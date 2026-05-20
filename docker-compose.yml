@@ -1,0 +1,145 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-secret-env-file: &secret-env-file
+  - path: ./.env
+    required: false
+
+services:
+  timescaledb-0:
+    image: timescale/timescaledb:2.14.2-pg14
+    container_name: timescaledb-0
+    hostname: timescaledb-0
+    logging: *default-logging
+    env_file: *secret-env-file
+    environment:
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "polymarket"
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - timescaledb-0-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d polymarket"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  db-migrate:
+    build:
+      context: .
+      dockerfile: packages/db-migrate/Dockerfile
+    image: polymarket/db-migrate:latest
+    container_name: db-migrate
+    hostname: db-migrate
+    logging: *default-logging
+    env_file: *secret-env-file
+    environment:
+      NODE_ENV: "development"
+      POSTGRES_HOST: "timescaledb-0"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "polymarket"
+      POSTGRES_SSL_MODE: "disable"
+      POSTGRES_SSL_CA_FILE: ""
+      POSTGRES_SSL_CERT_FILE: ""
+      POSTGRES_SSL_KEY_FILE: ""
+    depends_on:
+      timescaledb-0:
+        condition: service_healthy
+    restart: "no"
+
+  polymarket-bot:
+    build:
+      context: .
+      dockerfile: packages/polymarket-bot/Dockerfile
+    image: polymarket/polymarket-bot:latest
+    container_name: polymarket-bot
+    hostname: polymarket-bot
+    logging: *default-logging
+    env_file: *secret-env-file
+    environment:
+      RUST_LOG: "info"
+      POSTGRES_HOST: "timescaledb-0"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "polymarket"
+      POSTGRES_SSL_MODE: "disable"
+      POSTGRES_SSL_CA_FILE: ""
+      POLYMARKET_EXECUTION_MODE: "sim"
+      POLYMARKET_LIVE_CONFIRM: "false"
+      POLYMARKET_LIVE_ORDER_SUBMIT_ENABLED: "false"
+      POLYMARKET_LIVE_MAX_ORDER_NOTIONAL_USD: "2"
+      POLYMARKET_LIVE_MAX_OPEN_NOTIONAL_USD: "30"
+      POLYMARKET_LIVE_MAX_DAILY_LOSS_USD: "10"
+      POLYMARKET_LIVE_MAX_OPEN_POSITIONS: "6"
+      POLYMARKET_LIVE_REQUIRE_EXIT_BOOK: "true"
+      POLYMARKET_LIVE_REQUIRE_IDEMPOTENCY_CLEAN: "true"
+      POLYMARKET_LIVE_USER_WS_ENABLED: "false"
+      POLYMARKET_LIVE_USER_WS_URL: "wss://ws-subscriptions-clob.polymarket.com/ws/user"
+      POLYMARKET_LIVE_USER_WS_MARKETS: ""
+      POLYMARKET_LIVE_CLOB_BASE_URL: "https://clob.polymarket.com"
+      POLYMARKET_LIVE_USER_WS_STALE_SECS: "20"
+      POLYMARKET_LIVE_RECONCILE_INTERVAL_SECS: "30"
+      POLYMARKET_LIVE_STALE_RECONCILE_SECS: "60"
+      POLYMARKET_FUNDER_ADDRESS: ""
+      POLYMARKET_SIGNATURE_TYPE: ""
+      POLYMARKET_SCAN_ENABLED: "false"
+      POLYMARKET_SIGNAL2_ENABLED: "false"
+      POLYMARKET_SIGNAL3_ENABLED: "false"
+      POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
+      POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
+      POLYMARKET_CLOB_WS_URL: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+      POLYMARKET_DATA_API_BASE_URL: "https://data-api.polymarket.com"
+      POLYMARKET_SCAN_INTERVAL_SECS: "30"
+      POLYMARKET_HEALTH_INTERVAL_SECS: "30"
+      POLYMARKET_MAX_MARKETS_PER_SCAN: "50"
+      POLYMARKET_DAILY_PNL_TARGET_USD: "1000"
+      POLYMARKET_BOOTSTRAP_THRESHOLD: "0.020"
+      POLYMARKET_TAKER_FEE_RATE: "0.03"
+      POLYMARKET_TARGET_SIZE: "5"
+      POLYMARKET_MAX_SIMULTANEOUS_CONVERSIONS: "3"
+      POLYMARKET_HTTP_ENABLED: "true"
+      POLYMARKET_HTTP_BIND: "0.0.0.0:8097"
+      POLYMARKET_WHALE_BACKFILL_ENABLED: "false"
+      POLYMARKET_WHALE_LIVE_ENABLED: "false"
+      POLYMARKET_COPY_TRADE_ENABLED: "true"
+      POLYMARKET_COPY_EXECUTE_ENABLED: "false"
+      POLYMARKET_COPY_ALLOW_SELL_ENTRIES: "false"
+      POLYMARKET_WHALE_BACKFILL_LOOKBACK_DAYS: "30"
+      POLYMARKET_WHALE_MIN_TRADE_USD: "500"
+      POLYMARKET_WHALE_BACKFILL_MAX_PAGES: "10"
+      POLYMARKET_WHALE_LIVE_POLL_INTERVAL_SECS: "15"
+      POLYMARKET_WHALE_LIVE_PAGE_LIMIT: "100"
+      POLYMARKET_WHALE_LIVE_MAX_PAGES: "1"
+      POLYMARKET_EXIT_CANDIDATE_MAX_AGE_SECONDS: "900"
+      POLYMARKET_COPY_MIN_WALLET_SCORE: "0"
+      POLYMARKET_COPY_MIN_WALLET_TRADES: "0"
+      POLYMARKET_WHALE_MIN_REALIZED_PNL_USD: "100"
+      POLYMARKET_WHALE_MIN_ROI: "0.05"
+      POLYMARKET_WHALE_MIN_CLOSED_POSITIONS: "3"
+      POLYMARKET_COPY_MIN_SIZE_USD: "2"
+      POLYMARKET_COPY_MAX_SIZE_USD: "2"
+      POLYMARKET_COPY_SIZE_FRACTION: "0.10"
+      POLYMARKET_COPY_MIN_LIQUIDITY_USD: "1000"
+      POLYMARKET_COPY_MAX_PRICE_MOVE_PCT: "0.05"
+      POLYMARKET_COPY_MAX_FOLLOW_LAG_SECS: "1800"
+      POLYMARKET_COPY_MAX_PRICE_SLIPPAGE_BPS: "150"
+      POLYMARKET_COPY_MIN_BOOK_DEPTH_USD: "25"
+      POLYMARKET_COPY_BACKTEST_HORIZON_SECS: "3600"
+    ports:
+      - "127.0.0.1:8097:8097"
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      timescaledb-0:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  timescaledb-0-data:

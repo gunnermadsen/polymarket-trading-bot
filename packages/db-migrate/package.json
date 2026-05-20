@@ -1,0 +1,25 @@
+{
+  "name": "db-migrate",
+  "version": "0.1.0",
+  "description": "One-shot TypeORM migration runner for Capitonic market-data schema",
+  "private": true,
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "start:dev": "ts-node --project tsconfig.json src/main.ts",
+    "start:prod": "node dist/main.js",
+    "migration:run": "ts-node --project tsconfig.json src/main.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "pg": "^8.16.0",
+    "reflect-metadata": "^0.2.2",
+    "typeorm": "^0.3.25"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3"
+  }
+}
