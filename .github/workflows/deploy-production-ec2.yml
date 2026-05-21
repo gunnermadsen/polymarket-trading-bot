@@ -1,0 +1,77 @@
+name: Deploy Production EC2
+
+on:
+  workflow_dispatch:
+    inputs:
+      terraform_action:
+        description: "Terraform action to run"
+        required: true
+        default: "apply"
+        type: choice
+        options:
+          - plan
+          - apply
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: mx-central-1
+  AWS_ROLE_ARN: arn:aws:iam::192200846560:role/capitonic-polymarket-bot-github-actions-prod
+  TF_IN_AUTOMATION: "true"
+  TF_DIR: infra/ec2-compose
+
+jobs:
+  terraform:
+    name: Terraform ${{ github.event.inputs.terraform_action }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: production-ec2-compose-${{ github.event.inputs.terraform_action }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS access
+        run: aws sts get-caller-identity
+
+      - name: Check Terraform formatting
+        run: terraform -chdir="$TF_DIR" fmt -check -recursive
+
+      - name: Write backend config
+        run: |
+          cat > "$TF_DIR/backend.hcl" <<'EOF'
+          bucket       = "capitonic-polybot-tfstate-192200846560-mxc1"
+          key          = "production/ec2-compose/terraform.tfstate"
+          region       = "mx-central-1"
+          encrypt      = true
+          use_lockfile = true
+          EOF
+
+      - name: Initialize Terraform
+        run: terraform -chdir="$TF_DIR" init -backend-config=backend.hcl
+
+      - name: Validate Terraform
+        run: terraform -chdir="$TF_DIR" validate
+
+      - name: Terraform plan
+        run: terraform -chdir="$TF_DIR" plan -no-color -lock-timeout=60s -input=false
+
+      - name: Terraform apply
+        if: github.event.inputs.terraform_action == 'apply'
+        run: terraform -chdir="$TF_DIR" apply -auto-approve -input=false -lock-timeout=60s
+
+      - name: Terraform outputs
+        if: github.event.inputs.terraform_action == 'apply'
+        run: terraform -chdir="$TF_DIR" output

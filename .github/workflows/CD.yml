@@ -10,9 +10,9 @@ permissions:
   id-token: write
 
 env:
-  AWS_REGION: us-east-1
+  AWS_REGION: mx-central-1
   AWS_ROLE_ARN: arn:aws:iam::192200846560:role/capitonic-polymarket-bot-github-actions-prod
-  ECR_REGISTRY: 192200846560.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REGISTRY: 192200846560.dkr.ecr.mx-central-1.amazonaws.com
   ECR_POLYMARKET_BOT_REPOSITORY: capitonic/polymarket-bot
   ECR_DB_MIGRATE_REPOSITORY: capitonic/db-migrate
 

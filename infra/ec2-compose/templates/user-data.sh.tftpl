@@ -1,0 +1,61 @@
+#!/bin/bash
+set -euxo pipefail
+
+exec > >(tee -a /var/log/polymarket-bootstrap.log | logger -t polymarket-bootstrap -s 2>/dev/console) 2>&1
+
+AWS_REGION="${aws_region}"
+APP_DIRECTORY="${app_directory}"
+APP_SECRET_NAME="${app_secret_name}"
+ECR_REGISTRY="${ecr_registry}"
+REPO_BRANCH="${repo_branch}"
+REPO_URL="${repo_url}"
+
+dnf update -y
+dnf install -y docker git jq awscli amazon-ssm-agent
+
+systemctl enable --now amazon-ssm-agent
+systemctl enable --now docker
+
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -fsSL "https://github.com/docker/compose/releases/download/v2.40.3/docker-compose-linux-x86_64" \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+install -d -m 0700 /root/polymarket
+SECRET_PATH="/root/polymarket/secret.json"
+aws secretsmanager get-secret-value \
+  --region "$AWS_REGION" \
+  --secret-id "$APP_SECRET_NAME" \
+  --query SecretString \
+  --output text > "$SECRET_PATH"
+chmod 0600 "$SECRET_PATH"
+
+GITHUB_USERNAME="$(jq -r '.GITHUB_USERNAME' "$SECRET_PATH")"
+GITHUB_PAT="$(jq -r '.GITHUB_PAT' "$SECRET_PATH")"
+AUTH_REPO_URL="$(printf '%s' "$REPO_URL" | sed "s#https://#https://$GITHUB_USERNAME:$GITHUB_PAT@#")"
+
+if [ -d "$APP_DIRECTORY/.git" ]; then
+  git -C "$APP_DIRECTORY" fetch --prune origin "$REPO_BRANCH"
+  git -C "$APP_DIRECTORY" checkout "$REPO_BRANCH"
+  git -C "$APP_DIRECTORY" reset --hard "origin/$REPO_BRANCH"
+else
+  rm -rf "$APP_DIRECTORY"
+  git clone --branch "$REPO_BRANCH" "$AUTH_REPO_URL" "$APP_DIRECTORY"
+fi
+
+jq -r '
+  to_entries
+  | map(select(.key | startswith("GITHUB_") | not))
+  | map(select(.key | startswith("GHCR_") | not))
+  | .[]
+  | "\(.key)=\(.value | tostring)"
+' "$SECRET_PATH" > "$APP_DIRECTORY/.env"
+chmod 0600 "$APP_DIRECTORY/.env"
+
+aws ecr get-login-password --region "$AWS_REGION" \
+  | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+cd "$APP_DIRECTORY"
+docker compose pull
+docker compose up -d --no-build
+docker compose ps

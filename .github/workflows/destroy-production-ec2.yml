@@ -1,0 +1,63 @@
+name: Destroy Production EC2
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_destroy:
+        description: "Type destroy-production-ec2 to confirm teardown"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: mx-central-1
+  AWS_ROLE_ARN: arn:aws:iam::192200846560:role/capitonic-polymarket-bot-github-actions-prod
+  TF_IN_AUTOMATION: "true"
+  TF_DIR: infra/ec2-compose
+
+jobs:
+  destroy:
+    name: Terraform destroy
+    if: github.event.inputs.confirm_destroy == 'destroy-production-ec2'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: production-ec2-compose-destroy
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS access
+        run: aws sts get-caller-identity
+
+      - name: Write backend config
+        run: |
+          cat > "$TF_DIR/backend.hcl" <<'EOF'
+          bucket       = "capitonic-polybot-tfstate-192200846560-mxc1"
+          key          = "production/ec2-compose/terraform.tfstate"
+          region       = "mx-central-1"
+          encrypt      = true
+          use_lockfile = true
+          EOF
+
+      - name: Initialize Terraform
+        run: terraform -chdir="$TF_DIR" init -backend-config=backend.hcl
+
+      - name: Validate Terraform
+        run: terraform -chdir="$TF_DIR" validate
+
+      - name: Terraform destroy
+        run: terraform -chdir="$TF_DIR" destroy -auto-approve -input=false -lock-timeout=60s

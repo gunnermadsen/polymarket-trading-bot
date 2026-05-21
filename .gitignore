@@ -8,3 +8,9 @@ dist/
 *.log
 data/
 tmp/
+scripts/sync-aws-secret.mjs
+.env.aws.secrets
+**/.terraform/
+**/backend.hcl
+**/*.tfstate
+**/*.tfstate.*
