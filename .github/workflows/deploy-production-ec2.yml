@@ -202,13 +202,17 @@ jobs:
           fi
 
           for attempt in $(seq 1 60); do
-            if curl -fsS "$ADMIN_BASE_URL/health" | jq -e '.status == "ok"' >/dev/null; then
+            if curl -fsS \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              "$ADMIN_BASE_URL/health" | jq -e '.status == "ok"' >/dev/null; then
               break
             fi
             sleep 5
           done
 
-          if ! curl -fsS "$ADMIN_BASE_URL/health" | jq -e '.status == "ok"' >/dev/null; then
+          if ! curl -fsS \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            "$ADMIN_BASE_URL/health" | jq -e '.status == "ok"' >/dev/null; then
             echo "Bot health API did not become available." >&2
             exit 1
           fi
