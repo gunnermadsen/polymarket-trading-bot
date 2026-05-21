@@ -21,13 +21,14 @@ env:
   AWS_ROLE_ARN: arn:aws:iam::192200846560:role/capitonic-polymarket-bot-github-actions-prod
   TF_IN_AUTOMATION: "true"
   TF_DIR: infra/ec2-compose
+  APP_SECRET_NAME: capitonic/polymarket-bot/production
 
 jobs:
   terraform:
     name: Terraform ${{ github.event.inputs.terraform_action }}
     runs-on: ubuntu-latest
     concurrency:
-      group: production-ec2-compose-${{ github.event.inputs.terraform_action }}
+      group: production-ec2-compose
       cancel-in-progress: false
 
     steps:
@@ -46,6 +47,9 @@ jobs:
       - name: Verify AWS access
         run: aws sts get-caller-identity
 
+      - name: Load Cloudflare Terraform inputs
+        run: scripts/load-cloudflare-terraform-env.sh
+
       - name: Check Terraform formatting
         run: terraform -chdir="$TF_DIR" fmt -check -recursive
 
@@ -61,6 +65,10 @@ jobs:
 
       - name: Initialize Terraform
         run: terraform -chdir="$TF_DIR" init -backend-config=backend.hcl
+
+      - name: Import existing Cloudflare DNS records
+        if: github.event.inputs.terraform_action == 'apply'
+        run: scripts/import-cloudflare-dns-records.sh
 
       - name: Validate Terraform
         run: terraform -chdir="$TF_DIR" validate

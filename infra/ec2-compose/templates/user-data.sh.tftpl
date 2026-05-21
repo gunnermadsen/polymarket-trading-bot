@@ -9,6 +9,8 @@ AWS_REGION="${aws_region}"
 APP_DIRECTORY="${app_directory}"
 APP_SECRET_NAME="${app_secret_name}"
 COMPOSE_FILE="${compose_file}"
+CLOUDFLARED_RDP_HOSTNAME="${cloudflare_rdp_hostname}"
+CLOUDFLARED_SSH_HOSTNAME="${cloudflare_ssh_hostname}"
 ECR_REGISTRY="${ecr_registry}"
 ENABLE_CLOUDFLARED="${enable_cloudflared}"
 ENABLE_DESKTOP="${enable_desktop}"
@@ -131,6 +133,42 @@ install_desktop() {
   systemctl enable --now xrdp
 }
 
+install_authorized_keys_for_user() {
+  local username authorized_keys ssh_dir authorized_keys_file
+  username="$1"
+  authorized_keys="$2"
+
+  if ! id "$username" >/dev/null 2>&1; then
+    return
+  fi
+
+  ssh_dir="$(eval echo "~$username/.ssh")"
+  authorized_keys_file="$ssh_dir/authorized_keys"
+
+  install -d -m 0700 -o "$username" -g "$username" "$ssh_dir"
+  touch "$authorized_keys_file"
+  chown "$username:$username" "$authorized_keys_file"
+  chmod 0600 "$authorized_keys_file"
+
+  printf '%s\n' "$authorized_keys" \
+    | sed '/^[[:space:]]*$/d' \
+    >> "$authorized_keys_file"
+  sort -u "$authorized_keys_file" -o "$authorized_keys_file"
+  chown "$username:$username" "$authorized_keys_file"
+  chmod 0600 "$authorized_keys_file"
+}
+
+install_ssh_authorized_keys() {
+  local authorized_keys
+  authorized_keys="$(json_value SSH_AUTHORIZED_KEYS)"
+  if [ -z "$authorized_keys" ]; then
+    return
+  fi
+
+  install_authorized_keys_for_user ubuntu "$authorized_keys"
+  install_authorized_keys_for_user "$RDP_USERNAME" "$authorized_keys"
+}
+
 install_cloudflared() {
   if [ "$ENABLE_CLOUDFLARED" != "true" ]; then
     return
@@ -139,8 +177,8 @@ install_cloudflared() {
   local tunnel_id expected_tunnel_id credentials_b64 credentials_file rdp_hostname ssh_hostname deb_url
   expected_tunnel_id="$(json_value CLOUDFLARED_PRODUCTION_TUNNEL_ID)"
   credentials_b64="$(json_value CLOUDFLARED_PRODUCTION_TUNNEL_CREDENTIALS_B64)"
-  rdp_hostname="$(json_value CLOUDFLARED_RDP_HOSTNAME)"
-  ssh_hostname="$(json_value CLOUDFLARED_SSH_HOSTNAME)"
+  rdp_hostname="$CLOUDFLARED_RDP_HOSTNAME"
+  ssh_hostname="$CLOUDFLARED_SSH_HOSTNAME"
 
   if [ -z "$credentials_b64" ]; then
     echo "Missing CLOUDFLARED_PRODUCTION_TUNNEL_CREDENTIALS_B64 in AWS Secrets Manager secret $APP_SECRET_NAME" >&2
@@ -203,6 +241,7 @@ EOF
   if [ -n "$ssh_hostname" ]; then
     apt_get_install openssh-server
     systemctl enable --now ssh.service || systemctl enable --now sshd.service
+    install_ssh_authorized_keys
 
     cat >>/etc/cloudflared/config.yml <<EOF
   - hostname: $ssh_hostname
@@ -270,6 +309,7 @@ write_app_env() {
     | map(select(.key | startswith("CLOUDFLARED_") | not))
     | map(select(.key | startswith("COLOUDFLARED_") | not))
     | map(select(.key != "RDP_PASSWORD"))
+    | map(select(.key != "SSH_AUTHORIZED_KEYS"))
     | .[]
     | "\(.key)=\(.value | tostring)"
   ' "$SECRET_PATH" > "$APP_DIRECTORY/.env"
