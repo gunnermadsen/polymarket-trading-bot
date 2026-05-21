@@ -116,6 +116,8 @@ jobs:
               "timeout 1800 cloud-init status --wait || cloud-init status --long",
               "systemctl is-active docker",
               "systemctl is-active xrdp",
+              "awk 'BEGIN{section=\"\"} /^\\[/{section=$0} section==\"[Globals]\" && /^port=/{global=$0} section!=\"[Globals]\" && /^port=tcp:\\/\\/127\\.0\\.0\\.1:3389$/{bad=1} END{exit !(global==\"port=tcp://127.0.0.1:3389\" && !bad)}' /etc/xrdp/xrdp.ini",
+              "ss -ltnH 'sport = :3389' | awk '{print $4}' | grep -qx '127.0.0.1:3389'",
               "systemctl is-active cloudflared",
               "for attempt in $(seq 1 60); do journalctl -u cloudflared -n 240 --no-pager | grep -q 'Registered tunnel connection' && exit 0; sleep 5; done; journalctl -u cloudflared -n 240 --no-pager; exit 1",
               "cd /opt/polymarket-bot && sudo docker compose -f docker-compose.production.yml ps"
