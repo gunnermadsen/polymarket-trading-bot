@@ -109,6 +109,7 @@ jobs:
               "systemctl is-active docker",
               "systemctl is-active xrdp",
               "systemctl is-active cloudflared",
+              "for attempt in $(seq 1 60); do journalctl -u cloudflared -n 240 --no-pager | grep -q 'Registered tunnel connection' && exit 0; sleep 5; done; journalctl -u cloudflared -n 240 --no-pager; exit 1",
               "cd /opt/polymarket-bot && sudo docker compose ps"
             ]
           }

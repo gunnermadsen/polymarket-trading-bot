@@ -117,6 +117,17 @@ resource "aws_vpc_security_group_egress_rule" "https_ipv4" {
   to_port           = 443
 }
 
+resource "aws_vpc_security_group_egress_rule" "cloudflare_tunnel_http2_ipv4" {
+  for_each = toset(var.cloudflare_tunnel_ipv4_cidrs)
+
+  security_group_id = aws_security_group.compose_host.id
+  description       = "Cloudflare Tunnel http2 egress to ${each.value}"
+  cidr_ipv4         = each.value
+  from_port         = 7844
+  ip_protocol       = "tcp"
+  to_port           = 7844
+}
+
 resource "aws_vpc_security_group_egress_rule" "dns_udp_ipv4" {
   security_group_id = aws_security_group.compose_host.id
   description       = "DNS egress to VPC resolver"
