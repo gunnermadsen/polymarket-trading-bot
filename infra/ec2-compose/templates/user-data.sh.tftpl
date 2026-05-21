@@ -129,7 +129,7 @@ install_desktop() {
   chown "$RDP_USERNAME:$RDP_USERNAME" "/home/$RDP_USERNAME/.xsession"
   chmod 0600 "/home/$RDP_USERNAME/.xsession"
 
-  sed -i '/^\[Globals\]/,/^\[/{s/^port=.*/port=tcp:\/\/127.0.0.1:3389/}' /etc/xrdp/xrdp.ini
+  sed -i '/^\[Globals\]/,/^\[/{s/^port=.*/port=tcp:\/\/.:3389/}' /etc/xrdp/xrdp.ini
   usermod -aG ssl-cert xrdp
   systemctl enable --now xrdp
 }
