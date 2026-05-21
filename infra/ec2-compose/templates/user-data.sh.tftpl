@@ -19,14 +19,57 @@ apt_get_install() {
   apt-get install -y --no-install-recommends "$@"
 }
 
+configure_apt_for_https_egress() {
+  printf 'Acquire::ForceIPv4 "true";\n' >/etc/apt/apt.conf.d/99-force-ipv4
+
+  if [ -f /etc/apt/sources.list ]; then
+    sed -i 's#http://#https://#g' /etc/apt/sources.list
+  fi
+
+  if [ -d /etc/apt/sources.list.d ]; then
+    find /etc/apt/sources.list.d -type f \( -name '*.list' -o -name '*.sources' \) \
+      | while read -r source_file; do
+          sed -i 's#http://#https://#g' "$source_file"
+        done
+  fi
+}
+
 json_value() {
   local key="$1"
   jq -r --arg key "$key" '.[$key] // empty' "$SECRET_PATH"
 }
 
+install_aws_cli() {
+  if command -v aws >/dev/null 2>&1; then
+    return
+  fi
+
+  local arch aws_arch
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64)
+      aws_arch="x86_64"
+      ;;
+    aarch64|arm64)
+      aws_arch="aarch64"
+      ;;
+    *)
+      echo "Unsupported architecture for AWS CLI install: $arch" >&2
+      exit 1
+      ;;
+  esac
+
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$aws_arch.zip" -o /tmp/awscliv2.zip
+  rm -rf /tmp/aws
+  unzip -q /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install --update
+  rm -rf /tmp/aws /tmp/awscliv2.zip
+}
+
 install_base_packages() {
+  configure_apt_for_https_egress
   apt-get update
-  apt_get_install ca-certificates curl gnupg git jq unzip awscli snapd
+  apt_get_install ca-certificates curl gnupg git jq unzip snapd
 
   if ! systemctl is-active --quiet snap.amazon-ssm-agent.amazon-ssm-agent.service; then
     snap install amazon-ssm-agent --classic || true
@@ -34,6 +77,7 @@ install_base_packages() {
 
   systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service || true
   systemctl enable --now amazon-ssm-agent.service || true
+  install_aws_cli
 }
 
 install_docker() {
