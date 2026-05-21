@@ -13,6 +13,8 @@ services:
     image: timescale/timescaledb:2.14.2-pg14
     container_name: timescaledb-0
     hostname: timescaledb-0
+    mem_limit: 1280m
+    cpus: "0.65"
     logging: *default-logging
     env_file: *secret-env-file
     environment:
@@ -34,6 +36,8 @@ services:
     image: 192200846560.dkr.ecr.mx-central-1.amazonaws.com/capitonic/db-migrate:production
     container_name: db-migrate
     hostname: db-migrate
+    mem_limit: 256m
+    cpus: "0.25"
     logging: *default-logging
     env_file: *secret-env-file
     environment:
@@ -55,6 +59,8 @@ services:
     image: 192200846560.dkr.ecr.mx-central-1.amazonaws.com/capitonic/polymarket-bot:production
     container_name: polymarket-bot
     hostname: polymarket-bot
+    mem_limit: 512m
+    cpus: "0.30"
     logging: *default-logging
     env_file: *secret-env-file
     environment:
