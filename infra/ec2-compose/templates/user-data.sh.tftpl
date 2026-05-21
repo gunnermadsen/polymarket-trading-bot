@@ -70,7 +70,7 @@ install_aws_cli() {
 install_base_packages() {
   configure_apt_for_https_egress
   apt-get update
-  apt_get_install ca-certificates curl gnupg git jq unzip snapd
+  apt_get_install ca-certificates curl gnupg git jq nodejs unzip snapd
 
   if ! systemctl is-active --quiet snap.amazon-ssm-agent.amazon-ssm-agent.service; then
     snap install amazon-ssm-agent --classic || true
