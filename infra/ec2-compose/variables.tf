@@ -49,7 +49,7 @@ variable "ssh_key_name" {
 variable "root_volume_size_gib" {
   description = "Root EBS volume size in GiB."
   type        = number
-  default     = 30
+  default     = 50
 
   validation {
     condition     = var.root_volume_size_gib >= 20
