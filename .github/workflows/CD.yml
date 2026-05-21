@@ -13,7 +13,8 @@ env:
   AWS_REGION: us-east-1
   AWS_ROLE_ARN: arn:aws:iam::192200846560:role/capitonic-polymarket-bot-github-actions-prod
   ECR_REGISTRY: 192200846560.dkr.ecr.us-east-1.amazonaws.com
-  ECR_REPOSITORY: capitonic/polymarket-bot
+  ECR_POLYMARKET_BOT_REPOSITORY: capitonic/polymarket-bot
+  ECR_DB_MIGRATE_REPOSITORY: capitonic/db-migrate
 
 jobs:
   publish-polymarket-bot:
@@ -44,7 +45,71 @@ jobs:
           file: packages/polymarket-bot/Dockerfile
           push: true
           tags: |
-            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
-            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:production
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_POLYMARKET_BOT_REPOSITORY }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_POLYMARKET_BOT_REPOSITORY }}:production
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  publish-db-migrate:
+    name: Build and push db-migrate image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Calculate migration checksum
+        id: migration-checksum
+        run: |
+          checksum="$(
+            find packages/db-migrate/src/migrations -type f -print0 \
+              | sort -z \
+              | xargs -0 sha256sum \
+              | sha256sum \
+              | cut -d ' ' -f 1
+          )"
+          echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
+          echo "tag=migrations-$checksum" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check for existing migration image
+        id: db-migrate-image
+        run: |
+          if aws ecr describe-images \
+            --repository-name "$ECR_DB_MIGRATE_REPOSITORY" \
+            --image-ids imageTag="${{ steps.migration-checksum.outputs.tag }}" \
+            >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Migration image already exists for checksum ${{ steps.migration-checksum.outputs.checksum }}."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "No migration image found for checksum ${{ steps.migration-checksum.outputs.checksum }}."
+          fi
+
+      - name: Log in to Amazon ECR
+        if: steps.db-migrate-image.outputs.exists != 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        if: steps.db-migrate-image.outputs.exists != 'true'
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push image
+        if: steps.db-migrate-image.outputs.exists != 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: packages/db-migrate/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_DB_MIGRATE_REPOSITORY }}:${{ steps.migration-checksum.outputs.tag }}
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_DB_MIGRATE_REPOSITORY }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_DB_MIGRATE_REPOSITORY }}:production
           cache-from: type=gha
           cache-to: type=gha,mode=max
