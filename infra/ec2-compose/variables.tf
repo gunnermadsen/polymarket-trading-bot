@@ -23,7 +23,7 @@ variable "instance_type" {
 }
 
 variable "ami_id" {
-  description = "Optional AMI override. Leave null to use latest Amazon Linux 2023 x86_64."
+  description = "Optional AMI override. Leave null to use latest Ubuntu 24.04 LTS x86_64."
   type        = string
   default     = null
 }
@@ -32,12 +32,6 @@ variable "subnet_id" {
   description = "Optional subnet override. Leave null to use the first default subnet in the default VPC."
   type        = string
   default     = null
-}
-
-variable "admin_cidrs" {
-  description = "Optional CIDR blocks allowed to SSH to the host."
-  type        = list(string)
-  default     = []
 }
 
 variable "ssh_key_name" {
@@ -85,4 +79,22 @@ variable "ecr_registry" {
   description = "ECR registry host used by Docker Compose image references."
   type        = string
   default     = "192200846560.dkr.ecr.mx-central-1.amazonaws.com"
+}
+
+variable "enable_desktop" {
+  description = "Install XFCE, XRDP, and a lightweight browser on the host."
+  type        = bool
+  default     = true
+}
+
+variable "rdp_username" {
+  description = "Local Linux username for XRDP logins. The password is read from RDP_PASSWORD in AWS Secrets Manager."
+  type        = string
+  default     = "polybot"
+}
+
+variable "enable_cloudflared" {
+  description = "Install and run cloudflared as a systemd service. Tunnel credentials are read from AWS Secrets Manager."
+  type        = bool
+  default     = true
 }

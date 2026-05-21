@@ -23,7 +23,7 @@ data "aws_subnets" "default" {
   }
 }
 
-data "aws_ssm_parameter" "al2023_ami" {
+data "aws_ssm_parameter" "ubuntu_ami" {
   name = local.ami_ssm_parameter_name
 }
 
@@ -108,21 +108,31 @@ resource "aws_security_group" "compose_host" {
   })
 }
 
-resource "aws_vpc_security_group_ingress_rule" "admin" {
-  for_each = local.admin_ingress_rules
-
+resource "aws_vpc_security_group_egress_rule" "https_ipv4" {
   security_group_id = aws_security_group.compose_host.id
-  description       = each.value.description
-  cidr_ipv4         = each.value.cidr
-  from_port         = each.value.from_port
+  description       = "HTTPS egress for AWS APIs, GitHub, ECR, Docker, package repositories, and Cloudflare Tunnel"
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 443
   ip_protocol       = "tcp"
-  to_port           = each.value.to_port
+  to_port           = 443
 }
 
-resource "aws_vpc_security_group_egress_rule" "all_ipv4" {
+resource "aws_vpc_security_group_egress_rule" "dns_udp_ipv4" {
   security_group_id = aws_security_group.compose_host.id
-  cidr_ipv4         = "0.0.0.0/0"
-  ip_protocol       = "-1"
+  description       = "DNS egress to VPC resolver"
+  cidr_ipv4         = data.aws_vpc.default.cidr_block
+  from_port         = 53
+  ip_protocol       = "udp"
+  to_port           = 53
+}
+
+resource "aws_vpc_security_group_egress_rule" "dns_tcp_ipv4" {
+  security_group_id = aws_security_group.compose_host.id
+  description       = "DNS TCP egress to VPC resolver"
+  cidr_ipv4         = data.aws_vpc.default.cidr_block
+  from_port         = 53
+  ip_protocol       = "tcp"
+  to_port           = 53
 }
 
 resource "aws_instance" "compose_host" {
@@ -136,12 +146,15 @@ resource "aws_instance" "compose_host" {
   user_data_replace_on_change = true
 
   user_data = templatefile("${path.module}/templates/user-data.sh.tftpl", {
-    aws_region      = var.aws_region
-    app_directory   = var.app_directory
-    app_secret_name = var.app_secret_name
-    ecr_registry    = var.ecr_registry
-    repo_branch     = var.repo_branch
-    repo_url        = var.repo_url
+    aws_region         = var.aws_region
+    app_directory      = var.app_directory
+    app_secret_name    = var.app_secret_name
+    ecr_registry       = var.ecr_registry
+    enable_cloudflared = var.enable_cloudflared
+    enable_desktop     = var.enable_desktop
+    rdp_username       = var.rdp_username
+    repo_branch        = var.repo_branch
+    repo_url           = var.repo_url
   })
 
   metadata_options {
