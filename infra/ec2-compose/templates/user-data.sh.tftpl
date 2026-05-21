@@ -225,7 +225,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/cloudflared tunnel --config /etc/cloudflared/config.yml run
+ExecStart=/usr/bin/cloudflared tunnel --protocol http2 --config /etc/cloudflared/config.yml run
 Restart=always
 RestartSec=5s
 User=root
