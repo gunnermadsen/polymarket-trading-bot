@@ -17,10 +17,12 @@ env:
   AWS_ROLE_ARN: arn:aws:iam::192200846560:role/capitonic-polymarket-bot-github-actions-prod
   TF_IN_AUTOMATION: "true"
   TF_DIR: infra/ec2-compose
+  INSTANCE_TAG_NAME: capitonic-polymarket-bot
+  HOST_IAM_NAME: capitonic-polymarket-bot-host
+  SECURITY_GROUP_NAME: capitonic-polymarket-bot-sg
 
 jobs:
-  destroy:
-    name: Terraform destroy
+  prepare:
     if: github.event.inputs.confirm_destroy == 'destroy-production-ec2'
     runs-on: ubuntu-latest
     concurrency:
@@ -59,5 +61,153 @@ jobs:
       - name: Validate Terraform
         run: terraform -chdir="$TF_DIR" validate
 
+      - name: Preview resources selected for teardown
+        run: |
+          set -euo pipefail
+
+          echo "EC2 instances selected for teardown:"
+          aws ec2 describe-instances \
+            --filters \
+              "Name=tag:Name,Values=$INSTANCE_TAG_NAME" \
+              "Name=tag:Environment,Values=production" \
+              "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            --query 'Reservations[].Instances[].{InstanceId:InstanceId,State:State.Name,Type:InstanceType,AZ:Placement.AvailabilityZone,PublicIp:PublicIpAddress}' \
+            --output table
+
+          echo "Security groups selected for teardown:"
+          aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=$SECURITY_GROUP_NAME" \
+            --query 'SecurityGroups[].{GroupId:GroupId,GroupName:GroupName,VpcId:VpcId}' \
+            --output table
+
+  destroy:
+    name: Terraform destroy
+    if: github.event.inputs.confirm_destroy == 'destroy-production-ec2'
+    needs: prepare
+    runs-on: ubuntu-latest
+    concurrency:
+      group: production-ec2-compose-destroy
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS access
+        run: aws sts get-caller-identity
+
+      - name: Write backend config
+        run: |
+          cat > "$TF_DIR/backend.hcl" <<'EOF'
+          bucket       = "capitonic-polybot-tfstate-192200846560-mxc1"
+          key          = "production/ec2-compose/terraform.tfstate"
+          region       = "mx-central-1"
+          encrypt      = true
+          use_lockfile = true
+          EOF
+
+      - name: Initialize Terraform
+        run: terraform -chdir="$TF_DIR" init -backend-config=backend.hcl
+
+      - name: Validate Terraform
+        run: terraform -chdir="$TF_DIR" validate
+
+      - name: Capture resource ids before destroy
+        run: |
+          set -euo pipefail
+
+          INSTANCE_IDS="$(
+            aws ec2 describe-instances \
+              --filters \
+                "Name=tag:Name,Values=$INSTANCE_TAG_NAME" \
+                "Name=tag:Environment,Values=production" \
+                "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+              --query 'Reservations[].Instances[].InstanceId' \
+              --output text
+          )"
+
+          VOLUME_IDS=""
+          if [ -n "$INSTANCE_IDS" ]; then
+            VOLUME_IDS="$(
+              aws ec2 describe-instances \
+                --instance-ids $INSTANCE_IDS \
+                --query 'Reservations[].Instances[].BlockDeviceMappings[].Ebs.VolumeId' \
+                --output text
+            )"
+          fi
+
+          SECURITY_GROUP_IDS="$(
+            aws ec2 describe-security-groups \
+              --filters "Name=group-name,Values=$SECURITY_GROUP_NAME" \
+              --query 'SecurityGroups[].GroupId' \
+              --output text
+          )"
+
+          {
+            echo "INSTANCE_IDS=$INSTANCE_IDS"
+            echo "VOLUME_IDS=$VOLUME_IDS"
+            echo "SECURITY_GROUP_IDS=$SECURITY_GROUP_IDS"
+          } >> "$GITHUB_ENV"
+
       - name: Terraform destroy
         run: terraform -chdir="$TF_DIR" destroy -auto-approve -input=false -lock-timeout=60s
+
+      - name: Verify clean slate
+        run: |
+          set -euo pipefail
+
+          ACTIVE_INSTANCES="$(
+            aws ec2 describe-instances \
+              --filters \
+                "Name=tag:Name,Values=$INSTANCE_TAG_NAME" \
+                "Name=tag:Environment,Values=production" \
+                "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+              --query 'Reservations[].Instances[].InstanceId' \
+              --output text
+          )"
+          if [ -n "$ACTIVE_INSTANCES" ]; then
+            echo "EC2 instances still exist: $ACTIVE_INSTANCES" >&2
+            exit 1
+          fi
+
+          if [ -n "$VOLUME_IDS" ]; then
+            if aws ec2 describe-volumes --volume-ids $VOLUME_IDS >/tmp/volumes.json 2>/tmp/volumes.err; then
+              REMAINING_VOLUMES="$(jq -r '.Volumes[] | select(.State != "deleted") | .VolumeId' /tmp/volumes.json | xargs)"
+              if [ -n "$REMAINING_VOLUMES" ]; then
+                echo "EBS volumes still exist: $REMAINING_VOLUMES" >&2
+                exit 1
+              fi
+            fi
+          fi
+
+          REMAINING_SECURITY_GROUPS="$(
+            aws ec2 describe-security-groups \
+              --filters "Name=group-name,Values=$SECURITY_GROUP_NAME" \
+              --query 'SecurityGroups[].GroupId' \
+              --output text
+          )"
+          if [ -n "$REMAINING_SECURITY_GROUPS" ]; then
+            echo "Security groups still exist: $REMAINING_SECURITY_GROUPS" >&2
+            exit 1
+          fi
+
+          if aws iam get-instance-profile --instance-profile-name "$HOST_IAM_NAME" >/tmp/instance-profile.json 2>/tmp/instance-profile.err; then
+            echo "IAM instance profile still exists: $HOST_IAM_NAME" >&2
+            exit 1
+          fi
+
+          if aws iam get-role --role-name "$HOST_IAM_NAME" >/tmp/role.json 2>/tmp/role.err; then
+            echo "IAM role still exists: $HOST_IAM_NAME" >&2
+            exit 1
+          fi
+
+          echo "Production EC2 stack teardown verified. S3 Terraform state and AWS-managed KMS resources were not deleted."
