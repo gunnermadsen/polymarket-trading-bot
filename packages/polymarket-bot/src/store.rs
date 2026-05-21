@@ -13,8 +13,9 @@ use crate::{
     models::{
         BackfillJob, BackfillJobStatus, ConversionRequest, ConversionResult,
         CopyTradeBacktestResult, CopyTradeBacktestRun, CopyTradeSignal, FillRecord, Market,
-        OrderRecord, OrderRequest, OrderState, OutcomeToken, SignalCandidate, WalletPerformance,
-        WalletScore, WalletScoreCalibrationSnapshot, WhalePollCheckpoint, WhaleTrade,
+        OrderRecord, OrderRequest, OrderState, OutcomeToken, SignalCandidate, TradingProcess,
+        TradingProcessConfig, WalletPerformance, WalletScore, WalletScoreCalibrationSnapshot,
+        WhalePollCheckpoint, WhaleTrade,
     },
     orderbook::LocalOrderBook,
 };
@@ -31,6 +32,22 @@ struct OrderDbRow {
     raw_payload: serde_json::Value,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, FromRow)]
+struct TradingProcessRow {
+    process_id: Uuid,
+    name: String,
+    process_type: String,
+    status: String,
+    enabled: bool,
+    config: serde_json::Value,
+    metadata: serde_json::Value,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    started_at: Option<DateTime<Utc>>,
+    stopped_at: Option<DateTime<Utc>>,
+    last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -190,6 +207,186 @@ impl Store {
         Ok(Self { pool })
     }
 
+    pub async fn ensure_default_trading_process(
+        &self,
+        config: TradingProcessConfig,
+    ) -> Result<TradingProcess> {
+        let process_id = Uuid::new_v5(
+            &Uuid::NAMESPACE_URL,
+            b"polymarket-bot/default-env-copy-trade-process",
+        );
+        let config_value = serde_json::to_value(config)?;
+        let row = sqlx::query_as::<_, TradingProcessRow>(
+            r#"
+            INSERT INTO polymarket.trading_processes (
+              process_id, name, process_type, status, enabled, config, metadata,
+              created_at, updated_at, started_at
+            )
+            VALUES (
+              $1, 'default-env-copy-trade', 'copy_trade', 'running', true, $2, $3,
+              now(), now(), now()
+            )
+            ON CONFLICT (process_id) DO UPDATE SET
+              config = EXCLUDED.config,
+              enabled = true,
+              updated_at = now()
+            RETURNING process_id, name, process_type, status, enabled, config, metadata,
+              created_at, updated_at, started_at, stopped_at, last_error
+            "#,
+        )
+        .bind(process_id)
+        .bind(config_value)
+        .bind(serde_json::json!({"source": "env_default"}))
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to ensure default trading process")?;
+        trading_process_from_row(row)
+    }
+
+    pub async fn create_trading_process(
+        &self,
+        name: &str,
+        process_type: &str,
+        enabled: bool,
+        config: TradingProcessConfig,
+        metadata: serde_json::Value,
+    ) -> Result<TradingProcess> {
+        let row = sqlx::query_as::<_, TradingProcessRow>(
+            r#"
+            INSERT INTO polymarket.trading_processes (
+              process_id, name, process_type, status, enabled, config, metadata,
+              created_at, updated_at
+            )
+            VALUES (gen_random_uuid(),$1,$2,'created',$3,$4,$5,now(),now())
+            RETURNING process_id, name, process_type, status, enabled, config, metadata,
+              created_at, updated_at, started_at, stopped_at, last_error
+            "#,
+        )
+        .bind(name)
+        .bind(process_type)
+        .bind(enabled)
+        .bind(serde_json::to_value(config)?)
+        .bind(metadata)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to create trading process")?;
+        trading_process_from_row(row)
+    }
+
+    pub async fn list_trading_processes(&self, limit: i64) -> Result<Vec<TradingProcess>> {
+        let rows = sqlx::query_as::<_, TradingProcessRow>(
+            r#"
+            SELECT process_id, name, process_type, status, enabled, config, metadata,
+              created_at, updated_at, started_at, stopped_at, last_error
+            FROM polymarket.trading_processes
+            ORDER BY updated_at DESC
+            LIMIT $1
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to list trading processes")?;
+        rows.into_iter().map(trading_process_from_row).collect()
+    }
+
+    pub async fn get_trading_process(&self, process_id: Uuid) -> Result<Option<TradingProcess>> {
+        let row = sqlx::query_as::<_, TradingProcessRow>(
+            r#"
+            SELECT process_id, name, process_type, status, enabled, config, metadata,
+              created_at, updated_at, started_at, stopped_at, last_error
+            FROM polymarket.trading_processes
+            WHERE process_id = $1
+            "#,
+        )
+        .bind(process_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to get trading process")?;
+        row.map(trading_process_from_row).transpose()
+    }
+
+    pub async fn update_trading_process(
+        &self,
+        process_id: Uuid,
+        name: Option<&str>,
+        process_type: Option<&str>,
+        enabled: Option<bool>,
+        status: Option<&str>,
+        config: Option<TradingProcessConfig>,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<Option<TradingProcess>> {
+        let config_value = config.map(serde_json::to_value).transpose()?;
+        let row = sqlx::query_as::<_, TradingProcessRow>(
+            r#"
+            UPDATE polymarket.trading_processes
+            SET name = COALESCE($2, name),
+                process_type = COALESCE($3, process_type),
+                enabled = COALESCE($4, enabled),
+                status = COALESCE($5, status),
+                config = COALESCE($6, config),
+                metadata = COALESCE($7, metadata),
+                updated_at = now()
+            WHERE process_id = $1
+            RETURNING process_id, name, process_type, status, enabled, config, metadata,
+              created_at, updated_at, started_at, stopped_at, last_error
+            "#,
+        )
+        .bind(process_id)
+        .bind(name)
+        .bind(process_type)
+        .bind(enabled)
+        .bind(status)
+        .bind(config_value)
+        .bind(metadata)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to update trading process")?;
+        row.map(trading_process_from_row).transpose()
+    }
+
+    pub async fn start_trading_process(&self, process_id: Uuid) -> Result<Option<TradingProcess>> {
+        let row = sqlx::query_as::<_, TradingProcessRow>(
+            r#"
+            UPDATE polymarket.trading_processes
+            SET status = 'running',
+                enabled = true,
+                started_at = COALESCE(started_at, now()),
+                stopped_at = NULL,
+                last_error = NULL,
+                updated_at = now()
+            WHERE process_id = $1
+            RETURNING process_id, name, process_type, status, enabled, config, metadata,
+              created_at, updated_at, started_at, stopped_at, last_error
+            "#,
+        )
+        .bind(process_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to start trading process")?;
+        row.map(trading_process_from_row).transpose()
+    }
+
+    pub async fn stop_trading_process(&self, process_id: Uuid) -> Result<Option<TradingProcess>> {
+        let row = sqlx::query_as::<_, TradingProcessRow>(
+            r#"
+            UPDATE polymarket.trading_processes
+            SET status = 'stopped',
+                enabled = false,
+                stopped_at = now(),
+                updated_at = now()
+            WHERE process_id = $1
+            RETURNING process_id, name, process_type, status, enabled, config, metadata,
+              created_at, updated_at, started_at, stopped_at, last_error
+            "#,
+        )
+        .bind(process_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to stop trading process")?;
+        row.map(trading_process_from_row).transpose()
+    }
+
     pub async fn insert_market(&self, market: &Market) -> Result<()> {
         sqlx::query(
             r#"
@@ -256,14 +453,15 @@ impl Store {
         sqlx::query(
             r#"
             INSERT INTO polymarket.signal_candidates (
-              signal_id, timestamp_utc, signal_type, market_id, expected_edge,
+              signal_id, process_id, timestamp_utc, signal_type, market_id, expected_edge,
               threshold, size, status, reject_reason, worst_case_loss, metadata
             )
-            VALUES ($1,now(),$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            VALUES ($1,$2,now(),$3,$4,$5,$6,$7,$8,$9,$10,$11)
             ON CONFLICT (signal_id, timestamp_utc) DO NOTHING
             "#,
         )
         .bind(signal.signal_id)
+        .bind(signal.process_id)
         .bind(signal_type)
         .bind(&signal.market_id)
         .bind(signal.expected_edge)
@@ -286,12 +484,13 @@ impl Store {
         sqlx::query(
             r#"
             INSERT INTO polymarket.orders (
-              order_id, client_order_id, created_at, updated_at, market_id, token_id,
+              order_id, client_order_id, process_id, created_at, updated_at, market_id, token_id,
               side, order_type, price, size, state, raw_payload
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
             ON CONFLICT (client_order_id) DO UPDATE SET
               order_id = EXCLUDED.order_id,
+              process_id = EXCLUDED.process_id,
               market_id = EXCLUDED.market_id,
               token_id = EXCLUDED.token_id,
               side = EXCLUDED.side,
@@ -305,6 +504,7 @@ impl Store {
         )
         .bind(&order.order_id)
         .bind(order.request.client_order_id)
+        .bind(order.request.process_id)
         .bind(order.created_at)
         .bind(order.updated_at)
         .bind(&order.request.market_id)
@@ -501,13 +701,14 @@ impl Store {
         sqlx::query(
             r#"
             INSERT INTO polymarket.fills (
-              fill_id, order_id, token_id, timestamp_utc, price, size, fee, source, raw_payload
+              fill_id, process_id, order_id, token_id, timestamp_utc, price, size, fee, source, raw_payload
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
             ON CONFLICT (fill_id, timestamp_utc) DO NOTHING
             "#,
         )
         .bind(fill.fill_id)
+        .bind(fill.process_id)
         .bind(&fill.order_id)
         .bind(&fill.token_id)
         .bind(fill.filled_at)
@@ -773,14 +974,23 @@ impl Store {
             WITH filled_entries AS (
               SELECT
                 s.signal_id,
+                s.process_id,
                 s.timestamp_utc AS signal_timestamp,
                 s.proxy_wallet,
                 s.source_trade_id,
                 s.market_id,
                 COALESCE(s.token_id, o.token_id, f.token_id) AS token_id,
                 CASE WHEN upper(s.side) = 'SELL' THEN 'sell' ELSE 'buy' END AS side,
-                CASE WHEN f.source = 'live' THEN 'live' ELSE 'sim' END AS execution_mode,
-                CASE WHEN f.source = 'live' THEN 'polymarket_clob' ELSE 'sim' END AS venue,
+                CASE
+                  WHEN f.source = 'live' THEN 'live'
+                  WHEN f.source = 'paper' THEN 'paper'
+                  ELSE 'sim'
+                END AS execution_mode,
+                CASE
+                  WHEN f.source = 'live' THEN 'polymarket_clob'
+                  WHEN f.source = 'paper' THEN 'paper'
+                  ELSE 'sim'
+                END AS venue,
                 min(f.timestamp_utc) AS entry_timestamp,
                 sum(f.size) AS entry_size,
                 sum(f.price * f.size) / NULLIF(sum(f.size), 0) AS entry_price,
@@ -803,22 +1013,32 @@ impl Store {
                   WHERE p.source_signal_table = 'polymarket.copy_trade_signals'
                     AND p.source_signal_id = s.signal_id
                     AND p.token_id = COALESCE(s.token_id, o.token_id, f.token_id)
+                    AND p.process_id IS NOT DISTINCT FROM s.process_id
                 )
               GROUP BY
-                s.signal_id, s.timestamp_utc, s.proxy_wallet, s.source_trade_id,
+                s.signal_id, s.process_id, s.timestamp_utc, s.proxy_wallet, s.source_trade_id,
                 s.market_id, COALESCE(s.token_id, o.token_id, f.token_id),
                 CASE WHEN upper(s.side) = 'SELL' THEN 'sell' ELSE 'buy' END,
-                CASE WHEN f.source = 'live' THEN 'live' ELSE 'sim' END,
-                CASE WHEN f.source = 'live' THEN 'polymarket_clob' ELSE 'sim' END
+                CASE
+                  WHEN f.source = 'live' THEN 'live'
+                  WHEN f.source = 'paper' THEN 'paper'
+                  ELSE 'sim'
+                END,
+                CASE
+                  WHEN f.source = 'live' THEN 'polymarket_clob'
+                  WHEN f.source = 'paper' THEN 'paper'
+                  ELSE 'sim'
+                END
             )
             INSERT INTO polymarket.trade_positions (
-              source_signal_table, source_signal_id, source_trade_id, signal_source,
+              process_id, source_signal_table, source_signal_id, source_trade_id, signal_source,
               strategy_name, strategy_version, strategy_config_hash, execution_mode, venue,
               is_live_capital, proxy_wallet, market_id, token_id, side, entry_price,
               entry_size, open_size, entry_notional, entry_fee, entry_timestamp,
               follow_lag_seconds, status, metadata
             )
             SELECT
+              process_id,
               'polymarket.copy_trade_signals',
               signal_id,
               source_trade_id,
@@ -846,7 +1066,7 @@ impl Store {
             WHERE token_id IS NOT NULL
               AND entry_size > 0
               AND entry_price IS NOT NULL
-            ON CONFLICT (source_signal_table, source_signal_id, token_id) DO NOTHING
+            ON CONFLICT DO NOTHING
             "#,
         )
         .execute(&self.pool)
@@ -2073,12 +2293,13 @@ impl Store {
         sqlx::query(
             r#"
             INSERT INTO polymarket.copy_trade_signals (
-              signal_id, timestamp_utc, proxy_wallet, wallet_score, source_trade_id,
+              signal_id, process_id, timestamp_utc, proxy_wallet, wallet_score, source_trade_id,
               market_id, token_id, side, whale_price, observed_price,
               copy_size_usd, reason, status, metadata
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
             ON CONFLICT (signal_id, timestamp_utc) DO UPDATE SET
+              process_id = EXCLUDED.process_id,
               proxy_wallet = EXCLUDED.proxy_wallet,
               wallet_score = EXCLUDED.wallet_score,
               source_trade_id = EXCLUDED.source_trade_id,
@@ -2094,6 +2315,7 @@ impl Store {
             "#,
         )
         .bind(signal.signal_id)
+        .bind(signal.process_id)
         .bind(signal.timestamp_utc)
         .bind(&signal.proxy_wallet)
         .bind(signal.wallet_score)
@@ -2481,6 +2703,28 @@ impl From<WhalePollCheckpointRow> for WhalePollCheckpoint {
             state: row.state,
         }
     }
+}
+
+fn trading_process_from_row(row: TradingProcessRow) -> Result<TradingProcess> {
+    let config =
+        serde_json::from_value(row.config.clone()).unwrap_or_else(|_| TradingProcessConfig {
+            raw: row.config.clone(),
+            ..TradingProcessConfig::default()
+        });
+    Ok(TradingProcess {
+        process_id: row.process_id,
+        name: row.name,
+        process_type: row.process_type,
+        status: row.status,
+        enabled: row.enabled,
+        config,
+        metadata: row.metadata,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        started_at: row.started_at,
+        stopped_at: row.stopped_at,
+        last_error: row.last_error,
+    })
 }
 
 fn serialized_name<T: Serialize>(value: &T) -> Result<String> {

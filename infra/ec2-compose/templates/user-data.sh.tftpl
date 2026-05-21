@@ -8,6 +8,7 @@ export DEBIAN_FRONTEND=noninteractive
 AWS_REGION="${aws_region}"
 APP_DIRECTORY="${app_directory}"
 APP_SECRET_NAME="${app_secret_name}"
+COMPOSE_FILE="${compose_file}"
 ECR_REGISTRY="${ecr_registry}"
 ENABLE_CLOUDFLARED="${enable_cloudflared}"
 ENABLE_DESKTOP="${enable_desktop}"
@@ -280,9 +281,9 @@ start_compose_app() {
     | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
   cd "$APP_DIRECTORY"
-  docker compose pull
-  docker compose up -d --no-build
-  docker compose ps
+  docker compose -f "$COMPOSE_FILE" pull
+  docker compose -f "$COMPOSE_FILE" up -d --no-build
+  docker compose -f "$COMPOSE_FILE" ps
 }
 
 install_base_packages

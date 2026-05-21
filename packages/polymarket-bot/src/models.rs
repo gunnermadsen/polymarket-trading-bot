@@ -45,6 +45,8 @@ pub enum TokenSide {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignalCandidate {
     pub signal_id: Uuid,
+    #[serde(default)]
+    pub process_id: Option<Uuid>,
     pub signal_type: SignalType,
     pub market_id: String,
     pub expected_edge: Decimal,
@@ -106,6 +108,8 @@ pub enum SignalStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderRequest {
     pub client_order_id: Uuid,
+    #[serde(default)]
+    pub process_id: Option<Uuid>,
     pub market_id: String,
     pub token_id: String,
     pub side: OrderSide,
@@ -159,6 +163,8 @@ pub enum OrderState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FillRecord {
     pub fill_id: Uuid,
+    #[serde(default)]
+    pub process_id: Option<Uuid>,
     pub order_id: String,
     pub token_id: String,
     pub price: Decimal,
@@ -172,6 +178,7 @@ pub struct FillRecord {
 #[serde(rename_all = "snake_case")]
 pub enum FillSource {
     Sim,
+    Paper,
     Live,
 }
 
@@ -525,6 +532,8 @@ impl WalletPerformance {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CopyTradeSignal {
     pub signal_id: Uuid,
+    #[serde(default)]
+    pub process_id: Option<Uuid>,
     pub timestamp_utc: DateTime<Utc>,
     pub proxy_wallet: String,
     pub wallet_score: Decimal,
@@ -538,6 +547,92 @@ pub struct CopyTradeSignal {
     pub reason: String,
     pub status: String,
     pub metadata: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradingProcess {
+    pub process_id: Uuid,
+    pub name: String,
+    pub process_type: String,
+    pub status: String,
+    pub enabled: bool,
+    pub config: TradingProcessConfig,
+    pub metadata: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub stopped_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TradingProcessConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ProcessExecutionConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whale: Option<WhaleProcessConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy_trade: Option<CopyTradeProcessConfig>,
+    #[serde(default)]
+    pub raw: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessExecutionConfig {
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub execute_signals: bool,
+    #[serde(default)]
+    pub live_capital: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhaleProcessConfig {
+    #[serde(default)]
+    pub lookback_days: Option<u32>,
+    #[serde(default)]
+    pub min_trade_usd: Option<Decimal>,
+    #[serde(default)]
+    pub page_limit: Option<usize>,
+    #[serde(default)]
+    pub max_pages: Option<usize>,
+    #[serde(default)]
+    pub wallets: Vec<String>,
+    #[serde(default)]
+    pub market_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopyTradeProcessConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub min_wallet_score: Option<Decimal>,
+    #[serde(default)]
+    pub min_wallet_trades: Option<i32>,
+    #[serde(default)]
+    pub min_wallet_realized_pnl_usd: Option<Decimal>,
+    #[serde(default)]
+    pub min_wallet_roi: Option<Decimal>,
+    #[serde(default)]
+    pub min_wallet_closed_positions: Option<i32>,
+    #[serde(default)]
+    pub min_trade_usd: Option<Decimal>,
+    #[serde(default)]
+    pub min_copy_size_usd: Option<Decimal>,
+    #[serde(default)]
+    pub max_copy_size_usd: Option<Decimal>,
+    #[serde(default)]
+    pub copy_size_fraction: Option<Decimal>,
+    #[serde(default)]
+    pub max_follow_lag_secs: Option<i64>,
+    #[serde(default)]
+    pub max_price_slippage_bps: Option<Decimal>,
+    #[serde(default)]
+    pub min_book_depth_usd: Option<Decimal>,
+    #[serde(default)]
+    pub allow_sell_entries: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

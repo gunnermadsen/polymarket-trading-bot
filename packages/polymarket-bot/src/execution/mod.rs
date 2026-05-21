@@ -107,6 +107,7 @@ mod tests {
             plan_id: Uuid::new_v4(),
             orders: vec![OrderRequest {
                 client_order_id: Uuid::new_v4(),
+                process_id: None,
                 market_id: "m1".to_string(),
                 token_id: "t1".to_string(),
                 side: OrderSide::Buy,

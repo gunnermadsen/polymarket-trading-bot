@@ -18,11 +18,14 @@ use crate::{
     orderbook::{BookSide, FillQuote},
 };
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct SimVenue {
     state: Arc<Mutex<SimState>>,
     clob: Option<ClobClient>,
     taker_fee_rate: Decimal,
+    fill_source: FillSource,
+    order_prefix: &'static str,
+    mode_name: &'static str,
 }
 
 #[derive(Debug, Default)]
@@ -42,6 +45,20 @@ impl SimVenue {
             state: Arc::new(Mutex::new(SimState::default())),
             clob: Some(clob),
             taker_fee_rate,
+            fill_source: FillSource::Sim,
+            order_prefix: "sim",
+            mode_name: "sim",
+        }
+    }
+
+    pub fn paper_with_clob(clob: ClobClient, taker_fee_rate: Decimal) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(SimState::default())),
+            clob: Some(clob),
+            taker_fee_rate,
+            fill_source: FillSource::Paper,
+            order_prefix: "paper",
+            mode_name: "paper",
         }
     }
 
@@ -130,12 +147,13 @@ impl SimVenue {
             .enumerate()
             .map(|(idx, fill)| FillRecord {
                 fill_id: Uuid::new_v4(),
+                process_id: request.process_id,
                 order_id: order_id.to_string(),
                 token_id: request.token_id.clone(),
                 price: fill.price,
                 size: fill.size,
                 fee: allocate_level_fee(fill, fee, total_notional),
-                source: FillSource::Sim,
+                source: self.fill_source,
                 filled_at: now + chrono::Duration::microseconds(idx as i64),
             })
             .collect();
@@ -172,7 +190,7 @@ fn allocate_level_fee(fill: FillQuote, total_fee: Decimal, total_notional: Decim
 impl ExecutionVenue for SimVenue {
     async fn submit_order(&self, mut request: OrderRequest) -> Result<OrderRecord> {
         let now = Utc::now();
-        let order_id = format!("sim-{}", request.client_order_id);
+        let order_id = format!("{}-{}", self.order_prefix, request.client_order_id);
         let exit_execution = self.executable_exit_fills(&order_id, &request, now).await?;
         let executable_fills = if let Some(exit_execution) = exit_execution {
             request.metadata = merge_json(request.metadata, exit_execution.metadata);
@@ -180,12 +198,13 @@ impl ExecutionVenue for SimVenue {
         } else {
             vec![FillRecord {
                 fill_id: Uuid::new_v4(),
+                process_id: request.process_id,
                 order_id: order_id.clone(),
                 token_id: request.token_id.clone(),
                 price: request.price,
                 size: request.size,
                 fee: Decimal::ZERO,
-                source: FillSource::Sim,
+                source: self.fill_source,
                 filled_at: now,
             }]
         };
@@ -225,6 +244,7 @@ impl ExecutionVenue for SimVenue {
             order_id: order_id.to_string(),
             request: OrderRequest {
                 client_order_id: Uuid::new_v4(),
+                process_id: None,
                 market_id: "unknown".to_string(),
                 token_id: "unknown".to_string(),
                 side: crate::models::OrderSide::Buy,
@@ -318,7 +338,7 @@ impl ExecutionVenue for SimVenue {
 
     async fn live_status(&self) -> Result<LiveVenueStatus> {
         Ok(LiveVenueStatus {
-            mode: "sim".to_string(),
+            mode: self.mode_name.to_string(),
             live_confirmed: false,
             order_submit_enabled: false,
             user_ws_enabled: false,
@@ -330,7 +350,7 @@ impl ExecutionVenue for SimVenue {
             max_order_notional_usd: Decimal::ZERO,
             max_open_notional_usd: Decimal::ZERO,
             entries_enabled: false,
-            reason: Some("sim_mode".to_string()),
+            reason: Some(format!("{}_mode", self.mode_name)),
         })
     }
 
@@ -340,6 +360,19 @@ impl ExecutionVenue for SimVenue {
         _reason: Option<String>,
     ) -> Result<LiveVenueStatus> {
         self.live_status().await
+    }
+}
+
+impl Default for SimVenue {
+    fn default() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(SimState::default())),
+            clob: None,
+            taker_fee_rate: Decimal::ZERO,
+            fill_source: FillSource::Sim,
+            order_prefix: "sim",
+            mode_name: "sim",
+        }
     }
 }
 

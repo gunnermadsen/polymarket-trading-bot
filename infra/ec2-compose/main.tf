@@ -160,6 +160,7 @@ resource "aws_instance" "compose_host" {
     aws_region         = var.aws_region
     app_directory      = var.app_directory
     app_secret_name    = var.app_secret_name
+    compose_file       = var.compose_file
     ecr_registry       = var.ecr_registry
     enable_cloudflared = var.enable_cloudflared
     enable_desktop     = var.enable_desktop

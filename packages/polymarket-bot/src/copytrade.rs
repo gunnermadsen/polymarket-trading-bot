@@ -160,6 +160,7 @@ pub fn evaluate_copy_trade(
     performance: Option<&CopyTradeWalletPerformance>,
     observed: ObservedMarket,
     config: &CopyTradeConfig,
+    process_id: Option<Uuid>,
 ) -> CopyTradeDecision {
     let signal_id = trade.trade_id;
     let rank_score = performance
@@ -229,11 +230,13 @@ pub fn evaluate_copy_trade(
         "lag_secs": lag_secs,
         "slippage_bps": slippage_bps,
         "available_depth_usd": observed.available_depth_usd,
+        "process_id": process_id,
         "config": config,
     });
 
     let copy_signal = CopyTradeSignal {
         signal_id,
+        process_id,
         timestamp_utc: trade.timestamp_utc,
         proxy_wallet: trade.proxy_wallet.clone(),
         wallet_score: rank_score,
@@ -251,6 +254,7 @@ pub fn evaluate_copy_trade(
 
     let signal_candidate = SignalCandidate {
         signal_id,
+        process_id,
         signal_type: SignalType::WhaleFollow,
         market_id: market_id.clone().unwrap_or_else(|| "unknown".to_string()),
         expected_edge: Decimal::ZERO,
@@ -277,6 +281,7 @@ pub fn evaluate_copy_trade(
             let limit_price = clob_tick_price(observed.observed_price, order_side);
             let client_order_id = deterministic_client_order_id(&ClientOrderIdSeed {
                 strategy_version: "whale-follow-v1",
+                process_id,
                 source_id: signal_id,
                 purpose: "whale_follow_entry",
                 market_id: &market_id,
@@ -288,6 +293,7 @@ pub fn evaluate_copy_trade(
                 plan_id: signal_id,
                 orders: vec![OrderRequest {
                     client_order_id,
+                    process_id,
                     market_id,
                     token_id,
                     side: order_side,
@@ -408,6 +414,7 @@ fn backtest_at_threshold(
                 observed_at: trade.timestamp_utc,
             },
             config,
+            None,
         );
         if decision.order_plan.is_none() {
             continue;
@@ -657,6 +664,7 @@ mod tests {
                 observed_at: trade.timestamp_utc + chrono::Duration::seconds(10),
             },
             &config,
+            None,
         );
         assert_eq!(decision.copy_signal.status, "detected");
         let order = &decision.order_plan.as_ref().unwrap().orders[0];
@@ -679,6 +687,7 @@ mod tests {
                 observed_at: trade.timestamp_utc + chrono::Duration::seconds(10),
             },
             &config,
+            None,
         );
         let order = &decision.order_plan.unwrap().orders[0];
         assert_eq!(order.size, dec!(5.40));
@@ -699,6 +708,7 @@ mod tests {
                 observed_at: trade.timestamp_utc,
             },
             &config,
+            None,
         );
         assert_eq!(decision.copy_signal.status, "rejected");
         assert_eq!(
@@ -715,6 +725,7 @@ mod tests {
                 observed_at: trade.timestamp_utc,
             },
             &config,
+            None,
         );
         assert_eq!(
             missing.signal_candidate.reject_reason.as_deref(),
@@ -736,6 +747,7 @@ mod tests {
                 observed_at: trade.timestamp_utc,
             },
             &config,
+            None,
         );
         assert_eq!(
             low_roi.signal_candidate.reject_reason.as_deref(),
@@ -751,6 +763,7 @@ mod tests {
                 observed_at: trade.timestamp_utc,
             },
             &config,
+            None,
         );
         assert_eq!(
             low_closed_positions

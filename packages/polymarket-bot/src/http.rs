@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::{
     backfill::BackfillMode,
     execution::LiveVenueStatus,
-    models::{BackfillJob, BackfillJobStatus},
+    models::{BackfillJob, BackfillJobStatus, TradingProcess, TradingProcessConfig},
 };
 
 const SERVICE_NAME: &str = "polymarket-bot";
@@ -105,6 +105,61 @@ pub trait ControlApi: Send + Sync + 'static {
     async fn live_reconcile(&self) -> Result<serde_json::Value, HttpError>;
 
     async fn live_set_entries_enabled(&self, enabled: bool) -> Result<LiveVenueStatus, HttpError>;
+
+    async fn create_trading_process(
+        &self,
+        _request: CreateTradingProcessRequest,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading processes are not wired",
+        ))
+    }
+
+    async fn list_trading_processes(
+        &self,
+        _request: ListTradingProcessesRequest,
+    ) -> Result<TradingProcessesResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading processes are not wired",
+        ))
+    }
+
+    async fn get_trading_process(
+        &self,
+        _process_id: Uuid,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading processes are not wired",
+        ))
+    }
+
+    async fn update_trading_process(
+        &self,
+        _process_id: Uuid,
+        _request: UpdateTradingProcessRequest,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading processes are not wired",
+        ))
+    }
+
+    async fn start_trading_process(
+        &self,
+        _process_id: Uuid,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading processes are not wired",
+        ))
+    }
+
+    async fn stop_trading_process(
+        &self,
+        _process_id: Uuid,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading processes are not wired",
+        ))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -218,6 +273,61 @@ impl ControlApi for PlaceholderControlApi {
     async fn live_set_entries_enabled(&self, _enabled: bool) -> Result<LiveVenueStatus, HttpError> {
         Err(HttpError::not_implemented("live entry toggle is not wired"))
     }
+
+    async fn create_trading_process(
+        &self,
+        _request: CreateTradingProcessRequest,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading processes are not wired",
+        ))
+    }
+
+    async fn list_trading_processes(
+        &self,
+        _request: ListTradingProcessesRequest,
+    ) -> Result<TradingProcessesResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading processes are not wired",
+        ))
+    }
+
+    async fn get_trading_process(
+        &self,
+        _process_id: Uuid,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading processes are not wired",
+        ))
+    }
+
+    async fn update_trading_process(
+        &self,
+        _process_id: Uuid,
+        _request: UpdateTradingProcessRequest,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading processes are not wired",
+        ))
+    }
+
+    async fn start_trading_process(
+        &self,
+        _process_id: Uuid,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading processes are not wired",
+        ))
+    }
+
+    async fn stop_trading_process(
+        &self,
+        _process_id: Uuid,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading processes are not wired",
+        ))
+    }
 }
 
 pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) -> Router {
@@ -234,6 +344,7 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .route("/backfill/jobs", get(list_backfill_jobs))
         .route("/backfill/jobs/:job_id", get(get_backfill_job))
         .route("/backfill/jobs/:job_id/cancel", post(cancel_backfill_job))
+        .route("/pnl/stats", get(trade_pnl_summary))
         .route("/trades/pnl/summary", get(trade_pnl_summary))
         .route("/trades/pnl/wallets", get(trade_pnl_wallets))
         .route("/trades/pnl/open", get(trade_pnl_open_positions))
@@ -245,6 +356,22 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .route("/live/reconcile", post(live_reconcile))
         .route("/live/entries/enable", post(live_entries_enable))
         .route("/live/entries/disable", post(live_entries_disable))
+        .route(
+            "/trading-processes",
+            get(list_trading_processes).post(create_trading_process),
+        )
+        .route(
+            "/trading-processes/:process_id",
+            get(get_trading_process).patch(update_trading_process),
+        )
+        .route(
+            "/trading-processes/:process_id/start",
+            post(start_trading_process),
+        )
+        .route(
+            "/trading-processes/:process_id/stop",
+            post(stop_trading_process),
+        )
         .route_layer(from_fn_with_state(admin_auth, require_admin_bearer));
 
     Router::new()
@@ -392,6 +519,73 @@ async fn live_entries_disable(
         .map(Json)
 }
 
+async fn create_trading_process(
+    State(state): State<HttpState>,
+    Json(request): Json<CreateTradingProcessRequest>,
+) -> Result<Json<TradingProcessResponse>, HttpError> {
+    state
+        .control
+        .create_trading_process(request)
+        .await
+        .map(Json)
+}
+
+async fn list_trading_processes(
+    State(state): State<HttpState>,
+    Query(request): Query<ListTradingProcessesRequest>,
+) -> Result<Json<TradingProcessesResponse>, HttpError> {
+    state
+        .control
+        .list_trading_processes(request)
+        .await
+        .map(Json)
+}
+
+async fn get_trading_process(
+    State(state): State<HttpState>,
+    Path(process_id): Path<Uuid>,
+) -> Result<Json<TradingProcessResponse>, HttpError> {
+    state
+        .control
+        .get_trading_process(process_id)
+        .await
+        .map(Json)
+}
+
+async fn update_trading_process(
+    State(state): State<HttpState>,
+    Path(process_id): Path<Uuid>,
+    Json(request): Json<UpdateTradingProcessRequest>,
+) -> Result<Json<TradingProcessResponse>, HttpError> {
+    state
+        .control
+        .update_trading_process(process_id, request)
+        .await
+        .map(Json)
+}
+
+async fn start_trading_process(
+    State(state): State<HttpState>,
+    Path(process_id): Path<Uuid>,
+) -> Result<Json<TradingProcessResponse>, HttpError> {
+    state
+        .control
+        .start_trading_process(process_id)
+        .await
+        .map(Json)
+}
+
+async fn stop_trading_process(
+    State(state): State<HttpState>,
+    Path(process_id): Path<Uuid>,
+) -> Result<Json<TradingProcessResponse>, HttpError> {
+    state
+        .control
+        .stop_trading_process(process_id)
+        .await
+        .map(Json)
+}
+
 async fn require_admin_bearer(
     State(auth): State<AdminAuth>,
     headers: HeaderMap,
@@ -444,6 +638,8 @@ pub struct MetricsResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackfillWhalesRequest {
+    #[serde(default)]
+    pub process_id: Option<Uuid>,
     pub lookback_days: Option<i32>,
     pub min_trade_usd: Option<Decimal>,
     pub page_limit: Option<usize>,
@@ -462,6 +658,8 @@ pub struct BackfillWhalesRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CopyTradeBacktestRequest {
+    #[serde(default)]
+    pub process_id: Option<Uuid>,
     pub lookback_days: Option<i32>,
     pub min_trade_usd: Option<Decimal>,
     pub min_wallet_score: Option<Decimal>,
@@ -477,6 +675,8 @@ pub struct CopyTradeBacktestRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CopyTradeCalibrationRequest {
+    #[serde(default)]
+    pub process_id: Option<Uuid>,
     pub lookback_days: Option<i32>,
     pub min_trade_usd: Option<Decimal>,
     pub page_limit: Option<usize>,
@@ -487,6 +687,40 @@ pub struct CopyTradeCalibrationRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradePnlListRequest {
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateTradingProcessRequest {
+    pub name: String,
+    #[serde(default = "default_process_type")]
+    pub process_type: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub config: TradingProcessConfig,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateTradingProcessRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub process_type: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub config: Option<TradingProcessConfig>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListTradingProcessesRequest {
     pub limit: Option<i64>,
 }
 
@@ -508,6 +742,16 @@ pub struct CancelBackfillJobResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradingProcessResponse {
+    pub process: TradingProcess,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradingProcessesResponse {
+    pub processes: Vec<TradingProcess>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub error: ErrorBody,
 }
@@ -516,6 +760,10 @@ pub struct ErrorResponse {
 pub struct ErrorBody {
     pub code: String,
     pub message: String,
+}
+
+fn default_process_type() -> String {
+    "copy_trade".to_string()
 }
 
 #[derive(Debug, Clone)]

@@ -431,6 +431,7 @@ fn order_record_from_open_order(order: OpenOrderResponse) -> Result<OrderRecord>
                 &Uuid::NAMESPACE_URL,
                 format!("polymarket:venue-order:{order_id}").as_bytes(),
             ),
+            process_id: None,
             market_id,
             token_id,
             side,
@@ -452,7 +453,11 @@ fn order_record_from_open_order(order: OpenOrderResponse) -> Result<OrderRecord>
     })
 }
 
-fn fill_record_from_trade(order_id: &str, trade: TradeResponse) -> Result<FillRecord> {
+fn fill_record_from_trade(
+    order_id: &str,
+    process_id: Option<Uuid>,
+    trade: TradeResponse,
+) -> Result<FillRecord> {
     let price = local_decimal(trade.price)?;
     let size = local_decimal(trade.size)?;
     let fee_rate_bps = local_decimal(trade.fee_rate_bps)?;
@@ -462,6 +467,7 @@ fn fill_record_from_trade(order_id: &str, trade: TradeResponse) -> Result<FillRe
             &Uuid::NAMESPACE_URL,
             format!("polymarket:trade:{}", trade.id).as_bytes(),
         ),
+        process_id,
         order_id: order_id.to_string(),
         token_id: trade.asset_id.to_string(),
         price,
@@ -700,6 +706,10 @@ impl ExecutionVenue for LiveVenue {
     async fn fills_for_order(&self, order_id: &str) -> Result<Vec<FillRecord>> {
         let store = self.store()?;
         let client = self.authenticated_client().await?;
+        let order_process_id = store
+            .find_order_by_venue_order_id(order_id)
+            .await?
+            .and_then(|order| order.request.process_id);
         let page = client
             .trades(&TradesRequest::builder().build(), None)
             .await
@@ -710,7 +720,7 @@ impl ExecutionVenue for LiveVenue {
             .into_iter()
             .filter(|trade| trade.taker_order_id == order_id)
         {
-            let fill = fill_record_from_trade(order_id, trade)?;
+            let fill = fill_record_from_trade(order_id, order_process_id, trade)?;
             store.insert_fill(&fill).await?;
             fills.push(fill);
         }

@@ -7,6 +7,7 @@ use rust_decimal_macros::dec;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionMode {
     Sim,
+    Paper,
     Live,
 }
 
@@ -121,8 +122,11 @@ impl AppConfig {
             .as_str()
         {
             "sim" => ExecutionMode::Sim,
+            "paper" => ExecutionMode::Paper,
             "live" => ExecutionMode::Live,
-            other => bail!("unsupported POLYMARKET_EXECUTION_MODE={other}; expected sim or live"),
+            other => {
+                bail!("unsupported POLYMARKET_EXECUTION_MODE={other}; expected sim, paper, or live")
+            }
         };
         let live_confirm = parse_bool("POLYMARKET_LIVE_CONFIRM", false);
         if execution_mode == ExecutionMode::Live && !live_confirm {

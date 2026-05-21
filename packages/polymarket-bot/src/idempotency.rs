@@ -7,6 +7,7 @@ const ORDER_NAMESPACE: Uuid = Uuid::from_u128(0x7b0d_5a3c_2b87_4d2f_94f2_6d7c52d
 #[derive(Debug, Clone)]
 pub struct ClientOrderIdSeed<'a> {
     pub strategy_version: &'a str,
+    pub process_id: Option<Uuid>,
     pub source_id: Uuid,
     pub purpose: &'a str,
     pub market_id: &'a str,
@@ -17,8 +18,11 @@ pub struct ClientOrderIdSeed<'a> {
 
 pub fn deterministic_client_order_id(seed: &ClientOrderIdSeed<'_>) -> Uuid {
     let raw = format!(
-        "{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}",
         seed.strategy_version,
+        seed.process_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "legacy".to_string()),
         seed.source_id,
         seed.purpose,
         seed.market_id,
@@ -61,6 +65,7 @@ mod tests {
         let source_id = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
         let seed = ClientOrderIdSeed {
             strategy_version: "v1",
+            process_id: None,
             source_id,
             purpose: "whale_follow_entry",
             market_id: "m1",
@@ -79,6 +84,7 @@ mod tests {
     fn order_notional_key_rounds_to_four_decimals() {
         let request = OrderRequest {
             client_order_id: Uuid::new_v4(),
+            process_id: None,
             market_id: "m1".to_string(),
             token_id: "t1".to_string(),
             side: OrderSide::Buy,
