@@ -1660,27 +1660,72 @@ impl Store {
     pub async fn trade_pnl_summary(&self) -> Result<serde_json::Value> {
         let value = sqlx::query_scalar::<_, serde_json::Value>(
             r#"
+            WITH position_stats AS (
+              SELECT
+                COALESCE(process_id::text, 'unbound') AS process_key,
+                count(*) AS positions,
+                count(*) FILTER (WHERE status IN ('open', 'partially_closed')) AS open_positions,
+                count(*) FILTER (WHERE status IN ('closed', 'resolved')) AS closed_positions,
+                COALESCE(sum(realized_pnl), 0) AS realized_pnl,
+                COALESCE(sum(unrealized_pnl) FILTER (WHERE status IN ('open', 'partially_closed')), 0) AS unrealized_pnl,
+                COALESCE(sum(entry_notional), 0) AS notional,
+                count(*) FILTER (WHERE status IN ('closed', 'resolved') AND realized_pnl > 0) AS winning_closed_positions,
+                count(*) FILTER (WHERE status IN ('closed', 'resolved') AND realized_pnl < 0) AS losing_closed_positions
+              FROM polymarket.trade_positions
+              GROUP BY COALESCE(process_id::text, 'unbound')
+            ),
+            total_stats AS (
+              SELECT
+                count(*) AS positions,
+                count(*) FILTER (WHERE status IN ('open', 'partially_closed')) AS open_positions,
+                count(*) FILTER (WHERE status IN ('closed', 'resolved')) AS closed_positions,
+                COALESCE(sum(realized_pnl), 0) AS realized_pnl,
+                COALESCE(sum(unrealized_pnl) FILTER (WHERE status IN ('open', 'partially_closed')), 0) AS unrealized_pnl,
+                COALESCE(sum(entry_notional), 0) AS notional,
+                count(*) FILTER (WHERE status IN ('closed', 'resolved') AND realized_pnl > 0) AS winning_closed_positions,
+                count(*) FILTER (WHERE status IN ('closed', 'resolved') AND realized_pnl < 0) AS losing_closed_positions
+              FROM polymarket.trade_positions
+            )
             SELECT jsonb_build_object(
-              'positions', count(*),
-              'open_positions', count(*) FILTER (WHERE status IN ('open', 'partially_closed')),
-              'closed_positions', count(*) FILTER (WHERE status IN ('closed', 'resolved')),
-              'realized_pnl', COALESCE(sum(realized_pnl), 0),
-              'unrealized_pnl', COALESCE(sum(unrealized_pnl) FILTER (WHERE status IN ('open', 'partially_closed')), 0),
-              'total_pnl', COALESCE(sum(realized_pnl), 0)
-                + COALESCE(sum(unrealized_pnl) FILTER (WHERE status IN ('open', 'partially_closed')), 0),
-              'notional', COALESCE(sum(entry_notional), 0),
-              'roi', CASE WHEN COALESCE(sum(entry_notional), 0) > 0
-                THEN (
-                  COALESCE(sum(realized_pnl), 0)
-                  + COALESCE(sum(unrealized_pnl) FILTER (WHERE status IN ('open', 'partially_closed')), 0)
-                ) / sum(entry_notional)
+              'positions', total_stats.positions,
+              'open_positions', total_stats.open_positions,
+              'closed_positions', total_stats.closed_positions,
+              'realized_pnl', total_stats.realized_pnl,
+              'unrealized_pnl', total_stats.unrealized_pnl,
+              'total_pnl', total_stats.realized_pnl + total_stats.unrealized_pnl,
+              'notional', total_stats.notional,
+              'roi', CASE WHEN total_stats.notional > 0
+                THEN (total_stats.realized_pnl + total_stats.unrealized_pnl) / total_stats.notional
                 ELSE 0
               END,
-              'winning_closed_positions', count(*) FILTER (WHERE status IN ('closed', 'resolved') AND realized_pnl > 0),
-              'losing_closed_positions', count(*) FILTER (WHERE status IN ('closed', 'resolved') AND realized_pnl < 0),
+              'winning_closed_positions', total_stats.winning_closed_positions,
+              'losing_closed_positions', total_stats.losing_closed_positions,
+              'reports_by_process_id', COALESCE((
+                SELECT jsonb_object_agg(
+                  process_key,
+                  jsonb_build_object(
+                    'positions', positions,
+                    'open_positions', open_positions,
+                    'closed_positions', closed_positions,
+                    'realized_pnl', realized_pnl,
+                    'unrealized_pnl', unrealized_pnl,
+                    'total_pnl', realized_pnl + unrealized_pnl,
+                    'notional', notional,
+                    'roi', CASE WHEN notional > 0
+                      THEN (realized_pnl + unrealized_pnl) / notional
+                      ELSE 0
+                    END,
+                    'winning_closed_positions', winning_closed_positions,
+                    'losing_closed_positions', losing_closed_positions,
+                    'updated_at', now()
+                  )
+                  ORDER BY process_key
+                )
+                FROM position_stats
+              ), '{}'::jsonb),
               'updated_at', now()
             )
-            FROM polymarket.trade_positions
+            FROM total_stats
             "#,
         )
         .fetch_one(&self.pool)

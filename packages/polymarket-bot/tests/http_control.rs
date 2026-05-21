@@ -115,7 +115,16 @@ impl ControlApi for FakeControlApi {
     }
 
     async fn trade_pnl_summary(&self) -> Result<Value, HttpError> {
-        Ok(serde_json::json!({"positions": 1, "total_pnl": "1.23"}))
+        Ok(serde_json::json!({
+            "positions": 1,
+            "total_pnl": "1.23",
+            "reports_by_process_id": {
+                "unbound": {
+                    "positions": 1,
+                    "total_pnl": "1.23"
+                }
+            }
+        }))
     }
 
     async fn trade_pnl_wallets(
@@ -424,6 +433,11 @@ async fn authenticated_admin_can_read_pnl_stats() {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["positions"], 1);
         assert_eq!(json["total_pnl"], "1.23");
+        assert_eq!(json["reports_by_process_id"]["unbound"]["positions"], 1);
+        assert_eq!(
+            json["reports_by_process_id"]["unbound"]["total_pnl"],
+            "1.23"
+        );
     }
 }
 
