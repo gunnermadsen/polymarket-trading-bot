@@ -177,9 +177,18 @@ jobs:
           set -euo pipefail
 
           APP_DIRECTORY="/opt/polymarket-bot"
+          APP_SECRET_NAME="capitonic/polymarket-bot/production"
+          AWS_REGION="mx-central-1"
           ADMIN_BASE_URL="http://127.0.0.1:8097"
           BOOTSTRAP_SCRIPT="scripts/bootstrap-trading-processes.mjs"
           SECRET_PATH="/root/polymarket/secret.json"
+
+          aws secretsmanager get-secret-value \
+            --region "$AWS_REGION" \
+            --secret-id "$APP_SECRET_NAME" \
+            --query SecretString \
+            --output text > "$SECRET_PATH"
+          chmod 0600 "$SECRET_PATH"
 
           if [ ! -f "$SECRET_PATH" ]; then
             echo "Missing host secret file at $SECRET_PATH." >&2
