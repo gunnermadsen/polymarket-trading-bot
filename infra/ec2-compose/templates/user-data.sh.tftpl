@@ -131,7 +131,8 @@ install_desktop() {
 
   sed -i '/^\[Globals\]/,/^\[/{s/^port=.*/port=tcp:\/\/.:3389/}' /etc/xrdp/xrdp.ini
   usermod -aG ssl-cert xrdp
-  systemctl enable --now xrdp
+  systemctl enable xrdp xrdp-sesman
+  systemctl restart xrdp-sesman xrdp
 }
 
 install_authorized_keys_for_user() {
