@@ -223,6 +223,7 @@ impl ControlApi for FakeControlApi {
                         mode: Some("sim".to_string()),
                         execute_signals: true,
                         live_capital: false,
+                        taker_fee_rate: None,
                     }),
                     ..Default::default()
                 },

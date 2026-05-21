@@ -227,8 +227,6 @@ impl Store {
               now(), now(), now()
             )
             ON CONFLICT (process_id) DO UPDATE SET
-              config = EXCLUDED.config,
-              enabled = true,
               updated_at = now()
             RETURNING process_id, name, process_type, status, enabled, config, metadata,
               created_at, updated_at, started_at, stopped_at, last_error

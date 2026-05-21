@@ -12,9 +12,9 @@ use crate::{
     execution::OrderPlan,
     idempotency::{deterministic_client_order_id, ClientOrderIdSeed},
     models::{
-        CopyTradeBacktestResult, CopyTradeSignal, OrderRequest, OrderSide, OrderType,
-        SignalCandidate, SignalStatus, SignalType, WalletPerformance, WalletScore,
-        WalletScoreCalibrationSnapshot, WhaleTrade,
+        CopyTradeBacktestResult, CopyTradeSignal, EffectiveCopyTradeProcessConfig, OrderRequest,
+        OrderSide, OrderType, SignalCandidate, SignalStatus, SignalType, WalletPerformance,
+        WalletScore, WalletScoreCalibrationSnapshot, WhaleTrade,
     },
 };
 
@@ -83,6 +83,29 @@ impl From<&WhaleConfig> for CopyTradeConfig {
             backtest_horizon_secs: config.backtest_horizon.as_secs() as i64,
             allow_sell_entries: config.copy_allow_sell_entries,
             ..Self::default()
+        }
+    }
+}
+
+impl From<&EffectiveCopyTradeProcessConfig> for CopyTradeConfig {
+    fn from(config: &EffectiveCopyTradeProcessConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            min_wallet_score: config.min_wallet_score,
+            min_wallet_trades: config.min_wallet_trades,
+            min_wallet_realized_pnl_usd: config.min_wallet_realized_pnl_usd,
+            min_wallet_roi: config.min_wallet_roi,
+            min_wallet_closed_positions: config.min_wallet_closed_positions,
+            min_trade_usd: config.min_trade_usd,
+            min_copy_size_usd: config.min_copy_size_usd,
+            max_copy_size_usd: config.max_copy_size_usd,
+            copy_size_fraction: config.copy_size_fraction,
+            max_follow_lag_secs: config.max_follow_lag_secs,
+            max_price_slippage_bps: config.max_price_slippage_bps,
+            min_book_depth_usd: config.min_book_depth_usd,
+            backtest_horizon_secs: config.backtest_horizon_secs,
+            taker_fee_rate: config.taker_fee_rate,
+            allow_sell_entries: config.allow_sell_entries,
         }
     }
 }

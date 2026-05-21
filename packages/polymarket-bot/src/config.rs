@@ -226,13 +226,13 @@ impl AppConfig {
                 admin_token: env_or("POLYMARKET_HTTP_ADMIN_TOKEN", "dev-polymarket-admin"),
             },
             whale: WhaleConfig {
-                backfill_enabled: parse_bool("POLYMARKET_WHALE_BACKFILL_ENABLED", true),
+                backfill_enabled: parse_bool("POLYMARKET_WHALE_BACKFILL_ENABLED", false),
                 live_enabled: parse_bool("POLYMARKET_WHALE_LIVE_ENABLED", false),
                 copy_trade_enabled: parse_bool("POLYMARKET_COPY_TRADE_ENABLED", true),
                 lookback_days: parse_u32("POLYMARKET_WHALE_BACKFILL_LOOKBACK_DAYS", 30),
-                min_trade_usd: parse_decimal("POLYMARKET_WHALE_MIN_TRADE_USD", dec!(1000)),
-                min_wallet_score: parse_decimal("POLYMARKET_COPY_MIN_WALLET_SCORE", dec!(70)),
-                min_wallet_trades: parse_i32("POLYMARKET_COPY_MIN_WALLET_TRADES", 3),
+                min_trade_usd: parse_decimal("POLYMARKET_WHALE_MIN_TRADE_USD", dec!(500)),
+                min_wallet_score: parse_decimal("POLYMARKET_COPY_MIN_WALLET_SCORE", dec!(0)),
+                min_wallet_trades: parse_i32("POLYMARKET_COPY_MIN_WALLET_TRADES", 0),
                 min_wallet_realized_pnl_usd: parse_decimal(
                     "POLYMARKET_WHALE_MIN_REALIZED_PNL_USD",
                     dec!(100),
@@ -246,7 +246,7 @@ impl AppConfig {
                 max_price_move_pct: parse_decimal("POLYMARKET_COPY_MAX_PRICE_MOVE_PCT", dec!(0.05)),
                 max_follow_lag: Duration::from_secs(parse_u64(
                     "POLYMARKET_COPY_MAX_FOLLOW_LAG_SECS",
-                    300,
+                    1800,
                 )),
                 max_price_slippage_bps: parse_decimal(
                     "POLYMARKET_COPY_MAX_PRICE_SLIPPAGE_BPS",
