@@ -22,7 +22,10 @@ use polymarket_bot::{
     http as control_http,
     http::{
         BackfillJobResponse, BackfillJobsResponse, CancelBackfillJobResponse, ControlApi,
-        HttpError, MetricsResponse,
+        HttpError, MetricsResponse, TradingProcessResponse, TradingProcessesResponse,
+    },
+    models::{
+        CopyTradeProcessConfig, ProcessExecutionConfig, TradingProcessConfig, WhaleProcessConfig,
     },
     risk::{RiskLimits, RiskState},
     scanner::{scan_markets_for_signal1, ScannerConfig, ScannerCycleReport},
@@ -100,6 +103,7 @@ struct RuntimeControl {
     default_min_trade_usd: rust_decimal::Decimal,
     default_copy_trade_config: CopyTradeConfig,
     default_copy_execute_enabled: bool,
+    default_process_id: uuid::Uuid,
     default_max_pages: usize,
     trade_pnl_config: TradePnlConfig,
 }
@@ -145,6 +149,7 @@ impl ControlApi for RuntimeControl {
             dry_run: request.dry_run,
             limit: request.page_limit.unwrap_or(1000),
             max_pages: request.max_pages.unwrap_or(self.default_max_pages),
+            process_id: Some(request.process_id.unwrap_or(self.default_process_id)),
             copy_min_wallet_score: self.default_copy_trade_config.min_wallet_score,
             copy_size_fraction: self.default_copy_trade_config.copy_size_fraction,
             copy_max_size_usd: self.default_copy_trade_config.max_copy_size_usd,
@@ -194,6 +199,7 @@ impl ControlApi for RuntimeControl {
             dry_run: request.dry_run,
             limit: request.page_limit.unwrap_or(1000),
             max_pages: request.max_pages.unwrap_or(self.default_max_pages),
+            process_id: Some(request.process_id.unwrap_or(self.default_process_id)),
             copy_min_wallet_score: copy_trade_config.min_wallet_score,
             copy_size_fraction: copy_trade_config.copy_size_fraction,
             copy_max_size_usd: copy_trade_config.max_copy_size_usd,
@@ -233,6 +239,7 @@ impl ControlApi for RuntimeControl {
             dry_run: true,
             limit: request.page_limit.unwrap_or(1000),
             max_pages: request.max_pages.unwrap_or(self.default_max_pages),
+            process_id: Some(request.process_id.unwrap_or(self.default_process_id)),
             copy_min_wallet_score: self.default_copy_trade_config.min_wallet_score,
             copy_size_fraction: self.default_copy_trade_config.copy_size_fraction,
             copy_max_size_usd: self.default_copy_trade_config.max_copy_size_usd,
@@ -401,6 +408,123 @@ impl ControlApi for RuntimeControl {
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
     }
+
+    async fn create_trading_process(
+        &self,
+        request: control_http::CreateTradingProcessRequest,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        let name = request.name.trim();
+        if name.is_empty() {
+            return Err(HttpError::bad_request("trading process name is required"));
+        }
+        let process_type = request.process_type.trim();
+        if process_type.is_empty() {
+            return Err(HttpError::bad_request("trading process type is required"));
+        }
+        let process = self
+            .store
+            .create_trading_process(
+                name,
+                process_type,
+                request.enabled,
+                request.config,
+                request.metadata,
+            )
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        Ok(TradingProcessResponse { process })
+    }
+
+    async fn list_trading_processes(
+        &self,
+        request: control_http::ListTradingProcessesRequest,
+    ) -> Result<TradingProcessesResponse, HttpError> {
+        let processes = self
+            .store
+            .list_trading_processes(request.limit.unwrap_or(50).clamp(1, 500))
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        Ok(TradingProcessesResponse { processes })
+    }
+
+    async fn get_trading_process(
+        &self,
+        process_id: uuid::Uuid,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        let process = self
+            .store
+            .get_trading_process(process_id)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?
+            .ok_or_else(|| HttpError::not_found("trading process not found"))?;
+        Ok(TradingProcessResponse { process })
+    }
+
+    async fn update_trading_process(
+        &self,
+        process_id: uuid::Uuid,
+        request: control_http::UpdateTradingProcessRequest,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        let name = request.name.as_deref().map(str::trim);
+        if matches!(name, Some("")) {
+            return Err(HttpError::bad_request(
+                "trading process name cannot be empty",
+            ));
+        }
+        let process_type = request.process_type.as_deref().map(str::trim);
+        if matches!(process_type, Some("")) {
+            return Err(HttpError::bad_request(
+                "trading process type cannot be empty",
+            ));
+        }
+        let status = request.status.as_deref().map(str::trim);
+        if matches!(status, Some("")) {
+            return Err(HttpError::bad_request(
+                "trading process status cannot be empty",
+            ));
+        }
+        let process = self
+            .store
+            .update_trading_process(
+                process_id,
+                name,
+                process_type,
+                request.enabled,
+                status,
+                request.config,
+                request.metadata,
+            )
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?
+            .ok_or_else(|| HttpError::not_found("trading process not found"))?;
+        Ok(TradingProcessResponse { process })
+    }
+
+    async fn start_trading_process(
+        &self,
+        process_id: uuid::Uuid,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        let process = self
+            .store
+            .start_trading_process(process_id)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?
+            .ok_or_else(|| HttpError::not_found("trading process not found"))?;
+        Ok(TradingProcessResponse { process })
+    }
+
+    async fn stop_trading_process(
+        &self,
+        process_id: uuid::Uuid,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        let process = self
+            .store
+            .stop_trading_process(process_id)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?
+            .ok_or_else(|| HttpError::not_found("trading process not found"))?;
+        Ok(TradingProcessResponse { process })
+    }
 }
 
 #[tokio::main]
@@ -420,13 +544,17 @@ async fn main() -> Result<()> {
 
     let store = Store::connect(&config.postgres).await?;
     store.healthcheck().await?;
+    let default_trading_process = store
+        .ensure_default_trading_process(default_trading_process_config(&config))
+        .await?;
     store
         .insert_service_event(&ServiceEvent::new(
             "service_started",
             serde_json::json!({
                 "mode": format!("{:?}", config.execution_mode).to_ascii_lowercase(),
                 "scan_enabled": config.scan_enabled,
-                "kafka_required": false
+                "kafka_required": false,
+                "default_process_id": default_trading_process.process_id
             }),
         ))
         .await?;
@@ -436,6 +564,10 @@ async fn main() -> Result<()> {
     let data_api = DataApiClient::new(config.data_api_base_url.clone());
     let venue: Arc<dyn ExecutionVenue> = match config.execution_mode {
         ExecutionMode::Sim => Arc::new(SimVenue::with_clob(
+            clob.clone(),
+            config.risk.taker_fee_rate,
+        )),
+        ExecutionMode::Paper => Arc::new(SimVenue::paper_with_clob(
             clob.clone(),
             config.risk.taker_fee_rate,
         )),
@@ -475,6 +607,7 @@ async fn main() -> Result<()> {
             default_min_trade_usd: config.whale.min_trade_usd,
             default_copy_trade_config: CopyTradeConfig::from(&config.whale),
             default_copy_execute_enabled: config.whale.copy_execute_enabled,
+            default_process_id: default_trading_process.process_id,
             default_max_pages: config.whale.max_pages,
             trade_pnl_config: trade_pnl_config.clone(),
         });
@@ -637,6 +770,7 @@ async fn main() -> Result<()> {
                         &data_api,
                         venue.as_ref(),
                         &config,
+                        default_trading_process.process_id,
                         &mut seen_live_whale_trades,
                     ),
                 )
@@ -685,8 +819,26 @@ async fn poll_live_whales_once(
     data_api: &DataApiClient,
     venue: &dyn ExecutionVenue,
     config: &AppConfig,
+    process_id: uuid::Uuid,
     seen_trade_keys: &mut HashSet<String>,
 ) -> Result<polymarket_bot::backfill::CopyTradeRunSummary> {
+    let Some(process) = store.get_trading_process(process_id).await? else {
+        warn!(
+            process_id = %process_id,
+            "skipping live whale poll because trading process is missing"
+        );
+        return Ok(polymarket_bot::backfill::CopyTradeRunSummary::default());
+    };
+    if !process.enabled || process.status != "running" {
+        debug!(
+            process_id = %process_id,
+            status = %process.status,
+            enabled = process.enabled,
+            "skipping live whale poll because trading process is not running"
+        );
+        return Ok(polymarket_bot::backfill::CopyTradeRunSummary::default());
+    }
+
     if config.execution_mode == ExecutionMode::Live && config.whale.copy_execute_enabled {
         let live_status = venue.live_status().await?;
         if !live_status.entries_enabled {
@@ -752,6 +904,7 @@ async fn poll_live_whales_once(
         Some(venue),
         &trades,
         &CopyTradeRunConfig {
+            process_id: Some(process_id),
             copy_trade: CopyTradeConfig::from(&config.whale),
             execute_signals: config.whale.copy_execute_enabled,
         },
@@ -841,6 +994,46 @@ async fn run_scan_once(
     .await;
 
     Ok(report)
+}
+
+fn default_trading_process_config(config: &AppConfig) -> TradingProcessConfig {
+    TradingProcessConfig {
+        execution: Some(ProcessExecutionConfig {
+            mode: Some(format!("{:?}", config.execution_mode).to_ascii_lowercase()),
+            execute_signals: config.whale.copy_execute_enabled,
+            live_capital: config.execution_mode == ExecutionMode::Live,
+        }),
+        whale: Some(WhaleProcessConfig {
+            lookback_days: Some(config.whale.lookback_days),
+            min_trade_usd: Some(config.whale.min_trade_usd),
+            page_limit: Some(config.whale.live_page_limit),
+            max_pages: Some(config.whale.max_pages),
+            wallets: Vec::new(),
+            market_ids: Vec::new(),
+        }),
+        copy_trade: Some(CopyTradeProcessConfig {
+            enabled: Some(config.whale.copy_trade_enabled),
+            min_wallet_score: Some(config.whale.min_wallet_score),
+            min_wallet_trades: Some(config.whale.min_wallet_trades),
+            min_wallet_realized_pnl_usd: Some(config.whale.min_wallet_realized_pnl_usd),
+            min_wallet_roi: Some(config.whale.min_wallet_roi),
+            min_wallet_closed_positions: Some(config.whale.min_wallet_closed_positions),
+            min_trade_usd: Some(config.whale.min_trade_usd),
+            min_copy_size_usd: Some(config.whale.min_copy_size_usd),
+            max_copy_size_usd: Some(config.whale.max_copy_size_usd),
+            copy_size_fraction: Some(config.whale.copy_size_fraction),
+            max_follow_lag_secs: Some(config.whale.max_follow_lag.as_secs() as i64),
+            max_price_slippage_bps: Some(config.whale.max_price_slippage_bps),
+            min_book_depth_usd: Some(config.whale.min_book_depth_usd),
+            allow_sell_entries: Some(config.whale.copy_allow_sell_entries),
+        }),
+        raw: serde_json::json!({
+            "source": "env",
+            "scan_enabled": config.scan_enabled,
+            "whale_live_enabled": config.whale.live_enabled,
+            "copy_trade_enabled": config.whale.copy_trade_enabled
+        }),
+    }
 }
 
 fn install_tls_crypto_provider() {

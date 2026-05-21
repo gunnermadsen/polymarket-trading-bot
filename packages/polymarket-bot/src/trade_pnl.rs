@@ -143,6 +143,7 @@ fn close_order_request(candidate: &WhaleLedTradeExitCandidate) -> OrderRequest {
     OrderRequest {
         client_order_id: deterministic_client_order_id(&ClientOrderIdSeed {
             strategy_version: "whale-follow-v1",
+            process_id: None,
             source_id: candidate.position_id,
             purpose: "whale_led_exit",
             market_id: candidate.market_id.as_deref().unwrap_or("unknown"),
@@ -153,6 +154,7 @@ fn close_order_request(candidate: &WhaleLedTradeExitCandidate) -> OrderRequest {
                 .normalize()
                 .to_string(),
         }),
+        process_id: None,
         market_id: candidate
             .market_id
             .clone()

@@ -198,6 +198,7 @@ async fn scan_market_for_binary_cheap_basket(
 
     let signal = SignalCandidate {
         signal_id: Uuid::new_v4(),
+        process_id: None,
         signal_type: SignalType::CheapBasket,
         market_id: market.market_id.clone(),
         expected_edge: edge.net,
@@ -260,6 +261,7 @@ async fn scan_market_for_binary_cheap_basket(
                     OrderRequest {
                         client_order_id: deterministic_client_order_id(&ClientOrderIdSeed {
                             strategy_version: "basket-v1",
+                            process_id: None,
                             source_id: signal.signal_id,
                             purpose: "signal_entry",
                             market_id: &market.market_id,
@@ -267,6 +269,7 @@ async fn scan_market_for_binary_cheap_basket(
                             side: OrderSide::Buy,
                             notional_key: &(price * size).round_dp(4).normalize().to_string(),
                         }),
+                        process_id: None,
                         market_id: market.market_id.clone(),
                         token_id: token.token_id.clone(),
                         side: OrderSide::Buy,
@@ -323,6 +326,7 @@ async fn insert_reject(
 ) -> Result<()> {
     let signal = SignalCandidate {
         signal_id: Uuid::new_v4(),
+        process_id: None,
         signal_type: SignalType::CheapBasket,
         market_id: market.market_id.clone(),
         expected_edge: edge,

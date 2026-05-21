@@ -38,6 +38,8 @@ impl Default for BackfillMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WhaleBackfillRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_id: Option<Uuid>,
     #[serde(default = "default_lookback_days")]
     pub lookback_days: u32,
     #[serde(default = "default_min_trade_usd")]
@@ -86,6 +88,8 @@ pub struct BackfillSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CopyTradeRunConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_id: Option<Uuid>,
     pub copy_trade: CopyTradeConfig,
     pub execute_signals: bool,
 }
@@ -319,6 +323,7 @@ pub async fn run_job(
             venue.as_deref(),
             &trades_for_copy,
             &CopyTradeRunConfig {
+                process_id: request.process_id,
                 copy_trade: copy_trade_config.clone(),
                 execute_signals: request.execute_signals,
             },
@@ -330,6 +335,7 @@ pub async fn run_job(
         summary.copy_trade_fills = copy_summary.fills_inserted;
         summary.copy_trade_rejections = copy_summary.rejections;
         let backtest_config = CopyTradeRunConfig {
+            process_id: request.process_id,
             copy_trade: copy_trade_config.clone(),
             execute_signals: request.execute_signals,
         };
@@ -566,6 +572,7 @@ pub async fn run_copy_trade_signal_engine(
                 observed_at,
             },
             &copy_config,
+            config.process_id,
         );
 
         if dry_run {

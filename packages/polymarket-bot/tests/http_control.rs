@@ -13,7 +13,10 @@ use polymarket_bot::{
         CancelBackfillJobResponse, ControlApi, CopyTradeBacktestRequest,
         CopyTradeCalibrationRequest, HttpError, MetricsResponse,
     },
-    models::{BackfillJob, BackfillJobStatus},
+    models::{
+        BackfillJob, BackfillJobStatus, ProcessExecutionConfig, TradingProcess,
+        TradingProcessConfig,
+    },
 };
 use rust_decimal::Decimal;
 use serde_json::Value;
@@ -185,6 +188,112 @@ impl ControlApi for FakeControlApi {
             max_open_notional_usd: Decimal::from(30),
             entries_enabled: enabled,
             reason: (!enabled).then(|| "manual_disable".to_string()),
+        })
+    }
+
+    async fn create_trading_process(
+        &self,
+        request: http::CreateTradingProcessRequest,
+    ) -> Result<http::TradingProcessResponse, HttpError> {
+        Ok(http::TradingProcessResponse {
+            process: test_process(
+                Uuid::new_v4(),
+                request.name,
+                request.process_type,
+                "created",
+                request.enabled,
+                request.config,
+            ),
+        })
+    }
+
+    async fn list_trading_processes(
+        &self,
+        _request: http::ListTradingProcessesRequest,
+    ) -> Result<http::TradingProcessesResponse, HttpError> {
+        Ok(http::TradingProcessesResponse {
+            processes: vec![test_process(
+                Uuid::new_v4(),
+                "default-env-copy-trade".to_string(),
+                "copy_trade".to_string(),
+                "running",
+                true,
+                TradingProcessConfig {
+                    execution: Some(ProcessExecutionConfig {
+                        mode: Some("sim".to_string()),
+                        execute_signals: true,
+                        live_capital: false,
+                    }),
+                    ..Default::default()
+                },
+            )],
+        })
+    }
+
+    async fn get_trading_process(
+        &self,
+        process_id: Uuid,
+    ) -> Result<http::TradingProcessResponse, HttpError> {
+        Ok(http::TradingProcessResponse {
+            process: test_process(
+                process_id,
+                "paper-canary".to_string(),
+                "copy_trade".to_string(),
+                "running",
+                true,
+                TradingProcessConfig::default(),
+            ),
+        })
+    }
+
+    async fn update_trading_process(
+        &self,
+        process_id: Uuid,
+        request: http::UpdateTradingProcessRequest,
+    ) -> Result<http::TradingProcessResponse, HttpError> {
+        Ok(http::TradingProcessResponse {
+            process: test_process(
+                process_id,
+                request.name.unwrap_or_else(|| "paper-canary".to_string()),
+                request
+                    .process_type
+                    .unwrap_or_else(|| "copy_trade".to_string()),
+                request.status.as_deref().unwrap_or("created"),
+                request.enabled.unwrap_or(true),
+                request.config.unwrap_or_default(),
+            ),
+        })
+    }
+
+    async fn start_trading_process(
+        &self,
+        process_id: Uuid,
+    ) -> Result<http::TradingProcessResponse, HttpError> {
+        Ok(http::TradingProcessResponse {
+            process: test_process(
+                process_id,
+                "paper-canary".to_string(),
+                "copy_trade".to_string(),
+                "running",
+                true,
+                TradingProcessConfig::default(),
+            ),
+        })
+    }
+
+    async fn stop_trading_process(
+        &self,
+        process_id: Uuid,
+    ) -> Result<http::TradingProcessResponse, HttpError> {
+        Ok(http::TradingProcessResponse {
+            process: test_process(
+                process_id,
+                "paper-canary".to_string(),
+                "copy_trade".to_string(),
+                "stopped",
+                false,
+                TradingProcessConfig::default(),
+            ),
         })
     }
 }
@@ -381,6 +490,97 @@ async fn authenticated_admin_can_read_live_status_and_halt() {
     assert_eq!(halt_response.status(), StatusCode::OK);
 }
 
+#[tokio::test]
+async fn authenticated_admin_can_manage_trading_processes() {
+    let app = http::router(Arc::new(FakeControlApi), "secret");
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/trading-processes")
+                .header(AUTHORIZATION, "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"paper-canary","process_type":"copy_trade","enabled":true,"config":{"execution":{"mode":"paper","execute_signals":true,"live_capital":false}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_response.status(), StatusCode::OK);
+    let create_body = to_bytes(create_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let create_json: Value = serde_json::from_slice(&create_body).unwrap();
+    let process_id = create_json["process"]["process_id"].as_str().unwrap();
+    assert_eq!(create_json["process"]["name"], "paper-canary");
+    assert_eq!(
+        create_json["process"]["config"]["execution"]["mode"],
+        "paper"
+    );
+
+    let list_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/trading-processes?limit=5")
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list_body = to_bytes(list_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let list_json: Value = serde_json::from_slice(&list_body).unwrap();
+    assert_eq!(list_json["processes"][0]["status"], "running");
+
+    let update_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/admin/trading-processes/{process_id}"))
+                .header(AUTHORIZATION, "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"status":"created","enabled":false}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(update_response.status(), StatusCode::OK);
+
+    let start_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/trading-processes/{process_id}/start"))
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start_response.status(), StatusCode::OK);
+
+    let stop_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/trading-processes/{process_id}/stop"))
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stop_response.status(), StatusCode::OK);
+}
+
 fn test_job(status: BackfillJobStatus, request: Value) -> BackfillJob {
     BackfillJob {
         job_id: Uuid::new_v4(),
@@ -395,5 +595,29 @@ fn test_job(status: BackfillJobStatus, request: Value) -> BackfillJob {
         request,
         summary: serde_json::json!({}),
         error: None,
+    }
+}
+
+fn test_process(
+    process_id: Uuid,
+    name: String,
+    process_type: String,
+    status: &str,
+    enabled: bool,
+    config: TradingProcessConfig,
+) -> TradingProcess {
+    TradingProcess {
+        process_id,
+        name,
+        process_type,
+        status: status.to_string(),
+        enabled,
+        config,
+        metadata: serde_json::json!({}),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        started_at: None,
+        stopped_at: None,
+        last_error: None,
     }
 }
