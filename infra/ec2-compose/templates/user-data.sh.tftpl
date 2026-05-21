@@ -113,7 +113,7 @@ install_desktop() {
   apt_get_install software-properties-common
   add-apt-repository -y universe || true
   apt-get update
-  apt_get_install dbus-x11 xfce4 xfce4-goodies xrdp
+  apt_get_install dbus-x11 xfce4 xfce4-goodies xrdp xorgxrdp xserver-xorg-core xserver-xorg-input-all xserver-xorg-video-dummy xinit
 
   if ! apt_get_install falkon; then
     apt_get_install firefox
