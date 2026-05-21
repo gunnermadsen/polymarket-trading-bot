@@ -294,6 +294,30 @@ async fn authenticated_admin_can_start_copy_trade_calibration() {
 }
 
 #[tokio::test]
+async fn authenticated_admin_can_read_pnl_stats() {
+    let app = http::router(Arc::new(FakeControlApi), "secret");
+    for uri in ["/admin/pnl/stats", "/admin/trades/pnl/summary"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header(AUTHORIZATION, "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["positions"], 1);
+        assert_eq!(json["total_pnl"], "1.23");
+    }
+}
+
+#[tokio::test]
 async fn authenticated_admin_can_read_live_status_and_halt() {
     let app = http::router(Arc::new(FakeControlApi), "secret");
     let status_response = app
