@@ -22,11 +22,12 @@ use polymarket_bot::{
     http as control_http,
     http::{
         BackfillJobResponse, BackfillJobsResponse, CancelBackfillJobResponse, ControlApi,
-        HttpError, MetricsResponse, TradingProcessResponse, TradingProcessesResponse,
+        HttpError, MetricsResponse, TradingProcessResponse, TradingProcessStatusResponse,
+        TradingProcessesResponse,
     },
     models::{
         CopyTradeProcessConfig, ProcessExecutionConfig, TradingProcess, TradingProcessConfig,
-        WhaleProcessConfig,
+        WhalePollCheckpoint, WhaleProcessConfig,
     },
     risk::{RiskLimits, RiskState},
     scanner::{scan_markets_for_signal1, ScannerConfig, ScannerCycleReport},
@@ -513,11 +514,23 @@ impl ControlApi for RuntimeControl {
         if process_type.is_empty() {
             return Err(HttpError::bad_request("trading process type is required"));
         }
+        let process_scope = request.process_scope.trim();
+        if process_scope.is_empty() {
+            return Err(HttpError::bad_request("trading process scope is required"));
+        }
+        let process_key = request.process_key.as_deref().map(str::trim);
+        if matches!(process_key, Some("")) {
+            return Err(HttpError::bad_request(
+                "trading process key cannot be empty",
+            ));
+        }
         let process = self
             .store
             .create_trading_process(
                 name,
                 process_type,
+                process_scope,
+                process_key,
                 request.enabled,
                 request.config,
                 request.metadata,
@@ -552,6 +565,61 @@ impl ControlApi for RuntimeControl {
         Ok(TradingProcessResponse { process })
     }
 
+    async fn upsert_trading_process_by_key(
+        &self,
+        process_key: String,
+        request: control_http::UpsertTradingProcessByKeyRequest,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        let key = process_key.trim();
+        if key.is_empty() {
+            return Err(HttpError::bad_request("trading process key is required"));
+        }
+        let name = request.name.trim();
+        if name.is_empty() {
+            return Err(HttpError::bad_request("trading process name is required"));
+        }
+        let process_type = request.process_type.trim();
+        if process_type.is_empty() {
+            return Err(HttpError::bad_request("trading process type is required"));
+        }
+        let process_scope = request.process_scope.trim();
+        if process_scope.is_empty() {
+            return Err(HttpError::bad_request("trading process scope is required"));
+        }
+        let status = request.status.trim();
+        if status.is_empty() {
+            return Err(HttpError::bad_request("trading process status is required"));
+        }
+        let process = self
+            .store
+            .upsert_trading_process_by_key(
+                name,
+                process_type,
+                process_scope,
+                key,
+                request.enabled,
+                status,
+                request.config,
+                request.metadata,
+            )
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        Ok(TradingProcessResponse { process })
+    }
+
+    async fn get_trading_process_status(
+        &self,
+        process_id: uuid::Uuid,
+    ) -> Result<TradingProcessStatusResponse, HttpError> {
+        let status = self
+            .store
+            .trading_process_status(process_id)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?
+            .ok_or_else(|| HttpError::not_found("trading process not found"))?;
+        Ok(TradingProcessStatusResponse { process_id, status })
+    }
+
     async fn update_trading_process(
         &self,
         process_id: uuid::Uuid,
@@ -569,6 +637,21 @@ impl ControlApi for RuntimeControl {
                 "trading process type cannot be empty",
             ));
         }
+        let process_scope = request.process_scope.as_deref().map(str::trim);
+        if matches!(process_scope, Some("")) {
+            return Err(HttpError::bad_request(
+                "trading process scope cannot be empty",
+            ));
+        }
+        let process_key = request
+            .process_key
+            .as_ref()
+            .map(|key| key.as_deref().map(str::trim));
+        if matches!(process_key, Some(Some(""))) {
+            return Err(HttpError::bad_request(
+                "trading process key cannot be empty",
+            ));
+        }
         let status = request.status.as_deref().map(str::trim);
         if matches!(status, Some("")) {
             return Err(HttpError::bad_request(
@@ -581,6 +664,8 @@ impl ControlApi for RuntimeControl {
                 process_id,
                 name,
                 process_type,
+                process_scope,
+                process_key,
                 request.enabled,
                 status,
                 request.config,
@@ -923,18 +1008,74 @@ async fn main() -> Result<()> {
                                     metrics.copy_trade_fills = metrics
                                         .copy_trade_fills
                                         .saturating_add(copy_summary.fills_inserted as u64);
+                                    if let Err(error) = store
+                                        .upsert_whale_poll_checkpoint(&WhalePollCheckpoint {
+                                            checkpoint_name: process.process_id.to_string(),
+                                            last_polled_at: Some(Utc::now()),
+                                            next_cursor: None,
+                                            last_trade_timestamp_utc: None,
+                                            last_trade_id: None,
+                                            pages_seen: runtime_config.live_max_pages as i64,
+                                            trades_seen: copy_summary.trades_evaluated as i64,
+                                            state: serde_json::json!({
+                                                "status": "ok",
+                                                "signals_inserted": copy_summary.signals_inserted,
+                                                "orders_inserted": copy_summary.orders_inserted,
+                                                "fills_inserted": copy_summary.fills_inserted,
+                                                "rejections": copy_summary.rejections
+                                            }),
+                                        })
+                                        .await
+                                    {
+                                        warn!(error = %error, process_id = %process.process_id, "failed to record live whale poll checkpoint");
+                                    }
                                 }
                                 Ok(Err(error)) => {
                                     metrics.whale_live_poll_errors = metrics
                                         .whale_live_poll_errors
                                         .saturating_add(1);
                                     warn!(error = %error, process_id = %process.process_id, "live whale polling failed");
+                                    if let Err(checkpoint_error) = store
+                                        .upsert_whale_poll_checkpoint(&WhalePollCheckpoint {
+                                            checkpoint_name: process.process_id.to_string(),
+                                            last_polled_at: Some(Utc::now()),
+                                            next_cursor: None,
+                                            last_trade_timestamp_utc: None,
+                                            last_trade_id: None,
+                                            pages_seen: runtime_config.live_max_pages as i64,
+                                            trades_seen: 0,
+                                            state: serde_json::json!({
+                                                "status": "error",
+                                                "error": error.to_string()
+                                            }),
+                                        })
+                                        .await
+                                    {
+                                        warn!(error = %checkpoint_error, process_id = %process.process_id, "failed to record live whale poll error checkpoint");
+                                    }
                                 }
                                 Err(_) => {
                                     metrics.whale_live_poll_errors = metrics
                                         .whale_live_poll_errors
                                         .saturating_add(1);
                                     warn!(process_id = %process.process_id, "live whale polling timed out");
+                                    if let Err(checkpoint_error) = store
+                                        .upsert_whale_poll_checkpoint(&WhalePollCheckpoint {
+                                            checkpoint_name: process.process_id.to_string(),
+                                            last_polled_at: Some(Utc::now()),
+                                            next_cursor: None,
+                                            last_trade_timestamp_utc: None,
+                                            last_trade_id: None,
+                                            pages_seen: runtime_config.live_max_pages as i64,
+                                            trades_seen: 0,
+                                            state: serde_json::json!({
+                                                "status": "timeout"
+                                            }),
+                                        })
+                                        .await
+                                    {
+                                        warn!(error = %checkpoint_error, process_id = %process.process_id, "failed to record live whale poll timeout checkpoint");
+                                    }
                                 }
                             }
                         }

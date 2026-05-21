@@ -7,7 +7,7 @@ use axum::{
     http::{header::AUTHORIZATION, HeaderMap, Request, StatusCode},
     middleware::{from_fn_with_state, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -130,6 +130,25 @@ pub trait ControlApi: Send + Sync + 'static {
     ) -> Result<TradingProcessResponse, HttpError> {
         Err(HttpError::not_implemented(
             "trading processes are not wired",
+        ))
+    }
+
+    async fn upsert_trading_process_by_key(
+        &self,
+        _process_key: String,
+        _request: UpsertTradingProcessByKeyRequest,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading processes are not wired",
+        ))
+    }
+
+    async fn get_trading_process_status(
+        &self,
+        _process_id: Uuid,
+    ) -> Result<TradingProcessStatusResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading process status is not wired",
         ))
     }
 
@@ -301,6 +320,25 @@ impl ControlApi for PlaceholderControlApi {
         ))
     }
 
+    async fn upsert_trading_process_by_key(
+        &self,
+        _process_key: String,
+        _request: UpsertTradingProcessByKeyRequest,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading processes are not wired",
+        ))
+    }
+
+    async fn get_trading_process_status(
+        &self,
+        _process_id: Uuid,
+    ) -> Result<TradingProcessStatusResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading process status is not wired",
+        ))
+    }
+
     async fn update_trading_process(
         &self,
         _process_id: Uuid,
@@ -359,6 +397,14 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .route(
             "/trading-processes",
             get(list_trading_processes).post(create_trading_process),
+        )
+        .route(
+            "/trading-processes/by-key/:process_key",
+            put(upsert_trading_process_by_key),
+        )
+        .route(
+            "/trading-processes/:process_id/status",
+            get(get_trading_process_status),
         )
         .route(
             "/trading-processes/:process_id",
@@ -552,6 +598,29 @@ async fn get_trading_process(
         .map(Json)
 }
 
+async fn upsert_trading_process_by_key(
+    State(state): State<HttpState>,
+    Path(process_key): Path<String>,
+    Json(request): Json<UpsertTradingProcessByKeyRequest>,
+) -> Result<Json<TradingProcessResponse>, HttpError> {
+    state
+        .control
+        .upsert_trading_process_by_key(process_key, request)
+        .await
+        .map(Json)
+}
+
+async fn get_trading_process_status(
+    State(state): State<HttpState>,
+    Path(process_id): Path<Uuid>,
+) -> Result<Json<TradingProcessStatusResponse>, HttpError> {
+    state
+        .control
+        .get_trading_process_status(process_id)
+        .await
+        .map(Json)
+}
+
 async fn update_trading_process(
     State(state): State<HttpState>,
     Path(process_id): Path<Uuid>,
@@ -695,6 +764,10 @@ pub struct CreateTradingProcessRequest {
     pub name: String,
     #[serde(default = "default_process_type")]
     pub process_type: String,
+    #[serde(default = "default_process_scope")]
+    pub process_scope: String,
+    #[serde(default)]
+    pub process_key: Option<String>,
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
@@ -710,6 +783,10 @@ pub struct UpdateTradingProcessRequest {
     #[serde(default)]
     pub process_type: Option<String>,
     #[serde(default)]
+    pub process_scope: Option<String>,
+    #[serde(default)]
+    pub process_key: Option<Option<String>>,
+    #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
     pub status: Option<String>,
@@ -722,6 +799,21 @@ pub struct UpdateTradingProcessRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListTradingProcessesRequest {
     pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpsertTradingProcessByKeyRequest {
+    pub name: String,
+    #[serde(default = "default_process_type")]
+    pub process_type: String,
+    #[serde(default = "default_process_scope")]
+    pub process_scope: String,
+    pub enabled: bool,
+    pub status: String,
+    #[serde(default)]
+    pub config: TradingProcessConfig,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -752,6 +844,12 @@ pub struct TradingProcessesResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradingProcessStatusResponse {
+    pub process_id: Uuid,
+    pub status: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub error: ErrorBody,
 }
@@ -764,6 +862,10 @@ pub struct ErrorBody {
 
 fn default_process_type() -> String {
     "copy_trade".to_string()
+}
+
+fn default_process_scope() -> String {
+    "default".to_string()
 }
 
 #[derive(Debug, Clone)]

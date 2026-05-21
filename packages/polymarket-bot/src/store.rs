@@ -39,6 +39,8 @@ struct TradingProcessRow {
     process_id: Uuid,
     name: String,
     process_type: String,
+    process_scope: String,
+    process_key: Option<String>,
     status: String,
     enabled: bool,
     config: serde_json::Value,
@@ -219,16 +221,18 @@ impl Store {
         let row = sqlx::query_as::<_, TradingProcessRow>(
             r#"
             INSERT INTO polymarket.trading_processes (
-              process_id, name, process_type, status, enabled, config, metadata,
+              process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
               created_at, updated_at, started_at
             )
             VALUES (
-              $1, 'default-env-copy-trade', 'copy_trade', 'running', true, $2, $3,
+              $1, 'default-env-copy-trade', 'copy_trade', 'default', 'default-env-copy-trade', 'running', true, $2, $3,
               now(), now(), now()
             )
             ON CONFLICT (process_id) DO UPDATE SET
+              process_scope = 'default',
+              process_key = 'default-env-copy-trade',
               updated_at = now()
-            RETURNING process_id, name, process_type, status, enabled, config, metadata,
+            RETURNING process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
               created_at, updated_at, started_at, stopped_at, last_error
             "#,
         )
@@ -245,6 +249,8 @@ impl Store {
         &self,
         name: &str,
         process_type: &str,
+        process_scope: &str,
+        process_key: Option<&str>,
         enabled: bool,
         config: TradingProcessConfig,
         metadata: serde_json::Value,
@@ -252,16 +258,18 @@ impl Store {
         let row = sqlx::query_as::<_, TradingProcessRow>(
             r#"
             INSERT INTO polymarket.trading_processes (
-              process_id, name, process_type, status, enabled, config, metadata,
+              process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
               created_at, updated_at
             )
-            VALUES (gen_random_uuid(),$1,$2,'created',$3,$4,$5,now(),now())
-            RETURNING process_id, name, process_type, status, enabled, config, metadata,
+            VALUES (gen_random_uuid(),$1,$2,$3,$4,'created',$5,$6,$7,now(),now())
+            RETURNING process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
               created_at, updated_at, started_at, stopped_at, last_error
             "#,
         )
         .bind(name)
         .bind(process_type)
+        .bind(process_scope)
+        .bind(process_key)
         .bind(enabled)
         .bind(serde_json::to_value(config)?)
         .bind(metadata)
@@ -271,10 +279,84 @@ impl Store {
         trading_process_from_row(row)
     }
 
+    pub async fn upsert_trading_process_by_key(
+        &self,
+        name: &str,
+        process_type: &str,
+        process_scope: &str,
+        process_key: &str,
+        enabled: bool,
+        status: &str,
+        config: TradingProcessConfig,
+        metadata: serde_json::Value,
+    ) -> Result<TradingProcess> {
+        let config_value = serde_json::to_value(config)?;
+        let row = sqlx::query_as::<_, TradingProcessRow>(
+            r#"
+            WITH updated AS (
+              UPDATE polymarket.trading_processes
+              SET name = $1,
+                  status = $5,
+                  enabled = $6,
+                  config = $7,
+                  metadata = $8,
+                  started_at = CASE
+                    WHEN $6 = true AND $5 = 'running' THEN COALESCE(started_at, now())
+                    ELSE started_at
+                  END,
+                  stopped_at = CASE
+                    WHEN $6 = false OR $5 IN ('stopped', 'failed', 'expired') THEN now()
+                    ELSE NULL
+                  END,
+                  last_error = CASE
+                    WHEN $5 NOT IN ('failed', 'error') THEN NULL
+                    ELSE last_error
+                  END,
+                  updated_at = now()
+              WHERE process_type = $2
+                AND process_scope = $3
+                AND process_key = $4
+              RETURNING process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
+                created_at, updated_at, started_at, stopped_at, last_error
+            ),
+            inserted AS (
+              INSERT INTO polymarket.trading_processes (
+                process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
+                created_at, updated_at, started_at, stopped_at, last_error
+              )
+              SELECT
+                gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8,
+                now(), now(),
+                now(),
+                CASE WHEN $6 = false OR $5 IN ('stopped', 'failed', 'expired') THEN now() ELSE NULL END,
+                NULL
+              WHERE NOT EXISTS (SELECT 1 FROM updated)
+              RETURNING process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
+                created_at, updated_at, started_at, stopped_at, last_error
+            )
+            SELECT * FROM updated
+            UNION ALL
+            SELECT * FROM inserted
+            "#,
+        )
+        .bind(name)
+        .bind(process_type)
+        .bind(process_scope)
+        .bind(process_key)
+        .bind(status)
+        .bind(enabled)
+        .bind(config_value)
+        .bind(metadata)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to upsert trading process by key")?;
+        trading_process_from_row(row)
+    }
+
     pub async fn list_trading_processes(&self, limit: i64) -> Result<Vec<TradingProcess>> {
         let rows = sqlx::query_as::<_, TradingProcessRow>(
             r#"
-            SELECT process_id, name, process_type, status, enabled, config, metadata,
+            SELECT process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
               created_at, updated_at, started_at, stopped_at, last_error
             FROM polymarket.trading_processes
             ORDER BY updated_at DESC
@@ -291,7 +373,7 @@ impl Store {
     pub async fn get_trading_process(&self, process_id: Uuid) -> Result<Option<TradingProcess>> {
         let row = sqlx::query_as::<_, TradingProcessRow>(
             r#"
-            SELECT process_id, name, process_type, status, enabled, config, metadata,
+            SELECT process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
               created_at, updated_at, started_at, stopped_at, last_error
             FROM polymarket.trading_processes
             WHERE process_id = $1
@@ -304,11 +386,175 @@ impl Store {
         row.map(trading_process_from_row).transpose()
     }
 
+    pub async fn trading_process_status(
+        &self,
+        process_id: Uuid,
+    ) -> Result<Option<serde_json::Value>> {
+        let status = sqlx::query_scalar::<_, serde_json::Value>(
+            r#"
+            WITH process AS (
+              SELECT process_id, name, process_type, process_scope, process_key, status, enabled,
+                started_at, stopped_at, heartbeat_at, last_error, created_at, updated_at
+              FROM polymarket.trading_processes
+              WHERE process_id = $1
+            ),
+            signals AS (
+              SELECT count(*)::bigint AS total, max(timestamp_utc) AS last_signal_at
+              FROM polymarket.copy_trade_signals
+              WHERE process_id = $1
+            ),
+            orders AS (
+              SELECT count(*)::bigint AS total,
+                count(*) FILTER (WHERE state = 'accepted')::bigint AS accepted,
+                count(*) FILTER (WHERE state = 'rejected')::bigint AS rejected,
+                count(*) FILTER (WHERE state = 'simulated')::bigint AS simulated,
+                max(created_at) AS last_order_at
+              FROM polymarket.orders
+              WHERE process_id = $1
+            ),
+            order_states AS (
+              SELECT COALESCE(jsonb_object_agg(state, total), '{}'::jsonb) AS counts
+              FROM (
+                SELECT state, count(*)::bigint AS total
+                FROM polymarket.orders
+                WHERE process_id = $1
+                GROUP BY state
+              ) states
+            ),
+            fills AS (
+              SELECT count(*)::bigint AS total, max(timestamp_utc) AS last_fill_at
+              FROM polymarket.fills
+              WHERE process_id = $1
+            ),
+            positions AS (
+              SELECT count(*)::bigint AS total,
+                count(*) FILTER (WHERE status IN ('open', 'partially_closed'))::bigint AS open,
+                count(*) FILTER (WHERE status IN ('closed', 'resolved'))::bigint AS closed,
+                count(*) FILTER (WHERE status IN ('closed', 'resolved') AND realized_pnl > 0)::bigint AS profitable_closed,
+                count(*) FILTER (WHERE status IN ('open', 'partially_closed') AND unrealized_pnl > 0)::bigint AS profitable_open,
+                COALESCE(sum(entry_notional), 0) AS entry_notional,
+                COALESCE(sum(realized_pnl), 0) AS realized_pnl,
+                COALESCE(sum(unrealized_pnl) FILTER (WHERE status IN ('open', 'partially_closed')), 0) AS unrealized_pnl,
+                max(updated_at) AS last_position_update_at
+              FROM polymarket.trade_positions
+              WHERE process_id = $1
+            ),
+            marks AS (
+              SELECT count(*)::bigint AS total, max(timestamp_utc) AS last_mark_at
+              FROM polymarket.trade_marks
+              WHERE process_id = $1
+            ),
+            exits AS (
+              SELECT count(*)::bigint AS total, max(timestamp_utc) AS last_exit_at
+              FROM polymarket.trade_exits
+              WHERE process_id = $1
+            ),
+            jobs AS (
+              SELECT job_id, status, requested_at, started_at, completed_at, error
+              FROM polymarket.backfill_jobs
+              WHERE request->>'process_id' = $1::text
+              ORDER BY requested_at DESC
+              LIMIT 1
+            ),
+            poll_checkpoint AS (
+              SELECT checkpoint_name, last_polled_at, next_cursor, last_trade_timestamp_utc,
+                last_trade_id, pages_seen, trades_seen, state
+              FROM polymarket.whale_poll_checkpoints
+              WHERE checkpoint_name = $1::text
+            )
+            SELECT jsonb_build_object(
+              'process', to_jsonb(process),
+              'signals', jsonb_build_object(
+                'total', signals.total,
+                'last_signal_at', signals.last_signal_at
+              ),
+              'orders', jsonb_build_object(
+                'total', orders.total,
+                'accepted', orders.accepted,
+                'rejected', orders.rejected,
+                'simulated', orders.simulated,
+                'by_state', order_states.counts,
+                'last_order_at', orders.last_order_at
+              ),
+              'fills', jsonb_build_object(
+                'total', fills.total,
+                'last_fill_at', fills.last_fill_at
+              ),
+              'positions', jsonb_build_object(
+                'total', positions.total,
+                'open', positions.open,
+                'closed', positions.closed,
+                'profitable_closed', positions.profitable_closed,
+                'profitable_open', positions.profitable_open,
+                'entry_notional', positions.entry_notional,
+                'realized_pnl', positions.realized_pnl,
+                'unrealized_pnl', positions.unrealized_pnl,
+                'total_pnl', positions.realized_pnl + positions.unrealized_pnl,
+                'roi', CASE
+                  WHEN positions.entry_notional > 0
+                  THEN (positions.realized_pnl + positions.unrealized_pnl) / positions.entry_notional
+                  ELSE 0
+                END,
+                'last_position_update_at', positions.last_position_update_at
+              ),
+              'marks', jsonb_build_object(
+                'total', marks.total,
+                'last_mark_at', marks.last_mark_at
+              ),
+              'exits', jsonb_build_object(
+                'total', exits.total,
+                'last_exit_at', exits.last_exit_at
+              ),
+              'last_job', CASE
+                WHEN jobs.job_id IS NULL THEN NULL
+                ELSE jsonb_build_object(
+                  'job_id', jobs.job_id,
+                  'status', jobs.status,
+                  'requested_at', jobs.requested_at,
+                  'started_at', jobs.started_at,
+                  'completed_at', jobs.completed_at,
+                  'error', jobs.error
+                )
+              END,
+              'last_poll', CASE
+                WHEN poll_checkpoint.checkpoint_name IS NULL THEN NULL
+                ELSE jsonb_build_object(
+                  'last_polled_at', poll_checkpoint.last_polled_at,
+                  'next_cursor', poll_checkpoint.next_cursor,
+                  'last_trade_timestamp_utc', poll_checkpoint.last_trade_timestamp_utc,
+                  'last_trade_id', poll_checkpoint.last_trade_id,
+                  'pages_seen', poll_checkpoint.pages_seen,
+                  'trades_seen', poll_checkpoint.trades_seen,
+                  'state', poll_checkpoint.state
+                )
+              END
+            )
+            FROM process
+            CROSS JOIN signals
+            CROSS JOIN orders
+            CROSS JOIN order_states
+            CROSS JOIN fills
+            CROSS JOIN positions
+            CROSS JOIN marks
+            CROSS JOIN exits
+            LEFT JOIN jobs ON true
+            LEFT JOIN poll_checkpoint ON true
+            "#,
+        )
+        .bind(process_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to load trading process status")?;
+        Ok(status)
+    }
+
     pub async fn update_trading_process(
         &self,
         process_id: Uuid,
         name: Option<&str>,
         process_type: Option<&str>,
+        process_scope: Option<&str>,
+        process_key: Option<Option<&str>>,
         enabled: Option<bool>,
         status: Option<&str>,
         config: Option<TradingProcessConfig>,
@@ -320,19 +566,24 @@ impl Store {
             UPDATE polymarket.trading_processes
             SET name = COALESCE($2, name),
                 process_type = COALESCE($3, process_type),
-                enabled = COALESCE($4, enabled),
-                status = COALESCE($5, status),
-                config = COALESCE($6, config),
-                metadata = COALESCE($7, metadata),
+                process_scope = COALESCE($4, process_scope),
+                process_key = CASE WHEN $5::boolean THEN $6 ELSE process_key END,
+                enabled = COALESCE($7, enabled),
+                status = COALESCE($8, status),
+                config = COALESCE($9, config),
+                metadata = COALESCE($10, metadata),
                 updated_at = now()
             WHERE process_id = $1
-            RETURNING process_id, name, process_type, status, enabled, config, metadata,
+            RETURNING process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
               created_at, updated_at, started_at, stopped_at, last_error
             "#,
         )
         .bind(process_id)
         .bind(name)
         .bind(process_type)
+        .bind(process_scope)
+        .bind(process_key.is_some())
+        .bind(process_key.flatten())
         .bind(enabled)
         .bind(status)
         .bind(config_value)
@@ -354,7 +605,7 @@ impl Store {
                 last_error = NULL,
                 updated_at = now()
             WHERE process_id = $1
-            RETURNING process_id, name, process_type, status, enabled, config, metadata,
+            RETURNING process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
               created_at, updated_at, started_at, stopped_at, last_error
             "#,
         )
@@ -374,7 +625,7 @@ impl Store {
                 stopped_at = now(),
                 updated_at = now()
             WHERE process_id = $1
-            RETURNING process_id, name, process_type, status, enabled, config, metadata,
+            RETURNING process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
               created_at, updated_at, started_at, stopped_at, last_error
             "#,
         )
@@ -1507,6 +1758,7 @@ impl Store {
             WITH marks AS (
               SELECT
                 p.position_id,
+                p.process_id,
                 p.source_signal_id,
                 p.side,
                 p.entry_price,
@@ -1538,11 +1790,12 @@ impl Store {
             ),
             inserted AS (
               INSERT INTO polymarket.trade_marks (
-                position_id, source_signal_id, timestamp_utc, mark_price, mark_source,
+                position_id, process_id, source_signal_id, timestamp_utc, mark_price, mark_source,
                 mark_age_ms, gross_unrealized_pnl, net_unrealized_pnl, roi, metadata
               )
               SELECT
                 position_id,
+                process_id,
                 source_signal_id,
                 now(),
                 mark_price,
@@ -2758,6 +3011,8 @@ fn trading_process_from_row(row: TradingProcessRow) -> Result<TradingProcess> {
         process_id: row.process_id,
         name: row.name,
         process_type: row.process_type,
+        process_scope: row.process_scope,
+        process_key: row.process_key,
         status: row.status,
         enabled: row.enabled,
         config,

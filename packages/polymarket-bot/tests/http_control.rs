@@ -209,6 +209,8 @@ impl ControlApi for FakeControlApi {
                 Uuid::new_v4(),
                 request.name,
                 request.process_type,
+                request.process_scope,
+                request.process_key,
                 "created",
                 request.enabled,
                 request.config,
@@ -225,6 +227,8 @@ impl ControlApi for FakeControlApi {
                 Uuid::new_v4(),
                 "default-env-copy-trade".to_string(),
                 "copy_trade".to_string(),
+                "default".to_string(),
+                Some("default-env-copy-trade".to_string()),
                 "running",
                 true,
                 TradingProcessConfig {
@@ -249,6 +253,8 @@ impl ControlApi for FakeControlApi {
                 process_id,
                 "paper-canary".to_string(),
                 "copy_trade".to_string(),
+                "default".to_string(),
+                Some("paper-canary".to_string()),
                 "running",
                 true,
                 TradingProcessConfig::default(),
@@ -268,6 +274,12 @@ impl ControlApi for FakeControlApi {
                 request
                     .process_type
                     .unwrap_or_else(|| "copy_trade".to_string()),
+                request
+                    .process_scope
+                    .unwrap_or_else(|| "default".to_string()),
+                request
+                    .process_key
+                    .unwrap_or(Some("paper-canary".to_string())),
                 request.status.as_deref().unwrap_or("created"),
                 request.enabled.unwrap_or(true),
                 request.config.unwrap_or_default(),
@@ -284,6 +296,8 @@ impl ControlApi for FakeControlApi {
                 process_id,
                 "paper-canary".to_string(),
                 "copy_trade".to_string(),
+                "default".to_string(),
+                Some("paper-canary".to_string()),
                 "running",
                 true,
                 TradingProcessConfig::default(),
@@ -300,10 +314,46 @@ impl ControlApi for FakeControlApi {
                 process_id,
                 "paper-canary".to_string(),
                 "copy_trade".to_string(),
+                "default".to_string(),
+                Some("paper-canary".to_string()),
                 "stopped",
                 false,
                 TradingProcessConfig::default(),
             ),
+        })
+    }
+
+    async fn upsert_trading_process_by_key(
+        &self,
+        process_key: String,
+        request: http::UpsertTradingProcessByKeyRequest,
+    ) -> Result<http::TradingProcessResponse, HttpError> {
+        Ok(http::TradingProcessResponse {
+            process: test_process(
+                Uuid::new_v4(),
+                request.name,
+                request.process_type,
+                request.process_scope,
+                Some(process_key),
+                request.status.as_str(),
+                request.enabled,
+                request.config,
+            ),
+        })
+    }
+
+    async fn get_trading_process_status(
+        &self,
+        process_id: Uuid,
+    ) -> Result<http::TradingProcessStatusResponse, HttpError> {
+        Ok(http::TradingProcessStatusResponse {
+            process_id,
+            status: serde_json::json!({
+                "signals": {"total": 1},
+                "orders": {"total": 1},
+                "fills": {"total": 1},
+                "positions": {"total": 1, "total_pnl": "0"}
+            }),
         })
     }
 }
@@ -553,6 +603,45 @@ async fn authenticated_admin_can_manage_trading_processes() {
     let list_json: Value = serde_json::from_slice(&list_body).unwrap();
     assert_eq!(list_json["processes"][0]["status"], "running");
 
+    let upsert_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/admin/trading-processes/by-key/prod-sim-copy-trade-canary")
+                .header(AUTHORIZATION, "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"prod-sim-copy-trade-canary","process_type":"copy_trade","process_scope":"production","enabled":true,"status":"running","config":{"execution":{"mode":"sim","execute_signals":true,"live_capital":false}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(upsert_response.status(), StatusCode::OK);
+    let upsert_body = to_bytes(upsert_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let upsert_json: Value = serde_json::from_slice(&upsert_body).unwrap();
+    assert_eq!(
+        upsert_json["process"]["process_key"],
+        "prod-sim-copy-trade-canary"
+    );
+    assert_eq!(upsert_json["process"]["process_scope"], "production");
+
+    let status_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/admin/trading-processes/{process_id}/status"))
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status_response.status(), StatusCode::OK);
+
     let update_response = app
         .clone()
         .oneshot(
@@ -617,6 +706,8 @@ fn test_process(
     process_id: Uuid,
     name: String,
     process_type: String,
+    process_scope: String,
+    process_key: Option<String>,
     status: &str,
     enabled: bool,
     config: TradingProcessConfig,
@@ -625,6 +716,8 @@ fn test_process(
         process_id,
         name,
         process_type,
+        process_scope,
+        process_key,
         status: status.to_string(),
         enabled,
         config,

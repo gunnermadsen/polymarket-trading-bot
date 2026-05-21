@@ -555,6 +555,8 @@ pub struct TradingProcess {
     pub process_id: Uuid,
     pub name: String,
     pub process_type: String,
+    pub process_scope: String,
+    pub process_key: Option<String>,
     pub status: String,
     pub enabled: bool,
     pub config: TradingProcessConfig,
