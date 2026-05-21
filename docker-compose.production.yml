@@ -31,10 +31,7 @@ services:
     restart: unless-stopped
 
   db-migrate:
-    build:
-      context: .
-      dockerfile: packages/db-migrate/Dockerfile
-    image: polymarket/db-migrate:latest
+    image: 192200846560.dkr.ecr.mx-central-1.amazonaws.com/capitonic/db-migrate:production
     container_name: db-migrate
     hostname: db-migrate
     logging: *default-logging
@@ -55,10 +52,7 @@ services:
     restart: "no"
 
   polymarket-bot:
-    build:
-      context: .
-      dockerfile: packages/polymarket-bot/Dockerfile
-    image: polymarket/polymarket-bot:latest
+    image: 192200846560.dkr.ecr.mx-central-1.amazonaws.com/capitonic/polymarket-bot:production
     container_name: polymarket-bot
     hostname: polymarket-bot
     logging: *default-logging

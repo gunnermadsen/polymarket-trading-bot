@@ -69,6 +69,12 @@ variable "app_directory" {
   default     = "/opt/polymarket-bot"
 }
 
+variable "compose_file" {
+  description = "Docker Compose file used by the EC2 bootstrap."
+  type        = string
+  default     = "docker-compose.production.yml"
+}
+
 variable "app_secret_name" {
   description = "AWS Secrets Manager JSON secret containing app secrets and GitHub clone credentials."
   type        = string
