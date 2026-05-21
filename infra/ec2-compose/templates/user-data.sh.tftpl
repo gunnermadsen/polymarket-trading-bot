@@ -113,10 +113,10 @@ install_desktop() {
   apt_get_install software-properties-common
   add-apt-repository -y universe || true
   apt-get update
-  apt_get_install dbus-x11 xfce4 xfce4-goodies xrdp xorgxrdp xserver-xorg-core xserver-xorg-input-all xserver-xorg-video-dummy xinit
+  apt_get_install dbus-x11 xdg-utils xfce4 xfce4-goodies xrdp xorgxrdp xserver-xorg-core xserver-xorg-input-all xserver-xorg-video-dummy xinit firefox
 
   if ! apt_get_install falkon; then
-    apt_get_install firefox
+    echo "Falkon install failed; Firefox is already installed as the primary browser."
   fi
 
   if ! id "$RDP_USERNAME" >/dev/null 2>&1; then
