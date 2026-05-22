@@ -8,6 +8,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::{
+    clob::ClobClient,
     copytrade::{
         evaluate_copy_trade, run_copy_trade_backtest, CopyTradeConfig, CopyTradeWalletPerformance,
         ObservedMarket, COPY_SCORE_VERSION,
@@ -16,7 +17,7 @@ use crate::{
     execution::{execute_order_plan, ExecutionVenue},
     models::{BackfillJobStatus, CopyTradeBacktestRun, DataApiClosedPosition, WhaleTrade},
     store::Store,
-    trade_pnl::refresh_trade_pnl,
+    trade_pnl::{refresh_trade_pnl_with_config, TradePnlConfig},
     wallets::{score_closed_position_performance, score_closed_position_wallets, score_wallets},
 };
 
@@ -321,6 +322,7 @@ pub async fn run_job(
         let copy_summary = run_copy_trade_signal_engine(
             &store,
             venue.as_deref(),
+            None,
             &trades_for_copy,
             &CopyTradeRunConfig {
                 process_id: request.process_id,
@@ -519,6 +521,7 @@ mod tests {
 pub async fn run_copy_trade_signal_engine(
     store: &Store,
     venue: Option<&dyn ExecutionVenue>,
+    clob: Option<&ClobClient>,
     trades: &[WhaleTrade],
     config: &CopyTradeRunConfig,
     dry_run: bool,
@@ -621,7 +624,7 @@ pub async fn run_copy_trade_signal_engine(
     }
 
     if !dry_run && summary.trades_evaluated > 0 {
-        refresh_trade_pnl(store, venue).await?;
+        refresh_trade_pnl_with_config(store, venue, clob, &TradePnlConfig::default()).await?;
     }
 
     Ok(summary)

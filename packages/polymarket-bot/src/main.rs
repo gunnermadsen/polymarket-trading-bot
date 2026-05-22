@@ -97,6 +97,7 @@ impl RuntimeMetrics {
 struct RuntimeControl {
     store: Store,
     data_api: DataApiClient,
+    clob: ClobClient,
     venues: ExecutionVenues,
     metrics: Arc<Mutex<RuntimeMetrics>>,
     default_process_id: Option<uuid::Uuid>,
@@ -446,6 +447,7 @@ impl ControlApi for RuntimeControl {
         let report = refresh_trade_pnl_with_config(
             &self.store,
             Some(self.venues.health.as_ref()),
+            Some(&self.clob),
             &self.trade_pnl_config,
         )
         .await
@@ -457,6 +459,7 @@ impl ControlApi for RuntimeControl {
         let report = mark_trade_pnl_now_with_config(
             &self.store,
             Some(self.venues.health.as_ref()),
+            Some(&self.clob),
             &self.trade_pnl_config,
         )
         .await
@@ -817,6 +820,7 @@ async fn main() -> Result<()> {
     let trade_pnl_config = TradePnlConfig {
         exit_candidate_max_age: chrono::Duration::from_std(config.whale.exit_candidate_max_age)
             .unwrap_or_else(|_| chrono::Duration::seconds(900)),
+        ..TradePnlConfig::default()
     };
 
     let mut metrics = RuntimeMetrics::new();
@@ -825,6 +829,7 @@ async fn main() -> Result<()> {
         let control: control_http::SharedControlApi = Arc::new(RuntimeControl {
             store: store.clone(),
             data_api: data_api.clone(),
+            clob: clob.clone(),
             venues: venues.clone(),
             metrics: shared_metrics.clone(),
             default_process_id: None,
@@ -1021,6 +1026,7 @@ async fn main() -> Result<()> {
                                 poll_live_whales_once(
                                     &store,
                                     &data_api,
+                                    &clob,
                                     &venues,
                                     process.process_id,
                                     seen_live_whale_trades,
@@ -1134,6 +1140,7 @@ async fn main() -> Result<()> {
 async fn poll_live_whales_once(
     store: &Store,
     data_api: &DataApiClient,
+    clob: &ClobClient,
     venues: &ExecutionVenues,
     process_id: uuid::Uuid,
     seen_trade_keys: &mut HashSet<String>,
@@ -1229,6 +1236,7 @@ async fn poll_live_whales_once(
     run_copy_trade_signal_engine(
         store,
         Some(venue.as_ref()),
+        Some(clob),
         &trades,
         &CopyTradeRunConfig {
             process_id: Some(process_id),

@@ -1,24 +1,33 @@
 use anyhow::Result;
 use chrono::{Duration, Utc};
+use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::{
+    clob::ClobClient,
     execution::{execute_order_plan, ExecutionVenue, OrderPlan},
     idempotency::{deterministic_client_order_id, ClientOrderIdSeed},
     models::{OrderRequest, OrderSide, OrderType},
-    store::{Store, WhaleLedTradeExitCandidate},
+    store::{OrderbookSnapshot, Store, WhaleLedTradeExitCandidate},
 };
 
 #[derive(Debug, Clone)]
 pub struct TradePnlConfig {
     pub exit_candidate_max_age: Duration,
+    pub mark_token_refresh_limit: usize,
+    pub mark_refresh_concurrency: usize,
+    pub max_orderbook_mark_age: Duration,
 }
 
 impl Default for TradePnlConfig {
     fn default() -> Self {
         Self {
             exit_candidate_max_age: Duration::seconds(900),
+            mark_token_refresh_limit: 100,
+            mark_refresh_concurrency: 8,
+            max_orderbook_mark_age: Duration::minutes(15),
         }
     }
 }
@@ -31,6 +40,7 @@ pub struct TradePnlRefreshReport {
     pub exit_orders_submitted: u64,
     pub exit_fills_inserted: u64,
     pub closed_marks_cleared: u64,
+    pub mark_orderbook_snapshots_inserted: u64,
     pub marks_written: u64,
     pub wallets_refreshed: u64,
 }
@@ -39,12 +49,13 @@ pub async fn refresh_trade_pnl(
     store: &Store,
     venue: Option<&dyn ExecutionVenue>,
 ) -> Result<TradePnlRefreshReport> {
-    refresh_trade_pnl_with_config(store, venue, &TradePnlConfig::default()).await
+    refresh_trade_pnl_with_config(store, venue, None, &TradePnlConfig::default()).await
 }
 
 pub async fn refresh_trade_pnl_with_config(
     store: &Store,
     venue: Option<&dyn ExecutionVenue>,
+    clob: Option<&ClobClient>,
     config: &TradePnlConfig,
 ) -> Result<TradePnlRefreshReport> {
     let positions_backfilled = store.backfill_trade_positions_from_copy_signals().await?;
@@ -53,6 +64,8 @@ pub async fn refresh_trade_pnl_with_config(
         .await?;
     let exit_execution = execute_whale_led_trade_exits(store, venue, config).await?;
     let closed_marks_cleared = store.clear_closed_trade_position_unrealized_pnl().await?;
+    let mark_orderbook_snapshots_inserted =
+        refresh_open_position_orderbook_marks(store, clob, config).await?;
     let marks_written = store.mark_open_trade_positions().await?;
     let wallets_refreshed = store.refresh_wallet_trade_performance().await?;
     Ok(TradePnlRefreshReport {
@@ -62,6 +75,7 @@ pub async fn refresh_trade_pnl_with_config(
         exit_orders_submitted: exit_execution.exit_orders_submitted,
         exit_fills_inserted: exit_execution.exit_fills_inserted,
         closed_marks_cleared,
+        mark_orderbook_snapshots_inserted,
         marks_written,
         wallets_refreshed,
     })
@@ -71,12 +85,13 @@ pub async fn mark_trade_pnl_now(
     store: &Store,
     venue: Option<&dyn ExecutionVenue>,
 ) -> Result<TradePnlRefreshReport> {
-    mark_trade_pnl_now_with_config(store, venue, &TradePnlConfig::default()).await
+    mark_trade_pnl_now_with_config(store, venue, None, &TradePnlConfig::default()).await
 }
 
 pub async fn mark_trade_pnl_now_with_config(
     store: &Store,
     venue: Option<&dyn ExecutionVenue>,
+    clob: Option<&ClobClient>,
     config: &TradePnlConfig,
 ) -> Result<TradePnlRefreshReport> {
     let positions_reconciled = store
@@ -84,6 +99,8 @@ pub async fn mark_trade_pnl_now_with_config(
         .await?;
     let exit_execution = execute_whale_led_trade_exits(store, venue, config).await?;
     let closed_marks_cleared = store.clear_closed_trade_position_unrealized_pnl().await?;
+    let mark_orderbook_snapshots_inserted =
+        refresh_open_position_orderbook_marks(store, clob, config).await?;
     let marks_written = store.mark_open_trade_positions().await?;
     let wallets_refreshed = store.refresh_wallet_trade_performance().await?;
     Ok(TradePnlRefreshReport {
@@ -93,9 +110,57 @@ pub async fn mark_trade_pnl_now_with_config(
         exit_orders_submitted: exit_execution.exit_orders_submitted,
         exit_fills_inserted: exit_execution.exit_fills_inserted,
         closed_marks_cleared,
+        mark_orderbook_snapshots_inserted,
         marks_written,
         wallets_refreshed,
     })
+}
+
+async fn refresh_open_position_orderbook_marks(
+    store: &Store,
+    clob: Option<&ClobClient>,
+    config: &TradePnlConfig,
+) -> Result<u64> {
+    let Some(clob) = clob else {
+        return Ok(0);
+    };
+    let tokens = store
+        .open_trade_position_mark_tokens(
+            config.mark_token_refresh_limit as i64,
+            config.max_orderbook_mark_age,
+        )
+        .await?;
+    if tokens.is_empty() {
+        return Ok(0);
+    }
+
+    let concurrency = config.mark_refresh_concurrency.max(1);
+    let mut snapshots = stream::iter(tokens)
+        .map(|token| async move {
+            let token_id = token.token_id.clone();
+            let book = clob.fetch_orderbook(&token_id).await?;
+            let snapshot =
+                OrderbookSnapshot::from_local_book(token.market_id, token.token_id, None, &book)?;
+            store.insert_orderbook_snapshot(&snapshot).await?;
+            Ok::<u64, anyhow::Error>(1)
+        })
+        .buffer_unordered(concurrency);
+
+    let mut inserted = 0;
+    let mut failed = 0;
+    while let Some(result) = snapshots.next().await {
+        match result {
+            Ok(count) => inserted += count,
+            Err(_) => failed += 1,
+        }
+    }
+    if failed > 0 {
+        warn!(
+            failed,
+            inserted, "some open position orderbook mark refreshes failed"
+        );
+    }
+    Ok(inserted)
 }
 
 #[derive(Debug, Default)]
