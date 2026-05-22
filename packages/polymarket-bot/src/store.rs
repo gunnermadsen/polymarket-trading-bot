@@ -25,6 +25,155 @@ pub struct Store {
     pool: PgPool,
 }
 
+const MARK_OPEN_TRADE_POSITIONS_SQL: &str = r#"
+WITH open_positions AS MATERIALIZED (
+  SELECT
+    p.position_id,
+    p.process_id,
+    p.source_signal_id,
+    p.token_id,
+    p.side,
+    p.entry_price,
+    p.open_size,
+    p.entry_notional,
+    p.entry_timestamp,
+    p.realized_pnl,
+    p.latest_mark_timestamp
+  FROM polymarket.trade_positions p
+  WHERE p.status IN ('open', 'partially_closed')
+    AND p.open_size > 0
+),
+open_tokens AS MATERIALIZED (
+  SELECT DISTINCT token_id
+  FROM open_positions
+),
+latest_orderbook AS MATERIALIZED (
+  SELECT
+    t.token_id,
+    b.timestamp_utc AS source_timestamp,
+    CASE
+      WHEN b.best_bid IS NOT NULL AND b.best_ask IS NOT NULL THEN (b.best_bid + b.best_ask) / 2
+      WHEN b.best_bid IS NOT NULL THEN b.best_bid
+      ELSE b.best_ask
+    END AS mark_price,
+    CASE
+      WHEN b.best_bid IS NOT NULL AND b.best_ask IS NOT NULL THEN 'clob_mid'
+      WHEN b.best_bid IS NOT NULL THEN 'clob_bid'
+      ELSE 'clob_ask'
+    END AS mark_source,
+    jsonb_build_object(
+      'source_timestamp', b.timestamp_utc,
+      'best_bid', b.best_bid,
+      'best_ask', b.best_ask,
+      'mark_basis', 'orderbook_snapshot'
+    ) AS metadata
+  FROM open_tokens t
+  JOIN LATERAL (
+    SELECT timestamp_utc, best_bid, best_ask
+    FROM polymarket.orderbook_snapshots b
+    WHERE b.token_id = t.token_id
+      AND b.timestamp_utc >= now() - interval '15 minutes'
+      AND (b.best_bid IS NOT NULL OR b.best_ask IS NOT NULL)
+    ORDER BY b.timestamp_utc DESC
+    LIMIT 1
+  ) b ON true
+),
+latest_wallet_trade AS MATERIALIZED (
+  SELECT
+    t.token_id,
+    wt.timestamp_utc AS source_timestamp,
+    wt.price AS mark_price,
+    'data_api_trade' AS mark_source,
+    jsonb_build_object(
+      'source_timestamp', wt.timestamp_utc,
+      'mark_basis', 'wallet_trade_fallback',
+      'wallet_trade_id', wt.trade_id
+    ) AS metadata
+  FROM open_tokens t
+  JOIN LATERAL (
+    SELECT trade_id, timestamp_utc, price
+    FROM polymarket.wallet_trades wt
+    WHERE wt.asset = t.token_id
+    ORDER BY wt.timestamp_utc DESC
+    LIMIT 1
+  ) wt ON true
+),
+marks AS (
+  SELECT
+    p.position_id,
+    p.process_id,
+    p.source_signal_id,
+    p.side,
+    p.entry_price,
+    p.open_size,
+    p.entry_notional,
+    COALESCE(orderbook.mark_price, wallet.mark_price) AS mark_price,
+    COALESCE(orderbook.source_timestamp, wallet.source_timestamp) AS source_timestamp,
+    COALESCE(orderbook.mark_source, wallet.mark_source) AS mark_source,
+    COALESCE(orderbook.metadata, wallet.metadata) AS metadata,
+    GREATEST(
+      0,
+      floor(
+        extract(epoch from (now() - COALESCE(orderbook.source_timestamp, wallet.source_timestamp)))
+          * 1000
+      )
+    )::bigint AS mark_age_ms
+  FROM open_positions p
+  LEFT JOIN latest_orderbook orderbook
+    ON orderbook.token_id = p.token_id
+   AND orderbook.source_timestamp >= p.entry_timestamp
+  LEFT JOIN latest_wallet_trade wallet
+    ON wallet.token_id = p.token_id
+   AND wallet.source_timestamp >= p.entry_timestamp
+  WHERE COALESCE(orderbook.source_timestamp, wallet.source_timestamp) IS NOT NULL
+    AND (
+      p.latest_mark_timestamp IS NULL
+      OR COALESCE(orderbook.source_timestamp, wallet.source_timestamp) > p.latest_mark_timestamp
+    )
+),
+prepared AS (
+  SELECT
+    *,
+    CASE
+      WHEN side = 'buy' THEN open_size * (mark_price - entry_price)
+      ELSE open_size * (entry_price - mark_price)
+    END AS gross_unrealized_pnl
+  FROM marks
+),
+inserted AS (
+  INSERT INTO polymarket.trade_marks (
+    position_id, process_id, source_signal_id, timestamp_utc, mark_price, mark_source,
+    mark_age_ms, gross_unrealized_pnl, net_unrealized_pnl, roi, metadata
+  )
+  SELECT
+    position_id,
+    process_id,
+    source_signal_id,
+    source_timestamp,
+    mark_price,
+    mark_source,
+    mark_age_ms,
+    gross_unrealized_pnl,
+    gross_unrealized_pnl,
+    CASE WHEN entry_notional > 0 THEN gross_unrealized_pnl / entry_notional ELSE 0 END,
+    metadata || jsonb_build_object('written_at', now())
+  FROM prepared
+  RETURNING position_id, mark_price, net_unrealized_pnl, timestamp_utc
+)
+UPDATE polymarket.trade_positions p
+SET
+  latest_mark_price = i.mark_price,
+  latest_mark_timestamp = i.timestamp_utc,
+  unrealized_pnl = i.net_unrealized_pnl,
+  roi = CASE
+    WHEN p.entry_notional > 0 THEN (p.realized_pnl + i.net_unrealized_pnl) / p.entry_notional
+    ELSE 0
+  END,
+  updated_at = now()
+FROM inserted i
+WHERE p.position_id = i.position_id
+"#;
+
 #[derive(Debug, FromRow)]
 struct OrderDbRow {
     order_id: String,
@@ -107,6 +256,12 @@ pub struct OrderbookSnapshot {
     pub fresh_depth_bid: Option<Decimal>,
     pub fresh_depth_ask: Option<Decimal>,
     pub book: serde_json::Value,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct OpenMarkToken {
+    pub token_id: String,
+    pub market_id: Option<String>,
 }
 
 impl OrderbookSnapshot {
@@ -2175,79 +2330,55 @@ impl Store {
     }
 
     pub async fn mark_open_trade_positions(&self) -> Result<u64> {
-        let result = sqlx::query(
+        let result = sqlx::query(MARK_OPEN_TRADE_POSITIONS_SQL)
+            .execute(&self.pool)
+            .await
+            .context("failed to mark open trade positions")?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn open_trade_position_mark_tokens(
+        &self,
+        limit: i64,
+        max_mark_age: chrono::Duration,
+    ) -> Result<Vec<OpenMarkToken>> {
+        let max_mark_age_ms = max_mark_age.num_milliseconds().max(0);
+        let rows = sqlx::query_as::<_, OpenMarkToken>(
             r#"
-            WITH marks AS (
+            WITH stale_tokens AS MATERIALIZED (
               SELECT
-                p.position_id,
-                p.process_id,
-                p.source_signal_id,
-                p.side,
-                p.entry_price,
-                p.open_size,
-                p.entry_notional,
-                latest.price AS mark_price,
-                latest.timestamp_utc AS source_timestamp,
-                GREATEST(0, floor(extract(epoch from (now() - latest.timestamp_utc)) * 1000))::bigint AS mark_age_ms
+                p.token_id,
+                min(p.market_id) FILTER (WHERE p.market_id IS NOT NULL) AS market_id,
+                min(COALESCE(p.latest_mark_timestamp, p.entry_timestamp)) AS oldest_mark_at
               FROM polymarket.trade_positions p
-              JOIN LATERAL (
-                SELECT wt.price, wt.timestamp_utc
-                FROM polymarket.wallet_trades wt
-                WHERE wt.asset = p.token_id
-                  AND wt.timestamp_utc >= p.entry_timestamp
-                ORDER BY wt.timestamp_utc DESC
-                LIMIT 1
-              ) latest ON true
               WHERE p.status IN ('open', 'partially_closed')
                 AND p.open_size > 0
-            ),
-            prepared AS (
-              SELECT
-                *,
-                CASE
-                  WHEN side = 'buy' THEN open_size * (mark_price - entry_price)
-                  ELSE open_size * (entry_price - mark_price)
-                END AS gross_unrealized_pnl
-              FROM marks
-            ),
-            inserted AS (
-              INSERT INTO polymarket.trade_marks (
-                position_id, process_id, source_signal_id, timestamp_utc, mark_price, mark_source,
-                mark_age_ms, gross_unrealized_pnl, net_unrealized_pnl, roi, metadata
-              )
-              SELECT
-                position_id,
-                process_id,
-                source_signal_id,
-                now(),
-                mark_price,
-                'data_api_trade',
-                mark_age_ms,
-                gross_unrealized_pnl,
-                gross_unrealized_pnl,
-                CASE WHEN entry_notional > 0 THEN gross_unrealized_pnl / entry_notional ELSE 0 END,
-                jsonb_build_object('source_timestamp', source_timestamp)
-              FROM prepared
-              RETURNING position_id, mark_price, net_unrealized_pnl, timestamp_utc
+                AND (
+                  p.latest_mark_timestamp IS NULL
+                  OR p.latest_mark_timestamp < now() - ($1::bigint * interval '1 millisecond')
+                )
+              GROUP BY p.token_id
             )
-            UPDATE polymarket.trade_positions p
-            SET
-              latest_mark_price = i.mark_price,
-              latest_mark_timestamp = i.timestamp_utc,
-              unrealized_pnl = i.net_unrealized_pnl,
-              roi = CASE
-                WHEN p.entry_notional > 0 THEN (p.realized_pnl + i.net_unrealized_pnl) / p.entry_notional
-                ELSE 0
-              END,
-              updated_at = now()
-            FROM inserted i
-            WHERE p.position_id = i.position_id
+            SELECT token_id, market_id
+            FROM stale_tokens t
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM polymarket.orderbook_snapshots b
+              WHERE b.token_id = t.token_id
+                AND b.timestamp_utc >= now() - interval '15 minutes'
+                AND (b.best_bid IS NOT NULL OR b.best_ask IS NOT NULL)
+              LIMIT 1
+            )
+            ORDER BY oldest_mark_at ASC
+            LIMIT $2
             "#,
         )
-        .execute(&self.pool)
+        .bind(max_mark_age_ms)
+        .bind(limit.max(0))
+        .fetch_all(&self.pool)
         .await
-        .context("failed to mark open trade positions")?;
-        Ok(result.rows_affected())
+        .context("failed to list open trade position tokens needing marks")?;
+        Ok(rows)
     }
 
     pub async fn refresh_wallet_trade_performance(&self) -> Result<u64> {
@@ -3499,7 +3630,7 @@ mod tests {
 
     use crate::{
         models::{FillRecord, FillSource},
-        store::cap_fills_to_size,
+        store::{cap_fills_to_size, MARK_OPEN_TRADE_POSITIONS_SQL},
     };
 
     #[test]
@@ -3536,5 +3667,28 @@ mod tests {
         assert_eq!(capped[0].fee, dec!(0.03));
         assert_eq!(capped[1].size, dec!(2));
         assert_eq!(capped[1].fee, dec!(0.02));
+    }
+
+    #[test]
+    fn mark_open_trade_positions_uses_orderbook_before_wallet_trade() {
+        assert!(MARK_OPEN_TRADE_POSITIONS_SQL.contains("latest_orderbook"));
+        assert!(MARK_OPEN_TRADE_POSITIONS_SQL.contains("polymarket.orderbook_snapshots"));
+        assert!(MARK_OPEN_TRADE_POSITIONS_SQL.contains("latest_wallet_trade"));
+        assert!(MARK_OPEN_TRADE_POSITIONS_SQL.contains("polymarket.wallet_trades"));
+        assert!(MARK_OPEN_TRADE_POSITIONS_SQL
+            .contains("COALESCE(orderbook.mark_price, wallet.mark_price)"));
+        assert!(MARK_OPEN_TRADE_POSITIONS_SQL.contains("'clob_mid'"));
+        assert!(MARK_OPEN_TRADE_POSITIONS_SQL.contains("'data_api_trade'"));
+    }
+
+    #[test]
+    fn mark_open_trade_positions_records_source_timestamp_as_position_mark_timestamp() {
+        assert!(MARK_OPEN_TRADE_POSITIONS_SQL.contains("source_timestamp"));
+        assert!(MARK_OPEN_TRADE_POSITIONS_SQL.contains("latest_mark_timestamp = i.timestamp_utc"));
+        assert!(MARK_OPEN_TRADE_POSITIONS_SQL.contains(
+            "COALESCE(orderbook.source_timestamp, wallet.source_timestamp) > p.latest_mark_timestamp"
+        ));
+        assert!(MARK_OPEN_TRADE_POSITIONS_SQL
+            .contains("b.timestamp_utc >= now() - interval '15 minutes'"));
     }
 }
