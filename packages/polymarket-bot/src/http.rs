@@ -803,6 +803,8 @@ pub struct CopyTradeCalibrationRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradePnlListRequest {
+    #[serde(default)]
+    pub process_id: Option<Uuid>,
     pub limit: Option<i64>,
 }
 

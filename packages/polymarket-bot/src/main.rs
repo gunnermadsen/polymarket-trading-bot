@@ -438,7 +438,10 @@ impl ControlApi for RuntimeControl {
         request: control_http::TradePnlListRequest,
     ) -> Result<serde_json::Value, HttpError> {
         self.store
-            .trade_pnl_mark_health(request.limit.unwrap_or(50).clamp(1, 500))
+            .trade_pnl_mark_health(
+                request.process_id,
+                request.limit.unwrap_or(50).clamp(1, 500),
+            )
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
     }

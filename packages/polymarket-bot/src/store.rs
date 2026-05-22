@@ -2419,8 +2419,10 @@ impl Store {
         &self,
         limit: i64,
         max_mark_age: chrono::Duration,
+        failure_backoff: chrono::Duration,
     ) -> Result<Vec<OpenMarkToken>> {
         let max_mark_age_ms = max_mark_age.num_milliseconds().max(0);
+        let failure_backoff_ms = failure_backoff.num_milliseconds().max(0);
         let rows = sqlx::query_as::<_, OpenMarkToken>(
             r#"
             WITH stale_tokens AS MATERIALIZED (
@@ -2448,11 +2450,22 @@ impl Store {
                 AND (b.best_bid IS NOT NULL OR b.best_ask IS NOT NULL)
               LIMIT 1
             )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM polymarket.trade_mark_source_failures f
+                WHERE f.process_id IS NOT DISTINCT FROM t.process_id
+                  AND f.token_id = t.token_id
+                  AND f.failure_source = 'mark_orderbook_refresh'
+                  AND f.resolved_at IS NULL
+                  AND f.last_failed_at >= now() - ($2::bigint * interval '1 millisecond')
+                LIMIT 1
+              )
             ORDER BY oldest_mark_at ASC
-            LIMIT $2
+            LIMIT $3
             "#,
         )
         .bind(max_mark_age_ms)
+        .bind(failure_backoff_ms)
         .bind(limit.max(0))
         .fetch_all(&self.pool)
         .await
@@ -2658,7 +2671,11 @@ impl Store {
         Ok(value)
     }
 
-    pub async fn trade_pnl_mark_health(&self, limit: i64) -> Result<serde_json::Value> {
+    pub async fn trade_pnl_mark_health(
+        &self,
+        process_id: Option<Uuid>,
+        limit: i64,
+    ) -> Result<serde_json::Value> {
         let value = sqlx::query_scalar::<_, serde_json::Value>(
             r#"
             WITH open_positions AS MATERIALIZED (
@@ -2666,6 +2683,7 @@ impl Store {
               FROM polymarket.trade_positions
               WHERE status IN ('open', 'partially_closed')
                 AND open_size > 0
+                AND ($1::uuid IS NULL OR process_id = $1)
             ),
             coverage AS (
               SELECT
@@ -2675,6 +2693,16 @@ impl Store {
                 COALESCE(sum(unrealized_pnl), 0) AS unrealized_pnl
               FROM open_positions
               GROUP BY 1
+            ),
+            coverage_by_process AS (
+              SELECT
+                process_id,
+                CASE WHEN latest_mark_timestamp IS NULL THEN 'unmarked' ELSE 'marked' END AS state,
+                count(*) AS positions,
+                COALESCE(sum(entry_notional), 0) AS notional,
+                COALESCE(sum(unrealized_pnl), 0) AS unrealized_pnl
+              FROM open_positions
+              GROUP BY 1, 2
             ),
             stale AS (
               SELECT
@@ -2734,6 +2762,7 @@ impl Store {
                 max(last_failed_at) AS last_failed_at
               FROM polymarket.trade_mark_source_failures
               WHERE resolved_at IS NULL
+                AND ($1::uuid IS NULL OR process_id = $1)
               GROUP BY 1, 2
             ),
             oldest_unmarked AS (
@@ -2761,10 +2790,12 @@ impl Store {
                 LIMIT 1
               ) f ON true
               ORDER BY u.entry_timestamp ASC
-              LIMIT $1
+              LIMIT $2
             )
             SELECT jsonb_build_object(
+              'process_id', $1::uuid,
               'coverage', COALESCE((SELECT jsonb_agg(to_jsonb(coverage) ORDER BY state) FROM coverage), '[]'::jsonb),
+              'coverage_by_process', COALESCE((SELECT jsonb_agg(to_jsonb(coverage_by_process) ORDER BY process_id, state) FROM coverage_by_process), '[]'::jsonb),
               'stale', COALESCE((SELECT jsonb_agg(to_jsonb(stale) ORDER BY bucket) FROM stale), '[]'::jsonb),
               'unmarked_availability', COALESCE((SELECT jsonb_agg(to_jsonb(unmarked_availability) ORDER BY has_usable_orderbook, has_post_entry_wallet_trade) FROM unmarked_availability), '[]'::jsonb),
               'failure_reasons', COALESCE((SELECT jsonb_agg(to_jsonb(failure_reasons) ORDER BY failures DESC, last_failed_at DESC) FROM failure_reasons), '[]'::jsonb),
@@ -2773,6 +2804,7 @@ impl Store {
             )
             "#,
         )
+        .bind(process_id)
         .bind(limit)
         .fetch_one(&self.pool)
         .await
