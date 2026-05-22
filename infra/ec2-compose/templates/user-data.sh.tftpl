@@ -120,6 +120,48 @@ EOF
   systemctl enable --now docker
 }
 
+configure_ecr_login_refresh() {
+  install -d -m 0700 /root/.docker
+
+  cat >/usr/local/sbin/polymarket-ecr-login <<EOF
+#!/bin/bash
+set -euo pipefail
+
+aws ecr get-login-password --region "$AWS_REGION" \\
+  | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+EOF
+  chmod 0700 /usr/local/sbin/polymarket-ecr-login
+
+  cat >/etc/systemd/system/polymarket-ecr-login.service <<EOF
+[Unit]
+Description=Refresh Docker login for Polymarket ECR images
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/polymarket-ecr-login
+EOF
+
+  cat >/etc/systemd/system/polymarket-ecr-login.timer <<EOF
+[Unit]
+Description=Refresh Docker login for Polymarket ECR images every 6 hours
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now polymarket-ecr-login.timer
+  /usr/local/sbin/polymarket-ecr-login
+}
+
 install_desktop() {
   if [ "$ENABLE_DESKTOP" != "true" ]; then
     return
@@ -341,8 +383,7 @@ write_app_env() {
 }
 
 start_compose_app() {
-  aws ecr get-login-password --region "$AWS_REGION" \
-    | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+  /usr/local/sbin/polymarket-ecr-login
 
   cd "$APP_DIRECTORY"
   docker compose -f "$COMPOSE_FILE" pull
@@ -352,6 +393,7 @@ start_compose_app() {
 
 install_base_packages
 install_docker
+configure_ecr_login_refresh
 configure_swap
 
 install -d -m 0700 /root/polymarket
