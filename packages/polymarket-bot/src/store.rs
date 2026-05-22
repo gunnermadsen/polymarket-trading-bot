@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
 use uuid::Uuid;
 
@@ -54,6 +54,7 @@ struct TradingProcessRow {
 
 #[derive(Debug, Clone, FromRow)]
 pub struct WhaleLedTradeExitCandidate {
+    pub process_id: Option<Uuid>,
     pub position_id: Uuid,
     pub source_signal_id: Uuid,
     pub proxy_wallet: Option<String>,
@@ -69,6 +70,28 @@ pub struct WhaleLedTradeExitCandidate {
     pub exit_timestamp: DateTime<Utc>,
     pub reference_exit_price: Decimal,
     pub exit_size: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradingProcessResetReport {
+    pub process_id: Uuid,
+    pub process_name: String,
+    pub orders_deleted: u64,
+    pub fills_deleted: u64,
+    pub signal_candidates_deleted: u64,
+    pub copy_trade_signals_deleted: u64,
+    pub trade_marks_deleted: u64,
+    pub trade_exits_deleted: u64,
+    pub trade_positions_deleted: u64,
+    pub wallet_performance_deleted: u64,
+    pub process_events_deleted: u64,
+    pub copy_trade_backtest_results_deleted: u64,
+    pub copy_trade_backtest_runs_deleted: u64,
+    pub copy_trade_backtests_deleted: u64,
+    pub backfill_job_events_deleted: u64,
+    pub backfill_jobs_deleted: u64,
+    pub whale_poll_checkpoints_deleted: u64,
+    pub process_stopped: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -634,6 +657,367 @@ impl Store {
         .await
         .context("failed to stop trading process")?;
         row.map(trading_process_from_row).transpose()
+    }
+
+    pub async fn reset_trading_process_data(
+        &self,
+        process_id: Uuid,
+    ) -> Result<Option<TradingProcessResetReport>> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin trading process reset transaction")?;
+        let process_name = sqlx::query_scalar::<_, String>(
+            r#"
+            UPDATE polymarket.trading_processes
+            SET status = 'stopped',
+                enabled = false,
+                stopped_at = now(),
+                updated_at = now()
+            WHERE process_id = $1
+            RETURNING name
+            "#,
+        )
+        .bind(process_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("failed to stop trading process for reset")?;
+        let Some(process_name) = process_name else {
+            tx.rollback()
+                .await
+                .context("failed to roll back missing process reset")?;
+            return Ok(None);
+        };
+
+        sqlx::query("DROP TABLE IF EXISTS pg_temp.reset_process_positions")
+            .execute(&mut *tx)
+            .await
+            .context("failed to drop reset positions temp table")?;
+        sqlx::query("DROP TABLE IF EXISTS pg_temp.reset_process_signals")
+            .execute(&mut *tx)
+            .await
+            .context("failed to drop reset signals temp table")?;
+        sqlx::query("DROP TABLE IF EXISTS pg_temp.reset_process_orders")
+            .execute(&mut *tx)
+            .await
+            .context("failed to drop reset orders temp table")?;
+        sqlx::query("DROP TABLE IF EXISTS pg_temp.reset_process_jobs")
+            .execute(&mut *tx)
+            .await
+            .context("failed to drop reset jobs temp table")?;
+        sqlx::query("DROP TABLE IF EXISTS pg_temp.reset_process_backtests")
+            .execute(&mut *tx)
+            .await
+            .context("failed to drop reset backtests temp table")?;
+        sqlx::query(
+            r#"
+            CREATE TEMP TABLE reset_process_signals ON COMMIT DROP AS
+            SELECT signal_id
+            FROM polymarket.signal_candidates
+            WHERE process_id = $1
+            UNION
+            SELECT signal_id
+            FROM polymarket.copy_trade_signals
+            WHERE process_id = $1
+            UNION
+            SELECT source_signal_id
+            FROM polymarket.trade_positions
+            WHERE process_id IS NULL
+              AND execution_mode = 'sim'
+            "#,
+        )
+        .bind(process_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to stage reset signals")?;
+        sqlx::query(
+            r#"
+            CREATE TEMP TABLE reset_process_positions ON COMMIT DROP AS
+            SELECT position_id
+            FROM polymarket.trade_positions
+            WHERE process_id = $1
+               OR (
+                 process_id IS NULL
+                 AND execution_mode = 'sim'
+               )
+               OR (
+                 process_id IS NULL
+                 AND source_signal_id IN (SELECT signal_id FROM reset_process_signals)
+               )
+            "#,
+        )
+        .bind(process_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to stage reset positions")?;
+        sqlx::query(
+            r#"
+            CREATE TEMP TABLE reset_process_orders ON COMMIT DROP AS
+            SELECT DISTINCT o.order_id
+            FROM polymarket.orders o
+            WHERE o.process_id = $1
+               OR o.raw_payload #>> '{request,process_id}' = $1::text
+               OR o.raw_payload #>> '{request,metadata,process_id}' = $1::text
+               OR (
+                 o.raw_payload #>> '{request,signal_id}' ~* '^[0-9a-f-]{36}$'
+                 AND (o.raw_payload #>> '{request,signal_id}')::uuid IN (
+                   SELECT signal_id FROM reset_process_signals
+                 )
+               )
+               OR EXISTS (
+                 SELECT 1
+                 FROM reset_process_positions p
+                 WHERE o.raw_payload #>> '{request,metadata,position_id}' = p.position_id::text
+               )
+               OR EXISTS (
+                 SELECT 1
+                 FROM polymarket.trade_exits te
+                 JOIN reset_process_positions p ON p.position_id = te.position_id
+                 WHERE te.metadata #>> '{close_order_id}' = o.order_id
+               )
+            "#,
+        )
+        .bind(process_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to stage reset orders")?;
+        sqlx::query(
+            r#"
+            CREATE TEMP TABLE reset_process_jobs ON COMMIT DROP AS
+            SELECT job_id
+            FROM polymarket.backfill_jobs
+            WHERE request ->> 'process_id' = $1::text
+            "#,
+        )
+        .bind(process_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to stage reset jobs")?;
+        sqlx::query(
+            r#"
+            CREATE TEMP TABLE reset_process_backtests ON COMMIT DROP AS
+            SELECT backtest_id
+            FROM polymarket.copy_trade_backtest_runs
+            WHERE job_id IN (SELECT job_id FROM reset_process_jobs)
+               OR config #>> '{request,process_id}' = $1::text
+               OR config ->> 'process_id' = $1::text
+            "#,
+        )
+        .bind(process_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to stage reset backtests")?;
+
+        let copy_trade_backtest_results_deleted = sqlx::query(
+            r#"
+            DELETE FROM polymarket.copy_trade_backtest_results r
+            WHERE EXISTS (
+              SELECT 1 FROM reset_process_backtests b WHERE b.backtest_id = r.backtest_id
+            )
+            "#,
+        )
+        .execute(&mut *tx)
+        .await
+        .context("failed to delete reset copy trade backtest results")?
+        .rows_affected();
+        let copy_trade_backtest_runs_deleted = sqlx::query(
+            r#"
+            DELETE FROM polymarket.copy_trade_backtest_runs r
+            WHERE EXISTS (
+              SELECT 1 FROM reset_process_backtests b WHERE b.backtest_id = r.backtest_id
+            )
+            "#,
+        )
+        .execute(&mut *tx)
+        .await
+        .context("failed to delete reset copy trade backtest runs")?
+        .rows_affected();
+        let copy_trade_backtests_deleted = sqlx::query(
+            r#"
+            DELETE FROM polymarket.copy_trade_backtests b
+            WHERE b.job_id IN (SELECT job_id FROM reset_process_jobs)
+               OR b.config #>> '{request,process_id}' = $1::text
+               OR b.config ->> 'process_id' = $1::text
+            "#,
+        )
+        .bind(process_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to delete reset copy trade backtests")?
+        .rows_affected();
+        let backfill_job_events_deleted = sqlx::query(
+            r#"
+            DELETE FROM polymarket.backfill_job_events e
+            WHERE EXISTS (
+              SELECT 1 FROM reset_process_jobs j WHERE j.job_id = e.job_id
+            )
+            "#,
+        )
+        .execute(&mut *tx)
+        .await
+        .context("failed to delete reset backfill job events")?
+        .rows_affected();
+
+        let trade_marks_deleted = sqlx::query(
+            r#"
+            DELETE FROM polymarket.trade_marks tm
+            WHERE tm.process_id = $1
+               OR EXISTS (
+                 SELECT 1 FROM reset_process_positions p WHERE p.position_id = tm.position_id
+               )
+            "#,
+        )
+        .bind(process_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to delete reset trade marks")?
+        .rows_affected();
+        let trade_exits_deleted = sqlx::query(
+            r#"
+            DELETE FROM polymarket.trade_exits te
+            WHERE te.process_id = $1
+               OR EXISTS (
+                 SELECT 1 FROM reset_process_positions p WHERE p.position_id = te.position_id
+               )
+               OR te.metadata #>> '{process_id}' = $1::text
+            "#,
+        )
+        .bind(process_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to delete reset trade exits")?
+        .rows_affected();
+        let fills_deleted = sqlx::query(
+            r#"
+            DELETE FROM polymarket.fills f
+            WHERE f.process_id = $1
+               OR f.raw_payload ->> 'process_id' = $1::text
+               OR EXISTS (
+                 SELECT 1 FROM reset_process_orders o WHERE o.order_id = f.order_id
+               )
+               OR EXISTS (
+                 SELECT 1 FROM reset_process_orders o WHERE o.order_id = f.raw_payload ->> 'order_id'
+               )
+            "#,
+        )
+        .bind(process_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to delete reset fills")?
+        .rows_affected();
+        let orders_deleted = sqlx::query(
+            r#"
+            DELETE FROM polymarket.orders o
+            WHERE EXISTS (
+              SELECT 1 FROM reset_process_orders staged WHERE staged.order_id = o.order_id
+            )
+            "#,
+        )
+        .execute(&mut *tx)
+        .await
+        .context("failed to delete reset orders")?
+        .rows_affected();
+        let trade_positions_deleted = sqlx::query(
+            r#"
+            DELETE FROM polymarket.trade_positions p
+            WHERE EXISTS (
+              SELECT 1 FROM reset_process_positions staged WHERE staged.position_id = p.position_id
+            )
+            "#,
+        )
+        .execute(&mut *tx)
+        .await
+        .context("failed to delete reset trade positions")?
+        .rows_affected();
+        let copy_trade_signals_deleted = sqlx::query(
+            r#"
+            DELETE FROM polymarket.copy_trade_signals
+            WHERE process_id = $1
+               OR (
+                 process_id IS NULL
+                 AND signal_id IN (SELECT signal_id FROM reset_process_signals)
+               )
+            "#,
+        )
+        .bind(process_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to delete reset copy trade signals")?
+        .rows_affected();
+        let signal_candidates_deleted = sqlx::query(
+            r#"
+            DELETE FROM polymarket.signal_candidates
+            WHERE process_id = $1
+               OR (
+                 process_id IS NULL
+                 AND signal_id IN (SELECT signal_id FROM reset_process_signals)
+               )
+            "#,
+        )
+        .bind(process_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to delete reset signal candidates")?
+        .rows_affected();
+        let wallet_performance_deleted =
+            sqlx::query("DELETE FROM polymarket.wallet_trade_performance WHERE process_id = $1")
+                .bind(process_id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to delete reset wallet performance")?
+                .rows_affected();
+        let process_events_deleted =
+            sqlx::query("DELETE FROM polymarket.trading_process_events WHERE process_id = $1")
+                .bind(process_id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to delete reset process events")?
+                .rows_affected();
+        let backfill_jobs_deleted = sqlx::query(
+            r#"
+            DELETE FROM polymarket.backfill_jobs j
+            WHERE EXISTS (
+              SELECT 1 FROM reset_process_jobs staged WHERE staged.job_id = j.job_id
+            )
+            "#,
+        )
+        .execute(&mut *tx)
+        .await
+        .context("failed to delete reset backfill jobs")?
+        .rows_affected();
+        let whale_poll_checkpoints_deleted = sqlx::query(
+            "DELETE FROM polymarket.whale_poll_checkpoints WHERE checkpoint_name = $1::text",
+        )
+        .bind(process_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to delete reset whale poll checkpoint")?
+        .rows_affected();
+
+        tx.commit()
+            .await
+            .context("failed to commit trading process reset")?;
+        Ok(Some(TradingProcessResetReport {
+            process_id,
+            process_name,
+            orders_deleted,
+            fills_deleted,
+            signal_candidates_deleted,
+            copy_trade_signals_deleted,
+            trade_marks_deleted,
+            trade_exits_deleted,
+            trade_positions_deleted,
+            wallet_performance_deleted,
+            process_events_deleted,
+            copy_trade_backtest_results_deleted,
+            copy_trade_backtest_runs_deleted,
+            copy_trade_backtests_deleted,
+            backfill_job_events_deleted,
+            backfill_jobs_deleted,
+            whale_poll_checkpoints_deleted,
+            process_stopped: true,
+        }))
     }
 
     pub async fn insert_market(&self, market: &Market) -> Result<()> {
@@ -1332,6 +1716,7 @@ impl Store {
         let rows = sqlx::query_as::<_, WhaleLedTradeExitCandidate>(
             r#"
             SELECT
+              p.process_id,
               p.position_id,
               p.source_signal_id,
               p.proxy_wallet,
@@ -1466,12 +1851,16 @@ impl Store {
         candidate: &WhaleLedTradeExitCandidate,
         report: &OrderPlanReport,
     ) -> Result<u64> {
-        let filled_size: Decimal = report.fills.iter().map(|fill| fill.size).sum();
+        let applied_fills = cap_fills_to_size(&report.fills, candidate.open_size);
+        let filled_size: Decimal = applied_fills.iter().map(|fill| fill.size).sum();
         if filled_size <= Decimal::ZERO {
             return Ok(0);
         }
-        let exit_fee: Decimal = report.fills.iter().map(|fill| fill.fee).sum();
-        let exit_notional: Decimal = report.fills.iter().map(|fill| fill.price * fill.size).sum();
+        let exit_fee: Decimal = applied_fills.iter().map(|fill| fill.fee).sum();
+        let exit_notional: Decimal = applied_fills
+            .iter()
+            .map(|fill| fill.price * fill.size)
+            .sum();
         let exit_price = exit_notional / filled_size;
         let entry_value = candidate.entry_price * filled_size;
         let gross_pnl = if candidate.side == "buy" {
@@ -1492,8 +1881,7 @@ impl Store {
             (exit_notional - reference_notional).max(Decimal::ZERO)
         };
         let close_order_id = report.orders.first().map(|order| order.order_id.clone());
-        let fill_payloads: Vec<_> = report
-            .fills
+        let fill_payloads: Vec<_> = applied_fills
             .iter()
             .map(|fill| serde_json::to_value(fill))
             .collect::<std::result::Result<_, _>>()?;
@@ -1504,11 +1892,11 @@ impl Store {
             "reference_exit_price": candidate.reference_exit_price,
             "reference_exit_notional": reference_notional,
             "allocated_entry_fee": allocated_entry_fee,
-            "execution_source": report
-                .fills
+            "execution_source": applied_fills
                 .first()
                 .map(|fill| serialized_name(&fill.source).unwrap_or_else(|_| "unknown".to_string()))
                 .unwrap_or_else(|| "unknown".to_string()),
+            "applied_fill_size": filled_size,
             "fills": fill_payloads
         });
 
@@ -1517,22 +1905,51 @@ impl Store {
             .begin()
             .await
             .context("failed to begin executable exit transaction")?;
+        let duplicate_exists = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT EXISTS (
+              SELECT 1
+              FROM polymarket.trade_exits
+              WHERE position_id = $1
+                AND is_synthetic = false
+                AND (
+                  exit_source_trade_id = $2
+                  OR ($3::text IS NOT NULL AND metadata #>> '{close_order_id}' = $3)
+                  OR metadata #>> '{reference_exit_source_trade_id}' = $2::text
+                )
+            )
+            "#,
+        )
+        .bind(candidate.position_id)
+        .bind(candidate.exit_source_trade_id)
+        .bind(close_order_id.as_deref())
+        .fetch_one(&mut *tx)
+        .await
+        .context("failed to check duplicate executable trade exit")?;
+        if duplicate_exists {
+            tx.commit()
+                .await
+                .context("failed to commit duplicate executable exit transaction")?;
+            return Ok(0);
+        }
+
         let inserted = sqlx::query(
             r#"
             INSERT INTO polymarket.trade_exits (
-              position_id, source_signal_id, timestamp_utc, exit_type, is_synthetic,
+              position_id, process_id, source_signal_id, timestamp_utc, exit_type, is_synthetic,
               exit_trigger_wallet, exit_source_trade_id, exit_price, exit_size,
               exit_notional, exit_fee, slippage_cost, gross_pnl, net_pnl, roi, metadata
             )
             VALUES (
-              $1,$2,$3,$4,false,$5,$6,$7,$8,$9,$10,$11,$12,$13,
-              CASE WHEN $14 > 0 THEN $13 / $14 ELSE 0 END,
-              $15
+              $1,$2,$3,$4,$5,false,$6,$7,$8,$9,$10,$11,$12,$13,$14,
+              CASE WHEN $15 > 0 THEN $14 / $15 ELSE 0 END,
+              $16
             )
             ON CONFLICT (position_id, exit_source_trade_id) DO NOTHING
             "#,
         )
         .bind(candidate.position_id)
+        .bind(candidate.process_id)
         .bind(candidate.source_signal_id)
         .bind(candidate.exit_timestamp)
         .bind(if filled_size < candidate.open_size {
@@ -1541,7 +1958,7 @@ impl Store {
             "whale_exit"
         })
         .bind(candidate.proxy_wallet.as_deref())
-        .bind(Option::<Uuid>::None)
+        .bind(candidate.exit_source_trade_id)
         .bind(exit_price)
         .bind(filled_size)
         .bind(exit_notional)
@@ -2817,6 +3234,32 @@ impl Store {
     }
 }
 
+fn cap_fills_to_size(fills: &[FillRecord], max_size: Decimal) -> Vec<FillRecord> {
+    if max_size <= Decimal::ZERO {
+        return Vec::new();
+    }
+    let mut remaining = max_size;
+    let mut capped = Vec::new();
+    for fill in fills {
+        if remaining <= Decimal::ZERO {
+            break;
+        }
+        let take = fill.size.min(remaining);
+        if take <= Decimal::ZERO {
+            continue;
+        }
+        let mut capped_fill = fill.clone();
+        if take < fill.size && fill.size > Decimal::ZERO {
+            let ratio = take / fill.size;
+            capped_fill.size = take;
+            capped_fill.fee = fill.fee * ratio;
+        }
+        remaining -= take;
+        capped.push(capped_fill);
+    }
+    capped
+}
+
 #[derive(sqlx::FromRow)]
 struct BackfillJobRow {
     job_id: Uuid,
@@ -3041,4 +3484,52 @@ fn order_from_db_row(row: OrderDbRow) -> Result<OrderRecord> {
     order.created_at = row.created_at;
     order.updated_at = row.updated_at;
     Ok(order)
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use rust_decimal_macros::dec;
+    use uuid::Uuid;
+
+    use crate::{
+        models::{FillRecord, FillSource},
+        store::cap_fills_to_size,
+    };
+
+    #[test]
+    fn cap_fills_to_size_prorates_the_terminal_fill() {
+        let fills = vec![
+            FillRecord {
+                fill_id: Uuid::new_v4(),
+                process_id: Some(Uuid::new_v4()),
+                order_id: "sim-1".to_string(),
+                token_id: "token-1".to_string(),
+                price: dec!(0.50),
+                size: dec!(3),
+                fee: dec!(0.03),
+                source: FillSource::Sim,
+                filled_at: Utc::now(),
+            },
+            FillRecord {
+                fill_id: Uuid::new_v4(),
+                process_id: Some(Uuid::new_v4()),
+                order_id: "sim-1".to_string(),
+                token_id: "token-1".to_string(),
+                price: dec!(0.60),
+                size: dec!(4),
+                fee: dec!(0.04),
+                source: FillSource::Sim,
+                filled_at: Utc::now(),
+            },
+        ];
+
+        let capped = cap_fills_to_size(&fills, dec!(5));
+
+        assert_eq!(capped.len(), 2);
+        assert_eq!(capped[0].size, dec!(3));
+        assert_eq!(capped[0].fee, dec!(0.03));
+        assert_eq!(capped[1].size, dec!(2));
+        assert_eq!(capped[1].fee, dec!(0.02));
+    }
 }

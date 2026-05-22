@@ -143,7 +143,7 @@ fn close_order_request(candidate: &WhaleLedTradeExitCandidate) -> OrderRequest {
     OrderRequest {
         client_order_id: deterministic_client_order_id(&ClientOrderIdSeed {
             strategy_version: "whale-follow-v1",
-            process_id: None,
+            process_id: candidate.process_id,
             source_id: candidate.position_id,
             purpose: "whale_led_exit",
             market_id: candidate.market_id.as_deref().unwrap_or("unknown"),
@@ -154,7 +154,7 @@ fn close_order_request(candidate: &WhaleLedTradeExitCandidate) -> OrderRequest {
                 .normalize()
                 .to_string(),
         }),
-        process_id: None,
+        process_id: candidate.process_id,
         market_id: candidate
             .market_id
             .clone()
@@ -169,6 +169,7 @@ fn close_order_request(candidate: &WhaleLedTradeExitCandidate) -> OrderRequest {
             "purpose": "whale_led_exit",
             "position_id": candidate.position_id,
             "source_signal_id": candidate.source_signal_id,
+            "process_id": candidate.process_id,
             "exit_source_trade_id": candidate.exit_source_trade_id,
             "reference_exit_price": candidate.reference_exit_price,
             "reference_exit_timestamp": candidate.exit_timestamp,
@@ -191,9 +192,11 @@ mod tests {
     #[test]
     fn close_order_uses_opposite_side_and_reference_metadata() {
         let position_id = Uuid::new_v4();
+        let process_id = Uuid::new_v4();
         let source_signal_id = Uuid::new_v4();
         let exit_source_trade_id = Uuid::new_v4();
         let candidate = WhaleLedTradeExitCandidate {
+            process_id: Some(process_id),
             position_id,
             source_signal_id,
             proxy_wallet: Some("0xabc".to_string()),
@@ -215,10 +218,12 @@ mod tests {
 
         assert_eq!(request.side, OrderSide::Sell);
         assert_eq!(request.signal_id, None);
+        assert_eq!(request.process_id, Some(process_id));
         assert_eq!(request.price, dec!(0.50));
         assert_eq!(request.size, dec!(20));
         assert_eq!(request.metadata["purpose"], "whale_led_exit");
         assert_eq!(request.metadata["position_id"], position_id.to_string());
+        assert_eq!(request.metadata["process_id"], process_id.to_string());
         assert_eq!(
             request.metadata["exit_source_trade_id"],
             exit_source_trade_id.to_string()

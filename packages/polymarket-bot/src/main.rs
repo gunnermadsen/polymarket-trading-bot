@@ -22,8 +22,8 @@ use polymarket_bot::{
     http as control_http,
     http::{
         BackfillJobResponse, BackfillJobsResponse, CancelBackfillJobResponse, ControlApi,
-        HttpError, MetricsResponse, TradingProcessResponse, TradingProcessStatusResponse,
-        TradingProcessesResponse,
+        HttpError, MetricsResponse, TradingProcessResetResponse, TradingProcessResponse,
+        TradingProcessStatusResponse, TradingProcessesResponse,
     },
     models::{
         CopyTradeProcessConfig, ProcessExecutionConfig, TradingProcess, TradingProcessConfig,
@@ -701,6 +701,31 @@ impl ControlApi for RuntimeControl {
             .map_err(|error| HttpError::internal(error.to_string()))?
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
         Ok(TradingProcessResponse { process })
+    }
+
+    async fn reset_trading_process_simulation(
+        &self,
+        process_id: uuid::Uuid,
+    ) -> Result<TradingProcessResetResponse, HttpError> {
+        let process = self
+            .store
+            .get_trading_process(process_id)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?
+            .ok_or_else(|| HttpError::not_found("trading process not found"))?;
+        let execution_mode = process.config.effective_execution().mode;
+        if execution_mode != "sim" {
+            return Err(HttpError::bad_request(
+                "only sim trading processes can be reset through this endpoint",
+            ));
+        }
+        let report = self
+            .store
+            .reset_trading_process_data(process_id)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?
+            .ok_or_else(|| HttpError::not_found("trading process not found"))?;
+        Ok(TradingProcessResetResponse { report })
     }
 }
 

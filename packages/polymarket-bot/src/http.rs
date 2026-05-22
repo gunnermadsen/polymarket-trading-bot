@@ -19,6 +19,7 @@ use crate::{
     backfill::BackfillMode,
     execution::LiveVenueStatus,
     models::{BackfillJob, BackfillJobStatus, TradingProcess, TradingProcessConfig},
+    store::TradingProcessResetReport,
 };
 
 const SERVICE_NAME: &str = "polymarket-bot";
@@ -177,6 +178,15 @@ pub trait ControlApi: Send + Sync + 'static {
     ) -> Result<TradingProcessResponse, HttpError> {
         Err(HttpError::not_implemented(
             "trading processes are not wired",
+        ))
+    }
+
+    async fn reset_trading_process_simulation(
+        &self,
+        _process_id: Uuid,
+    ) -> Result<TradingProcessResetResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading process reset is not wired",
         ))
     }
 }
@@ -418,6 +428,10 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
             "/trading-processes/:process_id/stop",
             post(stop_trading_process),
         )
+        .route(
+            "/trading-processes/:process_id/reset-simulation",
+            post(reset_trading_process_simulation),
+        )
         .route_layer(from_fn_with_state(admin_auth, require_admin_bearer));
 
     Router::new()
@@ -655,6 +669,17 @@ async fn stop_trading_process(
         .map(Json)
 }
 
+async fn reset_trading_process_simulation(
+    State(state): State<HttpState>,
+    Path(process_id): Path<Uuid>,
+) -> Result<Json<TradingProcessResetResponse>, HttpError> {
+    state
+        .control
+        .reset_trading_process_simulation(process_id)
+        .await
+        .map(Json)
+}
+
 async fn require_admin_bearer(
     State(auth): State<AdminAuth>,
     headers: HeaderMap,
@@ -847,6 +872,11 @@ pub struct TradingProcessesResponse {
 pub struct TradingProcessStatusResponse {
     pub process_id: Uuid,
     pub status: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradingProcessResetResponse {
+    pub report: TradingProcessResetReport,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

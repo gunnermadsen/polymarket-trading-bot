@@ -191,6 +191,12 @@ impl ExecutionVenue for SimVenue {
     async fn submit_order(&self, mut request: OrderRequest) -> Result<OrderRecord> {
         let now = Utc::now();
         let order_id = format!("{}-{}", self.order_prefix, request.client_order_id);
+        {
+            let state = self.state.lock().await;
+            if let Some(order) = state.orders.iter().find(|order| order.order_id == order_id) {
+                return Ok(order.clone());
+            }
+        }
         let exit_execution = self.executable_exit_fills(&order_id, &request, now).await?;
         let executable_fills = if let Some(exit_execution) = exit_execution {
             request.metadata = merge_json(request.metadata, exit_execution.metadata);

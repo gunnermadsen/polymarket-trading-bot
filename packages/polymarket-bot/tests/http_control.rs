@@ -17,6 +17,7 @@ use polymarket_bot::{
         BackfillJob, BackfillJobStatus, ProcessExecutionConfig, TradingProcess,
         TradingProcessConfig,
     },
+    store::TradingProcessResetReport,
 };
 use rust_decimal::Decimal;
 use serde_json::Value;
@@ -356,6 +357,34 @@ impl ControlApi for FakeControlApi {
             }),
         })
     }
+
+    async fn reset_trading_process_simulation(
+        &self,
+        process_id: Uuid,
+    ) -> Result<http::TradingProcessResetResponse, HttpError> {
+        Ok(http::TradingProcessResetResponse {
+            report: TradingProcessResetReport {
+                process_id,
+                process_name: "paper-canary".to_string(),
+                orders_deleted: 2,
+                fills_deleted: 4,
+                signal_candidates_deleted: 1,
+                copy_trade_signals_deleted: 1,
+                trade_marks_deleted: 3,
+                trade_exits_deleted: 2,
+                trade_positions_deleted: 1,
+                wallet_performance_deleted: 1,
+                process_events_deleted: 1,
+                copy_trade_backtest_results_deleted: 0,
+                copy_trade_backtest_runs_deleted: 0,
+                copy_trade_backtests_deleted: 0,
+                backfill_job_events_deleted: 0,
+                backfill_jobs_deleted: 0,
+                whale_poll_checkpoints_deleted: 1,
+                process_stopped: true,
+            },
+        })
+    }
 }
 
 #[tokio::test]
@@ -670,6 +699,29 @@ async fn authenticated_admin_can_manage_trading_processes() {
         .await
         .unwrap();
     assert_eq!(start_response.status(), StatusCode::OK);
+
+    let reset_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/admin/trading-processes/{process_id}/reset-simulation"
+                ))
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reset_response.status(), StatusCode::OK);
+    let reset_body = to_bytes(reset_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let reset_json: Value = serde_json::from_slice(&reset_body).unwrap();
+    assert_eq!(reset_json["report"]["process_id"], process_id);
+    assert_eq!(reset_json["report"]["orders_deleted"], 2);
+    assert_eq!(reset_json["report"]["process_stopped"], true);
 
     let stop_response = app
         .oneshot(
