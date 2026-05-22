@@ -22,6 +22,28 @@ apt_get_install() {
   apt-get install -y --no-install-recommends "$@"
 }
 
+configure_swap() {
+  if ! swapon --show=NAME --noheadings | grep -qx /swapfile; then
+    if [ ! -f /swapfile ]; then
+      fallocate -l 4G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=4096
+      chmod 0600 /swapfile
+      mkswap /swapfile
+    fi
+
+    swapon /swapfile
+  fi
+
+  grep -qE '^[[:space:]]*/swapfile[[:space:]]+none[[:space:]]+swap[[:space:]]' /etc/fstab \
+    || printf '/swapfile none swap sw 0 0\n' >> /etc/fstab
+
+  cat >/etc/sysctl.d/99-polymarket-swap.conf <<EOF
+vm.swappiness=10
+vm.vfs_cache_pressure=50
+EOF
+
+  sysctl --system >/dev/null
+}
+
 configure_apt_for_https_egress() {
   printf 'Acquire::ForceIPv4 "true";\n' >/etc/apt/apt.conf.d/99-force-ipv4
 
@@ -330,6 +352,7 @@ start_compose_app() {
 
 install_base_packages
 install_docker
+configure_swap
 
 install -d -m 0700 /root/polymarket
 SECRET_PATH="/root/polymarket/secret.json"
