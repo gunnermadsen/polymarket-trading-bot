@@ -14,9 +14,9 @@ use crate::{
         ObservedMarket, COPY_SCORE_VERSION,
     },
     data_api::{ClosedPositionsQuery, DataApiClient, TradesQuery},
-    execution::{execute_order_plan, ExecutionVenue},
+    execution::{execute_order_plan, ExecutionVenue, OrderPlan},
     models::{BackfillJobStatus, CopyTradeBacktestRun, DataApiClosedPosition, WhaleTrade},
-    store::Store,
+    store::{OrderbookSnapshot, Store, TradeMarkSourceFailure},
     trade_pnl::{refresh_trade_pnl_with_config, TradePnlConfig},
     wallets::{score_closed_position_performance, score_closed_position_wallets, score_wallets},
 };
@@ -517,6 +517,62 @@ mod tests {
 
         assert_eq!(wallets, vec!["0xaaa", "0xbbb", "0xccc"]);
     }
+
+    #[test]
+    fn entry_markability_requires_two_sided_book() {
+        let base = OrderbookSnapshot {
+            snapshot_id: Uuid::new_v4(),
+            timestamp_utc: Utc::now(),
+            market_id: Some("market".to_string()),
+            token_id: "token".to_string(),
+            best_bid: Some(dec!(0.49)),
+            best_ask: Some(dec!(0.51)),
+            tick_size: None,
+            stale_level_count: 0,
+            fresh_depth_bid: None,
+            fresh_depth_ask: None,
+            book: serde_json::json!({}),
+        };
+
+        assert_eq!(entry_mark_book_failure_reason(&base), None);
+
+        let mut missing_bid = base.clone();
+        missing_bid.best_bid = None;
+        assert_eq!(
+            entry_mark_book_failure_reason(&missing_bid),
+            Some("missing_best_bid")
+        );
+
+        let mut missing_ask = base.clone();
+        missing_ask.best_ask = None;
+        assert_eq!(
+            entry_mark_book_failure_reason(&missing_ask),
+            Some("missing_best_ask")
+        );
+
+        let mut empty = base;
+        empty.best_bid = None;
+        empty.best_ask = None;
+        assert_eq!(
+            entry_mark_book_failure_reason(&empty),
+            Some("empty_orderbook")
+        );
+    }
+
+    #[test]
+    fn entry_markability_classifies_clob_errors() {
+        let unavailable = anyhow::anyhow!("CLOB book response was not successful");
+        assert_eq!(
+            entry_mark_error_reason(&unavailable),
+            "clob_orderbook_unavailable"
+        );
+
+        let request_failed = anyhow::anyhow!("failed to request CLOB book for token abc");
+        assert_eq!(
+            entry_mark_error_reason(&request_failed),
+            "clob_orderbook_request_failed"
+        );
+    }
 }
 pub async fn run_copy_trade_signal_engine(
     store: &Store,
@@ -606,6 +662,18 @@ pub async fn run_copy_trade_signal_engine(
         let Some(plan) = decision.order_plan else {
             continue;
         };
+        if let Some(rejection) = ensure_order_plan_markable_at_entry(store, clob, &plan).await? {
+            summary.rejections += 1;
+            store
+                .update_copy_trade_signal_status(
+                    decision.copy_signal.signal_id,
+                    decision.copy_signal.timestamp_utc,
+                    "rejected",
+                    rejection,
+                )
+                .await?;
+            continue;
+        }
         let execution = execute_order_plan(venue, plan).await?;
         summary.orders_inserted += execution.orders.len();
         summary.fills_inserted += execution.fills.len();
@@ -628,6 +696,162 @@ pub async fn run_copy_trade_signal_engine(
     }
 
     Ok(summary)
+}
+
+async fn ensure_order_plan_markable_at_entry(
+    store: &Store,
+    clob: Option<&ClobClient>,
+    plan: &OrderPlan,
+) -> Result<Option<serde_json::Value>> {
+    let Some(clob) = clob else {
+        for request in &plan.orders {
+            record_entry_mark_failure(
+                store,
+                request.process_id,
+                &request.market_id,
+                &request.token_id,
+                "missing_clob_client",
+                serde_json::json!({
+                    "operation": "copy_trade_entry_markability",
+                    "client_order_id": request.client_order_id,
+                    "plan_id": plan.plan_id
+                }),
+            )
+            .await?;
+        }
+        return Ok(Some(serde_json::json!({
+            "status": "rejected",
+            "reject_reason": "unmarkable_at_entry",
+            "mark_failure_reason": "missing_clob_client",
+            "plan_id": plan.plan_id
+        })));
+    };
+
+    for request in &plan.orders {
+        let fetched = clob.fetch_orderbook(&request.token_id).await;
+        let book = match fetched {
+            Ok(book) => book,
+            Err(error) => {
+                let reason = entry_mark_error_reason(&error);
+                record_entry_mark_failure(
+                    store,
+                    request.process_id,
+                    &request.market_id,
+                    &request.token_id,
+                    reason,
+                    serde_json::json!({
+                        "operation": "copy_trade_entry_markability",
+                        "client_order_id": request.client_order_id,
+                        "plan_id": plan.plan_id,
+                        "error": error.to_string(),
+                        "error_chain": format!("{error:#}")
+                    }),
+                )
+                .await?;
+                return Ok(Some(serde_json::json!({
+                    "status": "rejected",
+                    "reject_reason": "unmarkable_at_entry",
+                    "mark_failure_reason": reason,
+                    "client_order_id": request.client_order_id,
+                    "token_id": request.token_id
+                })));
+            }
+        };
+
+        let snapshot = OrderbookSnapshot::from_local_book(
+            Some(request.market_id.clone()),
+            request.token_id.clone(),
+            None,
+            &book,
+        )?;
+        store.insert_orderbook_snapshot(&snapshot).await?;
+        if let Some(reason) = entry_mark_book_failure_reason(&snapshot) {
+            record_entry_mark_failure(
+                store,
+                request.process_id,
+                &request.market_id,
+                &request.token_id,
+                reason,
+                serde_json::json!({
+                    "operation": "copy_trade_entry_markability",
+                    "client_order_id": request.client_order_id,
+                    "plan_id": plan.plan_id,
+                    "best_bid": snapshot.best_bid,
+                    "best_ask": snapshot.best_ask,
+                    "snapshot_id": snapshot.snapshot_id,
+                    "snapshot_timestamp": snapshot.timestamp_utc
+                }),
+            )
+            .await?;
+            return Ok(Some(serde_json::json!({
+                "status": "rejected",
+                "reject_reason": "unmarkable_at_entry",
+                "mark_failure_reason": reason,
+                "client_order_id": request.client_order_id,
+                "token_id": request.token_id,
+                "best_bid": snapshot.best_bid,
+                "best_ask": snapshot.best_ask
+            })));
+        }
+        store
+            .resolve_trade_mark_source_failure(
+                request.process_id,
+                None,
+                &request.token_id,
+                "entry_orderbook_precheck",
+            )
+            .await?;
+    }
+
+    Ok(None)
+}
+
+async fn record_entry_mark_failure(
+    store: &Store,
+    process_id: Option<Uuid>,
+    market_id: &str,
+    token_id: &str,
+    reason: &str,
+    mut metadata: serde_json::Value,
+) -> Result<()> {
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("market_id".to_string(), serde_json::json!(market_id));
+        object.insert("token_id".to_string(), serde_json::json!(token_id));
+        object.insert("attempted_at".to_string(), serde_json::json!(Utc::now()));
+    }
+    store
+        .upsert_trade_mark_source_failure(&TradeMarkSourceFailure {
+            process_id,
+            position_id: None,
+            token_id: token_id.to_string(),
+            market_id: Some(market_id.to_string()),
+            failure_source: "entry_orderbook_precheck".to_string(),
+            failure_reason: reason.to_string(),
+            metadata,
+        })
+        .await
+}
+
+fn entry_mark_book_failure_reason(snapshot: &OrderbookSnapshot) -> Option<&'static str> {
+    match (snapshot.best_bid, snapshot.best_ask) {
+        (Some(_), Some(_)) => None,
+        (None, Some(_)) => Some("missing_best_bid"),
+        (Some(_), None) => Some("missing_best_ask"),
+        (None, None) => Some("empty_orderbook"),
+    }
+}
+
+fn entry_mark_error_reason(error: &anyhow::Error) -> &'static str {
+    let chain = format!("{error:#}");
+    if chain.contains("CLOB book response was not successful") {
+        "clob_orderbook_unavailable"
+    } else if chain.contains("failed to request CLOB book") {
+        "clob_orderbook_request_failed"
+    } else if chain.contains("failed to decode CLOB book") {
+        "clob_orderbook_decode_failed"
+    } else {
+        "entry_orderbook_precheck_failed"
+    }
 }
 
 pub fn calibrate_copy_trade_thresholds(

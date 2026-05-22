@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::{Duration, Utc};
 use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::time::Duration as StdDuration;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -10,7 +11,7 @@ use crate::{
     execution::{execute_order_plan, ExecutionVenue, OrderPlan},
     idempotency::{deterministic_client_order_id, ClientOrderIdSeed},
     models::{OrderRequest, OrderSide, OrderType},
-    store::{OrderbookSnapshot, Store, WhaleLedTradeExitCandidate},
+    store::{OrderbookSnapshot, Store, TradeMarkSourceFailure, WhaleLedTradeExitCandidate},
 };
 
 #[derive(Debug, Clone)]
@@ -19,6 +20,9 @@ pub struct TradePnlConfig {
     pub mark_token_refresh_limit: usize,
     pub mark_refresh_concurrency: usize,
     pub max_orderbook_mark_age: Duration,
+    pub mark_failure_backoff: Duration,
+    pub mark_refresh_retry_attempts: usize,
+    pub mark_refresh_retry_delay: StdDuration,
 }
 
 impl Default for TradePnlConfig {
@@ -28,8 +32,17 @@ impl Default for TradePnlConfig {
             mark_token_refresh_limit: 100,
             mark_refresh_concurrency: 8,
             max_orderbook_mark_age: Duration::minutes(15),
+            mark_failure_backoff: Duration::minutes(5),
+            mark_refresh_retry_attempts: 2,
+            mark_refresh_retry_delay: StdDuration::from_millis(250),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MarkOrderbookRefreshReport {
+    pub snapshots_inserted: u64,
+    pub failures: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -41,6 +54,7 @@ pub struct TradePnlRefreshReport {
     pub exit_fills_inserted: u64,
     pub closed_marks_cleared: u64,
     pub mark_orderbook_snapshots_inserted: u64,
+    pub mark_orderbook_refresh_failures: u64,
     pub marks_written: u64,
     pub wallets_refreshed: u64,
 }
@@ -64,8 +78,7 @@ pub async fn refresh_trade_pnl_with_config(
         .await?;
     let exit_execution = execute_whale_led_trade_exits(store, venue, config).await?;
     let closed_marks_cleared = store.clear_closed_trade_position_unrealized_pnl().await?;
-    let mark_orderbook_snapshots_inserted =
-        refresh_open_position_orderbook_marks(store, clob, config).await?;
+    let mark_orderbook_refresh = refresh_open_position_orderbook_marks(store, clob, config).await?;
     let marks_written = store.mark_open_trade_positions().await?;
     let wallets_refreshed = store.refresh_wallet_trade_performance().await?;
     Ok(TradePnlRefreshReport {
@@ -75,7 +88,8 @@ pub async fn refresh_trade_pnl_with_config(
         exit_orders_submitted: exit_execution.exit_orders_submitted,
         exit_fills_inserted: exit_execution.exit_fills_inserted,
         closed_marks_cleared,
-        mark_orderbook_snapshots_inserted,
+        mark_orderbook_snapshots_inserted: mark_orderbook_refresh.snapshots_inserted,
+        mark_orderbook_refresh_failures: mark_orderbook_refresh.failures,
         marks_written,
         wallets_refreshed,
     })
@@ -99,8 +113,7 @@ pub async fn mark_trade_pnl_now_with_config(
         .await?;
     let exit_execution = execute_whale_led_trade_exits(store, venue, config).await?;
     let closed_marks_cleared = store.clear_closed_trade_position_unrealized_pnl().await?;
-    let mark_orderbook_snapshots_inserted =
-        refresh_open_position_orderbook_marks(store, clob, config).await?;
+    let mark_orderbook_refresh = refresh_open_position_orderbook_marks(store, clob, config).await?;
     let marks_written = store.mark_open_trade_positions().await?;
     let wallets_refreshed = store.refresh_wallet_trade_performance().await?;
     Ok(TradePnlRefreshReport {
@@ -110,7 +123,8 @@ pub async fn mark_trade_pnl_now_with_config(
         exit_orders_submitted: exit_execution.exit_orders_submitted,
         exit_fills_inserted: exit_execution.exit_fills_inserted,
         closed_marks_cleared,
-        mark_orderbook_snapshots_inserted,
+        mark_orderbook_snapshots_inserted: mark_orderbook_refresh.snapshots_inserted,
+        mark_orderbook_refresh_failures: mark_orderbook_refresh.failures,
         marks_written,
         wallets_refreshed,
     })
@@ -120,38 +134,79 @@ async fn refresh_open_position_orderbook_marks(
     store: &Store,
     clob: Option<&ClobClient>,
     config: &TradePnlConfig,
-) -> Result<u64> {
+) -> Result<MarkOrderbookRefreshReport> {
     let Some(clob) = clob else {
-        return Ok(0);
+        return Ok(MarkOrderbookRefreshReport::default());
     };
     let tokens = store
         .open_trade_position_mark_tokens(
             config.mark_token_refresh_limit as i64,
             config.max_orderbook_mark_age,
+            config.mark_failure_backoff,
         )
         .await?;
     if tokens.is_empty() {
-        return Ok(0);
+        return Ok(MarkOrderbookRefreshReport::default());
     }
 
     let concurrency = config.mark_refresh_concurrency.max(1);
     let mut snapshots = stream::iter(tokens)
         .map(|token| async move {
             let token_id = token.token_id.clone();
-            let book = clob.fetch_orderbook(&token_id).await?;
-            let snapshot =
-                OrderbookSnapshot::from_local_book(token.market_id, token.token_id, None, &book)?;
-            store.insert_orderbook_snapshot(&snapshot).await?;
-            Ok::<u64, anyhow::Error>(1)
+            let result = async {
+                let book = fetch_orderbook_with_retry(
+                    clob,
+                    &token_id,
+                    config.mark_refresh_retry_attempts,
+                    config.mark_refresh_retry_delay,
+                )
+                .await?;
+                let snapshot = OrderbookSnapshot::from_local_book(
+                    token.market_id.clone(),
+                    token.token_id.clone(),
+                    None,
+                    &book,
+                )?;
+                store.insert_orderbook_snapshot(&snapshot).await?;
+                store
+                    .resolve_trade_mark_source_failure(
+                        token.process_id,
+                        None,
+                        &token.token_id,
+                        "mark_orderbook_refresh",
+                    )
+                    .await?;
+                Ok::<u64, anyhow::Error>(1)
+            }
+            .await;
+            (token, result)
         })
         .buffer_unordered(concurrency);
 
     let mut inserted = 0;
     let mut failed = 0;
-    while let Some(result) = snapshots.next().await {
+    while let Some((token, result)) = snapshots.next().await {
         match result {
             Ok(count) => inserted += count,
-            Err(_) => failed += 1,
+            Err(error) => {
+                failed += 1;
+                store
+                    .upsert_trade_mark_source_failure(&TradeMarkSourceFailure {
+                        process_id: token.process_id,
+                        position_id: None,
+                        token_id: token.token_id,
+                        market_id: token.market_id,
+                        failure_source: "mark_orderbook_refresh".to_string(),
+                        failure_reason: mark_source_failure_reason(&error).to_string(),
+                        metadata: serde_json::json!({
+                            "operation": "orderbook_mark_refresh",
+                            "error": error.to_string(),
+                            "error_chain": format!("{error:#}"),
+                            "attempted_at": Utc::now()
+                        }),
+                    })
+                    .await?;
+            }
         }
     }
     if failed > 0 {
@@ -160,7 +215,48 @@ async fn refresh_open_position_orderbook_marks(
             inserted, "some open position orderbook mark refreshes failed"
         );
     }
-    Ok(inserted)
+    Ok(MarkOrderbookRefreshReport {
+        snapshots_inserted: inserted,
+        failures: failed,
+    })
+}
+
+async fn fetch_orderbook_with_retry(
+    clob: &ClobClient,
+    token_id: &str,
+    retry_attempts: usize,
+    retry_delay: StdDuration,
+) -> Result<crate::orderbook::LocalOrderBook> {
+    let attempts = retry_attempts.max(1);
+    let mut last_error = None;
+    for attempt in 1..=attempts {
+        match clob.fetch_orderbook(token_id).await {
+            Ok(book) => return Ok(book),
+            Err(error) => {
+                let should_retry =
+                    mark_source_failure_reason(&error) == "clob_orderbook_request_failed";
+                last_error = Some(error);
+                if !should_retry || attempt == attempts {
+                    break;
+                }
+                tokio::time::sleep(retry_delay).await;
+            }
+        }
+    }
+    Err(last_error.expect("orderbook fetch attempts are always at least one"))
+}
+
+fn mark_source_failure_reason(error: &anyhow::Error) -> &'static str {
+    let chain = format!("{error:#}");
+    if chain.contains("CLOB book response was not successful") {
+        "clob_orderbook_unavailable"
+    } else if chain.contains("failed to request CLOB book") {
+        "clob_orderbook_request_failed"
+    } else if chain.contains("failed to decode CLOB book") {
+        "clob_orderbook_decode_failed"
+    } else {
+        "orderbook_mark_source_failed"
+    }
 }
 
 #[derive(Debug, Default)]
@@ -246,12 +342,15 @@ fn close_order_request(candidate: &WhaleLedTradeExitCandidate) -> OrderRequest {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::anyhow;
     use chrono::Utc;
     use rust_decimal_macros::dec;
     use uuid::Uuid;
 
     use crate::{
-        models::OrderSide, store::WhaleLedTradeExitCandidate, trade_pnl::close_order_request,
+        models::OrderSide,
+        store::WhaleLedTradeExitCandidate,
+        trade_pnl::{close_order_request, mark_source_failure_reason},
     };
 
     #[test]
@@ -292,6 +391,22 @@ mod tests {
         assert_eq!(
             request.metadata["exit_source_trade_id"],
             exit_source_trade_id.to_string()
+        );
+    }
+
+    #[test]
+    fn mark_source_failure_reason_classifies_clob_errors() {
+        assert_eq!(
+            mark_source_failure_reason(&anyhow!("CLOB book response was not successful")),
+            "clob_orderbook_unavailable"
+        );
+        assert_eq!(
+            mark_source_failure_reason(&anyhow!("failed to request CLOB book for token abc")),
+            "clob_orderbook_request_failed"
+        );
+        assert_eq!(
+            mark_source_failure_reason(&anyhow!("failed to decode CLOB book")),
+            "clob_orderbook_decode_failed"
         );
     }
 }
