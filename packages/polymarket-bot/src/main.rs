@@ -482,20 +482,23 @@ impl ControlApi for RuntimeControl {
 
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError> {
         self.venues
-            .health
+            .for_mode(ExecutionMode::Live)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?
             .live_status()
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
     }
 
     async fn live_halt(&self) -> Result<serde_json::Value, HttpError> {
-        let disable_result = self
+        let live = self
             .venues
-            .health
+            .for_mode(ExecutionMode::Live)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?;
+        let disable_result = live
             .set_live_entries_enabled(false, Some("manual_live_halt".to_string()))
             .await;
-        let cancel_result = self.venues.health.cancel_all().await;
-        let reconcile_result = self.venues.health.reconcile().await;
+        let cancel_result = live.cancel_all().await;
+        let reconcile_result = live.reconcile().await;
         self.store
             .insert_service_event(&ServiceEvent::new(
                 "manual_live_halt",
@@ -521,7 +524,8 @@ impl ControlApi for RuntimeControl {
     async fn live_reconcile(&self) -> Result<serde_json::Value, HttpError> {
         let report = self
             .venues
-            .health
+            .for_mode(ExecutionMode::Live)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?
             .reconcile()
             .await
             .map_err(|error| HttpError::internal(error.to_string()))?;
@@ -530,7 +534,8 @@ impl ControlApi for RuntimeControl {
 
     async fn live_set_entries_enabled(&self, enabled: bool) -> Result<LiveVenueStatus, HttpError> {
         self.venues
-            .health
+            .for_mode(ExecutionMode::Live)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?
             .set_live_entries_enabled(enabled, (!enabled).then(|| "manual_disable".to_string()))
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
