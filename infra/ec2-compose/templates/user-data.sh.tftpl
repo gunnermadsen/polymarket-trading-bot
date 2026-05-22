@@ -9,6 +9,8 @@ AWS_REGION="${aws_region}"
 APP_DIRECTORY="${app_directory}"
 APP_SECRET_NAME="${app_secret_name}"
 COMPOSE_FILE="${compose_file}"
+CLOUDFLARED_RDP_HOSTNAME="${cloudflare_rdp_hostname}"
+CLOUDFLARED_SSH_HOSTNAME="${cloudflare_ssh_hostname}"
 ECR_REGISTRY="${ecr_registry}"
 ENABLE_CLOUDFLARED="${enable_cloudflared}"
 ENABLE_DESKTOP="${enable_desktop}"
@@ -18,6 +20,28 @@ REPO_URL="${repo_url}"
 
 apt_get_install() {
   apt-get install -y --no-install-recommends "$@"
+}
+
+configure_swap() {
+  if ! swapon --show=NAME --noheadings | grep -qx /swapfile; then
+    if [ ! -f /swapfile ]; then
+      fallocate -l 4G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=4096
+      chmod 0600 /swapfile
+      mkswap /swapfile
+    fi
+
+    swapon /swapfile
+  fi
+
+  grep -qE '^[[:space:]]*/swapfile[[:space:]]+none[[:space:]]+swap[[:space:]]' /etc/fstab \
+    || printf '/swapfile none swap sw 0 0\n' >> /etc/fstab
+
+  cat >/etc/sysctl.d/99-polymarket-swap.conf <<EOF
+vm.swappiness=10
+vm.vfs_cache_pressure=50
+EOF
+
+  sysctl --system >/dev/null
 }
 
 configure_apt_for_https_egress() {
@@ -70,7 +94,7 @@ install_aws_cli() {
 install_base_packages() {
   configure_apt_for_https_egress
   apt-get update
-  apt_get_install ca-certificates curl gnupg git jq unzip snapd
+  apt_get_install ca-certificates curl gnupg git jq nodejs unzip snapd
 
   if ! systemctl is-active --quiet snap.amazon-ssm-agent.amazon-ssm-agent.service; then
     snap install amazon-ssm-agent --classic || true
@@ -96,6 +120,48 @@ EOF
   systemctl enable --now docker
 }
 
+configure_ecr_login_refresh() {
+  install -d -m 0700 /root/.docker
+
+  cat >/usr/local/sbin/polymarket-ecr-login <<EOF
+#!/bin/bash
+set -euo pipefail
+
+aws ecr get-login-password --region "$AWS_REGION" \\
+  | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+EOF
+  chmod 0700 /usr/local/sbin/polymarket-ecr-login
+
+  cat >/etc/systemd/system/polymarket-ecr-login.service <<EOF
+[Unit]
+Description=Refresh Docker login for Polymarket ECR images
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/polymarket-ecr-login
+EOF
+
+  cat >/etc/systemd/system/polymarket-ecr-login.timer <<EOF
+[Unit]
+Description=Refresh Docker login for Polymarket ECR images every 6 hours
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now polymarket-ecr-login.timer
+  /usr/local/sbin/polymarket-ecr-login
+}
+
 install_desktop() {
   if [ "$ENABLE_DESKTOP" != "true" ]; then
     return
@@ -111,10 +177,10 @@ install_desktop() {
   apt_get_install software-properties-common
   add-apt-repository -y universe || true
   apt-get update
-  apt_get_install dbus-x11 xfce4 xfce4-goodies xrdp
+  apt_get_install dbus-x11 xdg-utils xfce4 xfce4-goodies xrdp xorgxrdp xserver-xorg-core xserver-xorg-input-all xserver-xorg-video-dummy xinit firefox
 
   if ! apt_get_install falkon; then
-    apt_get_install firefox
+    echo "Falkon install failed; Firefox is already installed as the primary browser."
   fi
 
   if ! id "$RDP_USERNAME" >/dev/null 2>&1; then
@@ -127,8 +193,46 @@ install_desktop() {
   chown "$RDP_USERNAME:$RDP_USERNAME" "/home/$RDP_USERNAME/.xsession"
   chmod 0600 "/home/$RDP_USERNAME/.xsession"
 
-  sed -i 's/^port=.*/port=tcp:\/\/127.0.0.1:3389/' /etc/xrdp/xrdp.ini
-  systemctl enable --now xrdp
+  sed -i '/^\[Globals\]/,/^\[/{s/^port=.*/port=tcp:\/\/.:3389/}' /etc/xrdp/xrdp.ini
+  usermod -aG ssl-cert xrdp
+  systemctl enable xrdp xrdp-sesman
+  systemctl restart xrdp-sesman xrdp
+}
+
+install_authorized_keys_for_user() {
+  local username authorized_keys ssh_dir authorized_keys_file
+  username="$1"
+  authorized_keys="$2"
+
+  if ! id "$username" >/dev/null 2>&1; then
+    return
+  fi
+
+  ssh_dir="$(eval echo "~$username/.ssh")"
+  authorized_keys_file="$ssh_dir/authorized_keys"
+
+  install -d -m 0700 -o "$username" -g "$username" "$ssh_dir"
+  touch "$authorized_keys_file"
+  chown "$username:$username" "$authorized_keys_file"
+  chmod 0600 "$authorized_keys_file"
+
+  printf '%s\n' "$authorized_keys" \
+    | sed '/^[[:space:]]*$/d' \
+    >> "$authorized_keys_file"
+  sort -u "$authorized_keys_file" -o "$authorized_keys_file"
+  chown "$username:$username" "$authorized_keys_file"
+  chmod 0600 "$authorized_keys_file"
+}
+
+install_ssh_authorized_keys() {
+  local authorized_keys
+  authorized_keys="$(json_value SSH_AUTHORIZED_KEYS)"
+  if [ -z "$authorized_keys" ]; then
+    return
+  fi
+
+  install_authorized_keys_for_user ubuntu "$authorized_keys"
+  install_authorized_keys_for_user "$RDP_USERNAME" "$authorized_keys"
 }
 
 install_cloudflared() {
@@ -139,8 +243,8 @@ install_cloudflared() {
   local tunnel_id expected_tunnel_id credentials_b64 credentials_file rdp_hostname ssh_hostname deb_url
   expected_tunnel_id="$(json_value CLOUDFLARED_PRODUCTION_TUNNEL_ID)"
   credentials_b64="$(json_value CLOUDFLARED_PRODUCTION_TUNNEL_CREDENTIALS_B64)"
-  rdp_hostname="$(json_value CLOUDFLARED_RDP_HOSTNAME)"
-  ssh_hostname="$(json_value CLOUDFLARED_SSH_HOSTNAME)"
+  rdp_hostname="$CLOUDFLARED_RDP_HOSTNAME"
+  ssh_hostname="$CLOUDFLARED_SSH_HOSTNAME"
 
   if [ -z "$credentials_b64" ]; then
     echo "Missing CLOUDFLARED_PRODUCTION_TUNNEL_CREDENTIALS_B64 in AWS Secrets Manager secret $APP_SECRET_NAME" >&2
@@ -203,6 +307,7 @@ EOF
   if [ -n "$ssh_hostname" ]; then
     apt_get_install openssh-server
     systemctl enable --now ssh.service || systemctl enable --now sshd.service
+    install_ssh_authorized_keys
 
     cat >>/etc/cloudflared/config.yml <<EOF
   - hostname: $ssh_hostname
@@ -270,6 +375,7 @@ write_app_env() {
     | map(select(.key | startswith("CLOUDFLARED_") | not))
     | map(select(.key | startswith("COLOUDFLARED_") | not))
     | map(select(.key != "RDP_PASSWORD"))
+    | map(select(.key != "SSH_AUTHORIZED_KEYS"))
     | .[]
     | "\(.key)=\(.value | tostring)"
   ' "$SECRET_PATH" > "$APP_DIRECTORY/.env"
@@ -277,8 +383,7 @@ write_app_env() {
 }
 
 start_compose_app() {
-  aws ecr get-login-password --region "$AWS_REGION" \
-    | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+  /usr/local/sbin/polymarket-ecr-login
 
   cd "$APP_DIRECTORY"
   docker compose -f "$COMPOSE_FILE" pull
@@ -288,6 +393,8 @@ start_compose_app() {
 
 install_base_packages
 install_docker
+configure_ecr_login_refresh
+configure_swap
 
 install -d -m 0700 /root/polymarket
 SECRET_PATH="/root/polymarket/secret.json"

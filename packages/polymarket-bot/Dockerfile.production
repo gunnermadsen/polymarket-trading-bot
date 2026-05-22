@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1.7
+
+ARG RUST_VERSION=1.92.0
+FROM rust:${RUST_VERSION}-bookworm AS builder
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY packages/polymarket-bot/Cargo.toml packages/polymarket-bot/Cargo.lock ./
+
+RUN mkdir -p src/bin \
+    && printf 'pub fn placeholder() {}\n' > src/lib.rs \
+    && printf 'fn main() {}\n' > src/main.rs \
+    && printf 'fn main() {}\n' > src/bin/derive-clob-creds.rs
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo fetch --locked
+
+COPY packages/polymarket-bot/src ./src
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --locked --release \
+    && cp /app/target/release/polymarket-bot /usr/local/bin/polymarket-bot \
+    && cp /app/target/release/derive-clob-creds /usr/local/bin/derive-clob-creds
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10002 --create-home --shell /usr/sbin/nologin polymarket
+
+COPY --from=builder /usr/local/bin/polymarket-bot /usr/local/bin/polymarket-bot
+COPY --from=builder /usr/local/bin/derive-clob-creds /usr/local/bin/derive-clob-creds
+
+USER polymarket
+ENV RUST_LOG=info
+ENTRYPOINT ["/usr/local/bin/polymarket-bot"]

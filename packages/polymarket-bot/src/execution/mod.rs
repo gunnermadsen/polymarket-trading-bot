@@ -98,7 +98,7 @@ mod tests {
 
     use crate::models::{OrderRequest, OrderSide, OrderType};
 
-    use super::{execute_order_plan, sim::SimVenue, OrderPlan};
+    use super::{execute_order_plan, sim::SimVenue, ExecutionVenue, OrderPlan};
 
     #[tokio::test]
     async fn order_plan_uses_same_venue_path_for_sim() {
@@ -124,5 +124,94 @@ mod tests {
         assert_eq!(report.fills.len(), 1);
         assert!(report.reconciliation.balances_checked);
         assert_eq!(report.reconciliation.unresolved_count, 0);
+    }
+
+    #[tokio::test]
+    async fn sim_venue_does_not_duplicate_fills_for_retried_order_id() {
+        let venue = SimVenue::default();
+        let request = OrderRequest {
+            client_order_id: Uuid::new_v4(),
+            process_id: Some(Uuid::new_v4()),
+            market_id: "m1".to_string(),
+            token_id: "t1".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            price: dec!(0.42),
+            size: dec!(10),
+            signal_id: None,
+            metadata: serde_json::json!({}),
+        };
+
+        let first = execute_order_plan(
+            &venue,
+            OrderPlan {
+                plan_id: Uuid::new_v4(),
+                orders: vec![request.clone()],
+            },
+        )
+        .await
+        .unwrap();
+        let second = execute_order_plan(
+            &venue,
+            OrderPlan {
+                plan_id: Uuid::new_v4(),
+                orders: vec![request],
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(first.orders[0].order_id, second.orders[0].order_id);
+        assert_eq!(first.fills.len(), 1);
+        assert_eq!(second.fills.len(), 1);
+        assert_eq!(first.fills[0].fill_id, second.fills[0].fill_id);
+        assert_eq!(
+            venue
+                .fills_for_order(&first.orders[0].order_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn sim_venue_replay_after_restart_uses_deterministic_fill_id() {
+        let request = OrderRequest {
+            client_order_id: Uuid::new_v4(),
+            process_id: Some(Uuid::new_v4()),
+            market_id: "m1".to_string(),
+            token_id: "t1".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            price: dec!(0.42),
+            size: dec!(10),
+            signal_id: None,
+            metadata: serde_json::json!({}),
+        };
+
+        let first = execute_order_plan(
+            &SimVenue::default(),
+            OrderPlan {
+                plan_id: Uuid::new_v4(),
+                orders: vec![request.clone()],
+            },
+        )
+        .await
+        .unwrap();
+        let replay = execute_order_plan(
+            &SimVenue::default(),
+            OrderPlan {
+                plan_id: Uuid::new_v4(),
+                orders: vec![request],
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(first.orders[0].order_id, replay.orders[0].order_id);
+        assert_eq!(first.fills.len(), 1);
+        assert_eq!(replay.fills.len(), 1);
+        assert_eq!(first.fills[0].fill_id, replay.fills[0].fill_id);
     }
 }

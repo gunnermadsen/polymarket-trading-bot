@@ -87,6 +87,30 @@ variable "ecr_registry" {
   default     = "192200846560.dkr.ecr.mx-central-1.amazonaws.com"
 }
 
+variable "cloudflare_zone_id" {
+  description = "Cloudflare zone ID for capitonic.com."
+  type        = string
+  sensitive   = true
+}
+
+variable "cloudflare_tunnel_id" {
+  description = "Cloudflare Tunnel UUID used for SSH/RDP CNAME targets."
+  type        = string
+  sensitive   = true
+}
+
+variable "cloudflare_ssh_hostname" {
+  description = "Cloudflare Access SSH hostname routed to the EC2 cloudflared daemon."
+  type        = string
+  default     = "ssh.ops.capitonic.com"
+}
+
+variable "cloudflare_rdp_hostname" {
+  description = "Cloudflare Access RDP hostname routed to the EC2 cloudflared daemon."
+  type        = string
+  default     = "rdp.ops.capitonic.com"
+}
+
 variable "enable_desktop" {
   description = "Install XFCE, XRDP, and a lightweight browser on the host."
   type        = bool

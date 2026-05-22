@@ -19,6 +19,7 @@ RUN apt-get update \
     && useradd --system --uid 10002 --create-home --shell /usr/sbin/nologin polymarket
 
 COPY --from=builder /app/target/release/polymarket-bot /usr/local/bin/polymarket-bot
+COPY --from=builder /app/target/release/derive-clob-creds /usr/local/bin/derive-clob-creds
 
 USER polymarket
 ENV RUST_LOG=info

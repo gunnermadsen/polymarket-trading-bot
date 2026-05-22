@@ -27,3 +27,13 @@ output "app_secret_name" {
   description = "Secrets Manager secret consumed by the host bootstrap."
   value       = var.app_secret_name
 }
+
+output "cloudflare_ssh_hostname" {
+  description = "Cloudflare hostname for SSH tunnel access."
+  value       = var.cloudflare_ssh_hostname
+}
+
+output "cloudflare_rdp_hostname" {
+  description = "Cloudflare hostname for RDP tunnel access."
+  value       = var.cloudflare_rdp_hostname
+}

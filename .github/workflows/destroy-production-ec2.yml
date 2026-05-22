@@ -17,6 +17,7 @@ env:
   AWS_ROLE_ARN: arn:aws:iam::192200846560:role/capitonic-polymarket-bot-github-actions-prod
   TF_IN_AUTOMATION: "true"
   TF_DIR: infra/ec2-compose
+  APP_SECRET_NAME: capitonic/polymarket-bot/production
   INSTANCE_TAG_NAME: capitonic-polymarket-bot
   HOST_IAM_NAME: capitonic-polymarket-bot-host
   SECURITY_GROUP_NAME: capitonic-polymarket-bot-sg
@@ -26,7 +27,7 @@ jobs:
     if: github.event.inputs.confirm_destroy == 'destroy-production-ec2'
     runs-on: ubuntu-latest
     concurrency:
-      group: production-ec2-compose-destroy
+      group: production-ec2-compose
       cancel-in-progress: false
 
     steps:
@@ -44,6 +45,9 @@ jobs:
 
       - name: Verify AWS access
         run: aws sts get-caller-identity
+
+      - name: Load Cloudflare Terraform inputs
+        run: scripts/load-cloudflare-terraform-env.sh
 
       - name: Write backend config
         run: |
@@ -86,7 +90,7 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     concurrency:
-      group: production-ec2-compose-destroy
+      group: production-ec2-compose
       cancel-in-progress: false
 
     steps:
@@ -105,6 +109,9 @@ jobs:
       - name: Verify AWS access
         run: aws sts get-caller-identity
 
+      - name: Load Cloudflare Terraform inputs
+        run: scripts/load-cloudflare-terraform-env.sh
+
       - name: Write backend config
         run: |
           cat > "$TF_DIR/backend.hcl" <<'EOF'
@@ -117,6 +124,9 @@ jobs:
 
       - name: Initialize Terraform
         run: terraform -chdir="$TF_DIR" init -backend-config=backend.hcl
+
+      - name: Import existing Cloudflare DNS records
+        run: scripts/import-cloudflare-dns-records.sh
 
       - name: Validate Terraform
         run: terraform -chdir="$TF_DIR" validate
@@ -209,5 +219,19 @@ jobs:
             echo "IAM role still exists: $HOST_IAM_NAME" >&2
             exit 1
           fi
+
+          for hostname in "$TF_VAR_cloudflare_ssh_hostname" "$TF_VAR_cloudflare_rdp_hostname"; do
+            DNS_COUNT="$(
+              curl -fsS \
+                -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                "https://api.cloudflare.com/client/v4/zones/$TF_VAR_cloudflare_zone_id/dns_records?type=CNAME&name=$hostname" \
+                | jq -r '.result | length'
+            )"
+            if [ "$DNS_COUNT" != "0" ]; then
+              echo "Cloudflare DNS record still exists for $hostname" >&2
+              exit 1
+            fi
+          done
 
           echo "Production EC2 stack teardown verified. S3 Terraform state and AWS-managed KMS resources were not deleted."

@@ -157,16 +157,18 @@ resource "aws_instance" "compose_host" {
   user_data_replace_on_change = true
 
   user_data = templatefile("${path.module}/templates/user-data.sh.tftpl", {
-    aws_region         = var.aws_region
-    app_directory      = var.app_directory
-    app_secret_name    = var.app_secret_name
-    compose_file       = var.compose_file
-    ecr_registry       = var.ecr_registry
-    enable_cloudflared = var.enable_cloudflared
-    enable_desktop     = var.enable_desktop
-    rdp_username       = var.rdp_username
-    repo_branch        = var.repo_branch
-    repo_url           = var.repo_url
+    aws_region              = var.aws_region
+    app_directory           = var.app_directory
+    app_secret_name         = var.app_secret_name
+    compose_file            = var.compose_file
+    cloudflare_rdp_hostname = var.cloudflare_rdp_hostname
+    cloudflare_ssh_hostname = var.cloudflare_ssh_hostname
+    ecr_registry            = var.ecr_registry
+    enable_cloudflared      = var.enable_cloudflared
+    enable_desktop          = var.enable_desktop
+    rdp_username            = var.rdp_username
+    repo_branch             = var.repo_branch
+    repo_url                = var.repo_url
   })
 
   metadata_options {
