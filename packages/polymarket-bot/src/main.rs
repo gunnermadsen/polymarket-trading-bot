@@ -25,10 +25,7 @@ use polymarket_bot::{
         HttpError, MetricsResponse, TradingProcessResetResponse, TradingProcessResponse,
         TradingProcessStatusResponse, TradingProcessesResponse,
     },
-    models::{
-        CopyTradeProcessConfig, ProcessExecutionConfig, TradingProcess, TradingProcessConfig,
-        WhalePollCheckpoint, WhaleProcessConfig,
-    },
+    models::{TradingProcess, WhalePollCheckpoint},
     risk::{RiskLimits, RiskState},
     scanner::{scan_markets_for_signal1, ScannerConfig, ScannerCycleReport},
     store::Store,
@@ -102,7 +99,7 @@ struct RuntimeControl {
     data_api: DataApiClient,
     venues: ExecutionVenues,
     metrics: Arc<Mutex<RuntimeMetrics>>,
-    default_process_id: uuid::Uuid,
+    default_process_id: Option<uuid::Uuid>,
     trade_pnl_config: TradePnlConfig,
 }
 
@@ -159,13 +156,34 @@ impl RuntimeControl {
         &self,
         process_id: Option<uuid::Uuid>,
     ) -> Result<ProcessRuntimeConfig, HttpError> {
-        let process_id = process_id.unwrap_or(self.default_process_id);
-        let process = self
-            .store
-            .get_trading_process(process_id)
-            .await
-            .map_err(|error| HttpError::internal(error.to_string()))?
-            .ok_or_else(|| HttpError::not_found("trading process not found"))?;
+        let process = if let Some(process_id) = process_id.or(self.default_process_id) {
+            self.store
+                .get_trading_process(process_id)
+                .await
+                .map_err(|error| HttpError::internal(error.to_string()))?
+                .ok_or_else(|| HttpError::not_found("trading process not found"))?
+        } else {
+            self.store
+                .list_trading_processes(100)
+                .await
+                .map_err(|error| HttpError::internal(error.to_string()))?
+                .into_iter()
+                .find(|process| {
+                    process.process_type == "copy_trade"
+                        && process.enabled
+                        && process.status == "running"
+                        && process
+                            .metadata
+                            .get("source")
+                            .and_then(|value| value.as_str())
+                            == Some("infra/processes")
+                })
+                .ok_or_else(|| {
+                    HttpError::bad_request(
+                        "process_id is required until an infra trading process is running",
+                    )
+                })?
+        };
         runtime_config_from_process(&process)
             .map_err(|error| HttpError::bad_request(error.to_string()))
     }
@@ -746,17 +764,13 @@ async fn main() -> Result<()> {
 
     let store = Store::connect(&config.postgres).await?;
     store.healthcheck().await?;
-    let default_trading_process = store
-        .ensure_default_trading_process(default_trading_process_config(&config))
-        .await?;
     store
         .insert_service_event(&ServiceEvent::new(
             "service_started",
             serde_json::json!({
                 "mode": format!("{:?}", config.execution_mode).to_ascii_lowercase(),
                 "scan_enabled": config.scan_enabled,
-                "kafka_required": false,
-                "default_process_id": default_trading_process.process_id
+                "kafka_required": false
             }),
         ))
         .await?;
@@ -782,17 +796,11 @@ async fn main() -> Result<()> {
     } else {
         None
     };
-    let default_runtime_config = runtime_config_from_process(&default_trading_process)?;
-    let health_venue = match default_runtime_config.execution_mode {
-        ExecutionMode::Live => live_venue.clone().unwrap_or_else(|| sim_venue.clone()),
-        ExecutionMode::Paper => paper_venue.clone(),
-        ExecutionMode::Sim => sim_venue.clone(),
-    };
     let venues = ExecutionVenues {
         sim: sim_venue.clone(),
         paper: paper_venue.clone(),
         live: live_venue.clone(),
-        health: health_venue,
+        health: sim_venue.clone(),
     };
     let scanner_config = ScannerConfig {
         target_size: config.risk.target_size,
@@ -819,7 +827,7 @@ async fn main() -> Result<()> {
             data_api: data_api.clone(),
             venues: venues.clone(),
             metrics: shared_metrics.clone(),
-            default_process_id: default_trading_process.process_id,
+            default_process_id: None,
             trade_pnl_config: trade_pnl_config.clone(),
         });
         let app = control_http::router(control, config.http.admin_token.clone());
@@ -1363,90 +1371,6 @@ fn parse_process_execution_mode(mode: &str) -> Result<ExecutionMode> {
         other => bail!(
             "unsupported trading process execution mode={other}; expected sim, paper, or live"
         ),
-    }
-}
-
-fn default_trading_process_config(config: &AppConfig) -> TradingProcessConfig {
-    TradingProcessConfig {
-        execution: Some(ProcessExecutionConfig {
-            mode: Some(format!("{:?}", config.execution_mode).to_ascii_lowercase()),
-            execute_signals: config.whale.copy_execute_enabled,
-            live_capital: config.execution_mode == ExecutionMode::Live,
-            taker_fee_rate: Some(config.risk.taker_fee_rate),
-        }),
-        whale: Some(WhaleProcessConfig {
-            backfill_enabled: Some(config.whale.backfill_enabled),
-            live_enabled: Some(config.whale.live_enabled),
-            lookback_days: Some(config.whale.lookback_days),
-            min_trade_usd: Some(config.whale.min_trade_usd),
-            page_limit: Some(1000),
-            max_pages: Some(config.whale.max_pages),
-            live_page_limit: Some(config.whale.live_page_limit),
-            live_max_pages: Some(config.whale.live_max_pages),
-            live_poll_interval_secs: Some(config.whale.live_poll_interval.as_secs() as i64),
-            wallets: Vec::new(),
-            market_ids: Vec::new(),
-        }),
-        copy_trade: Some(CopyTradeProcessConfig {
-            enabled: Some(config.whale.copy_trade_enabled),
-            min_wallet_score: Some(config.whale.min_wallet_score),
-            min_wallet_trades: Some(config.whale.min_wallet_trades),
-            min_wallet_realized_pnl_usd: Some(config.whale.min_wallet_realized_pnl_usd),
-            min_wallet_roi: Some(config.whale.min_wallet_roi),
-            min_wallet_closed_positions: Some(config.whale.min_wallet_closed_positions),
-            min_trade_usd: Some(config.whale.min_trade_usd),
-            min_copy_size_usd: Some(config.whale.min_copy_size_usd),
-            max_copy_size_usd: Some(config.whale.max_copy_size_usd),
-            copy_size_fraction: Some(config.whale.copy_size_fraction),
-            max_follow_lag_secs: Some(config.whale.max_follow_lag.as_secs() as i64),
-            max_price_slippage_bps: Some(config.whale.max_price_slippage_bps),
-            min_book_depth_usd: Some(config.whale.min_book_depth_usd),
-            backtest_horizon_secs: Some(config.whale.backtest_horizon.as_secs() as i64),
-            taker_fee_rate: Some(config.risk.taker_fee_rate),
-            allow_sell_entries: Some(config.whale.copy_allow_sell_entries),
-        }),
-        raw: serde_json::json!({
-            "source": "env",
-            "scan_enabled": config.scan_enabled,
-            "signal2_enabled": config.signal2_enabled,
-            "signal3_enabled": config.signal3_enabled,
-            "execution": {
-                "mode": format!("{:?}", config.execution_mode).to_ascii_lowercase(),
-                "execute_signals": config.whale.copy_execute_enabled,
-                "live_capital": config.execution_mode == ExecutionMode::Live,
-                "live_confirm": config.live_confirm,
-                "taker_fee_rate": config.risk.taker_fee_rate,
-            },
-            "whale": {
-                "backfill_enabled": config.whale.backfill_enabled,
-                "live_enabled": config.whale.live_enabled,
-                "lookback_days": config.whale.lookback_days,
-                "min_trade_usd": config.whale.min_trade_usd,
-                "page_limit": config.whale.live_page_limit,
-                "max_pages": config.whale.max_pages,
-                "live_page_limit": config.whale.live_page_limit,
-                "live_max_pages": config.whale.live_max_pages,
-                "live_poll_interval_secs": config.whale.live_poll_interval.as_secs() as i64,
-            },
-            "copy_trade": {
-                "enabled": config.whale.copy_trade_enabled,
-                "min_wallet_score": config.whale.min_wallet_score,
-                "min_wallet_trades": config.whale.min_wallet_trades,
-                "min_wallet_realized_pnl_usd": config.whale.min_wallet_realized_pnl_usd,
-                "min_wallet_roi": config.whale.min_wallet_roi,
-                "min_wallet_closed_positions": config.whale.min_wallet_closed_positions,
-                "min_trade_usd": config.whale.min_trade_usd,
-                "min_copy_size_usd": config.whale.min_copy_size_usd,
-                "max_copy_size_usd": config.whale.max_copy_size_usd,
-                "copy_size_fraction": config.whale.copy_size_fraction,
-                "max_follow_lag_secs": config.whale.max_follow_lag.as_secs() as i64,
-                "max_price_slippage_bps": config.whale.max_price_slippage_bps,
-                "min_book_depth_usd": config.whale.min_book_depth_usd,
-                "backtest_horizon_secs": config.whale.backtest_horizon.as_secs() as i64,
-                "taker_fee_rate": config.risk.taker_fee_rate,
-                "allow_sell_entries": config.whale.copy_allow_sell_entries,
-            }
-        }),
     }
 }
 
