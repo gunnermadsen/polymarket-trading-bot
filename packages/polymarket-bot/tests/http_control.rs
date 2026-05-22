@@ -142,6 +142,17 @@ impl ControlApi for FakeControlApi {
         Ok(serde_json::json!([]))
     }
 
+    async fn trade_pnl_mark_health(
+        &self,
+        _request: http::TradePnlListRequest,
+    ) -> Result<Value, HttpError> {
+        Ok(serde_json::json!({
+            "coverage": [],
+            "failure_reasons": [],
+            "unmarked_availability": []
+        }))
+    }
+
     async fn trade_pnl_recent_exits(
         &self,
         _request: http::TradePnlListRequest,

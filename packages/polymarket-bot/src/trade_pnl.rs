@@ -10,7 +10,7 @@ use crate::{
     execution::{execute_order_plan, ExecutionVenue, OrderPlan},
     idempotency::{deterministic_client_order_id, ClientOrderIdSeed},
     models::{OrderRequest, OrderSide, OrderType},
-    store::{OrderbookSnapshot, Store, WhaleLedTradeExitCandidate},
+    store::{OrderbookSnapshot, Store, TradeMarkSourceFailure, WhaleLedTradeExitCandidate},
 };
 
 #[derive(Debug, Clone)]
@@ -138,20 +138,54 @@ async fn refresh_open_position_orderbook_marks(
     let mut snapshots = stream::iter(tokens)
         .map(|token| async move {
             let token_id = token.token_id.clone();
-            let book = clob.fetch_orderbook(&token_id).await?;
-            let snapshot =
-                OrderbookSnapshot::from_local_book(token.market_id, token.token_id, None, &book)?;
-            store.insert_orderbook_snapshot(&snapshot).await?;
-            Ok::<u64, anyhow::Error>(1)
+            let result = async {
+                let book = clob.fetch_orderbook(&token_id).await?;
+                let snapshot = OrderbookSnapshot::from_local_book(
+                    token.market_id.clone(),
+                    token.token_id.clone(),
+                    None,
+                    &book,
+                )?;
+                store.insert_orderbook_snapshot(&snapshot).await?;
+                store
+                    .resolve_trade_mark_source_failure(
+                        token.process_id,
+                        None,
+                        &token.token_id,
+                        "mark_orderbook_refresh",
+                    )
+                    .await?;
+                Ok::<u64, anyhow::Error>(1)
+            }
+            .await;
+            (token, result)
         })
         .buffer_unordered(concurrency);
 
     let mut inserted = 0;
     let mut failed = 0;
-    while let Some(result) = snapshots.next().await {
+    while let Some((token, result)) = snapshots.next().await {
         match result {
             Ok(count) => inserted += count,
-            Err(_) => failed += 1,
+            Err(error) => {
+                failed += 1;
+                store
+                    .upsert_trade_mark_source_failure(&TradeMarkSourceFailure {
+                        process_id: token.process_id,
+                        position_id: None,
+                        token_id: token.token_id,
+                        market_id: token.market_id,
+                        failure_source: "mark_orderbook_refresh".to_string(),
+                        failure_reason: mark_source_failure_reason(&error).to_string(),
+                        metadata: serde_json::json!({
+                            "operation": "orderbook_mark_refresh",
+                            "error": error.to_string(),
+                            "error_chain": format!("{error:#}"),
+                            "attempted_at": Utc::now()
+                        }),
+                    })
+                    .await?;
+            }
         }
     }
     if failed > 0 {
@@ -161,6 +195,19 @@ async fn refresh_open_position_orderbook_marks(
         );
     }
     Ok(inserted)
+}
+
+fn mark_source_failure_reason(error: &anyhow::Error) -> &'static str {
+    let chain = format!("{error:#}");
+    if chain.contains("CLOB book response was not successful") {
+        "clob_orderbook_unavailable"
+    } else if chain.contains("failed to request CLOB book") {
+        "clob_orderbook_request_failed"
+    } else if chain.contains("failed to decode CLOB book") {
+        "clob_orderbook_decode_failed"
+    } else {
+        "orderbook_mark_source_failed"
+    }
 }
 
 #[derive(Debug, Default)]
@@ -246,12 +293,15 @@ fn close_order_request(candidate: &WhaleLedTradeExitCandidate) -> OrderRequest {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::anyhow;
     use chrono::Utc;
     use rust_decimal_macros::dec;
     use uuid::Uuid;
 
     use crate::{
-        models::OrderSide, store::WhaleLedTradeExitCandidate, trade_pnl::close_order_request,
+        models::OrderSide,
+        store::WhaleLedTradeExitCandidate,
+        trade_pnl::{close_order_request, mark_source_failure_reason},
     };
 
     #[test]
@@ -292,6 +342,22 @@ mod tests {
         assert_eq!(
             request.metadata["exit_source_trade_id"],
             exit_source_trade_id.to_string()
+        );
+    }
+
+    #[test]
+    fn mark_source_failure_reason_classifies_clob_errors() {
+        assert_eq!(
+            mark_source_failure_reason(&anyhow!("CLOB book response was not successful")),
+            "clob_orderbook_unavailable"
+        );
+        assert_eq!(
+            mark_source_failure_reason(&anyhow!("failed to request CLOB book for token abc")),
+            "clob_orderbook_request_failed"
+        );
+        assert_eq!(
+            mark_source_failure_reason(&anyhow!("failed to decode CLOB book")),
+            "clob_orderbook_decode_failed"
         );
     }
 }

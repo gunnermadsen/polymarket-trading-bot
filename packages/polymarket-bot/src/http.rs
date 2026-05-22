@@ -90,6 +90,11 @@ pub trait ControlApi: Send + Sync + 'static {
         request: TradePnlListRequest,
     ) -> Result<serde_json::Value, HttpError>;
 
+    async fn trade_pnl_mark_health(
+        &self,
+        request: TradePnlListRequest,
+    ) -> Result<serde_json::Value, HttpError>;
+
     async fn trade_pnl_recent_exits(
         &self,
         request: TradePnlListRequest,
@@ -270,6 +275,15 @@ impl ControlApi for PlaceholderControlApi {
         ))
     }
 
+    async fn trade_pnl_mark_health(
+        &self,
+        _request: TradePnlListRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "trade PnL mark health is not wired",
+        ))
+    }
+
     async fn trade_pnl_recent_exits(
         &self,
         _request: TradePnlListRequest,
@@ -396,6 +410,7 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .route("/trades/pnl/summary", get(trade_pnl_summary))
         .route("/trades/pnl/wallets", get(trade_pnl_wallets))
         .route("/trades/pnl/open", get(trade_pnl_open_positions))
+        .route("/trades/pnl/mark-health", get(trade_pnl_mark_health))
         .route("/trades/pnl/recent-exits", get(trade_pnl_recent_exits))
         .route("/trades/pnl/backfill", post(trade_pnl_backfill))
         .route("/trades/pnl/mark-now", post(trade_pnl_mark_now))
@@ -524,6 +539,13 @@ async fn trade_pnl_open_positions(
         .trade_pnl_open_positions(request)
         .await
         .map(Json)
+}
+
+async fn trade_pnl_mark_health(
+    State(state): State<HttpState>,
+    Query(request): Query<TradePnlListRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state.control.trade_pnl_mark_health(request).await.map(Json)
 }
 
 async fn trade_pnl_recent_exits(

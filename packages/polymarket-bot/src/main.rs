@@ -433,6 +433,16 @@ impl ControlApi for RuntimeControl {
             .map_err(|error| HttpError::internal(error.to_string()))
     }
 
+    async fn trade_pnl_mark_health(
+        &self,
+        request: control_http::TradePnlListRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        self.store
+            .trade_pnl_mark_health(request.limit.unwrap_or(50).clamp(1, 500))
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))
+    }
+
     async fn trade_pnl_recent_exits(
         &self,
         request: control_http::TradePnlListRequest,

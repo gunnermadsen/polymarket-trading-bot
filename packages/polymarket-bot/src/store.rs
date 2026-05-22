@@ -260,8 +260,20 @@ pub struct OrderbookSnapshot {
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct OpenMarkToken {
+    pub process_id: Option<Uuid>,
     pub token_id: String,
     pub market_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TradeMarkSourceFailure {
+    pub process_id: Option<Uuid>,
+    pub position_id: Option<Uuid>,
+    pub token_id: String,
+    pub market_id: Option<String>,
+    pub failure_source: String,
+    pub failure_reason: String,
+    pub metadata: serde_json::Value,
 }
 
 impl OrderbookSnapshot {
@@ -1649,6 +1661,72 @@ impl Store {
         Ok(())
     }
 
+    pub async fn upsert_trade_mark_source_failure(
+        &self,
+        failure: &TradeMarkSourceFailure,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO polymarket.trade_mark_source_failures (
+              process_id, position_id, token_id, market_id, failure_source, failure_reason, metadata
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7)
+            ON CONFLICT (
+              COALESCE(process_id, '00000000-0000-0000-0000-000000000000'::uuid),
+              COALESCE(position_id, '00000000-0000-0000-0000-000000000000'::uuid),
+              token_id,
+              failure_source
+            ) DO UPDATE SET
+              market_id = COALESCE(EXCLUDED.market_id, polymarket.trade_mark_source_failures.market_id),
+              failure_reason = EXCLUDED.failure_reason,
+              failure_count = polymarket.trade_mark_source_failures.failure_count + 1,
+              last_failed_at = now(),
+              resolved_at = NULL,
+              metadata = EXCLUDED.metadata
+            "#,
+        )
+        .bind(failure.process_id)
+        .bind(failure.position_id)
+        .bind(&failure.token_id)
+        .bind(&failure.market_id)
+        .bind(&failure.failure_source)
+        .bind(&failure.failure_reason)
+        .bind(&failure.metadata)
+        .execute(&self.pool)
+        .await
+        .context("failed to upsert trade mark source failure")?;
+        Ok(())
+    }
+
+    pub async fn resolve_trade_mark_source_failure(
+        &self,
+        process_id: Option<Uuid>,
+        position_id: Option<Uuid>,
+        token_id: &str,
+        failure_source: &str,
+    ) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            UPDATE polymarket.trade_mark_source_failures
+            SET resolved_at = now(),
+                metadata = metadata || jsonb_build_object('resolved_reason', 'mark_source_available')
+            WHERE process_id IS NOT DISTINCT FROM $1
+              AND position_id IS NOT DISTINCT FROM $2
+              AND token_id = $3
+              AND failure_source = $4
+              AND resolved_at IS NULL
+            "#,
+        )
+        .bind(process_id)
+        .bind(position_id)
+        .bind(token_id)
+        .bind(failure_source)
+        .execute(&self.pool)
+        .await
+        .context("failed to resolve trade mark source failure")?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn upsert_position(&self, position: &PositionSnapshot) -> Result<()> {
         sqlx::query(
             r#"
@@ -2347,6 +2425,7 @@ impl Store {
             r#"
             WITH stale_tokens AS MATERIALIZED (
               SELECT
+                p.process_id,
                 p.token_id,
                 min(p.market_id) FILTER (WHERE p.market_id IS NOT NULL) AS market_id,
                 min(COALESCE(p.latest_mark_timestamp, p.entry_timestamp)) AS oldest_mark_at
@@ -2357,9 +2436,9 @@ impl Store {
                   p.latest_mark_timestamp IS NULL
                   OR p.latest_mark_timestamp < now() - ($1::bigint * interval '1 millisecond')
                 )
-              GROUP BY p.token_id
+              GROUP BY p.process_id, p.token_id
             )
-            SELECT token_id, market_id
+            SELECT process_id, token_id, market_id
             FROM stale_tokens t
             WHERE NOT EXISTS (
               SELECT 1
@@ -2576,6 +2655,128 @@ impl Store {
         .fetch_one(&self.pool)
         .await
         .context("failed to fetch open trade positions")?;
+        Ok(value)
+    }
+
+    pub async fn trade_pnl_mark_health(&self, limit: i64) -> Result<serde_json::Value> {
+        let value = sqlx::query_scalar::<_, serde_json::Value>(
+            r#"
+            WITH open_positions AS MATERIALIZED (
+              SELECT *
+              FROM polymarket.trade_positions
+              WHERE status IN ('open', 'partially_closed')
+                AND open_size > 0
+            ),
+            coverage AS (
+              SELECT
+                CASE WHEN latest_mark_timestamp IS NULL THEN 'unmarked' ELSE 'marked' END AS state,
+                count(*) AS positions,
+                COALESCE(sum(entry_notional), 0) AS notional,
+                COALESCE(sum(unrealized_pnl), 0) AS unrealized_pnl
+              FROM open_positions
+              GROUP BY 1
+            ),
+            stale AS (
+              SELECT
+                CASE
+                  WHEN latest_mark_timestamp IS NULL THEN 'unmarked'
+                  WHEN now() - latest_mark_timestamp < interval '15 minutes' THEN 'fresh_<15m'
+                  WHEN now() - latest_mark_timestamp < interval '30 minutes' THEN 'stale_15-30m'
+                  WHEN now() - latest_mark_timestamp < interval '1 hour' THEN 'stale_30-60m'
+                  ELSE 'stale_>1h'
+                END AS bucket,
+                count(*) AS positions,
+                COALESCE(sum(entry_notional), 0) AS notional
+              FROM open_positions
+              GROUP BY 1
+            ),
+            unmarked AS MATERIALIZED (
+              SELECT
+                p.position_id,
+                p.process_id,
+                p.market_id,
+                p.token_id,
+                p.entry_timestamp,
+                p.entry_notional,
+                EXISTS (
+                  SELECT 1
+                  FROM polymarket.orderbook_snapshots o
+                  WHERE o.token_id = p.token_id
+                    AND o.timestamp_utc >= greatest(now() - interval '15 minutes', p.entry_timestamp)
+                    AND (o.best_bid IS NOT NULL OR o.best_ask IS NOT NULL)
+                  LIMIT 1
+                ) AS has_usable_orderbook,
+                EXISTS (
+                  SELECT 1
+                  FROM polymarket.wallet_trades wt
+                  WHERE wt.asset = p.token_id
+                    AND wt.timestamp_utc >= p.entry_timestamp
+                  LIMIT 1
+                ) AS has_post_entry_wallet_trade
+              FROM open_positions p
+              WHERE p.latest_mark_timestamp IS NULL
+            ),
+            unmarked_availability AS (
+              SELECT
+                has_usable_orderbook,
+                has_post_entry_wallet_trade,
+                count(*) AS positions,
+                COALESCE(sum(entry_notional), 0) AS notional
+              FROM unmarked
+              GROUP BY 1, 2
+            ),
+            failure_reasons AS (
+              SELECT
+                failure_source,
+                failure_reason,
+                count(*) AS tokens,
+                COALESCE(sum(failure_count), 0) AS failures,
+                max(last_failed_at) AS last_failed_at
+              FROM polymarket.trade_mark_source_failures
+              WHERE resolved_at IS NULL
+              GROUP BY 1, 2
+            ),
+            oldest_unmarked AS (
+              SELECT
+                u.position_id,
+                u.process_id,
+                u.market_id,
+                u.token_id,
+                u.entry_timestamp,
+                u.entry_notional,
+                u.has_usable_orderbook,
+                u.has_post_entry_wallet_trade,
+                f.failure_source,
+                f.failure_reason,
+                f.failure_count,
+                f.last_failed_at
+              FROM unmarked u
+              LEFT JOIN LATERAL (
+                SELECT failure_source, failure_reason, failure_count, last_failed_at
+                FROM polymarket.trade_mark_source_failures f
+                WHERE f.token_id = u.token_id
+                  AND f.process_id IS NOT DISTINCT FROM u.process_id
+                  AND f.resolved_at IS NULL
+                ORDER BY f.last_failed_at DESC
+                LIMIT 1
+              ) f ON true
+              ORDER BY u.entry_timestamp ASC
+              LIMIT $1
+            )
+            SELECT jsonb_build_object(
+              'coverage', COALESCE((SELECT jsonb_agg(to_jsonb(coverage) ORDER BY state) FROM coverage), '[]'::jsonb),
+              'stale', COALESCE((SELECT jsonb_agg(to_jsonb(stale) ORDER BY bucket) FROM stale), '[]'::jsonb),
+              'unmarked_availability', COALESCE((SELECT jsonb_agg(to_jsonb(unmarked_availability) ORDER BY has_usable_orderbook, has_post_entry_wallet_trade) FROM unmarked_availability), '[]'::jsonb),
+              'failure_reasons', COALESCE((SELECT jsonb_agg(to_jsonb(failure_reasons) ORDER BY failures DESC, last_failed_at DESC) FROM failure_reasons), '[]'::jsonb),
+              'oldest_unmarked', COALESCE((SELECT jsonb_agg(to_jsonb(oldest_unmarked) ORDER BY entry_timestamp ASC) FROM oldest_unmarked), '[]'::jsonb),
+              'updated_at', now()
+            )
+            "#,
+        )
+        .bind(limit)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to fetch trade PnL mark health")?;
         Ok(value)
     }
 
