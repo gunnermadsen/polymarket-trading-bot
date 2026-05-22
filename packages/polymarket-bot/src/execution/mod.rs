@@ -174,4 +174,44 @@ mod tests {
             1
         );
     }
+
+    #[tokio::test]
+    async fn sim_venue_replay_after_restart_uses_deterministic_fill_id() {
+        let request = OrderRequest {
+            client_order_id: Uuid::new_v4(),
+            process_id: Some(Uuid::new_v4()),
+            market_id: "m1".to_string(),
+            token_id: "t1".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            price: dec!(0.42),
+            size: dec!(10),
+            signal_id: None,
+            metadata: serde_json::json!({}),
+        };
+
+        let first = execute_order_plan(
+            &SimVenue::default(),
+            OrderPlan {
+                plan_id: Uuid::new_v4(),
+                orders: vec![request.clone()],
+            },
+        )
+        .await
+        .unwrap();
+        let replay = execute_order_plan(
+            &SimVenue::default(),
+            OrderPlan {
+                plan_id: Uuid::new_v4(),
+                orders: vec![request],
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(first.orders[0].order_id, replay.orders[0].order_id);
+        assert_eq!(first.fills.len(), 1);
+        assert_eq!(replay.fills.len(), 1);
+        assert_eq!(first.fills[0].fill_id, replay.fills[0].fill_id);
+    }
 }

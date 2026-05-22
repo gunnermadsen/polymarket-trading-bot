@@ -1336,7 +1336,12 @@ impl Store {
             INSERT INTO polymarket.fills (
               fill_id, process_id, order_id, token_id, timestamp_utc, price, size, fee, source, raw_payload
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM polymarket.fills
+              WHERE fill_id = $1
+            )
             ON CONFLICT (fill_id, timestamp_utc) DO NOTHING
             "#,
         )

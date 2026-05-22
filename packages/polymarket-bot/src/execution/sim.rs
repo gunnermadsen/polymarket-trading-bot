@@ -146,7 +146,7 @@ impl SimVenue {
             .into_iter()
             .enumerate()
             .map(|(idx, fill)| FillRecord {
-                fill_id: Uuid::new_v4(),
+                fill_id: deterministic_fill_id(self.fill_source, order_id, idx),
                 process_id: request.process_id,
                 order_id: order_id.to_string(),
                 token_id: request.token_id.clone(),
@@ -203,7 +203,7 @@ impl ExecutionVenue for SimVenue {
             exit_execution.fills
         } else {
             vec![FillRecord {
-                fill_id: Uuid::new_v4(),
+                fill_id: deterministic_fill_id(self.fill_source, &order_id, 0),
                 process_id: request.process_id,
                 order_id: order_id.clone(),
                 token_id: request.token_id.clone(),
@@ -380,6 +380,18 @@ impl Default for SimVenue {
             mode_name: "sim",
         }
     }
+}
+
+fn deterministic_fill_id(source: FillSource, order_id: &str, fill_index: usize) -> Uuid {
+    let source_name = match source {
+        FillSource::Sim => "sim",
+        FillSource::Paper => "paper",
+        FillSource::Live => "live",
+    };
+    Uuid::new_v5(
+        &Uuid::NAMESPACE_URL,
+        format!("polymarket-bot:{source_name}:fill:{order_id}:{fill_index}").as_bytes(),
+    )
 }
 
 fn is_terminal(state: OrderState) -> bool {
