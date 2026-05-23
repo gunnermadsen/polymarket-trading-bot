@@ -868,7 +868,7 @@ async fn main() -> Result<()> {
         sim: sim_venue.clone(),
         paper: paper_venue.clone(),
         live: live_venue.clone(),
-        health: sim_venue.clone(),
+        health: live_venue.clone().unwrap_or_else(|| sim_venue.clone()),
     };
     let scanner_config = ScannerConfig {
         target_size: config.risk.target_size,
