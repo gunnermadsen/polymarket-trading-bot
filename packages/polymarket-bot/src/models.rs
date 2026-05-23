@@ -124,6 +124,33 @@ pub struct OrderRequest {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum OrderIntent {
+    Entry,
+    Exit,
+    RiskReduction,
+    AdminManual,
+}
+
+impl OrderRequest {
+    pub fn intent(&self) -> OrderIntent {
+        for key in ["execution_intent", "intent", "purpose"] {
+            let Some(value) = self.metadata.get(key).and_then(|value| value.as_str()) else {
+                continue;
+            };
+            match value {
+                "entry" | "whale_follow_entry" => return OrderIntent::Entry,
+                "exit" | "whale_led_exit" => return OrderIntent::Exit,
+                "risk_reduction" | "risk_reduce" => return OrderIntent::RiskReduction,
+                "admin_manual" | "manual" => return OrderIntent::AdminManual,
+                _ => continue,
+            }
+        }
+        OrderIntent::Entry
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum OrderSide {
     Buy,
     Sell,

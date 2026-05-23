@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
+    account_reconcile::{AccountReconcileReport, AccountReconcileRequest},
     clob::ClobClient,
     edge::compute_taker_fee,
     execution::{
@@ -39,7 +40,7 @@ struct SimState {
     fills: Vec<FillRecord>,
 }
 
-struct SimExitExecution {
+struct SimOrderExecution {
     fills: Vec<FillRecord>,
     metadata: serde_json::Value,
 }
@@ -67,40 +68,32 @@ impl SimVenue {
         }
     }
 
-    async fn executable_exit_fills(
+    async fn executable_order_fills(
         &self,
         order_id: &str,
         request: &OrderRequest,
         now: chrono::DateTime<Utc>,
-    ) -> Result<Option<SimExitExecution>> {
-        if request
-            .metadata
-            .get("purpose")
-            .and_then(|value| value.as_str())
-            != Some("whale_led_exit")
-        {
-            return Ok(None);
-        }
+    ) -> Result<SimOrderExecution> {
         let Some(clob) = &self.clob else {
-            return Ok(Some(SimExitExecution {
+            return Ok(SimOrderExecution {
                 fills: vec![],
                 metadata: serde_json::json!({
                     "reject_reason": "missing_orderbook",
                     "book_snapshot_timestamp": now,
                 }),
-            }));
+            });
         };
         let book = match clob.fetch_orderbook(&request.token_id).await {
             Ok(book) => book,
             Err(error) => {
-                return Ok(Some(SimExitExecution {
+                return Ok(SimOrderExecution {
                     fills: vec![],
                     metadata: serde_json::json!({
                         "reject_reason": "missing_orderbook",
                         "venue_error": error.to_string(),
                         "book_snapshot_timestamp": now,
                     }),
-                }))
+                })
             }
         };
         let max_age = chrono::Duration::seconds(10);
@@ -122,10 +115,18 @@ impl SimVenue {
             "depth_walk_avg_price": depth_summary.avg_price,
             "book_snapshot_timestamp": now,
         });
-        let walk = match request.side {
-            OrderSide::Buy => book.depth_walk_buy_limit(request.size, request.price, max_age, now),
-            OrderSide::Sell => {
+        let walk = match (request.side, request.order_type) {
+            (OrderSide::Buy, OrderType::Fok) => {
+                book.depth_walk_buy_limit(request.size, request.price, max_age, now)
+            }
+            (OrderSide::Sell, OrderType::Fok) => {
                 book.depth_walk_sell_limit(request.size, request.price, max_age, now)
+            }
+            (OrderSide::Buy, _) => {
+                book.depth_walk_buy_limit_partial(request.size, request.price, max_age, now)
+            }
+            (OrderSide::Sell, _) => {
+                book.depth_walk_sell_limit_partial(request.size, request.price, max_age, now)
             }
         };
         let Some(walk) = walk else {
@@ -136,13 +137,13 @@ impl SimVenue {
             } else {
                 "insufficient_depth"
             };
-            return Ok(Some(SimExitExecution {
+            return Ok(SimOrderExecution {
                 fills: vec![],
                 metadata: merge_json(
                     base_metadata,
                     serde_json::json!({"reject_reason": reject_reason}),
                 ),
-            }));
+            });
         };
         let fee = compute_taker_fee(&walk.fills, self.taker_fee_rate);
         let total_notional = walk.total;
@@ -162,7 +163,7 @@ impl SimVenue {
                 filled_at: now + chrono::Duration::microseconds(idx as i64),
             })
             .collect();
-        Ok(Some(SimExitExecution {
+        Ok(SimOrderExecution {
             fills,
             metadata: merge_json(
                 base_metadata,
@@ -171,7 +172,7 @@ impl SimVenue {
                     "depth_walk_total": total_notional
                 }),
             ),
-        }))
+        })
     }
 }
 
@@ -202,23 +203,11 @@ impl ExecutionVenue for SimVenue {
                 return Ok(order.clone());
             }
         }
-        let exit_execution = self.executable_exit_fills(&order_id, &request, now).await?;
-        let executable_fills = if let Some(exit_execution) = exit_execution {
-            request.metadata = merge_json(request.metadata, exit_execution.metadata);
-            exit_execution.fills
-        } else {
-            vec![FillRecord {
-                fill_id: deterministic_fill_id(self.fill_source, &order_id, 0),
-                process_id: request.process_id,
-                order_id: order_id.clone(),
-                token_id: request.token_id.clone(),
-                price: request.price,
-                size: request.size,
-                fee: Decimal::ZERO,
-                source: self.fill_source,
-                filled_at: now,
-            }]
-        };
+        let order_execution = self
+            .executable_order_fills(&order_id, &request, now)
+            .await?;
+        request.metadata = merge_json(request.metadata, order_execution.metadata);
+        let executable_fills = order_execution.fills;
         let filled_size: Decimal = executable_fills.iter().map(|fill| fill.size).sum();
         let state = if filled_size >= request.size {
             OrderState::Filled
@@ -503,6 +492,13 @@ impl ExecutionVenue for SimVenue {
             verified_funder_candidates_count: 0,
             checked_at: Utc::now(),
         })
+    }
+
+    async fn live_account_reconcile(
+        &self,
+        _request: AccountReconcileRequest,
+    ) -> Result<AccountReconcileReport> {
+        bail!("live account reconciliation is only available for the live venue")
     }
 
     async fn set_live_entries_enabled(

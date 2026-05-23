@@ -30,7 +30,12 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::{
+    account_reconcile::{
+        account_trade_from_live_event, reconcile_account_positions, AccountReconcileReport,
+        AccountReconcileRequest,
+    },
     config::LiveExecutionConfig,
+    data_api::DataApiClient,
     execution::{
         ExecutionVenue, LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics,
         LiveOrderDryRunRequest, LivePoly1271FunderProbeCandidate, LivePoly1271FunderProbeRequest,
@@ -62,6 +67,7 @@ pub struct LiveVenue {
     config: LiveExecutionConfig,
     clob_base_url: String,
     store: Option<Store>,
+    data_api: Option<DataApiClient>,
     state: Arc<Mutex<LiveVenueState>>,
 }
 
@@ -103,12 +109,18 @@ impl LiveVenueEvent {
 }
 
 impl LiveVenue {
-    pub fn new(config: LiveExecutionConfig, clob_base_url: String, store: Store) -> Result<Self> {
+    pub fn new(
+        config: LiveExecutionConfig,
+        clob_base_url: String,
+        store: Store,
+        data_api: DataApiClient,
+    ) -> Result<Self> {
         config.validate_for_live()?;
         let venue = Self {
             config,
             clob_base_url,
             store: Some(store),
+            data_api: Some(data_api),
             state: Arc::new(Mutex::new(LiveVenueState {
                 live_confirmed: true,
                 user_ws_connected: false,
@@ -131,6 +143,7 @@ impl LiveVenue {
             config,
             clob_base_url: "https://clob-v2.polymarket.com".to_string(),
             store: None,
+            data_api: None,
             state: Arc::new(Mutex::new(LiveVenueState {
                 live_confirmed: true,
                 user_ws_connected: false,
@@ -272,6 +285,11 @@ impl LiveVenue {
         for event in store.recent_live_trade_events(500).await? {
             if LiveVenue::persist_fill_from_live_event(&store, &event).await? {
                 processed += 1;
+            } else if let Some(account_address) = configured_account_address(&self.config) {
+                if let Some(account_trade) = account_trade_from_live_event(&account_address, &event)
+                {
+                    store.upsert_account_trade(&account_trade).await?;
+                }
             }
         }
         for event in store.recent_live_order_events(500).await? {
@@ -288,10 +306,13 @@ impl LiveVenue {
         let Some(store) = self.store.clone() else {
             return;
         };
+        let data_api = self.data_api.clone();
         let state = self.state.clone();
         tokio::spawn(async move {
             loop {
-                if let Err(error) = run_user_ws_once(&config, &store, &state).await {
+                if let Err(error) =
+                    run_user_ws_once(&config, &store, data_api.as_ref(), &state).await
+                {
                     warn!(error = %error, "Polymarket live user websocket disconnected");
                     let mut state = state.lock().await;
                     state.user_ws_connected = false;
@@ -354,6 +375,30 @@ impl LiveVenue {
             .await
             .context("failed to authenticate Polymarket CLOB SDK client")?;
         Ok(client)
+    }
+
+    async fn authenticated_account_address(&self) -> Result<String> {
+        Ok(self
+            .authenticated_client()
+            .await?
+            .address()
+            .to_checksum(None)
+            .to_ascii_lowercase())
+    }
+
+    async fn run_account_reconcile(
+        &self,
+        mut request: AccountReconcileRequest,
+    ) -> Result<AccountReconcileReport> {
+        let store = self.store()?;
+        let data_api = self
+            .data_api
+            .as_ref()
+            .context("Polymarket Data API client is not configured")?;
+        if request.account_address.is_none() {
+            request.account_address = Some(self.authenticated_account_address().await?);
+        }
+        reconcile_account_positions(&store, data_api, request).await
     }
 
     async fn poly1271_candidate_client(&self, funder_address: &str) -> Result<AuthenticatedClient> {
@@ -629,6 +674,7 @@ impl LiveVenue {
 async fn run_user_ws_once(
     config: &LiveExecutionConfig,
     store: &Store,
+    data_api: Option<&DataApiClient>,
     state: &Arc<Mutex<LiveVenueState>>,
 ) -> Result<()> {
     let (mut ws, _) = connect_async(&config.user_ws_url)
@@ -674,8 +720,38 @@ async fn run_user_ws_once(
                             .unwrap_or_else(|_| json!({ "event_type": "raw", "message": text }));
                         let event = LiveVenue::parse_user_event(payload);
                         let inserted = store.insert_live_venue_event(&event).await?;
-                        if let Err(error) = LiveVenue::persist_fill_from_live_event(&store, &event).await {
-                            warn!(error = %error, "failed to persist Polymarket live user websocket fill event");
+                        let bot_fill_persisted = match LiveVenue::persist_fill_from_live_event(&store, &event).await {
+                            Ok(persisted) => persisted,
+                            Err(error) => {
+                                warn!(error = %error, "failed to persist Polymarket live user websocket fill event");
+                                false
+                            }
+                        };
+                        if !bot_fill_persisted {
+                            if let Some(account_address) = configured_account_address(config) {
+                                if let Some(account_trade) = account_trade_from_live_event(&account_address, &event) {
+                                    if let Err(error) = store.upsert_account_trade(&account_trade).await {
+                                        warn!(error = %error, "failed to persist Polymarket account trade from user websocket event");
+                                    }
+                                    if let Some(data_api) = data_api.cloned() {
+                                        let store = store.clone();
+                                        let token_id = account_trade.token_id.clone();
+                                        tokio::spawn(async move {
+                                            tokio::time::sleep(Duration::from_secs(2)).await;
+                                            let request = AccountReconcileRequest {
+                                                account_address: Some(account_address),
+                                                lookback_hours: Some(1),
+                                                dry_run: false,
+                                                token_id: Some(token_id),
+                                                source: Some("user_ws".to_string()),
+                                            };
+                                            if let Err(error) = reconcile_account_positions(&store, &data_api, request).await {
+                                                warn!(error = %error, "websocket-triggered account reconciliation failed");
+                                            }
+                                        });
+                                    }
+                                }
+                            }
                         }
                         if let Err(error) = LiveVenue::persist_order_update_from_live_event(&store, &event).await {
                             warn!(error = %error, "failed to persist Polymarket live user websocket order event");
@@ -717,6 +793,21 @@ fn parse_signature_type(value: Option<&str>) -> Result<SignatureType> {
         "3" | "poly1271" | "poly_1271" => Ok(SignatureType::Poly1271),
         other => bail!("unsupported POLYMARKET_SIGNATURE_TYPE={other}"),
     }
+}
+
+fn configured_account_address(config: &LiveExecutionConfig) -> Option<String> {
+    config
+        .funder_address
+        .as_deref()
+        .filter(|address| !address.trim().is_empty())
+        .map(|address| address.to_ascii_lowercase())
+        .or_else(|| {
+            let private_key = config.private_key.as_deref()?;
+            let signer = LocalSigner::from_str(private_key)
+                .ok()?
+                .with_chain_id(Some(POLYGON));
+            Some(signer.address().to_checksum(None).to_ascii_lowercase())
+        })
 }
 
 fn sdk_decimal(value: Decimal) -> Result<SdkDecimal> {
@@ -1120,7 +1211,9 @@ impl ExecutionVenue for LiveVenue {
         if !self.config.order_submit_enabled {
             return Err(self.live_submit_unavailable(&request));
         }
-        if !self.live_status().await?.entries_enabled {
+        if request.intent() != crate::models::OrderIntent::Exit
+            && !self.live_status().await?.entries_enabled
+        {
             return Err(self.live_submit_unavailable(&request));
         }
         let store = self.store()?;
@@ -1298,6 +1391,18 @@ impl ExecutionVenue for LiveVenue {
             warn!(error = %error, "failed to backfill fills from Polymarket live user websocket events");
             0
         });
+        let account_reconcile = self
+            .run_account_reconcile(AccountReconcileRequest {
+                account_address: None,
+                lookback_hours: Some(1),
+                dry_run: false,
+                token_id: None,
+                source: Some("poll".to_string()),
+            })
+            .await;
+        if let Err(error) = &account_reconcile {
+            warn!(error = %error, "live account reconciliation polling backup failed");
+        }
         let open_orders = self.get_open_orders().await.unwrap_or_default();
         let balances_checked = self.get_balances().await.is_ok();
         let unresolved = open_orders.len();
@@ -1323,7 +1428,10 @@ impl ExecutionVenue for LiveVenue {
                 report.mismatches_found as i32,
                 fills_backfilled as i32,
                 report.unresolved_count as i32,
-                serde_json::to_value(&report)?,
+                serde_json::json!({
+                    "venue": report,
+                    "account_reconcile": account_reconcile.as_ref().ok()
+                }),
             )
             .await?;
         Ok(report)
@@ -1781,6 +1889,13 @@ impl ExecutionVenue for LiveVenue {
         })
     }
 
+    async fn live_account_reconcile(
+        &self,
+        request: AccountReconcileRequest,
+    ) -> Result<AccountReconcileReport> {
+        self.run_account_reconcile(request).await
+    }
+
     async fn set_live_entries_enabled(
         &self,
         enabled: bool,
@@ -2070,6 +2185,67 @@ mod tests {
         let status = venue.live_status().await.unwrap();
         assert!(!status.entries_enabled);
         assert_eq!(status.reason.as_deref(), Some("live_order_submit_disabled"));
+    }
+
+    #[tokio::test]
+    async fn disabled_entries_block_entries_but_not_exit_intent_gate() {
+        let mut config = live_config();
+        config.order_submit_enabled = true;
+        let venue = LiveVenue::new_for_test(config).unwrap();
+        let base = OrderRequest {
+            client_order_id: uuid::Uuid::new_v4(),
+            process_id: None,
+            market_id: "market".to_string(),
+            token_id: "1".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            price: dec!(0.50),
+            size: dec!(2),
+            signal_id: None,
+            metadata: json!({"purpose": "whale_follow_entry"}),
+        };
+
+        let entry_error = venue
+            .submit_order(base.clone())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(entry_error.contains("live order submit is disabled or not ready"));
+
+        let mut exit = base;
+        exit.metadata = json!({"purpose": "whale_led_exit"});
+        let exit_error = venue.submit_order(exit).await.unwrap_err().to_string();
+        assert!(exit_error.contains("live persistence store is not configured"));
+    }
+
+    #[tokio::test]
+    async fn disabled_entries_block_non_exit_intents() {
+        let mut config = live_config();
+        config.order_submit_enabled = true;
+        let venue = LiveVenue::new_for_test(config).unwrap();
+        let mut request = OrderRequest {
+            client_order_id: uuid::Uuid::new_v4(),
+            process_id: None,
+            market_id: "market".to_string(),
+            token_id: "1".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            price: dec!(0.50),
+            size: dec!(2),
+            signal_id: None,
+            metadata: json!({"execution_intent": "risk_reduction"}),
+        };
+
+        for intent in ["risk_reduction", "admin_manual"] {
+            request.client_order_id = uuid::Uuid::new_v4();
+            request.metadata = json!({"execution_intent": intent});
+            let error = venue
+                .submit_order(request.clone())
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("live order submit is disabled or not ready"));
+        }
     }
 
     #[test]
