@@ -189,6 +189,8 @@ pub struct LivePoly1271FunderProbeCandidate {
     pub authenticated_client_address: Option<String>,
     pub api_keys_readable: bool,
     pub api_keys_error: Option<String>,
+    pub update_balance_allowance_ok: bool,
+    pub update_balance_allowance_error: Option<String>,
     pub balance_allowance_readable: bool,
     pub balance_allowance_error: Option<String>,
     pub collateral_balance: Option<String>,

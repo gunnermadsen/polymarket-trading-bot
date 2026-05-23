@@ -8,7 +8,10 @@ use polymarket_client_sdk_v2::{
     auth::{state::Authenticated, Credentials, LocalSigner, Normal, Signer as _},
     clob::{
         types::{
-            request::{BalanceAllowanceRequest, OrdersRequest, TradesRequest},
+            request::{
+                BalanceAllowanceRequest, OrdersRequest, TradesRequest,
+                UpdateBalanceAllowanceRequest,
+            },
             response::{OpenOrderResponse, PostOrderResponse, TradeResponse},
             AssetType, OrderStatusType, OrderType as SdkOrderType, Side as SdkSide, SignatureType,
         },
@@ -355,6 +358,8 @@ impl LiveVenue {
             authenticated_client_address: None,
             api_keys_readable: false,
             api_keys_error: None,
+            update_balance_allowance_ok: false,
+            update_balance_allowance_error: None,
             balance_allowance_readable: false,
             balance_allowance_error: None,
             collateral_balance: None,
@@ -398,6 +403,19 @@ impl LiveVenue {
         match client.api_keys().await {
             Ok(_) => candidate.api_keys_readable = true,
             Err(error) => candidate.api_keys_error = Some(error.to_string()),
+        }
+
+        match client
+            .update_balance_allowance(
+                UpdateBalanceAllowanceRequest::builder()
+                    .asset_type(AssetType::Collateral)
+                    .signature_type(SignatureType::Poly1271)
+                    .build(),
+            )
+            .await
+        {
+            Ok(_) => candidate.update_balance_allowance_ok = true,
+            Err(error) => candidate.update_balance_allowance_error = Some(error.to_string()),
         }
 
         match client
@@ -456,6 +474,7 @@ impl LiveVenue {
         candidate.signed_order_build_ok = true;
         candidate.ready_for_live_canary = candidate.derive_credentials_ok
             && candidate.api_keys_readable
+            && candidate.update_balance_allowance_ok
             && candidate.balance_allowance_readable
             && candidate.open_orders_readable
             && candidate.signed_order_build_ok

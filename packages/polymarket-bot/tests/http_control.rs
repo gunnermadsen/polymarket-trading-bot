@@ -378,6 +378,8 @@ impl ControlApi for FakeControlApi {
                     ),
                     api_keys_readable: true,
                     api_keys_error: None,
+                    update_balance_allowance_ok: true,
+                    update_balance_allowance_error: None,
                     balance_allowance_readable: true,
                     balance_allowance_error: None,
                     collateral_balance: Some("20".to_string()),

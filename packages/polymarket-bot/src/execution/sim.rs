@@ -479,6 +479,8 @@ impl ExecutionVenue for SimVenue {
                     authenticated_client_address: None,
                     api_keys_readable: false,
                     api_keys_error: Some(format!("{}_mode", self.mode_name)),
+                    update_balance_allowance_ok: false,
+                    update_balance_allowance_error: Some(format!("{}_mode", self.mode_name)),
                     balance_allowance_readable: false,
                     balance_allowance_error: Some(format!("{}_mode", self.mode_name)),
                     collateral_balance: None,
