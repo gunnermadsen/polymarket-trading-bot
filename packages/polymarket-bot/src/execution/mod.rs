@@ -111,6 +111,15 @@ pub struct LiveWalletCandidateAddressDiagnostics {
     pub deployed_as_safe_wallet_error: Option<String>,
     pub safe_wallet_deployment_check_url: Option<String>,
     pub balances: Option<LiveWalletTokenBalances>,
+    pub poly1271_authenticated_client_address: Option<String>,
+    pub poly1271_api_keys_readable: bool,
+    pub poly1271_api_keys_error: Option<String>,
+    pub poly1271_balance_allowance_readable: bool,
+    pub poly1271_balance_allowance_error: Option<String>,
+    pub poly1271_collateral_balance: Option<String>,
+    pub poly1271_open_orders_readable: bool,
+    pub poly1271_open_orders_error: Option<String>,
+    pub poly1271_open_orders_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

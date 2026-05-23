@@ -266,6 +266,80 @@ impl LiveVenue {
         Ok(client)
     }
 
+    async fn poly1271_candidate_client(&self, funder_address: &str) -> Result<AuthenticatedClient> {
+        let private_key = self
+            .config
+            .private_key
+            .as_deref()
+            .context("missing private key")?;
+        let signer = LocalSigner::from_str(private_key)
+            .context("failed to parse POLYMARKET_PRIVATE_KEY")?
+            .with_chain_id(Some(POLYGON));
+        let funder = Address::from_str(funder_address)
+            .context("failed to parse candidate funder address")?;
+        SdkClient::new(&self.clob_base_url, SdkConfig::default())
+            .context("failed to create Polymarket CLOB SDK client")?
+            .authentication_builder(&signer)
+            .signature_type(SignatureType::Poly1271)
+            .funder(funder)
+            .authenticate()
+            .await
+            .context("failed to authenticate candidate as POLY_1271")
+    }
+
+    async fn apply_poly1271_candidate_clob_diagnostics(
+        &self,
+        candidate: &mut LiveWalletCandidateAddressDiagnostics,
+    ) {
+        let client = match self.poly1271_candidate_client(&candidate.address).await {
+            Ok(client) => client,
+            Err(error) => {
+                let message = error.to_string();
+                candidate.poly1271_api_keys_error = Some(message.clone());
+                candidate.poly1271_balance_allowance_error = Some(message.clone());
+                candidate.poly1271_open_orders_error = Some(message);
+                return;
+            }
+        };
+        candidate.poly1271_authenticated_client_address = Some(client.address().to_checksum(None));
+
+        match client.api_keys().await {
+            Ok(_) => candidate.poly1271_api_keys_readable = true,
+            Err(error) => candidate.poly1271_api_keys_error = Some(error.to_string()),
+        }
+
+        match client
+            .balance_allowance(
+                BalanceAllowanceRequest::builder()
+                    .asset_type(AssetType::Collateral)
+                    .signature_type(SignatureType::Poly1271)
+                    .build(),
+            )
+            .await
+        {
+            Ok(balance) => {
+                candidate.poly1271_balance_allowance_readable = true;
+                match local_decimal(balance.balance) {
+                    Ok(balance) => {
+                        candidate.poly1271_collateral_balance = Some(balance.to_string())
+                    }
+                    Err(error) => {
+                        candidate.poly1271_balance_allowance_error = Some(error.to_string())
+                    }
+                }
+            }
+            Err(error) => candidate.poly1271_balance_allowance_error = Some(error.to_string()),
+        }
+
+        match client.orders(&OrdersRequest::builder().build(), None).await {
+            Ok(page) => {
+                candidate.poly1271_open_orders_readable = true;
+                candidate.poly1271_open_orders_count = Some(page.data.len());
+            }
+            Err(error) => candidate.poly1271_open_orders_error = Some(error.to_string()),
+        }
+    }
+
     fn store(&self) -> Result<Store> {
         self.store
             .clone()
@@ -1006,7 +1080,7 @@ impl ExecutionVenue for LiveVenue {
             }
             _ => None,
         };
-        let candidate_addresses = wallet_candidate_address_diagnostics(
+        let mut candidate_addresses = wallet_candidate_address_diagnostics(
             candidate_addresses,
             configured_funder_address.as_deref(),
             signer_address.as_deref(),
@@ -1017,6 +1091,10 @@ impl ExecutionVenue for LiveVenue {
             &rpc_url,
         )
         .await;
+        for candidate in &mut candidate_addresses {
+            self.apply_poly1271_candidate_clob_diagnostics(candidate)
+                .await;
+        }
         let verified_deposit_wallet_addresses = candidate_addresses
             .iter()
             .filter(|candidate| candidate.deployed_as_deposit_wallet == Some(true))
@@ -1296,6 +1374,15 @@ async fn wallet_candidate_address_diagnostics(
             deployed_as_safe_wallet_error,
             safe_wallet_deployment_check_url,
             balances,
+            poly1271_authenticated_client_address: None,
+            poly1271_api_keys_readable: false,
+            poly1271_api_keys_error: None,
+            poly1271_balance_allowance_readable: false,
+            poly1271_balance_allowance_error: None,
+            poly1271_collateral_balance: None,
+            poly1271_open_orders_readable: false,
+            poly1271_open_orders_error: None,
+            poly1271_open_orders_count: None,
         });
     }
     diagnostics

@@ -272,7 +272,7 @@ impl ControlApi for FakeControlApi {
             candidate_addresses: candidate_addresses
                 .into_iter()
                 .map(|address| LiveWalletCandidateAddressDiagnostics {
-                    address,
+                    address: address.clone(),
                     matches_signer: Some(false),
                     matches_configured_funder: Some(false),
                     matches_authenticated_client: Some(false),
@@ -291,6 +291,15 @@ impl ControlApi for FakeControlApi {
                             .to_string(),
                     ),
                     balances: None,
+                    poly1271_authenticated_client_address: Some(address),
+                    poly1271_api_keys_readable: true,
+                    poly1271_api_keys_error: None,
+                    poly1271_balance_allowance_readable: true,
+                    poly1271_balance_allowance_error: None,
+                    poly1271_collateral_balance: Some("0".to_string()),
+                    poly1271_open_orders_readable: true,
+                    poly1271_open_orders_error: None,
+                    poly1271_open_orders_count: Some(0),
                 })
                 .collect(),
             verified_deposit_wallet_address: Some(
