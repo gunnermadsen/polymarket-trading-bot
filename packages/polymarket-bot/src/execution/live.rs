@@ -922,10 +922,14 @@ fn is_cancelled_order_status(status: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
-fn is_fok_unfilled_rejection(error_chain: &str) -> bool {
+fn is_nonfatal_live_order_rejection(order_type: OrderType, error_chain: &str) -> bool {
     let normalized = error_chain.to_ascii_lowercase();
-    normalized.contains("order couldn't be fully filled")
-        && normalized.contains("fok orders are fully filled or killed")
+    let fok_unfilled = order_type == OrderType::Fok
+        && normalized.contains("order couldn't be fully filled")
+        && normalized.contains("fok orders are fully filled or killed");
+    let insufficient_balance = normalized.contains("not enough balance / allowance")
+        || normalized.contains("the balance is not enough");
+    fok_unfilled || insufficient_balance
 }
 
 fn live_event_order_id_candidates(payload: &Value) -> Vec<String> {
@@ -1173,7 +1177,7 @@ impl ExecutionVenue for LiveVenue {
                 let error_msg = response
                     .error_msg
                     .unwrap_or_else(|| "unknown rejection".to_string());
-                if request.order_type == OrderType::Fok && is_fok_unfilled_rejection(&error_msg) {
+                if is_nonfatal_live_order_rejection(request.order_type, &error_msg) {
                     return Ok(failed_order);
                 }
                 bail!(
@@ -1195,7 +1199,7 @@ impl ExecutionVenue for LiveVenue {
                         }),
                     )
                     .await?;
-                if request.order_type == OrderType::Fok && is_fok_unfilled_rejection(&error_chain) {
+                if is_nonfatal_live_order_rejection(request.order_type, &error_chain) {
                     return Ok(failed_order);
                 }
                 Err(error)
