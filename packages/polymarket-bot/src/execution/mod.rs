@@ -8,6 +8,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use crate::account_reconcile::{AccountReconcileReport, AccountReconcileRequest};
 use crate::models::{
     ConversionRequest, ConversionResult, FillRecord, OrderRecord, OrderRequest, OrderSide,
     OrderState, OrderType,
@@ -283,6 +284,10 @@ pub trait ExecutionVenue: Send + Sync {
         &self,
         request: LivePoly1271FunderProbeRequest,
     ) -> Result<LivePoly1271FunderProbeResponse>;
+    async fn live_account_reconcile(
+        &self,
+        request: AccountReconcileRequest,
+    ) -> Result<AccountReconcileReport>;
     async fn set_live_entries_enabled(
         &self,
         enabled: bool,
@@ -292,10 +297,12 @@ pub trait ExecutionVenue: Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    use axum::{routing::get, Json, Router};
     use rust_decimal_macros::dec;
     use uuid::Uuid;
 
-    use crate::models::{OrderRequest, OrderSide, OrderType};
+    use crate::clob::ClobClient;
+    use crate::models::{OrderIntent, OrderRequest, OrderSide, OrderState, OrderType};
 
     use super::{execute_order_plan, sim::SimVenue, ExecutionVenue, OrderPlan};
 
@@ -320,7 +327,12 @@ mod tests {
 
         let report = execute_order_plan(&venue, plan).await.unwrap();
         assert_eq!(report.orders.len(), 1);
-        assert_eq!(report.fills.len(), 1);
+        assert_eq!(report.orders[0].state, OrderState::Rejected);
+        assert_eq!(report.fills.len(), 0);
+        assert_eq!(
+            report.orders[0].request.metadata["reject_reason"],
+            serde_json::json!("missing_orderbook")
+        );
         assert!(report.reconciliation.balances_checked);
         assert_eq!(report.reconciliation.unresolved_count, 0);
     }
@@ -361,16 +373,17 @@ mod tests {
         .unwrap();
 
         assert_eq!(first.orders[0].order_id, second.orders[0].order_id);
-        assert_eq!(first.fills.len(), 1);
-        assert_eq!(second.fills.len(), 1);
-        assert_eq!(first.fills[0].fill_id, second.fills[0].fill_id);
+        assert_eq!(first.fills.len(), 0);
+        assert_eq!(second.fills.len(), 0);
+        assert_eq!(first.orders[0].state, OrderState::Rejected);
+        assert_eq!(second.orders[0].state, OrderState::Rejected);
         assert_eq!(
             venue
                 .fills_for_order(&first.orders[0].order_id)
                 .await
                 .unwrap()
                 .len(),
-            1
+            0
         );
     }
 
@@ -409,8 +422,89 @@ mod tests {
         .unwrap();
 
         assert_eq!(first.orders[0].order_id, replay.orders[0].order_id);
-        assert_eq!(first.fills.len(), 1);
-        assert_eq!(replay.fills.len(), 1);
-        assert_eq!(first.fills[0].fill_id, replay.fills[0].fill_id);
+        assert_eq!(first.fills.len(), 0);
+        assert_eq!(replay.fills.len(), 0);
+        assert_eq!(first.orders[0].state, OrderState::Rejected);
+        assert_eq!(replay.orders[0].state, OrderState::Rejected);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires binding a local loopback CLOB mock"]
+    async fn sim_venue_with_clob_rejects_non_crossable_entry() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new().route(
+            "/book",
+            get(|| async {
+                Json(serde_json::json!({
+                    "bids": [{"price": "0.38", "size": "100"}],
+                    "asks": [{"price": "0.41", "size": "100"}]
+                }))
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let venue = SimVenue::with_clob(ClobClient::new(base_url), dec!(0.03));
+        let request = OrderRequest {
+            client_order_id: Uuid::new_v4(),
+            process_id: Some(Uuid::new_v4()),
+            market_id: "m1".to_string(),
+            token_id: "t1".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            price: dec!(0.40),
+            size: dec!(10),
+            signal_id: None,
+            metadata: serde_json::json!({"purpose": "whale_follow_entry"}),
+        };
+
+        let report = execute_order_plan(
+            &venue,
+            OrderPlan {
+                plan_id: Uuid::new_v4(),
+                orders: vec![request],
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.orders.len(), 1);
+        assert_eq!(report.orders[0].state, crate::models::OrderState::Rejected);
+        assert_eq!(report.fills.len(), 0);
+        assert_eq!(
+            report.orders[0].request.metadata["reject_reason"],
+            serde_json::json!("limit_price_not_crossable")
+        );
+    }
+
+    #[test]
+    fn order_intent_is_derived_from_existing_metadata() {
+        let mut request = OrderRequest {
+            client_order_id: Uuid::new_v4(),
+            process_id: None,
+            market_id: "m1".to_string(),
+            token_id: "t1".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            price: dec!(0.42),
+            size: dec!(10),
+            signal_id: None,
+            metadata: serde_json::json!({"purpose": "whale_follow_entry"}),
+        };
+        assert_eq!(request.intent(), OrderIntent::Entry);
+
+        request.metadata = serde_json::json!({"purpose": "whale_led_exit"});
+        assert_eq!(request.intent(), OrderIntent::Exit);
+
+        request.metadata = serde_json::json!({"execution_intent": "risk_reduction"});
+        assert_eq!(request.intent(), OrderIntent::RiskReduction);
+
+        request.metadata =
+            serde_json::json!({"execution_intent": "unexpected", "purpose": "whale_led_exit"});
+        assert_eq!(request.intent(), OrderIntent::Exit);
+
+        request.metadata = serde_json::json!({"execution_intent": "unexpected"});
+        assert_eq!(request.intent(), OrderIntent::Entry);
     }
 }

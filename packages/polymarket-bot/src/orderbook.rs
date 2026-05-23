@@ -122,7 +122,7 @@ impl LocalOrderBook {
         max_age: Duration,
         now: DateTime<Utc>,
     ) -> Option<DepthWalk> {
-        self.depth_walk(BookSide::Ask, target, None, max_age, now)
+        self.depth_walk(BookSide::Ask, target, None, max_age, now, true)
     }
 
     pub fn depth_walk_buy_limit(
@@ -132,7 +132,24 @@ impl LocalOrderBook {
         max_age: Duration,
         now: DateTime<Utc>,
     ) -> Option<DepthWalk> {
-        self.depth_walk(BookSide::Ask, target, Some(limit_price), max_age, now)
+        self.depth_walk(BookSide::Ask, target, Some(limit_price), max_age, now, true)
+    }
+
+    pub fn depth_walk_buy_limit_partial(
+        &self,
+        target: Decimal,
+        limit_price: Decimal,
+        max_age: Duration,
+        now: DateTime<Utc>,
+    ) -> Option<DepthWalk> {
+        self.depth_walk(
+            BookSide::Ask,
+            target,
+            Some(limit_price),
+            max_age,
+            now,
+            false,
+        )
     }
 
     pub fn depth_walk_sell(
@@ -141,7 +158,7 @@ impl LocalOrderBook {
         max_age: Duration,
         now: DateTime<Utc>,
     ) -> Option<DepthWalk> {
-        self.depth_walk(BookSide::Bid, target, None, max_age, now)
+        self.depth_walk(BookSide::Bid, target, None, max_age, now, true)
     }
 
     pub fn depth_walk_sell_limit(
@@ -151,7 +168,24 @@ impl LocalOrderBook {
         max_age: Duration,
         now: DateTime<Utc>,
     ) -> Option<DepthWalk> {
-        self.depth_walk(BookSide::Bid, target, Some(limit_price), max_age, now)
+        self.depth_walk(BookSide::Bid, target, Some(limit_price), max_age, now, true)
+    }
+
+    pub fn depth_walk_sell_limit_partial(
+        &self,
+        target: Decimal,
+        limit_price: Decimal,
+        max_age: Duration,
+        now: DateTime<Utc>,
+    ) -> Option<DepthWalk> {
+        self.depth_walk(
+            BookSide::Bid,
+            target,
+            Some(limit_price),
+            max_age,
+            now,
+            false,
+        )
     }
 
     pub fn limit_depth_summary(
@@ -250,6 +284,7 @@ impl LocalOrderBook {
         limit_price: Option<Decimal>,
         max_age: Duration,
         now: DateTime<Utc>,
+        require_full: bool,
     ) -> Option<DepthWalk> {
         if target <= Decimal::ZERO {
             return Some(DepthWalk {
@@ -285,6 +320,9 @@ impl LocalOrderBook {
                 return Some(DepthWalk { total, fills });
             }
         }
+        if !require_full && !fills.is_empty() {
+            return Some(DepthWalk { total, fills });
+        }
         None
     }
 
@@ -299,6 +337,7 @@ impl LocalOrderBook {
 #[cfg(test)]
 mod tests {
     use chrono::Duration;
+    use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
 
     use super::{BookSide, LocalOrderBook};
@@ -361,6 +400,29 @@ mod tests {
             .unwrap();
         assert_eq!(buy.total, dec!(4.15));
         assert_eq!(sell.total, dec!(3.85));
+    }
+
+    #[test]
+    fn partial_limit_walk_returns_available_crossing_depth() {
+        let now = chrono::Utc::now();
+        let mut book = LocalOrderBook::default();
+        book.upsert_level(BookSide::Ask, dec!(0.41), dec!(5), now);
+        book.upsert_level(BookSide::Ask, dec!(0.42), dec!(3), now);
+
+        assert!(book
+            .depth_walk_buy_limit(dec!(10), dec!(0.42), Duration::seconds(45), now)
+            .is_none());
+
+        let partial = book
+            .depth_walk_buy_limit_partial(dec!(10), dec!(0.42), Duration::seconds(45), now)
+            .unwrap();
+
+        assert_eq!(partial.total, dec!(3.31));
+        assert_eq!(partial.fills.len(), 2);
+        assert_eq!(
+            partial.fills.iter().map(|fill| fill.size).sum::<Decimal>(),
+            dec!(8)
+        );
     }
 
     #[test]

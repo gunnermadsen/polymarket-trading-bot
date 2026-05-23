@@ -14,8 +14,10 @@ use crate::{
         ObservedMarket, COPY_SCORE_VERSION,
     },
     data_api::{ClosedPositionsQuery, DataApiClient, TradesQuery},
-    execution::{execute_order_plan, ExecutionVenue, OrderPlan},
-    models::{BackfillJobStatus, CopyTradeBacktestRun, DataApiClosedPosition, WhaleTrade},
+    execution::{execute_order_plan, ExecutionVenue, OrderPlan, OrderPlanReport},
+    models::{
+        BackfillJobStatus, CopyTradeBacktestRun, DataApiClosedPosition, OrderState, WhaleTrade,
+    },
     store::{OrderbookSnapshot, Store, TradeMarkSourceFailure},
     trade_pnl::{refresh_trade_pnl_with_config, TradePnlConfig},
     wallets::{score_closed_position_performance, score_closed_position_wallets, score_wallets},
@@ -485,6 +487,8 @@ mod tests {
     use rust_decimal_macros::dec;
     use uuid::Uuid;
 
+    use crate::models::{OrderRecord, OrderRequest, OrderSide, OrderState, OrderType};
+
     use super::*;
 
     fn trade(wallet: &str) -> WhaleTrade {
@@ -572,6 +576,46 @@ mod tests {
             entry_mark_error_reason(&request_failed),
             "clob_orderbook_request_failed"
         );
+    }
+
+    #[test]
+    fn copy_signal_execution_status_does_not_mark_rejected_orders_filled() {
+        let order = OrderRecord {
+            order_id: "live-pending-order".to_string(),
+            request: OrderRequest {
+                client_order_id: Uuid::new_v4(),
+                process_id: Some(Uuid::new_v4()),
+                market_id: "market".to_string(),
+                token_id: "token".to_string(),
+                side: OrderSide::Buy,
+                order_type: OrderType::Fok,
+                price: dec!(0.50),
+                size: dec!(4),
+                signal_id: Some(Uuid::new_v4()),
+                metadata: serde_json::json!({"purpose": "whale_follow_entry"}),
+            },
+            state: OrderState::Rejected,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let report = OrderPlanReport {
+            plan_id: Uuid::new_v4(),
+            orders: vec![order],
+            fills: vec![],
+            reconciliation: crate::execution::ReconciliationReport {
+                open_orders: 0,
+                balances_checked: true,
+                mismatches_found: 0,
+                unresolved_count: 0,
+                checked_at: Utc::now(),
+            },
+        };
+
+        let (status, metadata) = copy_signal_execution_status(&report);
+
+        assert_eq!(status, "rejected");
+        assert_eq!(metadata["orders"], 1);
+        assert_eq!(metadata["fills"], 0);
     }
 }
 pub async fn run_copy_trade_signal_engine(
@@ -678,15 +722,16 @@ pub async fn run_copy_trade_signal_engine(
         summary.orders_inserted += execution.orders.len();
         summary.fills_inserted += execution.fills.len();
         store.persist_order_plan_report(&execution).await?;
+        let (status, metadata) = copy_signal_execution_status(&execution);
+        if status == "rejected" {
+            summary.rejections += 1;
+        }
         store
             .update_copy_trade_signal_status(
                 decision.copy_signal.signal_id,
                 decision.copy_signal.timestamp_utc,
-                "filled",
-                serde_json::json!({
-                    "orders": execution.orders.len(),
-                    "fills": execution.fills.len()
-                }),
+                status,
+                metadata,
             )
             .await?;
     }
@@ -696,6 +741,48 @@ pub async fn run_copy_trade_signal_engine(
     }
 
     Ok(summary)
+}
+
+fn copy_signal_execution_status(execution: &OrderPlanReport) -> (&'static str, serde_json::Value) {
+    let has_fill = !execution.fills.is_empty()
+        || execution.orders.iter().any(|order| {
+            matches!(
+                order.state,
+                OrderState::Filled | OrderState::PartiallyFilled
+            )
+        });
+    let all_terminal_rejected = !execution.orders.is_empty()
+        && execution.orders.iter().all(|order| {
+            matches!(
+                order.state,
+                OrderState::Rejected | OrderState::Cancelled | OrderState::Expired
+            )
+        });
+    let status = if has_fill {
+        "filled"
+    } else if all_terminal_rejected {
+        "rejected"
+    } else {
+        "submitted"
+    };
+    let order_states = execution
+        .orders
+        .iter()
+        .map(|order| {
+            serde_json::json!({
+                "order_id": order.order_id,
+                "state": order.state,
+            })
+        })
+        .collect::<Vec<_>>();
+    (
+        status,
+        serde_json::json!({
+            "orders": execution.orders.len(),
+            "fills": execution.fills.len(),
+            "order_states": order_states,
+        }),
+    )
 }
 
 async fn ensure_order_plan_markable_at_entry(
