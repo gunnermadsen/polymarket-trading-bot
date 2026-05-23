@@ -322,7 +322,7 @@ pub fn evaluate_copy_trade(
                     side: order_side,
                     order_type: OrderType::Fok,
                     price: limit_price,
-                    size: shares_for_notional(copy_size_usd, limit_price),
+                    size: shares_for_notional(copy_size_usd, limit_price, order_side),
                     signal_id: Some(signal_id),
                     metadata: serde_json::json!({"purpose": "whale_follow_entry"}),
                 }],
@@ -445,12 +445,13 @@ fn backtest_at_threshold(
         let Some(exit_price) = future_price(trades, trade, config.backtest_horizon_secs) else {
             continue;
         };
-        let side_multiplier = if trade.side.eq_ignore_ascii_case("SELL") {
-            dec!(-1)
+        let (order_side, side_multiplier) = if trade.side.eq_ignore_ascii_case("SELL") {
+            (OrderSide::Sell, dec!(-1))
         } else {
-            dec!(1)
+            (OrderSide::Buy, dec!(1))
         };
-        let shares = shares_for_notional(decision.copy_signal.copy_size_usd, trade.price);
+        let shares =
+            shares_for_notional(decision.copy_signal.copy_size_usd, trade.price, order_side);
         let gross = (exit_price - trade.price) * shares * side_multiplier;
         let fees = decision.copy_signal.copy_size_usd * config.taker_fee_rate;
         gross_pnl.push(gross);
@@ -570,11 +571,25 @@ fn bounded_copy_size(trade_cash_value: Decimal, config: &CopyTradeConfig) -> Dec
         .min(config.max_copy_size_usd)
 }
 
-fn shares_for_notional(notional: Decimal, price: Decimal) -> Decimal {
+fn shares_for_notional(notional: Decimal, price: Decimal, side: OrderSide) -> Decimal {
     if price <= Decimal::ZERO {
         return Decimal::ZERO;
     }
-    (notional / price).round_dp_with_strategy(2, RoundingStrategy::ToZero)
+    let mut shares = (notional / price).round_dp_with_strategy(2, RoundingStrategy::ToZero);
+    if side != OrderSide::Buy {
+        return shares;
+    }
+
+    while shares > Decimal::ZERO {
+        let maker_amount = shares * price;
+        if maker_amount <= notional
+            && maker_amount == maker_amount.round_dp_with_strategy(2, RoundingStrategy::ToZero)
+        {
+            return shares;
+        }
+        shares -= dec!(0.01);
+    }
+    Decimal::ZERO
 }
 
 fn clob_tick_price(price: Decimal, side: OrderSide) -> Decimal {
@@ -713,8 +728,36 @@ mod tests {
             None,
         );
         let order = &decision.order_plan.unwrap().orders[0];
-        assert_eq!(order.size, dec!(5.40));
+        assert_eq!(order.size, dec!(5.00));
         assert!(order.price * order.size <= dec!(2));
+        assert_eq!(
+            (order.price * order.size).round_dp(2),
+            order.price * order.size
+        );
+    }
+
+    #[test]
+    fn generated_buy_order_has_clob_compatible_collateral_precision() {
+        let mut config = CopyTradeConfig::default();
+        config.min_copy_size_usd = dec!(2);
+        config.max_copy_size_usd = dec!(2);
+        let trade = trade("0xabc", "token", dec!(0.15), 0);
+        let wallet_performance = performance("0xabc", dec!(1000), dec!(0.10), 10);
+        let decision = evaluate_copy_trade(
+            &trade,
+            Some(&wallet_performance),
+            ObservedMarket {
+                observed_price: dec!(0.15),
+                available_depth_usd: dec!(1000),
+                observed_at: trade.timestamp_utc + chrono::Duration::seconds(10),
+            },
+            &config,
+            None,
+        );
+        let order = &decision.order_plan.unwrap().orders[0];
+        assert_eq!(order.price, dec!(0.15));
+        assert_eq!(order.size, dec!(13.20));
+        assert_eq!(order.price * order.size, dec!(1.98));
     }
 
     #[test]
