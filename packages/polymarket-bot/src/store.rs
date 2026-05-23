@@ -1965,8 +1965,10 @@ impl Store {
               FROM polymarket.copy_trade_signals s
               JOIN polymarket.orders o
                 ON (o.raw_payload #>> '{request,signal_id}')::uuid = s.signal_id
+               AND o.process_id IS NOT DISTINCT FROM s.process_id
               JOIN polymarket.fills f
                 ON f.order_id = o.order_id
+               AND f.process_id IS NOT DISTINCT FROM s.process_id
               WHERE s.status = 'filled'
                 AND NOT EXISTS (
                   SELECT 1
