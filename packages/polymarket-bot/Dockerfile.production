@@ -10,7 +10,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY packages/polymarket-bot/Cargo.toml packages/polymarket-bot/Cargo.lock ./
-COPY vendor/polymarket_client_sdk_v2 /vendor/polymarket_client_sdk_v2
 
 RUN mkdir -p src/bin \
     && printf 'pub fn placeholder() {}\n' > src/lib.rs \
@@ -22,7 +21,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo fetch --locked
 
 COPY packages/polymarket-bot/src ./src
-COPY vendor/polymarket_client_sdk_v2 /vendor/polymarket_client_sdk_v2
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \

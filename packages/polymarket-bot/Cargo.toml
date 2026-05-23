@@ -12,7 +12,7 @@ async-trait = "0.1"
 axum = "0.7"
 chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
-polymarket_client_sdk_v2 = { path = "../../vendor/polymarket_client_sdk_v2", features = ["clob", "ws", "heartbeats"] }
+polymarket_client_sdk_v2 = { version = "0.6.0-canary.1", features = ["clob", "ws", "heartbeats"] }
 rust_decimal = { version = "1.36", features = ["serde-with-str"] }
 rust_decimal_macros = "1.36"
 serde = { version = "1.0", features = ["derive"] }

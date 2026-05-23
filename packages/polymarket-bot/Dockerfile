@@ -7,7 +7,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY packages/polymarket-bot/Cargo.toml packages/polymarket-bot/Cargo.lock ./
-COPY vendor/polymarket_client_sdk_v2 /vendor/polymarket_client_sdk_v2
 COPY packages/polymarket-bot/src ./src
 
 RUN cargo build --release
