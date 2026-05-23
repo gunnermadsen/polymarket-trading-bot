@@ -593,10 +593,11 @@ fn shares_for_notional(notional: Decimal, price: Decimal, side: OrderSide) -> De
 }
 
 fn clob_tick_price(price: Decimal, side: OrderSide) -> Decimal {
-    match side {
+    let rounded = match side {
         OrderSide::Buy => price.round_dp_with_strategy(2, RoundingStrategy::ToPositiveInfinity),
         OrderSide::Sell => price.round_dp_with_strategy(2, RoundingStrategy::ToNegativeInfinity),
-    }
+    };
+    rounded.clamp(dec!(0.01), dec!(0.99))
 }
 
 fn price_slippage_bps(reference: Decimal, observed: Decimal) -> Decimal {
@@ -627,10 +628,10 @@ mod tests {
 
     use crate::{
         copytrade::{
-            evaluate_copy_trade, run_copy_trade_backtest, CopyTradeConfig,
+            clob_tick_price, evaluate_copy_trade, run_copy_trade_backtest, CopyTradeConfig,
             CopyTradeWalletPerformance, ObservedMarket,
         },
-        models::{WalletScore, WhaleTrade},
+        models::{OrderSide, WalletScore, WhaleTrade},
     };
 
     fn trade(wallet: &str, asset: &str, price: rust_decimal::Decimal, minutes: i64) -> WhaleTrade {
@@ -758,6 +759,14 @@ mod tests {
         assert_eq!(order.price, dec!(0.15));
         assert_eq!(order.size, dec!(13.20));
         assert_eq!(order.price * order.size, dec!(1.98));
+    }
+
+    #[test]
+    fn generated_order_price_stays_inside_clob_price_bounds() {
+        assert_eq!(clob_tick_price(dec!(0.999), OrderSide::Buy), dec!(0.99));
+        assert_eq!(clob_tick_price(dec!(1.00), OrderSide::Buy), dec!(0.99));
+        assert_eq!(clob_tick_price(dec!(0.001), OrderSide::Sell), dec!(0.01));
+        assert_eq!(clob_tick_price(dec!(0.00), OrderSide::Sell), dec!(0.01));
     }
 
     #[test]
