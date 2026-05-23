@@ -17,9 +17,9 @@ variable "environment" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type. t3.medium is 2 vCPU and 4 GiB RAM."
+  description = "EC2 instance type. c7i.xlarge is 4 vCPU and 8 GiB RAM."
   type        = string
-  default     = "t3.medium"
+  default     = "c7i.xlarge"
 }
 
 variable "ami_id" {
