@@ -16,16 +16,14 @@ RUN mkdir -p src/bin \
     && printf 'fn main() {}\n' > src/main.rs \
     && printf 'fn main() {}\n' > src/bin/derive-clob-creds.rs
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    cargo fetch --locked
+# Keep compiled dependencies in a normal layer so remote BuildKit cache exporters
+# can reuse them on ephemeral GitHub Actions runners.
+RUN cargo build --locked --release
 
 COPY packages/polymarket-bot/src ./src
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
-    cargo build --locked --release \
+RUN cargo clean --release -p polymarket-bot \
+    && cargo build --locked --release \
     && cp /app/target/release/polymarket-bot /usr/local/bin/polymarket-bot \
     && cp /app/target/release/derive-clob-creds /usr/local/bin/derive-clob-creds
 
