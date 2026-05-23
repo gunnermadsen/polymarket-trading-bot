@@ -5,9 +5,12 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::models::{ConversionRequest, ConversionResult, FillRecord, OrderRecord, OrderRequest};
+use crate::models::{
+    ConversionRequest, ConversionResult, FillRecord, OrderRecord, OrderRequest, OrderSide,
+    OrderType,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ReconciliationReport {
@@ -53,6 +56,37 @@ pub struct LiveIdentityDiagnostics {
     pub open_orders_readable: bool,
     pub open_orders_error: Option<String>,
     pub open_orders_count: Option<usize>,
+    pub checked_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LiveOrderDryRunRequest {
+    pub token_id: String,
+    pub side: OrderSide,
+    #[serde(default)]
+    pub order_type: Option<OrderType>,
+    pub price: Decimal,
+    pub size: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveOrderDryRunDiagnostics {
+    pub mode: String,
+    pub clob_api_base_url: String,
+    pub signer_address: Option<String>,
+    pub configured_funder_address: Option<String>,
+    pub configured_signature_type: Option<String>,
+    pub resolved_signature_type: Option<String>,
+    pub authenticated_client_address: Option<String>,
+    pub order_signer: Option<String>,
+    pub order_maker: Option<String>,
+    pub order_signature_type: Option<String>,
+    pub order_signer_matches_authenticated_client: Option<bool>,
+    pub order_signer_matches_configured_funder: Option<bool>,
+    pub order_maker_matches_configured_funder: Option<bool>,
+    pub owner_redacted: bool,
+    pub signature_redacted: bool,
+    pub signed_order: serde_json::Value,
     pub checked_at: DateTime<Utc>,
 }
 
@@ -106,6 +140,10 @@ pub trait ExecutionVenue: Send + Sync {
     async fn fills_for_order(&self, order_id: &str) -> Result<Vec<FillRecord>>;
     async fn live_status(&self) -> Result<LiveVenueStatus>;
     async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics>;
+    async fn live_order_dry_run(
+        &self,
+        request: LiveOrderDryRunRequest,
+    ) -> Result<LiveOrderDryRunDiagnostics>;
     async fn set_live_entries_enabled(
         &self,
         enabled: bool,

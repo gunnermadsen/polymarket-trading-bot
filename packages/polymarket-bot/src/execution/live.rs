@@ -26,7 +26,10 @@ use uuid::Uuid;
 
 use crate::{
     config::LiveExecutionConfig,
-    execution::{ExecutionVenue, LiveIdentityDiagnostics, LiveVenueStatus, ReconciliationReport},
+    execution::{
+        ExecutionVenue, LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics,
+        LiveOrderDryRunRequest, LiveVenueStatus, ReconciliationReport,
+    },
     idempotency::{event_hash, order_request_notional_key},
     models::{ConversionRequest, ConversionResult, FillRecord, OrderRecord, OrderRequest},
     models::{FillSource, OrderSide, OrderState, OrderType},
@@ -493,6 +496,16 @@ fn post_order_response_payload(response: &PostOrderResponse) -> serde_json::Valu
     })
 }
 
+fn normalized_address(value: Option<&str>) -> Option<String> {
+    value
+        .map(|address| address.trim().to_ascii_lowercase())
+        .filter(|address| !address.is_empty())
+}
+
+fn addresses_equal(left: Option<&str>, right: Option<&str>) -> Option<bool> {
+    Some(normalized_address(left)? == normalized_address(right)?)
+}
+
 #[async_trait]
 impl ExecutionVenue for LiveVenue {
     async fn submit_order(&self, request: OrderRequest) -> Result<OrderRecord> {
@@ -887,6 +900,107 @@ impl ExecutionVenue for LiveVenue {
         }
 
         Ok(diagnostics)
+    }
+
+    async fn live_order_dry_run(
+        &self,
+        request: LiveOrderDryRunRequest,
+    ) -> Result<LiveOrderDryRunDiagnostics> {
+        let signature_type = parse_signature_type(self.config.signature_type.as_deref())?;
+        let private_key = self
+            .config
+            .private_key
+            .as_deref()
+            .context("missing private key")?;
+        let signer = LocalSigner::from_str(private_key)
+            .context("failed to parse POLYMARKET_PRIVATE_KEY")?
+            .with_chain_id(Some(POLYGON));
+        let signer_address = signer.address().to_checksum(None);
+        let client = self.authenticated_client().await?;
+        let authenticated_client_address = client.address().to_checksum(None);
+        let token_id =
+            U256::from_str(&request.token_id).context("failed to parse CLOB token_id")?;
+        let signable = client
+            .limit_order()
+            .token_id(token_id)
+            .side(sdk_side(request.side))
+            .price(sdk_decimal(request.price)?)
+            .size(sdk_decimal(request.size)?)
+            .order_type(sdk_order_type(
+                request.order_type.unwrap_or(OrderType::Fok),
+            )?)
+            .build()
+            .await
+            .context("failed to build Polymarket CLOB dry-run order")?;
+        let signed = client
+            .sign(&signer, signable)
+            .await
+            .context("failed to sign Polymarket CLOB dry-run order")?;
+        let mut signed_order =
+            serde_json::to_value(&signed).context("failed to serialize dry-run signed order")?;
+
+        let order_signer = signed_order
+            .get("order")
+            .and_then(|order| order.get("signer"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        let order_maker = signed_order
+            .get("order")
+            .and_then(|order| order.get("maker"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        let order_signature_type = signed_order
+            .get("order")
+            .and_then(|order| order.get("signatureType"))
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| value.to_string())
+            });
+
+        let mut owner_redacted = false;
+        if let Some(owner) = signed_order.get_mut("owner") {
+            *owner = json!("<redacted>");
+            owner_redacted = true;
+        }
+        let mut signature_redacted = false;
+        if let Some(signature) = signed_order
+            .get_mut("order")
+            .and_then(|order| order.get_mut("signature"))
+        {
+            *signature = json!("<redacted>");
+            signature_redacted = true;
+        }
+
+        Ok(LiveOrderDryRunDiagnostics {
+            mode: "live".to_string(),
+            clob_api_base_url: self.clob_base_url.clone(),
+            signer_address: Some(signer_address),
+            configured_funder_address: self.config.funder_address.clone(),
+            configured_signature_type: self.config.signature_type.clone(),
+            resolved_signature_type: Some(format!("{signature_type:?}")),
+            authenticated_client_address: Some(authenticated_client_address.clone()),
+            order_signer: order_signer.clone(),
+            order_maker: order_maker.clone(),
+            order_signature_type,
+            order_signer_matches_authenticated_client: addresses_equal(
+                order_signer.as_deref(),
+                Some(&authenticated_client_address),
+            ),
+            order_signer_matches_configured_funder: addresses_equal(
+                order_signer.as_deref(),
+                self.config.funder_address.as_deref(),
+            ),
+            order_maker_matches_configured_funder: addresses_equal(
+                order_maker.as_deref(),
+                self.config.funder_address.as_deref(),
+            ),
+            owner_redacted,
+            signature_redacted,
+            signed_order,
+            checked_at: Utc::now(),
+        })
     }
 
     async fn set_live_entries_enabled(

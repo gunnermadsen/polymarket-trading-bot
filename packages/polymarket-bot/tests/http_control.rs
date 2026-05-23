@@ -7,7 +7,10 @@ use axum::{
 };
 use chrono::Utc;
 use polymarket_bot::{
-    execution::{LiveIdentityDiagnostics, LiveVenueStatus},
+    execution::{
+        LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics, LiveOrderDryRunRequest,
+        LiveVenueStatus,
+    },
     http::{
         self, BackfillJobResponse, BackfillJobsResponse, BackfillWhalesRequest,
         CancelBackfillJobResponse, ControlApi, CopyTradeBacktestRequest,
@@ -208,6 +211,43 @@ impl ControlApi for FakeControlApi {
             open_orders_readable: true,
             open_orders_error: None,
             open_orders_count: Some(0),
+            checked_at: Utc::now(),
+        })
+    }
+
+    async fn live_order_dry_run(
+        &self,
+        _request: LiveOrderDryRunRequest,
+    ) -> Result<LiveOrderDryRunDiagnostics, HttpError> {
+        Ok(LiveOrderDryRunDiagnostics {
+            mode: "live".to_string(),
+            clob_api_base_url: "https://clob.polymarket.com".to_string(),
+            signer_address: Some("0x0000000000000000000000000000000000000001".to_string()),
+            configured_funder_address: Some(
+                "0x0000000000000000000000000000000000000002".to_string(),
+            ),
+            configured_signature_type: Some("3".to_string()),
+            resolved_signature_type: Some("Poly1271".to_string()),
+            authenticated_client_address: Some(
+                "0x0000000000000000000000000000000000000001".to_string(),
+            ),
+            order_signer: Some("0x0000000000000000000000000000000000000002".to_string()),
+            order_maker: Some("0x0000000000000000000000000000000000000002".to_string()),
+            order_signature_type: Some("3".to_string()),
+            order_signer_matches_authenticated_client: Some(false),
+            order_signer_matches_configured_funder: Some(true),
+            order_maker_matches_configured_funder: Some(true),
+            owner_redacted: true,
+            signature_redacted: true,
+            signed_order: serde_json::json!({
+                "owner": "<redacted>",
+                "order": {
+                    "maker": "0x0000000000000000000000000000000000000002",
+                    "signer": "0x0000000000000000000000000000000000000002",
+                    "signatureType": "3",
+                    "signature": "<redacted>"
+                }
+            }),
             checked_at: Utc::now(),
         })
     }
@@ -612,6 +652,39 @@ async fn authenticated_admin_can_read_live_status_and_halt() {
     let diagnostics_json: Value = serde_json::from_slice(&diagnostics_body).unwrap();
     assert_eq!(diagnostics_json["credentials_present"], true);
     assert_eq!(diagnostics_json["api_keys_readable"], true);
+
+    let dry_run_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/live/order-dry-run")
+                .header(AUTHORIZATION, "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "token_id": "123",
+                        "side": "buy",
+                        "order_type": "fok",
+                        "price": "0.39",
+                        "size": "5.12"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dry_run_response.status(), StatusCode::OK);
+    let dry_run_body = to_bytes(dry_run_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let dry_run_json: Value = serde_json::from_slice(&dry_run_body).unwrap();
+    assert_eq!(
+        dry_run_json["order_signer_matches_authenticated_client"],
+        false
+    );
+    assert_eq!(dry_run_json["signature_redacted"], true);
 
     let enable_response = app
         .clone()

@@ -17,7 +17,10 @@ use uuid::Uuid;
 
 use crate::{
     backfill::BackfillMode,
-    execution::{LiveIdentityDiagnostics, LiveVenueStatus},
+    execution::{
+        LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics, LiveOrderDryRunRequest,
+        LiveVenueStatus,
+    },
     models::{BackfillJob, BackfillJobStatus, TradingProcess, TradingProcessConfig},
     store::TradingProcessResetReport,
 };
@@ -107,6 +110,11 @@ pub trait ControlApi: Send + Sync + 'static {
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError>;
 
     async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics, HttpError>;
+
+    async fn live_order_dry_run(
+        &self,
+        request: LiveOrderDryRunRequest,
+    ) -> Result<LiveOrderDryRunDiagnostics, HttpError>;
 
     async fn live_halt(&self) -> Result<serde_json::Value, HttpError>;
 
@@ -313,6 +321,15 @@ impl ControlApi for PlaceholderControlApi {
         ))
     }
 
+    async fn live_order_dry_run(
+        &self,
+        _request: LiveOrderDryRunRequest,
+    ) -> Result<LiveOrderDryRunDiagnostics, HttpError> {
+        Err(HttpError::not_implemented(
+            "live order dry-run is not wired",
+        ))
+    }
+
     async fn live_halt(&self) -> Result<serde_json::Value, HttpError> {
         Err(HttpError::not_implemented("live halt is not wired"))
     }
@@ -424,6 +441,7 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .route("/trades/pnl/mark-now", post(trade_pnl_mark_now))
         .route("/live/status", get(live_status))
         .route("/live/diagnostics", get(live_identity_diagnostics))
+        .route("/live/order-dry-run", post(live_order_dry_run))
         .route("/live/halt", post(live_halt))
         .route("/live/reconcile", post(live_reconcile))
         .route("/live/entries/enable", post(live_entries_enable))
@@ -588,6 +606,13 @@ async fn live_identity_diagnostics(
     State(state): State<HttpState>,
 ) -> Result<Json<LiveIdentityDiagnostics>, HttpError> {
     state.control.live_identity_diagnostics().await.map(Json)
+}
+
+async fn live_order_dry_run(
+    State(state): State<HttpState>,
+    Json(request): Json<LiveOrderDryRunRequest>,
+) -> Result<Json<LiveOrderDryRunDiagnostics>, HttpError> {
+    state.control.live_order_dry_run(request).await.map(Json)
 }
 
 async fn live_halt(State(state): State<HttpState>) -> Result<Json<serde_json::Value>, HttpError> {

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use rust_decimal::Decimal;
@@ -10,7 +10,10 @@ use uuid::Uuid;
 use crate::{
     clob::ClobClient,
     edge::compute_taker_fee,
-    execution::{ExecutionVenue, LiveIdentityDiagnostics, LiveVenueStatus, ReconciliationReport},
+    execution::{
+        ExecutionVenue, LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics,
+        LiveOrderDryRunRequest, LiveVenueStatus, ReconciliationReport,
+    },
     models::{
         ConversionRequest, ConversionResult, FillRecord, FillSource, OrderRecord, OrderRequest,
         OrderSide, OrderState, OrderType,
@@ -380,6 +383,13 @@ impl ExecutionVenue for SimVenue {
             open_orders_count: None,
             checked_at: Utc::now(),
         })
+    }
+
+    async fn live_order_dry_run(
+        &self,
+        _request: LiveOrderDryRunRequest,
+    ) -> Result<LiveOrderDryRunDiagnostics> {
+        bail!("live order dry-run is only available for the live venue")
     }
 
     async fn set_live_entries_enabled(
