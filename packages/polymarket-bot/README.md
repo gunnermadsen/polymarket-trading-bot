@@ -9,14 +9,13 @@ Rust microservice for Polymarket negative-risk arbitrage scanning, simulation, e
 - Postgres persistence in the `polymarket` schema.
 - Kafka is intentionally not required. Future Kafka event publishing should be added behind a disabled adapter only after the service has proven stable.
 
-## Run modes
+## Trading Processes
 
-```text
-POLYMARKET_EXECUTION_MODE=sim
-POLYMARKET_EXECUTION_MODE=live
-```
-
-`sim` is the default. `live` refuses to start unless `POLYMARKET_LIVE_CONFIRM=true` is set and wallet/order credentials are present.
+Trading mode is controlled by rows in `trade_processes`, not by a process-wide
+environment variable. A single bot runtime can execute `sim` and `live` processes
+in parallel. Live processes require CLOB credentials and wallet secrets to be
+present in the runtime environment, and host configuration only supplies venue
+URLs plus hard risk caps.
 
 ## Build
 
@@ -48,8 +47,8 @@ POLYMARKET_CLOB_PASSPHRASE=...
 ```
 
 Paste those values back into the root `.env`. The `.env` file is ignored by Git.
-Non-secret live settings, including `POLYMARKET_FUNDER_ADDRESS` and
-`POLYMARKET_SIGNATURE_TYPE`, belong in the root `docker-compose.yml`.
+`POLYMARKET_FUNDER_ADDRESS` and `POLYMARKET_SIGNATURE_TYPE` are also secrets for
+live execution and belong in `.env`.
 
 From the repository root:
 

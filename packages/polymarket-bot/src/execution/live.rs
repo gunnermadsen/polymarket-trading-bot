@@ -81,15 +81,7 @@ impl LiveVenueEvent {
 }
 
 impl LiveVenue {
-    pub fn new(
-        live_confirm: bool,
-        config: LiveExecutionConfig,
-        clob_base_url: String,
-        store: Store,
-    ) -> Result<Self> {
-        if !live_confirm {
-            bail!("LiveVenue requires POLYMARKET_LIVE_CONFIRM=true");
-        }
+    pub fn new(config: LiveExecutionConfig, clob_base_url: String, store: Store) -> Result<Self> {
         config.validate_for_live()?;
         let venue = Self {
             config,
@@ -111,10 +103,7 @@ impl LiveVenue {
     }
 
     #[cfg(test)]
-    fn new_for_test(live_confirm: bool, config: LiveExecutionConfig) -> Result<Self> {
-        if !live_confirm {
-            bail!("LiveVenue requires POLYMARKET_LIVE_CONFIRM=true");
-        }
+    fn new_for_test(config: LiveExecutionConfig) -> Result<Self> {
         config.validate_for_live()?;
         Ok(Self {
             config,
@@ -851,7 +840,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_status_blocks_entries_when_submit_disabled() {
-        let venue = LiveVenue::new_for_test(true, live_config()).unwrap();
+        let venue = LiveVenue::new_for_test(live_config()).unwrap();
         let status = venue.live_status().await.unwrap();
         assert!(!status.entries_enabled);
         assert_eq!(status.reason.as_deref(), Some("live_order_submit_disabled"));

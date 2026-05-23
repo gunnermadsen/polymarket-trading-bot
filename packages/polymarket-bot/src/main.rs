@@ -776,7 +776,6 @@ async fn main() -> Result<()> {
     let config = AppConfig::from_env()?;
     info!(
         service = "polymarket-bot",
-        mode = ?config.execution_mode,
         scan_enabled = config.scan_enabled,
         signal2_enabled = config.signal2_enabled,
         signal3_enabled = config.signal3_enabled,
@@ -789,7 +788,7 @@ async fn main() -> Result<()> {
         .insert_service_event(&ServiceEvent::new(
             "service_started",
             serde_json::json!({
-                "mode": format!("{:?}", config.execution_mode).to_ascii_lowercase(),
+                "execution_control": "trade_processes",
                 "scan_enabled": config.scan_enabled,
                 "kafka_required": false
             }),
@@ -807,9 +806,8 @@ async fn main() -> Result<()> {
         clob.clone(),
         config.risk.taker_fee_rate,
     ));
-    let live_venue: Option<Arc<dyn ExecutionVenue>> = if config.live_confirm {
+    let live_venue: Option<Arc<dyn ExecutionVenue>> = if config.live.live_auth_available() {
         Some(Arc::new(LiveVenue::new(
-            config.live_confirm,
             config.live.clone(),
             config.live.clob_api_base_url.clone(),
             store.clone(),
