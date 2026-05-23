@@ -12,7 +12,8 @@ use crate::{
     edge::compute_taker_fee,
     execution::{
         ExecutionVenue, LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics,
-        LiveOrderDryRunRequest, LiveVenueStatus, LiveWalletAddressDiagnostics,
+        LiveOrderDryRunRequest, LivePoly1271FunderProbeCandidate, LivePoly1271FunderProbeRequest,
+        LivePoly1271FunderProbeResponse, LiveVenueStatus, LiveWalletAddressDiagnostics,
         LiveWalletCandidateAddressDiagnostics, LiveWalletTokenBalances, ReconciliationReport,
     },
     models::{
@@ -451,6 +452,55 @@ impl ExecutionVenue for SimVenue {
         _request: LiveOrderDryRunRequest,
     ) -> Result<LiveOrderDryRunDiagnostics> {
         bail!("live order dry-run is only available for the live venue")
+    }
+
+    async fn live_poly1271_funder_probe(
+        &self,
+        request: LivePoly1271FunderProbeRequest,
+    ) -> Result<LivePoly1271FunderProbeResponse> {
+        let order_type = request.order_type.unwrap_or(OrderType::Fok);
+        Ok(LivePoly1271FunderProbeResponse {
+            mode: self.mode_name.to_string(),
+            clob_api_base_url: "sim".to_string(),
+            signer_address: None,
+            token_id: request.token_id,
+            side: request.side,
+            order_type,
+            price: request.price,
+            size: request.size,
+            candidates: request
+                .addresses
+                .into_iter()
+                .map(|address| LivePoly1271FunderProbeCandidate {
+                    address,
+                    address_valid: false,
+                    derive_credentials_ok: false,
+                    derive_credentials_error: Some(format!("{}_mode", self.mode_name)),
+                    authenticated_client_address: None,
+                    api_keys_readable: false,
+                    api_keys_error: Some(format!("{}_mode", self.mode_name)),
+                    balance_allowance_readable: false,
+                    balance_allowance_error: Some(format!("{}_mode", self.mode_name)),
+                    collateral_balance: None,
+                    open_orders_readable: false,
+                    open_orders_error: Some(format!("{}_mode", self.mode_name)),
+                    open_orders_count: None,
+                    signed_order_build_ok: false,
+                    signed_order_error: Some(format!("{}_mode", self.mode_name)),
+                    signed_order_maker: None,
+                    signed_order_signer: None,
+                    signed_order_signature_type: None,
+                    maker_matches_candidate: None,
+                    signer_matches_candidate: None,
+                    signature_type_is_poly1271: None,
+                    ready_for_live_canary: false,
+                    signed_order: serde_json::json!(null),
+                })
+                .collect(),
+            verified_funder_address: None,
+            verified_funder_candidates_count: 0,
+            checked_at: Utc::now(),
+        })
     }
 
     async fn set_live_entries_enabled(

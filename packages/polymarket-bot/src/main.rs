@@ -19,8 +19,8 @@ use polymarket_bot::{
     events::ServiceEvent,
     execution::{
         live::LiveVenue, sim::SimVenue, ExecutionVenue, LiveIdentityDiagnostics,
-        LiveOrderDryRunDiagnostics, LiveOrderDryRunRequest, LiveVenueStatus,
-        LiveWalletAddressDiagnostics,
+        LiveOrderDryRunDiagnostics, LiveOrderDryRunRequest, LivePoly1271FunderProbeRequest,
+        LivePoly1271FunderProbeResponse, LiveVenueStatus, LiveWalletAddressDiagnostics,
     },
     gamma::GammaClient,
     http as control_http,
@@ -522,6 +522,18 @@ impl ControlApi for RuntimeControl {
             .for_mode(ExecutionMode::Live)
             .map_err(|error| HttpError::bad_request(error.to_string()))?
             .live_order_dry_run(request)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))
+    }
+
+    async fn live_poly1271_funder_probe(
+        &self,
+        request: LivePoly1271FunderProbeRequest,
+    ) -> Result<LivePoly1271FunderProbeResponse, HttpError> {
+        self.venues
+            .for_mode(ExecutionMode::Live)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?
+            .live_poly1271_funder_probe(request)
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
     }

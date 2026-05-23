@@ -9,8 +9,9 @@ use chrono::Utc;
 use polymarket_bot::{
     execution::{
         LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics, LiveOrderDryRunRequest,
-        LiveVenueStatus, LiveWalletAddressDiagnostics, LiveWalletCandidateAddressDiagnostics,
-        LiveWalletTokenBalances,
+        LivePoly1271FunderProbeCandidate, LivePoly1271FunderProbeRequest,
+        LivePoly1271FunderProbeResponse, LiveVenueStatus, LiveWalletAddressDiagnostics,
+        LiveWalletCandidateAddressDiagnostics, LiveWalletTokenBalances,
     },
     http::{
         self, BackfillJobResponse, BackfillJobsResponse, BackfillWhalesRequest,
@@ -343,6 +344,68 @@ impl ControlApi for FakeControlApi {
                     "signature": "<redacted>"
                 }
             }),
+            checked_at: Utc::now(),
+        })
+    }
+
+    async fn live_poly1271_funder_probe(
+        &self,
+        request: LivePoly1271FunderProbeRequest,
+    ) -> Result<LivePoly1271FunderProbeResponse, HttpError> {
+        let order_type = request
+            .order_type
+            .unwrap_or(polymarket_bot::models::OrderType::Fok);
+        let verified = request.addresses.first().cloned();
+        Ok(LivePoly1271FunderProbeResponse {
+            mode: "live".to_string(),
+            clob_api_base_url: "https://clob.polymarket.com".to_string(),
+            signer_address: Some("0x0000000000000000000000000000000000000001".to_string()),
+            token_id: request.token_id,
+            side: request.side,
+            order_type,
+            price: request.price,
+            size: request.size,
+            candidates: request
+                .addresses
+                .into_iter()
+                .map(|address| LivePoly1271FunderProbeCandidate {
+                    address: address.clone(),
+                    address_valid: true,
+                    derive_credentials_ok: true,
+                    derive_credentials_error: None,
+                    authenticated_client_address: Some(
+                        "0x0000000000000000000000000000000000000001".to_string(),
+                    ),
+                    api_keys_readable: true,
+                    api_keys_error: None,
+                    balance_allowance_readable: true,
+                    balance_allowance_error: None,
+                    collateral_balance: Some("20".to_string()),
+                    open_orders_readable: true,
+                    open_orders_error: None,
+                    open_orders_count: Some(0),
+                    signed_order_build_ok: true,
+                    signed_order_error: None,
+                    signed_order_maker: Some(address.clone()),
+                    signed_order_signer: Some(address.clone()),
+                    signed_order_signature_type: Some("3".to_string()),
+                    maker_matches_candidate: Some(true),
+                    signer_matches_candidate: Some(true),
+                    signature_type_is_poly1271: Some(true),
+                    ready_for_live_canary: true,
+                    signed_order: serde_json::json!({
+                        "owner": "<redacted>",
+                        "order": {
+                            "maker": address,
+                            "signer": address,
+                            "signatureType": "3",
+                            "signature": "<redacted>"
+                        }
+                    }),
+                })
+                .collect(),
+            verified_funder_address: verified,
+            verified_funder_candidates_count: 1,
             checked_at: Utc::now(),
         })
     }
@@ -807,6 +870,40 @@ async fn authenticated_admin_can_read_live_status_and_halt() {
         false
     );
     assert_eq!(dry_run_json["signature_redacted"], true);
+
+    let funder_probe_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/live/poly1271-funder-probe")
+                .header(AUTHORIZATION, "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "addresses": ["0x0000000000000000000000000000000000000002"],
+                        "token_id": "123",
+                        "side": "buy",
+                        "order_type": "fok",
+                        "price": "0.39",
+                        "size": "5.12"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(funder_probe_response.status(), StatusCode::OK);
+    let funder_probe_body = to_bytes(funder_probe_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let funder_probe_json: Value = serde_json::from_slice(&funder_probe_body).unwrap();
+    assert_eq!(funder_probe_json["verified_funder_candidates_count"], 1);
+    assert_eq!(
+        funder_probe_json["candidates"][0]["maker_matches_candidate"],
+        true
+    );
 
     let enable_response = app
         .clone()

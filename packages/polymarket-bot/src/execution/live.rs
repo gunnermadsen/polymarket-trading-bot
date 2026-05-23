@@ -30,7 +30,8 @@ use crate::{
     config::LiveExecutionConfig,
     execution::{
         ExecutionVenue, LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics,
-        LiveOrderDryRunRequest, LiveVenueStatus, LiveWalletAddressDiagnostics,
+        LiveOrderDryRunRequest, LivePoly1271FunderProbeCandidate, LivePoly1271FunderProbeRequest,
+        LivePoly1271FunderProbeResponse, LiveVenueStatus, LiveWalletAddressDiagnostics,
         LiveWalletCandidateAddressDiagnostics, LiveWalletTokenBalances, ReconciliationReport,
     },
     idempotency::{event_hash, order_request_notional_key},
@@ -340,6 +341,166 @@ impl LiveVenue {
         }
     }
 
+    async fn poly1271_funder_probe_candidate(
+        &self,
+        request: &LivePoly1271FunderProbeRequest,
+        order_type: OrderType,
+        address: &str,
+    ) -> LivePoly1271FunderProbeCandidate {
+        let mut candidate = LivePoly1271FunderProbeCandidate {
+            address: address.to_string(),
+            address_valid: is_address_like(address),
+            derive_credentials_ok: false,
+            derive_credentials_error: None,
+            authenticated_client_address: None,
+            api_keys_readable: false,
+            api_keys_error: None,
+            balance_allowance_readable: false,
+            balance_allowance_error: None,
+            collateral_balance: None,
+            open_orders_readable: false,
+            open_orders_error: None,
+            open_orders_count: None,
+            signed_order_build_ok: false,
+            signed_order_error: None,
+            signed_order_maker: None,
+            signed_order_signer: None,
+            signed_order_signature_type: None,
+            maker_matches_candidate: None,
+            signer_matches_candidate: None,
+            signature_type_is_poly1271: None,
+            ready_for_live_canary: false,
+            signed_order: json!(null),
+        };
+
+        if !candidate.address_valid {
+            candidate.derive_credentials_error =
+                Some("candidate address is not a valid 20-byte hex address".to_string());
+            return candidate;
+        }
+
+        let client = match self.poly1271_candidate_client(address).await {
+            Ok(client) => {
+                candidate.derive_credentials_ok = true;
+                candidate.authenticated_client_address = Some(client.address().to_checksum(None));
+                client
+            }
+            Err(error) => {
+                let message = error.to_string();
+                candidate.derive_credentials_error = Some(message.clone());
+                candidate.api_keys_error = Some(message.clone());
+                candidate.balance_allowance_error = Some(message.clone());
+                candidate.open_orders_error = Some(message);
+                return candidate;
+            }
+        };
+
+        match client.api_keys().await {
+            Ok(_) => candidate.api_keys_readable = true,
+            Err(error) => candidate.api_keys_error = Some(error.to_string()),
+        }
+
+        match client
+            .balance_allowance(
+                BalanceAllowanceRequest::builder()
+                    .asset_type(AssetType::Collateral)
+                    .signature_type(SignatureType::Poly1271)
+                    .build(),
+            )
+            .await
+        {
+            Ok(balance) => {
+                candidate.balance_allowance_readable = true;
+                match local_decimal(balance.balance) {
+                    Ok(balance) => candidate.collateral_balance = Some(balance.to_string()),
+                    Err(error) => candidate.balance_allowance_error = Some(error.to_string()),
+                }
+            }
+            Err(error) => candidate.balance_allowance_error = Some(error.to_string()),
+        }
+
+        match client.orders(&OrdersRequest::builder().build(), None).await {
+            Ok(page) => {
+                candidate.open_orders_readable = true;
+                candidate.open_orders_count = Some(page.data.len());
+            }
+            Err(error) => candidate.open_orders_error = Some(error.to_string()),
+        }
+
+        let signed = match self
+            .build_signed_poly1271_candidate_order(&client, address, request, order_type)
+            .await
+        {
+            Ok(signed) => signed,
+            Err(error) => {
+                candidate.signed_order_error = Some(error.to_string());
+                return candidate;
+            }
+        };
+
+        let mut signed_order = serde_json::to_value(&signed)
+            .unwrap_or_else(|error| json!({ "error": error.to_string() }));
+        candidate.signed_order_maker = signed_order_address_field(&signed_order, "maker");
+        candidate.signed_order_signer = signed_order_address_field(&signed_order, "signer");
+        candidate.signed_order_signature_type = signed_order_signature_type(&signed_order);
+        candidate.maker_matches_candidate =
+            addresses_equal(candidate.signed_order_maker.as_deref(), Some(address));
+        candidate.signer_matches_candidate =
+            addresses_equal(candidate.signed_order_signer.as_deref(), Some(address));
+        candidate.signature_type_is_poly1271 = candidate
+            .signed_order_signature_type
+            .as_deref()
+            .map(is_poly1271_signature_type);
+        redact_signed_order_secrets(&mut signed_order);
+        candidate.signed_order = signed_order;
+        candidate.signed_order_build_ok = true;
+        candidate.ready_for_live_canary = candidate.derive_credentials_ok
+            && candidate.api_keys_readable
+            && candidate.balance_allowance_readable
+            && candidate.open_orders_readable
+            && candidate.signed_order_build_ok
+            && decimal_string_positive(candidate.collateral_balance.as_deref())
+            && candidate.maker_matches_candidate == Some(true)
+            && candidate.signer_matches_candidate == Some(true)
+            && candidate.signature_type_is_poly1271 == Some(true);
+
+        candidate
+    }
+
+    async fn build_signed_poly1271_candidate_order(
+        &self,
+        client: &AuthenticatedClient,
+        funder_address: &str,
+        request: &LivePoly1271FunderProbeRequest,
+        order_type: OrderType,
+    ) -> Result<impl serde::Serialize> {
+        let private_key = self
+            .config
+            .private_key
+            .as_deref()
+            .context("missing private key")?;
+        let signer = LocalSigner::from_str(private_key)
+            .context("failed to parse POLYMARKET_PRIVATE_KEY")?
+            .with_chain_id(Some(POLYGON));
+        let token_id =
+            U256::from_str(&request.token_id).context("failed to parse CLOB token_id")?;
+        let signable = client
+            .limit_order()
+            .token_id(token_id)
+            .side(sdk_side(request.side))
+            .price(sdk_decimal(request.price)?)
+            .size(sdk_decimal(request.size)?)
+            .order_type(sdk_order_type(order_type)?)
+            .build()
+            .await
+            .with_context(|| {
+                format!("failed to build POLY_1271 dry-run order for funder {funder_address}")
+            })?;
+        client.sign(&signer, signable).await.with_context(|| {
+            format!("failed to sign POLY_1271 dry-run order for funder {funder_address}")
+        })
+    }
+
     fn store(&self) -> Result<Store> {
         self.store
             .clone()
@@ -593,6 +754,51 @@ fn normalized_address(value: Option<&str>) -> Option<String> {
 
 fn addresses_equal(left: Option<&str>, right: Option<&str>) -> Option<bool> {
     Some(normalized_address(left)? == normalized_address(right)?)
+}
+
+fn signed_order_address_field(signed_order: &Value, field: &str) -> Option<String> {
+    signed_order
+        .get("order")
+        .and_then(|order| order.get(field))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn signed_order_signature_type(signed_order: &Value) -> Option<String> {
+    signed_order
+        .get("order")
+        .and_then(|order| order.get("signatureType"))
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| value.to_string())
+        })
+}
+
+fn redact_signed_order_secrets(signed_order: &mut Value) {
+    if let Some(owner) = signed_order.get_mut("owner") {
+        *owner = json!("<redacted>");
+    }
+    if let Some(signature) = signed_order
+        .get_mut("order")
+        .and_then(|order| order.get_mut("signature"))
+    {
+        *signature = json!("<redacted>");
+    }
+}
+
+fn is_poly1271_signature_type(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "3" | "poly1271" | "poly_1271"
+    )
+}
+
+fn decimal_string_positive(value: Option<&str>) -> bool {
+    value
+        .and_then(|value| value.parse::<Decimal>().ok())
+        .is_some_and(|value| value > Decimal::ZERO)
 }
 
 fn is_address_like(value: &str) -> bool {
@@ -1238,6 +1444,47 @@ impl ExecutionVenue for LiveVenue {
             owner_redacted,
             signature_redacted,
             signed_order,
+            checked_at: Utc::now(),
+        })
+    }
+
+    async fn live_poly1271_funder_probe(
+        &self,
+        request: LivePoly1271FunderProbeRequest,
+    ) -> Result<LivePoly1271FunderProbeResponse> {
+        let signer_address = signer_address_from_private_key(self.config.private_key.as_deref())?;
+        let order_type = request.order_type.unwrap_or(OrderType::Fok);
+        let mut candidates = Vec::with_capacity(request.addresses.len());
+
+        for address in &request.addresses {
+            candidates.push(
+                self.poly1271_funder_probe_candidate(&request, order_type, address.trim())
+                    .await,
+            );
+        }
+
+        let verified_funder_addresses = candidates
+            .iter()
+            .filter(|candidate| candidate.ready_for_live_canary)
+            .map(|candidate| candidate.address.clone())
+            .collect::<Vec<_>>();
+
+        Ok(LivePoly1271FunderProbeResponse {
+            mode: "live".to_string(),
+            clob_api_base_url: self.clob_base_url.clone(),
+            signer_address,
+            token_id: request.token_id,
+            side: request.side,
+            order_type,
+            price: request.price,
+            size: request.size,
+            candidates,
+            verified_funder_address: if verified_funder_addresses.len() == 1 {
+                verified_funder_addresses.first().cloned()
+            } else {
+                None
+            },
+            verified_funder_candidates_count: verified_funder_addresses.len(),
             checked_at: Utc::now(),
         })
     }

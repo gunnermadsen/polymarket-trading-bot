@@ -153,6 +153,60 @@ pub struct LiveOrderDryRunDiagnostics {
     pub checked_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct LivePoly1271FunderProbeRequest {
+    pub addresses: Vec<String>,
+    pub token_id: String,
+    pub side: OrderSide,
+    #[serde(default)]
+    pub order_type: Option<OrderType>,
+    pub price: Decimal,
+    pub size: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LivePoly1271FunderProbeResponse {
+    pub mode: String,
+    pub clob_api_base_url: String,
+    pub signer_address: Option<String>,
+    pub token_id: String,
+    pub side: OrderSide,
+    pub order_type: OrderType,
+    pub price: Decimal,
+    pub size: Decimal,
+    pub candidates: Vec<LivePoly1271FunderProbeCandidate>,
+    pub verified_funder_address: Option<String>,
+    pub verified_funder_candidates_count: usize,
+    pub checked_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LivePoly1271FunderProbeCandidate {
+    pub address: String,
+    pub address_valid: bool,
+    pub derive_credentials_ok: bool,
+    pub derive_credentials_error: Option<String>,
+    pub authenticated_client_address: Option<String>,
+    pub api_keys_readable: bool,
+    pub api_keys_error: Option<String>,
+    pub balance_allowance_readable: bool,
+    pub balance_allowance_error: Option<String>,
+    pub collateral_balance: Option<String>,
+    pub open_orders_readable: bool,
+    pub open_orders_error: Option<String>,
+    pub open_orders_count: Option<usize>,
+    pub signed_order_build_ok: bool,
+    pub signed_order_error: Option<String>,
+    pub signed_order_maker: Option<String>,
+    pub signed_order_signer: Option<String>,
+    pub signed_order_signature_type: Option<String>,
+    pub maker_matches_candidate: Option<bool>,
+    pub signer_matches_candidate: Option<bool>,
+    pub signature_type_is_poly1271: Option<bool>,
+    pub ready_for_live_canary: bool,
+    pub signed_order: serde_json::Value,
+}
+
 #[derive(Debug, Clone)]
 pub struct OrderPlan {
     pub plan_id: uuid::Uuid,
@@ -211,6 +265,10 @@ pub trait ExecutionVenue: Send + Sync {
         &self,
         request: LiveOrderDryRunRequest,
     ) -> Result<LiveOrderDryRunDiagnostics>;
+    async fn live_poly1271_funder_probe(
+        &self,
+        request: LivePoly1271FunderProbeRequest,
+    ) -> Result<LivePoly1271FunderProbeResponse>;
     async fn set_live_entries_enabled(
         &self,
         enabled: bool,

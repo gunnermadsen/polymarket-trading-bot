@@ -19,7 +19,8 @@ use crate::{
     backfill::BackfillMode,
     execution::{
         LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics, LiveOrderDryRunRequest,
-        LiveVenueStatus, LiveWalletAddressDiagnostics,
+        LivePoly1271FunderProbeRequest, LivePoly1271FunderProbeResponse, LiveVenueStatus,
+        LiveWalletAddressDiagnostics,
     },
     models::{BackfillJob, BackfillJobStatus, TradingProcess, TradingProcessConfig},
     store::TradingProcessResetReport,
@@ -120,6 +121,11 @@ pub trait ControlApi: Send + Sync + 'static {
         &self,
         request: LiveOrderDryRunRequest,
     ) -> Result<LiveOrderDryRunDiagnostics, HttpError>;
+
+    async fn live_poly1271_funder_probe(
+        &self,
+        request: LivePoly1271FunderProbeRequest,
+    ) -> Result<LivePoly1271FunderProbeResponse, HttpError>;
 
     async fn live_halt(&self) -> Result<serde_json::Value, HttpError>;
 
@@ -344,6 +350,15 @@ impl ControlApi for PlaceholderControlApi {
         ))
     }
 
+    async fn live_poly1271_funder_probe(
+        &self,
+        _request: LivePoly1271FunderProbeRequest,
+    ) -> Result<LivePoly1271FunderProbeResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "live POLY_1271 funder probe is not wired",
+        ))
+    }
+
     async fn live_halt(&self) -> Result<serde_json::Value, HttpError> {
         Err(HttpError::not_implemented("live halt is not wired"))
     }
@@ -460,6 +475,10 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
             get(live_wallet_address_diagnostics),
         )
         .route("/live/order-dry-run", post(live_order_dry_run))
+        .route(
+            "/live/poly1271-funder-probe",
+            post(live_poly1271_funder_probe),
+        )
         .route("/live/halt", post(live_halt))
         .route("/live/reconcile", post(live_reconcile))
         .route("/live/entries/enable", post(live_entries_enable))
@@ -642,6 +661,17 @@ async fn live_order_dry_run(
     Json(request): Json<LiveOrderDryRunRequest>,
 ) -> Result<Json<LiveOrderDryRunDiagnostics>, HttpError> {
     state.control.live_order_dry_run(request).await.map(Json)
+}
+
+async fn live_poly1271_funder_probe(
+    State(state): State<HttpState>,
+    Json(request): Json<LivePoly1271FunderProbeRequest>,
+) -> Result<Json<LivePoly1271FunderProbeResponse>, HttpError> {
+    state
+        .control
+        .live_poly1271_funder_probe(request)
+        .await
+        .map(Json)
 }
 
 async fn live_halt(State(state): State<HttpState>) -> Result<Json<serde_json::Value>, HttpError> {
