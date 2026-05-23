@@ -793,6 +793,14 @@ fn fill_record_from_trade(
     })
 }
 
+fn trade_response_matches_order(trade: &TradeResponse, order_id: &str) -> bool {
+    trade.taker_order_id == order_id
+        || trade
+            .maker_orders
+            .iter()
+            .any(|maker_order| maker_order.order_id == order_id)
+}
+
 async fn live_fill_record_from_event(
     store: &Store,
     event: &LiveVenueEvent,
@@ -1253,7 +1261,7 @@ impl ExecutionVenue for LiveVenue {
         for trade in page
             .data
             .into_iter()
-            .filter(|trade| trade.taker_order_id == order_id)
+            .filter(|trade| trade_response_matches_order(trade, order_id))
         {
             let fill = fill_record_from_trade(order_id, order_process_id, trade)?;
             store.insert_fill(&fill).await?;

@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::models::{
     ConversionRequest, ConversionResult, FillRecord, OrderRecord, OrderRequest, OrderSide,
@@ -232,7 +233,16 @@ pub async fn execute_order_plan<V: ExecutionVenue + ?Sized>(
 
     for request in plan.orders {
         let order = venue.submit_order(request).await?;
-        fills.extend(venue.fills_for_order(&order.order_id).await?);
+        match venue.fills_for_order(&order.order_id).await {
+            Ok(order_fills) => fills.extend(order_fills),
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    order_id = %order.order_id,
+                    "deferred fill lookup failed; live reconciliation will backfill fills"
+                );
+            }
+        }
         orders.push(order);
     }
 
