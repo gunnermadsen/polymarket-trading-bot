@@ -297,36 +297,49 @@ async fn run_user_ws_once(
         state.last_user_ws_pong_at = Some(Utc::now());
     }
 
-    while let Some(message) = ws.next().await {
-        match message.context("failed to read Polymarket user websocket")? {
-            Message::Text(text) => {
-                let text = text.to_string();
-                let payload: serde_json::Value = serde_json::from_str(&text)
-                    .unwrap_or_else(|_| json!({ "event_type": "raw", "message": text }));
-                let event = LiveVenue::parse_user_event(payload);
-                let inserted = store.insert_live_venue_event(&event).await?;
-                if inserted {
-                    debug!(
-                        event_type = %event.event_type,
-                        venue_order_id = ?event.venue_order_id,
-                        venue_trade_id = ?event.venue_trade_id,
-                        "persisted Polymarket live user websocket event"
-                    );
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(10));
+    loop {
+        tokio::select! {
+            _ = heartbeat.tick() => {
+                ws.send(Message::Ping(Vec::new().into()))
+                    .await
+                    .context("failed to ping Polymarket user websocket")?;
+            }
+            message = ws.next() => {
+                let Some(message) = message else {
+                    break;
+                };
+                match message.context("failed to read Polymarket user websocket")? {
+                    Message::Text(text) => {
+                        let text = text.to_string();
+                        let payload: serde_json::Value = serde_json::from_str(&text)
+                            .unwrap_or_else(|_| json!({ "event_type": "raw", "message": text }));
+                        let event = LiveVenue::parse_user_event(payload);
+                        let inserted = store.insert_live_venue_event(&event).await?;
+                        if inserted {
+                            debug!(
+                                event_type = %event.event_type,
+                                venue_order_id = ?event.venue_order_id,
+                                venue_trade_id = ?event.venue_trade_id,
+                                "persisted Polymarket live user websocket event"
+                            );
+                        }
+                        let mut state = state.lock().await;
+                        state.last_user_ws_pong_at = Some(Utc::now());
+                    }
+                    Message::Ping(payload) => {
+                        ws.send(Message::Pong(payload)).await.ok();
+                        let mut state = state.lock().await;
+                        state.last_user_ws_pong_at = Some(Utc::now());
+                    }
+                    Message::Pong(_) => {
+                        let mut state = state.lock().await;
+                        state.last_user_ws_pong_at = Some(Utc::now());
+                    }
+                    Message::Close(_) => break,
+                    _ => {}
                 }
-                let mut state = state.lock().await;
-                state.last_user_ws_pong_at = Some(Utc::now());
             }
-            Message::Ping(payload) => {
-                ws.send(Message::Pong(payload)).await.ok();
-                let mut state = state.lock().await;
-                state.last_user_ws_pong_at = Some(Utc::now());
-            }
-            Message::Pong(_) => {
-                let mut state = state.lock().await;
-                state.last_user_ws_pong_at = Some(Utc::now());
-            }
-            Message::Close(_) => break,
-            _ => {}
         }
     }
     Ok(())
