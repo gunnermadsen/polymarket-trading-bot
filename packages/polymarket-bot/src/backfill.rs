@@ -706,6 +706,34 @@ pub async fn run_copy_trade_signal_engine(
         let Some(plan) = decision.order_plan else {
             continue;
         };
+        if let Some(process_id) = config.process_id {
+            let current_open_notional = store.process_open_notional(process_id).await?;
+            let order_notional: Decimal = plan
+                .orders
+                .iter()
+                .map(|order| order.price * order.size)
+                .sum();
+            let max_open_notional = config.copy_trade.max_open_notional_usd;
+            if max_open_notional > Decimal::ZERO
+                && current_open_notional + order_notional > max_open_notional
+            {
+                summary.rejections += 1;
+                store
+                    .update_copy_trade_signal_status(
+                        decision.copy_signal.signal_id,
+                        decision.copy_signal.timestamp_utc,
+                        "rejected",
+                        serde_json::json!({
+                            "reason": "copy_open_notional_cap_exceeded",
+                            "current_open_notional_usd": current_open_notional,
+                            "order_notional_usd": order_notional,
+                            "max_open_notional_usd": max_open_notional
+                        }),
+                    )
+                    .await?;
+                continue;
+            }
+        }
         if let Some(rejection) = ensure_order_plan_markable_at_entry(store, clob, &plan).await? {
             summary.rejections += 1;
             store

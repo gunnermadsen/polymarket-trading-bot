@@ -1438,6 +1438,7 @@ fn runtime_config_from_process(process: &TradingProcess) -> Result<ProcessRuntim
             min_trade_usd: copy_trade.min_trade_usd,
             min_copy_size_usd: copy_trade.min_copy_size_usd,
             max_copy_size_usd: copy_trade.max_copy_size_usd,
+            max_open_notional_usd: copy_trade.max_open_notional_usd,
             copy_size_fraction: copy_trade.copy_size_fraction,
             max_follow_lag_secs: copy_trade.max_follow_lag_secs,
             max_price_slippage_bps: copy_trade.max_price_slippage_bps,
