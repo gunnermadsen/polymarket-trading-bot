@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
 use uuid::Uuid;
@@ -219,6 +220,138 @@ pub struct WhaleLedTradeExitCandidate {
     pub exit_timestamp: DateTime<Utc>,
     pub reference_exit_price: Decimal,
     pub exit_size: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountTrade {
+    pub account_trade_id: Uuid,
+    pub account_address: String,
+    pub token_id: String,
+    pub market_id: Option<String>,
+    pub side: String,
+    pub price: Decimal,
+    pub size: Decimal,
+    pub notional: Decimal,
+    pub timestamp_utc: DateTime<Utc>,
+    pub transaction_hash: Option<String>,
+    pub venue_order_id: Option<String>,
+    pub venue_trade_id: Option<String>,
+    pub source: String,
+    pub linked_order_id: Option<String>,
+    pub raw_payload: serde_json::Value,
+}
+
+impl AccountTrade {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        account_address: &str,
+        token_id: &str,
+        market_id: Option<String>,
+        side: &str,
+        price: Decimal,
+        size: Decimal,
+        timestamp_utc: DateTime<Utc>,
+        transaction_hash: Option<String>,
+        venue_order_id: Option<String>,
+        venue_trade_id: Option<String>,
+        source: &str,
+        raw_payload: serde_json::Value,
+    ) -> Self {
+        let account_address = account_address.to_ascii_lowercase();
+        let side = side.to_ascii_lowercase();
+        let identity = format!(
+            "{}|{}|{}|{}|{}|{}|{}|{}",
+            account_address,
+            token_id,
+            side,
+            price.normalize(),
+            size.normalize(),
+            timestamp_utc.timestamp_millis(),
+            transaction_hash.as_deref().unwrap_or(""),
+            venue_trade_id.as_deref().unwrap_or("")
+        );
+        Self {
+            account_trade_id: Uuid::new_v5(&Uuid::NAMESPACE_URL, identity.as_bytes()),
+            account_address,
+            token_id: token_id.to_string(),
+            market_id,
+            side,
+            price,
+            size,
+            notional: price * size,
+            timestamp_utc,
+            transaction_hash,
+            venue_order_id,
+            venue_trade_id,
+            source: source.to_string(),
+            linked_order_id: None,
+            raw_payload,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountPositionSnapshot {
+    pub snapshot_id: Uuid,
+    pub account_address: String,
+    pub token_id: String,
+    pub market_id: Option<String>,
+    pub size: Decimal,
+    pub avg_price: Option<Decimal>,
+    pub current_price: Option<Decimal>,
+    pub current_value: Option<Decimal>,
+    pub cash_pnl: Option<Decimal>,
+    pub percent_pnl: Option<Decimal>,
+    pub snapshot_at: DateTime<Utc>,
+    pub source: String,
+    pub raw_payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AccountPositionMismatch {
+    pub token_id: String,
+    pub db_open_size: Decimal,
+    pub account_size: Decimal,
+    pub delta_size: Decimal,
+    pub mismatch_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ManualExitReport {
+    pub exits_detected: u64,
+    pub exits_applied: u64,
+    pub exit_size_applied: Decimal,
+    pub unmatched_trades: u64,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct AccountTradeExitRow {
+    account_trade_id: Uuid,
+    account_address: String,
+    token_id: String,
+    side: String,
+    price: Decimal,
+    size: Decimal,
+    applied_exit_size: Decimal,
+    timestamp_utc: DateTime<Utc>,
+    transaction_hash: Option<String>,
+    venue_order_id: Option<String>,
+    venue_trade_id: Option<String>,
+    source: String,
+    raw_payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct AccountExitPositionRow {
+    process_id: Option<Uuid>,
+    position_id: Uuid,
+    source_signal_id: Uuid,
+    side: String,
+    entry_price: Decimal,
+    entry_size: Decimal,
+    open_size: Decimal,
+    entry_fee: Decimal,
+    entry_notional: Decimal,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1678,6 +1811,523 @@ impl Store {
         .fetch_one(&self.pool)
         .await
         .context("failed to insert live reconciliation run")?;
+        Ok(run_id)
+    }
+
+    pub async fn upsert_account_trade(&self, trade: &AccountTrade) -> Result<bool> {
+        let inserted = sqlx::query_scalar::<_, bool>(
+            r#"
+            INSERT INTO polymarket.account_trades (
+              account_trade_id, account_address, token_id, market_id, side, price, size,
+              notional, timestamp_utc, transaction_hash, venue_order_id, venue_trade_id,
+              source, linked_order_id, raw_payload
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+            ON CONFLICT (account_trade_id) DO UPDATE SET
+              source = EXCLUDED.source,
+              linked_order_id = COALESCE(polymarket.account_trades.linked_order_id, EXCLUDED.linked_order_id),
+              raw_payload = polymarket.account_trades.raw_payload || EXCLUDED.raw_payload,
+              updated_at = now()
+            RETURNING (xmax = 0) AS inserted
+            "#,
+        )
+        .bind(trade.account_trade_id)
+        .bind(&trade.account_address)
+        .bind(&trade.token_id)
+        .bind(&trade.market_id)
+        .bind(&trade.side)
+        .bind(trade.price)
+        .bind(trade.size)
+        .bind(trade.notional)
+        .bind(trade.timestamp_utc)
+        .bind(&trade.transaction_hash)
+        .bind(&trade.venue_order_id)
+        .bind(&trade.venue_trade_id)
+        .bind(&trade.source)
+        .bind(&trade.linked_order_id)
+        .bind(&trade.raw_payload)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to upsert account trade")?;
+        Ok(inserted)
+    }
+
+    pub async fn insert_account_position_snapshot(
+        &self,
+        snapshot: &AccountPositionSnapshot,
+    ) -> Result<bool> {
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO polymarket.account_position_snapshots (
+              snapshot_id, account_address, token_id, market_id, size, avg_price,
+              current_price, current_value, cash_pnl, percent_pnl, snapshot_at, source, raw_payload
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+            ON CONFLICT (snapshot_id) DO NOTHING
+            "#,
+        )
+        .bind(snapshot.snapshot_id)
+        .bind(&snapshot.account_address)
+        .bind(&snapshot.token_id)
+        .bind(&snapshot.market_id)
+        .bind(snapshot.size)
+        .bind(snapshot.avg_price)
+        .bind(snapshot.current_price)
+        .bind(snapshot.current_value)
+        .bind(snapshot.cash_pnl)
+        .bind(snapshot.percent_pnl)
+        .bind(snapshot.snapshot_at)
+        .bind(&snapshot.source)
+        .bind(&snapshot.raw_payload)
+        .execute(&self.pool)
+        .await
+        .context("failed to insert account position snapshot")?
+        .rows_affected()
+            > 0;
+        Ok(inserted)
+    }
+
+    pub async fn open_live_trade_position_tokens(
+        &self,
+        token_id: Option<&str>,
+    ) -> Result<Vec<String>> {
+        let rows = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT DISTINCT token_id
+            FROM polymarket.trade_positions
+            WHERE is_live_capital = true
+              AND status IN ('open', 'partially_closed')
+              AND open_size > 0
+              AND ($1::text IS NULL OR token_id = $1)
+            ORDER BY token_id
+            "#,
+        )
+        .bind(token_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch open live trade position tokens")?;
+        Ok(rows)
+    }
+
+    pub async fn preview_manual_account_exits(
+        &self,
+        account_address: &str,
+        token_id: Option<&str>,
+    ) -> Result<ManualExitReport> {
+        self.reconcile_manual_account_exits(account_address, token_id, "manual_ui_exit", true)
+            .await
+    }
+
+    pub async fn apply_manual_account_exits(
+        &self,
+        account_address: &str,
+        token_id: Option<&str>,
+        exit_type: &str,
+    ) -> Result<ManualExitReport> {
+        self.reconcile_manual_account_exits(account_address, token_id, exit_type, false)
+            .await
+    }
+
+    async fn reconcile_manual_account_exits(
+        &self,
+        account_address: &str,
+        token_id: Option<&str>,
+        exit_type: &str,
+        dry_run: bool,
+    ) -> Result<ManualExitReport> {
+        let trades = self
+            .unapplied_account_exit_trades(account_address, token_id)
+            .await?;
+        let mut report = ManualExitReport::default();
+        for trade in trades {
+            let mut remaining = (trade.size - trade.applied_exit_size).max(Decimal::ZERO);
+            if remaining <= Decimal::ZERO {
+                continue;
+            }
+            let positions = self.open_positions_for_account_exit(&trade).await?;
+            if positions.is_empty() {
+                report.unmatched_trades += 1;
+                continue;
+            }
+            for position in positions {
+                if remaining <= Decimal::ZERO {
+                    break;
+                }
+                let exit_size = remaining.min(position.open_size);
+                if exit_size <= Decimal::ZERO {
+                    continue;
+                }
+                report.exits_detected += 1;
+                report.exit_size_applied += exit_size;
+                if !dry_run {
+                    let applied = self
+                        .apply_manual_account_exit(&trade, &position, exit_size, exit_type)
+                        .await?;
+                    if applied {
+                        report.exits_applied += 1;
+                        remaining -= exit_size;
+                    }
+                }
+            }
+            if remaining > Decimal::ZERO {
+                report.unmatched_trades += 1;
+            }
+        }
+        Ok(report)
+    }
+
+    async fn unapplied_account_exit_trades(
+        &self,
+        account_address: &str,
+        token_id: Option<&str>,
+    ) -> Result<Vec<AccountTradeExitRow>> {
+        let rows = sqlx::query_as::<_, AccountTradeExitRow>(
+            r#"
+            SELECT account_trade_id, account_address, token_id, side, price, size,
+              applied_exit_size, timestamp_utc, transaction_hash, venue_order_id,
+              venue_trade_id, source, raw_payload
+            FROM polymarket.account_trades
+            WHERE account_address = $1
+              AND applied_exit_size < size
+              AND source IN ('data_api', 'manual_backfill', 'poll')
+              AND ($2::text IS NULL OR token_id = $2)
+            ORDER BY timestamp_utc ASC, created_at ASC
+            LIMIT 1000
+            "#,
+        )
+        .bind(account_address)
+        .bind(token_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch unapplied account exit trades")?;
+        Ok(rows)
+    }
+
+    async fn open_positions_for_account_exit(
+        &self,
+        trade: &AccountTradeExitRow,
+    ) -> Result<Vec<AccountExitPositionRow>> {
+        let rows = sqlx::query_as::<_, AccountExitPositionRow>(
+            r#"
+            SELECT process_id, position_id, source_signal_id, side, entry_price, entry_size,
+              open_size, entry_fee, entry_notional
+            FROM polymarket.trade_positions
+            WHERE is_live_capital = true
+              AND token_id = $1
+              AND status IN ('open', 'partially_closed')
+              AND open_size > 0
+              AND entry_timestamp <= $2
+              AND (
+                (side = 'buy' AND $3 = 'sell')
+                OR (side = 'sell' AND $3 = 'buy')
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM polymarket.trade_exits e
+                WHERE e.position_id = polymarket.trade_positions.position_id
+                  AND e.exit_source_trade_id = $4
+                  AND e.is_synthetic = false
+              )
+            ORDER BY entry_timestamp ASC, created_at ASC
+            "#,
+        )
+        .bind(&trade.token_id)
+        .bind(trade.timestamp_utc)
+        .bind(&trade.side)
+        .bind(trade.account_trade_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch open positions for account exit")?;
+        Ok(rows)
+    }
+
+    async fn apply_manual_account_exit(
+        &self,
+        trade: &AccountTradeExitRow,
+        position: &AccountExitPositionRow,
+        exit_size: Decimal,
+        exit_type: &str,
+    ) -> Result<bool> {
+        let exit_notional = trade.price * exit_size;
+        let entry_value = position.entry_price * exit_size;
+        let gross_pnl = if position.side == "buy" {
+            exit_notional - entry_value
+        } else {
+            entry_value - exit_notional
+        };
+        let allocated_entry_fee = if position.entry_size > Decimal::ZERO {
+            position.entry_fee * (exit_size / position.entry_size)
+        } else {
+            Decimal::ZERO
+        };
+        let net_pnl = gross_pnl - allocated_entry_fee;
+        let metadata = serde_json::json!({
+            "source": "manual_account_reconciliation",
+            "manual_exit_kind": exit_type,
+            "account_trade_id": trade.account_trade_id,
+            "account_address": trade.account_address,
+            "account_trade_source": trade.source,
+            "transaction_hash": trade.transaction_hash,
+            "venue_order_id": trade.venue_order_id,
+            "venue_trade_id": trade.venue_trade_id,
+            "allocated_entry_fee": allocated_entry_fee,
+            "raw_account_trade": trade.raw_payload
+        });
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin manual account exit transaction")?;
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO polymarket.trade_exits (
+              position_id, process_id, source_signal_id, timestamp_utc, exit_type, is_synthetic,
+              exit_trigger_wallet, exit_source_trade_id, exit_price, exit_size,
+              exit_notional, exit_fee, slippage_cost, gross_pnl, net_pnl, roi, metadata
+            )
+            VALUES (
+              $1,$2,$3,$4,$5,false,$6,$7,$8,$9,$10,0,0,$11,$12,
+              CASE WHEN $13 > 0 THEN $12 / $13 ELSE 0 END,
+              $14
+            )
+            ON CONFLICT (position_id, exit_source_trade_id) DO NOTHING
+            "#,
+        )
+        .bind(position.position_id)
+        .bind(position.process_id)
+        .bind(position.source_signal_id)
+        .bind(trade.timestamp_utc)
+        .bind(exit_type)
+        .bind(&trade.account_address)
+        .bind(trade.account_trade_id)
+        .bind(trade.price)
+        .bind(exit_size)
+        .bind(exit_notional)
+        .bind(gross_pnl)
+        .bind(net_pnl)
+        .bind(position.entry_notional)
+        .bind(metadata)
+        .execute(&mut *tx)
+        .await
+        .context("failed to insert manual account trade exit")?;
+        if inserted.rows_affected() == 0 {
+            tx.commit()
+                .await
+                .context("failed to commit duplicate manual account exit transaction")?;
+            return Ok(false);
+        }
+
+        sqlx::query(
+            r#"
+            UPDATE polymarket.trade_positions p
+            SET
+              open_size = GREATEST(0, p.open_size - $2),
+              realized_pnl = p.realized_pnl + $3,
+              status = CASE
+                WHEN GREATEST(0, p.open_size - $2) <= 0.000000001 THEN 'closed'
+                ELSE 'partially_closed'
+              END,
+              unrealized_pnl = CASE
+                WHEN GREATEST(0, p.open_size - $2) <= 0.000000001 THEN 0
+                WHEN p.open_size > 0 THEN p.unrealized_pnl * (GREATEST(0, p.open_size - $2) / p.open_size)
+                ELSE 0
+              END,
+              roi = CASE
+                WHEN p.entry_notional > 0 THEN (
+                  p.realized_pnl + $3 + CASE
+                    WHEN GREATEST(0, p.open_size - $2) <= 0.000000001 THEN 0
+                    WHEN p.open_size > 0 THEN p.unrealized_pnl * (GREATEST(0, p.open_size - $2) / p.open_size)
+                    ELSE 0
+                  END
+                ) / p.entry_notional
+                ELSE 0
+              END,
+              metadata = p.metadata || jsonb_build_object(
+                'last_account_reconcile_exit', $4::jsonb
+              ),
+              updated_at = now()
+            WHERE p.position_id = $1
+            "#,
+        )
+        .bind(position.position_id)
+        .bind(exit_size)
+        .bind(net_pnl)
+        .bind(serde_json::json!({
+            "account_trade_id": trade.account_trade_id,
+            "exit_type": exit_type,
+            "exit_size": exit_size,
+            "timestamp_utc": trade.timestamp_utc
+        }))
+        .execute(&mut *tx)
+        .await
+        .context("failed to update trade position from manual account exit")?;
+
+        sqlx::query(
+            r#"
+            UPDATE polymarket.account_trades
+            SET applied_exit_size = LEAST(size, applied_exit_size + $2),
+                updated_at = now()
+            WHERE account_trade_id = $1
+            "#,
+        )
+        .bind(trade.account_trade_id)
+        .bind(exit_size)
+        .execute(&mut *tx)
+        .await
+        .context("failed to mark account trade applied size")?;
+
+        tx.commit()
+            .await
+            .context("failed to commit manual account exit transaction")?;
+        Ok(true)
+    }
+
+    pub async fn preview_account_position_mismatches(
+        &self,
+        account_address: &str,
+        snapshots: &[AccountPositionSnapshot],
+        token_id: Option<&str>,
+    ) -> Result<Vec<AccountPositionMismatch>> {
+        let open = self.live_open_position_sizes(token_id).await?;
+        let mut mismatches = Vec::new();
+        for (token, db_open_size) in open {
+            let account_size = snapshots
+                .iter()
+                .find(|snapshot| snapshot.token_id == token)
+                .map(|snapshot| snapshot.size)
+                .unwrap_or(Decimal::ZERO);
+            push_position_mismatch(&mut mismatches, token, db_open_size, account_size);
+        }
+        if mismatches.is_empty() {
+            debug_assert!(!account_address.is_empty() || snapshots.is_empty());
+        }
+        Ok(mismatches)
+    }
+
+    pub async fn account_position_mismatches(
+        &self,
+        account_address: &str,
+        token_id: Option<&str>,
+    ) -> Result<Vec<AccountPositionMismatch>> {
+        let rows = sqlx::query_as::<_, AccountPositionMismatch>(
+            r#"
+            WITH db_open AS (
+              SELECT token_id, COALESCE(sum(open_size), 0) AS db_open_size
+              FROM polymarket.trade_positions
+              WHERE is_live_capital = true
+                AND status IN ('open', 'partially_closed')
+                AND open_size > 0
+                AND ($2::text IS NULL OR token_id = $2)
+              GROUP BY token_id
+            ),
+            latest_snapshots AS (
+              SELECT DISTINCT ON (token_id)
+                token_id,
+                size AS account_size
+              FROM polymarket.account_position_snapshots
+              WHERE account_address = $1
+                AND ($2::text IS NULL OR token_id = $2)
+              ORDER BY token_id, snapshot_at DESC
+            ),
+            compared AS (
+              SELECT
+                COALESCE(db_open.token_id, latest_snapshots.token_id) AS token_id,
+                COALESCE(db_open.db_open_size, 0) AS db_open_size,
+                COALESCE(latest_snapshots.account_size, 0) AS account_size
+              FROM db_open
+              FULL OUTER JOIN latest_snapshots USING (token_id)
+            )
+            SELECT
+              token_id,
+              db_open_size,
+              account_size,
+              account_size - db_open_size AS delta_size,
+              CASE
+                WHEN account_size < db_open_size THEN 'account_less_than_db'
+                ELSE 'account_greater_than_db'
+              END AS mismatch_type
+            FROM compared
+            WHERE abs(account_size - db_open_size) > 0.000000001
+            ORDER BY abs(account_size - db_open_size) DESC
+            "#,
+        )
+        .bind(account_address)
+        .bind(token_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch account position mismatches")?;
+        Ok(rows)
+    }
+
+    async fn live_open_position_sizes(
+        &self,
+        token_id: Option<&str>,
+    ) -> Result<Vec<(String, Decimal)>> {
+        #[derive(FromRow)]
+        struct Row {
+            token_id: String,
+            db_open_size: Decimal,
+        }
+        let rows = sqlx::query_as::<_, Row>(
+            r#"
+            SELECT token_id, COALESCE(sum(open_size), 0) AS db_open_size
+            FROM polymarket.trade_positions
+            WHERE is_live_capital = true
+              AND status IN ('open', 'partially_closed')
+              AND open_size > 0
+              AND ($1::text IS NULL OR token_id = $1)
+            GROUP BY token_id
+            "#,
+        )
+        .bind(token_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch live open position sizes")?;
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.token_id, row.db_open_size))
+            .collect())
+    }
+
+    pub async fn insert_account_reconciliation_run(
+        &self,
+        report: &crate::account_reconcile::AccountReconcileReport,
+    ) -> Result<Uuid> {
+        let run_id = sqlx::query_scalar::<_, Uuid>(
+            r#"
+            INSERT INTO polymarket.account_reconciliation_runs (
+              run_id, account_address, source, dry_run, token_id, lookback_hours,
+              started_at, completed_at, status, activities_fetched, account_trades_inserted,
+              position_snapshots_inserted, exits_detected, exits_applied,
+              mismatches_found, unmatched_trades, raw_summary
+            )
+            VALUES (
+              gen_random_uuid(),$1,$2,$3,$4,$5,now(),now(),$6,$7,$8,$9,$10,$11,$12,$13,$14
+            )
+            RETURNING run_id
+            "#,
+        )
+        .bind(&report.account_address)
+        .bind(&report.source)
+        .bind(report.dry_run)
+        .bind(&report.token_id)
+        .bind(report.lookback_hours as i32)
+        .bind(if report.dry_run {
+            "dry_run"
+        } else {
+            "completed"
+        })
+        .bind(report.activities_fetched as i32)
+        .bind(report.account_trades_inserted as i32)
+        .bind(report.position_snapshots_inserted as i32)
+        .bind(report.exits_detected as i32)
+        .bind(report.exits_applied as i32)
+        .bind(report.mismatches.len() as i32)
+        .bind(report.unmatched_trades as i32)
+        .bind(serde_json::to_value(report)?)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to insert account reconciliation run")?;
         Ok(run_id)
     }
 
@@ -3967,6 +4617,30 @@ fn order_from_db_row(row: OrderDbRow) -> Result<OrderRecord> {
     order.created_at = row.created_at;
     order.updated_at = row.updated_at;
     Ok(order)
+}
+
+fn push_position_mismatch(
+    mismatches: &mut Vec<AccountPositionMismatch>,
+    token_id: String,
+    db_open_size: Decimal,
+    account_size: Decimal,
+) {
+    let delta_size = account_size - db_open_size;
+    if delta_size.abs() <= dec!(0.000000001) {
+        return;
+    }
+    let mismatch_type = if account_size < db_open_size {
+        "account_less_than_db"
+    } else {
+        "account_greater_than_db"
+    };
+    mismatches.push(AccountPositionMismatch {
+        token_id,
+        db_open_size,
+        account_size,
+        delta_size,
+        mismatch_type: mismatch_type.to_string(),
+    });
 }
 
 #[cfg(test)]

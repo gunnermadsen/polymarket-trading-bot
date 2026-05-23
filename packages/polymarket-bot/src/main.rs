@@ -581,6 +581,18 @@ impl ControlApi for RuntimeControl {
         serde_json::to_value(report).map_err(|error| HttpError::internal(error.to_string()))
     }
 
+    async fn live_account_reconcile(
+        &self,
+        request: control_http::AccountReconcileRequest,
+    ) -> Result<control_http::AccountReconcileReport, HttpError> {
+        self.venues
+            .for_mode(ExecutionMode::Live)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?
+            .live_account_reconcile(request)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))
+    }
+
     async fn live_set_entries_enabled(&self, enabled: bool) -> Result<LiveVenueStatus, HttpError> {
         self.venues
             .for_mode(ExecutionMode::Live)
@@ -860,6 +872,7 @@ async fn main() -> Result<()> {
             config.live.clone(),
             config.live.clob_api_base_url.clone(),
             store.clone(),
+            data_api.clone(),
         )?))
     } else {
         None

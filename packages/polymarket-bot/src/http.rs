@@ -15,6 +15,8 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub use crate::account_reconcile::{AccountReconcileReport, AccountReconcileRequest};
+
 use crate::{
     backfill::BackfillMode,
     execution::{
@@ -130,6 +132,15 @@ pub trait ControlApi: Send + Sync + 'static {
     async fn live_halt(&self) -> Result<serde_json::Value, HttpError>;
 
     async fn live_reconcile(&self) -> Result<serde_json::Value, HttpError>;
+
+    async fn live_account_reconcile(
+        &self,
+        _request: AccountReconcileRequest,
+    ) -> Result<AccountReconcileReport, HttpError> {
+        Err(HttpError::not_implemented(
+            "live account reconciliation is not wired",
+        ))
+    }
 
     async fn live_set_entries_enabled(&self, enabled: bool) -> Result<LiveVenueStatus, HttpError>;
 
@@ -481,6 +492,7 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         )
         .route("/live/halt", post(live_halt))
         .route("/live/reconcile", post(live_reconcile))
+        .route("/live/account-reconcile", post(live_account_reconcile))
         .route("/live/entries/enable", post(live_entries_enable))
         .route("/live/entries/disable", post(live_entries_disable))
         .route(
@@ -682,6 +694,17 @@ async fn live_reconcile(
     State(state): State<HttpState>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
     state.control.live_reconcile().await.map(Json)
+}
+
+async fn live_account_reconcile(
+    State(state): State<HttpState>,
+    Json(request): Json<AccountReconcileRequest>,
+) -> Result<Json<AccountReconcileReport>, HttpError> {
+    state
+        .control
+        .live_account_reconcile(request)
+        .await
+        .map(Json)
 }
 
 async fn live_entries_enable(
