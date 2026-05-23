@@ -200,6 +200,22 @@ impl LiveVenue {
         };
 
         store.insert_fill(&fill).await?;
+        if let Some(signal_id) = order.request.signal_id {
+            store
+                .update_copy_trade_signal_status_by_id(
+                    signal_id,
+                    "filled",
+                    json!({
+                        "source": "user_ws",
+                        "venue_trade_id": event.venue_trade_id,
+                        "venue_order_id": order.order_id,
+                        "fill_size": fill.size,
+                        "fill_price": fill.price,
+                        "filled_at": fill.filled_at,
+                    }),
+                )
+                .await?;
+        }
         let order_state = if fill.size >= order.request.size {
             OrderState::Filled
         } else {
@@ -221,6 +237,35 @@ impl LiveVenue {
         Ok(true)
     }
 
+    async fn persist_order_update_from_live_event(
+        store: &Store,
+        event: &LiveVenueEvent,
+    ) -> Result<bool> {
+        if event.event_type != "order" || !is_cancelled_order_status(event.event_status.as_deref())
+        {
+            return Ok(false);
+        }
+        let Some(order_id) = event
+            .venue_order_id
+            .as_deref()
+            .or_else(|| json_str(&event.raw_payload, "id"))
+        else {
+            return Ok(false);
+        };
+        store
+            .mark_order_cancelled(
+                order_id,
+                json!({
+                    "source": "user_ws",
+                    "event_type": event.event_type,
+                    "event_status": event.event_status,
+                    "raw_payload": event.raw_payload,
+                }),
+            )
+            .await?;
+        Ok(true)
+    }
+
     async fn backfill_fills_from_live_events(&self) -> Result<usize> {
         let store = self.store()?;
         let mut processed = 0usize;
@@ -228,6 +273,9 @@ impl LiveVenue {
             if LiveVenue::persist_fill_from_live_event(&store, &event).await? {
                 processed += 1;
             }
+        }
+        for event in store.recent_live_order_events(500).await? {
+            let _ = LiveVenue::persist_order_update_from_live_event(&store, &event).await?;
         }
         Ok(processed)
     }
@@ -629,6 +677,9 @@ async fn run_user_ws_once(
                         if let Err(error) = LiveVenue::persist_fill_from_live_event(&store, &event).await {
                             warn!(error = %error, "failed to persist Polymarket live user websocket fill event");
                         }
+                        if let Err(error) = LiveVenue::persist_order_update_from_live_event(&store, &event).await {
+                            warn!(error = %error, "failed to persist Polymarket live user websocket order event");
+                        }
                         if inserted {
                             debug!(
                                 event_type = %event.event_type,
@@ -821,13 +872,18 @@ async fn live_fill_record_from_event(
         let Some(order) = store.find_order_by_venue_order_id(&candidate).await? else {
             continue;
         };
-        let price = json_decimal(&event.raw_payload, "price")?;
-        let size = live_event_matched_size_for_order(&event.raw_payload, &candidate)?
+        let details = live_event_fill_details_for_order(&event.raw_payload, &candidate)?;
+        let price = details
+            .price
+            .unwrap_or(json_decimal(&event.raw_payload, "price")?);
+        let size = details
+            .size
             .unwrap_or(json_decimal(&event.raw_payload, "size")?);
         let fee_rate_bps =
             json_decimal(&event.raw_payload, "fee_rate_bps").unwrap_or(Decimal::ZERO);
         let fee = price * size * fee_rate_bps / Decimal::from(10_000);
-        let token_id = live_event_asset_id_for_order(&event.raw_payload, &candidate)
+        let token_id = details
+            .token_id
             .or_else(|| json_str(&event.raw_payload, "asset_id").map(str::to_string))
             .unwrap_or_else(|| order.request.token_id.clone());
         let filled_at = json_timestamp(&event.raw_payload, "match_time")
@@ -860,6 +916,12 @@ fn is_fill_trade_status(status: Option<&str>) -> bool {
     )
 }
 
+fn is_cancelled_order_status(status: Option<&str>) -> bool {
+    status
+        .map(|value| value.to_ascii_uppercase().starts_with("CANCELED"))
+        .unwrap_or(false)
+}
+
 fn live_event_order_id_candidates(payload: &Value) -> Vec<String> {
     let mut candidates = Vec::new();
     if let Some(order_id) = json_str(payload, "taker_order_id") {
@@ -878,26 +940,30 @@ fn live_event_order_id_candidates(payload: &Value) -> Vec<String> {
     candidates
 }
 
-fn live_event_matched_size_for_order(payload: &Value, order_id: &str) -> Result<Option<Decimal>> {
+#[derive(Debug, Default)]
+struct LiveEventFillDetails {
+    price: Option<Decimal>,
+    size: Option<Decimal>,
+    token_id: Option<String>,
+}
+
+fn live_event_fill_details_for_order(
+    payload: &Value,
+    order_id: &str,
+) -> Result<LiveEventFillDetails> {
     let Some(maker_orders) = payload.get("maker_orders").and_then(Value::as_array) else {
-        return Ok(None);
+        return Ok(LiveEventFillDetails::default());
     };
     for maker_order in maker_orders {
         if json_str(maker_order, "order_id") == Some(order_id) {
-            return json_decimal(maker_order, "matched_amount").map(Some);
+            return Ok(LiveEventFillDetails {
+                price: Some(json_decimal(maker_order, "price")?),
+                size: Some(json_decimal(maker_order, "matched_amount")?),
+                token_id: json_str(maker_order, "asset_id").map(str::to_string),
+            });
         }
     }
-    Ok(None)
-}
-
-fn live_event_asset_id_for_order(payload: &Value, order_id: &str) -> Option<String> {
-    let maker_orders = payload.get("maker_orders").and_then(Value::as_array)?;
-    for maker_order in maker_orders {
-        if json_str(maker_order, "order_id") == Some(order_id) {
-            return json_str(maker_order, "asset_id").map(str::to_string);
-        }
-    }
-    None
+    Ok(LiveEventFillDetails::default())
 }
 
 fn json_str<'a>(payload: &'a Value, field: &str) -> Option<&'a str> {
