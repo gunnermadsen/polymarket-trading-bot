@@ -354,6 +354,23 @@ struct AccountExitPositionRow {
     entry_notional: Decimal,
 }
 
+#[derive(Debug, Clone, FromRow)]
+struct AccountAdjustmentPositionRow {
+    process_id: Option<Uuid>,
+    position_id: Uuid,
+    source_signal_id: Uuid,
+    side: String,
+    entry_price: Decimal,
+    entry_size: Decimal,
+    open_size: Decimal,
+    entry_fee: Decimal,
+    entry_notional: Decimal,
+    snapshot_at: DateTime<Utc>,
+    snapshot_size: Decimal,
+    exit_price: Decimal,
+    price_source: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradingProcessResetReport {
     pub process_id: Uuid,
@@ -2179,6 +2196,232 @@ impl Store {
         tx.commit()
             .await
             .context("failed to commit manual account exit transaction")?;
+        Ok(true)
+    }
+
+    pub async fn apply_account_position_mismatch_adjustments(
+        &self,
+        account_address: &str,
+        token_id: Option<&str>,
+        exit_type: &str,
+    ) -> Result<ManualExitReport> {
+        let mismatches = self
+            .account_position_mismatches(account_address, token_id)
+            .await?;
+        let mut report = ManualExitReport::default();
+        for mismatch in mismatches {
+            if mismatch.mismatch_type != "account_less_than_db" {
+                continue;
+            }
+            let mut remaining = (mismatch.db_open_size - mismatch.account_size).max(Decimal::ZERO);
+            if remaining <= Decimal::ZERO {
+                continue;
+            }
+            let positions = self
+                .open_positions_for_account_adjustment(account_address, &mismatch.token_id)
+                .await?;
+            if positions.is_empty() {
+                report.unmatched_trades += 1;
+                continue;
+            }
+            for position in positions {
+                if remaining <= Decimal::ZERO {
+                    break;
+                }
+                let exit_size = remaining.min(position.open_size);
+                if exit_size <= Decimal::ZERO {
+                    continue;
+                }
+                report.exits_detected += 1;
+                report.exit_size_applied += exit_size;
+                let applied = self
+                    .apply_account_position_mismatch_adjustment(
+                        account_address,
+                        &mismatch,
+                        &position,
+                        exit_size,
+                        exit_type,
+                    )
+                    .await?;
+                if applied {
+                    report.exits_applied += 1;
+                    remaining -= exit_size;
+                }
+            }
+            if remaining > Decimal::ZERO {
+                report.unmatched_trades += 1;
+            }
+        }
+        Ok(report)
+    }
+
+    async fn open_positions_for_account_adjustment(
+        &self,
+        account_address: &str,
+        token_id: &str,
+    ) -> Result<Vec<AccountAdjustmentPositionRow>> {
+        let rows = sqlx::query_as::<_, AccountAdjustmentPositionRow>(
+            r#"
+            WITH latest_snapshot AS (
+              SELECT token_id, size, avg_price, current_price, snapshot_at
+              FROM polymarket.account_position_snapshots
+              WHERE account_address = $1
+                AND token_id = $2
+              ORDER BY snapshot_at DESC
+              LIMIT 1
+            )
+            SELECT p.process_id, p.position_id, p.source_signal_id, p.side, p.entry_price,
+              p.entry_size, p.open_size, p.entry_fee, p.entry_notional,
+              COALESCE(ls.snapshot_at, now()) AS snapshot_at,
+              COALESCE(ls.size, 0) AS snapshot_size,
+              COALESCE(ls.current_price, ls.avg_price, p.entry_price) AS exit_price,
+              CASE
+                WHEN ls.current_price IS NOT NULL THEN 'account_snapshot_current_price'
+                WHEN ls.avg_price IS NOT NULL THEN 'account_snapshot_avg_price'
+                ELSE 'entry_price_fallback'
+              END AS price_source
+            FROM polymarket.trade_positions p
+            LEFT JOIN latest_snapshot ls ON ls.token_id = p.token_id
+            WHERE p.is_live_capital = true
+              AND p.token_id = $2
+              AND p.status IN ('open', 'partially_closed')
+              AND p.open_size > 0
+            ORDER BY p.entry_timestamp ASC, p.created_at ASC
+            "#,
+        )
+        .bind(account_address)
+        .bind(token_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch open positions for account position adjustment")?;
+        Ok(rows)
+    }
+
+    async fn apply_account_position_mismatch_adjustment(
+        &self,
+        account_address: &str,
+        mismatch: &AccountPositionMismatch,
+        position: &AccountAdjustmentPositionRow,
+        exit_size: Decimal,
+        exit_type: &str,
+    ) -> Result<bool> {
+        let exit_notional = position.exit_price * exit_size;
+        let entry_value = position.entry_price * exit_size;
+        let gross_pnl = if position.side == "buy" {
+            exit_notional - entry_value
+        } else {
+            entry_value - exit_notional
+        };
+        let allocated_entry_fee = if position.entry_size > Decimal::ZERO {
+            position.entry_fee * (exit_size / position.entry_size)
+        } else {
+            Decimal::ZERO
+        };
+        let net_pnl = gross_pnl - allocated_entry_fee;
+        let metadata = serde_json::json!({
+            "source": "account_position_snapshot_reconciliation",
+            "manual_exit_kind": exit_type,
+            "account_address": account_address,
+            "token_id": mismatch.token_id,
+            "db_open_size_before": mismatch.db_open_size,
+            "account_size": mismatch.account_size,
+            "delta_size": mismatch.delta_size,
+            "snapshot_at": position.snapshot_at,
+            "snapshot_size": position.snapshot_size,
+            "price_source": position.price_source,
+            "allocated_entry_fee": allocated_entry_fee,
+            "note": "Synthetic adjustment used when account position snapshot is lower than DB open size and no matching account sell trade remains unapplied."
+        });
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin account position adjustment transaction")?;
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO polymarket.trade_exits (
+              position_id, process_id, source_signal_id, timestamp_utc, exit_type, is_synthetic,
+              exit_trigger_wallet, exit_source_trade_id, exit_price, exit_size,
+              exit_notional, exit_fee, slippage_cost, gross_pnl, net_pnl, roi, metadata
+            )
+            VALUES (
+              $1,$2,$3,$4,$5,true,$6,NULL,$7,$8,$9,0,0,$10,$11,
+              CASE WHEN $12 > 0 THEN $11 / $12 ELSE 0 END,
+              $13
+            )
+            "#,
+        )
+        .bind(position.position_id)
+        .bind(position.process_id)
+        .bind(position.source_signal_id)
+        .bind(position.snapshot_at)
+        .bind(exit_type)
+        .bind(account_address)
+        .bind(position.exit_price)
+        .bind(exit_size)
+        .bind(exit_notional)
+        .bind(gross_pnl)
+        .bind(net_pnl)
+        .bind(position.entry_notional)
+        .bind(metadata)
+        .execute(&mut *tx)
+        .await
+        .context("failed to insert account position adjustment exit")?;
+        if inserted.rows_affected() == 0 {
+            tx.commit()
+                .await
+                .context("failed to commit duplicate account position adjustment transaction")?;
+            return Ok(false);
+        }
+
+        sqlx::query(
+            r#"
+            UPDATE polymarket.trade_positions p
+            SET
+              open_size = GREATEST(0, p.open_size - $2),
+              realized_pnl = p.realized_pnl + $3,
+              status = CASE
+                WHEN GREATEST(0, p.open_size - $2) <= 0.000000001 THEN 'closed'
+                ELSE 'partially_closed'
+              END,
+              unrealized_pnl = CASE
+                WHEN GREATEST(0, p.open_size - $2) <= 0.000000001 THEN 0
+                WHEN p.open_size > 0 THEN p.unrealized_pnl * (GREATEST(0, p.open_size - $2) / p.open_size)
+                ELSE 0
+              END,
+              roi = CASE
+                WHEN p.entry_notional > 0 THEN (
+                  p.realized_pnl + $3 + CASE
+                    WHEN GREATEST(0, p.open_size - $2) <= 0.000000001 THEN 0
+                    WHEN p.open_size > 0 THEN p.unrealized_pnl * (GREATEST(0, p.open_size - $2) / p.open_size)
+                    ELSE 0
+                  END
+                ) / p.entry_notional
+                ELSE 0
+              END,
+              metadata = p.metadata || jsonb_build_object(
+                'last_account_position_adjustment', $4::jsonb
+              ),
+              updated_at = now()
+            WHERE p.position_id = $1
+            "#,
+        )
+        .bind(position.position_id)
+        .bind(exit_size)
+        .bind(net_pnl)
+        .bind(serde_json::json!({
+            "exit_type": exit_type,
+            "exit_size": exit_size,
+            "account_address": account_address,
+            "snapshot_at": position.snapshot_at
+        }))
+        .execute(&mut *tx)
+        .await
+        .context("failed to update trade position from account position adjustment")?;
+
+        tx.commit()
+            .await
+            .context("failed to commit account position adjustment transaction")?;
         Ok(true)
     }
 

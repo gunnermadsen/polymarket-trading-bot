@@ -396,6 +396,9 @@ impl LiveVenue {
             .as_ref()
             .context("Polymarket Data API client is not configured")?;
         if request.account_address.is_none() {
+            request.account_address = configured_account_address(&self.config);
+        }
+        if request.account_address.is_none() {
             request.account_address = Some(self.authenticated_account_address().await?);
         }
         reconcile_account_positions(&store, data_api, request).await

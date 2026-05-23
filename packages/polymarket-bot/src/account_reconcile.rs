@@ -38,6 +38,9 @@ pub struct AccountReconcileReport {
     pub exits_detected: u64,
     pub exits_applied: u64,
     pub exit_size_applied: Decimal,
+    pub position_adjustments_detected: u64,
+    pub position_adjustments_applied: u64,
+    pub position_adjustment_size_applied: Decimal,
     pub mismatches: Vec<AccountPositionMismatch>,
     pub unmatched_trades: u64,
 }
@@ -155,6 +158,7 @@ pub async fn reconcile_account_positions(
             .apply_manual_account_exits(&account_address, request.token_id.as_deref(), exit_type)
             .await?
     };
+    let mut position_adjustment_report = Default::default();
     let mismatches = if request.dry_run {
         store
             .preview_account_position_mismatches(
@@ -164,6 +168,13 @@ pub async fn reconcile_account_positions(
             )
             .await?
     } else {
+        position_adjustment_report = store
+            .apply_account_position_mismatch_adjustments(
+                &account_address,
+                request.token_id.as_deref(),
+                exit_type,
+            )
+            .await?;
         store
             .account_position_mismatches(&account_address, request.token_id.as_deref())
             .await?
@@ -182,6 +193,9 @@ pub async fn reconcile_account_positions(
         exits_detected: exit_report.exits_detected,
         exits_applied: exit_report.exits_applied,
         exit_size_applied: exit_report.exit_size_applied,
+        position_adjustments_detected: position_adjustment_report.exits_detected,
+        position_adjustments_applied: position_adjustment_report.exits_applied,
+        position_adjustment_size_applied: position_adjustment_report.exit_size_applied,
         mismatches,
         unmatched_trades: exit_report.unmatched_trades,
     };
