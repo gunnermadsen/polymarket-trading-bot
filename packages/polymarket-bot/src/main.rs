@@ -20,6 +20,7 @@ use polymarket_bot::{
     execution::{
         live::LiveVenue, sim::SimVenue, ExecutionVenue, LiveIdentityDiagnostics,
         LiveOrderDryRunDiagnostics, LiveOrderDryRunRequest, LiveVenueStatus,
+        LiveWalletAddressDiagnostics,
     },
     gamma::GammaClient,
     http as control_http,
@@ -497,6 +498,18 @@ impl ControlApi for RuntimeControl {
             .for_mode(ExecutionMode::Live)
             .map_err(|error| HttpError::bad_request(error.to_string()))?
             .live_identity_diagnostics()
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))
+    }
+
+    async fn live_wallet_address_diagnostics(
+        &self,
+        candidate_addresses: Vec<String>,
+    ) -> Result<LiveWalletAddressDiagnostics, HttpError> {
+        self.venues
+            .for_mode(ExecutionMode::Live)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?
+            .live_wallet_address_diagnostics(candidate_addresses)
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
     }

@@ -12,7 +12,8 @@ use crate::{
     edge::compute_taker_fee,
     execution::{
         ExecutionVenue, LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics,
-        LiveOrderDryRunRequest, LiveVenueStatus, ReconciliationReport,
+        LiveOrderDryRunRequest, LiveVenueStatus, LiveWalletAddressDiagnostics,
+        LiveWalletCandidateAddressDiagnostics, LiveWalletTokenBalances, ReconciliationReport,
     },
     models::{
         ConversionRequest, ConversionResult, FillRecord, FillSource, OrderRecord, OrderRequest,
@@ -381,6 +382,57 @@ impl ExecutionVenue for SimVenue {
             open_orders_readable: false,
             open_orders_error: Some(format!("{}_mode", self.mode_name)),
             open_orders_count: None,
+            checked_at: Utc::now(),
+        })
+    }
+
+    async fn live_wallet_address_diagnostics(
+        &self,
+        candidate_addresses: Vec<String>,
+    ) -> Result<LiveWalletAddressDiagnostics> {
+        Ok(LiveWalletAddressDiagnostics {
+            mode: self.mode_name.to_string(),
+            signer_address: None,
+            configured_funder_address: None,
+            configured_signature_type: None,
+            resolved_signature_type: None,
+            authenticated_client_address: None,
+            derived_proxy_wallet_address: None,
+            derived_safe_wallet_address: None,
+            expected_order_maker_address: None,
+            expected_order_signer_field: None,
+            configured_funder_matches_signer: None,
+            configured_funder_matches_proxy_wallet: None,
+            configured_funder_matches_safe_wallet: None,
+            configured_funder_deployed_as_deposit_wallet: None,
+            configured_funder_deployed_as_deposit_wallet_error: Some(format!(
+                "{}_mode",
+                self.mode_name
+            )),
+            relayer_base_url: None,
+            relayer_deployment_check_url: None,
+            signer_balances: None::<LiveWalletTokenBalances>,
+            configured_funder_balances: None::<LiveWalletTokenBalances>,
+            candidate_addresses: candidate_addresses
+                .into_iter()
+                .map(|address| LiveWalletCandidateAddressDiagnostics {
+                    address,
+                    matches_signer: None,
+                    matches_configured_funder: None,
+                    matches_authenticated_client: None,
+                    matches_proxy_wallet: None,
+                    matches_safe_wallet: None,
+                    deployed_as_deposit_wallet: None,
+                    deployed_as_deposit_wallet_error: Some(format!("{}_mode", self.mode_name)),
+                    deposit_wallet_deployment_check_url: None,
+                    deployed_as_safe_wallet: None,
+                    deployed_as_safe_wallet_error: Some(format!("{}_mode", self.mode_name)),
+                    safe_wallet_deployment_check_url: None,
+                    balances: None,
+                })
+                .collect(),
+            verified_deposit_wallet_address: None,
+            verified_deposit_wallet_candidates_count: 0,
             checked_at: Utc::now(),
         })
     }

@@ -19,7 +19,7 @@ use crate::{
     backfill::BackfillMode,
     execution::{
         LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics, LiveOrderDryRunRequest,
-        LiveVenueStatus,
+        LiveVenueStatus, LiveWalletAddressDiagnostics,
     },
     models::{BackfillJob, BackfillJobStatus, TradingProcess, TradingProcessConfig},
     store::TradingProcessResetReport,
@@ -110,6 +110,11 @@ pub trait ControlApi: Send + Sync + 'static {
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError>;
 
     async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics, HttpError>;
+
+    async fn live_wallet_address_diagnostics(
+        &self,
+        candidate_addresses: Vec<String>,
+    ) -> Result<LiveWalletAddressDiagnostics, HttpError>;
 
     async fn live_order_dry_run(
         &self,
@@ -321,6 +326,15 @@ impl ControlApi for PlaceholderControlApi {
         ))
     }
 
+    async fn live_wallet_address_diagnostics(
+        &self,
+        _candidate_addresses: Vec<String>,
+    ) -> Result<LiveWalletAddressDiagnostics, HttpError> {
+        Err(HttpError::not_implemented(
+            "live wallet diagnostics are not wired",
+        ))
+    }
+
     async fn live_order_dry_run(
         &self,
         _request: LiveOrderDryRunRequest,
@@ -441,6 +455,10 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .route("/trades/pnl/mark-now", post(trade_pnl_mark_now))
         .route("/live/status", get(live_status))
         .route("/live/diagnostics", get(live_identity_diagnostics))
+        .route(
+            "/live/wallet-diagnostics",
+            get(live_wallet_address_diagnostics),
+        )
         .route("/live/order-dry-run", post(live_order_dry_run))
         .route("/live/halt", post(live_halt))
         .route("/live/reconcile", post(live_reconcile))
@@ -606,6 +624,17 @@ async fn live_identity_diagnostics(
     State(state): State<HttpState>,
 ) -> Result<Json<LiveIdentityDiagnostics>, HttpError> {
     state.control.live_identity_diagnostics().await.map(Json)
+}
+
+async fn live_wallet_address_diagnostics(
+    State(state): State<HttpState>,
+    Query(request): Query<LiveWalletDiagnosticsRequest>,
+) -> Result<Json<LiveWalletAddressDiagnostics>, HttpError> {
+    state
+        .control
+        .live_wallet_address_diagnostics(request.candidate_addresses())
+        .await
+        .map(Json)
 }
 
 async fn live_order_dry_run(
@@ -846,6 +875,27 @@ pub struct TradePnlListRequest {
     #[serde(default)]
     pub process_id: Option<Uuid>,
     pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LiveWalletDiagnosticsRequest {
+    #[serde(default)]
+    pub address: Option<String>,
+    #[serde(default)]
+    pub candidate_address: Option<String>,
+}
+
+impl LiveWalletDiagnosticsRequest {
+    fn candidate_addresses(&self) -> Vec<String> {
+        self.address
+            .iter()
+            .chain(self.candidate_address.iter())
+            .flat_map(|value| value.split(','))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

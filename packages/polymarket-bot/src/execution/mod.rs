@@ -59,6 +59,60 @@ pub struct LiveIdentityDiagnostics {
     pub checked_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveWalletAddressDiagnostics {
+    pub mode: String,
+    pub signer_address: Option<String>,
+    pub configured_funder_address: Option<String>,
+    pub configured_signature_type: Option<String>,
+    pub resolved_signature_type: Option<String>,
+    pub authenticated_client_address: Option<String>,
+    pub derived_proxy_wallet_address: Option<String>,
+    pub derived_safe_wallet_address: Option<String>,
+    pub expected_order_maker_address: Option<String>,
+    pub expected_order_signer_field: Option<String>,
+    pub configured_funder_matches_signer: Option<bool>,
+    pub configured_funder_matches_proxy_wallet: Option<bool>,
+    pub configured_funder_matches_safe_wallet: Option<bool>,
+    pub configured_funder_deployed_as_deposit_wallet: Option<bool>,
+    pub configured_funder_deployed_as_deposit_wallet_error: Option<String>,
+    pub relayer_base_url: Option<String>,
+    pub relayer_deployment_check_url: Option<String>,
+    pub signer_balances: Option<LiveWalletTokenBalances>,
+    pub configured_funder_balances: Option<LiveWalletTokenBalances>,
+    pub candidate_addresses: Vec<LiveWalletCandidateAddressDiagnostics>,
+    pub verified_deposit_wallet_address: Option<String>,
+    pub verified_deposit_wallet_candidates_count: usize,
+    pub checked_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveWalletTokenBalances {
+    pub address: String,
+    pub pol_wei: Option<String>,
+    pub pusd: Option<String>,
+    pub usdc_e: Option<String>,
+    pub native_usdc: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveWalletCandidateAddressDiagnostics {
+    pub address: String,
+    pub matches_signer: Option<bool>,
+    pub matches_configured_funder: Option<bool>,
+    pub matches_authenticated_client: Option<bool>,
+    pub matches_proxy_wallet: Option<bool>,
+    pub matches_safe_wallet: Option<bool>,
+    pub deployed_as_deposit_wallet: Option<bool>,
+    pub deployed_as_deposit_wallet_error: Option<String>,
+    pub deposit_wallet_deployment_check_url: Option<String>,
+    pub deployed_as_safe_wallet: Option<bool>,
+    pub deployed_as_safe_wallet_error: Option<String>,
+    pub safe_wallet_deployment_check_url: Option<String>,
+    pub balances: Option<LiveWalletTokenBalances>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct LiveOrderDryRunRequest {
     pub token_id: String,
@@ -140,6 +194,10 @@ pub trait ExecutionVenue: Send + Sync {
     async fn fills_for_order(&self, order_id: &str) -> Result<Vec<FillRecord>>;
     async fn live_status(&self) -> Result<LiveVenueStatus>;
     async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics>;
+    async fn live_wallet_address_diagnostics(
+        &self,
+        candidate_addresses: Vec<String>,
+    ) -> Result<LiveWalletAddressDiagnostics>;
     async fn live_order_dry_run(
         &self,
         request: LiveOrderDryRunRequest,

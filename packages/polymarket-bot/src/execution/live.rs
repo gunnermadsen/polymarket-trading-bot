@@ -14,11 +14,13 @@ use polymarket_client_sdk_v2::{
         },
         Client as SdkClient, Config as SdkConfig,
     },
+    derive_proxy_wallet, derive_safe_wallet,
     types::{Address, Decimal as SdkDecimal, U256},
     POLYGON,
 };
 use rust_decimal::Decimal;
-use serde_json::json;
+use serde::Deserialize;
+use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, warn};
@@ -28,7 +30,8 @@ use crate::{
     config::LiveExecutionConfig,
     execution::{
         ExecutionVenue, LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics,
-        LiveOrderDryRunRequest, LiveVenueStatus, ReconciliationReport,
+        LiveOrderDryRunRequest, LiveVenueStatus, LiveWalletAddressDiagnostics,
+        LiveWalletCandidateAddressDiagnostics, LiveWalletTokenBalances, ReconciliationReport,
     },
     idempotency::{event_hash, order_request_notional_key},
     models::{ConversionRequest, ConversionResult, FillRecord, OrderRecord, OrderRequest},
@@ -37,6 +40,18 @@ use crate::{
 };
 
 type AuthenticatedClient = SdkClient<Authenticated<Normal>>;
+
+const DEFAULT_POLYGON_RPC_URL: &str = "https://polygon-bor-rpc.publicnode.com";
+const DEFAULT_RELAYER_BASE_URL: &str = "https://relayer-v2.polymarket.com";
+const PUSD_ADDRESS: &str = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
+const USDC_E_ADDRESS: &str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+const NATIVE_USDC_ADDRESS: &str = "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359";
+
+#[derive(Debug, Deserialize)]
+struct RpcResponse {
+    result: Option<String>,
+    error: Option<Value>,
+}
 
 #[derive(Clone)]
 pub struct LiveVenue {
@@ -506,6 +521,30 @@ fn addresses_equal(left: Option<&str>, right: Option<&str>) -> Option<bool> {
     Some(normalized_address(left)? == normalized_address(right)?)
 }
 
+fn is_address_like(value: &str) -> bool {
+    let trimmed = value.trim();
+    let Some(hex) = trimmed.strip_prefix("0x") else {
+        return false;
+    };
+    hex.len() == 40 && hex.chars().all(|character| character.is_ascii_hexdigit())
+}
+
+fn push_unique_candidate_address(candidates: &mut Vec<String>, candidate: Option<&str>) {
+    let Some(candidate) = candidate
+        .map(str::trim)
+        .filter(|candidate| is_address_like(candidate))
+    else {
+        return;
+    };
+    if candidates
+        .iter()
+        .any(|existing| addresses_equal(Some(existing), Some(candidate)) == Some(true))
+    {
+        return;
+    }
+    candidates.push(candidate.to_string());
+}
+
 #[async_trait]
 impl ExecutionVenue for LiveVenue {
     async fn submit_order(&self, request: OrderRequest) -> Result<OrderRecord> {
@@ -902,6 +941,128 @@ impl ExecutionVenue for LiveVenue {
         Ok(diagnostics)
     }
 
+    async fn live_wallet_address_diagnostics(
+        &self,
+        candidate_addresses: Vec<String>,
+    ) -> Result<LiveWalletAddressDiagnostics> {
+        let signature_type = parse_signature_type(self.config.signature_type.as_deref())?;
+        let signer_address = signer_address_from_private_key(self.config.private_key.as_deref())?;
+        let configured_funder_address = self.config.funder_address.clone();
+        let signer: Option<Address> = signer_address
+            .as_deref()
+            .and_then(|address| Address::from_str(address).ok());
+        let derived_proxy_wallet_address = signer
+            .and_then(|address| derive_proxy_wallet(address, POLYGON))
+            .map(|address| address.to_checksum(None));
+        let derived_safe_wallet_address = signer
+            .and_then(|address| derive_safe_wallet(address, POLYGON))
+            .map(|address| address.to_checksum(None));
+
+        let authenticated_client_address = match self.authenticated_client().await {
+            Ok(client) => Some(client.address().to_checksum(None)),
+            Err(_) => None,
+        };
+
+        let expected_order_maker_address = match signature_type {
+            SignatureType::Eoa => signer_address.clone(),
+            SignatureType::Proxy | SignatureType::GnosisSafe | SignatureType::Poly1271 => {
+                configured_funder_address.clone()
+            }
+            _ => configured_funder_address.clone(),
+        };
+        let expected_order_signer_field = match signature_type {
+            SignatureType::Poly1271 => configured_funder_address.clone(),
+            _ => signer_address.clone(),
+        };
+
+        let relayer_base_url = std::env::var("POLYMARKET_RELAYER_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_RELAYER_BASE_URL.to_string());
+        let (
+            configured_funder_deployed_as_deposit_wallet,
+            configured_funder_deployed_as_deposit_wallet_error,
+            relayer_deployment_check_url,
+        ) = check_candidate_relayer_deployment(
+            &relayer_base_url,
+            configured_funder_address.as_deref(),
+            "WALLET",
+        )
+        .await;
+
+        let rpc_url = std::env::var("POLYMARKET_POLYGON_RPC_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_POLYGON_RPC_URL.to_string());
+        let signer_balances = match signer_address.as_deref() {
+            Some(address) if is_address_like(address) => {
+                Some(wallet_token_balances(&rpc_url, address).await)
+            }
+            _ => None,
+        };
+        let configured_funder_balances = match configured_funder_address.as_deref() {
+            Some(address) if is_address_like(address) => {
+                Some(wallet_token_balances(&rpc_url, address).await)
+            }
+            _ => None,
+        };
+        let candidate_addresses = wallet_candidate_address_diagnostics(
+            candidate_addresses,
+            configured_funder_address.as_deref(),
+            signer_address.as_deref(),
+            authenticated_client_address.as_deref(),
+            derived_proxy_wallet_address.as_deref(),
+            derived_safe_wallet_address.as_deref(),
+            &relayer_base_url,
+            &rpc_url,
+        )
+        .await;
+        let verified_deposit_wallet_addresses = candidate_addresses
+            .iter()
+            .filter(|candidate| candidate.deployed_as_deposit_wallet == Some(true))
+            .map(|candidate| candidate.address.clone())
+            .collect::<Vec<_>>();
+
+        Ok(LiveWalletAddressDiagnostics {
+            mode: "live".to_string(),
+            signer_address: signer_address.clone(),
+            configured_funder_address: configured_funder_address.clone(),
+            configured_signature_type: self.config.signature_type.clone(),
+            resolved_signature_type: Some(format!("{signature_type:?}")),
+            authenticated_client_address,
+            derived_proxy_wallet_address: derived_proxy_wallet_address.clone(),
+            derived_safe_wallet_address: derived_safe_wallet_address.clone(),
+            expected_order_maker_address,
+            expected_order_signer_field,
+            configured_funder_matches_signer: addresses_equal(
+                configured_funder_address.as_deref(),
+                signer_address.as_deref(),
+            ),
+            configured_funder_matches_proxy_wallet: addresses_equal(
+                configured_funder_address.as_deref(),
+                derived_proxy_wallet_address.as_deref(),
+            ),
+            configured_funder_matches_safe_wallet: addresses_equal(
+                configured_funder_address.as_deref(),
+                derived_safe_wallet_address.as_deref(),
+            ),
+            configured_funder_deployed_as_deposit_wallet,
+            configured_funder_deployed_as_deposit_wallet_error,
+            relayer_base_url: Some(relayer_base_url),
+            relayer_deployment_check_url,
+            signer_balances,
+            configured_funder_balances,
+            candidate_addresses,
+            verified_deposit_wallet_address: if verified_deposit_wallet_addresses.len() == 1 {
+                verified_deposit_wallet_addresses.first().cloned()
+            } else {
+                None
+            },
+            verified_deposit_wallet_candidates_count: verified_deposit_wallet_addresses.len(),
+            checked_at: Utc::now(),
+        })
+    }
+
     async fn live_order_dry_run(
         &self,
         request: LiveOrderDryRunRequest,
@@ -1018,6 +1179,221 @@ impl ExecutionVenue for LiveVenue {
         drop(state);
         self.live_status().await
     }
+}
+
+fn signer_address_from_private_key(private_key: Option<&str>) -> Result<Option<String>> {
+    private_key
+        .map(|private_key| {
+            LocalSigner::from_str(private_key)
+                .context("failed to parse POLYMARKET_PRIVATE_KEY")
+                .map(|signer| {
+                    signer
+                        .with_chain_id(Some(POLYGON))
+                        .address()
+                        .to_checksum(None)
+                })
+        })
+        .transpose()
+}
+
+async fn check_relayer_deployed(url: &str) -> Result<bool> {
+    let value: Value = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("failed to request relayer deployment status from {url}"))?
+        .error_for_status()
+        .with_context(|| format!("relayer deployment status request failed for {url}"))?
+        .json()
+        .await
+        .with_context(|| format!("failed to decode relayer deployment status from {url}"))?;
+
+    if let Some(deployed) = value.as_bool() {
+        return Ok(deployed);
+    }
+    if let Some(deployed) = value.get("deployed").and_then(Value::as_bool) {
+        return Ok(deployed);
+    }
+    if let Some(deployed) = value.get("isDeployed").and_then(Value::as_bool) {
+        return Ok(deployed);
+    }
+    if let Some(deployed) = value.get("result").and_then(Value::as_bool) {
+        return Ok(deployed);
+    }
+    bail!("relayer deployment response did not contain a boolean deployment status: {value}");
+}
+
+async fn check_candidate_relayer_deployment(
+    relayer_base_url: &str,
+    address: Option<&str>,
+    wallet_type: &str,
+) -> (Option<bool>, Option<String>, Option<String>) {
+    let Some(address) = address
+        .map(str::trim)
+        .filter(|address| is_address_like(address))
+    else {
+        return (None, None, None);
+    };
+    let url = format!(
+        "{}/deployed?address={}&type={}",
+        relayer_base_url.trim_end_matches('/'),
+        address,
+        wallet_type
+    );
+    match check_relayer_deployed(&url).await {
+        Ok(deployed) => (Some(deployed), None, Some(url)),
+        Err(error) => (None, Some(error.to_string()), Some(url)),
+    }
+}
+
+async fn wallet_candidate_address_diagnostics(
+    requested_candidates: Vec<String>,
+    configured_funder_address: Option<&str>,
+    signer_address: Option<&str>,
+    authenticated_client_address: Option<&str>,
+    derived_proxy_wallet_address: Option<&str>,
+    derived_safe_wallet_address: Option<&str>,
+    relayer_base_url: &str,
+    rpc_url: &str,
+) -> Vec<LiveWalletCandidateAddressDiagnostics> {
+    let mut candidates = Vec::new();
+    push_unique_candidate_address(&mut candidates, signer_address);
+    push_unique_candidate_address(&mut candidates, configured_funder_address);
+    push_unique_candidate_address(&mut candidates, authenticated_client_address);
+    push_unique_candidate_address(&mut candidates, derived_proxy_wallet_address);
+    push_unique_candidate_address(&mut candidates, derived_safe_wallet_address);
+    for candidate in requested_candidates {
+        push_unique_candidate_address(&mut candidates, Some(&candidate));
+    }
+
+    let mut diagnostics = Vec::with_capacity(candidates.len());
+    for address in candidates {
+        let (
+            deployed_as_deposit_wallet,
+            deployed_as_deposit_wallet_error,
+            deposit_wallet_deployment_check_url,
+        ) = check_candidate_relayer_deployment(relayer_base_url, Some(&address), "WALLET").await;
+        let (
+            deployed_as_safe_wallet,
+            deployed_as_safe_wallet_error,
+            safe_wallet_deployment_check_url,
+        ) = check_candidate_relayer_deployment(relayer_base_url, Some(&address), "SAFE").await;
+        let balances = Some(wallet_token_balances(rpc_url, &address).await);
+        diagnostics.push(LiveWalletCandidateAddressDiagnostics {
+            address: address.clone(),
+            matches_signer: addresses_equal(Some(&address), signer_address),
+            matches_configured_funder: addresses_equal(Some(&address), configured_funder_address),
+            matches_authenticated_client: addresses_equal(
+                Some(&address),
+                authenticated_client_address,
+            ),
+            matches_proxy_wallet: addresses_equal(Some(&address), derived_proxy_wallet_address),
+            matches_safe_wallet: addresses_equal(Some(&address), derived_safe_wallet_address),
+            deployed_as_deposit_wallet,
+            deployed_as_deposit_wallet_error,
+            deposit_wallet_deployment_check_url,
+            deployed_as_safe_wallet,
+            deployed_as_safe_wallet_error,
+            safe_wallet_deployment_check_url,
+            balances,
+        });
+    }
+    diagnostics
+}
+
+async fn wallet_token_balances(rpc_url: &str, address: &str) -> LiveWalletTokenBalances {
+    let mut balances = LiveWalletTokenBalances {
+        address: address.to_string(),
+        pol_wei: None,
+        pusd: None,
+        usdc_e: None,
+        native_usdc: None,
+        error: None,
+    };
+
+    match rpc_balance_snapshot(rpc_url, address).await {
+        Ok(snapshot) => {
+            balances.pol_wei = Some(snapshot.pol_wei);
+            balances.pusd = Some(snapshot.pusd);
+            balances.usdc_e = Some(snapshot.usdc_e);
+            balances.native_usdc = Some(snapshot.native_usdc);
+        }
+        Err(error) => balances.error = Some(error.to_string()),
+    }
+
+    balances
+}
+
+struct WalletBalanceSnapshot {
+    pol_wei: String,
+    pusd: String,
+    usdc_e: String,
+    native_usdc: String,
+}
+
+async fn rpc_balance_snapshot(rpc_url: &str, address: &str) -> Result<WalletBalanceSnapshot> {
+    Ok(WalletBalanceSnapshot {
+        pol_wei: rpc_call_quantity(rpc_url, "eth_getBalance", json!([address, "latest"])).await?,
+        pusd: erc20_balance_of(rpc_url, PUSD_ADDRESS, address).await?,
+        usdc_e: erc20_balance_of(rpc_url, USDC_E_ADDRESS, address).await?,
+        native_usdc: erc20_balance_of(rpc_url, NATIVE_USDC_ADDRESS, address).await?,
+    })
+}
+
+async fn erc20_balance_of(
+    rpc_url: &str,
+    token_address: &str,
+    owner_address: &str,
+) -> Result<String> {
+    let owner = owner_address
+        .strip_prefix("0x")
+        .unwrap_or(owner_address)
+        .to_ascii_lowercase();
+    let data = format!("0x70a08231{:0>64}", owner);
+    rpc_call_quantity(
+        rpc_url,
+        "eth_call",
+        json!([{"to": token_address, "data": data}, "latest"]),
+    )
+    .await
+}
+
+async fn rpc_call_quantity(rpc_url: &str, method: &str, params: Value) -> Result<String> {
+    let response: RpcResponse = reqwest::Client::new()
+        .post(rpc_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params
+        }))
+        .send()
+        .await
+        .with_context(|| format!("failed to request Polygon RPC method {method}"))?
+        .error_for_status()
+        .with_context(|| format!("Polygon RPC method {method} returned non-success status"))?
+        .json()
+        .await
+        .with_context(|| format!("failed to decode Polygon RPC response for {method}"))?;
+
+    if let Some(error) = response.error {
+        bail!("Polygon RPC method {method} returned error: {error}");
+    }
+
+    let raw = response
+        .result
+        .with_context(|| format!("Polygon RPC method {method} did not return a result"))?;
+    Ok(u256_hex_to_decimal_string(&raw)?)
+}
+
+fn u256_hex_to_decimal_string(value: &str) -> Result<String> {
+    let trimmed = value.strip_prefix("0x").unwrap_or(value);
+    if trimmed.is_empty() {
+        return Ok("0".to_string());
+    }
+    let parsed = U256::from_str_radix(trimmed, 16)
+        .with_context(|| format!("failed to parse U256 hex quantity {value}"))?;
+    Ok(parsed.to_string())
 }
 
 #[cfg(test)]
