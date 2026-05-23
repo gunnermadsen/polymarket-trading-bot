@@ -922,6 +922,12 @@ fn is_cancelled_order_status(status: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+fn is_fok_unfilled_rejection(error_chain: &str) -> bool {
+    let normalized = error_chain.to_ascii_lowercase();
+    normalized.contains("order couldn't be fully filled")
+        && normalized.contains("fok orders are fully filled or killed")
+}
+
 fn live_event_order_id_candidates(payload: &Value) -> Vec<String> {
     let mut candidates = Vec::new();
     if let Some(order_id) = json_str(payload, "taker_order_id") {
@@ -1160,21 +1166,25 @@ impl ExecutionVenue for LiveVenue {
             }
             Ok(response) => {
                 let raw = post_order_response_payload(&response);
-                let _ = self
+                let failed_order = self
                     .store()?
                     .mark_order_submit_failed(request.client_order_id, "venue_rejected", raw)
-                    .await;
+                    .await?;
+                let error_msg = response
+                    .error_msg
+                    .unwrap_or_else(|| "unknown rejection".to_string());
+                if request.order_type == OrderType::Fok && is_fok_unfilled_rejection(&error_msg) {
+                    return Ok(failed_order);
+                }
                 bail!(
                     "Polymarket CLOB rejected order {}: {}",
                     request.client_order_id,
-                    response
-                        .error_msg
-                        .unwrap_or_else(|| "unknown rejection".to_string())
+                    error_msg
                 )
             }
             Err(error) => {
                 let error_chain = format!("{error:#}");
-                let _ = self
+                let failed_order = self
                     .store()?
                     .mark_order_submit_failed(
                         request.client_order_id,
@@ -1184,7 +1194,10 @@ impl ExecutionVenue for LiveVenue {
                             "error_chain": error_chain
                         }),
                     )
-                    .await;
+                    .await?;
+                if request.order_type == OrderType::Fok && is_fok_unfilled_rejection(&error_chain) {
+                    return Ok(failed_order);
+                }
                 Err(error)
             }
         }

@@ -10,7 +10,7 @@ use tracing::warn;
 
 use crate::models::{
     ConversionRequest, ConversionResult, FillRecord, OrderRecord, OrderRequest, OrderSide,
-    OrderType,
+    OrderState, OrderType,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -233,14 +233,16 @@ pub async fn execute_order_plan<V: ExecutionVenue + ?Sized>(
 
     for request in plan.orders {
         let order = venue.submit_order(request).await?;
-        match venue.fills_for_order(&order.order_id).await {
-            Ok(order_fills) => fills.extend(order_fills),
-            Err(error) => {
-                warn!(
-                    error = %error,
-                    order_id = %order.order_id,
-                    "deferred fill lookup failed; live reconciliation will backfill fills"
-                );
+        if !matches!(order.state, OrderState::Rejected | OrderState::Cancelled) {
+            match venue.fills_for_order(&order.order_id).await {
+                Ok(order_fills) => fills.extend(order_fills),
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        order_id = %order.order_id,
+                        "deferred fill lookup failed; live reconciliation will backfill fills"
+                    );
+                }
             }
         }
         orders.push(order);
