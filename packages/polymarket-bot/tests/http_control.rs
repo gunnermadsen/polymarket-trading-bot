@@ -7,7 +7,12 @@ use axum::{
 };
 use chrono::Utc;
 use polymarket_bot::{
-    execution::LiveVenueStatus,
+    execution::{
+        LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics, LiveOrderDryRunRequest,
+        LivePoly1271FunderProbeCandidate, LivePoly1271FunderProbeRequest,
+        LivePoly1271FunderProbeResponse, LiveVenueStatus, LiveWalletAddressDiagnostics,
+        LiveWalletCandidateAddressDiagnostics, LiveWalletTokenBalances,
+    },
     http::{
         self, BackfillJobResponse, BackfillJobsResponse, BackfillWhalesRequest,
         CancelBackfillJobResponse, ControlApi, CopyTradeBacktestRequest,
@@ -183,6 +188,227 @@ impl ControlApi for FakeControlApi {
             max_open_notional_usd: Decimal::ZERO,
             entries_enabled: false,
             reason: Some("sim_mode".to_string()),
+        })
+    }
+
+    async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics, HttpError> {
+        Ok(LiveIdentityDiagnostics {
+            mode: "live".to_string(),
+            clob_api_base_url: "https://clob.polymarket.com".to_string(),
+            signer_address: Some("0x0000000000000000000000000000000000000001".to_string()),
+            configured_funder_address: Some(
+                "0x0000000000000000000000000000000000000002".to_string(),
+            ),
+            configured_signature_type: Some("3".to_string()),
+            resolved_signature_type: Some("Poly1271".to_string()),
+            authenticated_client_address: Some(
+                "0x0000000000000000000000000000000000000001".to_string(),
+            ),
+            credentials_present: true,
+            api_keys_readable: true,
+            api_keys_error: None,
+            balance_allowance_readable: true,
+            balance_allowance_error: None,
+            collateral_balance: Some("20".to_string()),
+            open_orders_readable: true,
+            open_orders_error: None,
+            open_orders_count: Some(0),
+            checked_at: Utc::now(),
+        })
+    }
+
+    async fn live_wallet_address_diagnostics(
+        &self,
+        candidate_addresses: Vec<String>,
+    ) -> Result<LiveWalletAddressDiagnostics, HttpError> {
+        Ok(LiveWalletAddressDiagnostics {
+            mode: "live".to_string(),
+            signer_address: Some("0x0000000000000000000000000000000000000001".to_string()),
+            configured_funder_address: Some(
+                "0x0000000000000000000000000000000000000002".to_string(),
+            ),
+            configured_signature_type: Some("3".to_string()),
+            resolved_signature_type: Some("Poly1271".to_string()),
+            authenticated_client_address: Some(
+                "0x0000000000000000000000000000000000000001".to_string(),
+            ),
+            derived_proxy_wallet_address: Some(
+                "0x0000000000000000000000000000000000000003".to_string(),
+            ),
+            derived_safe_wallet_address: Some(
+                "0x0000000000000000000000000000000000000004".to_string(),
+            ),
+            expected_order_maker_address: Some(
+                "0x0000000000000000000000000000000000000002".to_string(),
+            ),
+            expected_order_signer_field: Some(
+                "0x0000000000000000000000000000000000000002".to_string(),
+            ),
+            configured_funder_matches_signer: Some(false),
+            configured_funder_matches_proxy_wallet: Some(false),
+            configured_funder_matches_safe_wallet: Some(false),
+            configured_funder_deployed_as_deposit_wallet: Some(true),
+            configured_funder_deployed_as_deposit_wallet_error: None,
+            relayer_base_url: Some("https://relayer-v2.polymarket.com".to_string()),
+            relayer_deployment_check_url: Some(
+                "https://relayer-v2.polymarket.com/deployed?address=0x0000000000000000000000000000000000000002&type=WALLET"
+                    .to_string(),
+            ),
+            signer_balances: Some(LiveWalletTokenBalances {
+                address: "0x0000000000000000000000000000000000000001".to_string(),
+                pol_wei: Some("1".to_string()),
+                pusd: Some("20".to_string()),
+                usdc_e: Some("0".to_string()),
+                native_usdc: Some("0".to_string()),
+                error: None,
+            }),
+            configured_funder_balances: Some(LiveWalletTokenBalances {
+                address: "0x0000000000000000000000000000000000000002".to_string(),
+                pol_wei: Some("0".to_string()),
+                pusd: Some("30".to_string()),
+                usdc_e: Some("0".to_string()),
+                native_usdc: Some("0".to_string()),
+                error: None,
+            }),
+            candidate_addresses: candidate_addresses
+                .into_iter()
+                .map(|address| LiveWalletCandidateAddressDiagnostics {
+                    address: address.clone(),
+                    matches_signer: Some(false),
+                    matches_configured_funder: Some(false),
+                    matches_authenticated_client: Some(false),
+                    matches_proxy_wallet: Some(false),
+                    matches_safe_wallet: Some(false),
+                    deployed_as_deposit_wallet: Some(false),
+                    deployed_as_deposit_wallet_error: None,
+                    deposit_wallet_deployment_check_url: Some(
+                        "https://relayer-v2.polymarket.com/deployed?address=0x0000000000000000000000000000000000000005&type=WALLET"
+                            .to_string(),
+                    ),
+                    deployed_as_safe_wallet: Some(false),
+                    deployed_as_safe_wallet_error: None,
+                    safe_wallet_deployment_check_url: Some(
+                        "https://relayer-v2.polymarket.com/deployed?address=0x0000000000000000000000000000000000000005&type=SAFE"
+                            .to_string(),
+                    ),
+                    balances: None,
+                    poly1271_authenticated_client_address: Some(address),
+                    poly1271_api_keys_readable: true,
+                    poly1271_api_keys_error: None,
+                    poly1271_balance_allowance_readable: true,
+                    poly1271_balance_allowance_error: None,
+                    poly1271_collateral_balance: Some("0".to_string()),
+                    poly1271_open_orders_readable: true,
+                    poly1271_open_orders_error: None,
+                    poly1271_open_orders_count: Some(0),
+                })
+                .collect(),
+            verified_deposit_wallet_address: Some(
+                "0x0000000000000000000000000000000000000002".to_string(),
+            ),
+            verified_deposit_wallet_candidates_count: 1,
+            checked_at: Utc::now(),
+        })
+    }
+
+    async fn live_order_dry_run(
+        &self,
+        _request: LiveOrderDryRunRequest,
+    ) -> Result<LiveOrderDryRunDiagnostics, HttpError> {
+        Ok(LiveOrderDryRunDiagnostics {
+            mode: "live".to_string(),
+            clob_api_base_url: "https://clob.polymarket.com".to_string(),
+            signer_address: Some("0x0000000000000000000000000000000000000001".to_string()),
+            configured_funder_address: Some(
+                "0x0000000000000000000000000000000000000002".to_string(),
+            ),
+            configured_signature_type: Some("3".to_string()),
+            resolved_signature_type: Some("Poly1271".to_string()),
+            authenticated_client_address: Some(
+                "0x0000000000000000000000000000000000000001".to_string(),
+            ),
+            order_signer: Some("0x0000000000000000000000000000000000000002".to_string()),
+            order_maker: Some("0x0000000000000000000000000000000000000002".to_string()),
+            order_signature_type: Some("3".to_string()),
+            order_signer_matches_authenticated_client: Some(false),
+            order_signer_matches_configured_funder: Some(true),
+            order_maker_matches_configured_funder: Some(true),
+            owner_redacted: true,
+            signature_redacted: true,
+            signed_order: serde_json::json!({
+                "owner": "<redacted>",
+                "order": {
+                    "maker": "0x0000000000000000000000000000000000000002",
+                    "signer": "0x0000000000000000000000000000000000000002",
+                    "signatureType": "3",
+                    "signature": "<redacted>"
+                }
+            }),
+            checked_at: Utc::now(),
+        })
+    }
+
+    async fn live_poly1271_funder_probe(
+        &self,
+        request: LivePoly1271FunderProbeRequest,
+    ) -> Result<LivePoly1271FunderProbeResponse, HttpError> {
+        let order_type = request
+            .order_type
+            .unwrap_or(polymarket_bot::models::OrderType::Fok);
+        let verified = request.addresses.first().cloned();
+        Ok(LivePoly1271FunderProbeResponse {
+            mode: "live".to_string(),
+            clob_api_base_url: "https://clob.polymarket.com".to_string(),
+            signer_address: Some("0x0000000000000000000000000000000000000001".to_string()),
+            token_id: request.token_id,
+            side: request.side,
+            order_type,
+            price: request.price,
+            size: request.size,
+            candidates: request
+                .addresses
+                .into_iter()
+                .map(|address| LivePoly1271FunderProbeCandidate {
+                    address: address.clone(),
+                    address_valid: true,
+                    derive_credentials_ok: true,
+                    derive_credentials_error: None,
+                    authenticated_client_address: Some(
+                        "0x0000000000000000000000000000000000000001".to_string(),
+                    ),
+                    api_keys_readable: true,
+                    api_keys_error: None,
+                    update_balance_allowance_ok: true,
+                    update_balance_allowance_error: None,
+                    balance_allowance_readable: true,
+                    balance_allowance_error: None,
+                    collateral_balance: Some("20".to_string()),
+                    open_orders_readable: true,
+                    open_orders_error: None,
+                    open_orders_count: Some(0),
+                    signed_order_build_ok: true,
+                    signed_order_error: None,
+                    signed_order_maker: Some(address.clone()),
+                    signed_order_signer: Some(address.clone()),
+                    signed_order_signature_type: Some("3".to_string()),
+                    maker_matches_candidate: Some(true),
+                    signer_matches_candidate: Some(true),
+                    signature_type_is_poly1271: Some(true),
+                    ready_for_live_canary: true,
+                    signed_order: serde_json::json!({
+                        "owner": "<redacted>",
+                        "order": {
+                            "maker": address,
+                            "signer": address,
+                            "signatureType": "3",
+                            "signature": "<redacted>"
+                        }
+                    }),
+                })
+                .collect(),
+            verified_funder_address: verified,
+            verified_funder_candidates_count: 1,
+            checked_at: Utc::now(),
         })
     }
 
@@ -566,6 +792,120 @@ async fn authenticated_admin_can_read_live_status_and_halt() {
         .await
         .unwrap();
     assert_eq!(reconcile_response.status(), StatusCode::OK);
+
+    let diagnostics_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/live/diagnostics")
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(diagnostics_response.status(), StatusCode::OK);
+    let diagnostics_body = to_bytes(diagnostics_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let diagnostics_json: Value = serde_json::from_slice(&diagnostics_body).unwrap();
+    assert_eq!(diagnostics_json["credentials_present"], true);
+    assert_eq!(diagnostics_json["api_keys_readable"], true);
+
+    let wallet_diagnostics_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/live/wallet-diagnostics?address=0x0000000000000000000000000000000000000005")
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wallet_diagnostics_response.status(), StatusCode::OK);
+    let wallet_diagnostics_body = to_bytes(wallet_diagnostics_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let wallet_diagnostics_json: Value = serde_json::from_slice(&wallet_diagnostics_body).unwrap();
+    assert_eq!(
+        wallet_diagnostics_json["configured_funder_deployed_as_deposit_wallet"],
+        true
+    );
+    assert_eq!(wallet_diagnostics_json["signer_balances"]["pusd"], "20");
+    assert_eq!(
+        wallet_diagnostics_json["candidate_addresses"][0]["address"],
+        "0x0000000000000000000000000000000000000005"
+    );
+
+    let dry_run_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/live/order-dry-run")
+                .header(AUTHORIZATION, "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "token_id": "123",
+                        "side": "buy",
+                        "order_type": "fok",
+                        "price": "0.39",
+                        "size": "5.12"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dry_run_response.status(), StatusCode::OK);
+    let dry_run_body = to_bytes(dry_run_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let dry_run_json: Value = serde_json::from_slice(&dry_run_body).unwrap();
+    assert_eq!(
+        dry_run_json["order_signer_matches_authenticated_client"],
+        false
+    );
+    assert_eq!(dry_run_json["signature_redacted"], true);
+
+    let funder_probe_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/live/poly1271-funder-probe")
+                .header(AUTHORIZATION, "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "addresses": ["0x0000000000000000000000000000000000000002"],
+                        "token_id": "123",
+                        "side": "buy",
+                        "order_type": "fok",
+                        "price": "0.39",
+                        "size": "5.12"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(funder_probe_response.status(), StatusCode::OK);
+    let funder_probe_body = to_bytes(funder_probe_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let funder_probe_json: Value = serde_json::from_slice(&funder_probe_body).unwrap();
+    assert_eq!(funder_probe_json["verified_funder_candidates_count"], 1);
+    assert_eq!(
+        funder_probe_json["candidates"][0]["maker_matches_candidate"],
+        true
+    );
 
     let enable_response = app
         .clone()

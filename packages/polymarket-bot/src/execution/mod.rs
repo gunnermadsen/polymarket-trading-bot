@@ -5,9 +5,13 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use tracing::warn;
 
-use crate::models::{ConversionRequest, ConversionResult, FillRecord, OrderRecord, OrderRequest};
+use crate::models::{
+    ConversionRequest, ConversionResult, FillRecord, OrderRecord, OrderRequest, OrderSide,
+    OrderState, OrderType,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ReconciliationReport {
@@ -35,6 +39,177 @@ pub struct LiveVenueStatus {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveIdentityDiagnostics {
+    pub mode: String,
+    pub clob_api_base_url: String,
+    pub signer_address: Option<String>,
+    pub configured_funder_address: Option<String>,
+    pub configured_signature_type: Option<String>,
+    pub resolved_signature_type: Option<String>,
+    pub authenticated_client_address: Option<String>,
+    pub credentials_present: bool,
+    pub api_keys_readable: bool,
+    pub api_keys_error: Option<String>,
+    pub balance_allowance_readable: bool,
+    pub balance_allowance_error: Option<String>,
+    pub collateral_balance: Option<String>,
+    pub open_orders_readable: bool,
+    pub open_orders_error: Option<String>,
+    pub open_orders_count: Option<usize>,
+    pub checked_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveWalletAddressDiagnostics {
+    pub mode: String,
+    pub signer_address: Option<String>,
+    pub configured_funder_address: Option<String>,
+    pub configured_signature_type: Option<String>,
+    pub resolved_signature_type: Option<String>,
+    pub authenticated_client_address: Option<String>,
+    pub derived_proxy_wallet_address: Option<String>,
+    pub derived_safe_wallet_address: Option<String>,
+    pub expected_order_maker_address: Option<String>,
+    pub expected_order_signer_field: Option<String>,
+    pub configured_funder_matches_signer: Option<bool>,
+    pub configured_funder_matches_proxy_wallet: Option<bool>,
+    pub configured_funder_matches_safe_wallet: Option<bool>,
+    pub configured_funder_deployed_as_deposit_wallet: Option<bool>,
+    pub configured_funder_deployed_as_deposit_wallet_error: Option<String>,
+    pub relayer_base_url: Option<String>,
+    pub relayer_deployment_check_url: Option<String>,
+    pub signer_balances: Option<LiveWalletTokenBalances>,
+    pub configured_funder_balances: Option<LiveWalletTokenBalances>,
+    pub candidate_addresses: Vec<LiveWalletCandidateAddressDiagnostics>,
+    pub verified_deposit_wallet_address: Option<String>,
+    pub verified_deposit_wallet_candidates_count: usize,
+    pub checked_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveWalletTokenBalances {
+    pub address: String,
+    pub pol_wei: Option<String>,
+    pub pusd: Option<String>,
+    pub usdc_e: Option<String>,
+    pub native_usdc: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveWalletCandidateAddressDiagnostics {
+    pub address: String,
+    pub matches_signer: Option<bool>,
+    pub matches_configured_funder: Option<bool>,
+    pub matches_authenticated_client: Option<bool>,
+    pub matches_proxy_wallet: Option<bool>,
+    pub matches_safe_wallet: Option<bool>,
+    pub deployed_as_deposit_wallet: Option<bool>,
+    pub deployed_as_deposit_wallet_error: Option<String>,
+    pub deposit_wallet_deployment_check_url: Option<String>,
+    pub deployed_as_safe_wallet: Option<bool>,
+    pub deployed_as_safe_wallet_error: Option<String>,
+    pub safe_wallet_deployment_check_url: Option<String>,
+    pub balances: Option<LiveWalletTokenBalances>,
+    pub poly1271_authenticated_client_address: Option<String>,
+    pub poly1271_api_keys_readable: bool,
+    pub poly1271_api_keys_error: Option<String>,
+    pub poly1271_balance_allowance_readable: bool,
+    pub poly1271_balance_allowance_error: Option<String>,
+    pub poly1271_collateral_balance: Option<String>,
+    pub poly1271_open_orders_readable: bool,
+    pub poly1271_open_orders_error: Option<String>,
+    pub poly1271_open_orders_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LiveOrderDryRunRequest {
+    pub token_id: String,
+    pub side: OrderSide,
+    #[serde(default)]
+    pub order_type: Option<OrderType>,
+    pub price: Decimal,
+    pub size: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveOrderDryRunDiagnostics {
+    pub mode: String,
+    pub clob_api_base_url: String,
+    pub signer_address: Option<String>,
+    pub configured_funder_address: Option<String>,
+    pub configured_signature_type: Option<String>,
+    pub resolved_signature_type: Option<String>,
+    pub authenticated_client_address: Option<String>,
+    pub order_signer: Option<String>,
+    pub order_maker: Option<String>,
+    pub order_signature_type: Option<String>,
+    pub order_signer_matches_authenticated_client: Option<bool>,
+    pub order_signer_matches_configured_funder: Option<bool>,
+    pub order_maker_matches_configured_funder: Option<bool>,
+    pub owner_redacted: bool,
+    pub signature_redacted: bool,
+    pub signed_order: serde_json::Value,
+    pub checked_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LivePoly1271FunderProbeRequest {
+    pub addresses: Vec<String>,
+    pub token_id: String,
+    pub side: OrderSide,
+    #[serde(default)]
+    pub order_type: Option<OrderType>,
+    pub price: Decimal,
+    pub size: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LivePoly1271FunderProbeResponse {
+    pub mode: String,
+    pub clob_api_base_url: String,
+    pub signer_address: Option<String>,
+    pub token_id: String,
+    pub side: OrderSide,
+    pub order_type: OrderType,
+    pub price: Decimal,
+    pub size: Decimal,
+    pub candidates: Vec<LivePoly1271FunderProbeCandidate>,
+    pub verified_funder_address: Option<String>,
+    pub verified_funder_candidates_count: usize,
+    pub checked_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LivePoly1271FunderProbeCandidate {
+    pub address: String,
+    pub address_valid: bool,
+    pub derive_credentials_ok: bool,
+    pub derive_credentials_error: Option<String>,
+    pub authenticated_client_address: Option<String>,
+    pub api_keys_readable: bool,
+    pub api_keys_error: Option<String>,
+    pub update_balance_allowance_ok: bool,
+    pub update_balance_allowance_error: Option<String>,
+    pub balance_allowance_readable: bool,
+    pub balance_allowance_error: Option<String>,
+    pub collateral_balance: Option<String>,
+    pub open_orders_readable: bool,
+    pub open_orders_error: Option<String>,
+    pub open_orders_count: Option<usize>,
+    pub signed_order_build_ok: bool,
+    pub signed_order_error: Option<String>,
+    pub signed_order_maker: Option<String>,
+    pub signed_order_signer: Option<String>,
+    pub signed_order_signature_type: Option<String>,
+    pub maker_matches_candidate: Option<bool>,
+    pub signer_matches_candidate: Option<bool>,
+    pub signature_type_is_poly1271: Option<bool>,
+    pub ready_for_live_canary: bool,
+    pub signed_order: serde_json::Value,
+}
+
 #[derive(Debug, Clone)]
 pub struct OrderPlan {
     pub plan_id: uuid::Uuid,
@@ -58,7 +233,18 @@ pub async fn execute_order_plan<V: ExecutionVenue + ?Sized>(
 
     for request in plan.orders {
         let order = venue.submit_order(request).await?;
-        fills.extend(venue.fills_for_order(&order.order_id).await?);
+        if !matches!(order.state, OrderState::Rejected | OrderState::Cancelled) {
+            match venue.fills_for_order(&order.order_id).await {
+                Ok(order_fills) => fills.extend(order_fills),
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        order_id = %order.order_id,
+                        "deferred fill lookup failed; live reconciliation will backfill fills"
+                    );
+                }
+            }
+        }
         orders.push(order);
     }
 
@@ -84,6 +270,19 @@ pub trait ExecutionVenue: Send + Sync {
     async fn reconcile(&self) -> Result<ReconciliationReport>;
     async fn fills_for_order(&self, order_id: &str) -> Result<Vec<FillRecord>>;
     async fn live_status(&self) -> Result<LiveVenueStatus>;
+    async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics>;
+    async fn live_wallet_address_diagnostics(
+        &self,
+        candidate_addresses: Vec<String>,
+    ) -> Result<LiveWalletAddressDiagnostics>;
+    async fn live_order_dry_run(
+        &self,
+        request: LiveOrderDryRunRequest,
+    ) -> Result<LiveOrderDryRunDiagnostics>;
+    async fn live_poly1271_funder_probe(
+        &self,
+        request: LivePoly1271FunderProbeRequest,
+    ) -> Result<LivePoly1271FunderProbeResponse>;
     async fn set_live_entries_enabled(
         &self,
         enabled: bool,

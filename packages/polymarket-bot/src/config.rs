@@ -13,11 +13,9 @@ pub enum ExecutionMode {
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
-    pub execution_mode: ExecutionMode,
     pub scan_enabled: bool,
     pub signal2_enabled: bool,
     pub signal3_enabled: bool,
-    pub live_confirm: bool,
     pub live: LiveExecutionConfig,
     pub gamma_base_url: String,
     pub clob_base_url: String,
@@ -117,28 +115,13 @@ pub struct WhaleConfig {
 
 impl AppConfig {
     pub fn from_env() -> Result<Self> {
-        let execution_mode = match env_or("POLYMARKET_EXECUTION_MODE", "sim")
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "sim" => ExecutionMode::Sim,
-            "paper" => ExecutionMode::Paper,
-            "live" => ExecutionMode::Live,
-            other => {
-                bail!("unsupported POLYMARKET_EXECUTION_MODE={other}; expected sim, paper, or live")
-            }
-        };
-        let live_confirm = parse_bool("POLYMARKET_LIVE_CONFIRM", false);
-        if execution_mode == ExecutionMode::Live && !live_confirm {
-            bail!("live mode requires POLYMARKET_LIVE_CONFIRM=true");
-        }
         let live = LiveExecutionConfig {
-            order_submit_enabled: parse_bool("POLYMARKET_LIVE_ORDER_SUBMIT_ENABLED", false),
+            order_submit_enabled: false,
             max_order_notional_usd: parse_decimal(
                 "POLYMARKET_LIVE_MAX_ORDER_NOTIONAL_USD",
                 dec!(2),
             ),
-            max_open_notional_usd: parse_decimal("POLYMARKET_LIVE_MAX_OPEN_NOTIONAL_USD", dec!(30)),
+            max_open_notional_usd: parse_decimal("POLYMARKET_LIVE_MAX_OPEN_NOTIONAL_USD", dec!(20)),
             max_daily_loss_usd: parse_decimal("POLYMARKET_LIVE_MAX_DAILY_LOSS_USD", dec!(10)),
             max_open_positions: parse_usize("POLYMARKET_LIVE_MAX_OPEN_POSITIONS", 6),
             require_exit_book: parse_bool("POLYMARKET_LIVE_REQUIRE_EXIT_BOOK", true),
@@ -172,16 +155,18 @@ impl AppConfig {
             funder_address: first_non_empty_env(&["POLYMARKET_FUNDER_ADDRESS"]),
             signature_type: first_non_empty_env(&["POLYMARKET_SIGNATURE_TYPE"]),
         };
-        if execution_mode == ExecutionMode::Live {
+        let live = LiveExecutionConfig {
+            order_submit_enabled: live.submit_auth_available(),
+            ..live
+        };
+        if live.live_auth_available() {
             live.validate_for_live()?;
         }
 
         Ok(Self {
-            execution_mode,
             scan_enabled: parse_bool("POLYMARKET_SCAN_ENABLED", true),
             signal2_enabled: parse_bool("POLYMARKET_SIGNAL2_ENABLED", false),
             signal3_enabled: parse_bool("POLYMARKET_SIGNAL3_ENABLED", false),
-            live_confirm,
             live,
             gamma_base_url: env_or(
                 "POLYMARKET_GAMMA_BASE_URL",
@@ -340,6 +325,10 @@ impl LiveExecutionConfig {
 
     pub fn clob_auth_available(&self) -> bool {
         self.user_ws_auth_available() && self.submit_auth_available()
+    }
+
+    pub fn live_auth_available(&self) -> bool {
+        self.user_ws_auth_available() || self.submit_auth_available()
     }
 
     pub fn user_ws_auth_available(&self) -> bool {

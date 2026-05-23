@@ -1427,6 +1427,21 @@ impl Store {
             .await
     }
 
+    pub async fn mark_order_filled(
+        &self,
+        order_id: &str,
+        state: OrderState,
+        raw_event: serde_json::Value,
+    ) -> Result<Option<OrderRecord>> {
+        let status = match state {
+            OrderState::Filled => "filled",
+            OrderState::PartiallyFilled => "partially_filled",
+            _ => "filled",
+        };
+        self.mark_order_by_order_id(order_id, state, status, raw_event)
+            .await
+    }
+
     async fn mark_order_by_client_id(
         &self,
         client_order_id: Uuid,
@@ -1533,9 +1548,29 @@ impl Store {
             r#"
             INSERT INTO polymarket.live_venue_events (
               event_id, source, event_type, venue_event_id, venue_order_id,
-              venue_trade_id, event_status, event_hash, raw_payload
+              venue_trade_id, market_id, token_id, event_status, event_timestamp,
+              event_hash, raw_payload
             )
-            VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7,$8)
+            VALUES (
+              gen_random_uuid(),$1,$2,$3,$4,$5,
+              $8->>'market',
+              $8->>'asset_id',
+              $6,
+              CASE
+                WHEN ($8->>'match_time') ~ '^[0-9]+$'
+                  THEN to_timestamp(($8->>'match_time')::double precision)
+                WHEN ($8->>'timestamp') ~ '^[0-9]+$'
+                  THEN to_timestamp(
+                    CASE
+                      WHEN ($8->>'timestamp')::double precision > 9999999999
+                        THEN ($8->>'timestamp')::double precision / 1000
+                      ELSE ($8->>'timestamp')::double precision
+                    END
+                  )
+                ELSE NULL
+              END,
+              $7,$8
+            )
             ON CONFLICT (event_hash) DO NOTHING
             RETURNING true
             "#,
@@ -1553,6 +1588,61 @@ impl Store {
         .context("failed to insert live venue event")?
         .unwrap_or(false);
         Ok(inserted)
+    }
+
+    pub async fn recent_live_trade_events(&self, limit: i64) -> Result<Vec<LiveVenueEvent>> {
+        self.recent_live_events_by_type("trade", limit).await
+    }
+
+    pub async fn recent_live_order_events(&self, limit: i64) -> Result<Vec<LiveVenueEvent>> {
+        self.recent_live_events_by_type("order", limit).await
+    }
+
+    async fn recent_live_events_by_type(
+        &self,
+        event_type: &str,
+        limit: i64,
+    ) -> Result<Vec<LiveVenueEvent>> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            source: String,
+            event_type: String,
+            venue_event_id: Option<String>,
+            venue_order_id: Option<String>,
+            venue_trade_id: Option<String>,
+            event_status: Option<String>,
+            raw_payload: serde_json::Value,
+        }
+
+        let rows = sqlx::query_as::<_, Row>(
+            r#"
+            SELECT source, event_type, venue_event_id, venue_order_id,
+                   venue_trade_id, event_status, raw_payload
+            FROM polymarket.live_venue_events
+            WHERE source = 'user_ws'
+              AND event_type = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(event_type)
+        .bind(limit.clamp(1, 1000))
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to list recent live venue events")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| LiveVenueEvent {
+                source: row.source,
+                event_type: row.event_type,
+                venue_event_id: row.venue_event_id,
+                venue_order_id: row.venue_order_id,
+                venue_trade_id: row.venue_trade_id,
+                event_status: row.event_status,
+                raw_payload: row.raw_payload,
+            })
+            .collect())
     }
 
     pub async fn insert_live_reconciliation_run(
@@ -1875,8 +1965,10 @@ impl Store {
               FROM polymarket.copy_trade_signals s
               JOIN polymarket.orders o
                 ON (o.raw_payload #>> '{request,signal_id}')::uuid = s.signal_id
+               AND o.process_id IS NOT DISTINCT FROM s.process_id
               JOIN polymarket.fills f
                 ON f.order_id = o.order_id
+               AND f.process_id IS NOT DISTINCT FROM s.process_id
               WHERE s.status = 'filled'
                 AND NOT EXISTS (
                   SELECT 1
@@ -3438,6 +3530,28 @@ impl Store {
         .execute(&self.pool)
         .await
         .context("failed to update copy-trade signal status")?;
+        Ok(())
+    }
+
+    pub async fn update_copy_trade_signal_status_by_id(
+        &self,
+        signal_id: Uuid,
+        status: &str,
+        metadata: serde_json::Value,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE polymarket.copy_trade_signals
+            SET status = $2, metadata = metadata || $3
+            WHERE signal_id = $1
+            "#,
+        )
+        .bind(signal_id)
+        .bind(status)
+        .bind(metadata)
+        .execute(&self.pool)
+        .await
+        .context("failed to update copy-trade signal status by id")?;
         Ok(())
     }
 

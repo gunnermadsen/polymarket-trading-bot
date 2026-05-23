@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use rust_decimal::Decimal;
@@ -10,7 +10,12 @@ use uuid::Uuid;
 use crate::{
     clob::ClobClient,
     edge::compute_taker_fee,
-    execution::{ExecutionVenue, LiveVenueStatus, ReconciliationReport},
+    execution::{
+        ExecutionVenue, LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics,
+        LiveOrderDryRunRequest, LivePoly1271FunderProbeCandidate, LivePoly1271FunderProbeRequest,
+        LivePoly1271FunderProbeResponse, LiveVenueStatus, LiveWalletAddressDiagnostics,
+        LiveWalletCandidateAddressDiagnostics, LiveWalletTokenBalances, ReconciliationReport,
+    },
     models::{
         ConversionRequest, ConversionResult, FillRecord, FillSource, OrderRecord, OrderRequest,
         OrderSide, OrderState, OrderType,
@@ -357,6 +362,146 @@ impl ExecutionVenue for SimVenue {
             max_open_notional_usd: Decimal::ZERO,
             entries_enabled: false,
             reason: Some(format!("{}_mode", self.mode_name)),
+        })
+    }
+
+    async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics> {
+        Ok(LiveIdentityDiagnostics {
+            mode: self.mode_name.to_string(),
+            clob_api_base_url: String::new(),
+            signer_address: None,
+            configured_funder_address: None,
+            configured_signature_type: None,
+            resolved_signature_type: None,
+            authenticated_client_address: None,
+            credentials_present: false,
+            api_keys_readable: false,
+            api_keys_error: Some(format!("{}_mode", self.mode_name)),
+            balance_allowance_readable: false,
+            balance_allowance_error: Some(format!("{}_mode", self.mode_name)),
+            collateral_balance: None,
+            open_orders_readable: false,
+            open_orders_error: Some(format!("{}_mode", self.mode_name)),
+            open_orders_count: None,
+            checked_at: Utc::now(),
+        })
+    }
+
+    async fn live_wallet_address_diagnostics(
+        &self,
+        candidate_addresses: Vec<String>,
+    ) -> Result<LiveWalletAddressDiagnostics> {
+        Ok(LiveWalletAddressDiagnostics {
+            mode: self.mode_name.to_string(),
+            signer_address: None,
+            configured_funder_address: None,
+            configured_signature_type: None,
+            resolved_signature_type: None,
+            authenticated_client_address: None,
+            derived_proxy_wallet_address: None,
+            derived_safe_wallet_address: None,
+            expected_order_maker_address: None,
+            expected_order_signer_field: None,
+            configured_funder_matches_signer: None,
+            configured_funder_matches_proxy_wallet: None,
+            configured_funder_matches_safe_wallet: None,
+            configured_funder_deployed_as_deposit_wallet: None,
+            configured_funder_deployed_as_deposit_wallet_error: Some(format!(
+                "{}_mode",
+                self.mode_name
+            )),
+            relayer_base_url: None,
+            relayer_deployment_check_url: None,
+            signer_balances: None::<LiveWalletTokenBalances>,
+            configured_funder_balances: None::<LiveWalletTokenBalances>,
+            candidate_addresses: candidate_addresses
+                .into_iter()
+                .map(|address| LiveWalletCandidateAddressDiagnostics {
+                    address,
+                    matches_signer: None,
+                    matches_configured_funder: None,
+                    matches_authenticated_client: None,
+                    matches_proxy_wallet: None,
+                    matches_safe_wallet: None,
+                    deployed_as_deposit_wallet: None,
+                    deployed_as_deposit_wallet_error: Some(format!("{}_mode", self.mode_name)),
+                    deposit_wallet_deployment_check_url: None,
+                    deployed_as_safe_wallet: None,
+                    deployed_as_safe_wallet_error: Some(format!("{}_mode", self.mode_name)),
+                    safe_wallet_deployment_check_url: None,
+                    balances: None,
+                    poly1271_authenticated_client_address: None,
+                    poly1271_api_keys_readable: false,
+                    poly1271_api_keys_error: Some(format!("{}_mode", self.mode_name)),
+                    poly1271_balance_allowance_readable: false,
+                    poly1271_balance_allowance_error: Some(format!("{}_mode", self.mode_name)),
+                    poly1271_collateral_balance: None,
+                    poly1271_open_orders_readable: false,
+                    poly1271_open_orders_error: Some(format!("{}_mode", self.mode_name)),
+                    poly1271_open_orders_count: None,
+                })
+                .collect(),
+            verified_deposit_wallet_address: None,
+            verified_deposit_wallet_candidates_count: 0,
+            checked_at: Utc::now(),
+        })
+    }
+
+    async fn live_order_dry_run(
+        &self,
+        _request: LiveOrderDryRunRequest,
+    ) -> Result<LiveOrderDryRunDiagnostics> {
+        bail!("live order dry-run is only available for the live venue")
+    }
+
+    async fn live_poly1271_funder_probe(
+        &self,
+        request: LivePoly1271FunderProbeRequest,
+    ) -> Result<LivePoly1271FunderProbeResponse> {
+        let order_type = request.order_type.unwrap_or(OrderType::Fok);
+        Ok(LivePoly1271FunderProbeResponse {
+            mode: self.mode_name.to_string(),
+            clob_api_base_url: "sim".to_string(),
+            signer_address: None,
+            token_id: request.token_id,
+            side: request.side,
+            order_type,
+            price: request.price,
+            size: request.size,
+            candidates: request
+                .addresses
+                .into_iter()
+                .map(|address| LivePoly1271FunderProbeCandidate {
+                    address,
+                    address_valid: false,
+                    derive_credentials_ok: false,
+                    derive_credentials_error: Some(format!("{}_mode", self.mode_name)),
+                    authenticated_client_address: None,
+                    api_keys_readable: false,
+                    api_keys_error: Some(format!("{}_mode", self.mode_name)),
+                    update_balance_allowance_ok: false,
+                    update_balance_allowance_error: Some(format!("{}_mode", self.mode_name)),
+                    balance_allowance_readable: false,
+                    balance_allowance_error: Some(format!("{}_mode", self.mode_name)),
+                    collateral_balance: None,
+                    open_orders_readable: false,
+                    open_orders_error: Some(format!("{}_mode", self.mode_name)),
+                    open_orders_count: None,
+                    signed_order_build_ok: false,
+                    signed_order_error: Some(format!("{}_mode", self.mode_name)),
+                    signed_order_maker: None,
+                    signed_order_signer: None,
+                    signed_order_signature_type: None,
+                    maker_matches_candidate: None,
+                    signer_matches_candidate: None,
+                    signature_type_is_poly1271: None,
+                    ready_for_live_canary: false,
+                    signed_order: serde_json::json!(null),
+                })
+                .collect(),
+            verified_funder_address: None,
+            verified_funder_candidates_count: 0,
+            checked_at: Utc::now(),
         })
     }
 

@@ -17,7 +17,11 @@ use polymarket_bot::{
     copytrade::CopyTradeConfig,
     data_api::DataApiClient,
     events::ServiceEvent,
-    execution::{live::LiveVenue, sim::SimVenue, ExecutionVenue, LiveVenueStatus},
+    execution::{
+        live::LiveVenue, sim::SimVenue, ExecutionVenue, LiveIdentityDiagnostics,
+        LiveOrderDryRunDiagnostics, LiveOrderDryRunRequest, LivePoly1271FunderProbeRequest,
+        LivePoly1271FunderProbeResponse, LiveVenueStatus, LiveWalletAddressDiagnostics,
+    },
     gamma::GammaClient,
     http as control_http,
     http::{
@@ -482,20 +486,68 @@ impl ControlApi for RuntimeControl {
 
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError> {
         self.venues
-            .health
+            .for_mode(ExecutionMode::Live)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?
             .live_status()
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
     }
 
+    async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics, HttpError> {
+        self.venues
+            .for_mode(ExecutionMode::Live)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?
+            .live_identity_diagnostics()
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))
+    }
+
+    async fn live_wallet_address_diagnostics(
+        &self,
+        candidate_addresses: Vec<String>,
+    ) -> Result<LiveWalletAddressDiagnostics, HttpError> {
+        self.venues
+            .for_mode(ExecutionMode::Live)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?
+            .live_wallet_address_diagnostics(candidate_addresses)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))
+    }
+
+    async fn live_order_dry_run(
+        &self,
+        request: LiveOrderDryRunRequest,
+    ) -> Result<LiveOrderDryRunDiagnostics, HttpError> {
+        self.venues
+            .for_mode(ExecutionMode::Live)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?
+            .live_order_dry_run(request)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))
+    }
+
+    async fn live_poly1271_funder_probe(
+        &self,
+        request: LivePoly1271FunderProbeRequest,
+    ) -> Result<LivePoly1271FunderProbeResponse, HttpError> {
+        self.venues
+            .for_mode(ExecutionMode::Live)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?
+            .live_poly1271_funder_probe(request)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))
+    }
+
     async fn live_halt(&self) -> Result<serde_json::Value, HttpError> {
-        let disable_result = self
+        let live = self
             .venues
-            .health
+            .for_mode(ExecutionMode::Live)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?;
+        let disable_result = live
             .set_live_entries_enabled(false, Some("manual_live_halt".to_string()))
             .await;
-        let cancel_result = self.venues.health.cancel_all().await;
-        let reconcile_result = self.venues.health.reconcile().await;
+        let cancel_result = live.cancel_all().await;
+        let reconcile_result = live.reconcile().await;
         self.store
             .insert_service_event(&ServiceEvent::new(
                 "manual_live_halt",
@@ -521,7 +573,8 @@ impl ControlApi for RuntimeControl {
     async fn live_reconcile(&self) -> Result<serde_json::Value, HttpError> {
         let report = self
             .venues
-            .health
+            .for_mode(ExecutionMode::Live)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?
             .reconcile()
             .await
             .map_err(|error| HttpError::internal(error.to_string()))?;
@@ -530,7 +583,8 @@ impl ControlApi for RuntimeControl {
 
     async fn live_set_entries_enabled(&self, enabled: bool) -> Result<LiveVenueStatus, HttpError> {
         self.venues
-            .health
+            .for_mode(ExecutionMode::Live)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?
             .set_live_entries_enabled(enabled, (!enabled).then(|| "manual_disable".to_string()))
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
@@ -771,7 +825,6 @@ async fn main() -> Result<()> {
     let config = AppConfig::from_env()?;
     info!(
         service = "polymarket-bot",
-        mode = ?config.execution_mode,
         scan_enabled = config.scan_enabled,
         signal2_enabled = config.signal2_enabled,
         signal3_enabled = config.signal3_enabled,
@@ -784,7 +837,7 @@ async fn main() -> Result<()> {
         .insert_service_event(&ServiceEvent::new(
             "service_started",
             serde_json::json!({
-                "mode": format!("{:?}", config.execution_mode).to_ascii_lowercase(),
+                "execution_control": "trade_processes",
                 "scan_enabled": config.scan_enabled,
                 "kafka_required": false
             }),
@@ -802,9 +855,8 @@ async fn main() -> Result<()> {
         clob.clone(),
         config.risk.taker_fee_rate,
     ));
-    let live_venue: Option<Arc<dyn ExecutionVenue>> = if config.live_confirm {
+    let live_venue: Option<Arc<dyn ExecutionVenue>> = if config.live.live_auth_available() {
         Some(Arc::new(LiveVenue::new(
-            config.live_confirm,
             config.live.clone(),
             config.live.clob_api_base_url.clone(),
             store.clone(),
@@ -816,7 +868,7 @@ async fn main() -> Result<()> {
         sim: sim_venue.clone(),
         paper: paper_venue.clone(),
         live: live_venue.clone(),
-        health: sim_venue.clone(),
+        health: live_venue.clone().unwrap_or_else(|| sim_venue.clone()),
     };
     let scanner_config = ScannerConfig {
         target_size: config.risk.target_size,

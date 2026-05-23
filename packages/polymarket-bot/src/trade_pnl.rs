@@ -51,6 +51,7 @@ pub struct TradePnlRefreshReport {
     pub positions_reconciled: u64,
     pub exits_applied: u64,
     pub exit_orders_submitted: u64,
+    pub exit_order_failures: u64,
     pub exit_fills_inserted: u64,
     pub closed_marks_cleared: u64,
     pub mark_orderbook_snapshots_inserted: u64,
@@ -86,6 +87,7 @@ pub async fn refresh_trade_pnl_with_config(
         positions_reconciled,
         exits_applied: exit_execution.exits_applied,
         exit_orders_submitted: exit_execution.exit_orders_submitted,
+        exit_order_failures: exit_execution.exit_order_failures,
         exit_fills_inserted: exit_execution.exit_fills_inserted,
         closed_marks_cleared,
         mark_orderbook_snapshots_inserted: mark_orderbook_refresh.snapshots_inserted,
@@ -121,6 +123,7 @@ pub async fn mark_trade_pnl_now_with_config(
         positions_reconciled,
         exits_applied: exit_execution.exits_applied,
         exit_orders_submitted: exit_execution.exit_orders_submitted,
+        exit_order_failures: exit_execution.exit_order_failures,
         exit_fills_inserted: exit_execution.exit_fills_inserted,
         closed_marks_cleared,
         mark_orderbook_snapshots_inserted: mark_orderbook_refresh.snapshots_inserted,
@@ -263,6 +266,7 @@ fn mark_source_failure_reason(error: &anyhow::Error) -> &'static str {
 struct ExitExecutionReport {
     exits_applied: u64,
     exit_orders_submitted: u64,
+    exit_order_failures: u64,
     exit_fills_inserted: u64,
 }
 
@@ -283,7 +287,19 @@ async fn execute_whale_led_trade_exits(
             plan_id: Uuid::new_v4(),
             orders: vec![close_order_request(&candidate)],
         };
-        let execution = execute_order_plan(venue, order_plan).await?;
+        let execution = match execute_order_plan(venue, order_plan).await {
+            Ok(execution) => execution,
+            Err(error) => {
+                report.exit_order_failures += 1;
+                warn!(
+                    error = %error,
+                    position_id = %candidate.position_id,
+                    exit_source_trade_id = %candidate.exit_source_trade_id,
+                    "whale-led exit execution failed; continuing trade PnL refresh"
+                );
+                continue;
+            }
+        };
         report.exit_orders_submitted += execution.orders.len() as u64;
         report.exit_fills_inserted += execution.fills.len() as u64;
         store.persist_order_plan_report(&execution).await?;

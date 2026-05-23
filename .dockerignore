@@ -1,0 +1,16 @@
+.git
+.github
+.DS_Store
+.env
+.env.*
+!.env.example
+**/target
+**/node_modules
+**/dist
+**/.terraform
+**/backend.hcl
+**/*.tfstate
+**/*.tfstate.*
+data
+tmp
+*.log

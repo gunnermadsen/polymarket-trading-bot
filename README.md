@@ -28,7 +28,7 @@ curl http://127.0.0.1:8097/health
 curl http://127.0.0.1:8097/metrics
 ```
 
-## Reconciliation-Only Live Mode
+## Live Credentials
 
 Set the CLOB credential secrets in `.env`:
 
@@ -36,15 +36,12 @@ Set the CLOB credential secrets in `.env`:
 POLYMARKET_CLOB_API_KEY=...
 POLYMARKET_CLOB_SECRET=...
 POLYMARKET_CLOB_PASSPHRASE=...
+POLYMARKET_PRIVATE_KEY=...
+POLYMARKET_FUNDER_ADDRESS=...
+POLYMARKET_SIGNATURE_TYPE=...
 ```
 
-Then update the corresponding non-secret live-mode flags in `docker-compose.yml`:
-
-```yaml
-POLYMARKET_EXECUTION_MODE: "live"
-POLYMARKET_LIVE_CONFIRM: "true"
-POLYMARKET_LIVE_ORDER_SUBMIT_ENABLED: "false"
-POLYMARKET_LIVE_USER_WS_ENABLED: "true"
-```
-
-Keep order submission disabled for reconciliation-only validation.
+Trading mode is not selected through environment variables. `sim` and `live` are
+controlled by `trade_processes.config.execution.mode`, so live and sim processes
+can run side by side without restarting the container. Host live configuration is
+limited to credentials, venue URLs, and hard risk caps.
