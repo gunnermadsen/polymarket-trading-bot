@@ -35,6 +35,7 @@
       "min_trade_usd": "500",
       "min_copy_size_usd": "2",
       "max_copy_size_usd": "2",
+      "max_open_notional_usd": "20",
       "copy_size_fraction": "0.10",
       "max_follow_lag_secs": 1800,
       "max_price_slippage_bps": "150",

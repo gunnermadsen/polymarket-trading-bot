@@ -726,6 +726,23 @@ impl Store {
         row.map(trading_process_from_row).transpose()
     }
 
+    pub async fn process_open_notional(&self, process_id: Uuid) -> Result<Decimal> {
+        let notional = sqlx::query_scalar::<_, Decimal>(
+            r#"
+            SELECT COALESCE(sum(open_size * entry_price), 0)
+            FROM polymarket.trade_positions
+            WHERE process_id = $1
+              AND status IN ('open', 'partially_closed')
+              AND open_size > 0
+            "#,
+        )
+        .bind(process_id)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to fetch process open notional")?;
+        Ok(notional)
+    }
+
     pub async fn trading_process_status(
         &self,
         process_id: Uuid,

@@ -823,6 +823,9 @@ impl TradingProcessConfig {
             if let Some(max_copy_size_usd) = config.max_copy_size_usd {
                 effective.max_copy_size_usd = max_copy_size_usd;
             }
+            if let Some(max_open_notional_usd) = config.max_open_notional_usd {
+                effective.max_open_notional_usd = max_open_notional_usd;
+            }
             if let Some(copy_size_fraction) = config.copy_size_fraction {
                 effective.copy_size_fraction = copy_size_fraction;
             }
@@ -940,6 +943,18 @@ impl TradingProcessConfig {
                 raw_decimal(&self.raw, &["copy_trade", "max_copy_size_usd"])
             {
                 effective.max_copy_size_usd = max_copy_size_usd;
+            }
+        }
+        if self
+            .copy_trade
+            .as_ref()
+            .and_then(|config| config.max_open_notional_usd)
+            .is_none()
+        {
+            if let Some(max_open_notional_usd) =
+                raw_decimal(&self.raw, &["copy_trade", "max_open_notional_usd"])
+            {
+                effective.max_open_notional_usd = max_open_notional_usd;
             }
         }
         if self
@@ -1157,6 +1172,7 @@ pub struct EffectiveCopyTradeProcessConfig {
     pub min_trade_usd: Decimal,
     pub min_copy_size_usd: Decimal,
     pub max_copy_size_usd: Decimal,
+    pub max_open_notional_usd: Decimal,
     pub copy_size_fraction: Decimal,
     pub max_follow_lag_secs: i64,
     pub max_price_slippage_bps: Decimal,
@@ -1178,6 +1194,7 @@ impl Default for EffectiveCopyTradeProcessConfig {
             min_trade_usd: dec!(500),
             min_copy_size_usd: dec!(2),
             max_copy_size_usd: dec!(2),
+            max_open_notional_usd: dec!(20),
             copy_size_fraction: dec!(0.10),
             max_follow_lag_secs: 1800,
             max_price_slippage_bps: dec!(150),
@@ -1209,6 +1226,8 @@ pub struct CopyTradeProcessConfig {
     pub min_copy_size_usd: Option<Decimal>,
     #[serde(default)]
     pub max_copy_size_usd: Option<Decimal>,
+    #[serde(default)]
+    pub max_open_notional_usd: Option<Decimal>,
     #[serde(default)]
     pub copy_size_fraction: Option<Decimal>,
     #[serde(default)]
