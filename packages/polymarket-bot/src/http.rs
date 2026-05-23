@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::{
     backfill::BackfillMode,
-    execution::LiveVenueStatus,
+    execution::{LiveIdentityDiagnostics, LiveVenueStatus},
     models::{BackfillJob, BackfillJobStatus, TradingProcess, TradingProcessConfig},
     store::TradingProcessResetReport,
 };
@@ -105,6 +105,8 @@ pub trait ControlApi: Send + Sync + 'static {
     async fn trade_pnl_mark_now(&self) -> Result<serde_json::Value, HttpError>;
 
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError>;
+
+    async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics, HttpError>;
 
     async fn live_halt(&self) -> Result<serde_json::Value, HttpError>;
 
@@ -305,6 +307,12 @@ impl ControlApi for PlaceholderControlApi {
         Err(HttpError::not_implemented("live status is not wired"))
     }
 
+    async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics, HttpError> {
+        Err(HttpError::not_implemented(
+            "live identity diagnostics are not wired",
+        ))
+    }
+
     async fn live_halt(&self) -> Result<serde_json::Value, HttpError> {
         Err(HttpError::not_implemented("live halt is not wired"))
     }
@@ -415,6 +423,7 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .route("/trades/pnl/backfill", post(trade_pnl_backfill))
         .route("/trades/pnl/mark-now", post(trade_pnl_mark_now))
         .route("/live/status", get(live_status))
+        .route("/live/diagnostics", get(live_identity_diagnostics))
         .route("/live/halt", post(live_halt))
         .route("/live/reconcile", post(live_reconcile))
         .route("/live/entries/enable", post(live_entries_enable))
@@ -573,6 +582,12 @@ async fn trade_pnl_mark_now(
 
 async fn live_status(State(state): State<HttpState>) -> Result<Json<LiveVenueStatus>, HttpError> {
     state.control.live_status().await.map(Json)
+}
+
+async fn live_identity_diagnostics(
+    State(state): State<HttpState>,
+) -> Result<Json<LiveIdentityDiagnostics>, HttpError> {
+    state.control.live_identity_diagnostics().await.map(Json)
 }
 
 async fn live_halt(State(state): State<HttpState>) -> Result<Json<serde_json::Value>, HttpError> {

@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::{
     clob::ClobClient,
     edge::compute_taker_fee,
-    execution::{ExecutionVenue, LiveVenueStatus, ReconciliationReport},
+    execution::{ExecutionVenue, LiveIdentityDiagnostics, LiveVenueStatus, ReconciliationReport},
     models::{
         ConversionRequest, ConversionResult, FillRecord, FillSource, OrderRecord, OrderRequest,
         OrderSide, OrderState, OrderType,
@@ -357,6 +357,28 @@ impl ExecutionVenue for SimVenue {
             max_open_notional_usd: Decimal::ZERO,
             entries_enabled: false,
             reason: Some(format!("{}_mode", self.mode_name)),
+        })
+    }
+
+    async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics> {
+        Ok(LiveIdentityDiagnostics {
+            mode: self.mode_name.to_string(),
+            clob_api_base_url: String::new(),
+            signer_address: None,
+            configured_funder_address: None,
+            configured_signature_type: None,
+            resolved_signature_type: None,
+            authenticated_client_address: None,
+            credentials_present: false,
+            api_keys_readable: false,
+            api_keys_error: Some(format!("{}_mode", self.mode_name)),
+            balance_allowance_readable: false,
+            balance_allowance_error: Some(format!("{}_mode", self.mode_name)),
+            collateral_balance: None,
+            open_orders_readable: false,
+            open_orders_error: Some(format!("{}_mode", self.mode_name)),
+            open_orders_count: None,
+            checked_at: Utc::now(),
         })
     }
 

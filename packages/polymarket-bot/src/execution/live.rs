@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 use crate::{
     config::LiveExecutionConfig,
-    execution::{ExecutionVenue, LiveVenueStatus, ReconciliationReport},
+    execution::{ExecutionVenue, LiveIdentityDiagnostics, LiveVenueStatus, ReconciliationReport},
     idempotency::{event_hash, order_request_notional_key},
     models::{ConversionRequest, ConversionResult, FillRecord, OrderRecord, OrderRequest},
     models::{FillSource, OrderSide, OrderState, OrderType},
@@ -790,6 +790,103 @@ impl ExecutionVenue for LiveVenue {
             entries_enabled,
             reason,
         })
+    }
+
+    async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics> {
+        let signature_type = parse_signature_type(self.config.signature_type.as_deref())?;
+        let signer_address = self
+            .config
+            .private_key
+            .as_deref()
+            .map(|private_key| {
+                LocalSigner::from_str(private_key)
+                    .context("failed to parse POLYMARKET_PRIVATE_KEY")
+                    .map(|signer| {
+                        signer
+                            .with_chain_id(Some(POLYGON))
+                            .address()
+                            .to_checksum(None)
+                    })
+            })
+            .transpose()?;
+        let credentials_present = self
+            .config
+            .clob_api_key
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+            && self
+                .config
+                .clob_secret
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+            && self
+                .config
+                .clob_passphrase
+                .as_deref()
+                .is_some_and(|value| !value.is_empty());
+
+        let mut diagnostics = LiveIdentityDiagnostics {
+            mode: "live".to_string(),
+            clob_api_base_url: self.clob_base_url.clone(),
+            signer_address,
+            configured_funder_address: self.config.funder_address.clone(),
+            configured_signature_type: self.config.signature_type.clone(),
+            resolved_signature_type: Some(format!("{signature_type:?}")),
+            authenticated_client_address: None,
+            credentials_present,
+            api_keys_readable: false,
+            api_keys_error: None,
+            balance_allowance_readable: false,
+            balance_allowance_error: None,
+            collateral_balance: None,
+            open_orders_readable: false,
+            open_orders_error: None,
+            open_orders_count: None,
+            checked_at: Utc::now(),
+        };
+
+        let client = match self.authenticated_client().await {
+            Ok(client) => client,
+            Err(error) => {
+                let message = error.to_string();
+                diagnostics.api_keys_error = Some(message.clone());
+                diagnostics.balance_allowance_error = Some(message.clone());
+                diagnostics.open_orders_error = Some(message);
+                return Ok(diagnostics);
+            }
+        };
+        diagnostics.authenticated_client_address = Some(client.address().to_checksum(None));
+
+        match client.api_keys().await {
+            Ok(_) => diagnostics.api_keys_readable = true,
+            Err(error) => diagnostics.api_keys_error = Some(error.to_string()),
+        }
+
+        match client
+            .balance_allowance(
+                BalanceAllowanceRequest::builder()
+                    .asset_type(AssetType::Collateral)
+                    .signature_type(signature_type)
+                    .build(),
+            )
+            .await
+        {
+            Ok(balance) => {
+                diagnostics.balance_allowance_readable = true;
+                diagnostics.collateral_balance = Some(local_decimal(balance.balance)?.to_string());
+            }
+            Err(error) => diagnostics.balance_allowance_error = Some(error.to_string()),
+        }
+
+        match client.orders(&OrdersRequest::builder().build(), None).await {
+            Ok(page) => {
+                diagnostics.open_orders_readable = true;
+                diagnostics.open_orders_count = Some(page.data.len());
+            }
+            Err(error) => diagnostics.open_orders_error = Some(error.to_string()),
+        }
+
+        Ok(diagnostics)
     }
 
     async fn set_live_entries_enabled(

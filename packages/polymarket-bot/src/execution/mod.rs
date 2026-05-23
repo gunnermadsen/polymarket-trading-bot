@@ -35,6 +35,27 @@ pub struct LiveVenueStatus {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveIdentityDiagnostics {
+    pub mode: String,
+    pub clob_api_base_url: String,
+    pub signer_address: Option<String>,
+    pub configured_funder_address: Option<String>,
+    pub configured_signature_type: Option<String>,
+    pub resolved_signature_type: Option<String>,
+    pub authenticated_client_address: Option<String>,
+    pub credentials_present: bool,
+    pub api_keys_readable: bool,
+    pub api_keys_error: Option<String>,
+    pub balance_allowance_readable: bool,
+    pub balance_allowance_error: Option<String>,
+    pub collateral_balance: Option<String>,
+    pub open_orders_readable: bool,
+    pub open_orders_error: Option<String>,
+    pub open_orders_count: Option<usize>,
+    pub checked_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone)]
 pub struct OrderPlan {
     pub plan_id: uuid::Uuid,
@@ -84,6 +105,7 @@ pub trait ExecutionVenue: Send + Sync {
     async fn reconcile(&self) -> Result<ReconciliationReport>;
     async fn fills_for_order(&self, order_id: &str) -> Result<Vec<FillRecord>>;
     async fn live_status(&self) -> Result<LiveVenueStatus>;
+    async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics>;
     async fn set_live_entries_enabled(
         &self,
         enabled: bool,

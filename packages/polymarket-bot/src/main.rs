@@ -17,7 +17,9 @@ use polymarket_bot::{
     copytrade::CopyTradeConfig,
     data_api::DataApiClient,
     events::ServiceEvent,
-    execution::{live::LiveVenue, sim::SimVenue, ExecutionVenue, LiveVenueStatus},
+    execution::{
+        live::LiveVenue, sim::SimVenue, ExecutionVenue, LiveIdentityDiagnostics, LiveVenueStatus,
+    },
     gamma::GammaClient,
     http as control_http,
     http::{
@@ -485,6 +487,15 @@ impl ControlApi for RuntimeControl {
             .for_mode(ExecutionMode::Live)
             .map_err(|error| HttpError::bad_request(error.to_string()))?
             .live_status()
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))
+    }
+
+    async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics, HttpError> {
+        self.venues
+            .for_mode(ExecutionMode::Live)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?
+            .live_identity_diagnostics()
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
     }

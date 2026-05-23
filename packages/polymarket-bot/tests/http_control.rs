@@ -7,7 +7,7 @@ use axum::{
 };
 use chrono::Utc;
 use polymarket_bot::{
-    execution::LiveVenueStatus,
+    execution::{LiveIdentityDiagnostics, LiveVenueStatus},
     http::{
         self, BackfillJobResponse, BackfillJobsResponse, BackfillWhalesRequest,
         CancelBackfillJobResponse, ControlApi, CopyTradeBacktestRequest,
@@ -183,6 +183,32 @@ impl ControlApi for FakeControlApi {
             max_open_notional_usd: Decimal::ZERO,
             entries_enabled: false,
             reason: Some("sim_mode".to_string()),
+        })
+    }
+
+    async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics, HttpError> {
+        Ok(LiveIdentityDiagnostics {
+            mode: "live".to_string(),
+            clob_api_base_url: "https://clob.polymarket.com".to_string(),
+            signer_address: Some("0x0000000000000000000000000000000000000001".to_string()),
+            configured_funder_address: Some(
+                "0x0000000000000000000000000000000000000002".to_string(),
+            ),
+            configured_signature_type: Some("3".to_string()),
+            resolved_signature_type: Some("Poly1271".to_string()),
+            authenticated_client_address: Some(
+                "0x0000000000000000000000000000000000000001".to_string(),
+            ),
+            credentials_present: true,
+            api_keys_readable: true,
+            api_keys_error: None,
+            balance_allowance_readable: true,
+            balance_allowance_error: None,
+            collateral_balance: Some("20".to_string()),
+            open_orders_readable: true,
+            open_orders_error: None,
+            open_orders_count: Some(0),
+            checked_at: Utc::now(),
         })
     }
 
@@ -566,6 +592,26 @@ async fn authenticated_admin_can_read_live_status_and_halt() {
         .await
         .unwrap();
     assert_eq!(reconcile_response.status(), StatusCode::OK);
+
+    let diagnostics_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/live/diagnostics")
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(diagnostics_response.status(), StatusCode::OK);
+    let diagnostics_body = to_bytes(diagnostics_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let diagnostics_json: Value = serde_json::from_slice(&diagnostics_body).unwrap();
+    assert_eq!(diagnostics_json["credentials_present"], true);
+    assert_eq!(diagnostics_json["api_keys_readable"], true);
 
     let enable_response = app
         .clone()
