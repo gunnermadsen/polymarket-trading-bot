@@ -137,7 +137,7 @@ impl AppConfig {
             user_ws_markets: parse_csv("POLYMARKET_LIVE_USER_WS_MARKETS"),
             clob_api_base_url: env_or(
                 "POLYMARKET_LIVE_CLOB_BASE_URL",
-                "https://clob-v2.polymarket.com",
+                "https://clob.polymarket.com",
             ),
             user_ws_stale: Duration::from_secs(parse_u64("POLYMARKET_LIVE_USER_WS_STALE_SECS", 20)),
             reconcile_interval: Duration::from_secs(parse_u64(
@@ -172,7 +172,7 @@ impl AppConfig {
                 "POLYMARKET_GAMMA_BASE_URL",
                 "https://gamma-api.polymarket.com",
             ),
-            clob_base_url: env_or("POLYMARKET_CLOB_BASE_URL", "https://clob-v2.polymarket.com"),
+            clob_base_url: env_or("POLYMARKET_CLOB_BASE_URL", "https://clob.polymarket.com"),
             clob_ws_url: env_or(
                 "POLYMARKET_CLOB_WS_URL",
                 "wss://ws-subscriptions-clob.polymarket.com/ws/market",
