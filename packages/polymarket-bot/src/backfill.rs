@@ -641,6 +641,14 @@ pub async fn run_copy_trade_signal_engine(
     let mut persisted_performance_by_wallet =
         std::collections::HashMap::<String, Option<CopyTradeWalletPerformance>>::new();
     let copy_config = config.copy_trade.clone();
+    let mut open_notional_with_in_run_orders = if !dry_run && config.execute_signals {
+        match config.process_id {
+            Some(process_id) => Some(store.process_open_notional(process_id).await?),
+            None => None,
+        }
+    } else {
+        None
+    };
 
     for trade in trades {
         summary.trades_evaluated += 1;
@@ -706,8 +714,7 @@ pub async fn run_copy_trade_signal_engine(
         let Some(plan) = decision.order_plan else {
             continue;
         };
-        if let Some(process_id) = config.process_id {
-            let current_open_notional = store.process_open_notional(process_id).await?;
+        if let Some(current_open_notional) = open_notional_with_in_run_orders {
             let order_notional: Decimal = plan
                 .orders
                 .iter()
@@ -753,6 +760,22 @@ pub async fn run_copy_trade_signal_engine(
         let (status, metadata) = copy_signal_execution_status(&execution);
         if status == "rejected" {
             summary.rejections += 1;
+        } else if let Some(current_open_notional) = open_notional_with_in_run_orders.as_mut() {
+            let filled_notional: Decimal = execution
+                .fills
+                .iter()
+                .map(|fill| fill.price * fill.size)
+                .sum();
+            let order_notional: Decimal = execution
+                .orders
+                .iter()
+                .map(|order| order.request.price * order.request.size)
+                .sum();
+            *current_open_notional += if filled_notional > Decimal::ZERO {
+                filled_notional
+            } else {
+                order_notional
+            };
         }
         store
             .update_copy_trade_signal_status(
