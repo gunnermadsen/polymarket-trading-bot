@@ -194,6 +194,44 @@ impl LiveVenue {
         }
     }
 
+    async fn persist_fill_from_live_event(store: &Store, event: &LiveVenueEvent) -> Result<bool> {
+        let Some((order, fill)) = live_fill_record_from_event(store, event).await? else {
+            return Ok(false);
+        };
+
+        store.insert_fill(&fill).await?;
+        let order_state = if fill.size >= order.request.size {
+            OrderState::Filled
+        } else {
+            OrderState::PartiallyFilled
+        };
+        store
+            .mark_order_filled(
+                &order.order_id,
+                order_state,
+                json!({
+                    "source": "user_ws",
+                    "event_type": event.event_type,
+                    "venue_event_id": event.venue_event_id,
+                    "venue_trade_id": event.venue_trade_id,
+                    "raw_payload": event.raw_payload,
+                }),
+            )
+            .await?;
+        Ok(true)
+    }
+
+    async fn backfill_fills_from_live_events(&self) -> Result<usize> {
+        let store = self.store()?;
+        let mut processed = 0usize;
+        for event in store.recent_live_trade_events(500).await? {
+            if LiveVenue::persist_fill_from_live_event(&store, &event).await? {
+                processed += 1;
+            }
+        }
+        Ok(processed)
+    }
+
     fn spawn_user_ws_task_if_enabled(&self) {
         if !self.config.user_ws_enabled || !self.config.user_ws_auth_available() {
             return;
@@ -588,6 +626,9 @@ async fn run_user_ws_once(
                             .unwrap_or_else(|_| json!({ "event_type": "raw", "message": text }));
                         let event = LiveVenue::parse_user_event(payload);
                         let inserted = store.insert_live_venue_event(&event).await?;
+                        if let Err(error) = LiveVenue::persist_fill_from_live_event(&store, &event).await {
+                            warn!(error = %error, "failed to persist Polymarket live user websocket fill event");
+                        }
                         if inserted {
                             debug!(
                                 event_type = %event.event_type,
@@ -750,6 +791,143 @@ fn fill_record_from_trade(
         source: FillSource::Live,
         filled_at: trade.match_time,
     })
+}
+
+async fn live_fill_record_from_event(
+    store: &Store,
+    event: &LiveVenueEvent,
+) -> Result<Option<(OrderRecord, FillRecord)>> {
+    if event.event_type != "trade" || !is_fill_trade_status(event.event_status.as_deref()) {
+        return Ok(None);
+    }
+
+    let Some(trade_id) = event
+        .venue_trade_id
+        .as_deref()
+        .or_else(|| json_str(&event.raw_payload, "id"))
+    else {
+        return Ok(None);
+    };
+
+    for candidate in live_event_order_id_candidates(&event.raw_payload) {
+        let Some(order) = store.find_order_by_venue_order_id(&candidate).await? else {
+            continue;
+        };
+        let price = json_decimal(&event.raw_payload, "price")?;
+        let size = live_event_matched_size_for_order(&event.raw_payload, &candidate)?
+            .unwrap_or(json_decimal(&event.raw_payload, "size")?);
+        let fee_rate_bps =
+            json_decimal(&event.raw_payload, "fee_rate_bps").unwrap_or(Decimal::ZERO);
+        let fee = price * size * fee_rate_bps / Decimal::from(10_000);
+        let token_id = live_event_asset_id_for_order(&event.raw_payload, &candidate)
+            .or_else(|| json_str(&event.raw_payload, "asset_id").map(str::to_string))
+            .unwrap_or_else(|| order.request.token_id.clone());
+        let filled_at = json_timestamp(&event.raw_payload, "match_time")
+            .or_else(|| json_timestamp(&event.raw_payload, "timestamp"))
+            .unwrap_or_else(Utc::now);
+        let fill = FillRecord {
+            fill_id: Uuid::new_v5(
+                &Uuid::NAMESPACE_URL,
+                format!("polymarket:trade:{trade_id}").as_bytes(),
+            ),
+            process_id: order.request.process_id,
+            order_id: order.order_id.clone(),
+            token_id,
+            price,
+            size,
+            fee,
+            source: FillSource::Live,
+            filled_at,
+        };
+        return Ok(Some((order, fill)));
+    }
+
+    Ok(None)
+}
+
+fn is_fill_trade_status(status: Option<&str>) -> bool {
+    matches!(
+        status.map(|value| value.to_ascii_uppercase()),
+        Some(value) if matches!(value.as_str(), "MATCHED" | "MINED" | "CONFIRMED")
+    )
+}
+
+fn live_event_order_id_candidates(payload: &Value) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if let Some(order_id) = json_str(payload, "taker_order_id") {
+        push_unique(&mut candidates, order_id);
+    }
+    if let Some(order_id) = json_str(payload, "order_id").or_else(|| json_str(payload, "id")) {
+        push_unique(&mut candidates, order_id);
+    }
+    if let Some(maker_orders) = payload.get("maker_orders").and_then(Value::as_array) {
+        for maker_order in maker_orders {
+            if let Some(order_id) = json_str(maker_order, "order_id") {
+                push_unique(&mut candidates, order_id);
+            }
+        }
+    }
+    candidates
+}
+
+fn live_event_matched_size_for_order(payload: &Value, order_id: &str) -> Result<Option<Decimal>> {
+    let Some(maker_orders) = payload.get("maker_orders").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    for maker_order in maker_orders {
+        if json_str(maker_order, "order_id") == Some(order_id) {
+            return json_decimal(maker_order, "matched_amount").map(Some);
+        }
+    }
+    Ok(None)
+}
+
+fn live_event_asset_id_for_order(payload: &Value, order_id: &str) -> Option<String> {
+    let maker_orders = payload.get("maker_orders").and_then(Value::as_array)?;
+    for maker_order in maker_orders {
+        if json_str(maker_order, "order_id") == Some(order_id) {
+            return json_str(maker_order, "asset_id").map(str::to_string);
+        }
+    }
+    None
+}
+
+fn json_str<'a>(payload: &'a Value, field: &str) -> Option<&'a str> {
+    payload.get(field).and_then(Value::as_str)
+}
+
+fn json_decimal(payload: &Value, field: &str) -> Result<Decimal> {
+    let value = payload
+        .get(field)
+        .with_context(|| format!("missing decimal field {field}"))?;
+    if let Some(text) = value.as_str() {
+        return Decimal::from_str(text)
+            .with_context(|| format!("failed to parse decimal field {field}={text}"));
+    }
+    if let Some(number) = value.as_f64() {
+        return Decimal::from_str(&number.to_string())
+            .with_context(|| format!("failed to parse decimal field {field}={number}"));
+    }
+    bail!("decimal field {field} is not a string or number")
+}
+
+fn json_timestamp(payload: &Value, field: &str) -> Option<DateTime<Utc>> {
+    let raw = payload.get(field)?;
+    let value = raw
+        .as_i64()
+        .or_else(|| raw.as_str().and_then(|text| text.parse::<i64>().ok()))?;
+    let seconds = if value > 9_999_999_999 {
+        value / 1000
+    } else {
+        value
+    };
+    DateTime::<Utc>::from_timestamp(seconds, 0)
+}
+
+fn push_unique(candidates: &mut Vec<String>, candidate: &str) {
+    if !candidates.iter().any(|existing| existing == candidate) {
+        candidates.push(candidate.to_string());
+    }
 }
 
 fn post_order_response_payload(response: &PostOrderResponse) -> serde_json::Value {
@@ -1025,6 +1203,10 @@ impl ExecutionVenue for LiveVenue {
     }
 
     async fn reconcile(&self) -> Result<ReconciliationReport> {
+        let fills_backfilled = self.backfill_fills_from_live_events().await.unwrap_or_else(|error| {
+            warn!(error = %error, "failed to backfill fills from Polymarket live user websocket events");
+            0
+        });
         let open_orders = self.get_open_orders().await.unwrap_or_default();
         let balances_checked = self.get_balances().await.is_ok();
         let unresolved = open_orders.len();
@@ -1048,7 +1230,7 @@ impl ExecutionVenue for LiveVenue {
                 0,
                 if report.balances_checked { 1 } else { 0 },
                 report.mismatches_found as i32,
-                0,
+                fills_backfilled as i32,
                 report.unresolved_count as i32,
                 serde_json::to_value(&report)?,
             )

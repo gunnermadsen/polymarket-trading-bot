@@ -1427,6 +1427,21 @@ impl Store {
             .await
     }
 
+    pub async fn mark_order_filled(
+        &self,
+        order_id: &str,
+        state: OrderState,
+        raw_event: serde_json::Value,
+    ) -> Result<Option<OrderRecord>> {
+        let status = match state {
+            OrderState::Filled => "filled",
+            OrderState::PartiallyFilled => "partially_filled",
+            _ => "filled",
+        };
+        self.mark_order_by_order_id(order_id, state, status, raw_event)
+            .await
+    }
+
     async fn mark_order_by_client_id(
         &self,
         client_order_id: Uuid,
@@ -1553,6 +1568,48 @@ impl Store {
         .context("failed to insert live venue event")?
         .unwrap_or(false);
         Ok(inserted)
+    }
+
+    pub async fn recent_live_trade_events(&self, limit: i64) -> Result<Vec<LiveVenueEvent>> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            source: String,
+            event_type: String,
+            venue_event_id: Option<String>,
+            venue_order_id: Option<String>,
+            venue_trade_id: Option<String>,
+            event_status: Option<String>,
+            raw_payload: serde_json::Value,
+        }
+
+        let rows = sqlx::query_as::<_, Row>(
+            r#"
+            SELECT source, event_type, venue_event_id, venue_order_id,
+                   venue_trade_id, event_status, raw_payload
+            FROM polymarket.live_venue_events
+            WHERE source = 'user_ws'
+              AND event_type = 'trade'
+            ORDER BY created_at DESC
+            LIMIT $1
+            "#,
+        )
+        .bind(limit.clamp(1, 1000))
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to list recent live trade events")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| LiveVenueEvent {
+                source: row.source,
+                event_type: row.event_type,
+                venue_event_id: row.venue_event_id,
+                venue_order_id: row.venue_order_id,
+                venue_trade_id: row.venue_trade_id,
+                event_status: row.event_status,
+                raw_payload: row.raw_payload,
+            })
+            .collect())
     }
 
     pub async fn insert_live_reconciliation_run(
