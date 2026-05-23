@@ -3,7 +3,8 @@ use std::{env, fs, path::Path, str::FromStr};
 use anyhow::{bail, Context, Result};
 use polymarket_client_sdk_v2::{
     auth::{ExposeSecret, LocalSigner, Signer},
-    clob::{Client, Config},
+    clob::{types::SignatureType, Client, Config},
+    types::Address,
     POLYGON,
 };
 
@@ -19,12 +20,25 @@ async fn main() -> Result<()> {
     let signer = LocalSigner::from_str(&private_key)
         .context("failed to parse POLYMARKET_PRIVATE_KEY")?
         .with_chain_id(Some(POLYGON));
+    let signature_type =
+        parse_signature_type(env::var("POLYMARKET_SIGNATURE_TYPE").ok().as_deref())?;
     let client = Client::new(&host, Config::default())
         .with_context(|| format!("failed to create CLOB client for {host}"))?;
-    let creds = client
-        .create_or_derive_api_key(&signer, None)
+
+    let mut builder = client
+        .authentication_builder(&signer)
+        .signature_type(signature_type);
+    if signature_type != SignatureType::Eoa {
+        let funder = required_env("POLYMARKET_FUNDER_ADDRESS")?;
+        builder = builder.funder(
+            Address::from_str(&funder).context("failed to parse POLYMARKET_FUNDER_ADDRESS")?,
+        );
+    }
+    let client = builder
+        .authenticate()
         .await
-        .context("failed to create or derive CLOB API credentials")?;
+        .context("failed to authenticate and create or derive CLOB API credentials")?;
+    let creds = client.credentials();
 
     println!("POLYMARKET_CLOB_API_KEY={}", creds.key());
     println!("POLYMARKET_CLOB_SECRET={}", creds.secret().expose_secret());
@@ -33,6 +47,16 @@ async fn main() -> Result<()> {
         creds.passphrase().expose_secret()
     );
     Ok(())
+}
+
+fn parse_signature_type(value: Option<&str>) -> Result<SignatureType> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None | Some("0") | Some("eoa") | Some("EOA") => Ok(SignatureType::Eoa),
+        Some("1") | Some("proxy") | Some("POLY_PROXY") => Ok(SignatureType::Proxy),
+        Some("2") | Some("gnosis") | Some("GNOSIS_SAFE") => Ok(SignatureType::GnosisSafe),
+        Some("3") | Some("poly1271") | Some("POLY_1271") => Ok(SignatureType::Poly1271),
+        Some(value) => bail!("unsupported POLYMARKET_SIGNATURE_TYPE: {value}"),
+    }
 }
 
 fn load_env_file(path: impl AsRef<Path>) -> Result<()> {
