@@ -34,7 +34,7 @@ use polymarket_bot::{
     scanner::{scan_markets_for_signal1, ScannerConfig, ScannerCycleReport},
     store::Store,
     trade_pnl::{mark_trade_pnl_now_with_config, refresh_trade_pnl_with_config, TradePnlConfig},
-    wallets::score_closed_position_performance,
+    wallets::{score_closed_position_performance, score_mrs, MrsScoreInput},
 };
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, warn};
@@ -168,26 +168,29 @@ impl RuntimeControl {
                 .map_err(|error| HttpError::internal(error.to_string()))?
                 .ok_or_else(|| HttpError::not_found("trading process not found"))?
         } else {
-            self.store
+            let candidates: Vec<_> = self
+                .store
                 .list_trading_processes(100)
                 .await
                 .map_err(|error| HttpError::internal(error.to_string()))?
                 .into_iter()
-                .find(|process| {
+                .filter(|process| {
                     process.process_type == "copy_trade"
                         && process.enabled
                         && process.status == "running"
-                        && process
-                            .metadata
-                            .get("source")
-                            .and_then(|value| value.as_str())
-                            == Some("infra/processes")
                 })
-                .ok_or_else(|| {
-                    HttpError::bad_request(
-                        "process_id is required until an infra trading process is running",
-                    )
-                })?
+                .collect();
+            match candidates.as_slice() {
+                [process] => process.clone(),
+                [] => return Err(HttpError::bad_request(
+                    "process_id is required until exactly one running copy_trade process exists",
+                )),
+                _ => {
+                    return Err(HttpError::bad_request(
+                        "process_id is required when multiple running copy_trade processes exist",
+                    ))
+                }
+            }
         };
         runtime_config_from_process(&process)
             .map_err(|error| HttpError::bad_request(error.to_string()))
@@ -374,6 +377,55 @@ impl ControlApi for RuntimeControl {
         Ok(BackfillJobResponse { job })
     }
 
+    async fn replay_existing_copy_trades(
+        &self,
+        request: control_http::CopyTradeReplayRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        let process_config = self.resolve_process_config(request.process_id).await?;
+        if process_config.execution_mode != ExecutionMode::Sim {
+            return Err(HttpError::bad_request(
+                "copy-trade replay is simulation-only",
+            ));
+        }
+        let since = Utc::now() - chrono::Duration::days(request.lookback_days.unwrap_or(3).max(1));
+        let mut trades = self
+            .store
+            .fetch_recent_whale_trades(since)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        trades.sort_by_key(|trade| trade.timestamp_utc);
+        let limit = request.limit.unwrap_or(500).clamp(1, 5_000);
+        if trades.len() > limit {
+            trades = trades.split_off(trades.len() - limit);
+        }
+        let venue = self
+            .venues
+            .for_mode(process_config.execution_mode)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?;
+        let summary = run_copy_trade_signal_engine(
+            &self.store,
+            Some(venue.as_ref()),
+            Some(&self.clob),
+            &trades,
+            &CopyTradeRunConfig {
+                process_id: Some(process_config.process_id),
+                copy_trade: process_config.copy_trade,
+                execute_signals: request.execute_signals,
+                require_entry_markability: false,
+            },
+            request.dry_run,
+        )
+        .await
+        .map_err(|error| HttpError::internal(error.to_string()))?;
+        Ok(serde_json::json!({
+            "process_id": process_config.process_id,
+            "trades_replayed": trades.len(),
+            "execute_signals": request.execute_signals,
+            "dry_run": request.dry_run,
+            "summary": summary
+        }))
+    }
+
     async fn list_backfill_jobs(&self) -> Result<BackfillJobsResponse, HttpError> {
         let jobs = self
             .store
@@ -482,6 +534,32 @@ impl ControlApi for RuntimeControl {
         .await
         .map_err(|error| HttpError::internal(error.to_string()))?;
         serde_json::to_value(report).map_err(|error| HttpError::internal(error.to_string()))
+    }
+
+    async fn recompute_mrs_scores(
+        &self,
+        request: control_http::MrsRecomputeRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        let lookback_days = request.lookback_days.unwrap_or(150).clamp(1, 365);
+        let limit = request.limit.unwrap_or(20_000).clamp(1, 100_000);
+        let since = Utc::now() - chrono::Duration::days(lookback_days);
+        let updated = self
+            .store
+            .recompute_mrs_scores_from_existing(since, limit)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        let top_scores = self
+            .store
+            .fetch_top_mrs_scores(10)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        Ok(serde_json::json!({
+            "score_version": polymarket_bot::wallets::MRS_SCORE_VERSION,
+            "updated_wallets": updated,
+            "lookback_days": lookback_days,
+            "limit": limit,
+            "top_scores": top_scores
+        }))
     }
 
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError> {
@@ -1320,6 +1398,7 @@ async fn poll_live_whales_once(
             process_id: Some(process_id),
             copy_trade: runtime_config.copy_trade,
             execute_signals: runtime_config.execute_signals,
+            require_entry_markability: true,
         },
         false,
     )
@@ -1338,13 +1417,6 @@ async fn ensure_live_wallet_performance(
         if !checked_wallets.insert(trade.proxy_wallet.clone()) {
             continue;
         }
-        if store
-            .fetch_latest_wallet_performance(&trade.proxy_wallet)
-            .await?
-            .is_some()
-        {
-            continue;
-        }
         let positions = fetch_closed_positions_for_wallet(
             data_api,
             &trade.proxy_wallet,
@@ -1356,11 +1428,43 @@ async fn ensure_live_wallet_performance(
         let performance = performance_score
             .clone()
             .into_wallet_performance(Utc::now(), serde_json::to_value(&positions)?);
-        let wallet_score = performance_score.into_wallet_score();
+        let wallet_score = performance_score.clone().into_wallet_score();
         store.upsert_wallet_performance(&performance).await?;
         store.upsert_wallet_score(&wallet_score).await?;
+        let stats = store
+            .fetch_wallet_observed_trade_stats(
+                &trade.proxy_wallet,
+                Utc::now() - chrono::Duration::days(150),
+            )
+            .await?;
+        let mut mrs_input = MrsScoreInput::from(&performance_score);
+        mrs_input.observed_trade_count = stats.observed_trade_count;
+        mrs_input.observed_volume_usd = stats.observed_volume_usd;
+        mrs_input.observed_market_count = stats.observed_market_count;
+        mrs_input.avg_trade_size = stats.avg_trade_size;
+        let mut mrs_score = score_mrs(mrs_input).into_wallet_score();
+        mrs_score.metadata = merge_json(
+            mrs_score.metadata,
+            serde_json::json!({
+                "source": "live_trade_score_update",
+                "sample_start": stats.sample_start,
+                "sample_end": stats.sample_end,
+                "trigger_trade_id": trade.trade_id,
+                "trigger_transaction_hash": trade.transaction_hash
+            }),
+        );
+        store.upsert_wallet_score(&mrs_score).await?;
     }
     Ok(())
+}
+
+fn merge_json(mut left: serde_json::Value, right: serde_json::Value) -> serde_json::Value {
+    if let (Some(left), Some(right)) = (left.as_object_mut(), right.as_object()) {
+        for (key, value) in right {
+            left.insert(key.clone(), value.clone());
+        }
+    }
+    left
 }
 
 async fn run_scan_once(
@@ -1413,9 +1517,10 @@ fn runtime_config_from_process(process: &TradingProcess) -> Result<ProcessRuntim
     let execution = process.config.effective_execution();
     let backfill = process.config.effective_backfill();
     let copy_trade = process.config.effective_copy_trade();
+    let execution_mode = parse_process_execution_mode(&execution.mode)?;
     Ok(ProcessRuntimeConfig {
         process_id: process.process_id,
-        execution_mode: parse_process_execution_mode(&execution.mode)?,
+        execution_mode,
         execute_signals: execution.execute_signals,
         backfill_enabled: backfill.backfill_enabled,
         live_enabled: backfill.live_enabled,
@@ -1446,6 +1551,10 @@ fn runtime_config_from_process(process: &TradingProcess) -> Result<ProcessRuntim
             backtest_horizon_secs: copy_trade.backtest_horizon_secs,
             taker_fee_rate: copy_trade.taker_fee_rate,
             allow_sell_entries: copy_trade.allow_sell_entries,
+            mrs_enabled: copy_trade.mrs_enabled,
+            mrs_enforce: copy_trade.mrs_enforce && execution_mode == ExecutionMode::Sim,
+            min_mrs_score: copy_trade.min_mrs_score,
+            mrs_percentile_floor: copy_trade.mrs_percentile_floor,
         },
     })
 }

@@ -19,6 +19,7 @@ use crate::{
         WhalePollCheckpoint, WhaleTrade,
     },
     orderbook::LocalOrderBook,
+    wallets::{score_mrs, MrsScoreInput, MRS_SCORE_VERSION},
 };
 
 #[derive(Clone)]
@@ -4194,6 +4195,136 @@ impl Store {
         Ok(rows)
     }
 
+    pub async fn fetch_wallet_observed_trade_stats(
+        &self,
+        proxy_wallet: &str,
+        since: DateTime<Utc>,
+    ) -> Result<WalletObservedTradeStats> {
+        let row = sqlx::query_as::<_, WalletObservedTradeStatsRow>(
+            r#"
+            SELECT
+              count(*)::integer AS observed_trade_count,
+              COALESCE(sum(cash_value), 0)::numeric AS observed_volume_usd,
+              count(DISTINCT COALESCE(condition_id, market_id, slug, asset))::integer AS observed_market_count,
+              COALESCE(avg(cash_value), 0)::numeric AS avg_trade_size,
+              min(timestamp_utc) AS sample_start,
+              max(timestamp_utc) AS sample_end
+            FROM polymarket.wallet_trades
+            WHERE proxy_wallet = $1
+              AND timestamp_utc >= $2
+            "#,
+        )
+        .bind(proxy_wallet)
+        .bind(since)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to fetch wallet observed trade stats")?;
+        Ok(row.into())
+    }
+
+    pub async fn fetch_wallet_score_by_version(
+        &self,
+        proxy_wallet: &str,
+        score_version: &str,
+    ) -> Result<Option<WalletScore>> {
+        let row = sqlx::query_as::<_, WalletScoreRow>(
+            r#"
+            SELECT proxy_wallet, score_version, resolved_markets, total_trades, total_volume,
+              realized_pnl, roi, win_rate, avg_trade_size, max_drawdown, score, metadata
+            FROM polymarket.wallet_scores
+            WHERE proxy_wallet = $1
+              AND score_version = $2
+            ORDER BY scored_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(proxy_wallet)
+        .bind(score_version)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to fetch wallet score by version")?;
+        Ok(row.map(Into::into))
+    }
+
+    pub async fn fetch_top_mrs_scores(&self, limit: i64) -> Result<Vec<WalletScore>> {
+        let rows = sqlx::query_as::<_, WalletScoreRow>(
+            r#"
+            SELECT proxy_wallet, score_version, resolved_markets, total_trades, total_volume,
+              realized_pnl, roi, win_rate, avg_trade_size, max_drawdown, score, metadata
+            FROM polymarket.wallet_scores
+            WHERE score_version = $1
+            ORDER BY score DESC, realized_pnl DESC, roi DESC, proxy_wallet
+            LIMIT $2
+            "#,
+        )
+        .bind(MRS_SCORE_VERSION)
+        .bind(limit.max(1))
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch top MRS scores")?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn recompute_mrs_scores_from_existing(
+        &self,
+        since: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<u64> {
+        let rows = sqlx::query_as::<_, WalletPerformanceRow>(
+            r#"
+            SELECT proxy_wallet, sample_updated_at, realized_pnl_usd, total_bought_usd,
+              roi, closed_positions, winning_positions, win_rate, rank_score,
+              raw_payload, metadata
+            FROM polymarket.wallet_performance
+            ORDER BY rank_score DESC, realized_pnl_usd DESC, roi DESC, proxy_wallet
+            LIMIT $1
+            "#,
+        )
+        .bind(limit.max(1))
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch wallet performance rows for MRS recompute")?;
+
+        let mut updated = 0u64;
+        for row in rows {
+            let performance: WalletPerformance = row.into();
+            let stats = self
+                .fetch_wallet_observed_trade_stats(&performance.proxy_wallet, since)
+                .await?;
+            let mut input = MrsScoreInput {
+                proxy_wallet: performance.proxy_wallet.clone(),
+                realized_pnl_usd: performance.realized_pnl_usd,
+                total_bought_usd: performance.total_bought_usd,
+                roi: performance.roi,
+                closed_positions: performance.closed_positions,
+                winning_positions: performance.winning_positions,
+                win_rate: performance.win_rate,
+                observed_trade_count: stats.observed_trade_count,
+                observed_volume_usd: stats.observed_volume_usd,
+                observed_market_count: stats.observed_market_count,
+                avg_trade_size: stats.avg_trade_size,
+            };
+            if input.observed_volume_usd <= Decimal::ZERO {
+                input.observed_volume_usd = performance.total_bought_usd;
+            }
+            if input.observed_market_count <= 0 {
+                input.observed_market_count = performance.closed_positions;
+            }
+            let mut score = score_mrs(input).into_wallet_score();
+            score.metadata = merge_json(
+                score.metadata,
+                serde_json::json!({
+                    "source": "existing_wallet_performance_recompute",
+                    "sample_start": stats.sample_start,
+                    "sample_end": stats.sample_end
+                }),
+            );
+            self.upsert_wallet_score(&score).await?;
+            updated = updated.saturating_add(1);
+        }
+        Ok(updated)
+    }
+
     pub async fn upsert_wallet_score(&self, score: &WalletScore) -> Result<()> {
         sqlx::query(
             r#"
@@ -4653,6 +4784,15 @@ fn cap_fills_to_size(fills: &[FillRecord], max_size: Decimal) -> Vec<FillRecord>
     capped
 }
 
+fn merge_json(mut left: serde_json::Value, right: serde_json::Value) -> serde_json::Value {
+    if let (Some(left), Some(right)) = (left.as_object_mut(), right.as_object()) {
+        for (key, value) in right {
+            left.insert(key.clone(), value.clone());
+        }
+    }
+    left
+}
+
 #[derive(sqlx::FromRow)]
 struct BackfillJobRow {
     job_id: Uuid,
@@ -4758,6 +4898,39 @@ struct WalletScoreRow {
     metadata: serde_json::Value,
 }
 
+#[derive(Debug, Clone)]
+pub struct WalletObservedTradeStats {
+    pub observed_trade_count: i32,
+    pub observed_volume_usd: Decimal,
+    pub observed_market_count: i32,
+    pub avg_trade_size: Decimal,
+    pub sample_start: Option<DateTime<Utc>>,
+    pub sample_end: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, FromRow)]
+struct WalletObservedTradeStatsRow {
+    observed_trade_count: i32,
+    observed_volume_usd: Decimal,
+    observed_market_count: i32,
+    avg_trade_size: Decimal,
+    sample_start: Option<DateTime<Utc>>,
+    sample_end: Option<DateTime<Utc>>,
+}
+
+impl From<WalletObservedTradeStatsRow> for WalletObservedTradeStats {
+    fn from(row: WalletObservedTradeStatsRow) -> Self {
+        Self {
+            observed_trade_count: row.observed_trade_count,
+            observed_volume_usd: row.observed_volume_usd,
+            observed_market_count: row.observed_market_count,
+            avg_trade_size: row.avg_trade_size,
+            sample_start: row.sample_start,
+            sample_end: row.sample_end,
+        }
+    }
+}
+
 impl From<WalletScoreRow> for WalletScore {
     fn from(row: WalletScoreRow) -> Self {
         Self {
@@ -4838,11 +5011,8 @@ impl From<WhalePollCheckpointRow> for WhalePollCheckpoint {
 }
 
 fn trading_process_from_row(row: TradingProcessRow) -> Result<TradingProcess> {
-    let config =
-        serde_json::from_value(row.config.clone()).unwrap_or_else(|_| TradingProcessConfig {
-            raw: row.config.clone(),
-            ..TradingProcessConfig::default()
-        });
+    let config = serde_json::from_value(row.config.clone())
+        .context("failed to deserialize trading process config")?;
     Ok(TradingProcess {
         process_id: row.process_id,
         name: row.name,

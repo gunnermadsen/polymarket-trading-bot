@@ -103,6 +103,19 @@ impl ControlApi for FakeControlApi {
         })
     }
 
+    async fn replay_existing_copy_trades(
+        &self,
+        _request: http::CopyTradeReplayRequest,
+    ) -> Result<Value, HttpError> {
+        Ok(serde_json::json!({
+            "trades_replayed": 1,
+            "summary": {
+                "trades_evaluated": 1,
+                "signals_inserted": 1
+            }
+        }))
+    }
+
     async fn get_backfill_job(&self, _job_id: Uuid) -> Result<BackfillJobResponse, HttpError> {
         Ok(BackfillJobResponse {
             job: test_job(BackfillJobStatus::Completed, serde_json::json!({})),
@@ -171,6 +184,17 @@ impl ControlApi for FakeControlApi {
 
     async fn trade_pnl_mark_now(&self) -> Result<Value, HttpError> {
         Ok(serde_json::json!({"marks_written": 1}))
+    }
+
+    async fn recompute_mrs_scores(
+        &self,
+        _request: http::MrsRecomputeRequest,
+    ) -> Result<Value, HttpError> {
+        Ok(serde_json::json!({
+            "score_version": "mrs_v1",
+            "updated_wallets": 1,
+            "top_scores": []
+        }))
     }
 
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError> {

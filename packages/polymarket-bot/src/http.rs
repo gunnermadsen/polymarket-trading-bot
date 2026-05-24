@@ -75,6 +75,11 @@ pub trait ControlApi: Send + Sync + 'static {
         request: CopyTradeCalibrationRequest,
     ) -> Result<BackfillJobResponse, HttpError>;
 
+    async fn replay_existing_copy_trades(
+        &self,
+        request: CopyTradeReplayRequest,
+    ) -> Result<serde_json::Value, HttpError>;
+
     async fn list_backfill_jobs(&self) -> Result<BackfillJobsResponse, HttpError>;
 
     async fn get_backfill_job(&self, job_id: Uuid) -> Result<BackfillJobResponse, HttpError>;
@@ -109,6 +114,11 @@ pub trait ControlApi: Send + Sync + 'static {
     async fn trade_pnl_backfill(&self) -> Result<serde_json::Value, HttpError>;
 
     async fn trade_pnl_mark_now(&self) -> Result<serde_json::Value, HttpError>;
+
+    async fn recompute_mrs_scores(
+        &self,
+        request: MrsRecomputeRequest,
+    ) -> Result<serde_json::Value, HttpError>;
 
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError>;
 
@@ -333,6 +343,20 @@ impl ControlApi for PlaceholderControlApi {
         Err(HttpError::not_implemented("trade PnL marking is not wired"))
     }
 
+    async fn replay_existing_copy_trades(
+        &self,
+        _request: CopyTradeReplayRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented("copy-trade replay is not wired"))
+    }
+
+    async fn recompute_mrs_scores(
+        &self,
+        _request: MrsRecomputeRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented("MRS recompute is not wired"))
+    }
+
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError> {
         Err(HttpError::not_implemented("live status is not wired"))
     }
@@ -465,6 +489,10 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .route("/backfill/whales", post(start_whales_backfill))
         .route("/copy-trade/backtest", post(start_copy_trade_backtest))
         .route(
+            "/copy-trade/replay-existing",
+            post(replay_existing_copy_trades),
+        )
+        .route(
             "/copy-trade/calibration",
             post(start_copy_trade_calibration),
         )
@@ -479,6 +507,7 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .route("/trades/pnl/recent-exits", get(trade_pnl_recent_exits))
         .route("/trades/pnl/backfill", post(trade_pnl_backfill))
         .route("/trades/pnl/mark-now", post(trade_pnl_mark_now))
+        .route("/wallets/mrs/recompute", post(recompute_mrs_scores))
         .route("/live/status", get(live_status))
         .route("/live/diagnostics", get(live_identity_diagnostics))
         .route(
@@ -573,6 +602,17 @@ async fn start_copy_trade_calibration(
         .map(Json)
 }
 
+async fn replay_existing_copy_trades(
+    State(state): State<HttpState>,
+    Json(request): Json<CopyTradeReplayRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state
+        .control
+        .replay_existing_copy_trades(request)
+        .await
+        .map(Json)
+}
+
 async fn list_backfill_jobs(
     State(state): State<HttpState>,
 ) -> Result<Json<BackfillJobsResponse>, HttpError> {
@@ -645,6 +685,13 @@ async fn trade_pnl_mark_now(
     State(state): State<HttpState>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
     state.control.trade_pnl_mark_now().await.map(Json)
+}
+
+async fn recompute_mrs_scores(
+    State(state): State<HttpState>,
+    Json(request): Json<MrsRecomputeRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state.control.recompute_mrs_scores(request).await.map(Json)
 }
 
 async fn live_status(State(state): State<HttpState>) -> Result<Json<LiveVenueStatus>, HttpError> {
@@ -924,9 +971,27 @@ pub struct CopyTradeCalibrationRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopyTradeReplayRequest {
+    #[serde(default)]
+    pub process_id: Option<Uuid>,
+    pub lookback_days: Option<i64>,
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub execute_signals: bool,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradePnlListRequest {
     #[serde(default)]
     pub process_id: Option<Uuid>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MrsRecomputeRequest {
+    pub lookback_days: Option<i64>,
     pub limit: Option<i64>,
 }
 

@@ -10,8 +10,8 @@ use uuid::Uuid;
 use crate::{
     clob::ClobClient,
     copytrade::{
-        evaluate_copy_trade, run_copy_trade_backtest, CopyTradeConfig, CopyTradeWalletPerformance,
-        ObservedMarket, COPY_SCORE_VERSION,
+        evaluate_copy_trade, run_copy_trade_backtest, CopyTradeConfig, CopyTradeMrsScore,
+        CopyTradeWalletPerformance, ObservedMarket, COPY_SCORE_VERSION,
     },
     data_api::{ClosedPositionsQuery, DataApiClient, TradesQuery},
     execution::{execute_order_plan, ExecutionVenue, OrderPlan, OrderPlanReport},
@@ -20,8 +20,13 @@ use crate::{
     },
     store::{OrderbookSnapshot, Store, TradeMarkSourceFailure},
     trade_pnl::{refresh_trade_pnl_with_config, TradePnlConfig},
-    wallets::{score_closed_position_performance, score_closed_position_wallets, score_wallets},
+    wallets::{
+        score_closed_position_performance, score_closed_position_wallets, score_mrs, score_wallets,
+        MrsScoreInput, MRS_SCORE_VERSION,
+    },
 };
+
+const POLYMARKET_TRADES_OFFSET_LIMIT: usize = 4000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -95,6 +100,8 @@ pub struct CopyTradeRunConfig {
     pub process_id: Option<Uuid>,
     pub copy_trade: CopyTradeConfig,
     pub execute_signals: bool,
+    #[serde(default = "default_require_entry_markability")]
+    pub require_entry_markability: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -202,6 +209,24 @@ pub async fn run_job(
     if !matches!(request.mode, BackfillMode::WalletScoresOnly) {
         for page in 0..request.max_pages {
             let offset = page * request.limit;
+            if offset >= POLYMARKET_TRADES_OFFSET_LIMIT {
+                store
+                    .insert_backfill_event(
+                        job_id,
+                        "info",
+                        "whale backfill stopped at Polymarket trades offset limit",
+                        serde_json::json!({
+                            "page": page,
+                            "offset": offset,
+                            "offset_limit": POLYMARKET_TRADES_OFFSET_LIMIT,
+                            "api_trades_seen": summary.api_trades_seen,
+                            "trades_persisted": summary.trades_persisted
+                        }),
+                    )
+                    .await
+                    .ok();
+                break;
+            }
             let trades =
                 fetch_whale_trade_page(&data_api, request.limit, offset, request.min_trade_usd)
                     .await
@@ -269,9 +294,31 @@ pub async fn run_job(
             .await?;
             summary.wallet_performances_scored += 1;
             if !request.dry_run {
-                let performance = score_closed_position_performance(wallet, &positions)
+                let performance_score = score_closed_position_performance(wallet, &positions);
+                let performance = performance_score
+                    .clone()
                     .into_wallet_performance(Utc::now(), serde_json::to_value(&positions)?);
                 store.upsert_wallet_performance(&performance).await?;
+                let observed_stats = store
+                    .fetch_wallet_observed_trade_stats(wallet, cutoff)
+                    .await?;
+                let mut mrs_input = MrsScoreInput::from(&performance_score);
+                mrs_input.observed_trade_count = observed_stats.observed_trade_count;
+                mrs_input.observed_volume_usd = observed_stats.observed_volume_usd;
+                mrs_input.observed_market_count = observed_stats.observed_market_count;
+                mrs_input.avg_trade_size = observed_stats.avg_trade_size;
+                let mut mrs_score = score_mrs(mrs_input).into_wallet_score();
+                mrs_score.metadata = merge_json(
+                    mrs_score.metadata,
+                    serde_json::json!({
+                        "source": "historic_backfill",
+                        "lookback_days": request.lookback_days,
+                        "min_trade_usd": request.min_trade_usd,
+                        "sample_start": observed_stats.sample_start,
+                        "sample_end": observed_stats.sample_end
+                    }),
+                );
+                store.upsert_wallet_score(&mrs_score).await?;
             }
             closed_positions.push((wallet.clone(), positions));
 
@@ -330,6 +377,7 @@ pub async fn run_job(
                 process_id: request.process_id,
                 copy_trade: copy_trade_config.clone(),
                 execute_signals: request.execute_signals,
+                require_entry_markability: true,
             },
             request.dry_run,
         )
@@ -342,6 +390,7 @@ pub async fn run_job(
             process_id: request.process_id,
             copy_trade: copy_trade_config.clone(),
             execute_signals: request.execute_signals,
+            require_entry_markability: true,
         };
         let calibration = calibrate_copy_trade_thresholds(&trades_for_copy, &backtest_config);
         if !request.dry_run {
@@ -640,6 +689,8 @@ pub async fn run_copy_trade_signal_engine(
         .collect::<std::collections::HashMap<_, _>>();
     let mut persisted_performance_by_wallet =
         std::collections::HashMap::<String, Option<CopyTradeWalletPerformance>>::new();
+    let mut persisted_mrs_by_wallet =
+        std::collections::HashMap::<String, Option<CopyTradeMrsScore>>::new();
     let copy_config = config.copy_trade.clone();
     let mut open_notional_with_in_run_orders = if !dry_run && config.execute_signals {
         match config.process_id {
@@ -674,9 +725,32 @@ pub async fn run_copy_trade_signal_engine(
                 .get(&trade.proxy_wallet)
                 .and_then(|performance| performance.as_ref())
         };
+        if !dry_run
+            && copy_config.mrs_enabled
+            && !persisted_mrs_by_wallet.contains_key(&trade.proxy_wallet)
+        {
+            let persisted = store
+                .fetch_wallet_score_by_version(&trade.proxy_wallet, MRS_SCORE_VERSION)
+                .await?
+                .map(|score| CopyTradeMrsScore {
+                    score: score.score,
+                    score_version: score.score_version,
+                    percentile: None,
+                    metadata: score.metadata,
+                });
+            persisted_mrs_by_wallet.insert(trade.proxy_wallet.clone(), persisted);
+        }
+        let mrs_score = if dry_run || !copy_config.mrs_enabled {
+            None
+        } else {
+            persisted_mrs_by_wallet
+                .get(&trade.proxy_wallet)
+                .and_then(|score| score.as_ref())
+        };
         let decision = evaluate_copy_trade(
             trade,
             performance,
+            mrs_score,
             ObservedMarket {
                 observed_price: trade.price,
                 available_depth_usd: trade.cash_value,
@@ -741,17 +815,20 @@ pub async fn run_copy_trade_signal_engine(
                 continue;
             }
         }
-        if let Some(rejection) = ensure_order_plan_markable_at_entry(store, clob, &plan).await? {
-            summary.rejections += 1;
-            store
-                .update_copy_trade_signal_status(
-                    decision.copy_signal.signal_id,
-                    decision.copy_signal.timestamp_utc,
-                    "rejected",
-                    rejection,
-                )
-                .await?;
-            continue;
+        if config.require_entry_markability {
+            if let Some(rejection) = ensure_order_plan_markable_at_entry(store, clob, &plan).await?
+            {
+                summary.rejections += 1;
+                store
+                    .update_copy_trade_signal_status(
+                        decision.copy_signal.signal_id,
+                        decision.copy_signal.timestamp_utc,
+                        "rejected",
+                        rejection,
+                    )
+                    .await?;
+                continue;
+            }
         }
         let execution = execute_order_plan(venue, plan).await?;
         summary.orders_inserted += execution.orders.len();
@@ -1006,6 +1083,15 @@ pub fn calibrate_copy_trade_thresholds(
     })
 }
 
+fn merge_json(mut left: serde_json::Value, right: serde_json::Value) -> serde_json::Value {
+    if let (Some(left), Some(right)) = (left.as_object_mut(), right.as_object()) {
+        for (key, value) in right {
+            left.insert(key.clone(), value.clone());
+        }
+    }
+    left
+}
+
 fn default_lookback_days() -> u32 {
     30
 }
@@ -1020,6 +1106,10 @@ fn default_limit() -> usize {
 
 fn default_max_pages() -> usize {
     10
+}
+
+fn default_require_entry_markability() -> bool {
+    true
 }
 
 fn default_copy_min_wallet_score() -> Decimal {
