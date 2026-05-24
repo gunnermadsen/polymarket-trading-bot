@@ -137,6 +137,15 @@ impl ControlApi for FakeControlApi {
         Ok(serde_json::json!({
             "positions": 1,
             "total_pnl": "1.23",
+            "mark_readiness": {
+                "status": "degraded",
+                "max_fresh_age_secs": 300,
+                "open_positions": 1,
+                "fresh_mark_positions": 0,
+                "stale_mark_positions": 1,
+                "missing_mark_positions": 0,
+                "unavailable_mark_positions": 0
+            },
             "reports_by_process_id": {
                 "unbound": {
                     "positions": 1,
@@ -773,6 +782,8 @@ async fn authenticated_admin_can_read_pnl_stats() {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["positions"], 1);
         assert_eq!(json["total_pnl"], "1.23");
+        assert_eq!(json["mark_readiness"]["status"], "degraded");
+        assert_eq!(json["mark_readiness"]["max_fresh_age_secs"], 300);
         assert_eq!(json["reports_by_process_id"]["unbound"]["positions"], 1);
         assert_eq!(
             json["reports_by_process_id"]["unbound"]["total_pnl"],

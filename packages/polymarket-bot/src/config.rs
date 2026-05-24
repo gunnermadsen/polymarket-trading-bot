@@ -111,6 +111,7 @@ pub struct WhaleConfig {
     pub live_max_pages: usize,
     pub max_pages: usize,
     pub exit_candidate_max_age: Duration,
+    pub mark_fresh_max_age: Duration,
 }
 
 impl AppConfig {
@@ -254,6 +255,10 @@ impl AppConfig {
                 exit_candidate_max_age: Duration::from_secs(parse_u64(
                     "POLYMARKET_EXIT_CANDIDATE_MAX_AGE_SECONDS",
                     900,
+                )),
+                mark_fresh_max_age: Duration::from_secs(parse_u64(
+                    "POLYMARKET_MARK_FRESH_MAX_AGE_SECS",
+                    300,
                 )),
             },
         })
