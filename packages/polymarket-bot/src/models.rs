@@ -634,34 +634,6 @@ impl TradingProcessConfig {
                 effective.taker_fee_rate = taker_fee_rate;
             }
         }
-        if self
-            .execution
-            .as_ref()
-            .and_then(|config| config.mode.as_ref())
-            .is_none()
-        {
-            if let Some(mode) = raw_string(&self.raw, &["execution", "mode"]) {
-                effective.mode = mode.to_string();
-            }
-        }
-        if self.execution.is_none() {
-            if let Some(execute_signals) = raw_bool(&self.raw, &["execution", "execute_signals"]) {
-                effective.execute_signals = execute_signals;
-            }
-            if let Some(live_capital) = raw_bool(&self.raw, &["execution", "live_capital"]) {
-                effective.live_capital = live_capital;
-            }
-        }
-        if self
-            .execution
-            .as_ref()
-            .and_then(|config| config.taker_fee_rate)
-            .is_none()
-        {
-            if let Some(taker_fee_rate) = raw_decimal(&self.raw, &["execution", "taker_fee_rate"]) {
-                effective.taker_fee_rate = taker_fee_rate;
-            }
-        }
         effective
     }
 
@@ -697,98 +669,6 @@ impl TradingProcessConfig {
             }
             effective.wallets = config.wallets.clone();
             effective.market_ids = config.market_ids.clone();
-        }
-        if self
-            .whale
-            .as_ref()
-            .and_then(|config| config.backfill_enabled)
-            .is_none()
-        {
-            if let Some(backfill_enabled) = raw_bool(&self.raw, &["whale", "backfill_enabled"]) {
-                effective.backfill_enabled = backfill_enabled;
-            }
-        }
-        if self
-            .whale
-            .as_ref()
-            .and_then(|config| config.live_enabled)
-            .is_none()
-        {
-            if let Some(live_enabled) = raw_bool(&self.raw, &["whale", "live_enabled"]) {
-                effective.live_enabled = live_enabled;
-            }
-        }
-        if self
-            .whale
-            .as_ref()
-            .and_then(|config| config.lookback_days)
-            .is_none()
-        {
-            if let Some(lookback_days) = raw_u32(&self.raw, &["whale", "lookback_days"]) {
-                effective.lookback_days = lookback_days;
-            }
-        }
-        if self
-            .whale
-            .as_ref()
-            .and_then(|config| config.min_trade_usd)
-            .is_none()
-        {
-            if let Some(min_trade_usd) = raw_decimal(&self.raw, &["whale", "min_trade_usd"]) {
-                effective.min_trade_usd = min_trade_usd;
-            }
-        }
-        if self
-            .whale
-            .as_ref()
-            .and_then(|config| config.page_limit)
-            .is_none()
-        {
-            if let Some(page_limit) = raw_usize(&self.raw, &["whale", "page_limit"]) {
-                effective.page_limit = page_limit;
-            }
-        }
-        if self
-            .whale
-            .as_ref()
-            .and_then(|config| config.max_pages)
-            .is_none()
-        {
-            if let Some(max_pages) = raw_usize(&self.raw, &["whale", "max_pages"]) {
-                effective.max_pages = max_pages;
-            }
-        }
-        if self
-            .whale
-            .as_ref()
-            .and_then(|config| config.live_page_limit)
-            .is_none()
-        {
-            if let Some(live_page_limit) = raw_usize(&self.raw, &["whale", "live_page_limit"]) {
-                effective.live_page_limit = live_page_limit;
-            }
-        }
-        if self
-            .whale
-            .as_ref()
-            .and_then(|config| config.live_max_pages)
-            .is_none()
-        {
-            if let Some(live_max_pages) = raw_usize(&self.raw, &["whale", "live_max_pages"]) {
-                effective.live_max_pages = live_max_pages;
-            }
-        }
-        if self
-            .whale
-            .as_ref()
-            .and_then(|config| config.live_poll_interval_secs)
-            .is_none()
-        {
-            if let Some(live_poll_interval_secs) =
-                raw_i64(&self.raw, &["whale", "live_poll_interval_secs"])
-            {
-                effective.live_poll_interval_secs = live_poll_interval_secs;
-            }
         }
         effective
     }
@@ -838,236 +718,29 @@ impl TradingProcessConfig {
             if let Some(min_book_depth_usd) = config.min_book_depth_usd {
                 effective.min_book_depth_usd = min_book_depth_usd;
             }
+            if let Some(backtest_horizon_secs) = config.backtest_horizon_secs {
+                effective.backtest_horizon_secs = backtest_horizon_secs;
+            }
+            if let Some(taker_fee_rate) = config.taker_fee_rate {
+                effective.taker_fee_rate = taker_fee_rate;
+            }
             if let Some(allow_sell_entries) = config.allow_sell_entries {
                 effective.allow_sell_entries = allow_sell_entries;
             }
-        }
-        if self
-            .copy_trade
-            .as_ref()
-            .and_then(|config| config.enabled)
-            .is_none()
-        {
-            if let Some(enabled) = raw_bool(&self.raw, &["copy_trade", "enabled"]) {
-                effective.enabled = enabled;
+            if let Some(mrs_enabled) = config.mrs_enabled {
+                effective.mrs_enabled = mrs_enabled;
             }
-        }
-        if self
-            .copy_trade
-            .as_ref()
-            .and_then(|config| config.min_wallet_score)
-            .is_none()
-        {
-            if let Some(min_wallet_score) =
-                raw_decimal(&self.raw, &["copy_trade", "min_wallet_score"])
-            {
-                effective.min_wallet_score = min_wallet_score;
+            if let Some(mrs_enforce) = config.mrs_enforce {
+                effective.mrs_enforce = mrs_enforce;
             }
-        }
-        if self
-            .copy_trade
-            .as_ref()
-            .and_then(|config| config.min_wallet_trades)
-            .is_none()
-        {
-            if let Some(min_wallet_trades) =
-                raw_i32(&self.raw, &["copy_trade", "min_wallet_trades"])
-            {
-                effective.min_wallet_trades = min_wallet_trades;
+            if let Some(min_mrs_score) = config.min_mrs_score {
+                effective.min_mrs_score = min_mrs_score;
             }
-        }
-        if self
-            .copy_trade
-            .as_ref()
-            .and_then(|config| config.min_wallet_realized_pnl_usd)
-            .is_none()
-        {
-            if let Some(min_wallet_realized_pnl_usd) =
-                raw_decimal(&self.raw, &["copy_trade", "min_wallet_realized_pnl_usd"])
-            {
-                effective.min_wallet_realized_pnl_usd = min_wallet_realized_pnl_usd;
+            if let Some(mrs_percentile_floor) = config.mrs_percentile_floor {
+                effective.mrs_percentile_floor = mrs_percentile_floor;
             }
-        }
-        if self
-            .copy_trade
-            .as_ref()
-            .and_then(|config| config.min_wallet_roi)
-            .is_none()
-        {
-            if let Some(min_wallet_roi) = raw_decimal(&self.raw, &["copy_trade", "min_wallet_roi"])
-            {
-                effective.min_wallet_roi = min_wallet_roi;
-            }
-        }
-        if self
-            .copy_trade
-            .as_ref()
-            .and_then(|config| config.min_wallet_closed_positions)
-            .is_none()
-        {
-            if let Some(min_wallet_closed_positions) =
-                raw_i32(&self.raw, &["copy_trade", "min_wallet_closed_positions"])
-            {
-                effective.min_wallet_closed_positions = min_wallet_closed_positions;
-            }
-        }
-        if self
-            .copy_trade
-            .as_ref()
-            .and_then(|config| config.min_trade_usd)
-            .is_none()
-        {
-            if let Some(min_trade_usd) = raw_decimal(&self.raw, &["copy_trade", "min_trade_usd"]) {
-                effective.min_trade_usd = min_trade_usd;
-            }
-        }
-        if self
-            .copy_trade
-            .as_ref()
-            .and_then(|config| config.min_copy_size_usd)
-            .is_none()
-        {
-            if let Some(min_copy_size_usd) =
-                raw_decimal(&self.raw, &["copy_trade", "min_copy_size_usd"])
-            {
-                effective.min_copy_size_usd = min_copy_size_usd;
-            }
-        }
-        if self
-            .copy_trade
-            .as_ref()
-            .and_then(|config| config.max_copy_size_usd)
-            .is_none()
-        {
-            if let Some(max_copy_size_usd) =
-                raw_decimal(&self.raw, &["copy_trade", "max_copy_size_usd"])
-            {
-                effective.max_copy_size_usd = max_copy_size_usd;
-            }
-        }
-        if self
-            .copy_trade
-            .as_ref()
-            .and_then(|config| config.max_open_notional_usd)
-            .is_none()
-        {
-            if let Some(max_open_notional_usd) =
-                raw_decimal(&self.raw, &["copy_trade", "max_open_notional_usd"])
-            {
-                effective.max_open_notional_usd = max_open_notional_usd;
-            }
-        }
-        if self
-            .copy_trade
-            .as_ref()
-            .and_then(|config| config.copy_size_fraction)
-            .is_none()
-        {
-            if let Some(copy_size_fraction) =
-                raw_decimal(&self.raw, &["copy_trade", "copy_size_fraction"])
-            {
-                effective.copy_size_fraction = copy_size_fraction;
-            }
-        }
-        if self
-            .copy_trade
-            .as_ref()
-            .and_then(|config| config.max_follow_lag_secs)
-            .is_none()
-        {
-            if let Some(max_follow_lag_secs) =
-                raw_i64(&self.raw, &["copy_trade", "max_follow_lag_secs"])
-            {
-                effective.max_follow_lag_secs = max_follow_lag_secs;
-            }
-        }
-        if self
-            .copy_trade
-            .as_ref()
-            .and_then(|config| config.max_price_slippage_bps)
-            .is_none()
-        {
-            if let Some(max_price_slippage_bps) =
-                raw_decimal(&self.raw, &["copy_trade", "max_price_slippage_bps"])
-            {
-                effective.max_price_slippage_bps = max_price_slippage_bps;
-            }
-        }
-        if self
-            .copy_trade
-            .as_ref()
-            .and_then(|config| config.min_book_depth_usd)
-            .is_none()
-        {
-            if let Some(min_book_depth_usd) =
-                raw_decimal(&self.raw, &["copy_trade", "min_book_depth_usd"])
-            {
-                effective.min_book_depth_usd = min_book_depth_usd;
-            }
-        }
-        if self
-            .copy_trade
-            .as_ref()
-            .and_then(|config| config.allow_sell_entries)
-            .is_none()
-        {
-            if let Some(allow_sell_entries) =
-                raw_bool(&self.raw, &["copy_trade", "allow_sell_entries"])
-            {
-                effective.allow_sell_entries = allow_sell_entries;
-            }
-        }
-        if let Some(backtest_horizon_secs) =
-            raw_i64(&self.raw, &["copy_trade", "backtest_horizon_secs"])
-        {
-            effective.backtest_horizon_secs = backtest_horizon_secs;
-        }
-        if let Some(taker_fee_rate) = raw_decimal(&self.raw, &["copy_trade", "taker_fee_rate"]) {
-            effective.taker_fee_rate = taker_fee_rate;
         }
         effective
-    }
-}
-
-fn raw_value<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
-    path.iter().try_fold(value, |current, key| current.get(key))
-}
-
-fn raw_bool(value: &serde_json::Value, path: &[&str]) -> Option<bool> {
-    raw_value(value, path).and_then(serde_json::Value::as_bool)
-}
-
-fn raw_string<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
-    raw_value(value, path).and_then(serde_json::Value::as_str)
-}
-
-fn raw_i32(value: &serde_json::Value, path: &[&str]) -> Option<i32> {
-    raw_value(value, path)
-        .and_then(serde_json::Value::as_i64)
-        .and_then(|value| value.try_into().ok())
-}
-
-fn raw_i64(value: &serde_json::Value, path: &[&str]) -> Option<i64> {
-    raw_value(value, path).and_then(serde_json::Value::as_i64)
-}
-
-fn raw_u32(value: &serde_json::Value, path: &[&str]) -> Option<u32> {
-    raw_value(value, path)
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|value| value.try_into().ok())
-}
-
-fn raw_usize(value: &serde_json::Value, path: &[&str]) -> Option<usize> {
-    raw_value(value, path)
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|value| value.try_into().ok())
-}
-
-fn raw_decimal(value: &serde_json::Value, path: &[&str]) -> Option<Decimal> {
-    match raw_value(value, path)? {
-        serde_json::Value::String(value) => value.parse().ok(),
-        serde_json::Value::Number(value) => value.to_string().parse().ok(),
-        _ => None,
     }
 }
 
@@ -1180,6 +853,10 @@ pub struct EffectiveCopyTradeProcessConfig {
     pub backtest_horizon_secs: i64,
     pub taker_fee_rate: Decimal,
     pub allow_sell_entries: bool,
+    pub mrs_enabled: bool,
+    pub mrs_enforce: bool,
+    pub min_mrs_score: Decimal,
+    pub mrs_percentile_floor: Decimal,
 }
 
 impl Default for EffectiveCopyTradeProcessConfig {
@@ -1202,6 +879,10 @@ impl Default for EffectiveCopyTradeProcessConfig {
             backtest_horizon_secs: 3600,
             taker_fee_rate: dec!(0.03),
             allow_sell_entries: false,
+            mrs_enabled: true,
+            mrs_enforce: false,
+            min_mrs_score: dec!(80),
+            mrs_percentile_floor: dec!(0.80),
         }
     }
 }
@@ -1242,6 +923,14 @@ pub struct CopyTradeProcessConfig {
     pub taker_fee_rate: Option<Decimal>,
     #[serde(default)]
     pub allow_sell_entries: Option<bool>,
+    #[serde(default)]
+    pub mrs_enabled: Option<bool>,
+    #[serde(default)]
+    pub mrs_enforce: Option<bool>,
+    #[serde(default)]
+    pub min_mrs_score: Option<Decimal>,
+    #[serde(default)]
+    pub mrs_percentile_floor: Option<Decimal>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

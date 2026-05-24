@@ -12,6 +12,7 @@ use crate::models::{
 
 pub const SCORE_VERSION: &str = "whale_score_v1";
 pub const PERFORMANCE_SCORE_VERSION: &str = "whale_performance_v1";
+pub const MRS_SCORE_VERSION: &str = "mrs_v1";
 
 #[derive(Debug, Clone, Default)]
 pub struct WalletScoreInput {
@@ -139,6 +140,160 @@ pub struct WalletPerformanceScore {
     pub rank_score: Decimal,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MrsScoreInput {
+    pub proxy_wallet: String,
+    pub realized_pnl_usd: Decimal,
+    pub total_bought_usd: Decimal,
+    pub roi: Decimal,
+    pub closed_positions: i32,
+    pub winning_positions: i32,
+    pub win_rate: Decimal,
+    pub observed_trade_count: i32,
+    pub observed_volume_usd: Decimal,
+    pub observed_market_count: i32,
+    pub avg_trade_size: Decimal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MrsScore {
+    pub proxy_wallet: String,
+    pub score: Decimal,
+    pub roi_score: Decimal,
+    pub pnl_score: Decimal,
+    pub win_rate_score: Decimal,
+    pub sample_score: Decimal,
+    pub activity_score: Decimal,
+    pub input: MrsScoreInput,
+}
+
+impl MrsScore {
+    pub fn into_wallet_score(self) -> WalletScore {
+        WalletScore {
+            proxy_wallet: self.proxy_wallet,
+            score_version: MRS_SCORE_VERSION.to_string(),
+            resolved_markets: self
+                .input
+                .observed_market_count
+                .max(self.input.closed_positions),
+            total_trades: self.input.observed_trade_count,
+            total_volume: self.input.observed_volume_usd,
+            realized_pnl: self.input.realized_pnl_usd,
+            roi: self.input.roi,
+            win_rate: self.input.win_rate,
+            avg_trade_size: self.input.avg_trade_size,
+            max_drawdown: Decimal::ZERO,
+            score: self.score,
+            metadata: serde_json::json!({
+                "score_basis": MRS_SCORE_VERSION,
+                "score_range": "0_to_100",
+                "components": {
+                    "roi_score": self.roi_score,
+                    "pnl_score": self.pnl_score,
+                    "win_rate_score": self.win_rate_score,
+                    "sample_score": self.sample_score,
+                    "activity_score": self.activity_score
+                },
+                "weights": {
+                    "roi": 0.30,
+                    "realized_pnl": 0.25,
+                    "win_rate": 0.20,
+                    "sample_size": 0.15,
+                    "activity": 0.10
+                },
+                "caps": {
+                    "roi": "0.50",
+                    "realized_pnl_usd": "2500",
+                    "closed_positions": 20,
+                    "observed_volume_usd": "50000"
+                },
+                "inputs": {
+                    "realized_pnl_usd": self.input.realized_pnl_usd,
+                    "total_bought_usd": self.input.total_bought_usd,
+                    "roi": self.input.roi,
+                    "closed_positions": self.input.closed_positions,
+                    "winning_positions": self.input.winning_positions,
+                    "win_rate": self.input.win_rate,
+                    "observed_trade_count": self.input.observed_trade_count,
+                    "observed_volume_usd": self.input.observed_volume_usd,
+                    "observed_market_count": self.input.observed_market_count,
+                    "avg_trade_size": self.input.avg_trade_size
+                }
+            }),
+        }
+    }
+}
+
+pub fn score_mrs(input: MrsScoreInput) -> MrsScore {
+    let positive_roi = input.roi.max(Decimal::ZERO);
+    let positive_pnl = input.realized_pnl_usd.max(Decimal::ZERO);
+    let roi_score = bounded(positive_roi / dec!(0.50), Decimal::ZERO, Decimal::ONE) * dec!(100);
+    let pnl_score = bounded(positive_pnl / dec!(2500), Decimal::ZERO, Decimal::ONE) * dec!(100);
+    let win_rate_score = bounded(input.win_rate, Decimal::ZERO, Decimal::ONE) * dec!(100);
+    let sample_score = bounded(
+        Decimal::from(input.closed_positions.max(0)) / dec!(20),
+        Decimal::ZERO,
+        Decimal::ONE,
+    ) * dec!(100);
+    let volume_component = bounded(
+        input.observed_volume_usd / dec!(50000),
+        Decimal::ZERO,
+        Decimal::ONE,
+    );
+    let trade_component = bounded(
+        Decimal::from(input.observed_trade_count.max(0)) / dec!(50),
+        Decimal::ZERO,
+        Decimal::ONE,
+    );
+    let market_component = bounded(
+        Decimal::from(input.observed_market_count.max(0)) / dec!(10),
+        Decimal::ZERO,
+        Decimal::ONE,
+    );
+    let activity_score = ((volume_component * dec!(0.50))
+        + (trade_component * dec!(0.30))
+        + (market_component * dec!(0.20)))
+        * dec!(100);
+    let score = bounded(
+        roi_score * dec!(0.30)
+            + pnl_score * dec!(0.25)
+            + win_rate_score * dec!(0.20)
+            + sample_score * dec!(0.15)
+            + activity_score * dec!(0.10),
+        Decimal::ZERO,
+        dec!(100),
+    )
+    .round_dp(4);
+    MrsScore {
+        proxy_wallet: input.proxy_wallet.clone(),
+        score,
+        roi_score: roi_score.round_dp(4),
+        pnl_score: pnl_score.round_dp(4),
+        win_rate_score: win_rate_score.round_dp(4),
+        sample_score: sample_score.round_dp(4),
+        activity_score: activity_score.round_dp(4),
+        input,
+    }
+}
+
+impl From<&WalletPerformanceScore> for MrsScoreInput {
+    fn from(score: &WalletPerformanceScore) -> Self {
+        Self {
+            proxy_wallet: score.proxy_wallet.clone(),
+            realized_pnl_usd: score.realized_pnl_usd,
+            total_bought_usd: score.total_bought_usd,
+            roi: score.roi,
+            closed_positions: score.closed_positions,
+            winning_positions: score.winning_positions,
+            win_rate: score.win_rate,
+            observed_trade_count: 0,
+            observed_volume_usd: score.total_bought_usd,
+            observed_market_count: score.closed_positions,
+            avg_trade_size: Decimal::ZERO,
+        }
+    }
+}
+
 impl WalletPerformanceScore {
     pub fn into_wallet_performance(
         self,
@@ -186,6 +341,10 @@ impl WalletPerformanceScore {
                 "rank_score": self.rank_score
             }),
         }
+    }
+
+    pub fn into_mrs_wallet_score(self) -> WalletScore {
+        score_mrs(MrsScoreInput::from(&self)).into_wallet_score()
     }
 }
 
@@ -518,5 +677,38 @@ mod tests {
         assert_eq!(scores[0].score_version, PERFORMANCE_SCORE_VERSION);
         assert_eq!(scores[0].score, dec!(25.0));
         assert_eq!(scores[1].score, dec!(4.0));
+    }
+
+    #[test]
+    fn mrs_rewards_profitable_consistent_wallets() {
+        let high = score_mrs(MrsScoreInput {
+            proxy_wallet: "0xhigh".to_string(),
+            realized_pnl_usd: dec!(2500),
+            total_bought_usd: dec!(10000),
+            roi: dec!(0.35),
+            closed_positions: 20,
+            winning_positions: 15,
+            win_rate: dec!(0.75),
+            observed_trade_count: 60,
+            observed_volume_usd: dec!(60000),
+            observed_market_count: 12,
+            avg_trade_size: dec!(1000),
+        });
+        let low = score_mrs(MrsScoreInput {
+            proxy_wallet: "0xlow".to_string(),
+            realized_pnl_usd: dec!(-100),
+            total_bought_usd: dec!(5000),
+            roi: dec!(-0.02),
+            closed_positions: 3,
+            winning_positions: 1,
+            win_rate: dec!(0.3333),
+            observed_trade_count: 5,
+            observed_volume_usd: dec!(1000),
+            observed_market_count: 1,
+            avg_trade_size: dec!(200),
+        });
+
+        assert!(high.score > dec!(80));
+        assert!(low.score < dec!(30));
     }
 }

@@ -40,6 +40,10 @@ pub struct CopyTradeConfig {
     pub backtest_horizon_secs: i64,
     pub taker_fee_rate: Decimal,
     pub allow_sell_entries: bool,
+    pub mrs_enabled: bool,
+    pub mrs_enforce: bool,
+    pub min_mrs_score: Decimal,
+    pub mrs_percentile_floor: Decimal,
 }
 
 impl Default for CopyTradeConfig {
@@ -62,6 +66,10 @@ impl Default for CopyTradeConfig {
             backtest_horizon_secs: 3600,
             taker_fee_rate: dec!(0.03),
             allow_sell_entries: false,
+            mrs_enabled: true,
+            mrs_enforce: false,
+            min_mrs_score: dec!(80),
+            mrs_percentile_floor: dec!(0.80),
         }
     }
 }
@@ -110,6 +118,10 @@ impl From<&EffectiveCopyTradeProcessConfig> for CopyTradeConfig {
             backtest_horizon_secs: config.backtest_horizon_secs,
             taker_fee_rate: config.taker_fee_rate,
             allow_sell_entries: config.allow_sell_entries,
+            mrs_enabled: config.mrs_enabled,
+            mrs_enforce: config.mrs_enforce,
+            min_mrs_score: config.min_mrs_score,
+            mrs_percentile_floor: config.mrs_percentile_floor,
         }
     }
 }
@@ -121,6 +133,14 @@ pub struct CopyTradeWalletPerformance {
     pub roi: Decimal,
     pub closed_positions: i32,
     pub wallet_score_diagnostic: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopyTradeMrsScore {
+    pub score: Decimal,
+    pub score_version: String,
+    pub percentile: Option<Decimal>,
+    pub metadata: serde_json::Value,
 }
 
 impl CopyTradeWalletPerformance {
@@ -185,6 +205,7 @@ pub struct CopyTradeBacktestSummary {
 pub fn evaluate_copy_trade(
     trade: &WhaleTrade,
     performance: Option<&CopyTradeWalletPerformance>,
+    mrs_score: Option<&CopyTradeMrsScore>,
     observed: ObservedMarket,
     config: &CopyTradeConfig,
     process_id: Option<Uuid>,
@@ -215,6 +236,15 @@ pub fn evaluate_copy_trade(
         reject_reason = Some("unsupported_trade_side");
     } else if side == "SELL" && !config.allow_sell_entries {
         reject_reason = Some("sell_entries_disabled");
+    } else if config.mrs_enabled && config.mrs_enforce && mrs_score.is_none() {
+        reject_reason = Some("missing_mrs_score");
+    } else if config.mrs_enabled
+        && config.mrs_enforce
+        && mrs_score
+            .map(|score| score.score < config.min_mrs_score)
+            .unwrap_or(true)
+    {
+        reject_reason = Some("mrs_score_below_threshold");
     } else if performance.is_none() {
         reject_reason = Some("missing_wallet_performance");
     } else if performance
@@ -254,6 +284,19 @@ pub fn evaluate_copy_trade(
         "wallet_roi": performance.map(|performance| performance.roi),
         "wallet_closed_positions": performance.map(|performance| performance.closed_positions),
         "wallet_score_diagnostic": performance.and_then(|performance| performance.wallet_score_diagnostic),
+        "mrs": {
+            "enabled": config.mrs_enabled,
+            "enforced": config.mrs_enforce,
+            "min_score": config.min_mrs_score,
+            "percentile_floor": config.mrs_percentile_floor,
+            "score": mrs_score.map(|score| score.score),
+            "score_version": mrs_score.map(|score| score.score_version.as_str()),
+            "percentile": mrs_score.and_then(|score| score.percentile),
+            "passed": mrs_score
+                .map(|score| score.score >= config.min_mrs_score)
+                .unwrap_or(false),
+            "metadata": mrs_score.map(|score| score.metadata.clone())
+        },
         "lag_secs": lag_secs,
         "slippage_bps": slippage_bps,
         "available_depth_usd": observed.available_depth_usd,
@@ -435,6 +478,7 @@ fn backtest_at_threshold(
         let decision = evaluate_copy_trade(
             trade,
             Some(performance),
+            None,
             ObservedMarket {
                 observed_price: trade.price,
                 available_depth_usd: trade.cash_value,
@@ -633,7 +677,7 @@ mod tests {
     use crate::{
         copytrade::{
             clob_tick_price, evaluate_copy_trade, run_copy_trade_backtest, CopyTradeConfig,
-            CopyTradeWalletPerformance, ObservedMarket,
+            CopyTradeMrsScore, CopyTradeWalletPerformance, ObservedMarket,
         },
         models::{OrderSide, WalletScore, WhaleTrade},
     };
@@ -701,6 +745,7 @@ mod tests {
         let decision = evaluate_copy_trade(
             &trade,
             Some(&wallet_performance),
+            None,
             ObservedMarket {
                 observed_price: dec!(0.505),
                 available_depth_usd: dec!(1000),
@@ -724,6 +769,7 @@ mod tests {
         let decision = evaluate_copy_trade(
             &trade,
             Some(&wallet_performance),
+            None,
             ObservedMarket {
                 observed_price: dec!(0.37),
                 available_depth_usd: dec!(1000),
@@ -751,6 +797,7 @@ mod tests {
         let decision = evaluate_copy_trade(
             &trade,
             Some(&wallet_performance),
+            None,
             ObservedMarket {
                 observed_price: dec!(0.15),
                 available_depth_usd: dec!(1000),
@@ -781,6 +828,7 @@ mod tests {
         let decision = evaluate_copy_trade(
             &trade,
             Some(&wallet_performance),
+            None,
             ObservedMarket {
                 observed_price: dec!(0.50),
                 available_depth_usd: dec!(1000),
@@ -797,6 +845,7 @@ mod tests {
 
         let missing = evaluate_copy_trade(
             &trade,
+            None,
             None,
             ObservedMarket {
                 observed_price: dec!(0.50),
@@ -820,6 +869,7 @@ mod tests {
         let low_roi = evaluate_copy_trade(
             &trade,
             Some(&performance("0xabc", dec!(1000), dec!(0.01), 10)),
+            None,
             ObservedMarket {
                 observed_price: dec!(0.50),
                 available_depth_usd: dec!(1000),
@@ -836,6 +886,7 @@ mod tests {
         let low_closed_positions = evaluate_copy_trade(
             &trade,
             Some(&performance("0xabc", dec!(1000), dec!(0.10), 1)),
+            None,
             ObservedMarket {
                 observed_price: dec!(0.50),
                 available_depth_usd: dec!(1000),
@@ -851,6 +902,73 @@ mod tests {
                 .as_deref(),
             Some("closed_positions_below_threshold")
         );
+    }
+
+    #[test]
+    fn mrs_gate_rejects_only_when_enforced() {
+        let mut config = CopyTradeConfig::default();
+        config.mrs_enforce = true;
+        config.min_mrs_score = dec!(80);
+        let trade = trade("0xabc", "token", dec!(0.50), 0);
+        let wallet_performance = performance("0xabc", dec!(1000), dec!(0.10), 10);
+        let low_mrs = CopyTradeMrsScore {
+            score: dec!(79.9999),
+            score_version: "mrs_v1".to_string(),
+            percentile: Some(dec!(0.79)),
+            metadata: serde_json::json!({}),
+        };
+        let high_mrs = CopyTradeMrsScore {
+            score: dec!(80),
+            score_version: "mrs_v1".to_string(),
+            percentile: Some(dec!(0.80)),
+            metadata: serde_json::json!({}),
+        };
+
+        let low = evaluate_copy_trade(
+            &trade,
+            Some(&wallet_performance),
+            Some(&low_mrs),
+            ObservedMarket {
+                observed_price: dec!(0.50),
+                available_depth_usd: dec!(1000),
+                observed_at: trade.timestamp_utc,
+            },
+            &config,
+            None,
+        );
+        assert_eq!(
+            low.signal_candidate.reject_reason.as_deref(),
+            Some("mrs_score_below_threshold")
+        );
+
+        let high = evaluate_copy_trade(
+            &trade,
+            Some(&wallet_performance),
+            Some(&high_mrs),
+            ObservedMarket {
+                observed_price: dec!(0.50),
+                available_depth_usd: dec!(1000),
+                observed_at: trade.timestamp_utc,
+            },
+            &config,
+            None,
+        );
+        assert_eq!(high.copy_signal.status, "detected");
+
+        config.mrs_enforce = false;
+        let observe_only = evaluate_copy_trade(
+            &trade,
+            Some(&wallet_performance),
+            Some(&low_mrs),
+            ObservedMarket {
+                observed_price: dec!(0.50),
+                available_depth_usd: dec!(1000),
+                observed_at: trade.timestamp_utc,
+            },
+            &config,
+            None,
+        );
+        assert_eq!(observe_only.copy_signal.status, "detected");
     }
 
     #[test]
