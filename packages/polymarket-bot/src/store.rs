@@ -4508,15 +4508,14 @@ impl Store {
         sqlx::query(
             r#"
             INSERT INTO polymarket.copy_trade_signals (
-              signal_id, process_id, timestamp_utc, proxy_wallet, wallet_score, source_trade_id,
+              signal_id, process_id, timestamp_utc, proxy_wallet, source_trade_id,
               market_id, token_id, side, whale_price, observed_price,
               copy_size_usd, reason, status, metadata
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
             ON CONFLICT (signal_id, timestamp_utc) DO UPDATE SET
               process_id = EXCLUDED.process_id,
               proxy_wallet = EXCLUDED.proxy_wallet,
-              wallet_score = EXCLUDED.wallet_score,
               source_trade_id = EXCLUDED.source_trade_id,
               market_id = EXCLUDED.market_id,
               token_id = EXCLUDED.token_id,
@@ -4533,7 +4532,6 @@ impl Store {
         .bind(signal.process_id)
         .bind(signal.timestamp_utc)
         .bind(&signal.proxy_wallet)
-        .bind(signal.wallet_score)
         .bind(signal.source_trade_id)
         .bind(&signal.market_id)
         .bind(&signal.token_id)

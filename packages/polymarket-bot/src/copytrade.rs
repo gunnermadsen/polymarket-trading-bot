@@ -279,6 +279,7 @@ pub fn evaluate_copy_trade(
     let status = if detected { "detected" } else { "rejected" }.to_string();
     let metadata = serde_json::json!({
         "trade_cash_value": trade.cash_value,
+        "wallet_score_basis": if config.mrs_enabled { "mrs_v1" } else { "wallet_rank_score" },
         "wallet_rank_score": rank_score,
         "wallet_realized_pnl_usd": performance.map(|performance| performance.realized_pnl_usd),
         "wallet_roi": performance.map(|performance| performance.roi),
@@ -309,7 +310,6 @@ pub fn evaluate_copy_trade(
         process_id,
         timestamp_utc: trade.timestamp_utc,
         proxy_wallet: trade.proxy_wallet.clone(),
-        wallet_score: rank_score,
         source_trade_id: trade.trade_id,
         market_id: market_id.clone(),
         token_id: token_id.clone(),
@@ -954,6 +954,22 @@ mod tests {
             None,
         );
         assert_eq!(high.copy_signal.status, "detected");
+        assert_eq!(
+            high.copy_signal.metadata["mrs"]["score"],
+            serde_json::to_value(high_mrs.score).unwrap()
+        );
+        assert_eq!(
+            high.copy_signal.metadata["wallet_score_basis"],
+            serde_json::json!("mrs_v1")
+        );
+        assert_eq!(
+            high.copy_signal.metadata["wallet_rank_score"],
+            serde_json::to_value(wallet_performance.rank_score()).unwrap()
+        );
+        assert_ne!(
+            high.copy_signal.metadata["mrs"]["score"],
+            high.copy_signal.metadata["wallet_rank_score"]
+        );
 
         config.mrs_enforce = false;
         let observe_only = evaluate_copy_trade(
