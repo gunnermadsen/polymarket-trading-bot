@@ -3558,7 +3558,11 @@ impl Store {
         Ok(result.rows_affected())
     }
 
-    pub async fn trade_pnl_summary(&self) -> Result<serde_json::Value> {
+    pub async fn trade_pnl_summary(
+        &self,
+        mark_fresh_max_age: chrono::Duration,
+    ) -> Result<serde_json::Value> {
+        let mark_fresh_max_age_ms = mark_fresh_max_age.num_milliseconds().max(0);
         let value = sqlx::query_scalar::<_, serde_json::Value>(
             r#"
             WITH position_stats AS (
@@ -3586,6 +3590,78 @@ impl Store {
                 count(*) FILTER (WHERE status IN ('closed', 'resolved') AND realized_pnl > 0) AS winning_closed_positions,
                 count(*) FILTER (WHERE status IN ('closed', 'resolved') AND realized_pnl < 0) AS losing_closed_positions
               FROM polymarket.trade_positions
+            ),
+            open_positions AS MATERIALIZED (
+              SELECT
+                p.position_id,
+                p.process_id,
+                p.token_id,
+                p.entry_notional,
+                p.unrealized_pnl,
+                p.latest_mark_timestamp,
+                EXISTS (
+                  SELECT 1
+                  FROM polymarket.trade_mark_source_failures f
+                  WHERE f.process_id IS NOT DISTINCT FROM p.process_id
+                    AND f.token_id = p.token_id
+                    AND f.failure_source = 'mark_orderbook_refresh'
+                    AND f.resolved_at IS NULL
+                  LIMIT 1
+                ) AS has_unresolved_mark_failure
+              FROM polymarket.trade_positions p
+              WHERE p.status IN ('open', 'partially_closed')
+                AND p.open_size > 0
+            ),
+            mark_position_states AS (
+              SELECT
+                *,
+                CASE
+                  WHEN has_unresolved_mark_failure THEN 'unavailable'
+                  WHEN latest_mark_timestamp IS NULL THEN 'missing'
+                  WHEN latest_mark_timestamp < now() - ($1::bigint * interval '1 millisecond') THEN 'stale'
+                  ELSE 'fresh'
+                END AS mark_state,
+                CASE
+                  WHEN latest_mark_timestamp IS NULL THEN NULL
+                  ELSE GREATEST(0, floor(extract(epoch from (now() - latest_mark_timestamp))))::bigint
+                END AS mark_age_secs
+              FROM open_positions
+            ),
+            mark_totals AS (
+              SELECT
+                count(*) AS open_positions,
+                count(*) FILTER (WHERE mark_state = 'fresh') AS fresh_mark_positions,
+                count(*) FILTER (WHERE mark_state = 'stale') AS stale_mark_positions,
+                count(*) FILTER (WHERE mark_state = 'missing') AS missing_mark_positions,
+                count(*) FILTER (WHERE mark_state = 'unavailable') AS unavailable_mark_positions,
+                max(mark_age_secs) AS oldest_mark_age_secs,
+                COALESCE(sum(entry_notional) FILTER (WHERE mark_state <> 'fresh'), 0) AS degraded_notional,
+                COALESCE(sum(unrealized_pnl) FILTER (WHERE mark_state <> 'fresh'), 0) AS degraded_unrealized_pnl
+              FROM mark_position_states
+            ),
+            mark_failures AS (
+              SELECT
+                count(*) AS unresolved_mark_failures,
+                COALESCE(sum(failure_count), 0) AS unresolved_mark_failure_events,
+                max(last_failed_at) AS last_mark_failure_at
+              FROM polymarket.trade_mark_source_failures
+              WHERE failure_source = 'mark_orderbook_refresh'
+                AND resolved_at IS NULL
+                AND EXISTS (
+                  SELECT 1
+                  FROM open_positions p
+                  WHERE p.process_id IS NOT DISTINCT FROM polymarket.trade_mark_source_failures.process_id
+                    AND p.token_id = polymarket.trade_mark_source_failures.token_id
+                )
+            ),
+            mark_state_counts AS (
+              SELECT
+                mark_state,
+                count(*) AS positions,
+                COALESCE(sum(entry_notional), 0) AS notional,
+                COALESCE(sum(unrealized_pnl), 0) AS unrealized_pnl
+              FROM mark_position_states
+              GROUP BY mark_state
             )
             SELECT jsonb_build_object(
               'positions', total_stats.positions,
@@ -3624,11 +3700,46 @@ impl Store {
                 )
                 FROM position_stats
               ), '{}'::jsonb),
+              'mark_readiness', jsonb_build_object(
+                'status', CASE
+                  WHEN mark_totals.open_positions = 0 THEN 'reliable'
+                  WHEN mark_totals.fresh_mark_positions = mark_totals.open_positions THEN 'reliable'
+                  WHEN mark_totals.fresh_mark_positions = 0 THEN 'unavailable'
+                  ELSE 'degraded'
+                END,
+                'max_fresh_age_secs', ($1::bigint / 1000),
+                'open_positions', mark_totals.open_positions,
+                'fresh_mark_positions', mark_totals.fresh_mark_positions,
+                'stale_mark_positions', mark_totals.stale_mark_positions,
+                'missing_mark_positions', mark_totals.missing_mark_positions,
+                'unavailable_mark_positions', mark_totals.unavailable_mark_positions,
+                'oldest_mark_age_secs', mark_totals.oldest_mark_age_secs,
+                'degraded_notional', mark_totals.degraded_notional,
+                'degraded_unrealized_pnl', mark_totals.degraded_unrealized_pnl,
+                'unresolved_mark_failures', mark_failures.unresolved_mark_failures,
+                'unresolved_mark_failure_events', mark_failures.unresolved_mark_failure_events,
+                'last_mark_failure_at', mark_failures.last_mark_failure_at,
+                'states', COALESCE((
+                  SELECT jsonb_object_agg(
+                    mark_state,
+                    jsonb_build_object(
+                      'positions', positions,
+                      'notional', notional,
+                      'unrealized_pnl', unrealized_pnl
+                    )
+                    ORDER BY mark_state
+                  )
+                  FROM mark_state_counts
+                ), '{}'::jsonb)
+              ),
               'updated_at', now()
             )
             FROM total_stats
+            CROSS JOIN mark_totals
+            CROSS JOIN mark_failures
             "#,
         )
+        .bind(mark_fresh_max_age_ms)
         .fetch_one(&self.pool)
         .await
         .context("failed to fetch trade PnL summary")?;
@@ -3679,6 +3790,17 @@ impl Store {
         process_id: Option<Uuid>,
         limit: i64,
     ) -> Result<serde_json::Value> {
+        self.trade_pnl_mark_health_with_freshness(process_id, limit, chrono::Duration::minutes(5))
+            .await
+    }
+
+    pub async fn trade_pnl_mark_health_with_freshness(
+        &self,
+        process_id: Option<Uuid>,
+        limit: i64,
+        mark_fresh_max_age: chrono::Duration,
+    ) -> Result<serde_json::Value> {
+        let mark_fresh_max_age_ms = mark_fresh_max_age.num_milliseconds().max(0);
         let value = sqlx::query_scalar::<_, serde_json::Value>(
             r#"
             WITH open_positions AS MATERIALIZED (
@@ -3711,10 +3833,8 @@ impl Store {
               SELECT
                 CASE
                   WHEN latest_mark_timestamp IS NULL THEN 'unmarked'
-                  WHEN now() - latest_mark_timestamp < interval '15 minutes' THEN 'fresh_<15m'
-                  WHEN now() - latest_mark_timestamp < interval '30 minutes' THEN 'stale_15-30m'
-                  WHEN now() - latest_mark_timestamp < interval '1 hour' THEN 'stale_30-60m'
-                  ELSE 'stale_>1h'
+                  WHEN latest_mark_timestamp >= now() - ($2::bigint * interval '1 millisecond') THEN 'fresh'
+                  ELSE 'stale'
                 END AS bucket,
                 count(*) AS positions,
                 COALESCE(sum(entry_notional), 0) AS notional
@@ -3733,7 +3853,7 @@ impl Store {
                   SELECT 1
                   FROM polymarket.orderbook_snapshots o
                   WHERE o.token_id = p.token_id
-                    AND o.timestamp_utc >= greatest(now() - interval '15 minutes', p.entry_timestamp)
+                    AND o.timestamp_utc >= greatest(now() - ($2::bigint * interval '1 millisecond'), p.entry_timestamp)
                     AND (o.best_bid IS NOT NULL OR o.best_ask IS NOT NULL)
                   LIMIT 1
                 ) AS has_usable_orderbook,
@@ -3793,10 +3913,11 @@ impl Store {
                 LIMIT 1
               ) f ON true
               ORDER BY u.entry_timestamp ASC
-              LIMIT $2
+              LIMIT $3
             )
             SELECT jsonb_build_object(
               'process_id', $1::uuid,
+              'max_fresh_age_secs', ($2::bigint / 1000),
               'coverage', COALESCE((SELECT jsonb_agg(to_jsonb(coverage) ORDER BY state) FROM coverage), '[]'::jsonb),
               'coverage_by_process', COALESCE((SELECT jsonb_agg(to_jsonb(coverage_by_process) ORDER BY process_id, state) FROM coverage_by_process), '[]'::jsonb),
               'stale', COALESCE((SELECT jsonb_agg(to_jsonb(stale) ORDER BY bucket) FROM stale), '[]'::jsonb),
@@ -3808,6 +3929,7 @@ impl Store {
             "#,
         )
         .bind(process_id)
+        .bind(mark_fresh_max_age_ms)
         .bind(limit)
         .fetch_one(&self.pool)
         .await

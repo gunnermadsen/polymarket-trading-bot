@@ -21,6 +21,7 @@ pub struct TradePnlConfig {
     pub mark_refresh_concurrency: usize,
     pub max_orderbook_mark_age: Duration,
     pub mark_failure_backoff: Duration,
+    pub mark_fresh_max_age: Duration,
     pub mark_refresh_retry_attempts: usize,
     pub mark_refresh_retry_delay: StdDuration,
 }
@@ -33,6 +34,7 @@ impl Default for TradePnlConfig {
             mark_refresh_concurrency: 8,
             max_orderbook_mark_age: Duration::minutes(15),
             mark_failure_backoff: Duration::minutes(5),
+            mark_fresh_max_age: Duration::minutes(5),
             mark_refresh_retry_attempts: 2,
             mark_refresh_retry_delay: StdDuration::from_millis(250),
         }

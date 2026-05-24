@@ -463,7 +463,7 @@ impl ControlApi for RuntimeControl {
     async fn trade_pnl_summary(&self) -> Result<serde_json::Value, HttpError> {
         let summary = self
             .store
-            .trade_pnl_summary()
+            .trade_pnl_summary(self.trade_pnl_config.mark_fresh_max_age)
             .await
             .map_err(|error| HttpError::internal(error.to_string()))?;
         Ok(summary)
@@ -494,9 +494,10 @@ impl ControlApi for RuntimeControl {
         request: control_http::TradePnlListRequest,
     ) -> Result<serde_json::Value, HttpError> {
         self.store
-            .trade_pnl_mark_health(
+            .trade_pnl_mark_health_with_freshness(
                 request.process_id,
                 request.limit.unwrap_or(50).clamp(1, 500),
+                self.trade_pnl_config.mark_fresh_max_age,
             )
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
@@ -976,6 +977,8 @@ async fn main() -> Result<()> {
     let trade_pnl_config = TradePnlConfig {
         exit_candidate_max_age: chrono::Duration::from_std(config.whale.exit_candidate_max_age)
             .unwrap_or_else(|_| chrono::Duration::seconds(900)),
+        mark_fresh_max_age: chrono::Duration::from_std(config.whale.mark_fresh_max_age)
+            .unwrap_or_else(|_| chrono::Duration::seconds(300)),
         ..TradePnlConfig::default()
     };
 
