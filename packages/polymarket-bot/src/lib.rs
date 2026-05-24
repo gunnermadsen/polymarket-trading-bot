@@ -14,6 +14,7 @@ pub mod models;
 pub mod orderbook;
 pub mod risk;
 pub mod scanner;
+pub mod segments;
 pub mod store;
 pub mod trade_pnl;
 pub mod wallet;

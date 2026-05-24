@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -13,12 +15,13 @@ use crate::{
     execution::OrderPlanReport,
     models::{
         BackfillJob, BackfillJobStatus, ConversionRequest, ConversionResult,
-        CopyTradeBacktestResult, CopyTradeBacktestRun, CopyTradeSignal, FillRecord, Market,
-        OrderRecord, OrderRequest, OrderState, OutcomeToken, SignalCandidate, TradingProcess,
-        TradingProcessConfig, WalletPerformance, WalletScore, WalletScoreCalibrationSnapshot,
-        WhalePollCheckpoint, WhaleTrade,
+        CopyTradeBacktestResult, CopyTradeBacktestRun, CopyTradeSignal, DataApiClosedPosition,
+        FillRecord, Market, OrderRecord, OrderRequest, OrderState, OutcomeToken, SignalCandidate,
+        TradingProcess, TradingProcessConfig, WalletPerformance, WalletScore,
+        WalletScoreCalibrationSnapshot, WalletSegmentPerformance, WhalePollCheckpoint, WhaleTrade,
     },
     orderbook::LocalOrderBook,
+    segments::{score_wallet_segments_from_samples, MRS_SEGMENT_SCORE_VERSION},
     wallets::{score_mrs, MrsScoreInput, MRS_SCORE_VERSION},
 };
 
@@ -4317,6 +4320,70 @@ impl Store {
         Ok(rows)
     }
 
+    pub async fn fetch_wallet_observed_trades(
+        &self,
+        proxy_wallet: &str,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<WhaleTrade>> {
+        let rows = sqlx::query_as::<_, WhaleTradeRow>(
+            r#"
+            SELECT trade_id, proxy_wallet, asset, condition_id, market_id, side, outcome,
+              price, size, cash_value, timestamp_utc, title, slug, event_slug,
+              transaction_hash, raw_payload
+            FROM polymarket.wallet_trades
+            WHERE lower(proxy_wallet) = lower($1)
+              AND timestamp_utc >= $2
+            ORDER BY timestamp_utc DESC
+            "#,
+        )
+        .bind(proxy_wallet)
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch wallet observed trades")?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    async fn fetch_wallet_observed_trades_for_wallets(
+        &self,
+        proxy_wallets: &[String],
+        since: DateTime<Utc>,
+    ) -> Result<HashMap<String, Vec<WhaleTrade>>> {
+        if proxy_wallets.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let wallet_keys = proxy_wallets
+            .iter()
+            .map(|wallet| wallet.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        let rows = sqlx::query_as::<_, WhaleTradeRow>(
+            r#"
+            SELECT trade_id, proxy_wallet, asset, condition_id, market_id, side, outcome,
+              price, size, cash_value, timestamp_utc, title, slug, event_slug,
+              transaction_hash, raw_payload
+            FROM polymarket.wallet_trades
+            WHERE lower(proxy_wallet) = ANY($1)
+              AND timestamp_utc >= $2
+            ORDER BY proxy_wallet, timestamp_utc DESC
+            "#,
+        )
+        .bind(&wallet_keys)
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch observed trades for wallet segment recompute batch")?;
+
+        let mut by_wallet = HashMap::<String, Vec<WhaleTrade>>::new();
+        for row in rows {
+            let trade: WhaleTrade = row.into();
+            by_wallet
+                .entry(trade.proxy_wallet.to_ascii_lowercase())
+                .or_default()
+                .push(trade);
+        }
+        Ok(by_wallet)
+    }
+
     pub async fn fetch_wallet_observed_trade_stats(
         &self,
         proxy_wallet: &str,
@@ -4445,6 +4512,210 @@ impl Store {
             updated = updated.saturating_add(1);
         }
         Ok(updated)
+    }
+
+    pub async fn recompute_wallet_segment_scores_from_existing(
+        &self,
+        since: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<u64> {
+        let mut updated = 0u64;
+        let requested = limit.max(1);
+        let batch_size = 50i64;
+        let mut offset = 0i64;
+        while offset < requested {
+            let rows = sqlx::query_as::<_, WalletPerformanceRow>(
+                r#"
+                SELECT proxy_wallet, sample_updated_at, realized_pnl_usd, total_bought_usd,
+                  roi, closed_positions, winning_positions, win_rate, rank_score,
+                  raw_payload, metadata
+                FROM polymarket.wallet_performance
+                ORDER BY rank_score DESC, realized_pnl_usd DESC, roi DESC, proxy_wallet
+                LIMIT $1 OFFSET $2
+                "#,
+            )
+            .bind(batch_size.min(requested - offset))
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to fetch wallet performance rows for segment recompute")?;
+            if rows.is_empty() {
+                break;
+            }
+
+            let wallet_keys = rows
+                .iter()
+                .map(|row| row.proxy_wallet.clone())
+                .collect::<Vec<_>>();
+            let observed_trades_by_wallet = self
+                .fetch_wallet_observed_trades_for_wallets(&wallet_keys, since)
+                .await?;
+            for row in rows {
+                let positions = closed_positions_from_raw_payload(&row.raw_payload)?;
+                let observed_trades = observed_trades_by_wallet
+                    .get(&row.proxy_wallet.to_ascii_lowercase())
+                    .cloned()
+                    .unwrap_or_default();
+                for mut performance in score_wallet_segments_from_samples(
+                    &row.proxy_wallet,
+                    &positions,
+                    observed_trades.as_slice(),
+                ) {
+                    performance.metadata = merge_json(
+                        performance.metadata,
+                        serde_json::json!({
+                            "source": "existing_wallet_performance_segment_recompute",
+                            "sample_updated_at": row.sample_updated_at,
+                            "wallet_performance": {
+                                "closed_positions": row.closed_positions,
+                                "winning_positions": row.winning_positions,
+                                "realized_pnl_usd": row.realized_pnl_usd,
+                                "roi": row.roi,
+                                "win_rate": row.win_rate
+                            }
+                        }),
+                    );
+                    self.upsert_wallet_segment_performance(&performance).await?;
+                    updated = updated.saturating_add(1);
+                }
+            }
+            offset += batch_size;
+        }
+        Ok(updated)
+    }
+
+    pub async fn upsert_wallet_segment_performance(
+        &self,
+        performance: &WalletSegmentPerformance,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO polymarket.wallet_segment_performance (
+              proxy_wallet, segment_key, score_version, classifier_version, score, confidence,
+              closed_positions, winning_positions, losing_positions, win_rate,
+              realized_pnl_usd, total_bought_usd, roi, observed_trade_count,
+              observed_volume_usd, sample_start, sample_end, metadata, updated_at
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,now())
+            ON CONFLICT (proxy_wallet, segment_key, score_version) DO UPDATE SET
+              classifier_version = EXCLUDED.classifier_version,
+              score = EXCLUDED.score,
+              confidence = EXCLUDED.confidence,
+              closed_positions = EXCLUDED.closed_positions,
+              winning_positions = EXCLUDED.winning_positions,
+              losing_positions = EXCLUDED.losing_positions,
+              win_rate = EXCLUDED.win_rate,
+              realized_pnl_usd = EXCLUDED.realized_pnl_usd,
+              total_bought_usd = EXCLUDED.total_bought_usd,
+              roi = EXCLUDED.roi,
+              observed_trade_count = EXCLUDED.observed_trade_count,
+              observed_volume_usd = EXCLUDED.observed_volume_usd,
+              sample_start = EXCLUDED.sample_start,
+              sample_end = EXCLUDED.sample_end,
+              metadata = EXCLUDED.metadata,
+              updated_at = now()
+            "#,
+        )
+        .bind(&performance.proxy_wallet)
+        .bind(&performance.segment_key)
+        .bind(&performance.score_version)
+        .bind(&performance.classifier_version)
+        .bind(performance.score)
+        .bind(performance.confidence)
+        .bind(performance.closed_positions)
+        .bind(performance.winning_positions)
+        .bind(performance.losing_positions)
+        .bind(performance.win_rate)
+        .bind(performance.realized_pnl_usd)
+        .bind(performance.total_bought_usd)
+        .bind(performance.roi)
+        .bind(performance.observed_trade_count)
+        .bind(performance.observed_volume_usd)
+        .bind(performance.sample_start)
+        .bind(performance.sample_end)
+        .bind(&performance.metadata)
+        .execute(&self.pool)
+        .await
+        .context("failed to upsert wallet segment performance")?;
+        Ok(())
+    }
+
+    pub async fn fetch_wallet_segment_performance(
+        &self,
+        proxy_wallet: &str,
+        segment_key: &str,
+        score_version: &str,
+    ) -> Result<Option<WalletSegmentPerformance>> {
+        let row = sqlx::query_as::<_, WalletSegmentPerformanceRow>(
+            r#"
+            SELECT proxy_wallet, segment_key, score_version, classifier_version, score, confidence,
+              closed_positions, winning_positions, losing_positions, win_rate,
+              realized_pnl_usd, total_bought_usd, roi, observed_trade_count,
+              observed_volume_usd, sample_start, sample_end, metadata
+            FROM polymarket.wallet_segment_performance
+            WHERE proxy_wallet = $1
+              AND segment_key = $2
+              AND score_version = $3
+            LIMIT 1
+            "#,
+        )
+        .bind(proxy_wallet)
+        .bind(segment_key)
+        .bind(score_version)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to fetch wallet segment performance")?;
+        Ok(row.map(Into::into))
+    }
+
+    pub async fn wallet_segment_summary(&self, limit: i64) -> Result<serde_json::Value> {
+        let value = sqlx::query_scalar::<_, serde_json::Value>(
+            r#"
+            WITH by_segment AS (
+              SELECT
+                segment_key,
+                count(*)::integer AS wallets_scored,
+                count(*) FILTER (WHERE closed_positions > 0)::integer AS wallets_with_closed_positions,
+                COALESCE(avg(score), 0) AS avg_score,
+                COALESCE(avg(win_rate), 0) AS avg_win_rate,
+                COALESCE(avg(roi), 0) AS avg_roi,
+                COALESCE(sum(observed_trade_count), 0)::integer AS observed_trade_count,
+                COALESCE(sum(observed_volume_usd), 0) AS observed_volume_usd
+              FROM polymarket.wallet_segment_performance
+              WHERE score_version = $1
+              GROUP BY segment_key
+            ),
+            top_wallets AS (
+              SELECT
+                proxy_wallet,
+                segment_key,
+                score,
+                confidence,
+                closed_positions,
+                win_rate,
+                roi,
+                realized_pnl_usd,
+                observed_trade_count,
+                updated_at
+              FROM polymarket.wallet_segment_performance
+              WHERE score_version = $1
+              ORDER BY score DESC, realized_pnl_usd DESC, proxy_wallet
+              LIMIT $2
+            )
+            SELECT jsonb_build_object(
+              'score_version', $1,
+              'segments', COALESCE((SELECT jsonb_agg(to_jsonb(by_segment) ORDER BY segment_key) FROM by_segment), '[]'::jsonb),
+              'top_wallets', COALESCE((SELECT jsonb_agg(to_jsonb(top_wallets) ORDER BY score DESC, realized_pnl_usd DESC) FROM top_wallets), '[]'::jsonb),
+              'updated_at', now()
+            )
+            "#,
+        )
+        .bind(MRS_SEGMENT_SCORE_VERSION)
+        .bind(limit.max(1))
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to fetch wallet segment summary")?;
+        Ok(value)
     }
 
     pub async fn upsert_wallet_score(&self, score: &WalletScore) -> Result<()> {
@@ -4913,6 +5184,17 @@ fn merge_json(mut left: serde_json::Value, right: serde_json::Value) -> serde_js
     left
 }
 
+fn closed_positions_from_raw_payload(
+    raw_payload: &serde_json::Value,
+) -> Result<Vec<DataApiClosedPosition>> {
+    if raw_payload.is_array() {
+        serde_json::from_value(raw_payload.clone())
+            .context("failed to deserialize wallet performance closed-position payload")
+    } else {
+        Ok(Vec::new())
+    }
+}
+
 #[derive(sqlx::FromRow)]
 struct BackfillJobRow {
     job_id: Uuid,
@@ -5098,6 +5380,53 @@ impl From<WalletPerformanceRow> for WalletPerformance {
             win_rate: row.win_rate,
             rank_score: row.rank_score,
             raw_payload: row.raw_payload,
+            metadata: row.metadata,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct WalletSegmentPerformanceRow {
+    proxy_wallet: String,
+    segment_key: String,
+    score_version: String,
+    classifier_version: String,
+    score: Decimal,
+    confidence: Decimal,
+    closed_positions: i32,
+    winning_positions: i32,
+    losing_positions: i32,
+    win_rate: Decimal,
+    realized_pnl_usd: Decimal,
+    total_bought_usd: Decimal,
+    roi: Decimal,
+    observed_trade_count: i32,
+    observed_volume_usd: Decimal,
+    sample_start: Option<DateTime<Utc>>,
+    sample_end: Option<DateTime<Utc>>,
+    metadata: serde_json::Value,
+}
+
+impl From<WalletSegmentPerformanceRow> for WalletSegmentPerformance {
+    fn from(row: WalletSegmentPerformanceRow) -> Self {
+        Self {
+            proxy_wallet: row.proxy_wallet,
+            segment_key: row.segment_key,
+            score_version: row.score_version,
+            classifier_version: row.classifier_version,
+            score: row.score,
+            confidence: row.confidence,
+            closed_positions: row.closed_positions,
+            winning_positions: row.winning_positions,
+            losing_positions: row.losing_positions,
+            win_rate: row.win_rate,
+            realized_pnl_usd: row.realized_pnl_usd,
+            total_bought_usd: row.total_bought_usd,
+            roi: row.roi,
+            observed_trade_count: row.observed_trade_count,
+            observed_volume_usd: row.observed_volume_usd,
+            sample_start: row.sample_start,
+            sample_end: row.sample_end,
             metadata: row.metadata,
         }
     }

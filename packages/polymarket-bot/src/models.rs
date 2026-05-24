@@ -550,6 +550,28 @@ pub struct WalletPerformance {
     pub metadata: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletSegmentPerformance {
+    pub proxy_wallet: String,
+    pub segment_key: String,
+    pub score_version: String,
+    pub classifier_version: String,
+    pub score: Decimal,
+    pub confidence: Decimal,
+    pub closed_positions: i32,
+    pub winning_positions: i32,
+    pub losing_positions: i32,
+    pub win_rate: Decimal,
+    pub realized_pnl_usd: Decimal,
+    pub total_bought_usd: Decimal,
+    pub roi: Decimal,
+    pub observed_trade_count: i32,
+    pub observed_volume_usd: Decimal,
+    pub sample_start: Option<DateTime<Utc>>,
+    pub sample_end: Option<DateTime<Utc>>,
+    pub metadata: serde_json::Value,
+}
+
 impl WalletPerformance {
     pub fn with_computed_rank_score(mut self) -> Self {
         self.rank_score = self.realized_pnl_usd * self.roi;
@@ -738,6 +760,47 @@ impl TradingProcessConfig {
             if let Some(mrs_percentile_floor) = config.mrs_percentile_floor {
                 effective.mrs_percentile_floor = mrs_percentile_floor;
             }
+            if let Some(mrs_score_version) = &config.mrs_score_version {
+                effective.mrs_score_version = mrs_score_version.clone();
+            }
+            if let Some(segment_scoring_enabled) = config.segment_scoring_enabled {
+                effective.segment_scoring_enabled = segment_scoring_enabled;
+            }
+            if let Some(segment_scoring_mode) = &config.segment_scoring_mode {
+                effective.segment_scoring_mode = segment_scoring_mode.clone();
+            }
+            if let Some(segment_score_version) = &config.segment_score_version {
+                effective.segment_score_version = segment_score_version.clone();
+            }
+            if let Some(segment_classifier_version) = &config.segment_classifier_version {
+                effective.segment_classifier_version = segment_classifier_version.clone();
+            }
+            if let Some(min_segment_score) = config.min_segment_score {
+                effective.min_segment_score = min_segment_score;
+            }
+            if let Some(min_segment_closed_positions) = config.min_segment_closed_positions {
+                effective.min_segment_closed_positions = min_segment_closed_positions;
+            }
+            if let Some(min_segment_win_rate) = config.min_segment_win_rate {
+                effective.min_segment_win_rate = min_segment_win_rate;
+            }
+            if let Some(reject_negative_segment_roi_sample_size) =
+                config.reject_negative_segment_roi_sample_size
+            {
+                effective.reject_negative_segment_roi_sample_size =
+                    reject_negative_segment_roi_sample_size;
+            }
+            if let Some(hard_reject_segment_win_rate_below) =
+                config.hard_reject_segment_win_rate_below
+            {
+                effective.hard_reject_segment_win_rate_below = hard_reject_segment_win_rate_below;
+            }
+            if let Some(hard_reject_segment_sample_size) = config.hard_reject_segment_sample_size {
+                effective.hard_reject_segment_sample_size = hard_reject_segment_sample_size;
+            }
+            if let Some(unknown_segment_policy) = &config.unknown_segment_policy {
+                effective.unknown_segment_policy = unknown_segment_policy.clone();
+            }
         }
         effective
     }
@@ -856,6 +919,18 @@ pub struct EffectiveCopyTradeProcessConfig {
     pub mrs_enforce: bool,
     pub min_mrs_score: Decimal,
     pub mrs_percentile_floor: Decimal,
+    pub mrs_score_version: String,
+    pub segment_scoring_enabled: bool,
+    pub segment_scoring_mode: String,
+    pub segment_score_version: String,
+    pub segment_classifier_version: String,
+    pub min_segment_score: Decimal,
+    pub min_segment_closed_positions: i32,
+    pub min_segment_win_rate: Decimal,
+    pub reject_negative_segment_roi_sample_size: i32,
+    pub hard_reject_segment_win_rate_below: Decimal,
+    pub hard_reject_segment_sample_size: i32,
+    pub unknown_segment_policy: String,
 }
 
 impl Default for EffectiveCopyTradeProcessConfig {
@@ -882,6 +957,18 @@ impl Default for EffectiveCopyTradeProcessConfig {
             mrs_enforce: false,
             min_mrs_score: dec!(80),
             mrs_percentile_floor: dec!(0.80),
+            mrs_score_version: "mrs_v1".to_string(),
+            segment_scoring_enabled: false,
+            segment_scoring_mode: "shadow".to_string(),
+            segment_score_version: "mrs_segment_v1".to_string(),
+            segment_classifier_version: "segment_rules_v1".to_string(),
+            min_segment_score: dec!(50),
+            min_segment_closed_positions: 5,
+            min_segment_win_rate: dec!(0.52),
+            reject_negative_segment_roi_sample_size: 5,
+            hard_reject_segment_win_rate_below: dec!(0.40),
+            hard_reject_segment_sample_size: 10,
+            unknown_segment_policy: "neutral".to_string(),
         }
     }
 }
@@ -930,6 +1017,30 @@ pub struct CopyTradeProcessConfig {
     pub min_mrs_score: Option<Decimal>,
     #[serde(default)]
     pub mrs_percentile_floor: Option<Decimal>,
+    #[serde(default)]
+    pub mrs_score_version: Option<String>,
+    #[serde(default)]
+    pub segment_scoring_enabled: Option<bool>,
+    #[serde(default)]
+    pub segment_scoring_mode: Option<String>,
+    #[serde(default)]
+    pub segment_score_version: Option<String>,
+    #[serde(default)]
+    pub segment_classifier_version: Option<String>,
+    #[serde(default)]
+    pub min_segment_score: Option<Decimal>,
+    #[serde(default)]
+    pub min_segment_closed_positions: Option<i32>,
+    #[serde(default)]
+    pub min_segment_win_rate: Option<Decimal>,
+    #[serde(default)]
+    pub reject_negative_segment_roi_sample_size: Option<i32>,
+    #[serde(default)]
+    pub hard_reject_segment_win_rate_below: Option<Decimal>,
+    #[serde(default)]
+    pub hard_reject_segment_sample_size: Option<i32>,
+    #[serde(default)]
+    pub unknown_segment_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

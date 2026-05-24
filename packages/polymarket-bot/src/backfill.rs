@@ -11,18 +11,19 @@ use crate::{
     clob::ClobClient,
     copytrade::{
         evaluate_copy_trade, run_copy_trade_backtest, CopyTradeConfig, CopyTradeMrsScore,
-        CopyTradeWalletPerformance, ObservedMarket, COPY_SCORE_VERSION,
+        CopyTradeSegmentScore, CopyTradeWalletPerformance, ObservedMarket, COPY_SCORE_VERSION,
     },
     data_api::{ClosedPositionsQuery, DataApiClient, TradesQuery},
     execution::{execute_order_plan, ExecutionVenue, OrderPlan, OrderPlanReport},
     models::{
         BackfillJobStatus, CopyTradeBacktestRun, DataApiClosedPosition, OrderState, WhaleTrade,
     },
+    segments::{classify_trade_segment, score_wallet_segments_from_samples},
     store::{OrderbookSnapshot, Store, TradeMarkSourceFailure},
     trade_pnl::{refresh_trade_pnl_with_config, TradePnlConfig},
     wallets::{
         score_closed_position_performance, score_closed_position_wallets, score_mrs, score_wallets,
-        MrsScoreInput, MRS_SCORE_VERSION,
+        MrsScoreInput,
     },
 };
 
@@ -319,6 +320,22 @@ pub async fn run_job(
                     }),
                 );
                 store.upsert_wallet_score(&mrs_score).await?;
+                let observed_trades = store.fetch_wallet_observed_trades(wallet, cutoff).await?;
+                for mut segment_performance in
+                    score_wallet_segments_from_samples(wallet, &positions, &observed_trades)
+                {
+                    segment_performance.metadata = merge_json(
+                        segment_performance.metadata,
+                        serde_json::json!({
+                            "source": "historic_backfill",
+                            "lookback_days": request.lookback_days,
+                            "min_trade_usd": request.min_trade_usd
+                        }),
+                    );
+                    store
+                        .upsert_wallet_segment_performance(&segment_performance)
+                        .await?;
+                }
             }
             closed_positions.push((wallet.clone(), positions));
 
@@ -691,6 +708,8 @@ pub async fn run_copy_trade_signal_engine(
         std::collections::HashMap::<String, Option<CopyTradeWalletPerformance>>::new();
     let mut persisted_mrs_by_wallet =
         std::collections::HashMap::<String, Option<CopyTradeMrsScore>>::new();
+    let mut persisted_segment_by_wallet_segment =
+        std::collections::HashMap::<(String, String), Option<CopyTradeSegmentScore>>::new();
     let copy_config = config.copy_trade.clone();
     let mut open_notional_with_in_run_orders = if !dry_run && config.execute_signals {
         match config.process_id {
@@ -730,7 +749,7 @@ pub async fn run_copy_trade_signal_engine(
             && !persisted_mrs_by_wallet.contains_key(&trade.proxy_wallet)
         {
             let persisted = store
-                .fetch_wallet_score_by_version(&trade.proxy_wallet, MRS_SCORE_VERSION)
+                .fetch_wallet_score_by_version(&trade.proxy_wallet, &copy_config.mrs_score_version)
                 .await?
                 .map(|score| CopyTradeMrsScore {
                     score: score.score,
@@ -747,10 +766,46 @@ pub async fn run_copy_trade_signal_engine(
                 .get(&trade.proxy_wallet)
                 .and_then(|score| score.as_ref())
         };
+        let segment_classification = classify_trade_segment(trade);
+        if !dry_run
+            && copy_config.segment_scoring_enabled
+            && !persisted_segment_by_wallet_segment.contains_key(&(
+                trade.proxy_wallet.clone(),
+                segment_classification.segment_key.clone(),
+            ))
+        {
+            let persisted = store
+                .fetch_wallet_segment_performance(
+                    &trade.proxy_wallet,
+                    &segment_classification.segment_key,
+                    &copy_config.segment_score_version,
+                )
+                .await?
+                .as_ref()
+                .map(CopyTradeSegmentScore::from);
+            persisted_segment_by_wallet_segment.insert(
+                (
+                    trade.proxy_wallet.clone(),
+                    segment_classification.segment_key.clone(),
+                ),
+                persisted,
+            );
+        }
+        let segment_score = if dry_run || !copy_config.segment_scoring_enabled {
+            None
+        } else {
+            persisted_segment_by_wallet_segment
+                .get(&(
+                    trade.proxy_wallet.clone(),
+                    segment_classification.segment_key,
+                ))
+                .and_then(|score| score.as_ref())
+        };
         let decision = evaluate_copy_trade(
             trade,
             performance,
             mrs_score,
+            segment_score,
             ObservedMarket {
                 observed_price: trade.price,
                 available_depth_usd: trade.cash_value,

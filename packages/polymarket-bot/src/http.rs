@@ -120,6 +120,16 @@ pub trait ControlApi: Send + Sync + 'static {
         request: MrsRecomputeRequest,
     ) -> Result<serde_json::Value, HttpError>;
 
+    async fn recompute_mrs_segment_scores(
+        &self,
+        request: MrsRecomputeRequest,
+    ) -> Result<serde_json::Value, HttpError>;
+
+    async fn mrs_segment_summary(
+        &self,
+        request: TradePnlListRequest,
+    ) -> Result<serde_json::Value, HttpError>;
+
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError>;
 
     async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics, HttpError>;
@@ -357,6 +367,24 @@ impl ControlApi for PlaceholderControlApi {
         Err(HttpError::not_implemented("MRS recompute is not wired"))
     }
 
+    async fn recompute_mrs_segment_scores(
+        &self,
+        _request: MrsRecomputeRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "MRS segment recompute is not wired",
+        ))
+    }
+
+    async fn mrs_segment_summary(
+        &self,
+        _request: TradePnlListRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "MRS segment summary is not wired",
+        ))
+    }
+
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError> {
         Err(HttpError::not_implemented("live status is not wired"))
     }
@@ -508,6 +536,11 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .route("/trades/pnl/backfill", post(trade_pnl_backfill))
         .route("/trades/pnl/mark-now", post(trade_pnl_mark_now))
         .route("/wallets/mrs/recompute", post(recompute_mrs_scores))
+        .route("/wallets/mrs/segments", get(mrs_segment_summary))
+        .route(
+            "/wallets/mrs/segments/recompute",
+            post(recompute_mrs_segment_scores),
+        )
         .route("/live/status", get(live_status))
         .route("/live/diagnostics", get(live_identity_diagnostics))
         .route(
@@ -692,6 +725,24 @@ async fn recompute_mrs_scores(
     Json(request): Json<MrsRecomputeRequest>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
     state.control.recompute_mrs_scores(request).await.map(Json)
+}
+
+async fn recompute_mrs_segment_scores(
+    State(state): State<HttpState>,
+    Json(request): Json<MrsRecomputeRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state
+        .control
+        .recompute_mrs_segment_scores(request)
+        .await
+        .map(Json)
+}
+
+async fn mrs_segment_summary(
+    State(state): State<HttpState>,
+    Query(request): Query<TradePnlListRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state.control.mrs_segment_summary(request).await.map(Json)
 }
 
 async fn live_status(State(state): State<HttpState>) -> Result<Json<LiveVenueStatus>, HttpError> {

@@ -14,8 +14,9 @@ use crate::{
     models::{
         CopyTradeBacktestResult, CopyTradeSignal, EffectiveCopyTradeProcessConfig, OrderRequest,
         OrderSide, OrderType, SignalCandidate, SignalStatus, SignalType, WalletPerformance,
-        WalletScore, WalletScoreCalibrationSnapshot, WhaleTrade,
+        WalletScore, WalletScoreCalibrationSnapshot, WalletSegmentPerformance, WhaleTrade,
     },
+    segments::classify_trade_segment,
 };
 
 pub const COPY_SCORE_VERSION: &str = "whale_score_v1";
@@ -44,6 +45,18 @@ pub struct CopyTradeConfig {
     pub mrs_enforce: bool,
     pub min_mrs_score: Decimal,
     pub mrs_percentile_floor: Decimal,
+    pub mrs_score_version: String,
+    pub segment_scoring_enabled: bool,
+    pub segment_scoring_mode: String,
+    pub segment_score_version: String,
+    pub segment_classifier_version: String,
+    pub min_segment_score: Decimal,
+    pub min_segment_closed_positions: i32,
+    pub min_segment_win_rate: Decimal,
+    pub reject_negative_segment_roi_sample_size: i32,
+    pub hard_reject_segment_win_rate_below: Decimal,
+    pub hard_reject_segment_sample_size: i32,
+    pub unknown_segment_policy: String,
 }
 
 impl Default for CopyTradeConfig {
@@ -70,6 +83,18 @@ impl Default for CopyTradeConfig {
             mrs_enforce: false,
             min_mrs_score: dec!(80),
             mrs_percentile_floor: dec!(0.80),
+            mrs_score_version: "mrs_v1".to_string(),
+            segment_scoring_enabled: false,
+            segment_scoring_mode: "shadow".to_string(),
+            segment_score_version: "mrs_segment_v1".to_string(),
+            segment_classifier_version: "segment_rules_v1".to_string(),
+            min_segment_score: dec!(50),
+            min_segment_closed_positions: 5,
+            min_segment_win_rate: dec!(0.52),
+            reject_negative_segment_roi_sample_size: 5,
+            hard_reject_segment_win_rate_below: dec!(0.40),
+            hard_reject_segment_sample_size: 10,
+            unknown_segment_policy: "neutral".to_string(),
         }
     }
 }
@@ -122,6 +147,18 @@ impl From<&EffectiveCopyTradeProcessConfig> for CopyTradeConfig {
             mrs_enforce: config.mrs_enforce,
             min_mrs_score: config.min_mrs_score,
             mrs_percentile_floor: config.mrs_percentile_floor,
+            mrs_score_version: config.mrs_score_version.clone(),
+            segment_scoring_enabled: config.segment_scoring_enabled,
+            segment_scoring_mode: config.segment_scoring_mode.clone(),
+            segment_score_version: config.segment_score_version.clone(),
+            segment_classifier_version: config.segment_classifier_version.clone(),
+            min_segment_score: config.min_segment_score,
+            min_segment_closed_positions: config.min_segment_closed_positions,
+            min_segment_win_rate: config.min_segment_win_rate,
+            reject_negative_segment_roi_sample_size: config.reject_negative_segment_roi_sample_size,
+            hard_reject_segment_win_rate_below: config.hard_reject_segment_win_rate_below,
+            hard_reject_segment_sample_size: config.hard_reject_segment_sample_size,
+            unknown_segment_policy: config.unknown_segment_policy.clone(),
         }
     }
 }
@@ -143,9 +180,48 @@ pub struct CopyTradeMrsScore {
     pub metadata: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopyTradeSegmentScore {
+    pub segment_key: String,
+    pub score: Decimal,
+    pub score_version: String,
+    pub classifier_version: String,
+    pub confidence: Decimal,
+    pub closed_positions: i32,
+    pub winning_positions: i32,
+    pub win_rate: Decimal,
+    pub realized_pnl_usd: Decimal,
+    pub total_bought_usd: Decimal,
+    pub roi: Decimal,
+    pub observed_trade_count: i32,
+    pub observed_volume_usd: Decimal,
+    pub metadata: serde_json::Value,
+}
+
 impl CopyTradeWalletPerformance {
     pub fn rank_score(&self) -> Decimal {
         self.realized_pnl_usd * self.roi
+    }
+}
+
+impl From<&WalletSegmentPerformance> for CopyTradeSegmentScore {
+    fn from(performance: &WalletSegmentPerformance) -> Self {
+        Self {
+            segment_key: performance.segment_key.clone(),
+            score: performance.score,
+            score_version: performance.score_version.clone(),
+            classifier_version: performance.classifier_version.clone(),
+            confidence: performance.confidence,
+            closed_positions: performance.closed_positions,
+            winning_positions: performance.winning_positions,
+            win_rate: performance.win_rate,
+            realized_pnl_usd: performance.realized_pnl_usd,
+            total_bought_usd: performance.total_bought_usd,
+            roi: performance.roi,
+            observed_trade_count: performance.observed_trade_count,
+            observed_volume_usd: performance.observed_volume_usd,
+            metadata: performance.metadata.clone(),
+        }
     }
 }
 
@@ -206,6 +282,7 @@ pub fn evaluate_copy_trade(
     trade: &WhaleTrade,
     performance: Option<&CopyTradeWalletPerformance>,
     mrs_score: Option<&CopyTradeMrsScore>,
+    segment_score: Option<&CopyTradeSegmentScore>,
     observed: ObservedMarket,
     config: &CopyTradeConfig,
     process_id: Option<Uuid>,
@@ -227,6 +304,9 @@ pub fn evaluate_copy_trade(
         .max(0);
     let slippage_bps = price_slippage_bps(trade.price, observed.observed_price);
     let mut reject_reason = None;
+    let segment_classification = classify_trade_segment(trade);
+    let segment_decision =
+        evaluate_segment_gate(&segment_classification.segment_key, segment_score, config);
 
     if !config.enabled {
         reject_reason = Some("copy_trade_disabled");
@@ -272,6 +352,8 @@ pub fn evaluate_copy_trade(
         reject_reason = Some("insufficient_observed_depth");
     } else if copy_size_usd < config.min_copy_size_usd {
         reject_reason = Some("copy_size_below_minimum");
+    } else if segment_decision.enforced_reject {
+        reject_reason = Some(segment_decision.reason);
     }
 
     let detected = reject_reason.is_none();
@@ -290,6 +372,7 @@ pub fn evaluate_copy_trade(
             "enforced": config.mrs_enforce,
             "min_score": config.min_mrs_score,
             "percentile_floor": config.mrs_percentile_floor,
+            "score_version_config": config.mrs_score_version,
             "score": mrs_score.map(|score| score.score),
             "score_version": mrs_score.map(|score| score.score_version.as_str()),
             "percentile": mrs_score.and_then(|score| score.percentile),
@@ -297,6 +380,41 @@ pub fn evaluate_copy_trade(
                 .map(|score| score.score >= config.min_mrs_score)
                 .unwrap_or(false),
             "metadata": mrs_score.map(|score| score.metadata.clone())
+        },
+        "segment": {
+            "enabled": config.segment_scoring_enabled,
+            "mode": config.segment_scoring_mode,
+            "score_version_config": config.segment_score_version,
+            "classifier_version_config": config.segment_classifier_version,
+            "segment_key": segment_classification.segment_key,
+            "classifier_version": segment_classification.classifier_version,
+            "classifier_confidence": segment_classification.confidence,
+            "matched_rule": segment_classification.matched_rule,
+            "matched_terms": segment_classification.matched_terms,
+            "source_fields": segment_classification.source_fields,
+            "score": segment_score.map(|score| score.score),
+            "score_version": segment_score.map(|score| score.score_version.as_str()),
+            "confidence": segment_score.map(|score| score.confidence),
+            "closed_positions": segment_score.map(|score| score.closed_positions),
+            "winning_positions": segment_score.map(|score| score.winning_positions),
+            "win_rate": segment_score.map(|score| score.win_rate),
+            "roi": segment_score.map(|score| score.roi),
+            "realized_pnl_usd": segment_score.map(|score| score.realized_pnl_usd),
+            "observed_trade_count": segment_score.map(|score| score.observed_trade_count),
+            "observed_volume_usd": segment_score.map(|score| score.observed_volume_usd),
+            "decision": segment_decision.decision,
+            "reject_reason": segment_decision.reject_reason,
+            "enforced_reject": segment_decision.enforced_reject,
+            "thresholds": {
+                "min_segment_score": config.min_segment_score,
+                "min_closed_positions": config.min_segment_closed_positions,
+                "min_win_rate": config.min_segment_win_rate,
+                "reject_negative_roi_sample_size": config.reject_negative_segment_roi_sample_size,
+                "hard_reject_win_rate_below": config.hard_reject_segment_win_rate_below,
+                "hard_reject_sample_size": config.hard_reject_segment_sample_size,
+                "unknown_segment_policy": config.unknown_segment_policy
+            },
+            "metadata": segment_score.map(|score| score.metadata.clone())
         },
         "lag_secs": lag_secs,
         "slippage_bps": slippage_bps,
@@ -384,6 +502,94 @@ pub fn evaluate_copy_trade(
         copy_signal,
         order_plan,
     }
+}
+
+#[derive(Debug, Clone)]
+struct SegmentGateDecision {
+    decision: &'static str,
+    reject_reason: Option<&'static str>,
+    reason: &'static str,
+    enforced_reject: bool,
+}
+
+fn evaluate_segment_gate(
+    segment_key: &str,
+    score: Option<&CopyTradeSegmentScore>,
+    config: &CopyTradeConfig,
+) -> SegmentGateDecision {
+    if !config.segment_scoring_enabled || config.segment_scoring_mode == "off" {
+        return SegmentGateDecision {
+            decision: "disabled",
+            reject_reason: None,
+            reason: "segment_scoring_disabled",
+            enforced_reject: false,
+        };
+    }
+
+    let reject_reason = segment_reject_reason(segment_key, score, config);
+    let enforce = matches!(
+        config.segment_scoring_mode.as_str(),
+        "sim_enforce" | "live_enforce"
+    );
+    match reject_reason {
+        Some(reason) if enforce => SegmentGateDecision {
+            decision: "rejected",
+            reject_reason: Some(reason),
+            reason,
+            enforced_reject: true,
+        },
+        Some(reason) => SegmentGateDecision {
+            decision: "would_reject",
+            reject_reason: Some(reason),
+            reason,
+            enforced_reject: false,
+        },
+        None if enforce => SegmentGateDecision {
+            decision: "accepted",
+            reject_reason: None,
+            reason: "segment_gate_passed",
+            enforced_reject: false,
+        },
+        None => SegmentGateDecision {
+            decision: "would_accept",
+            reject_reason: None,
+            reason: "segment_gate_passed",
+            enforced_reject: false,
+        },
+    }
+}
+
+fn segment_reject_reason(
+    segment_key: &str,
+    score: Option<&CopyTradeSegmentScore>,
+    config: &CopyTradeConfig,
+) -> Option<&'static str> {
+    if segment_key == "other" && config.unknown_segment_policy == "reject" {
+        return Some("unknown_segment");
+    }
+    let Some(score) = score else {
+        return None;
+    };
+    if score.closed_positions < config.min_segment_closed_positions {
+        return None;
+    }
+    if score.closed_positions >= config.hard_reject_segment_sample_size
+        && score.win_rate < config.hard_reject_segment_win_rate_below
+    {
+        return Some("segment_win_rate_hard_reject");
+    }
+    if score.closed_positions >= config.reject_negative_segment_roi_sample_size
+        && score.roi < Decimal::ZERO
+    {
+        return Some("segment_negative_roi");
+    }
+    if score.win_rate < config.min_segment_win_rate {
+        return Some("segment_win_rate_below_threshold");
+    }
+    if score.score < config.min_segment_score {
+        return Some("segment_score_below_threshold");
+    }
+    None
 }
 
 pub fn run_copy_trade_backtest(
@@ -478,6 +684,7 @@ fn backtest_at_threshold(
         let decision = evaluate_copy_trade(
             trade,
             Some(performance),
+            None,
             None,
             ObservedMarket {
                 observed_price: trade.price,
@@ -677,7 +884,7 @@ mod tests {
     use crate::{
         copytrade::{
             clob_tick_price, evaluate_copy_trade, run_copy_trade_backtest, CopyTradeConfig,
-            CopyTradeMrsScore, CopyTradeWalletPerformance, ObservedMarket,
+            CopyTradeMrsScore, CopyTradeSegmentScore, CopyTradeWalletPerformance, ObservedMarket,
         },
         models::{OrderSide, WalletScore, WhaleTrade},
     };
@@ -737,6 +944,25 @@ mod tests {
         }
     }
 
+    fn segment_score(segment_key: &str, score: rust_decimal::Decimal) -> CopyTradeSegmentScore {
+        CopyTradeSegmentScore {
+            segment_key: segment_key.to_string(),
+            score,
+            score_version: "mrs_segment_v1".to_string(),
+            classifier_version: "segment_rules_v1".to_string(),
+            confidence: dec!(0.90),
+            closed_positions: 12,
+            winning_positions: 4,
+            win_rate: dec!(0.3333),
+            realized_pnl_usd: dec!(-100),
+            total_bought_usd: dec!(1000),
+            roi: dec!(-0.10),
+            observed_trade_count: 20,
+            observed_volume_usd: dec!(5000),
+            metadata: serde_json::json!({}),
+        }
+    }
+
     #[test]
     fn evaluates_qualified_whale_trade_into_order_plan() {
         let config = CopyTradeConfig::default();
@@ -745,6 +971,7 @@ mod tests {
         let decision = evaluate_copy_trade(
             &trade,
             Some(&wallet_performance),
+            None,
             None,
             ObservedMarket {
                 observed_price: dec!(0.505),
@@ -769,6 +996,7 @@ mod tests {
         let decision = evaluate_copy_trade(
             &trade,
             Some(&wallet_performance),
+            None,
             None,
             ObservedMarket {
                 observed_price: dec!(0.37),
@@ -797,6 +1025,7 @@ mod tests {
         let decision = evaluate_copy_trade(
             &trade,
             Some(&wallet_performance),
+            None,
             None,
             ObservedMarket {
                 observed_price: dec!(0.15),
@@ -829,6 +1058,7 @@ mod tests {
             &trade,
             Some(&wallet_performance),
             None,
+            None,
             ObservedMarket {
                 observed_price: dec!(0.50),
                 available_depth_usd: dec!(1000),
@@ -845,6 +1075,7 @@ mod tests {
 
         let missing = evaluate_copy_trade(
             &trade,
+            None,
             None,
             None,
             ObservedMarket {
@@ -870,6 +1101,7 @@ mod tests {
             &trade,
             Some(&performance("0xabc", dec!(1000), dec!(0.01), 10)),
             None,
+            None,
             ObservedMarket {
                 observed_price: dec!(0.50),
                 available_depth_usd: dec!(1000),
@@ -886,6 +1118,7 @@ mod tests {
         let low_closed_positions = evaluate_copy_trade(
             &trade,
             Some(&performance("0xabc", dec!(1000), dec!(0.10), 1)),
+            None,
             None,
             ObservedMarket {
                 observed_price: dec!(0.50),
@@ -928,6 +1161,7 @@ mod tests {
             &trade,
             Some(&wallet_performance),
             Some(&low_mrs),
+            None,
             ObservedMarket {
                 observed_price: dec!(0.50),
                 available_depth_usd: dec!(1000),
@@ -945,6 +1179,7 @@ mod tests {
             &trade,
             Some(&wallet_performance),
             Some(&high_mrs),
+            None,
             ObservedMarket {
                 observed_price: dec!(0.50),
                 available_depth_usd: dec!(1000),
@@ -976,6 +1211,7 @@ mod tests {
             &trade,
             Some(&wallet_performance),
             Some(&low_mrs),
+            None,
             ObservedMarket {
                 observed_price: dec!(0.50),
                 available_depth_usd: dec!(1000),
@@ -985,6 +1221,72 @@ mod tests {
             None,
         );
         assert_eq!(observe_only.copy_signal.status, "detected");
+    }
+
+    #[test]
+    fn segment_gate_records_shadow_reject_without_blocking() {
+        let mut config = CopyTradeConfig::default();
+        config.segment_scoring_enabled = true;
+        config.segment_scoring_mode = "shadow".to_string();
+        let mut trade = trade("0xabc", "token", dec!(0.50), 0);
+        trade.title = Some("Will Bitcoin hit $120k?".to_string());
+        let wallet_performance = performance("0xabc", dec!(1000), dec!(0.10), 10);
+        let segment = segment_score("crypto", dec!(25));
+
+        let decision = evaluate_copy_trade(
+            &trade,
+            Some(&wallet_performance),
+            None,
+            Some(&segment),
+            ObservedMarket {
+                observed_price: dec!(0.50),
+                available_depth_usd: dec!(1000),
+                observed_at: trade.timestamp_utc,
+            },
+            &config,
+            None,
+        );
+
+        assert_eq!(decision.copy_signal.status, "detected");
+        assert_eq!(
+            decision.copy_signal.metadata["segment"]["decision"],
+            serde_json::json!("would_reject")
+        );
+        assert_eq!(
+            decision.copy_signal.metadata["segment"]["reject_reason"],
+            serde_json::json!("segment_win_rate_hard_reject")
+        );
+    }
+
+    #[test]
+    fn segment_gate_rejects_when_enforced() {
+        let mut config = CopyTradeConfig::default();
+        config.segment_scoring_enabled = true;
+        config.segment_scoring_mode = "sim_enforce".to_string();
+        let mut trade = trade("0xabc", "token", dec!(0.50), 0);
+        trade.title = Some("Will Bitcoin hit $120k?".to_string());
+        let wallet_performance = performance("0xabc", dec!(1000), dec!(0.10), 10);
+        let segment = segment_score("crypto", dec!(25));
+
+        let decision = evaluate_copy_trade(
+            &trade,
+            Some(&wallet_performance),
+            None,
+            Some(&segment),
+            ObservedMarket {
+                observed_price: dec!(0.50),
+                available_depth_usd: dec!(1000),
+                observed_at: trade.timestamp_utc,
+            },
+            &config,
+            None,
+        );
+
+        assert_eq!(decision.copy_signal.status, "rejected");
+        assert_eq!(
+            decision.signal_candidate.reject_reason.as_deref(),
+            Some("segment_win_rate_hard_reject")
+        );
     }
 
     #[test]

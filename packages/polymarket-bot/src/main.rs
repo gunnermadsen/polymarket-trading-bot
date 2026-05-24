@@ -32,6 +32,7 @@ use polymarket_bot::{
     models::{TradingProcess, WhalePollCheckpoint},
     risk::{RiskLimits, RiskState},
     scanner::{scan_markets_for_signal1, ScannerConfig, ScannerCycleReport},
+    segments::score_wallet_segments_from_samples,
     store::Store,
     trade_pnl::{mark_trade_pnl_now_with_config, refresh_trade_pnl_with_config, TradePnlConfig},
     wallets::{score_closed_position_performance, score_mrs, MrsScoreInput},
@@ -561,6 +562,43 @@ impl ControlApi for RuntimeControl {
             "limit": limit,
             "top_scores": top_scores
         }))
+    }
+
+    async fn recompute_mrs_segment_scores(
+        &self,
+        request: control_http::MrsRecomputeRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        let lookback_days = request.lookback_days.unwrap_or(150).clamp(1, 365);
+        let limit = request.limit.unwrap_or(20_000).clamp(1, 100_000);
+        let since = Utc::now() - chrono::Duration::days(lookback_days);
+        let updated = self
+            .store
+            .recompute_wallet_segment_scores_from_existing(since, limit)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        let summary = self
+            .store
+            .wallet_segment_summary(20)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        Ok(serde_json::json!({
+            "score_version": polymarket_bot::segments::MRS_SEGMENT_SCORE_VERSION,
+            "classifier_version": polymarket_bot::segments::SEGMENT_CLASSIFIER_VERSION,
+            "updated_segments": updated,
+            "lookback_days": lookback_days,
+            "limit": limit,
+            "summary": summary
+        }))
+    }
+
+    async fn mrs_segment_summary(
+        &self,
+        request: control_http::TradePnlListRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        self.store
+            .wallet_segment_summary(request.limit.unwrap_or(20).clamp(1, 100))
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))
     }
 
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError> {
@@ -1457,6 +1495,27 @@ async fn ensure_live_wallet_performance(
             }),
         );
         store.upsert_wallet_score(&mrs_score).await?;
+        let observed_trades = store
+            .fetch_wallet_observed_trades(
+                &trade.proxy_wallet,
+                Utc::now() - chrono::Duration::days(150),
+            )
+            .await?;
+        for mut segment_performance in
+            score_wallet_segments_from_samples(&trade.proxy_wallet, &positions, &observed_trades)
+        {
+            segment_performance.metadata = merge_json(
+                segment_performance.metadata,
+                serde_json::json!({
+                    "source": "live_trade_score_update",
+                    "trigger_trade_id": trade.trade_id,
+                    "trigger_transaction_hash": trade.transaction_hash
+                }),
+            );
+            store
+                .upsert_wallet_segment_performance(&segment_performance)
+                .await?;
+        }
     }
     Ok(())
 }
@@ -1558,8 +1617,33 @@ fn runtime_config_from_process(process: &TradingProcess) -> Result<ProcessRuntim
             mrs_enforce: copy_trade.mrs_enforce && execution_mode == ExecutionMode::Sim,
             min_mrs_score: copy_trade.min_mrs_score,
             mrs_percentile_floor: copy_trade.mrs_percentile_floor,
+            mrs_score_version: copy_trade.mrs_score_version,
+            segment_scoring_enabled: copy_trade.segment_scoring_enabled,
+            segment_scoring_mode: effective_segment_scoring_mode(
+                &copy_trade.segment_scoring_mode,
+                execution_mode,
+            ),
+            segment_score_version: copy_trade.segment_score_version,
+            segment_classifier_version: copy_trade.segment_classifier_version,
+            min_segment_score: copy_trade.min_segment_score,
+            min_segment_closed_positions: copy_trade.min_segment_closed_positions,
+            min_segment_win_rate: copy_trade.min_segment_win_rate,
+            reject_negative_segment_roi_sample_size: copy_trade
+                .reject_negative_segment_roi_sample_size,
+            hard_reject_segment_win_rate_below: copy_trade.hard_reject_segment_win_rate_below,
+            hard_reject_segment_sample_size: copy_trade.hard_reject_segment_sample_size,
+            unknown_segment_policy: copy_trade.unknown_segment_policy,
         },
     })
+}
+
+fn effective_segment_scoring_mode(configured: &str, execution_mode: ExecutionMode) -> String {
+    match (configured, execution_mode) {
+        ("sim_enforce", ExecutionMode::Sim) => "sim_enforce".to_string(),
+        ("live_enforce", ExecutionMode::Live) => "live_enforce".to_string(),
+        ("off", _) => "off".to_string(),
+        _ => "shadow".to_string(),
+    }
 }
 
 fn parse_process_execution_mode(mode: &str) -> Result<ExecutionMode> {
