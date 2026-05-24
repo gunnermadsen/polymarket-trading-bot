@@ -564,7 +564,6 @@ pub struct CopyTradeSignal {
     pub process_id: Option<Uuid>,
     pub timestamp_utc: DateTime<Utc>,
     pub proxy_wallet: String,
-    pub wallet_score: Decimal,
     pub source_trade_id: Uuid,
     pub market_id: Option<String>,
     pub token_id: Option<String>,

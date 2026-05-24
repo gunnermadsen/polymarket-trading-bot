@@ -87,6 +87,7 @@ services:
       POLYMARKET_HTTP_ENABLED: "true"
       POLYMARKET_HTTP_BIND: "0.0.0.0:8097"
       POLYMARKET_EXIT_CANDIDATE_MAX_AGE_SECONDS: "900"
+      POLYMARKET_MARK_FRESH_MAX_AGE_SECS: "300"
     ports:
       - "127.0.0.1:8097:8097"
     depends_on:
