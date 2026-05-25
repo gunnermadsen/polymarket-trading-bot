@@ -520,6 +520,50 @@ pub struct WhaleTrade {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GammaMarketMetadata {
+    pub cache_key: String,
+    pub lookup_type: String,
+    pub lookup_slug: String,
+    pub event_slug: Option<String>,
+    pub market_slug: Option<String>,
+    pub gamma_event_id: Option<String>,
+    pub gamma_market_id: Option<String>,
+    pub category: Option<String>,
+    pub series_slug: Option<String>,
+    pub tag_slugs: Vec<String>,
+    pub sport_key: Option<String>,
+    pub taxonomy_segment: Option<String>,
+    pub taxonomy_source: String,
+    pub taxonomy_confidence: Decimal,
+    pub taxonomy_version: String,
+    pub raw_payload: serde_json::Value,
+    pub fetched_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletTradeTaxonomyCandidate {
+    pub trade_id: Uuid,
+    pub title: Option<String>,
+    pub slug: Option<String>,
+    pub event_slug: Option<String>,
+    pub market_id: Option<String>,
+    pub condition_id: Option<String>,
+    pub asset: String,
+    pub raw_payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletTradeTaxonomyUpdate {
+    pub trade_id: Uuid,
+    pub taxonomy_segment: String,
+    pub taxonomy_source: String,
+    pub taxonomy_confidence: Decimal,
+    pub taxonomy_version: String,
+    pub taxonomy_metadata: serde_json::Value,
+    pub taxonomy_fetched_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletScore {
     pub proxy_wallet: String,
     pub score_version: String,
