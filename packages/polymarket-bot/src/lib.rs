@@ -16,6 +16,7 @@ pub mod risk;
 pub mod scanner;
 pub mod segments;
 pub mod store;
+pub mod taxonomy;
 pub mod trade_pnl;
 pub mod wallet;
 pub mod wallets;

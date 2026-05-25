@@ -130,6 +130,21 @@ pub trait ControlApi: Send + Sync + 'static {
         request: TradePnlListRequest,
     ) -> Result<serde_json::Value, HttpError>;
 
+    async fn gamma_taxonomy_status(&self) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "Gamma taxonomy status is not wired",
+        ))
+    }
+
+    async fn gamma_taxonomy_backfill(
+        &self,
+        _request: GammaTaxonomyBackfillRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "Gamma taxonomy backfill is not wired",
+        ))
+    }
+
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError>;
 
     async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics, HttpError>;
@@ -541,6 +556,8 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
             "/wallets/mrs/segments/recompute",
             post(recompute_mrs_segment_scores),
         )
+        .route("/gamma/taxonomy/status", get(gamma_taxonomy_status))
+        .route("/gamma/taxonomy/backfill", post(gamma_taxonomy_backfill))
         .route("/live/status", get(live_status))
         .route("/live/diagnostics", get(live_identity_diagnostics))
         .route(
@@ -743,6 +760,23 @@ async fn mrs_segment_summary(
     Query(request): Query<TradePnlListRequest>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
     state.control.mrs_segment_summary(request).await.map(Json)
+}
+
+async fn gamma_taxonomy_status(
+    State(state): State<HttpState>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state.control.gamma_taxonomy_status().await.map(Json)
+}
+
+async fn gamma_taxonomy_backfill(
+    State(state): State<HttpState>,
+    Json(request): Json<GammaTaxonomyBackfillRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state
+        .control
+        .gamma_taxonomy_backfill(request)
+        .await
+        .map(Json)
 }
 
 async fn live_status(State(state): State<HttpState>) -> Result<Json<LiveVenueStatus>, HttpError> {
@@ -1044,6 +1078,15 @@ pub struct TradePnlListRequest {
 pub struct MrsRecomputeRequest {
     pub lookback_days: Option<i64>,
     pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GammaTaxonomyBackfillRequest {
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub fallback_keywords: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -249,6 +249,13 @@ pub async fn run_job(
                 store.ensure_whale_wallet(&trade).await?;
                 if store.upsert_whale_trade(&trade).await? {
                     store.record_wallet_observed_trade(&trade).await?;
+                    if let Err(error) = store.apply_cached_taxonomy_to_trade(&trade).await {
+                        tracing::warn!(
+                            error = %error,
+                            trade_id = %trade.trade_id,
+                            "failed to apply cached Gamma taxonomy to backfilled wallet trade"
+                        );
+                    }
                     summary.trades_persisted += 1;
                 }
                 all_trades.push(trade);

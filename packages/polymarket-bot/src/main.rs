@@ -34,6 +34,7 @@ use polymarket_bot::{
     scanner::{scan_markets_for_signal1, ScannerConfig, ScannerCycleReport},
     segments::score_wallet_segments_from_samples,
     store::Store,
+    taxonomy::{fallback_taxonomy_update, taxonomy_update_from_metadata},
     trade_pnl::{mark_trade_pnl_now_with_config, refresh_trade_pnl_with_config, TradePnlConfig},
     wallets::{score_closed_position_performance, score_mrs, MrsScoreInput},
 };
@@ -101,6 +102,7 @@ impl RuntimeMetrics {
 
 struct RuntimeControl {
     store: Store,
+    gamma: GammaClient,
     data_api: DataApiClient,
     clob: ClobClient,
     venues: ExecutionVenues,
@@ -601,6 +603,141 @@ impl ControlApi for RuntimeControl {
             .map_err(|error| HttpError::internal(error.to_string()))
     }
 
+    async fn gamma_taxonomy_status(&self) -> Result<serde_json::Value, HttpError> {
+        self.store
+            .wallet_trade_taxonomy_status()
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))
+    }
+
+    async fn gamma_taxonomy_backfill(
+        &self,
+        request: control_http::GammaTaxonomyBackfillRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        let limit = request.limit.unwrap_or(500).clamp(1, 5_000);
+        let candidates = self
+            .store
+            .fetch_unresolved_wallet_trade_taxonomy_candidates(limit)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        let mut gamma_event_hits = 0usize;
+        let mut gamma_market_hits = 0usize;
+        let mut fallback_hits = 0usize;
+        let mut dry_run_updates = 0usize;
+        let mut updated_trades = 0u64;
+        let mut errors = Vec::new();
+
+        for candidate in &candidates {
+            let mut metadata = None;
+            if let Some(event_slug) = candidate
+                .event_slug
+                .as_deref()
+                .filter(|slug| !slug.is_empty())
+            {
+                metadata = self
+                    .store
+                    .fetch_gamma_market_metadata_by_lookup("event_slug", event_slug)
+                    .await
+                    .map_err(|error| HttpError::internal(error.to_string()))?;
+                if metadata.is_none() {
+                    match self.gamma.fetch_event_taxonomy_by_slug(event_slug).await {
+                        Ok(Some(fetched)) => {
+                            if !request.dry_run {
+                                self.store
+                                    .upsert_gamma_market_metadata(&fetched)
+                                    .await
+                                    .map_err(|error| HttpError::internal(error.to_string()))?;
+                            }
+                            metadata = Some(fetched);
+                        }
+                        Ok(None) => {}
+                        Err(error) => errors.push(serde_json::json!({
+                            "trade_id": candidate.trade_id,
+                            "lookup": "event_slug",
+                            "slug": event_slug,
+                            "error": error.to_string()
+                        })),
+                    }
+                }
+                if metadata.is_some() {
+                    gamma_event_hits += 1;
+                }
+            }
+
+            if metadata.is_none() {
+                if let Some(slug) = candidate.slug.as_deref().filter(|slug| !slug.is_empty()) {
+                    metadata = self
+                        .store
+                        .fetch_gamma_market_metadata_by_lookup("market_slug", slug)
+                        .await
+                        .map_err(|error| HttpError::internal(error.to_string()))?;
+                    if metadata.is_none() {
+                        match self.gamma.fetch_market_taxonomy_by_slug(slug).await {
+                            Ok(Some(fetched)) => {
+                                if !request.dry_run {
+                                    self.store
+                                        .upsert_gamma_market_metadata(&fetched)
+                                        .await
+                                        .map_err(|error| HttpError::internal(error.to_string()))?;
+                                }
+                                metadata = Some(fetched);
+                            }
+                            Ok(None) => {}
+                            Err(error) => errors.push(serde_json::json!({
+                                "trade_id": candidate.trade_id,
+                                "lookup": "market_slug",
+                                "slug": slug,
+                                "error": error.to_string()
+                            })),
+                        }
+                    }
+                    if metadata.is_some() {
+                        gamma_market_hits += 1;
+                    }
+                }
+            }
+
+            let update = metadata
+                .as_ref()
+                .and_then(|metadata| taxonomy_update_from_metadata(candidate, metadata))
+                .or_else(|| {
+                    request
+                        .fallback_keywords
+                        .then(|| fallback_taxonomy_update(candidate))
+                });
+
+            if let Some(update) = update {
+                if update.taxonomy_source == "keyword_fallback" {
+                    fallback_hits += 1;
+                }
+                if request.dry_run {
+                    dry_run_updates += 1;
+                } else {
+                    updated_trades += self
+                        .store
+                        .update_wallet_trade_taxonomy(&update)
+                        .await
+                        .map_err(|error| HttpError::internal(error.to_string()))?;
+                }
+            }
+        }
+
+        let error_count = errors.len();
+        Ok(serde_json::json!({
+            "taxonomy_version": polymarket_bot::taxonomy::GAMMA_TAXONOMY_VERSION,
+            "dry_run": request.dry_run,
+            "fallback_keywords": request.fallback_keywords,
+            "candidates": candidates.len(),
+            "gamma_event_hits": gamma_event_hits,
+            "gamma_market_hits": gamma_market_hits,
+            "fallback_hits": fallback_hits,
+            "dry_run_updates": dry_run_updates,
+            "updated_trades": updated_trades,
+            "errors": errors,
+            "error_count": error_count
+        }))
+    }
+
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError> {
         self.venues
             .for_mode(ExecutionMode::Live)
@@ -1025,6 +1162,7 @@ async fn main() -> Result<()> {
     if config.http.enabled {
         let control: control_http::SharedControlApi = Arc::new(RuntimeControl {
             store: store.clone(),
+            gamma: gamma.clone(),
             data_api: data_api.clone(),
             clob: clob.clone(),
             venues: venues.clone(),
@@ -1407,6 +1545,13 @@ async fn poll_live_whales_once(
             store.ensure_whale_wallet(&trade).await?;
             if store.upsert_whale_trade(&trade).await? {
                 store.record_wallet_observed_trade(&trade).await?;
+                if let Err(error) = store.apply_cached_taxonomy_to_trade(&trade).await {
+                    warn!(
+                        error = %error,
+                        trade_id = %trade.trade_id,
+                        "failed to apply cached Gamma taxonomy to live wallet trade"
+                    );
+                }
             } else if let Some(existing_trade) = store.fetch_whale_trade_by_identity(&trade).await?
             {
                 trade = existing_trade;

@@ -16,12 +16,14 @@ use crate::{
     models::{
         BackfillJob, BackfillJobStatus, ConversionRequest, ConversionResult,
         CopyTradeBacktestResult, CopyTradeBacktestRun, CopyTradeSignal, DataApiClosedPosition,
-        FillRecord, Market, OrderRecord, OrderRequest, OrderState, OutcomeToken, SignalCandidate,
-        TradingProcess, TradingProcessConfig, WalletPerformance, WalletScore,
-        WalletScoreCalibrationSnapshot, WalletSegmentPerformance, WhalePollCheckpoint, WhaleTrade,
+        FillRecord, GammaMarketMetadata, Market, OrderRecord, OrderRequest, OrderState,
+        OutcomeToken, SignalCandidate, TradingProcess, TradingProcessConfig, WalletPerformance,
+        WalletScore, WalletScoreCalibrationSnapshot, WalletSegmentPerformance,
+        WalletTradeTaxonomyCandidate, WalletTradeTaxonomyUpdate, WhalePollCheckpoint, WhaleTrade,
     },
     orderbook::LocalOrderBook,
     segments::{score_wallet_segments_from_samples, MRS_SEGMENT_SCORE_VERSION},
+    taxonomy::{cache_key, taxonomy_update_from_metadata, GAMMA_TAXONOMY_VERSION},
     wallets::{score_mrs, MrsScoreInput, MRS_SCORE_VERSION},
 };
 
@@ -4287,6 +4289,211 @@ impl Store {
         Ok(())
     }
 
+    pub async fn upsert_gamma_market_metadata(&self, metadata: &GammaMarketMetadata) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO polymarket.gamma_market_metadata (
+              cache_key, lookup_type, lookup_slug, event_slug, market_slug,
+              gamma_event_id, gamma_market_id, category, series_slug, tag_slugs,
+              sport_key, taxonomy_segment, taxonomy_source, taxonomy_confidence,
+              taxonomy_version, raw_payload, fetched_at, updated_at
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now())
+            ON CONFLICT (cache_key) DO UPDATE SET
+              lookup_type = EXCLUDED.lookup_type,
+              lookup_slug = EXCLUDED.lookup_slug,
+              event_slug = EXCLUDED.event_slug,
+              market_slug = EXCLUDED.market_slug,
+              gamma_event_id = EXCLUDED.gamma_event_id,
+              gamma_market_id = EXCLUDED.gamma_market_id,
+              category = EXCLUDED.category,
+              series_slug = EXCLUDED.series_slug,
+              tag_slugs = EXCLUDED.tag_slugs,
+              sport_key = EXCLUDED.sport_key,
+              taxonomy_segment = EXCLUDED.taxonomy_segment,
+              taxonomy_source = EXCLUDED.taxonomy_source,
+              taxonomy_confidence = EXCLUDED.taxonomy_confidence,
+              taxonomy_version = EXCLUDED.taxonomy_version,
+              raw_payload = EXCLUDED.raw_payload,
+              fetched_at = EXCLUDED.fetched_at,
+              updated_at = now()
+            "#,
+        )
+        .bind(&metadata.cache_key)
+        .bind(&metadata.lookup_type)
+        .bind(&metadata.lookup_slug)
+        .bind(&metadata.event_slug)
+        .bind(&metadata.market_slug)
+        .bind(&metadata.gamma_event_id)
+        .bind(&metadata.gamma_market_id)
+        .bind(&metadata.category)
+        .bind(&metadata.series_slug)
+        .bind(&metadata.tag_slugs)
+        .bind(&metadata.sport_key)
+        .bind(&metadata.taxonomy_segment)
+        .bind(&metadata.taxonomy_source)
+        .bind(metadata.taxonomy_confidence)
+        .bind(&metadata.taxonomy_version)
+        .bind(&metadata.raw_payload)
+        .bind(metadata.fetched_at)
+        .execute(&self.pool)
+        .await
+        .context("failed to upsert Gamma market metadata")?;
+        Ok(())
+    }
+
+    pub async fn fetch_gamma_market_metadata_by_lookup(
+        &self,
+        lookup_type: &str,
+        lookup_slug: &str,
+    ) -> Result<Option<GammaMarketMetadata>> {
+        let row = sqlx::query_as::<_, GammaMarketMetadataRow>(
+            r#"
+            SELECT cache_key, lookup_type, lookup_slug, event_slug, market_slug,
+              gamma_event_id, gamma_market_id, category, series_slug, tag_slugs,
+              sport_key, taxonomy_segment, taxonomy_source, taxonomy_confidence,
+              taxonomy_version, raw_payload, fetched_at
+            FROM polymarket.gamma_market_metadata
+            WHERE cache_key = $1
+            LIMIT 1
+            "#,
+        )
+        .bind(cache_key(lookup_type, lookup_slug))
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to fetch Gamma market metadata")?;
+        Ok(row.map(Into::into))
+    }
+
+    pub async fn fetch_unresolved_wallet_trade_taxonomy_candidates(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<WalletTradeTaxonomyCandidate>> {
+        let rows = sqlx::query_as::<_, WalletTradeTaxonomyCandidateRow>(
+            r#"
+            SELECT trade_id, title, slug, event_slug, market_id, condition_id, asset, raw_payload
+            FROM polymarket.wallet_trades
+            WHERE taxonomy_version IS NULL
+              AND (event_slug IS NOT NULL OR slug IS NOT NULL)
+            ORDER BY timestamp_utc DESC
+            LIMIT $1
+            "#,
+        )
+        .bind(limit.clamp(1, 10_000))
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch unresolved wallet trade taxonomy candidates")?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn update_wallet_trade_taxonomy(
+        &self,
+        update: &WalletTradeTaxonomyUpdate,
+    ) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            UPDATE polymarket.wallet_trades
+            SET
+              taxonomy_segment = $2,
+              taxonomy_source = $3,
+              taxonomy_confidence = $4,
+              taxonomy_version = $5,
+              taxonomy_fetched_at = $6,
+              taxonomy_metadata = $7
+            WHERE trade_id = $1
+            "#,
+        )
+        .bind(update.trade_id)
+        .bind(&update.taxonomy_segment)
+        .bind(&update.taxonomy_source)
+        .bind(update.taxonomy_confidence)
+        .bind(&update.taxonomy_version)
+        .bind(update.taxonomy_fetched_at)
+        .bind(&update.taxonomy_metadata)
+        .execute(&self.pool)
+        .await
+        .context("failed to update wallet trade taxonomy")?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn apply_cached_taxonomy_to_trade(&self, trade: &WhaleTrade) -> Result<bool> {
+        let candidate = WalletTradeTaxonomyCandidate {
+            trade_id: trade.trade_id,
+            title: trade.title.clone(),
+            slug: trade.slug.clone(),
+            event_slug: trade.event_slug.clone(),
+            market_id: trade.market_id.clone(),
+            condition_id: trade.condition_id.clone(),
+            asset: trade.asset.clone(),
+            raw_payload: trade.raw_payload.clone(),
+        };
+        let mut metadata = if let Some(event_slug) = trade.event_slug.as_deref() {
+            self.fetch_gamma_market_metadata_by_lookup("event_slug", event_slug)
+                .await?
+        } else {
+            None
+        };
+        if metadata.is_none() {
+            if let Some(slug) = trade.slug.as_deref() {
+                metadata = self
+                    .fetch_gamma_market_metadata_by_lookup("market_slug", slug)
+                    .await?;
+            }
+        }
+        let Some(metadata) = metadata else {
+            return Ok(false);
+        };
+        let Some(update) = taxonomy_update_from_metadata(&candidate, &metadata) else {
+            return Ok(false);
+        };
+        Ok(self.update_wallet_trade_taxonomy(&update).await? > 0)
+    }
+
+    pub async fn wallet_trade_taxonomy_status(&self) -> Result<serde_json::Value> {
+        let value = sqlx::query_scalar::<_, serde_json::Value>(
+            r#"
+            WITH totals AS (
+              SELECT
+                count(*)::integer AS total_trades,
+                count(*) FILTER (WHERE taxonomy_version = $1)::integer AS labeled_trades,
+                count(*) FILTER (WHERE taxonomy_source = 'gamma')::integer AS gamma_labeled_trades,
+                count(*) FILTER (WHERE taxonomy_source = 'keyword_fallback')::integer AS fallback_labeled_trades,
+                count(*) FILTER (WHERE taxonomy_segment = 'other')::integer AS other_labeled_trades,
+                count(*) FILTER (WHERE taxonomy_version IS NULL)::integer AS unresolved_trades
+              FROM polymarket.wallet_trades
+            ),
+            cache AS (
+              SELECT
+                count(*)::integer AS cached_metadata,
+                count(*) FILTER (WHERE lookup_type = 'event_slug')::integer AS cached_events,
+                count(*) FILTER (WHERE lookup_type = 'market_slug')::integer AS cached_markets
+              FROM polymarket.gamma_market_metadata
+            ),
+            top_segments AS (
+              SELECT taxonomy_segment, taxonomy_source, count(*)::integer AS trades
+              FROM polymarket.wallet_trades
+              WHERE taxonomy_version = $1
+              GROUP BY taxonomy_segment, taxonomy_source
+              ORDER BY trades DESC, taxonomy_segment
+              LIMIT 25
+            )
+            SELECT jsonb_build_object(
+              'taxonomy_version', $1,
+              'totals', to_jsonb(totals),
+              'cache', to_jsonb(cache),
+              'top_segments', COALESCE((SELECT jsonb_agg(to_jsonb(top_segments)) FROM top_segments), '[]'::jsonb),
+              'updated_at', now()
+            )
+            FROM totals, cache
+            "#,
+        )
+        .bind(GAMMA_TAXONOMY_VERSION)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to build wallet trade taxonomy status")?;
+        Ok(value)
+    }
+
     pub async fn fetch_recent_whale_trades(&self, since: DateTime<Utc>) -> Result<Vec<WhaleTrade>> {
         let rows = sqlx::query_as::<_, WhaleTradeRow>(
             r#"
@@ -5259,6 +5466,78 @@ struct WhaleTradeRow {
     event_slug: Option<String>,
     transaction_hash: Option<String>,
     raw_payload: serde_json::Value,
+}
+
+#[derive(sqlx::FromRow)]
+struct GammaMarketMetadataRow {
+    cache_key: String,
+    lookup_type: String,
+    lookup_slug: String,
+    event_slug: Option<String>,
+    market_slug: Option<String>,
+    gamma_event_id: Option<String>,
+    gamma_market_id: Option<String>,
+    category: Option<String>,
+    series_slug: Option<String>,
+    tag_slugs: Vec<String>,
+    sport_key: Option<String>,
+    taxonomy_segment: Option<String>,
+    taxonomy_source: String,
+    taxonomy_confidence: Decimal,
+    taxonomy_version: String,
+    raw_payload: serde_json::Value,
+    fetched_at: DateTime<Utc>,
+}
+
+impl From<GammaMarketMetadataRow> for GammaMarketMetadata {
+    fn from(row: GammaMarketMetadataRow) -> Self {
+        Self {
+            cache_key: row.cache_key,
+            lookup_type: row.lookup_type,
+            lookup_slug: row.lookup_slug,
+            event_slug: row.event_slug,
+            market_slug: row.market_slug,
+            gamma_event_id: row.gamma_event_id,
+            gamma_market_id: row.gamma_market_id,
+            category: row.category,
+            series_slug: row.series_slug,
+            tag_slugs: row.tag_slugs,
+            sport_key: row.sport_key,
+            taxonomy_segment: row.taxonomy_segment,
+            taxonomy_source: row.taxonomy_source,
+            taxonomy_confidence: row.taxonomy_confidence,
+            taxonomy_version: row.taxonomy_version,
+            raw_payload: row.raw_payload,
+            fetched_at: row.fetched_at,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct WalletTradeTaxonomyCandidateRow {
+    trade_id: Uuid,
+    title: Option<String>,
+    slug: Option<String>,
+    event_slug: Option<String>,
+    market_id: Option<String>,
+    condition_id: Option<String>,
+    asset: String,
+    raw_payload: serde_json::Value,
+}
+
+impl From<WalletTradeTaxonomyCandidateRow> for WalletTradeTaxonomyCandidate {
+    fn from(row: WalletTradeTaxonomyCandidateRow) -> Self {
+        Self {
+            trade_id: row.trade_id,
+            title: row.title,
+            slug: row.slug,
+            event_slug: row.event_slug,
+            market_id: row.market_id,
+            condition_id: row.condition_id,
+            asset: row.asset,
+            raw_payload: row.raw_payload,
+        }
+    }
 }
 
 impl From<WhaleTradeRow> for WhaleTrade {
