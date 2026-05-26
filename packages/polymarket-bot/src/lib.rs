@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 pub mod account_reconcile;
 pub mod backfill;
 pub mod clob;

@@ -7,7 +7,9 @@ use rust_decimal_macros::dec;
 use crate::models::{DataApiClosedPosition, WalletSegmentPerformance, WhaleTrade};
 
 pub const SEGMENT_CLASSIFIER_VERSION: &str = "segment_rules_v1";
+pub const GAMMA_SEGMENT_CLASSIFIER_VERSION: &str = "gamma_taxonomy_v1";
 pub const MRS_SEGMENT_SCORE_VERSION: &str = "mrs_segment_v1";
+pub const MRS_SEGMENT_V2_SCORE_VERSION: &str = "mrs_segment_v2";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SegmentClassification {
@@ -63,6 +65,106 @@ pub fn classify_trade_segment(trade: &WhaleTrade) -> SegmentClassification {
         event_slug: trade.event_slug.as_deref(),
         question: None,
     })
+}
+
+pub fn classify_gamma_taxonomy_segment(
+    taxonomy_segment: &str,
+    taxonomy_confidence: Decimal,
+    source_fields: serde_json::Value,
+) -> Option<SegmentClassification> {
+    let segment_key = normalize_gamma_segment_key(taxonomy_segment)?;
+    Some(SegmentClassification {
+        segment_key,
+        classifier_version: GAMMA_SEGMENT_CLASSIFIER_VERSION.to_string(),
+        confidence: taxonomy_confidence,
+        matched_rule: "gamma_taxonomy".to_string(),
+        matched_terms: vec![taxonomy_segment.to_string()],
+        source_fields,
+    })
+}
+
+pub fn normalize_gamma_segment_key(taxonomy_segment: &str) -> Option<String> {
+    let raw = taxonomy_segment.trim().to_ascii_lowercase();
+    if let Some(canonical) = normalize_canonical_gamma_segment_key(&raw) {
+        return Some(canonical.to_string());
+    }
+
+    let segment = raw.replace('_', "-");
+    let value = segment
+        .strip_prefix("series.")
+        .or_else(|| segment.strip_prefix("tag."))
+        .or_else(|| segment.strip_prefix("category."))
+        .unwrap_or(segment.as_str());
+
+    let normalized = match value {
+        "btc-up-or-down-5m" | "btc-up-or-down-15m" => "crypto.bitcoin.short_interval",
+        "btc-up-or-down-hourly" => "crypto.bitcoin.hourly",
+        "btc-multi-strikes-weekly" | "bitcoin-hit-price-monthly" => "crypto.bitcoin",
+        "eth-up-or-down-5m" | "eth-up-or-down-15m" => "crypto.ethereum.short_interval",
+        "eth-up-or-down-hourly" => "crypto.ethereum.hourly",
+        "crypto" => "crypto.general",
+        "bitcoin" | "btc" => "crypto.bitcoin",
+        "ethereum" | "eth" => "crypto.ethereum",
+        "mlb" => "sports.mlb",
+        "nba" | "nba-2025" | "nba-2026" => "sports.nba",
+        "wnba" | "wnba-2025" | "wnba-2026" => "sports.wnba",
+        "nhl" | "nhl-2025" | "nhl-2026" => "sports.nhl",
+        "nfl" | "nfl-2025" | "nfl-2026" => "sports.nfl",
+        "atp" => "sports.tennis.atp",
+        "wta" => "sports.tennis.wta",
+        "soccer" | "sports" => "sports.general",
+        "league-of-legends" => "esports.league_of_legends",
+        "dota-2" => "esports.dota2",
+        "iran" | "iran-regime" | "hormuz-traffic-returns-to-normal" => "geopolitics.iran",
+        "geopolitics" => "geopolitics.general",
+        "world-elections" | "elections" => "politics.elections",
+        "politics" => "politics.general",
+        "fomc" => "macro.fed",
+        "brazil" => "politics.brazil",
+        "elon-tweets" => "culture.elon",
+        _ => return None,
+    };
+
+    Some(normalized.to_string())
+}
+
+fn normalize_canonical_gamma_segment_key(segment_key: &str) -> Option<&'static str> {
+    match segment_key {
+        "crypto.general" => Some("crypto.general"),
+        "crypto.bitcoin" => Some("crypto.bitcoin"),
+        "crypto.bitcoin.short_interval" | "crypto.bitcoin.short-interval" => {
+            Some("crypto.bitcoin.short_interval")
+        }
+        "crypto.bitcoin.hourly" => Some("crypto.bitcoin.hourly"),
+        "crypto.ethereum" => Some("crypto.ethereum"),
+        "crypto.ethereum.short_interval" | "crypto.ethereum.short-interval" => {
+            Some("crypto.ethereum.short_interval")
+        }
+        "crypto.ethereum.hourly" => Some("crypto.ethereum.hourly"),
+        "crypto.solana" => Some("crypto.solana"),
+        "crypto.xrp" => Some("crypto.xrp"),
+        "crypto.dogecoin" => Some("crypto.dogecoin"),
+        "sports.general" => Some("sports.general"),
+        "sports.mlb" => Some("sports.mlb"),
+        "sports.nba" => Some("sports.nba"),
+        "sports.wnba" => Some("sports.wnba"),
+        "sports.nhl" => Some("sports.nhl"),
+        "sports.nfl" => Some("sports.nfl"),
+        "sports.tennis.atp" => Some("sports.tennis.atp"),
+        "sports.tennis.wta" => Some("sports.tennis.wta"),
+        "esports.league_of_legends" | "esports.league-of-legends" => {
+            Some("esports.league_of_legends")
+        }
+        "esports.dota2" => Some("esports.dota2"),
+        "geopolitics.general" => Some("geopolitics.general"),
+        "geopolitics.iran" => Some("geopolitics.iran"),
+        "politics.general" => Some("politics.general"),
+        "politics.elections" => Some("politics.elections"),
+        "politics.brazil" => Some("politics.brazil"),
+        "macro.fed" => Some("macro.fed"),
+        "culture.elon" => Some("culture.elon"),
+        _ => None,
+    }
 }
 
 pub fn classify_closed_position_segment(position: &DataApiClosedPosition) -> SegmentClassification {
@@ -505,6 +607,67 @@ mod tests {
         });
         assert_eq!(classification.segment_key, "other");
         assert_eq!(classification.matched_rule, "fallback_other");
+    }
+
+    #[test]
+    fn gamma_taxonomy_normalizes_specific_segments() {
+        assert_eq!(
+            normalize_gamma_segment_key("series.btc-up-or-down-5m").as_deref(),
+            Some("crypto.bitcoin.short_interval")
+        );
+        assert_eq!(
+            normalize_gamma_segment_key("crypto.bitcoin.short_interval").as_deref(),
+            Some("crypto.bitcoin.short_interval")
+        );
+        assert_eq!(
+            normalize_gamma_segment_key("series.mlb").as_deref(),
+            Some("sports.mlb")
+        );
+        assert_eq!(
+            normalize_gamma_segment_key("series.nba-2026").as_deref(),
+            Some("sports.nba")
+        );
+        assert_eq!(
+            normalize_gamma_segment_key("series.atp").as_deref(),
+            Some("sports.tennis.atp")
+        );
+        assert_eq!(
+            normalize_gamma_segment_key("esports.league_of_legends").as_deref(),
+            Some("esports.league_of_legends")
+        );
+        assert_eq!(
+            normalize_gamma_segment_key("series.league-of-legends").as_deref(),
+            Some("esports.league_of_legends")
+        );
+        assert_eq!(
+            normalize_gamma_segment_key("tag.iran").as_deref(),
+            Some("geopolitics.iran")
+        );
+        assert_eq!(
+            normalize_gamma_segment_key("tag.elections").as_deref(),
+            Some("politics.elections")
+        );
+        assert_eq!(
+            normalize_gamma_segment_key("tag.politics").as_deref(),
+            Some("politics.general")
+        );
+        assert_eq!(normalize_gamma_segment_key("series.some-new-label"), None);
+    }
+
+    #[test]
+    fn gamma_taxonomy_classification_uses_gamma_version() {
+        let classification = classify_gamma_taxonomy_segment(
+            "series.btc-up-or-down-hourly",
+            dec!(0.75),
+            serde_json::json!({"source": "test"}),
+        )
+        .expect("classification");
+        assert_eq!(classification.segment_key, "crypto.bitcoin.hourly");
+        assert_eq!(
+            classification.classifier_version,
+            GAMMA_SEGMENT_CLASSIFIER_VERSION
+        );
+        assert_eq!(classification.confidence, dec!(0.75));
     }
 
     #[test]

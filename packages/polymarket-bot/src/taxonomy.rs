@@ -4,7 +4,10 @@ use rust_decimal_macros::dec;
 
 use crate::{
     models::{GammaMarketMetadata, WalletTradeTaxonomyCandidate, WalletTradeTaxonomyUpdate},
-    segments::{classify_segment, SegmentText},
+    segments::{
+        classify_segment, SegmentText, GAMMA_SEGMENT_CLASSIFIER_VERSION,
+        MRS_SEGMENT_V2_SCORE_VERSION,
+    },
 };
 
 pub const GAMMA_TAXONOMY_VERSION: &str = "gamma_taxonomy_v1";
@@ -119,6 +122,8 @@ pub fn taxonomy_update_from_metadata(
         taxonomy_fetched_at: metadata.fetched_at,
         taxonomy_metadata: serde_json::json!({
             "source": metadata.taxonomy_source,
+            "classifier_version": GAMMA_SEGMENT_CLASSIFIER_VERSION,
+            "segment_key_schema": MRS_SEGMENT_V2_SCORE_VERSION,
             "category": metadata.category,
             "series_slug": metadata.series_slug,
             "tag_slugs": metadata.tag_slugs,
@@ -160,6 +165,19 @@ pub fn cache_key(lookup_type: &str, slug: &str) -> String {
     format!("{}:{}", lookup_type, slug.trim().to_ascii_lowercase())
 }
 
+pub fn normalize_gamma_taxonomy_label(label: &str) -> Option<String> {
+    let (kind, slug) = label.split_once('.')?;
+    let kind = normalize_key(kind)?;
+    let slug = normalize_key(slug)?;
+
+    match kind.as_str() {
+        "series" => normalize_gamma_series_slug(&slug),
+        "tag" => normalize_gamma_tag_slug(&slug),
+        "category" => normalize_gamma_category(&slug),
+        _ => None,
+    }
+}
+
 fn derive_taxonomy_segment(
     category: Option<&str>,
     series_slug: Option<&str>,
@@ -169,32 +187,115 @@ fn derive_taxonomy_segment(
     let category = category.and_then(normalize_key);
     let series_slug = series_slug.and_then(normalize_key);
     let sport_key = sport_key.and_then(normalize_key);
+    let normalized_series = series_slug
+        .as_deref()
+        .and_then(|slug| normalize_gamma_series_slug(slug));
+    let normalized_sport = sport_key
+        .as_deref()
+        .and_then(|slug| normalize_gamma_series_slug(slug));
+    let normalized_tag = tag_slugs
+        .iter()
+        .find_map(|tag| normalize_gamma_tag_slug(tag));
     let priority_tag = tag_slugs.iter().find_map(|tag| priority_tag_segment(tag));
 
-    if let Some(category) = category {
+    if let Some(category) = category.as_deref() {
         if category == "sports" {
-            if let Some(series_slug) = series_slug.or(sport_key) {
+            if let Some(segment) = normalized_series.or(normalized_sport) {
+                return (Some(segment), dec!(1.0));
+            }
+            if let Some(series_slug) = series_slug.as_ref().or(sport_key.as_ref()) {
                 return (Some(format!("sports.{series_slug}")), dec!(1.0));
             }
             return (Some("sports".to_string()), dec!(0.90));
         }
         if category == "crypto" {
+            if let Some(segment) = normalized_series {
+                return (Some(segment), dec!(1.0));
+            }
+            if let Some(segment) = normalized_tag.filter(|segment| segment.starts_with("crypto.")) {
+                return (Some(segment), dec!(0.95));
+            }
             if let Some(tag) = priority_tag {
                 return (Some(format!("crypto.{tag}")), dec!(0.95));
             }
             return (Some("crypto".to_string()), dec!(0.90));
         }
-        return (Some(category), dec!(0.90));
+        if category == "politics" {
+            if let Some(segment) = normalized_tag.filter(|segment| segment.starts_with("politics."))
+            {
+                return (Some(segment), dec!(0.95));
+            }
+            return (Some("politics.general".to_string()), dec!(0.90));
+        }
+        if let Some(segment) = normalized_tag.or_else(|| normalize_gamma_category(category)) {
+            return (Some(segment), dec!(0.90));
+        }
+        return (Some(category.to_string()), dec!(0.90));
     }
 
+    if let Some(segment) = normalized_series {
+        return (Some(segment), dec!(0.85));
+    }
     if let Some(series_slug) = series_slug {
         return (Some(format!("series.{series_slug}")), dec!(0.75));
+    }
+    if let Some(segment) = normalized_tag {
+        return (Some(segment), dec!(0.80));
     }
     if let Some(tag) = priority_tag.or_else(|| tag_slugs.iter().find_map(|tag| normalize_key(tag)))
     {
         return (Some(format!("tag.{tag}")), dec!(0.70));
     }
     (None, Decimal::ZERO)
+}
+
+fn normalize_gamma_series_slug(slug: &str) -> Option<String> {
+    match slug {
+        "btc-up-or-down-5m" => Some("crypto.bitcoin.short_interval".to_string()),
+        "btc-up-or-down-15m" => Some("crypto.bitcoin.short_interval".to_string()),
+        "btc-up-or-down-hourly" => Some("crypto.bitcoin.hourly".to_string()),
+        "btc-multi-strikes-weekly" | "bitcoin-hit-price-monthly" => {
+            Some("crypto.bitcoin".to_string())
+        }
+        "eth-up-or-down-5m" | "eth-up-or-down-15m" => {
+            Some("crypto.ethereum.short_interval".to_string())
+        }
+        "eth-up-or-down-hourly" => Some("crypto.ethereum.hourly".to_string()),
+        "mlb" => Some("sports.mlb".to_string()),
+        "nba" | "nba-2025" | "nba-2026" => Some("sports.nba".to_string()),
+        "wnba" | "wnba-2025" | "wnba-2026" => Some("sports.wnba".to_string()),
+        "nfl" | "nfl-2025" | "nfl-2026" => Some("sports.nfl".to_string()),
+        "nhl" | "nhl-2025" | "nhl-2026" => Some("sports.nhl".to_string()),
+        "atp" => Some("sports.tennis.atp".to_string()),
+        "wta" => Some("sports.tennis.wta".to_string()),
+        "league-of-legends" => Some("esports.league_of_legends".to_string()),
+        "dota-2" => Some("esports.dota2".to_string()),
+        "iran-regime" | "hormuz-traffic-returns-to-normal" => Some("geopolitics.iran".to_string()),
+        "fomc" => Some("macro.fed".to_string()),
+        "elon-tweets" => Some("culture.elon".to_string()),
+        _ => None,
+    }
+}
+
+fn normalize_gamma_tag_slug(slug: &str) -> Option<String> {
+    match slug {
+        "iran" => Some("geopolitics.iran".to_string()),
+        "politics" => Some("politics.general".to_string()),
+        "election" | "elections" => Some("politics.elections".to_string()),
+        "bitcoin" | "btc" => Some("crypto.bitcoin".to_string()),
+        "ethereum" | "eth" => Some("crypto.ethereum".to_string()),
+        "solana" | "sol" => Some("crypto.solana".to_string()),
+        "xrp" => Some("crypto.xrp".to_string()),
+        "dogecoin" | "doge" => Some("crypto.dogecoin".to_string()),
+        _ => normalize_gamma_series_slug(slug),
+    }
+}
+
+fn normalize_gamma_category(category: &str) -> Option<String> {
+    match category {
+        "politics" => Some("politics.general".to_string()),
+        _ => None,
+    }
 }
 
 fn priority_tag_segment(tag: &str) -> Option<String> {
@@ -261,6 +362,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn normalizes_known_gamma_taxonomy_labels_to_segment_keys() {
+        let cases = [
+            ("series.btc-up-or-down-5m", "crypto.bitcoin.short_interval"),
+            ("series.btc-up-or-down-hourly", "crypto.bitcoin.hourly"),
+            ("series.mlb", "sports.mlb"),
+            ("series.atp", "sports.tennis.atp"),
+            ("series.wta", "sports.tennis.wta"),
+            ("series.league-of-legends", "esports.league_of_legends"),
+            ("series.dota-2", "esports.dota2"),
+            ("tag.iran", "geopolitics.iran"),
+            ("tag.politics", "politics.general"),
+            ("tag.elections", "politics.elections"),
+        ];
+
+        for (label, expected) in cases {
+            assert_eq!(
+                normalize_gamma_taxonomy_label(label).as_deref(),
+                Some(expected),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn leaves_unknown_gamma_taxonomy_labels_unmapped() {
+        assert_eq!(normalize_gamma_taxonomy_label("series.some-new-show"), None);
+        assert_eq!(normalize_gamma_taxonomy_label("topic.elections"), None);
+        assert_eq!(normalize_gamma_taxonomy_label("elections"), None);
+    }
+
+    #[test]
     fn derives_sports_series_segment_from_gamma_event() {
         let metadata = metadata_from_gamma_event(
             "nba-event",
@@ -276,6 +408,66 @@ mod tests {
 
         assert_eq!(metadata.taxonomy_segment.as_deref(), Some("sports.nba"));
         assert_eq!(metadata.taxonomy_confidence, dec!(1.0));
+    }
+
+    #[test]
+    fn derives_crypto_interval_segment_from_gamma_series() {
+        let metadata = metadata_from_gamma_event(
+            "btc-up-or-down-5m-event",
+            &serde_json::json!({
+                "id": "btc-5m",
+                "slug": "btc-up-or-down-5m-event",
+                "category": "Crypto",
+                "series": [{"slug": "btc-up-or-down-5m"}],
+                "tags": [{"slug": "bitcoin"}]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            metadata.taxonomy_segment.as_deref(),
+            Some("crypto.bitcoin.short_interval")
+        );
+        assert_eq!(metadata.taxonomy_confidence, dec!(1.0));
+    }
+
+    #[test]
+    fn derives_politics_segment_from_gamma_tag() {
+        let metadata = metadata_from_gamma_market(
+            "election-market",
+            &serde_json::json!({
+                "id": "3",
+                "slug": "election-market",
+                "category": "Politics",
+                "tags": [{"slug": "elections"}]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            metadata.taxonomy_segment.as_deref(),
+            Some("politics.elections")
+        );
+        assert_eq!(metadata.taxonomy_confidence, dec!(0.95));
+    }
+
+    #[test]
+    fn derives_geopolitics_segment_from_gamma_tag_without_category() {
+        let metadata = metadata_from_gamma_market(
+            "iran-market",
+            &serde_json::json!({
+                "id": "4",
+                "slug": "iran-market",
+                "tags": [{"slug": "iran"}]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            metadata.taxonomy_segment.as_deref(),
+            Some("geopolitics.iran")
+        );
+        assert_eq!(metadata.taxonomy_confidence, dec!(0.80));
     }
 
     #[test]
