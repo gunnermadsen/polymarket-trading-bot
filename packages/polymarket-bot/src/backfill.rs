@@ -10,15 +10,19 @@ use uuid::Uuid;
 use crate::{
     clob::ClobClient,
     copytrade::{
-        evaluate_copy_trade, run_copy_trade_backtest, CopyTradeConfig, CopyTradeMrsScore,
-        CopyTradeSegmentScore, CopyTradeWalletPerformance, ObservedMarket, COPY_SCORE_VERSION,
+        evaluate_copy_trade_with_segment, run_copy_trade_backtest, CopyTradeConfig,
+        CopyTradeMrsScore, CopyTradeSegmentScore, CopyTradeWalletPerformance, ObservedMarket,
+        COPY_SCORE_VERSION,
     },
     data_api::{ClosedPositionsQuery, DataApiClient, TradesQuery},
     execution::{execute_order_plan, ExecutionVenue, OrderPlan, OrderPlanReport},
     models::{
         BackfillJobStatus, CopyTradeBacktestRun, DataApiClosedPosition, OrderState, WhaleTrade,
     },
-    segments::{classify_trade_segment, score_wallet_segments_from_samples},
+    segments::{
+        classify_trade_segment, score_wallet_segments_from_samples,
+        GAMMA_SEGMENT_CLASSIFIER_VERSION,
+    },
     store::{OrderbookSnapshot, Store, TradeMarkSourceFailure},
     trade_pnl::{refresh_trade_pnl_with_config, TradePnlConfig},
     wallets::{
@@ -773,7 +777,15 @@ pub async fn run_copy_trade_signal_engine(
                 .get(&trade.proxy_wallet)
                 .and_then(|score| score.as_ref())
         };
-        let segment_classification = classify_trade_segment(trade);
+        let segment_classification =
+            if copy_config.segment_classifier_version == GAMMA_SEGMENT_CLASSIFIER_VERSION {
+                store
+                    .fetch_wallet_trade_gamma_segment_classification(trade.trade_id)
+                    .await?
+                    .unwrap_or_else(|| classify_trade_segment(trade))
+            } else {
+                classify_trade_segment(trade)
+            };
         if !dry_run
             && copy_config.segment_scoring_enabled
             && !persisted_segment_by_wallet_segment.contains_key(&(
@@ -804,15 +816,16 @@ pub async fn run_copy_trade_signal_engine(
             persisted_segment_by_wallet_segment
                 .get(&(
                     trade.proxy_wallet.clone(),
-                    segment_classification.segment_key,
+                    segment_classification.segment_key.clone(),
                 ))
                 .and_then(|score| score.as_ref())
         };
-        let decision = evaluate_copy_trade(
+        let decision = evaluate_copy_trade_with_segment(
             trade,
             performance,
             mrs_score,
             segment_score,
+            Some(segment_classification),
             ObservedMarket {
                 observed_price: trade.price,
                 available_depth_usd: trade.cash_value,

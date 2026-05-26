@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{bail, Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,11 @@ use crate::{
         WalletTradeTaxonomyCandidate, WalletTradeTaxonomyUpdate, WhalePollCheckpoint, WhaleTrade,
     },
     orderbook::LocalOrderBook,
-    segments::{score_wallet_segments_from_samples, MRS_SEGMENT_SCORE_VERSION},
+    segments::{
+        classify_gamma_taxonomy_segment, normalize_gamma_segment_key, score_wallet_segment,
+        SegmentClassification, WalletSegmentPerformanceInput, GAMMA_SEGMENT_CLASSIFIER_VERSION,
+        MRS_SEGMENT_V2_SCORE_VERSION,
+    },
     taxonomy::{cache_key, taxonomy_update_from_metadata, GAMMA_TAXONOMY_VERSION},
     wallets::{score_mrs, MrsScoreInput, MRS_SCORE_VERSION},
 };
@@ -4365,6 +4369,79 @@ impl Store {
         Ok(row.map(Into::into))
     }
 
+    pub async fn fetch_wallet_trade_gamma_segment_classification(
+        &self,
+        trade_id: Uuid,
+    ) -> Result<Option<SegmentClassification>> {
+        let row = sqlx::query_as::<_, WalletTradeGammaSegmentRow>(
+            r#"
+            SELECT lower(proxy_wallet) AS proxy_wallet, taxonomy_segment, COALESCE(taxonomy_confidence, 0)::numeric AS taxonomy_confidence,
+              cash_value, timestamp_utc, trade_id, COALESCE(taxonomy_metadata, '{}'::jsonb) AS taxonomy_metadata
+            FROM polymarket.wallet_trades
+            WHERE trade_id = $1
+              AND taxonomy_version = $2
+              AND taxonomy_source = 'gamma'
+              AND taxonomy_segment IS NOT NULL
+            LIMIT 1
+            "#,
+        )
+        .bind(trade_id)
+        .bind(GAMMA_TAXONOMY_VERSION)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to fetch wallet trade Gamma segment classification")?;
+
+        Ok(row.and_then(|row| {
+            classify_gamma_taxonomy_segment(
+                &row.taxonomy_segment,
+                row.taxonomy_confidence,
+                serde_json::json!({
+                    "trade_id": row.trade_id,
+                    "taxonomy_segment": row.taxonomy_segment,
+                    "taxonomy_metadata": row.taxonomy_metadata
+                }),
+            )
+        }))
+    }
+
+    async fn fetch_gamma_segment_lookup_map(&self) -> Result<HashMap<String, String>> {
+        let rows = sqlx::query_as::<_, GammaSegmentLookupRow>(
+            r#"
+            SELECT lookup_slug, event_slug, market_slug, taxonomy_segment, COALESCE(taxonomy_confidence, 0)::numeric AS taxonomy_confidence
+            FROM polymarket.gamma_market_metadata
+            WHERE taxonomy_version = $1
+              AND taxonomy_source = 'gamma'
+              AND taxonomy_segment IS NOT NULL
+            "#,
+        )
+        .bind(GAMMA_TAXONOMY_VERSION)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch Gamma segment lookup map")?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let Some(classification) = classify_gamma_taxonomy_segment(
+                &row.taxonomy_segment,
+                row.taxonomy_confidence,
+                serde_json::json!({
+                    "lookup_slug": row.lookup_slug,
+                    "event_slug": row.event_slug,
+                    "market_slug": row.market_slug
+                }),
+            ) else {
+                continue;
+            };
+            for key in [Some(row.lookup_slug), row.event_slug, row.market_slug]
+                .into_iter()
+                .flatten()
+                .filter(|value| !value.is_empty())
+            {
+                map.insert(key.to_ascii_lowercase(), classification.segment_key.clone());
+            }
+        }
+        Ok(map)
+    }
+
     pub async fn fetch_unresolved_wallet_trade_taxonomy_candidates(
         &self,
         limit: i64,
@@ -4551,6 +4628,7 @@ impl Store {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
+    #[allow(dead_code)]
     async fn fetch_wallet_observed_trades_for_wallets(
         &self,
         proxy_wallets: &[String],
@@ -4587,6 +4665,79 @@ impl Store {
                 .entry(trade.proxy_wallet.to_ascii_lowercase())
                 .or_default()
                 .push(trade);
+        }
+        Ok(by_wallet)
+    }
+
+    async fn fetch_wallet_observed_gamma_segment_inputs(
+        &self,
+        proxy_wallets: &[String],
+        since: DateTime<Utc>,
+    ) -> Result<HashMap<String, HashMap<String, WalletSegmentPerformanceInput>>> {
+        if proxy_wallets.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let wallet_keys = proxy_wallets
+            .iter()
+            .map(|wallet| wallet.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        let rows = sqlx::query_as::<_, WalletTradeGammaSegmentRow>(
+            r#"
+            SELECT lower(proxy_wallet) AS proxy_wallet, taxonomy_segment, COALESCE(taxonomy_confidence, 0)::numeric AS taxonomy_confidence,
+              cash_value, timestamp_utc, trade_id, COALESCE(taxonomy_metadata, '{}'::jsonb) AS taxonomy_metadata
+            FROM polymarket.wallet_trades
+            WHERE lower(proxy_wallet) = ANY($1)
+              AND timestamp_utc >= $2
+              AND taxonomy_version = $3
+              AND taxonomy_source = 'gamma'
+              AND taxonomy_segment IS NOT NULL
+            ORDER BY proxy_wallet, timestamp_utc DESC
+            "#,
+        )
+        .bind(&wallet_keys)
+        .bind(since)
+        .bind(GAMMA_TAXONOMY_VERSION)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch Gamma-labeled observed trades for segment v2 recompute")?;
+
+        let mut by_wallet =
+            HashMap::<String, HashMap<String, WalletSegmentPerformanceInput>>::new();
+        for row in rows {
+            let Some(classification) = classify_gamma_taxonomy_segment(
+                &row.taxonomy_segment,
+                row.taxonomy_confidence,
+                serde_json::json!({
+                    "trade_id": row.trade_id,
+                    "taxonomy_segment": row.taxonomy_segment,
+                    "taxonomy_metadata": row.taxonomy_metadata
+                }),
+            ) else {
+                continue;
+            };
+            let wallet = row.proxy_wallet.to_ascii_lowercase();
+            let entry = by_wallet
+                .entry(wallet.clone())
+                .or_default()
+                .entry(classification.segment_key.clone())
+                .or_insert_with(|| WalletSegmentPerformanceInput {
+                    proxy_wallet: wallet,
+                    segment_key: classification.segment_key.clone(),
+                    classifier_version: classification.classifier_version.clone(),
+                    ..WalletSegmentPerformanceInput::default()
+                });
+            entry.observed_trade_count = entry.observed_trade_count.saturating_add(1);
+            entry.observed_volume_usd += row.cash_value;
+            entry.sample_start = Some(
+                entry
+                    .sample_start
+                    .map_or(row.timestamp_utc, |value| value.min(row.timestamp_utc)),
+            );
+            entry.sample_end = Some(
+                entry
+                    .sample_end
+                    .map_or(row.timestamp_utc, |value| value.max(row.timestamp_utc)),
+            );
         }
         Ok(by_wallet)
     }
@@ -4726,6 +4877,32 @@ impl Store {
         since: DateTime<Utc>,
         limit: i64,
     ) -> Result<u64> {
+        self.recompute_wallet_segment_scores_from_gamma_taxonomy(since, limit)
+            .await
+    }
+
+    pub async fn recompute_wallet_segment_scores_from_gamma_taxonomy(
+        &self,
+        since: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<u64> {
+        let performances = self
+            .compute_wallet_segment_performance_from_gamma_taxonomy(since, limit)
+            .await?;
+        let mut updated = 0u64;
+        for performance in performances {
+            self.upsert_wallet_segment_performance(&performance).await?;
+            updated = updated.saturating_add(1);
+        }
+        Ok(updated)
+    }
+
+    pub async fn recompute_wallet_segment_v2_scores_from_existing(
+        &self,
+        since: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<u64> {
+        let gamma_lookup = self.fetch_gamma_segment_lookup_map().await?;
         let mut updated = 0u64;
         let requested = limit.max(1);
         let batch_size = 50i64;
@@ -4745,7 +4922,7 @@ impl Store {
             .bind(offset)
             .fetch_all(&self.pool)
             .await
-            .context("failed to fetch wallet performance rows for segment recompute")?;
+            .context("failed to fetch wallet performance rows for segment v2 recompute")?;
             if rows.is_empty() {
                 break;
             }
@@ -4754,24 +4931,60 @@ impl Store {
                 .iter()
                 .map(|row| row.proxy_wallet.clone())
                 .collect::<Vec<_>>();
-            let observed_trades_by_wallet = self
-                .fetch_wallet_observed_trades_for_wallets(&wallet_keys, since)
+            let observed_by_wallet = self
+                .fetch_wallet_observed_gamma_segment_inputs(&wallet_keys, since)
                 .await?;
+
             for row in rows {
-                let positions = closed_positions_from_raw_payload(&row.raw_payload)?;
-                let observed_trades = observed_trades_by_wallet
-                    .get(&row.proxy_wallet.to_ascii_lowercase())
-                    .cloned()
-                    .unwrap_or_default();
-                for mut performance in score_wallet_segments_from_samples(
-                    &row.proxy_wallet,
-                    &positions,
-                    observed_trades.as_slice(),
-                ) {
+                let wallet = row.proxy_wallet.to_ascii_lowercase();
+                let mut by_segment = observed_by_wallet.get(&wallet).cloned().unwrap_or_default();
+                for position in closed_positions_from_raw_payload(&row.raw_payload)? {
+                    let Some(segment_key) =
+                        gamma_segment_for_closed_position(&position, &gamma_lookup)
+                    else {
+                        continue;
+                    };
+                    let entry = by_segment.entry(segment_key.clone()).or_insert_with(|| {
+                        WalletSegmentPerformanceInput {
+                            proxy_wallet: wallet.clone(),
+                            segment_key,
+                            classifier_version: GAMMA_SEGMENT_CLASSIFIER_VERSION.to_string(),
+                            ..WalletSegmentPerformanceInput::default()
+                        }
+                    });
+                    let realized_pnl = position.realized_pnl.unwrap_or(Decimal::ZERO);
+                    entry.realized_pnl_usd += realized_pnl;
+                    entry.total_bought_usd += position.total_bought.unwrap_or(Decimal::ZERO);
+                    entry.closed_positions = entry.closed_positions.saturating_add(1);
+                    if realized_pnl > Decimal::ZERO {
+                        entry.winning_positions = entry.winning_positions.saturating_add(1);
+                    }
+                    if let Some(timestamp) = position.timestamp.and_then(timestamp_from_secs) {
+                        entry.sample_start = Some(
+                            entry
+                                .sample_start
+                                .map_or(timestamp, |value| value.min(timestamp)),
+                        );
+                        entry.sample_end = Some(
+                            entry
+                                .sample_end
+                                .map_or(timestamp, |value| value.max(timestamp)),
+                        );
+                    }
+                }
+
+                for input in by_segment.into_values() {
+                    let mut performance =
+                        score_wallet_segment(input).into_wallet_segment_performance();
+                    performance.score_version = MRS_SEGMENT_V2_SCORE_VERSION.to_string();
+                    performance.classifier_version = GAMMA_SEGMENT_CLASSIFIER_VERSION.to_string();
                     performance.metadata = merge_json(
                         performance.metadata,
                         serde_json::json!({
-                            "source": "existing_wallet_performance_segment_recompute",
+                            "source": "gamma_taxonomy_segment_v2_recompute",
+                            "score_basis": MRS_SEGMENT_V2_SCORE_VERSION,
+                            "score_version": MRS_SEGMENT_V2_SCORE_VERSION,
+                            "classifier_version": GAMMA_SEGMENT_CLASSIFIER_VERSION,
                             "sample_updated_at": row.sample_updated_at,
                             "wallet_performance": {
                                 "closed_positions": row.closed_positions,
@@ -4788,7 +5001,83 @@ impl Store {
             }
             offset += batch_size;
         }
+        self.refresh_wallet_segment_v2_percentiles().await?;
         Ok(updated)
+    }
+
+    pub async fn compute_wallet_segment_performance_from_gamma_taxonomy(
+        &self,
+        since: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<WalletSegmentPerformance>> {
+        let rows = sqlx::query_as::<_, GammaWalletSegmentPerformanceInputRow>(
+            r#"
+            WITH eligible_trades AS (
+              SELECT
+                lower(proxy_wallet) AS proxy_wallet,
+                taxonomy_segment AS segment_key,
+                taxonomy_source,
+                taxonomy_confidence,
+                side,
+                cash_value,
+                condition_id,
+                market_id,
+                slug,
+                asset,
+                timestamp_utc
+              FROM polymarket.wallet_trades
+              WHERE timestamp_utc >= $1
+                AND taxonomy_version = $2
+                AND taxonomy_segment IS NOT NULL
+                AND taxonomy_segment <> ''
+            ),
+            ranked_wallets AS (
+              SELECT
+                proxy_wallet,
+                count(*)::integer AS observed_trade_count,
+                COALESCE(sum(cash_value), 0)::numeric AS observed_volume_usd,
+                max(timestamp_utc) AS latest_trade_at
+              FROM eligible_trades
+              GROUP BY proxy_wallet
+              ORDER BY observed_volume_usd DESC, observed_trade_count DESC, latest_trade_at DESC, proxy_wallet
+              LIMIT $3
+            )
+            SELECT
+              trades.proxy_wallet,
+              trades.segment_key,
+              count(*)::integer AS observed_trade_count,
+              COALESCE(sum(trades.cash_value), 0)::numeric AS observed_volume_usd,
+              COALESCE(sum(trades.cash_value) FILTER (WHERE upper(trades.side) = 'BUY'), 0)::numeric AS buy_volume_usd,
+              COALESCE(sum(trades.cash_value) FILTER (WHERE upper(trades.side) = 'SELL'), 0)::numeric AS sell_volume_usd,
+              count(DISTINCT COALESCE(trades.condition_id, trades.market_id, trades.slug, trades.asset))::integer AS observed_market_count,
+              COALESCE(avg(trades.taxonomy_confidence), 0)::numeric AS avg_taxonomy_confidence,
+              min(trades.timestamp_utc) AS sample_start,
+              max(trades.timestamp_utc) AS sample_end,
+              jsonb_build_object(
+                'source', 'wallet_trades_gamma_taxonomy',
+                'taxonomy_version', $2,
+                'taxonomy_sources', COALESCE(
+                  jsonb_agg(DISTINCT trades.taxonomy_source) FILTER (WHERE trades.taxonomy_source IS NOT NULL),
+                  '[]'::jsonb
+                )
+              ) AS taxonomy_metadata
+            FROM eligible_trades trades
+            JOIN ranked_wallets wallets ON wallets.proxy_wallet = trades.proxy_wallet
+            GROUP BY trades.proxy_wallet, trades.segment_key
+            ORDER BY observed_volume_usd DESC, observed_trade_count DESC, trades.proxy_wallet, trades.segment_key
+            "#,
+        )
+        .bind(since)
+        .bind(GAMMA_TAXONOMY_VERSION)
+        .bind(limit.max(1))
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to compute wallet segment performance from Gamma taxonomy")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| row.into_wallet_segment_performance())
+            .collect())
     }
 
     pub async fn upsert_wallet_segment_performance(
@@ -4860,7 +5149,7 @@ impl Store {
               realized_pnl_usd, total_bought_usd, roi, observed_trade_count,
               observed_volume_usd, sample_start, sample_end, metadata
             FROM polymarket.wallet_segment_performance
-            WHERE proxy_wallet = $1
+            WHERE lower(proxy_wallet) = lower($1)
               AND segment_key = $2
               AND score_version = $3
             LIMIT 1
@@ -4875,10 +5164,80 @@ impl Store {
         Ok(row.map(Into::into))
     }
 
+    pub async fn refresh_wallet_segment_v2_percentiles(&self) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            WITH ranked AS (
+              SELECT
+                proxy_wallet,
+                segment_key,
+                score_version,
+                cume_dist() OVER (
+                  PARTITION BY segment_key, score_version
+                  ORDER BY score ASC, realized_pnl_usd ASC, proxy_wallet ASC
+                ) AS segment_percentile,
+                row_number() OVER (
+                  PARTITION BY segment_key, score_version
+                  ORDER BY score DESC, realized_pnl_usd DESC, proxy_wallet ASC
+                ) AS segment_rank,
+                count(*) OVER (PARTITION BY segment_key, score_version) AS segment_wallet_count
+              FROM polymarket.wallet_segment_performance
+              WHERE score_version = $1
+            )
+            UPDATE polymarket.wallet_segment_performance wsp
+            SET metadata = COALESCE(wsp.metadata, '{}'::jsonb)
+                || jsonb_build_object(
+                  'segment_percentile', round(r.segment_percentile::numeric, 6)::text,
+                  'segment_rank', r.segment_rank,
+                  'segment_wallet_count', r.segment_wallet_count
+                ),
+                updated_at = now()
+            FROM ranked r
+            WHERE wsp.proxy_wallet = r.proxy_wallet
+              AND wsp.segment_key = r.segment_key
+              AND wsp.score_version = r.score_version
+            "#,
+        )
+        .bind(MRS_SEGMENT_V2_SCORE_VERSION)
+        .execute(&self.pool)
+        .await
+        .context("failed to refresh wallet segment v2 percentiles")?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn wallet_segment_summary(&self, limit: i64) -> Result<serde_json::Value> {
+        self.wallet_segment_summary_by_version(MRS_SEGMENT_V2_SCORE_VERSION, limit)
+            .await
+    }
+
+    pub async fn wallet_segment_summary_by_version(
+        &self,
+        score_version: &str,
+        limit: i64,
+    ) -> Result<serde_json::Value> {
         let value = sqlx::query_scalar::<_, serde_json::Value>(
             r#"
-            WITH by_segment AS (
+            WITH segment_status AS (
+              SELECT
+                count(*)::integer AS scored_rows,
+                count(DISTINCT proxy_wallet)::integer AS wallets_scored,
+                count(DISTINCT segment_key)::integer AS segments_scored,
+                max(updated_at) AS last_updated_at
+              FROM polymarket.wallet_segment_performance
+              WHERE score_version = $1
+            ),
+            taxonomy_status AS (
+              SELECT
+                count(*) FILTER (WHERE taxonomy_version = $3)::integer AS labeled_trades,
+                count(DISTINCT lower(proxy_wallet)) FILTER (WHERE taxonomy_version = $3)::integer AS wallets_with_labeled_trades,
+                count(DISTINCT taxonomy_segment) FILTER (
+                  WHERE taxonomy_version = $3
+                    AND taxonomy_segment IS NOT NULL
+                    AND taxonomy_segment <> ''
+                )::integer AS taxonomy_segments
+              FROM polymarket.wallet_trades
+            ),
+            by_segment AS (
               SELECT
                 segment_key,
                 count(*)::integer AS wallets_scored,
@@ -4911,18 +5270,33 @@ impl Store {
             )
             SELECT jsonb_build_object(
               'score_version', $1,
+              'taxonomy_version', $3,
+              'status', to_jsonb(segment_status),
+              'taxonomy_status', to_jsonb(taxonomy_status),
               'segments', COALESCE((SELECT jsonb_agg(to_jsonb(by_segment) ORDER BY segment_key) FROM by_segment), '[]'::jsonb),
               'top_wallets', COALESCE((SELECT jsonb_agg(to_jsonb(top_wallets) ORDER BY score DESC, realized_pnl_usd DESC) FROM top_wallets), '[]'::jsonb),
               'updated_at', now()
             )
+            FROM segment_status
+            CROSS JOIN taxonomy_status
             "#,
         )
-        .bind(MRS_SEGMENT_SCORE_VERSION)
+        .bind(score_version)
         .bind(limit.max(1))
+        .bind(GAMMA_TAXONOMY_VERSION)
         .fetch_one(&self.pool)
         .await
         .context("failed to fetch wallet segment summary")?;
         Ok(value)
+    }
+
+    pub async fn wallet_segment_status(
+        &self,
+        score_version: &str,
+        limit: i64,
+    ) -> Result<serde_json::Value> {
+        self.wallet_segment_summary_by_version(score_version, limit)
+            .await
     }
 
     pub async fn upsert_wallet_score(&self, score: &WalletScore) -> Result<()> {
@@ -5469,6 +5843,26 @@ struct WhaleTradeRow {
 }
 
 #[derive(sqlx::FromRow)]
+struct WalletTradeGammaSegmentRow {
+    proxy_wallet: String,
+    taxonomy_segment: String,
+    taxonomy_confidence: Decimal,
+    cash_value: Decimal,
+    timestamp_utc: DateTime<Utc>,
+    trade_id: Uuid,
+    taxonomy_metadata: serde_json::Value,
+}
+
+#[derive(sqlx::FromRow)]
+struct GammaSegmentLookupRow {
+    lookup_slug: String,
+    event_slug: Option<String>,
+    market_slug: Option<String>,
+    taxonomy_segment: String,
+    taxonomy_confidence: Decimal,
+}
+
+#[derive(sqlx::FromRow)]
 struct GammaMarketMetadataRow {
     cache_key: String,
     lookup_type: String,
@@ -5686,6 +6080,77 @@ struct WalletSegmentPerformanceRow {
     metadata: serde_json::Value,
 }
 
+#[derive(sqlx::FromRow)]
+struct GammaWalletSegmentPerformanceInputRow {
+    proxy_wallet: String,
+    segment_key: String,
+    observed_trade_count: i32,
+    observed_volume_usd: Decimal,
+    buy_volume_usd: Decimal,
+    sell_volume_usd: Decimal,
+    observed_market_count: i32,
+    avg_taxonomy_confidence: Decimal,
+    sample_start: Option<DateTime<Utc>>,
+    sample_end: Option<DateTime<Utc>>,
+    taxonomy_metadata: serde_json::Value,
+}
+
+impl GammaWalletSegmentPerformanceInputRow {
+    fn into_wallet_segment_performance(self) -> WalletSegmentPerformance {
+        let taxonomy_confidence = self
+            .avg_taxonomy_confidence
+            .max(Decimal::ZERO)
+            .min(Decimal::ONE);
+        let taxonomy_segment = self.segment_key;
+        let classification = classify_gamma_taxonomy_segment(
+            &taxonomy_segment,
+            taxonomy_confidence,
+            self.taxonomy_metadata.clone(),
+        );
+        let segment_key = classification
+            .as_ref()
+            .map(|classification| classification.segment_key.clone())
+            .or_else(|| normalize_gamma_segment_key(&taxonomy_segment))
+            .unwrap_or_else(|| taxonomy_segment.trim().to_ascii_lowercase());
+        let input = WalletSegmentPerformanceInput {
+            proxy_wallet: self.proxy_wallet,
+            segment_key,
+            classifier_version: GAMMA_SEGMENT_CLASSIFIER_VERSION.to_string(),
+            closed_positions: 0,
+            winning_positions: 0,
+            realized_pnl_usd: Decimal::ZERO,
+            total_bought_usd: self.buy_volume_usd,
+            observed_trade_count: self.observed_trade_count,
+            observed_volume_usd: self.observed_volume_usd,
+            sample_start: self.sample_start,
+            sample_end: self.sample_end,
+        };
+        let mut performance = score_wallet_segment(input).into_wallet_segment_performance();
+        performance.score_version = MRS_SEGMENT_V2_SCORE_VERSION.to_string();
+        performance.confidence = ((performance.confidence * dec!(0.70))
+            + (taxonomy_confidence * dec!(0.30)))
+        .min(Decimal::ONE)
+        .round_dp(4);
+        performance.metadata = merge_json(
+            performance.metadata,
+            serde_json::json!({
+                "source": "wallet_trades_gamma_taxonomy",
+                "score_basis": MRS_SEGMENT_V2_SCORE_VERSION,
+                "score_version": MRS_SEGMENT_V2_SCORE_VERSION,
+                "classifier_version": GAMMA_SEGMENT_CLASSIFIER_VERSION,
+                "raw_taxonomy_segment": taxonomy_segment,
+                "taxonomy_confidence": taxonomy_confidence,
+                "observed_market_count": self.observed_market_count,
+                "buy_volume_usd": self.buy_volume_usd,
+                "sell_volume_usd": self.sell_volume_usd,
+                "closed_positions_basis": "not_inferred_from_wallet_trades",
+                "taxonomy": self.taxonomy_metadata
+            }),
+        );
+        performance
+    }
+}
+
 impl From<WalletSegmentPerformanceRow> for WalletSegmentPerformance {
     fn from(row: WalletSegmentPerformanceRow) -> Self {
         Self {
@@ -5799,6 +6264,32 @@ fn push_position_mismatch(
         delta_size,
         mismatch_type: mismatch_type.to_string(),
     });
+}
+
+fn gamma_segment_for_closed_position(
+    position: &DataApiClosedPosition,
+    lookup: &HashMap<String, String>,
+) -> Option<String> {
+    [
+        position.slug.as_deref(),
+        position.event_slug.as_deref(),
+        position.condition_id.as_deref(),
+        position.asset.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|key| {
+        let key = key.to_ascii_lowercase();
+        lookup
+            .get(&key)
+            .or_else(|| lookup.get(&format!("event:{key}")))
+            .or_else(|| lookup.get(&format!("market:{key}")))
+            .cloned()
+    })
+}
+
+fn timestamp_from_secs(timestamp: i64) -> Option<DateTime<Utc>> {
+    Utc.timestamp_opt(timestamp, 0).single()
 }
 
 #[cfg(test)]

@@ -575,7 +575,7 @@ impl ControlApi for RuntimeControl {
         let since = Utc::now() - chrono::Duration::days(lookback_days);
         let updated = self
             .store
-            .recompute_wallet_segment_scores_from_existing(since, limit)
+            .recompute_wallet_segment_v2_scores_from_existing(since, limit)
             .await
             .map_err(|error| HttpError::internal(error.to_string()))?;
         let summary = self
@@ -584,8 +584,8 @@ impl ControlApi for RuntimeControl {
             .await
             .map_err(|error| HttpError::internal(error.to_string()))?;
         Ok(serde_json::json!({
-            "score_version": polymarket_bot::segments::MRS_SEGMENT_SCORE_VERSION,
-            "classifier_version": polymarket_bot::segments::SEGMENT_CLASSIFIER_VERSION,
+            "score_version": polymarket_bot::segments::MRS_SEGMENT_V2_SCORE_VERSION,
+            "classifier_version": polymarket_bot::segments::GAMMA_SEGMENT_CLASSIFIER_VERSION,
             "updated_segments": updated,
             "lookback_days": lookback_days,
             "limit": limit,
@@ -1771,6 +1771,8 @@ fn runtime_config_from_process(process: &TradingProcess) -> Result<ProcessRuntim
             segment_score_version: copy_trade.segment_score_version,
             segment_classifier_version: copy_trade.segment_classifier_version,
             min_segment_score: copy_trade.min_segment_score,
+            segment_mrs_percentile_floor: copy_trade.segment_mrs_percentile_floor,
+            min_segment_confidence: copy_trade.min_segment_confidence,
             min_segment_closed_positions: copy_trade.min_segment_closed_positions,
             min_segment_win_rate: copy_trade.min_segment_win_rate,
             reject_negative_segment_roi_sample_size: copy_trade

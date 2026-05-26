@@ -822,6 +822,12 @@ impl TradingProcessConfig {
             if let Some(min_segment_score) = config.min_segment_score {
                 effective.min_segment_score = min_segment_score;
             }
+            if let Some(segment_mrs_percentile_floor) = config.segment_mrs_percentile_floor {
+                effective.segment_mrs_percentile_floor = segment_mrs_percentile_floor;
+            }
+            if let Some(min_segment_confidence) = config.min_segment_confidence {
+                effective.min_segment_confidence = min_segment_confidence;
+            }
             if let Some(min_segment_closed_positions) = config.min_segment_closed_positions {
                 effective.min_segment_closed_positions = min_segment_closed_positions;
             }
@@ -969,6 +975,8 @@ pub struct EffectiveCopyTradeProcessConfig {
     pub segment_score_version: String,
     pub segment_classifier_version: String,
     pub min_segment_score: Decimal,
+    pub segment_mrs_percentile_floor: Decimal,
+    pub min_segment_confidence: Decimal,
     pub min_segment_closed_positions: i32,
     pub min_segment_win_rate: Decimal,
     pub reject_negative_segment_roi_sample_size: i32,
@@ -1007,6 +1015,8 @@ impl Default for EffectiveCopyTradeProcessConfig {
             segment_score_version: "mrs_segment_v1".to_string(),
             segment_classifier_version: "segment_rules_v1".to_string(),
             min_segment_score: dec!(50),
+            segment_mrs_percentile_floor: dec!(0.95),
+            min_segment_confidence: dec!(0.10),
             min_segment_closed_positions: 5,
             min_segment_win_rate: dec!(0.52),
             reject_negative_segment_roi_sample_size: 5,
@@ -1073,6 +1083,10 @@ pub struct CopyTradeProcessConfig {
     pub segment_classifier_version: Option<String>,
     #[serde(default)]
     pub min_segment_score: Option<Decimal>,
+    #[serde(default)]
+    pub segment_mrs_percentile_floor: Option<Decimal>,
+    #[serde(default)]
+    pub min_segment_confidence: Option<Decimal>,
     #[serde(default)]
     pub min_segment_closed_positions: Option<i32>,
     #[serde(default)]
