@@ -232,6 +232,31 @@ pub struct WhaleLedTradeExitCandidate {
     pub exit_size: Decimal,
 }
 
+#[derive(Debug, Clone, FromRow)]
+pub struct TakeProfitTradeExitCandidate {
+    pub process_id: Option<Uuid>,
+    pub position_id: Uuid,
+    pub source_signal_id: Uuid,
+    pub proxy_wallet: Option<String>,
+    pub market_id: Option<String>,
+    pub token_id: String,
+    pub side: String,
+    pub entry_price: Decimal,
+    pub entry_size: Decimal,
+    pub open_size: Decimal,
+    pub entry_fee: Decimal,
+    pub entry_notional: Decimal,
+    pub exit_source_trade_id: Uuid,
+    pub exit_timestamp: DateTime<Utc>,
+    pub reference_exit_price: Decimal,
+    pub order_limit_price: Decimal,
+    pub exit_size: Decimal,
+    pub trigger_roi: Decimal,
+    pub take_profit_roi: Decimal,
+    pub latest_mark_timestamp: DateTime<Utc>,
+    pub max_exit_slippage_bps: Decimal,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountTrade {
     pub account_trade_id: Uuid,
@@ -3036,6 +3061,140 @@ impl Store {
             .collect())
     }
 
+    pub async fn fetch_take_profit_trade_exit_candidates(
+        &self,
+        process_id: Uuid,
+        take_profit_roi: Decimal,
+        exit_size_fraction: Decimal,
+        min_hold: chrono::Duration,
+        require_fresh_mark: chrono::Duration,
+        max_exit_slippage_bps: Decimal,
+        limit: i64,
+    ) -> Result<Vec<TakeProfitTradeExitCandidate>> {
+        let rows = sqlx::query_as::<_, TakeProfitTradeExitCandidate>(
+            r#"
+            WITH prepared AS MATERIALIZED (
+              SELECT
+                p.process_id,
+                p.position_id,
+                p.source_signal_id,
+                p.proxy_wallet,
+                p.market_id,
+                p.token_id,
+                p.side,
+                p.entry_price,
+                p.entry_size,
+                p.open_size,
+                p.entry_fee,
+                p.entry_notional,
+                p.entry_timestamp,
+                (
+                  substr(md5(p.position_id::text || '|take_profit|' || $2::text), 1, 8) || '-' ||
+                  substr(md5(p.position_id::text || '|take_profit|' || $2::text), 9, 4) || '-' ||
+                  substr(md5(p.position_id::text || '|take_profit|' || $2::text), 13, 4) || '-' ||
+                  substr(md5(p.position_id::text || '|take_profit|' || $2::text), 17, 4) || '-' ||
+                  substr(md5(p.position_id::text || '|take_profit|' || $2::text), 21, 12)
+                )::uuid AS exit_source_trade_id,
+                now() AS exit_timestamp,
+                p.latest_mark_price AS reference_exit_price,
+                CASE
+                  WHEN p.side = 'buy' THEN GREATEST(
+                    0::numeric,
+                    p.latest_mark_price * (1 - ($6::numeric / 10000))
+                  )
+                  ELSE LEAST(
+                    1::numeric,
+                    p.latest_mark_price * (1 + ($6::numeric / 10000))
+                  )
+                END AS order_limit_price,
+                LEAST(
+                  p.open_size,
+                  p.open_size * LEAST(1::numeric, GREATEST(0::numeric, $3::numeric))
+                ) AS exit_size,
+                CASE
+                  WHEN p.side = 'buy' THEN
+                    (p.open_size * (p.latest_mark_price - p.entry_price))
+                      / NULLIF(p.entry_price * p.open_size, 0)
+                  ELSE
+                    (p.open_size * (p.entry_price - p.latest_mark_price))
+                      / NULLIF(p.entry_price * p.open_size, 0)
+                END AS trigger_roi,
+                $2::numeric AS take_profit_roi,
+                p.latest_mark_timestamp,
+                $6::numeric AS max_exit_slippage_bps
+              FROM polymarket.trade_positions p
+              WHERE p.process_id = $1
+                AND p.status IN ('open', 'partially_closed')
+                AND p.open_size > 0
+                AND p.entry_price > 0
+                AND p.latest_mark_price IS NOT NULL
+                AND p.latest_mark_timestamp IS NOT NULL
+                AND p.latest_mark_timestamp >= now() - ($5::bigint * interval '1 millisecond')
+                AND p.entry_timestamp <= now() - ($4::bigint * interval '1 millisecond')
+            )
+            SELECT
+              process_id,
+              position_id,
+              source_signal_id,
+              proxy_wallet,
+              market_id,
+              token_id,
+              side,
+              entry_price,
+              entry_size,
+              open_size,
+              entry_fee,
+              entry_notional,
+              exit_source_trade_id,
+              exit_timestamp,
+              reference_exit_price,
+              order_limit_price,
+              exit_size,
+              trigger_roi,
+              take_profit_roi,
+              latest_mark_timestamp,
+              max_exit_slippage_bps
+            FROM prepared p
+            WHERE p.trigger_roi >= $2
+              AND p.exit_size > 0
+              AND NOT EXISTS (
+                SELECT 1
+                FROM polymarket.trade_exits te
+                WHERE te.position_id = p.position_id
+                  AND te.is_synthetic = false
+                  AND (
+                    te.exit_source_trade_id = p.exit_source_trade_id
+                    OR te.metadata #>> '{purpose}' = 'take_profit_exit'
+                    OR te.metadata #>> '{source}' = 'take_profit_exit'
+                  )
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM polymarket.orders o
+                WHERE o.raw_payload #>> '{request,metadata,purpose}' = 'take_profit_exit'
+                  AND o.raw_payload #>> '{request,metadata,position_id}' = p.position_id::text
+                  AND o.created_at > now() - interval '30 seconds'
+              )
+            ORDER BY p.trigger_roi DESC, p.entry_timestamp ASC
+            LIMIT $7
+            "#,
+        )
+        .bind(process_id)
+        .bind(take_profit_roi)
+        .bind(exit_size_fraction)
+        .bind(min_hold.num_milliseconds().max(0))
+        .bind(require_fresh_mark.num_milliseconds().max(0))
+        .bind(max_exit_slippage_bps.max(Decimal::ZERO))
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch take-profit trade exit candidates")?;
+        Ok(rows
+            .into_iter()
+            .filter(|row| row.exit_size > Decimal::ZERO)
+            .collect())
+    }
+
     pub async fn reconcile_trade_positions_from_executable_exits(&self) -> Result<u64> {
         let result = sqlx::query(
             r#"
@@ -3268,6 +3427,213 @@ impl Store {
         tx.commit()
             .await
             .context("failed to commit executable exit transaction")?;
+        Ok(1)
+    }
+
+    pub async fn apply_take_profit_trade_exit(
+        &self,
+        candidate: &TakeProfitTradeExitCandidate,
+        report: &OrderPlanReport,
+    ) -> Result<u64> {
+        let close_order_id = report.orders.first().map(|order| order.order_id.clone());
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin take-profit exit transaction")?;
+        let duplicate_exists = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT EXISTS (
+              SELECT 1
+              FROM polymarket.trade_exits
+              WHERE position_id = $1
+                AND is_synthetic = false
+                AND (
+                  exit_source_trade_id = $2
+                  OR ($3::text IS NOT NULL AND metadata #>> '{close_order_id}' = $3)
+                  OR metadata #>> '{purpose}' = 'take_profit_exit'
+                  OR metadata #>> '{source}' = 'take_profit_exit'
+                )
+            )
+            "#,
+        )
+        .bind(candidate.position_id)
+        .bind(candidate.exit_source_trade_id)
+        .bind(close_order_id.as_deref())
+        .fetch_one(&mut *tx)
+        .await
+        .context("failed to check duplicate take-profit trade exit")?;
+        if duplicate_exists {
+            tx.commit()
+                .await
+                .context("failed to commit duplicate take-profit exit transaction")?;
+            return Ok(0);
+        }
+
+        let Some(current_open_size) = sqlx::query_scalar::<_, Decimal>(
+            r#"
+            SELECT open_size
+            FROM polymarket.trade_positions
+            WHERE position_id = $1
+              AND status IN ('open', 'partially_closed')
+              AND open_size > 0
+            FOR UPDATE
+            "#,
+        )
+        .bind(candidate.position_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("failed to lock take-profit trade position")?
+        else {
+            tx.commit()
+                .await
+                .context("failed to commit missing take-profit position transaction")?;
+            return Ok(0);
+        };
+
+        let applied_fills = cap_fills_to_size(&report.fills, current_open_size);
+        let filled_size: Decimal = applied_fills.iter().map(|fill| fill.size).sum();
+        if filled_size <= Decimal::ZERO {
+            tx.commit()
+                .await
+                .context("failed to commit empty take-profit exit transaction")?;
+            return Ok(0);
+        }
+        let exit_fee: Decimal = applied_fills.iter().map(|fill| fill.fee).sum();
+        let exit_notional: Decimal = applied_fills
+            .iter()
+            .map(|fill| fill.price * fill.size)
+            .sum();
+        let exit_price = exit_notional / filled_size;
+        let entry_value = candidate.entry_price * filled_size;
+        let gross_pnl = if candidate.side == "buy" {
+            exit_notional - entry_value
+        } else {
+            entry_value - exit_notional
+        };
+        let allocated_entry_fee = if candidate.entry_size > Decimal::ZERO {
+            candidate.entry_fee * (filled_size / candidate.entry_size)
+        } else {
+            Decimal::ZERO
+        };
+        let net_pnl = gross_pnl - allocated_entry_fee - exit_fee;
+        let reference_notional = candidate.reference_exit_price * filled_size;
+        let slippage_cost = if candidate.side == "buy" {
+            (reference_notional - exit_notional).max(Decimal::ZERO)
+        } else {
+            (exit_notional - reference_notional).max(Decimal::ZERO)
+        };
+        let fill_payloads: Vec<_> = applied_fills
+            .iter()
+            .map(|fill| serde_json::to_value(fill))
+            .collect::<std::result::Result<_, _>>()?;
+        let exit_timestamp = applied_fills
+            .iter()
+            .map(|fill| fill.filled_at)
+            .min()
+            .unwrap_or(candidate.exit_timestamp);
+        let metadata = serde_json::json!({
+            "source": "take_profit_exit",
+            "purpose": "take_profit_exit",
+            "close_order_id": close_order_id,
+            "reference_exit_price": candidate.reference_exit_price,
+            "order_limit_price": candidate.order_limit_price,
+            "reference_exit_notional": reference_notional,
+            "trigger_roi": candidate.trigger_roi,
+            "take_profit_roi": candidate.take_profit_roi,
+            "latest_mark_timestamp": candidate.latest_mark_timestamp,
+            "max_exit_slippage_bps": candidate.max_exit_slippage_bps,
+            "allocated_entry_fee": allocated_entry_fee,
+            "execution_source": applied_fills
+                .first()
+                .map(|fill| serialized_name(&fill.source).unwrap_or_else(|_| "unknown".to_string()))
+                .unwrap_or_else(|| "unknown".to_string()),
+            "applied_fill_size": filled_size,
+            "position_open_size_at_lock": current_open_size,
+            "fills": fill_payloads
+        });
+
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO polymarket.trade_exits (
+              position_id, process_id, source_signal_id, timestamp_utc, exit_type, is_synthetic,
+              exit_trigger_wallet, exit_source_trade_id, exit_price, exit_size,
+              exit_notional, exit_fee, slippage_cost, gross_pnl, net_pnl, roi, metadata
+            )
+            VALUES (
+              $1,$2,$3,$4,'risk_control',false,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+              CASE WHEN $14 > 0 THEN $13 / $14 ELSE 0 END,
+              $15
+            )
+            ON CONFLICT (position_id, exit_source_trade_id) DO NOTHING
+            "#,
+        )
+        .bind(candidate.position_id)
+        .bind(candidate.process_id)
+        .bind(candidate.source_signal_id)
+        .bind(exit_timestamp)
+        .bind(candidate.proxy_wallet.as_deref())
+        .bind(candidate.exit_source_trade_id)
+        .bind(exit_price)
+        .bind(filled_size)
+        .bind(exit_notional)
+        .bind(exit_fee)
+        .bind(slippage_cost)
+        .bind(gross_pnl)
+        .bind(net_pnl)
+        .bind(candidate.entry_notional)
+        .bind(metadata)
+        .execute(&mut *tx)
+        .await
+        .context("failed to insert take-profit trade exit")?;
+
+        if inserted.rows_affected() == 0 {
+            tx.commit()
+                .await
+                .context("failed to commit duplicate take-profit exit transaction")?;
+            return Ok(0);
+        }
+
+        sqlx::query(
+            r#"
+            UPDATE polymarket.trade_positions p
+            SET
+              open_size = GREATEST(0, p.open_size - $2),
+              realized_pnl = p.realized_pnl + $3,
+              status = CASE
+                WHEN GREATEST(0, p.open_size - $2) <= 0.000000001 THEN 'closed'
+                ELSE 'partially_closed'
+              END,
+              unrealized_pnl = CASE
+                WHEN GREATEST(0, p.open_size - $2) <= 0.000000001 THEN 0
+                WHEN p.open_size > 0 THEN p.unrealized_pnl * (GREATEST(0, p.open_size - $2) / p.open_size)
+                ELSE 0
+              END,
+              roi = CASE
+                WHEN p.entry_notional > 0 THEN (
+                  p.realized_pnl + $3 + CASE
+                    WHEN GREATEST(0, p.open_size - $2) <= 0.000000001 THEN 0
+                    WHEN p.open_size > 0 THEN p.unrealized_pnl * (GREATEST(0, p.open_size - $2) / p.open_size)
+                    ELSE 0
+                  END
+                ) / p.entry_notional
+                ELSE 0
+              END,
+              updated_at = now()
+            WHERE p.position_id = $1
+            "#,
+        )
+        .bind(candidate.position_id)
+        .bind(filled_size)
+        .bind(net_pnl)
+        .execute(&mut *tx)
+        .await
+        .context("failed to update trade position from take-profit exit")?;
+
+        tx.commit()
+            .await
+            .context("failed to commit take-profit exit transaction")?;
         Ok(1)
     }
 
