@@ -888,6 +888,29 @@ impl TradingProcessConfig {
                     effective.take_profit.max_exit_slippage_bps = max_exit_slippage_bps;
                 }
             }
+            if let Some(stop_loss) = &config.stop_loss {
+                if let Some(stop_loss_enabled) = stop_loss.stop_loss_enabled {
+                    effective.stop_loss.stop_loss_enabled = stop_loss_enabled;
+                }
+                if let Some(stop_loss_roi) = stop_loss.stop_loss_roi {
+                    effective.stop_loss.stop_loss_roi = stop_loss_roi;
+                }
+                if let Some(poll_interval_secs) = stop_loss.poll_interval_secs {
+                    effective.stop_loss.poll_interval_secs = poll_interval_secs;
+                }
+                if let Some(min_hold_secs) = stop_loss.min_hold_secs {
+                    effective.stop_loss.min_hold_secs = min_hold_secs;
+                }
+                if let Some(require_fresh_mark_secs) = stop_loss.require_fresh_mark_secs {
+                    effective.stop_loss.require_fresh_mark_secs = require_fresh_mark_secs;
+                }
+                if let Some(exit_size_fraction) = stop_loss.exit_size_fraction {
+                    effective.stop_loss.exit_size_fraction = exit_size_fraction;
+                }
+                if let Some(max_exit_slippage_bps) = stop_loss.max_exit_slippage_bps {
+                    effective.stop_loss.max_exit_slippage_bps = max_exit_slippage_bps;
+                }
+            }
         }
         effective
     }
@@ -1145,12 +1168,14 @@ pub struct CopyTradeProcessConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EffectiveProcessExitRulesConfig {
     pub take_profit: EffectiveTakeProfitExitRuleProcessConfig,
+    pub stop_loss: EffectiveStopLossExitRuleProcessConfig,
 }
 
 impl Default for EffectiveProcessExitRulesConfig {
     fn default() -> Self {
         Self {
             take_profit: EffectiveTakeProfitExitRuleProcessConfig::default(),
+            stop_loss: EffectiveStopLossExitRuleProcessConfig::default(),
         }
     }
 }
@@ -1188,6 +1213,8 @@ pub struct ProcessExitRulesConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub take_profit: Option<TakeProfitExitRuleProcessConfig>,
+    #[serde(default, alias = "stop-loss", skip_serializing_if = "Option::is_none")]
+    pub stop_loss: Option<StopLossExitRuleProcessConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1196,6 +1223,49 @@ pub struct TakeProfitExitRuleProcessConfig {
     pub take_profit_enabled: Option<bool>,
     #[serde(default)]
     pub take_profit_roi: Option<Decimal>,
+    #[serde(default)]
+    pub poll_interval_secs: Option<i64>,
+    #[serde(default)]
+    pub min_hold_secs: Option<i64>,
+    #[serde(default)]
+    pub require_fresh_mark_secs: Option<i64>,
+    #[serde(default)]
+    pub exit_size_fraction: Option<Decimal>,
+    #[serde(default)]
+    pub max_exit_slippage_bps: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveStopLossExitRuleProcessConfig {
+    pub stop_loss_enabled: bool,
+    pub stop_loss_roi: Decimal,
+    pub poll_interval_secs: i64,
+    pub min_hold_secs: i64,
+    pub require_fresh_mark_secs: i64,
+    pub exit_size_fraction: Decimal,
+    pub max_exit_slippage_bps: Decimal,
+}
+
+impl Default for EffectiveStopLossExitRuleProcessConfig {
+    fn default() -> Self {
+        Self {
+            stop_loss_enabled: false,
+            stop_loss_roi: dec!(-0.10),
+            poll_interval_secs: 10,
+            min_hold_secs: 60,
+            require_fresh_mark_secs: 60,
+            exit_size_fraction: dec!(1.0),
+            max_exit_slippage_bps: dec!(150),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StopLossExitRuleProcessConfig {
+    #[serde(default)]
+    pub stop_loss_enabled: Option<bool>,
+    #[serde(default)]
+    pub stop_loss_roi: Option<Decimal>,
     #[serde(default)]
     pub poll_interval_secs: Option<i64>,
     #[serde(default)]

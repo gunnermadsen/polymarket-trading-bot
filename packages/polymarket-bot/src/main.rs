@@ -36,8 +36,8 @@ use polymarket_bot::{
     store::Store,
     taxonomy::{fallback_taxonomy_update, taxonomy_update_from_metadata},
     trade_pnl::{
-        execute_take_profit_exits_for_process, mark_trade_pnl_now_with_config,
-        refresh_trade_pnl_with_config, TradePnlConfig,
+        execute_stop_loss_exits_for_process, execute_take_profit_exits_for_process,
+        mark_trade_pnl_now_with_config, refresh_trade_pnl_with_config, TradePnlConfig,
     },
     wallets::{score_closed_position_performance, score_mrs, MrsScoreInput},
 };
@@ -1519,12 +1519,24 @@ async fn run_take_profit_exit_scheduler(
                 }
             };
             let take_profit = &runtime_config.exit_rules.take_profit;
-            if !take_profit.take_profit_enabled {
+            let stop_loss = &runtime_config.exit_rules.stop_loss;
+            if !take_profit.take_profit_enabled && !stop_loss.stop_loss_enabled {
                 continue;
             }
 
             let now = Utc::now();
-            let poll_interval_secs = take_profit.poll_interval_secs.max(1);
+            let poll_interval_secs = [
+                take_profit
+                    .take_profit_enabled
+                    .then_some(take_profit.poll_interval_secs.max(1)),
+                stop_loss
+                    .stop_loss_enabled
+                    .then_some(stop_loss.poll_interval_secs.max(1)),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(10);
             if last_take_profit_check_by_process
                 .get(&process.process_id)
                 .map(|last_checked_at| (now - *last_checked_at).num_seconds() < poll_interval_secs)
@@ -1537,32 +1549,50 @@ async fn run_take_profit_exit_scheduler(
             let venue = match venues.for_mode(runtime_config.execution_mode) {
                 Ok(venue) => venue,
                 Err(error) => {
-                    warn!(error = %error, process_id = %process.process_id, "take-profit venue is not available");
+                    warn!(error = %error, process_id = %process.process_id, "risk-control exit venue is not available");
                     continue;
                 }
             };
-            let checkpoint_name = format!("take_profit:{}", process.process_id);
-            let execution = tokio::time::timeout(
-                TAKE_PROFIT_EXIT_TIMEOUT,
-                execute_take_profit_exits_for_process(
+            let checkpoint_name = format!("risk_control:{}", process.process_id);
+            let execution = tokio::time::timeout(TAKE_PROFIT_EXIT_TIMEOUT, async {
+                let take_profit_report = execute_take_profit_exits_for_process(
                     &store,
                     Some(venue.as_ref()),
                     Some(&clob),
                     process.process_id,
                     take_profit,
                     &trade_pnl_config,
-                ),
-            )
+                )
+                .await?;
+                let stop_loss_report = execute_stop_loss_exits_for_process(
+                    &store,
+                    Some(venue.as_ref()),
+                    Some(&clob),
+                    process.process_id,
+                    stop_loss,
+                    &trade_pnl_config,
+                )
+                .await?;
+                Ok::<_, anyhow::Error>((take_profit_report, stop_loss_report))
+            })
             .await;
 
             match execution {
-                Ok(Ok(report)) => {
-                    if report.exits_applied > 0 {
+                Ok(Ok((take_profit_report, stop_loss_report))) => {
+                    if take_profit_report.exits_applied > 0 {
                         info!(
                             process_id = %process.process_id,
-                            exits_applied = report.exits_applied,
-                            candidates_evaluated = report.candidates_evaluated,
+                            exits_applied = take_profit_report.exits_applied,
+                            candidates_evaluated = take_profit_report.candidates_evaluated,
                             "take-profit exits applied"
+                        );
+                    }
+                    if stop_loss_report.exits_applied > 0 {
+                        info!(
+                            process_id = %process.process_id,
+                            exits_applied = stop_loss_report.exits_applied,
+                            candidates_evaluated = stop_loss_report.candidates_evaluated,
+                            "stop-loss exits applied"
                         );
                     }
                     if let Err(error) = store
@@ -1573,26 +1603,27 @@ async fn run_take_profit_exit_scheduler(
                             last_trade_timestamp_utc: None,
                             last_trade_id: None,
                             pages_seen: 0,
-                            trades_seen: report.candidates_evaluated as i64,
+                            trades_seen: (take_profit_report.candidates_evaluated
+                                + stop_loss_report.candidates_evaluated)
+                                as i64,
                             state: serde_json::json!({
                                 "status": "ok",
-                                "take_profit_enabled": true,
+                                "take_profit_enabled": take_profit.take_profit_enabled,
                                 "take_profit_roi": take_profit.take_profit_roi,
-                                "poll_interval_secs": take_profit.poll_interval_secs,
-                                "min_hold_secs": take_profit.min_hold_secs,
-                                "require_fresh_mark_secs": take_profit.require_fresh_mark_secs,
-                                "exit_size_fraction": take_profit.exit_size_fraction,
-                                "max_exit_slippage_bps": take_profit.max_exit_slippage_bps,
-                                "report": report
+                                "stop_loss_enabled": stop_loss.stop_loss_enabled,
+                                "stop_loss_roi": stop_loss.stop_loss_roi,
+                                "poll_interval_secs": poll_interval_secs,
+                                "take_profit_report": take_profit_report,
+                                "stop_loss_report": stop_loss_report
                             }),
                         })
                         .await
                     {
-                        warn!(error = %error, process_id = %process.process_id, "failed to record take-profit checkpoint");
+                        warn!(error = %error, process_id = %process.process_id, "failed to record risk-control checkpoint");
                     }
                 }
                 Ok(Err(error)) => {
-                    warn!(error = %error, process_id = %process.process_id, "take-profit exit scheduler failed");
+                    warn!(error = %error, process_id = %process.process_id, "risk-control exit scheduler failed");
                     if let Err(checkpoint_error) = store
                         .upsert_whale_poll_checkpoint(&WhalePollCheckpoint {
                             checkpoint_name,
@@ -1609,11 +1640,11 @@ async fn run_take_profit_exit_scheduler(
                         })
                         .await
                     {
-                        warn!(error = %checkpoint_error, process_id = %process.process_id, "failed to record take-profit error checkpoint");
+                        warn!(error = %checkpoint_error, process_id = %process.process_id, "failed to record risk-control error checkpoint");
                     }
                 }
                 Err(_) => {
-                    warn!(process_id = %process.process_id, "take-profit exit scheduler timed out");
+                    warn!(process_id = %process.process_id, "risk-control exit scheduler timed out");
                     if let Err(checkpoint_error) = store
                         .upsert_whale_poll_checkpoint(&WhalePollCheckpoint {
                             checkpoint_name,
@@ -1629,7 +1660,7 @@ async fn run_take_profit_exit_scheduler(
                         })
                         .await
                     {
-                        warn!(error = %checkpoint_error, process_id = %process.process_id, "failed to record take-profit timeout checkpoint");
+                        warn!(error = %checkpoint_error, process_id = %process.process_id, "failed to record risk-control timeout checkpoint");
                     }
                 }
             }

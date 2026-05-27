@@ -236,6 +236,7 @@ pub struct WhaleLedTradeExitCandidate {
 
 #[derive(Debug, Clone, FromRow)]
 pub struct TakeProfitTradeExitCandidate {
+    pub exit_purpose: String,
     pub process_id: Option<Uuid>,
     pub position_id: Uuid,
     pub source_signal_id: Uuid,
@@ -254,6 +255,7 @@ pub struct TakeProfitTradeExitCandidate {
     pub order_limit_price: Decimal,
     pub exit_size: Decimal,
     pub trigger_roi: Decimal,
+    pub threshold_roi: Decimal,
     pub take_profit_roi: Decimal,
     pub latest_mark_timestamp: DateTime<Utc>,
     pub max_exit_slippage_bps: Decimal,
@@ -3073,10 +3075,59 @@ impl Store {
         max_exit_slippage_bps: Decimal,
         limit: i64,
     ) -> Result<Vec<TakeProfitTradeExitCandidate>> {
+        self.fetch_risk_control_trade_exit_candidates(
+            process_id,
+            "take_profit_exit",
+            take_profit_roi,
+            exit_size_fraction,
+            min_hold,
+            require_fresh_mark,
+            max_exit_slippage_bps,
+            limit,
+        )
+        .await
+    }
+
+    pub async fn fetch_stop_loss_trade_exit_candidates(
+        &self,
+        process_id: Uuid,
+        stop_loss_roi: Decimal,
+        exit_size_fraction: Decimal,
+        min_hold: chrono::Duration,
+        require_fresh_mark: chrono::Duration,
+        max_exit_slippage_bps: Decimal,
+        limit: i64,
+    ) -> Result<Vec<TakeProfitTradeExitCandidate>> {
+        self.fetch_risk_control_trade_exit_candidates(
+            process_id,
+            "stop_loss_exit",
+            stop_loss_roi,
+            exit_size_fraction,
+            min_hold,
+            require_fresh_mark,
+            max_exit_slippage_bps,
+            limit,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn fetch_risk_control_trade_exit_candidates(
+        &self,
+        process_id: Uuid,
+        exit_purpose: &str,
+        threshold_roi: Decimal,
+        exit_size_fraction: Decimal,
+        min_hold: chrono::Duration,
+        require_fresh_mark: chrono::Duration,
+        max_exit_slippage_bps: Decimal,
+        limit: i64,
+    ) -> Result<Vec<TakeProfitTradeExitCandidate>> {
         let rows = sqlx::query_as::<_, TakeProfitTradeExitCandidate>(
             r#"
             WITH prepared AS MATERIALIZED (
               SELECT
+                $8::text AS exit_purpose,
                 p.process_id,
                 p.position_id,
                 p.source_signal_id,
@@ -3091,11 +3142,11 @@ impl Store {
                 p.entry_notional,
                 p.entry_timestamp,
                 (
-                  substr(md5(p.position_id::text || '|take_profit|' || $2::text), 1, 8) || '-' ||
-                  substr(md5(p.position_id::text || '|take_profit|' || $2::text), 9, 4) || '-' ||
-                  substr(md5(p.position_id::text || '|take_profit|' || $2::text), 13, 4) || '-' ||
-                  substr(md5(p.position_id::text || '|take_profit|' || $2::text), 17, 4) || '-' ||
-                  substr(md5(p.position_id::text || '|take_profit|' || $2::text), 21, 12)
+                  substr(md5(p.position_id::text || '|' || $8::text || '|' || $2::text), 1, 8) || '-' ||
+                  substr(md5(p.position_id::text || '|' || $8::text || '|' || $2::text), 9, 4) || '-' ||
+                  substr(md5(p.position_id::text || '|' || $8::text || '|' || $2::text), 13, 4) || '-' ||
+                  substr(md5(p.position_id::text || '|' || $8::text || '|' || $2::text), 17, 4) || '-' ||
+                  substr(md5(p.position_id::text || '|' || $8::text || '|' || $2::text), 21, 12)
                 )::uuid AS exit_source_trade_id,
                 now() AS exit_timestamp,
                 p.latest_mark_price AS reference_exit_price,
@@ -3121,6 +3172,7 @@ impl Store {
                     (p.open_size * (p.entry_price - p.latest_mark_price))
                       / NULLIF(p.entry_price * p.open_size, 0)
                 END AS trigger_roi,
+                $2::numeric AS threshold_roi,
                 $2::numeric AS take_profit_roi,
                 p.latest_mark_timestamp,
                 $6::numeric AS max_exit_slippage_bps
@@ -3135,6 +3187,7 @@ impl Store {
                 AND p.entry_timestamp <= now() - ($4::bigint * interval '1 millisecond')
             )
             SELECT
+              exit_purpose,
               process_id,
               position_id,
               source_signal_id,
@@ -3153,11 +3206,15 @@ impl Store {
               order_limit_price,
               exit_size,
               trigger_roi,
+              threshold_roi,
               take_profit_roi,
               latest_mark_timestamp,
               max_exit_slippage_bps
             FROM prepared p
-            WHERE p.trigger_roi >= $2
+            WHERE (
+                ($8::text = 'take_profit_exit' AND p.trigger_roi >= $2)
+                OR ($8::text = 'stop_loss_exit' AND p.trigger_roi <= $2)
+              )
               AND p.exit_size > 0
               AND NOT EXISTS (
                 SELECT 1
@@ -3166,31 +3223,35 @@ impl Store {
                   AND te.is_synthetic = false
                   AND (
                     te.exit_source_trade_id = p.exit_source_trade_id
-                    OR te.metadata #>> '{purpose}' = 'take_profit_exit'
-                    OR te.metadata #>> '{source}' = 'take_profit_exit'
+                    OR te.metadata #>> '{purpose}' IN ('take_profit_exit', 'stop_loss_exit')
+                    OR te.metadata #>> '{source}' IN ('take_profit_exit', 'stop_loss_exit')
                   )
               )
               AND NOT EXISTS (
                 SELECT 1
                 FROM polymarket.orders o
-                WHERE o.raw_payload #>> '{request,metadata,purpose}' = 'take_profit_exit'
+                WHERE o.raw_payload #>> '{request,metadata,purpose}' IN ('take_profit_exit', 'stop_loss_exit')
                   AND o.raw_payload #>> '{request,metadata,position_id}' = p.position_id::text
                   AND o.created_at > now() - interval '30 seconds'
               )
-            ORDER BY p.trigger_roi DESC, p.entry_timestamp ASC
+            ORDER BY
+              CASE WHEN $8::text = 'stop_loss_exit' THEN p.trigger_roi END ASC,
+              CASE WHEN $8::text = 'take_profit_exit' THEN p.trigger_roi END DESC,
+              p.entry_timestamp ASC
             LIMIT $7
             "#,
         )
         .bind(process_id)
-        .bind(take_profit_roi)
+        .bind(threshold_roi)
         .bind(exit_size_fraction)
         .bind(min_hold.num_milliseconds().max(0))
         .bind(require_fresh_mark.num_milliseconds().max(0))
         .bind(max_exit_slippage_bps.max(Decimal::ZERO))
         .bind(limit)
+        .bind(exit_purpose)
         .fetch_all(&self.pool)
         .await
-        .context("failed to fetch take-profit trade exit candidates")?;
+        .context("failed to fetch risk-control trade exit candidates")?;
         Ok(rows
             .into_iter()
             .filter(|row| row.exit_size > Decimal::ZERO)
@@ -3443,7 +3504,7 @@ impl Store {
             .pool
             .begin()
             .await
-            .context("failed to begin take-profit exit transaction")?;
+            .context("failed to begin risk-control exit transaction")?;
         let duplicate_exists = sqlx::query_scalar::<_, bool>(
             r#"
             SELECT EXISTS (
@@ -3454,8 +3515,8 @@ impl Store {
                 AND (
                   exit_source_trade_id = $2
                   OR ($3::text IS NOT NULL AND metadata #>> '{close_order_id}' = $3)
-                  OR metadata #>> '{purpose}' = 'take_profit_exit'
-                  OR metadata #>> '{source}' = 'take_profit_exit'
+                  OR metadata #>> '{purpose}' IN ('take_profit_exit', 'stop_loss_exit')
+                  OR metadata #>> '{source}' IN ('take_profit_exit', 'stop_loss_exit')
                 )
             )
             "#,
@@ -3465,11 +3526,11 @@ impl Store {
         .bind(close_order_id.as_deref())
         .fetch_one(&mut *tx)
         .await
-        .context("failed to check duplicate take-profit trade exit")?;
+        .context("failed to check duplicate risk-control trade exit")?;
         if duplicate_exists {
             tx.commit()
                 .await
-                .context("failed to commit duplicate take-profit exit transaction")?;
+                .context("failed to commit duplicate risk-control exit transaction")?;
             return Ok(0);
         }
 
@@ -3486,11 +3547,11 @@ impl Store {
         .bind(candidate.position_id)
         .fetch_optional(&mut *tx)
         .await
-        .context("failed to lock take-profit trade position")?
+        .context("failed to lock risk-control trade position")?
         else {
             tx.commit()
                 .await
-                .context("failed to commit missing take-profit position transaction")?;
+                .context("failed to commit missing risk-control position transaction")?;
             return Ok(0);
         };
 
@@ -3499,7 +3560,7 @@ impl Store {
         if filled_size <= Decimal::ZERO {
             tx.commit()
                 .await
-                .context("failed to commit empty take-profit exit transaction")?;
+                .context("failed to commit empty risk-control exit transaction")?;
             return Ok(0);
         }
         let exit_fee: Decimal = applied_fills.iter().map(|fill| fill.fee).sum();
@@ -3536,14 +3597,20 @@ impl Store {
             .min()
             .unwrap_or(candidate.exit_timestamp);
         let metadata = serde_json::json!({
-            "source": "take_profit_exit",
-            "purpose": "take_profit_exit",
+            "source": candidate.exit_purpose.as_str(),
+            "purpose": candidate.exit_purpose.as_str(),
             "close_order_id": close_order_id,
             "reference_exit_price": candidate.reference_exit_price,
             "order_limit_price": candidate.order_limit_price,
             "reference_exit_notional": reference_notional,
             "trigger_roi": candidate.trigger_roi,
+            "threshold_roi": candidate.threshold_roi,
             "take_profit_roi": candidate.take_profit_roi,
+            "stop_loss_roi": if candidate.exit_purpose == "stop_loss_exit" {
+                Some(candidate.threshold_roi)
+            } else {
+                None
+            },
             "latest_mark_timestamp": candidate.latest_mark_timestamp,
             "max_exit_slippage_bps": candidate.max_exit_slippage_bps,
             "allocated_entry_fee": allocated_entry_fee,
@@ -3588,12 +3655,12 @@ impl Store {
         .bind(metadata)
         .execute(&mut *tx)
         .await
-        .context("failed to insert take-profit trade exit")?;
+        .context("failed to insert risk-control trade exit")?;
 
         if inserted.rows_affected() == 0 {
             tx.commit()
                 .await
-                .context("failed to commit duplicate take-profit exit transaction")?;
+                .context("failed to commit duplicate risk-control exit transaction")?;
             return Ok(0);
         }
 
@@ -3631,11 +3698,11 @@ impl Store {
         .bind(net_pnl)
         .execute(&mut *tx)
         .await
-        .context("failed to update trade position from take-profit exit")?;
+        .context("failed to update trade position from risk-control exit")?;
 
         tx.commit()
             .await
-            .context("failed to commit take-profit exit transaction")?;
+            .context("failed to commit risk-control exit transaction")?;
         Ok(1)
     }
 

@@ -11,7 +11,10 @@ use crate::{
     clob::ClobClient,
     execution::{execute_order_plan, ExecutionVenue, OrderPlan},
     idempotency::{deterministic_client_order_id, ClientOrderIdSeed},
-    models::{EffectiveTakeProfitExitRuleProcessConfig, OrderRequest, OrderSide, OrderType},
+    models::{
+        EffectiveStopLossExitRuleProcessConfig, EffectiveTakeProfitExitRuleProcessConfig,
+        OrderRequest, OrderSide, OrderType,
+    },
     store::{
         OrderbookSnapshot, Store, TakeProfitTradeExitCandidate, TradeMarkSourceFailure,
         WhaleLedTradeExitCandidate,
@@ -87,6 +90,11 @@ pub struct TakeProfitExitConfig {
     pub min_roi: Decimal,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StopLossExitConfig {
+    pub max_loss_roi: Decimal,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TakeProfitPosition {
     pub position_id: Uuid,
@@ -123,13 +131,40 @@ pub fn evaluate_take_profit_exit(
     mark: &TakeProfitMark,
     config: &TakeProfitExitConfig,
 ) -> Option<TakeProfitExitDecision> {
+    evaluate_roi_exit(
+        position,
+        mark,
+        config.min_roi,
+        "take_profit",
+        |roi, threshold| threshold > Decimal::ZERO && roi >= threshold,
+    )
+}
+
+pub fn evaluate_stop_loss_exit(
+    position: &TakeProfitPosition,
+    mark: &TakeProfitMark,
+    config: &StopLossExitConfig,
+) -> Option<TakeProfitExitDecision> {
+    evaluate_roi_exit(
+        position,
+        mark,
+        config.max_loss_roi,
+        "stop_loss",
+        |roi, threshold| threshold < Decimal::ZERO && roi <= threshold,
+    )
+}
+
+fn evaluate_roi_exit(
+    position: &TakeProfitPosition,
+    mark: &TakeProfitMark,
+    threshold_roi: Decimal,
+    exit_type: &'static str,
+    threshold_matches: impl Fn(Decimal, Decimal) -> bool,
+) -> Option<TakeProfitExitDecision> {
     if !matches!(position.status.as_str(), "open" | "partially_closed") {
         return None;
     }
     if position.open_size <= Decimal::ZERO || position.entry_notional <= Decimal::ZERO {
-        return None;
-    }
-    if config.min_roi <= Decimal::ZERO {
         return None;
     }
 
@@ -139,7 +174,7 @@ pub fn evaluate_take_profit_exit(
         _ => return None,
     };
     let roi = gross_pnl / position.entry_notional;
-    if roi < config.min_roi {
+    if !threshold_matches(roi, threshold_roi) {
         return None;
     }
 
@@ -147,7 +182,7 @@ pub fn evaluate_take_profit_exit(
         position_id: position.position_id,
         token_id: position.token_id.clone(),
         market_id: position.market_id.clone(),
-        exit_type: "take_profit",
+        exit_type,
         exit_price: mark.mark_price,
         exit_size: position.open_size,
         gross_pnl,
@@ -278,7 +313,7 @@ pub async fn execute_take_profit_exits_for_process(
     for candidate in candidates {
         let order_plan = OrderPlan {
             plan_id: Uuid::new_v4(),
-            orders: vec![take_profit_order_request(&candidate)],
+            orders: vec![risk_control_order_request(&candidate)],
         };
         let execution = match execute_order_plan(venue, order_plan).await {
             Ok(execution) => execution,
@@ -290,6 +325,84 @@ pub async fn execute_take_profit_exits_for_process(
                     trigger_roi = %candidate.trigger_roi,
                     take_profit_roi = %candidate.take_profit_roi,
                     "take-profit exit execution failed; continuing scheduler"
+                );
+                continue;
+            }
+        };
+        report.exit_orders_submitted += execution.orders.len() as u64;
+        report.exit_fills_inserted += execution.fills.len() as u64;
+        store.persist_order_plan_report(&execution).await?;
+        report.exits_applied += store
+            .apply_take_profit_trade_exit(&candidate, &execution)
+            .await?;
+    }
+
+    report.closed_marks_cleared = store.clear_closed_trade_position_unrealized_pnl().await?;
+    report.wallets_refreshed = store.refresh_wallet_trade_performance().await?;
+    Ok(report)
+}
+
+pub async fn execute_stop_loss_exits_for_process(
+    store: &Store,
+    venue: Option<&dyn ExecutionVenue>,
+    clob: Option<&ClobClient>,
+    process_id: Uuid,
+    stop_loss_config: &EffectiveStopLossExitRuleProcessConfig,
+    pnl_config: &TradePnlConfig,
+) -> Result<TakeProfitExitExecutionReport> {
+    if !stop_loss_config.stop_loss_enabled || stop_loss_config.stop_loss_roi >= Decimal::ZERO {
+        return Ok(TakeProfitExitExecutionReport::default());
+    }
+    let Some(venue) = venue else {
+        return Ok(TakeProfitExitExecutionReport::default());
+    };
+
+    let positions_backfilled = store.backfill_trade_positions_from_copy_signals().await?;
+    let positions_reconciled = store
+        .reconcile_trade_positions_from_executable_exits()
+        .await?;
+    let mark_orderbook_refresh =
+        refresh_open_position_orderbook_marks(store, clob, pnl_config).await?;
+    let marks_written = store.mark_open_trade_positions().await?;
+
+    let min_hold = Duration::seconds(stop_loss_config.min_hold_secs.max(0));
+    let require_fresh_mark = Duration::seconds(stop_loss_config.require_fresh_mark_secs.max(0));
+    let candidates = store
+        .fetch_stop_loss_trade_exit_candidates(
+            process_id,
+            stop_loss_config.stop_loss_roi,
+            stop_loss_config.exit_size_fraction,
+            min_hold,
+            require_fresh_mark,
+            stop_loss_config.max_exit_slippage_bps,
+            100,
+        )
+        .await?;
+
+    let mut report = TakeProfitExitExecutionReport {
+        candidates_evaluated: candidates.len() as u64,
+        positions_backfilled,
+        positions_reconciled,
+        mark_orderbook_snapshots_inserted: mark_orderbook_refresh.snapshots_inserted,
+        mark_orderbook_refresh_failures: mark_orderbook_refresh.failures,
+        marks_written,
+        ..TakeProfitExitExecutionReport::default()
+    };
+    for candidate in candidates {
+        let order_plan = OrderPlan {
+            plan_id: Uuid::new_v4(),
+            orders: vec![risk_control_order_request(&candidate)],
+        };
+        let execution = match execute_order_plan(venue, order_plan).await {
+            Ok(execution) => execution,
+            Err(error) => {
+                report.exit_order_failures += 1;
+                warn!(
+                    error = %error,
+                    position_id = %candidate.position_id,
+                    trigger_roi = %candidate.trigger_roi,
+                    stop_loss_roi = %candidate.threshold_roi,
+                    "stop-loss exit execution failed; continuing scheduler"
                 );
                 continue;
             }
@@ -530,7 +643,7 @@ fn close_order_request(candidate: &WhaleLedTradeExitCandidate) -> OrderRequest {
     }
 }
 
-fn take_profit_order_request(candidate: &TakeProfitTradeExitCandidate) -> OrderRequest {
+fn risk_control_order_request(candidate: &TakeProfitTradeExitCandidate) -> OrderRequest {
     let side = if candidate.side == "buy" {
         OrderSide::Sell
     } else {
@@ -541,7 +654,7 @@ fn take_profit_order_request(candidate: &TakeProfitTradeExitCandidate) -> OrderR
             strategy_version: "whale-follow-v1",
             process_id: candidate.process_id,
             source_id: candidate.position_id,
-            purpose: "take_profit_exit",
+            purpose: &candidate.exit_purpose,
             market_id: candidate.market_id.as_deref().unwrap_or("unknown"),
             token_id: &candidate.token_id,
             side,
@@ -563,7 +676,7 @@ fn take_profit_order_request(candidate: &TakeProfitTradeExitCandidate) -> OrderR
         signal_id: None,
         metadata: serde_json::json!({
             "execution_intent": "exit",
-            "purpose": "take_profit_exit",
+            "purpose": candidate.exit_purpose.as_str(),
             "position_id": candidate.position_id,
             "source_signal_id": candidate.source_signal_id,
             "process_id": candidate.process_id,
@@ -573,7 +686,13 @@ fn take_profit_order_request(candidate: &TakeProfitTradeExitCandidate) -> OrderR
             "reference_exit_timestamp": candidate.exit_timestamp,
             "latest_mark_timestamp": candidate.latest_mark_timestamp,
             "trigger_roi": candidate.trigger_roi,
+            "threshold_roi": candidate.threshold_roi,
             "take_profit_roi": candidate.take_profit_roi,
+            "stop_loss_roi": if candidate.exit_purpose == "stop_loss_exit" {
+                Some(candidate.threshold_roi)
+            } else {
+                None
+            },
             "max_exit_slippage_bps": candidate.max_exit_slippage_bps,
             "reference_exit_size": candidate.exit_size
         }),
@@ -592,8 +711,9 @@ mod tests {
         models::OrderSide,
         store::{TakeProfitTradeExitCandidate, WhaleLedTradeExitCandidate},
         trade_pnl::{
-            close_order_request, evaluate_take_profit_exit, mark_source_failure_reason,
-            take_profit_order_request, TakeProfitExitConfig, TakeProfitMark, TakeProfitPosition,
+            close_order_request, evaluate_stop_loss_exit, evaluate_take_profit_exit,
+            mark_source_failure_reason, risk_control_order_request, StopLossExitConfig,
+            TakeProfitExitConfig, TakeProfitMark, TakeProfitPosition,
         },
     };
 
@@ -612,6 +732,7 @@ mod tests {
 
     fn take_profit_candidate(side: &str) -> TakeProfitTradeExitCandidate {
         TakeProfitTradeExitCandidate {
+            exit_purpose: "take_profit_exit".to_string(),
             process_id: Some(Uuid::new_v4()),
             position_id: Uuid::new_v4(),
             source_signal_id: Uuid::new_v4(),
@@ -630,6 +751,7 @@ mod tests {
             order_limit_price: dec!(0.4334),
             exit_size: dec!(25),
             trigger_roi: dec!(0.10),
+            threshold_roi: dec!(0.10),
             take_profit_roi: dec!(0.10),
             latest_mark_timestamp: Utc::now(),
             max_exit_slippage_bps: dec!(150),
@@ -681,7 +803,7 @@ mod tests {
     fn take_profit_order_uses_exit_intent_and_position_size() {
         let candidate = take_profit_candidate("buy");
 
-        let request = take_profit_order_request(&candidate);
+        let request = risk_control_order_request(&candidate);
 
         assert_eq!(request.side, OrderSide::Sell);
         assert_eq!(request.price, candidate.order_limit_price);
@@ -701,6 +823,35 @@ mod tests {
         assert_eq!(
             request.metadata["trigger_roi"],
             serde_json::json!(candidate.trigger_roi)
+        );
+    }
+
+    #[test]
+    fn stop_loss_order_uses_exit_intent_and_threshold_metadata() {
+        let mut candidate = take_profit_candidate("buy");
+        candidate.exit_purpose = "stop_loss_exit".to_string();
+        candidate.trigger_roi = dec!(-0.10);
+        candidate.threshold_roi = dec!(-0.10);
+        candidate.take_profit_roi = dec!(-0.10);
+
+        let request = risk_control_order_request(&candidate);
+
+        assert_eq!(request.side, OrderSide::Sell);
+        assert_eq!(
+            request.metadata["execution_intent"],
+            serde_json::json!("exit")
+        );
+        assert_eq!(
+            request.metadata["purpose"],
+            serde_json::json!("stop_loss_exit")
+        );
+        assert_eq!(
+            request.metadata["threshold_roi"],
+            serde_json::json!(dec!(-0.10))
+        );
+        assert_eq!(
+            request.metadata["stop_loss_roi"],
+            serde_json::json!(dec!(-0.10))
         );
     }
 
@@ -768,6 +919,49 @@ mod tests {
     }
 
     #[test]
+    fn stop_loss_exit_triggers_for_buy_at_configured_loss_threshold() {
+        let position = take_profit_position("buy");
+        let mark = TakeProfitMark {
+            mark_price: dec!(0.36),
+            mark_source: "clob_mid".to_string(),
+        };
+        let decision = evaluate_stop_loss_exit(
+            &position,
+            &mark,
+            &StopLossExitConfig {
+                max_loss_roi: dec!(-0.10),
+            },
+        )
+        .expect("buy position should hit stop-loss threshold");
+
+        assert_eq!(decision.position_id, position.position_id);
+        assert_eq!(decision.exit_type, "stop_loss");
+        assert_eq!(decision.exit_price, dec!(0.36));
+        assert_eq!(decision.gross_pnl, dec!(-1.00));
+        assert_eq!(decision.roi, dec!(-0.10));
+    }
+
+    #[test]
+    fn stop_loss_exit_holds_when_loss_is_above_threshold() {
+        let position = take_profit_position("buy");
+        let mark = TakeProfitMark {
+            mark_price: dec!(0.37),
+            mark_source: "clob_mid".to_string(),
+        };
+
+        assert_eq!(
+            evaluate_stop_loss_exit(
+                &position,
+                &mark,
+                &StopLossExitConfig {
+                    max_loss_roi: dec!(-0.10)
+                },
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn take_profit_exit_uses_inverse_mark_move_for_sell_positions() {
         let position = take_profit_position("sell");
         let mark = TakeProfitMark {
@@ -786,6 +980,27 @@ mod tests {
         assert_eq!(decision.exit_price, dec!(0.36));
         assert_eq!(decision.gross_pnl, dec!(1.00));
         assert_eq!(decision.roi, dec!(0.10));
+    }
+
+    #[test]
+    fn stop_loss_exit_uses_inverse_mark_move_for_sell_positions() {
+        let position = take_profit_position("sell");
+        let mark = TakeProfitMark {
+            mark_price: dec!(0.44),
+            mark_source: "clob_mid".to_string(),
+        };
+        let decision = evaluate_stop_loss_exit(
+            &position,
+            &mark,
+            &StopLossExitConfig {
+                max_loss_roi: dec!(-0.10),
+            },
+        )
+        .expect("sell position should hit stop-loss threshold when mark rises");
+
+        assert_eq!(decision.exit_price, dec!(0.44));
+        assert_eq!(decision.gross_pnl, dec!(-1.00));
+        assert_eq!(decision.roi, dec!(-0.10));
     }
 
     #[test]
