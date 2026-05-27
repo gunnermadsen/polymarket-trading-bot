@@ -1,6 +1,8 @@
 .env
 .env.*
 !.env.example
+!.env.grafana.example
+!.env.postgres.example
 target/
 node_modules/
 dist/

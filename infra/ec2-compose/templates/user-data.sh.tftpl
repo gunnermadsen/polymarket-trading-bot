@@ -374,12 +374,61 @@ write_app_env() {
     | map(select(.key | startswith("CLOUDFLARE_") | not))
     | map(select(.key | startswith("CLOUDFLARED_") | not))
     | map(select(.key | startswith("COLOUDFLARED_") | not))
+    | map(select(.key | startswith("GF_") | not))
+    | map(select(.key | startswith("GRAFANA_") | not))
+    | map(select(.key != "POSTGRES_PASSWORD"))
     | map(select(.key != "RDP_PASSWORD"))
     | map(select(.key != "SSH_AUTHORIZED_KEYS"))
     | .[]
     | "\(.key)=\(.value | tostring)"
   ' "$SECRET_PATH" > "$APP_DIRECTORY/.env"
   chmod 0600 "$APP_DIRECTORY/.env"
+}
+
+write_postgres_env() {
+  local postgres_password
+  postgres_password="$(json_value POSTGRES_PASSWORD)"
+  if [ -z "$postgres_password" ]; then
+    echo "Missing POSTGRES_PASSWORD in AWS Secrets Manager secret $APP_SECRET_NAME" >&2
+    exit 1
+  fi
+
+  printf 'POSTGRES_PASSWORD=%s\n' "$postgres_password" > "$APP_DIRECTORY/.env.postgres"
+  chmod 0600 "$APP_DIRECTORY/.env.postgres"
+}
+
+grafana_value() {
+  local key default_value value
+  key="$1"
+  default_value="$2"
+  value="$(json_value "$key")"
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
+  else
+    printf '%s' "$default_value"
+  fi
+}
+
+write_grafana_env() {
+  local grafana_admin_password
+  grafana_admin_password="$(json_value GRAFANA_ADMIN_PASSWORD)"
+  if [ -z "$grafana_admin_password" ]; then
+    echo "Missing GRAFANA_ADMIN_PASSWORD in AWS Secrets Manager secret $APP_SECRET_NAME" >&2
+    exit 1
+  fi
+
+  {
+    printf 'GRAFANA_ADMIN_USER=%s\n' "$(grafana_value GRAFANA_ADMIN_USER admin)"
+    printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "$grafana_admin_password"
+    printf 'GRAFANA_POSTGRES_DATASOURCE_NAME=%s\n' "$(grafana_value GRAFANA_POSTGRES_DATASOURCE_NAME Postgres)"
+    printf 'GRAFANA_POSTGRES_DATASOURCE_UID=%s\n' "$(grafana_value GRAFANA_POSTGRES_DATASOURCE_UID postgres)"
+    printf 'GRAFANA_POSTGRES_HOST=%s\n' "$(grafana_value GRAFANA_POSTGRES_HOST timescaledb-0)"
+    printf 'GRAFANA_POSTGRES_PORT=%s\n' "$(grafana_value GRAFANA_POSTGRES_PORT 5432)"
+    printf 'GRAFANA_POSTGRES_DATABASE=%s\n' "$(grafana_value GRAFANA_POSTGRES_DATABASE polymarket)"
+    printf 'GRAFANA_POSTGRES_USER=%s\n' "$(grafana_value GRAFANA_POSTGRES_USER postgres)"
+    printf 'GRAFANA_POSTGRES_SSL_MODE=%s\n' "$(grafana_value GRAFANA_POSTGRES_SSL_MODE disable)"
+  } > "$APP_DIRECTORY/.env.grafana"
+  chmod 0600 "$APP_DIRECTORY/.env.grafana"
 }
 
 start_compose_app() {
@@ -409,4 +458,6 @@ install_desktop
 install_cloudflared
 clone_or_update_repo
 write_app_env
+write_postgres_env
+write_grafana_env
 start_compose_app
