@@ -29,7 +29,10 @@ use polymarket_bot::{
         HttpError, MetricsResponse, TradingProcessResetResponse, TradingProcessResponse,
         TradingProcessStatusResponse, TradingProcessesResponse,
     },
-    models::{EffectiveProcessExitRulesConfig, TradingProcess, WhalePollCheckpoint},
+    models::{
+        EffectiveMarkRefreshProcessConfig, EffectiveProcessExitRulesConfig, TradingProcess,
+        WhalePollCheckpoint,
+    },
     risk::{RiskLimits, RiskState},
     scanner::{scan_markets_for_signal1, ScannerConfig, ScannerCycleReport},
     segments::score_wallet_segments_from_samples,
@@ -37,7 +40,8 @@ use polymarket_bot::{
     taxonomy::{fallback_taxonomy_update, taxonomy_update_from_metadata},
     trade_pnl::{
         execute_stop_loss_exits_for_process, execute_take_profit_exits_for_process,
-        mark_trade_pnl_now_with_config, refresh_trade_pnl_with_config, TradePnlConfig,
+        mark_trade_pnl_now_with_config, refresh_process_marks_with_config,
+        refresh_trade_pnl_with_config, TradePnlConfig,
     },
     wallets::{score_closed_position_performance, score_mrs, MrsScoreInput},
 };
@@ -49,6 +53,7 @@ const SCAN_CYCLE_TIMEOUT: Duration = Duration::from_secs(8);
 const WHALE_POLL_TIMEOUT: Duration = Duration::from_secs(60);
 const WHALE_POLL_SCHEDULER_INTERVAL: Duration = Duration::from_secs(5);
 const TAKE_PROFIT_EXIT_TIMEOUT: Duration = Duration::from_secs(60);
+const MARK_REFRESH_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Default, Clone)]
 struct RuntimeMetrics {
@@ -154,6 +159,7 @@ struct ProcessRuntimeConfig {
     market_ids: Vec<String>,
     copy_trade: CopyTradeConfig,
     exit_rules: EffectiveProcessExitRulesConfig,
+    mark_refresh: EffectiveMarkRefreshProcessConfig,
 }
 
 #[derive(Debug, Default)]
@@ -1197,6 +1203,11 @@ async fn main() -> Result<()> {
         venues.clone(),
         trade_pnl_config.clone(),
     ));
+    tokio::spawn(run_mark_refresh_scheduler(
+        store.clone(),
+        clob.clone(),
+        trade_pnl_config.clone(),
+    ));
     let mut scan_interval = tokio::time::interval(config.scan_interval);
     scan_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut health_interval = tokio::time::interval(config.health_interval);
@@ -1668,6 +1679,152 @@ async fn run_take_profit_exit_scheduler(
     }
 }
 
+async fn run_mark_refresh_scheduler(
+    store: Store,
+    clob: ClobClient,
+    trade_pnl_config: TradePnlConfig,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut last_mark_refresh_by_process: HashMap<uuid::Uuid, chrono::DateTime<Utc>> =
+        HashMap::new();
+
+    loop {
+        interval.tick().await;
+        let processes = match store.list_trading_processes(100).await {
+            Ok(processes) => processes,
+            Err(error) => {
+                warn!(error = %error, "failed to list trading processes for mark refresh");
+                continue;
+            }
+        };
+
+        for process in processes {
+            if process.process_type != "copy_trade"
+                || !process.enabled
+                || process.status != "running"
+            {
+                continue;
+            }
+            let runtime_config = match runtime_config_from_process(&process) {
+                Ok(config) => config,
+                Err(error) => {
+                    warn!(error = %error, process_id = %process.process_id, "invalid trading process config for mark refresh");
+                    continue;
+                }
+            };
+            let mark_refresh = &runtime_config.mark_refresh;
+            if !mark_refresh.enabled {
+                continue;
+            }
+
+            let now = Utc::now();
+            let poll_interval_secs = mark_refresh.poll_interval_secs.max(1);
+            if last_mark_refresh_by_process
+                .get(&process.process_id)
+                .map(|last_checked_at| (now - *last_checked_at).num_seconds() < poll_interval_secs)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            last_mark_refresh_by_process.insert(process.process_id, now);
+
+            let checkpoint_name = format!("mark_refresh:{}", process.process_id);
+            let execution = tokio::time::timeout(
+                MARK_REFRESH_TIMEOUT,
+                refresh_process_marks_with_config(
+                    &store,
+                    Some(&clob),
+                    process.process_id,
+                    mark_refresh,
+                    &trade_pnl_config,
+                ),
+            )
+            .await;
+
+            match execution {
+                Ok(Ok(report)) => {
+                    if report.mark_orderbook_snapshots_inserted > 0 || report.marks_written > 0 {
+                        info!(
+                            process_id = %process.process_id,
+                            tokens_selected = report.tokens_selected,
+                            snapshots_inserted = report.mark_orderbook_snapshots_inserted,
+                            marks_written = report.marks_written,
+                            refresh_failures = report.mark_orderbook_refresh_failures,
+                            "process marks refreshed"
+                        );
+                    }
+                    if let Err(error) = store
+                        .upsert_whale_poll_checkpoint(&WhalePollCheckpoint {
+                            checkpoint_name,
+                            last_polled_at: Some(Utc::now()),
+                            next_cursor: None,
+                            last_trade_timestamp_utc: None,
+                            last_trade_id: None,
+                            pages_seen: 0,
+                            trades_seen: report.tokens_selected as i64,
+                            state: serde_json::json!({
+                                "status": if report.mark_orderbook_refresh_failures > 0 { "degraded" } else { "ok" },
+                                "enabled": mark_refresh.enabled,
+                                "poll_interval_secs": poll_interval_secs,
+                                "max_mark_age_secs": mark_refresh.max_mark_age_secs,
+                                "batch_size": mark_refresh.batch_size,
+                                "stale_only": mark_refresh.stale_only,
+                                "failure_backoff_secs": mark_refresh.failure_backoff_secs,
+                                "report": report
+                            }),
+                        })
+                        .await
+                    {
+                        warn!(error = %error, process_id = %process.process_id, "failed to record mark refresh checkpoint");
+                    }
+                }
+                Ok(Err(error)) => {
+                    warn!(error = %error, process_id = %process.process_id, "mark refresh scheduler failed");
+                    if let Err(checkpoint_error) = store
+                        .upsert_whale_poll_checkpoint(&WhalePollCheckpoint {
+                            checkpoint_name,
+                            last_polled_at: Some(Utc::now()),
+                            next_cursor: None,
+                            last_trade_timestamp_utc: None,
+                            last_trade_id: None,
+                            pages_seen: 0,
+                            trades_seen: 0,
+                            state: serde_json::json!({
+                                "status": "error",
+                                "error": error.to_string()
+                            }),
+                        })
+                        .await
+                    {
+                        warn!(error = %checkpoint_error, process_id = %process.process_id, "failed to record mark refresh error checkpoint");
+                    }
+                }
+                Err(_) => {
+                    warn!(process_id = %process.process_id, "mark refresh scheduler timed out");
+                    if let Err(checkpoint_error) = store
+                        .upsert_whale_poll_checkpoint(&WhalePollCheckpoint {
+                            checkpoint_name,
+                            last_polled_at: Some(Utc::now()),
+                            next_cursor: None,
+                            last_trade_timestamp_utc: None,
+                            last_trade_id: None,
+                            pages_seen: 0,
+                            trades_seen: 0,
+                            state: serde_json::json!({
+                                "status": "timeout"
+                            }),
+                        })
+                        .await
+                    {
+                        warn!(error = %checkpoint_error, process_id = %process.process_id, "failed to record mark refresh timeout checkpoint");
+                    }
+                }
+            }
+        }
+    }
+}
+
 async fn poll_live_whales_once(
     store: &Store,
     data_api: &DataApiClient,
@@ -1921,6 +2078,7 @@ fn runtime_config_from_process(process: &TradingProcess) -> Result<ProcessRuntim
     let backfill = process.config.effective_backfill();
     let copy_trade = process.config.effective_copy_trade();
     let exit_rules = process.config.effective_exit_rules();
+    let mark_refresh = process.config.effective_mark_refresh();
     let execution_mode = parse_process_execution_mode(&execution.mode)?;
     Ok(ProcessRuntimeConfig {
         process_id: process.process_id,
@@ -1980,6 +2138,7 @@ fn runtime_config_from_process(process: &TradingProcess) -> Result<ProcessRuntim
             segment_allowlist: copy_trade.segment_allowlist,
         },
         exit_rules,
+        mark_refresh,
     })
 }
 

@@ -688,6 +688,8 @@ pub struct TradingProcessConfig {
     pub copy_trade: Option<CopyTradeProcessConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_rules: Option<ProcessExitRulesConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark_refresh: Option<MarkRefreshProcessConfig>,
     #[serde(default)]
     pub raw: serde_json::Value,
 }
@@ -910,6 +912,31 @@ impl TradingProcessConfig {
                 if let Some(max_exit_slippage_bps) = stop_loss.max_exit_slippage_bps {
                     effective.stop_loss.max_exit_slippage_bps = max_exit_slippage_bps;
                 }
+            }
+        }
+        effective
+    }
+
+    pub fn effective_mark_refresh(&self) -> EffectiveMarkRefreshProcessConfig {
+        let mut effective = EffectiveMarkRefreshProcessConfig::default();
+        if let Some(config) = &self.mark_refresh {
+            if let Some(enabled) = config.enabled {
+                effective.enabled = enabled;
+            }
+            if let Some(poll_interval_secs) = config.poll_interval_secs {
+                effective.poll_interval_secs = poll_interval_secs;
+            }
+            if let Some(max_mark_age_secs) = config.max_mark_age_secs {
+                effective.max_mark_age_secs = max_mark_age_secs;
+            }
+            if let Some(batch_size) = config.batch_size {
+                effective.batch_size = batch_size;
+            }
+            if let Some(stale_only) = config.stale_only {
+                effective.stale_only = stale_only;
+            }
+            if let Some(failure_backoff_secs) = config.failure_backoff_secs {
+                effective.failure_backoff_secs = failure_backoff_secs;
             }
         }
         effective
@@ -1279,6 +1306,45 @@ pub struct StopLossExitRuleProcessConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveMarkRefreshProcessConfig {
+    pub enabled: bool,
+    pub poll_interval_secs: i64,
+    pub max_mark_age_secs: i64,
+    pub batch_size: i64,
+    pub stale_only: bool,
+    pub failure_backoff_secs: i64,
+}
+
+impl Default for EffectiveMarkRefreshProcessConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            poll_interval_secs: 15,
+            max_mark_age_secs: 60,
+            batch_size: 50,
+            stale_only: true,
+            failure_backoff_secs: 300,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarkRefreshProcessConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub poll_interval_secs: Option<i64>,
+    #[serde(default)]
+    pub max_mark_age_secs: Option<i64>,
+    #[serde(default)]
+    pub batch_size: Option<i64>,
+    #[serde(default)]
+    pub stale_only: Option<bool>,
+    #[serde(default)]
+    pub failure_backoff_secs: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CopyTradeBacktestRun {
     pub backtest_id: Uuid,
     pub job_id: Option<Uuid>,
@@ -1335,4 +1401,44 @@ pub struct WhalePollCheckpoint {
     pub pages_seen: i64,
     pub trades_seen: i64,
     pub state: serde_json::Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mark_refresh_defaults_are_disabled_and_conservative() {
+        let effective = TradingProcessConfig::default().effective_mark_refresh();
+
+        assert!(!effective.enabled);
+        assert_eq!(effective.poll_interval_secs, 15);
+        assert_eq!(effective.max_mark_age_secs, 60);
+        assert_eq!(effective.batch_size, 50);
+        assert!(effective.stale_only);
+        assert_eq!(effective.failure_backoff_secs, 300);
+    }
+
+    #[test]
+    fn mark_refresh_config_overrides_defaults() {
+        let config: TradingProcessConfig = serde_json::from_value(serde_json::json!({
+            "mark_refresh": {
+                "enabled": true,
+                "poll_interval_secs": 5,
+                "max_mark_age_secs": 30,
+                "batch_size": 12,
+                "stale_only": false,
+                "failure_backoff_secs": 45
+            }
+        }))
+        .expect("mark refresh config should deserialize");
+
+        let effective = config.effective_mark_refresh();
+        assert!(effective.enabled);
+        assert_eq!(effective.poll_interval_secs, 5);
+        assert_eq!(effective.max_mark_age_secs, 30);
+        assert_eq!(effective.batch_size, 12);
+        assert!(!effective.stale_only);
+        assert_eq!(effective.failure_backoff_secs, 45);
+    }
 }

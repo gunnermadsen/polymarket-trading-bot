@@ -55,6 +55,7 @@ WITH open_positions AS MATERIALIZED (
   FROM polymarket.trade_positions p
   WHERE p.status IN ('open', 'partially_closed')
     AND p.open_size > 0
+    AND ($1::uuid IS NULL OR p.process_id IS NOT DISTINCT FROM $1::uuid)
 ),
 open_tokens AS MATERIALIZED (
   SELECT DISTINCT token_id
@@ -3856,9 +3857,19 @@ impl Store {
 
     pub async fn mark_open_trade_positions(&self) -> Result<u64> {
         let result = sqlx::query(MARK_OPEN_TRADE_POSITIONS_SQL)
+            .bind(Option::<Uuid>::None)
             .execute(&self.pool)
             .await
             .context("failed to mark open trade positions")?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn mark_open_trade_positions_for_process(&self, process_id: Uuid) -> Result<u64> {
+        let result = sqlx::query(MARK_OPEN_TRADE_POSITIONS_SQL)
+            .bind(Some(process_id))
+            .execute(&self.pool)
+            .await
+            .context("failed to mark open trade positions for process")?;
         Ok(result.rows_affected())
     }
 
@@ -3867,6 +3878,24 @@ impl Store {
         limit: i64,
         max_mark_age: chrono::Duration,
         failure_backoff: chrono::Duration,
+    ) -> Result<Vec<OpenMarkToken>> {
+        self.open_trade_position_mark_tokens_for_process(
+            None,
+            limit,
+            max_mark_age,
+            failure_backoff,
+            true,
+        )
+        .await
+    }
+
+    pub async fn open_trade_position_mark_tokens_for_process(
+        &self,
+        process_id: Option<Uuid>,
+        limit: i64,
+        max_mark_age: chrono::Duration,
+        failure_backoff: chrono::Duration,
+        stale_only: bool,
     ) -> Result<Vec<OpenMarkToken>> {
         let max_mark_age_ms = max_mark_age.num_milliseconds().max(0);
         let failure_backoff_ms = failure_backoff.num_milliseconds().max(0);
@@ -3881,7 +3910,10 @@ impl Store {
               FROM polymarket.trade_positions p
               WHERE p.status IN ('open', 'partially_closed')
                 AND p.open_size > 0
+                AND ($4::uuid IS NULL OR p.process_id IS NOT DISTINCT FROM $4::uuid)
                 AND (
+                  $5::boolean = false
+                  OR
                   p.latest_mark_timestamp IS NULL
                   OR p.latest_mark_timestamp < now() - ($1::bigint * interval '1 millisecond')
                 )
@@ -3893,7 +3925,7 @@ impl Store {
               SELECT 1
               FROM polymarket.orderbook_snapshots b
               WHERE b.token_id = t.token_id
-                AND b.timestamp_utc >= now() - interval '15 minutes'
+                AND b.timestamp_utc >= now() - ($1::bigint * interval '1 millisecond')
                 AND (b.best_bid IS NOT NULL OR b.best_ask IS NOT NULL)
               LIMIT 1
             )
@@ -3914,6 +3946,8 @@ impl Store {
         .bind(max_mark_age_ms)
         .bind(failure_backoff_ms)
         .bind(limit.max(0))
+        .bind(process_id)
+        .bind(stale_only)
         .fetch_all(&self.pool)
         .await
         .context("failed to list open trade position tokens needing marks")?;

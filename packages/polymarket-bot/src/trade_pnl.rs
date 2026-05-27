@@ -12,8 +12,8 @@ use crate::{
     execution::{execute_order_plan, ExecutionVenue, OrderPlan},
     idempotency::{deterministic_client_order_id, ClientOrderIdSeed},
     models::{
-        EffectiveStopLossExitRuleProcessConfig, EffectiveTakeProfitExitRuleProcessConfig,
-        OrderRequest, OrderSide, OrderType,
+        EffectiveMarkRefreshProcessConfig, EffectiveStopLossExitRuleProcessConfig,
+        EffectiveTakeProfitExitRuleProcessConfig, OrderRequest, OrderSide, OrderType,
     },
     store::{
         OrderbookSnapshot, Store, TakeProfitTradeExitCandidate, TradeMarkSourceFailure,
@@ -50,6 +50,7 @@ impl Default for TradePnlConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MarkOrderbookRefreshReport {
+    pub tokens_selected: u64,
     pub snapshots_inserted: u64,
     pub failures: u64,
 }
@@ -66,6 +67,17 @@ pub struct TradePnlRefreshReport {
     pub mark_orderbook_snapshots_inserted: u64,
     pub mark_orderbook_refresh_failures: u64,
     pub marks_written: u64,
+    pub wallets_refreshed: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProcessMarkRefreshReport {
+    pub positions_reconciled: u64,
+    pub tokens_selected: u64,
+    pub mark_orderbook_snapshots_inserted: u64,
+    pub mark_orderbook_refresh_failures: u64,
+    pub marks_written: u64,
+    pub closed_marks_cleared: u64,
     pub wallets_refreshed: u64,
 }
 
@@ -342,6 +354,52 @@ pub async fn execute_take_profit_exits_for_process(
     Ok(report)
 }
 
+pub async fn refresh_process_marks_with_config(
+    store: &Store,
+    clob: Option<&ClobClient>,
+    process_id: Uuid,
+    mark_refresh_config: &EffectiveMarkRefreshProcessConfig,
+    pnl_config: &TradePnlConfig,
+) -> Result<ProcessMarkRefreshReport> {
+    if !mark_refresh_config.enabled {
+        return Ok(ProcessMarkRefreshReport::default());
+    }
+
+    let positions_reconciled = store
+        .reconcile_trade_positions_from_executable_exits()
+        .await?;
+    let mut scoped_config = pnl_config.clone();
+    scoped_config.mark_token_refresh_limit = mark_refresh_config.batch_size.max(0) as usize;
+    scoped_config.max_orderbook_mark_age =
+        Duration::seconds(mark_refresh_config.max_mark_age_secs.max(0));
+    scoped_config.mark_failure_backoff =
+        Duration::seconds(mark_refresh_config.failure_backoff_secs.max(0));
+
+    let mark_orderbook_refresh = refresh_open_position_orderbook_marks_for_process(
+        store,
+        clob,
+        Some(process_id),
+        &scoped_config,
+        mark_refresh_config.stale_only,
+    )
+    .await?;
+    let marks_written = store
+        .mark_open_trade_positions_for_process(process_id)
+        .await?;
+    let closed_marks_cleared = store.clear_closed_trade_position_unrealized_pnl().await?;
+    let wallets_refreshed = store.refresh_wallet_trade_performance().await?;
+
+    Ok(ProcessMarkRefreshReport {
+        positions_reconciled,
+        tokens_selected: mark_orderbook_refresh.tokens_selected,
+        mark_orderbook_snapshots_inserted: mark_orderbook_refresh.snapshots_inserted,
+        mark_orderbook_refresh_failures: mark_orderbook_refresh.failures,
+        marks_written,
+        closed_marks_cleared,
+        wallets_refreshed,
+    })
+}
+
 pub async fn execute_stop_loss_exits_for_process(
     store: &Store,
     venue: Option<&dyn ExecutionVenue>,
@@ -425,19 +483,32 @@ async fn refresh_open_position_orderbook_marks(
     clob: Option<&ClobClient>,
     config: &TradePnlConfig,
 ) -> Result<MarkOrderbookRefreshReport> {
+    refresh_open_position_orderbook_marks_for_process(store, clob, None, config, true).await
+}
+
+async fn refresh_open_position_orderbook_marks_for_process(
+    store: &Store,
+    clob: Option<&ClobClient>,
+    process_id: Option<Uuid>,
+    config: &TradePnlConfig,
+    stale_only: bool,
+) -> Result<MarkOrderbookRefreshReport> {
     let Some(clob) = clob else {
         return Ok(MarkOrderbookRefreshReport::default());
     };
     let tokens = store
-        .open_trade_position_mark_tokens(
+        .open_trade_position_mark_tokens_for_process(
+            process_id,
             config.mark_token_refresh_limit as i64,
             config.max_orderbook_mark_age,
             config.mark_failure_backoff,
+            stale_only,
         )
         .await?;
     if tokens.is_empty() {
         return Ok(MarkOrderbookRefreshReport::default());
     }
+    let tokens_selected = tokens.len() as u64;
 
     let concurrency = config.mark_refresh_concurrency.max(1);
     let mut snapshots = stream::iter(tokens)
@@ -506,6 +577,7 @@ async fn refresh_open_position_orderbook_marks(
         );
     }
     Ok(MarkOrderbookRefreshReport {
+        tokens_selected,
         snapshots_inserted: inserted,
         failures: failed,
     })
