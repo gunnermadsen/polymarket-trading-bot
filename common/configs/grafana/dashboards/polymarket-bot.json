@@ -1,0 +1,158 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": true,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH exit_events AS (\n  SELECT\n    COALESCE(e.process_id, p.process_id) AS process_id,\n    e.timestamp_utc,\n    e.net_pnl\n  FROM polymarket.trade_exits e\n  JOIN polymarket.trade_positions p\n    ON p.position_id = e.position_id\n  WHERE NOT e.is_synthetic\n    AND COALESCE(e.process_id, p.process_id) IS NOT NULL\n), baseline AS (\n  SELECT\n    process_id,\n    COALESCE(SUM(net_pnl), 0) AS realized_before\n  FROM exit_events\n  WHERE timestamp_utc < $__timeFrom()\n  GROUP BY process_id\n), bucketed AS (\n  SELECT\n    $__timeGroupAlias(timestamp_utc, $__interval),\n    process_id,\n    SUM(net_pnl) AS bucket_realized_pnl\n  FROM exit_events\n  WHERE $__timeFilter(timestamp_utc)\n  GROUP BY 1, process_id\n)\nSELECT\n  b.\"time\",\n  left(b.process_id::text, 8) AS metric,\n  (\n    COALESCE(bl.realized_before, 0)\n    + SUM(b.bucket_realized_pnl) OVER (\n      PARTITION BY b.process_id\n      ORDER BY b.\"time\"\n      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n    )\n  )::double precision AS value\nFROM bucketed b\nLEFT JOIN baseline bl\n  ON bl.process_id = b.process_id\nORDER BY b.\"time\", metric;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Cumulative Realized PnL by Process",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 42,
+  "tags": [
+    "polymarket-bot"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "polymarket-bot",
+  "uid": "polymarket-bot",
+  "version": 1,
+  "weekStart": ""
+}
