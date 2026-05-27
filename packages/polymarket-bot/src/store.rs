@@ -27,7 +27,9 @@ use crate::{
         SegmentClassification, WalletSegmentPerformanceInput, GAMMA_SEGMENT_CLASSIFIER_VERSION,
         MRS_SEGMENT_V2_SCORE_VERSION,
     },
-    taxonomy::{cache_key, taxonomy_update_from_metadata, GAMMA_TAXONOMY_VERSION},
+    taxonomy::{
+        cache_key, fallback_taxonomy_update, taxonomy_update_from_metadata, GAMMA_TAXONOMY_VERSION,
+    },
     wallets::{score_mrs, MrsScoreInput, MRS_SCORE_VERSION},
 };
 
@@ -4741,12 +4743,14 @@ impl Store {
     ) -> Result<Option<SegmentClassification>> {
         let row = sqlx::query_as::<_, WalletTradeGammaSegmentRow>(
             r#"
-            SELECT lower(proxy_wallet) AS proxy_wallet, taxonomy_segment, COALESCE(taxonomy_confidence, 0)::numeric AS taxonomy_confidence,
-              cash_value, timestamp_utc, trade_id, COALESCE(taxonomy_metadata, '{}'::jsonb) AS taxonomy_metadata
+            SELECT lower(proxy_wallet) AS proxy_wallet, taxonomy_segment, taxonomy_source,
+              COALESCE(taxonomy_confidence, 0)::numeric AS taxonomy_confidence,
+              cash_value, timestamp_utc, trade_id,
+              COALESCE(taxonomy_metadata, '{}'::jsonb) AS taxonomy_metadata
             FROM polymarket.wallet_trades
             WHERE trade_id = $1
               AND taxonomy_version = $2
-              AND taxonomy_source = 'gamma'
+              AND taxonomy_source IN ('gamma', 'keyword_fallback')
               AND taxonomy_segment IS NOT NULL
             LIMIT 1
             "#,
@@ -4764,6 +4768,7 @@ impl Store {
                 serde_json::json!({
                     "trade_id": row.trade_id,
                     "taxonomy_segment": row.taxonomy_segment,
+                    "taxonomy_source": row.taxonomy_source,
                     "taxonomy_metadata": row.taxonomy_metadata
                 }),
             )
@@ -4883,12 +4888,10 @@ impl Store {
                     .await?;
             }
         }
-        let Some(metadata) = metadata else {
-            return Ok(false);
-        };
-        let Some(update) = taxonomy_update_from_metadata(&candidate, &metadata) else {
-            return Ok(false);
-        };
+        let update = metadata
+            .as_ref()
+            .and_then(|metadata| taxonomy_update_from_metadata(&candidate, metadata))
+            .unwrap_or_else(|| fallback_taxonomy_update(&candidate));
         Ok(self.update_wallet_trade_taxonomy(&update).await? > 0)
     }
 
@@ -5049,13 +5052,15 @@ impl Store {
             .collect::<Vec<_>>();
         let rows = sqlx::query_as::<_, WalletTradeGammaSegmentRow>(
             r#"
-            SELECT lower(proxy_wallet) AS proxy_wallet, taxonomy_segment, COALESCE(taxonomy_confidence, 0)::numeric AS taxonomy_confidence,
-              cash_value, timestamp_utc, trade_id, COALESCE(taxonomy_metadata, '{}'::jsonb) AS taxonomy_metadata
+            SELECT lower(proxy_wallet) AS proxy_wallet, taxonomy_segment, taxonomy_source,
+              COALESCE(taxonomy_confidence, 0)::numeric AS taxonomy_confidence,
+              cash_value, timestamp_utc, trade_id,
+              COALESCE(taxonomy_metadata, '{}'::jsonb) AS taxonomy_metadata
             FROM polymarket.wallet_trades
             WHERE lower(proxy_wallet) = ANY($1)
               AND timestamp_utc >= $2
               AND taxonomy_version = $3
-              AND taxonomy_source = 'gamma'
+              AND taxonomy_source IN ('gamma', 'keyword_fallback')
               AND taxonomy_segment IS NOT NULL
             ORDER BY proxy_wallet, timestamp_utc DESC
             "#,
@@ -6212,6 +6217,7 @@ struct WhaleTradeRow {
 struct WalletTradeGammaSegmentRow {
     proxy_wallet: String,
     taxonomy_segment: String,
+    taxonomy_source: String,
     taxonomy_confidence: Decimal,
     cash_value: Decimal,
     timestamp_utc: DateTime<Utc>,

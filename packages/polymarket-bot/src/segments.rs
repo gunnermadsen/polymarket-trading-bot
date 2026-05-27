@@ -96,6 +96,13 @@ pub fn normalize_gamma_segment_key(taxonomy_segment: &str) -> Option<String> {
         .or_else(|| segment.strip_prefix("category."))
         .unwrap_or(segment.as_str());
 
+    if is_btc_short_interval_slug(value) {
+        return Some("crypto.bitcoin.short_interval".to_string());
+    }
+    if is_eth_short_interval_slug(value) {
+        return Some("crypto.ethereum.short_interval".to_string());
+    }
+
     let normalized = match value {
         "btc-up-or-down-5m" | "btc-up-or-down-15m" => "crypto.bitcoin.short_interval",
         "btc-up-or-down-hourly" => "crypto.bitcoin.hourly",
@@ -126,6 +133,20 @@ pub fn normalize_gamma_segment_key(taxonomy_segment: &str) -> Option<String> {
     };
 
     Some(normalized.to_string())
+}
+
+fn is_btc_short_interval_slug(value: &str) -> bool {
+    value.starts_with("btc-updown-5m")
+        || value.starts_with("btc-updown-15m")
+        || value.starts_with("btc-up-or-down-5m")
+        || value.starts_with("btc-up-or-down-15m")
+}
+
+fn is_eth_short_interval_slug(value: &str) -> bool {
+    value.starts_with("eth-updown-5m")
+        || value.starts_with("eth-updown-15m")
+        || value.starts_with("eth-up-or-down-5m")
+        || value.starts_with("eth-up-or-down-15m")
 }
 
 fn normalize_canonical_gamma_segment_key(segment_key: &str) -> Option<&'static str> {
@@ -186,6 +207,17 @@ pub fn classify_segment(text: SegmentText<'_>) -> SegmentClassification {
     .join(" ")
     .to_ascii_lowercase();
 
+    if let Some((segment_key, matched_term)) = normalized_segment_from_slug(&text) {
+        return SegmentClassification {
+            segment_key,
+            classifier_version: SEGMENT_CLASSIFIER_VERSION.to_string(),
+            confidence: dec!(0.90),
+            matched_rule: "normalized_slug_segment".to_string(),
+            matched_terms: vec![matched_term],
+            source_fields: source_fields(text),
+        };
+    }
+
     for rule in segment_rules() {
         let matched_terms = rule
             .terms
@@ -213,6 +245,21 @@ pub fn classify_segment(text: SegmentText<'_>) -> SegmentClassification {
         matched_terms: Vec::new(),
         source_fields: source_fields(text),
     }
+}
+
+fn normalized_segment_from_slug(text: &SegmentText<'_>) -> Option<(String, String)> {
+    [text.slug, text.event_slug]
+        .into_iter()
+        .flatten()
+        .filter(|slug| {
+            let normalized = slug.trim().to_ascii_lowercase();
+            normalized.starts_with("series.")
+                || normalized.contains("updown")
+                || normalized.contains("up-or-down")
+        })
+        .find_map(|slug| {
+            normalize_gamma_segment_key(slug).map(|segment| (segment, slug.to_string()))
+        })
 }
 
 pub fn score_wallet_segment(input: WalletSegmentPerformanceInput) -> WalletSegmentScore {
@@ -616,6 +663,10 @@ mod tests {
             Some("crypto.bitcoin.short_interval")
         );
         assert_eq!(
+            normalize_gamma_segment_key("btc-updown-5m-1779894000").as_deref(),
+            Some("crypto.bitcoin.short_interval")
+        );
+        assert_eq!(
             normalize_gamma_segment_key("crypto.bitcoin.short_interval").as_deref(),
             Some("crypto.bitcoin.short_interval")
         );
@@ -652,6 +703,17 @@ mod tests {
             Some("politics.general")
         );
         assert_eq!(normalize_gamma_segment_key("series.some-new-label"), None);
+    }
+
+    #[test]
+    fn classifier_uses_btc_short_interval_slug_before_broad_crypto_rule() {
+        let classification = classify_segment(SegmentText {
+            title: Some("Bitcoin Up or Down - 5m"),
+            event_slug: Some("btc-updown-5m-1779894000"),
+            ..SegmentText::default()
+        });
+        assert_eq!(classification.segment_key, "crypto.bitcoin.short_interval");
+        assert_eq!(classification.matched_rule, "normalized_slug_segment");
     }
 
     #[test]

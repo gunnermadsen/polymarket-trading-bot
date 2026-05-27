@@ -250,6 +250,21 @@ fn derive_taxonomy_segment(
 }
 
 fn normalize_gamma_series_slug(slug: &str) -> Option<String> {
+    if slug.starts_with("btc-updown-5m")
+        || slug.starts_with("btc-updown-15m")
+        || slug.starts_with("btc-up-or-down-5m")
+        || slug.starts_with("btc-up-or-down-15m")
+    {
+        return Some("crypto.bitcoin.short_interval".to_string());
+    }
+    if slug.starts_with("eth-updown-5m")
+        || slug.starts_with("eth-updown-15m")
+        || slug.starts_with("eth-up-or-down-5m")
+        || slug.starts_with("eth-up-or-down-15m")
+    {
+        return Some("crypto.ethereum.short_interval".to_string());
+    }
+
     match slug {
         "btc-up-or-down-5m" => Some("crypto.bitcoin.short_interval".to_string()),
         "btc-up-or-down-15m" => Some("crypto.bitcoin.short_interval".to_string()),
