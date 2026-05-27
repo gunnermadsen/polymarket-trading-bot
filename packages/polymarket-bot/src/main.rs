@@ -1946,6 +1946,7 @@ fn runtime_config_from_process(process: &TradingProcess) -> Result<ProcessRuntim
             hard_reject_segment_win_rate_below: copy_trade.hard_reject_segment_win_rate_below,
             hard_reject_segment_sample_size: copy_trade.hard_reject_segment_sample_size,
             unknown_segment_policy: copy_trade.unknown_segment_policy,
+            segment_allowlist: copy_trade.segment_allowlist,
         },
         exit_rules,
     })

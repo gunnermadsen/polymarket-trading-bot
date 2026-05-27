@@ -857,6 +857,7 @@ impl TradingProcessConfig {
             if let Some(unknown_segment_policy) = &config.unknown_segment_policy {
                 effective.unknown_segment_policy = unknown_segment_policy.clone();
             }
+            effective.segment_allowlist = config.segment_allowlist.clone();
         }
         effective
     }
@@ -1019,6 +1020,7 @@ pub struct EffectiveCopyTradeProcessConfig {
     pub hard_reject_segment_win_rate_below: Decimal,
     pub hard_reject_segment_sample_size: i32,
     pub unknown_segment_policy: String,
+    pub segment_allowlist: Vec<String>,
 }
 
 impl Default for EffectiveCopyTradeProcessConfig {
@@ -1059,6 +1061,7 @@ impl Default for EffectiveCopyTradeProcessConfig {
             hard_reject_segment_win_rate_below: dec!(0.40),
             hard_reject_segment_sample_size: 10,
             unknown_segment_policy: "neutral".to_string(),
+            segment_allowlist: Vec::new(),
         }
     }
 }
@@ -1135,6 +1138,8 @@ pub struct CopyTradeProcessConfig {
     pub hard_reject_segment_sample_size: Option<i32>,
     #[serde(default)]
     pub unknown_segment_policy: Option<String>,
+    #[serde(default)]
+    pub segment_allowlist: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

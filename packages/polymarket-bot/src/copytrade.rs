@@ -16,7 +16,10 @@ use crate::{
         OrderSide, OrderType, SignalCandidate, SignalStatus, SignalType, WalletPerformance,
         WalletScore, WalletScoreCalibrationSnapshot, WalletSegmentPerformance, WhaleTrade,
     },
-    segments::{classify_trade_segment, SegmentClassification, MRS_SEGMENT_V2_SCORE_VERSION},
+    segments::{
+        classify_trade_segment, normalize_gamma_segment_key, SegmentClassification,
+        MRS_SEGMENT_V2_SCORE_VERSION,
+    },
 };
 
 pub const COPY_SCORE_VERSION: &str = "whale_score_v1";
@@ -59,6 +62,7 @@ pub struct CopyTradeConfig {
     pub hard_reject_segment_win_rate_below: Decimal,
     pub hard_reject_segment_sample_size: i32,
     pub unknown_segment_policy: String,
+    pub segment_allowlist: Vec<String>,
 }
 
 impl Default for CopyTradeConfig {
@@ -99,6 +103,7 @@ impl Default for CopyTradeConfig {
             hard_reject_segment_win_rate_below: dec!(0.40),
             hard_reject_segment_sample_size: 10,
             unknown_segment_policy: "neutral".to_string(),
+            segment_allowlist: Vec::new(),
         }
     }
 }
@@ -165,6 +170,7 @@ impl From<&EffectiveCopyTradeProcessConfig> for CopyTradeConfig {
             hard_reject_segment_win_rate_below: config.hard_reject_segment_win_rate_below,
             hard_reject_segment_sample_size: config.hard_reject_segment_sample_size,
             unknown_segment_policy: config.unknown_segment_policy.clone(),
+            segment_allowlist: config.segment_allowlist.clone(),
         }
     }
 }
@@ -347,6 +353,8 @@ pub fn evaluate_copy_trade_with_segment(
     let mut reject_reason = None;
     let segment_classification =
         segment_classification.unwrap_or_else(|| classify_trade_segment(trade));
+    let segment_filter_decision =
+        evaluate_segment_filter(&segment_classification.segment_key, config);
     let segment_decision =
         evaluate_segment_gate(&segment_classification.segment_key, segment_score, config);
 
@@ -358,6 +366,8 @@ pub fn evaluate_copy_trade_with_segment(
         reject_reason = Some("unsupported_trade_side");
     } else if side == "SELL" && !config.allow_sell_entries {
         reject_reason = Some("sell_entries_disabled");
+    } else if segment_filter_decision.enforced_reject {
+        reject_reason = Some(segment_filter_decision.reason);
     } else if config.mrs_enabled && config.mrs_enforce && mrs_score.is_none() {
         reject_reason = Some("missing_mrs_score");
     } else if config.mrs_enabled
@@ -461,6 +471,14 @@ pub fn evaluate_copy_trade_with_segment(
             },
             "metadata": segment_score.map(|score| score.metadata.clone())
         },
+        "segment_filter": {
+            "enabled": !config.segment_allowlist.is_empty(),
+            "allowed_segments": segment_filter_decision.allowed_segments,
+            "segment_key": segment_classification.segment_key,
+            "decision": segment_filter_decision.decision,
+            "reject_reason": segment_filter_decision.reject_reason,
+            "enforced_reject": segment_filter_decision.enforced_reject
+        },
         "lag_secs": lag_secs,
         "slippage_bps": slippage_bps,
         "available_depth_usd": observed.available_depth_usd,
@@ -555,6 +573,63 @@ struct SegmentGateDecision {
     reject_reason: Option<&'static str>,
     reason: &'static str,
     enforced_reject: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SegmentFilterDecision {
+    decision: &'static str,
+    reject_reason: Option<&'static str>,
+    reason: &'static str,
+    enforced_reject: bool,
+    allowed_segments: Vec<String>,
+}
+
+fn evaluate_segment_filter(segment_key: &str, config: &CopyTradeConfig) -> SegmentFilterDecision {
+    let allowed_segments = normalized_segment_allowlist(&config.segment_allowlist);
+    if allowed_segments.is_empty() {
+        return SegmentFilterDecision {
+            decision: "disabled",
+            reject_reason: None,
+            reason: "segment_filter_disabled",
+            enforced_reject: false,
+            allowed_segments,
+        };
+    }
+
+    if allowed_segments
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(segment_key))
+    {
+        return SegmentFilterDecision {
+            decision: "accepted",
+            reject_reason: None,
+            reason: "segment_filter_passed",
+            enforced_reject: false,
+            allowed_segments,
+        };
+    }
+
+    SegmentFilterDecision {
+        decision: "rejected",
+        reject_reason: Some("segment_not_allowlisted"),
+        reason: "segment_not_allowlisted",
+        enforced_reject: true,
+        allowed_segments,
+    }
+}
+
+fn normalized_segment_allowlist(segments: &[String]) -> Vec<String> {
+    segments
+        .iter()
+        .filter_map(|segment| {
+            normalize_gamma_segment_key(segment).or_else(|| {
+                let trimmed = segment.trim().to_ascii_lowercase();
+                (!trimmed.is_empty()).then_some(trimmed)
+            })
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn evaluate_segment_gate(
@@ -1444,6 +1519,73 @@ mod tests {
             None,
         );
         assert_eq!(high.copy_signal.status, "detected");
+    }
+
+    #[test]
+    fn segment_allowlist_rejects_non_matching_segments_before_mrs_gate() {
+        let mut config = CopyTradeConfig::default();
+        config.segment_allowlist = vec!["crypto.bitcoin.short_interval".to_string()];
+        config.mrs_enforce = true;
+        let mut trade = trade("0xabc", "token", dec!(0.50), 0);
+        trade.title = Some("Will the NBA Finals go seven games?".to_string());
+        let wallet_performance = performance("0xabc", dec!(1000), dec!(0.10), 10);
+
+        let decision = evaluate_copy_trade(
+            &trade,
+            Some(&wallet_performance),
+            None,
+            None,
+            ObservedMarket {
+                observed_price: dec!(0.50),
+                available_depth_usd: dec!(1000),
+                observed_at: trade.timestamp_utc,
+            },
+            &config,
+            None,
+        );
+
+        assert_eq!(decision.copy_signal.status, "rejected");
+        assert_eq!(
+            decision.signal_candidate.reject_reason.as_deref(),
+            Some("segment_not_allowlisted")
+        );
+        assert_eq!(
+            decision.copy_signal.metadata["segment_filter"]["decision"],
+            serde_json::json!("rejected")
+        );
+    }
+
+    #[test]
+    fn segment_allowlist_accepts_normalized_btc_short_interval_slug() {
+        let mut config = CopyTradeConfig::default();
+        config.segment_allowlist = vec!["series.btc-up-or-down-5m".to_string()];
+        let mut trade = trade("0xabc", "token", dec!(0.50), 0);
+        trade.event_slug = Some("btc-updown-5m-1779894000".to_string());
+        let wallet_performance = performance("0xabc", dec!(1000), dec!(0.10), 10);
+
+        let decision = evaluate_copy_trade(
+            &trade,
+            Some(&wallet_performance),
+            None,
+            None,
+            ObservedMarket {
+                observed_price: dec!(0.50),
+                available_depth_usd: dec!(1000),
+                observed_at: trade.timestamp_utc,
+            },
+            &config,
+            None,
+        );
+
+        assert_eq!(decision.copy_signal.status, "detected");
+        assert_eq!(
+            decision.copy_signal.metadata["segment"]["segment_key"],
+            serde_json::json!("crypto.bitcoin.short_interval")
+        );
+        assert_eq!(
+            decision.copy_signal.metadata["segment_filter"]["allowed_segments"],
+            serde_json::json!(["crypto.bitcoin.short_interval"])
+        );
     }
 
     #[test]
