@@ -1,8 +1,9 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use anyhow::{Context, Result};
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 use uuid::Uuid;
@@ -17,8 +18,10 @@ use crate::{
     data_api::{ClosedPositionsQuery, DataApiClient, TradesQuery},
     execution::{execute_order_plan, ExecutionVenue, OrderPlan, OrderPlanReport},
     models::{
-        BackfillJobStatus, CopyTradeBacktestRun, DataApiClosedPosition, OrderState, WhaleTrade,
+        BackfillJobStatus, CopyTradeBacktestRun, DataApiClosedPosition, OrderRequest, OrderState,
+        WhaleTrade,
     },
+    orderbook::{BookSide, LocalOrderBook},
     segments::{
         classify_trade_segment, score_wallet_segments_from_samples,
         GAMMA_SEGMENT_CLASSIFIER_VERSION,
@@ -694,6 +697,167 @@ mod tests {
         assert_eq!(metadata["orders"], 1);
         assert_eq!(metadata["fills"], 0);
     }
+
+    fn safety_order(side: OrderSide, price: rust_decimal::Decimal) -> OrderRequest {
+        OrderRequest {
+            client_order_id: Uuid::new_v4(),
+            process_id: Some(Uuid::new_v4()),
+            market_id: "market".to_string(),
+            token_id: "token".to_string(),
+            side,
+            order_type: OrderType::Fok,
+            price,
+            size: dec!(4),
+            signal_id: Some(Uuid::new_v4()),
+            metadata: serde_json::json!({"purpose": "whale_follow_entry"}),
+        }
+    }
+
+    fn safety_config() -> CopyTradeConfig {
+        let mut config = CopyTradeConfig::default();
+        config.entry_safety.enabled = true;
+        config.entry_safety.min_time_to_expiry_secs = 120;
+        config.entry_safety.require_two_sided_book = true;
+        config.entry_safety.max_spread_bps = dec!(2500);
+        config.entry_safety.require_exit_depth = true;
+        config.entry_safety.exit_depth_size_fraction = dec!(1.0);
+        config.entry_safety.exit_depth_slippage_bps = dec!(150);
+        config.entry_safety.min_entry_price = dec!(0.05);
+        config.entry_safety.max_entry_price = dec!(0.95);
+        config
+    }
+
+    fn safety_book(
+        bid: rust_decimal::Decimal,
+        bid_size: rust_decimal::Decimal,
+        ask: rust_decimal::Decimal,
+    ) -> LocalOrderBook {
+        let now = Utc::now();
+        let mut book = LocalOrderBook::default();
+        book.upsert_level(BookSide::Bid, bid, bid_size, now);
+        book.upsert_level(BookSide::Ask, ask, dec!(20), now);
+        book
+    }
+
+    #[test]
+    fn entry_safety_accepts_liquid_two_sided_book() {
+        let now = Utc::now();
+        let request = safety_order(OrderSide::Buy, dec!(0.51));
+        let book = safety_book(dec!(0.505), dec!(10), dec!(0.51));
+
+        let rejection = entry_safety_rejection(
+            &request,
+            &book,
+            Some(now + Duration::seconds(300)),
+            &safety_config(),
+            now,
+        );
+
+        assert!(rejection.is_none());
+    }
+
+    #[test]
+    fn entry_safety_rejects_missing_expiry_when_required() {
+        let now = Utc::now();
+        let request = safety_order(OrderSide::Buy, dec!(0.51));
+        let book = safety_book(dec!(0.50), dec!(10), dec!(0.51));
+
+        let rejection =
+            entry_safety_rejection(&request, &book, None, &safety_config(), now).unwrap();
+
+        assert_eq!(rejection["reject_reason"], "missing_market_expiry");
+    }
+
+    #[test]
+    fn entry_safety_rejects_expiry_too_close() {
+        let now = Utc::now();
+        let request = safety_order(OrderSide::Buy, dec!(0.51));
+        let book = safety_book(dec!(0.50), dec!(10), dec!(0.51));
+
+        let rejection = entry_safety_rejection(
+            &request,
+            &book,
+            Some(now + Duration::seconds(30)),
+            &safety_config(),
+            now,
+        )
+        .unwrap();
+
+        assert_eq!(rejection["reject_reason"], "entry_expiry_too_close");
+    }
+
+    #[test]
+    fn entry_safety_rejects_one_sided_book() {
+        let now = Utc::now();
+        let request = safety_order(OrderSide::Buy, dec!(0.51));
+        let mut book = LocalOrderBook::default();
+        book.upsert_level(BookSide::Ask, dec!(0.51), dec!(20), now);
+
+        let rejection = entry_safety_rejection(
+            &request,
+            &book,
+            Some(now + Duration::seconds(300)),
+            &safety_config(),
+            now,
+        )
+        .unwrap();
+
+        assert_eq!(rejection["reject_reason"], "entry_book_not_two_sided");
+    }
+
+    #[test]
+    fn entry_safety_rejects_wide_spread() {
+        let now = Utc::now();
+        let request = safety_order(OrderSide::Buy, dec!(0.70));
+        let book = safety_book(dec!(0.30), dec!(10), dec!(0.70));
+
+        let rejection = entry_safety_rejection(
+            &request,
+            &book,
+            Some(now + Duration::seconds(300)),
+            &safety_config(),
+            now,
+        )
+        .unwrap();
+
+        assert_eq!(rejection["reject_reason"], "entry_spread_too_wide");
+    }
+
+    #[test]
+    fn entry_safety_rejects_insufficient_exit_depth() {
+        let now = Utc::now();
+        let request = safety_order(OrderSide::Buy, dec!(0.51));
+        let book = safety_book(dec!(0.50), dec!(1), dec!(0.51));
+
+        let rejection = entry_safety_rejection(
+            &request,
+            &book,
+            Some(now + Duration::seconds(300)),
+            &safety_config(),
+            now,
+        )
+        .unwrap();
+
+        assert_eq!(rejection["reject_reason"], "entry_exit_depth_insufficient");
+    }
+
+    #[test]
+    fn entry_safety_rejects_price_out_of_bounds() {
+        let now = Utc::now();
+        let request = safety_order(OrderSide::Buy, dec!(0.04));
+        let book = safety_book(dec!(0.039), dec!(10), dec!(0.04));
+
+        let rejection = entry_safety_rejection(
+            &request,
+            &book,
+            Some(now + Duration::seconds(300)),
+            &safety_config(),
+            now,
+        )
+        .unwrap();
+
+        assert_eq!(rejection["reject_reason"], "entry_price_out_of_bounds");
+    }
 }
 pub async fn run_copy_trade_signal_engine(
     store: &Store,
@@ -891,7 +1055,8 @@ pub async fn run_copy_trade_signal_engine(
             }
         }
         if config.require_entry_markability {
-            if let Some(rejection) = ensure_order_plan_markable_at_entry(store, clob, &plan).await?
+            if let Some(rejection) =
+                ensure_order_plan_markable_at_entry(store, clob, &plan, &config.copy_trade).await?
             {
                 summary.rejections += 1;
                 store
@@ -992,6 +1157,7 @@ async fn ensure_order_plan_markable_at_entry(
     store: &Store,
     clob: Option<&ClobClient>,
     plan: &OrderPlan,
+    config: &CopyTradeConfig,
 ) -> Result<Option<serde_json::Value>> {
     let Some(clob) = clob else {
         for request in &plan.orders {
@@ -1083,6 +1249,36 @@ async fn ensure_order_plan_markable_at_entry(
                 "best_ask": snapshot.best_ask
             })));
         }
+        let market_end_date =
+            if config.entry_safety.enabled && config.entry_safety.min_time_to_expiry_secs > 0 {
+                store
+                    .fetch_market_end_date_for_entry(&request.market_id, &request.token_id)
+                    .await?
+            } else {
+                None
+            };
+        if let Some(rejection) =
+            entry_safety_rejection(request, &book, market_end_date, config, Utc::now())
+        {
+            record_entry_mark_failure(
+                store,
+                request.process_id,
+                &request.market_id,
+                &request.token_id,
+                rejection
+                    .get("reject_reason")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("entry_safety_rejected"),
+                serde_json::json!({
+                    "operation": "copy_trade_entry_safety",
+                    "client_order_id": request.client_order_id,
+                    "plan_id": plan.plan_id,
+                    "entry_safety": rejection
+                }),
+            )
+            .await?;
+            return Ok(Some(rejection));
+        }
         store
             .resolve_trade_mark_source_failure(
                 request.process_id,
@@ -1094,6 +1290,191 @@ async fn ensure_order_plan_markable_at_entry(
     }
 
     Ok(None)
+}
+
+fn entry_safety_rejection(
+    request: &OrderRequest,
+    book: &LocalOrderBook,
+    market_end_date: Option<DateTime<Utc>>,
+    config: &CopyTradeConfig,
+    now: DateTime<Utc>,
+) -> Option<serde_json::Value> {
+    let safety = &config.entry_safety;
+    if !safety.enabled {
+        return None;
+    }
+
+    let mut metadata = serde_json::json!({
+        "status": "rejected",
+        "entry_safety": {
+            "enabled": true,
+            "decision": "accepted",
+            "best_bid": book.best_bid(),
+            "best_ask": book.best_ask(),
+            "min_time_to_expiry_secs": safety.min_time_to_expiry_secs,
+            "require_two_sided_book": safety.require_two_sided_book,
+            "max_spread_bps": safety.max_spread_bps,
+            "require_exit_depth": safety.require_exit_depth,
+            "exit_depth_size_fraction": safety.exit_depth_size_fraction,
+            "exit_depth_slippage_bps": safety.exit_depth_slippage_bps,
+            "min_entry_price": safety.min_entry_price,
+            "max_entry_price": safety.max_entry_price
+        }
+    });
+
+    if safety.min_time_to_expiry_secs > 0 {
+        let Some(end_date) = market_end_date else {
+            return Some(entry_safety_reject(
+                metadata,
+                "missing_market_expiry",
+                serde_json::json!({}),
+            ));
+        };
+        let time_to_expiry_secs = (end_date - now).num_seconds();
+        merge_object(
+            &mut metadata,
+            serde_json::json!({
+                "entry_safety": {
+                    "market_end_date": end_date,
+                    "time_to_expiry_secs": time_to_expiry_secs
+                }
+            }),
+        );
+        if time_to_expiry_secs < safety.min_time_to_expiry_secs {
+            return Some(entry_safety_reject(
+                metadata,
+                "entry_expiry_too_close",
+                serde_json::json!({}),
+            ));
+        }
+    }
+
+    let best_bid = book.best_bid();
+    let best_ask = book.best_ask();
+    if safety.require_two_sided_book && (best_bid.is_none() || best_ask.is_none()) {
+        return Some(entry_safety_reject(
+            metadata,
+            "entry_book_not_two_sided",
+            serde_json::json!({}),
+        ));
+    }
+
+    let entry_price = match request.side {
+        crate::models::OrderSide::Buy => best_ask.unwrap_or(request.price),
+        crate::models::OrderSide::Sell => best_bid.unwrap_or(request.price),
+    };
+    merge_object(
+        &mut metadata,
+        serde_json::json!({
+            "entry_safety": {
+                "entry_price": entry_price
+            }
+        }),
+    );
+    if entry_price < safety.min_entry_price || entry_price > safety.max_entry_price {
+        return Some(entry_safety_reject(
+            metadata,
+            "entry_price_out_of_bounds",
+            serde_json::json!({}),
+        ));
+    }
+
+    if let (Some(best_bid), Some(best_ask)) = (best_bid, best_ask) {
+        let mid = (best_bid + best_ask) / Decimal::from(2);
+        let spread_bps = if mid > Decimal::ZERO {
+            ((best_ask - best_bid).abs() / mid) * Decimal::from(10000)
+        } else {
+            Decimal::MAX
+        };
+        merge_object(
+            &mut metadata,
+            serde_json::json!({
+                "entry_safety": {
+                    "spread_bps": spread_bps
+                }
+            }),
+        );
+        if safety.max_spread_bps > Decimal::ZERO && spread_bps > safety.max_spread_bps {
+            return Some(entry_safety_reject(
+                metadata,
+                "entry_spread_too_wide",
+                serde_json::json!({}),
+            ));
+        }
+    }
+
+    if safety.require_exit_depth {
+        let required_size = request.size
+            * safety
+                .exit_depth_size_fraction
+                .clamp(Decimal::ZERO, dec!(1.0));
+        let slippage = safety.exit_depth_slippage_bps.max(Decimal::ZERO) / Decimal::from(10000);
+        let (exit_side, exit_limit_price) = match request.side {
+            crate::models::OrderSide::Buy => {
+                (BookSide::Bid, entry_price * (Decimal::ONE - slippage))
+            }
+            crate::models::OrderSide::Sell => {
+                (BookSide::Ask, entry_price * (Decimal::ONE + slippage))
+            }
+        };
+        let depth =
+            book.limit_depth_summary(exit_side, exit_limit_price, Duration::seconds(10), now);
+        merge_object(
+            &mut metadata,
+            serde_json::json!({
+                "entry_safety": {
+                    "exit_side": exit_side,
+                    "exit_limit_price": exit_limit_price,
+                    "exit_depth_required": required_size,
+                    "exit_depth_available": depth.fillable_size,
+                    "exit_depth_avg_price": depth.avg_price
+                }
+            }),
+        );
+        if depth.fillable_size < required_size {
+            return Some(entry_safety_reject(
+                metadata,
+                "entry_exit_depth_insufficient",
+                serde_json::json!({}),
+            ));
+        }
+    }
+
+    None
+}
+
+fn entry_safety_reject(
+    mut metadata: serde_json::Value,
+    reason: &'static str,
+    extra: serde_json::Value,
+) -> serde_json::Value {
+    merge_object(
+        &mut metadata,
+        serde_json::json!({
+            "reject_reason": reason,
+            "entry_safety": {
+                "decision": "rejected",
+                "reject_reason": reason
+            }
+        }),
+    );
+    merge_object(&mut metadata, extra);
+    metadata
+}
+
+fn merge_object(left: &mut serde_json::Value, right: serde_json::Value) {
+    match (left, right) {
+        (serde_json::Value::Object(left), serde_json::Value::Object(right)) => {
+            for (key, value) in right {
+                if let Some(existing) = left.get_mut(&key) {
+                    merge_object(existing, value);
+                } else {
+                    left.insert(key, value);
+                }
+            }
+        }
+        (left, right) => *left = right,
+    }
 }
 
 async fn record_entry_mark_failure(

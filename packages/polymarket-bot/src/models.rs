@@ -860,6 +860,35 @@ impl TradingProcessConfig {
                 effective.unknown_segment_policy = unknown_segment_policy.clone();
             }
             effective.segment_allowlist = config.segment_allowlist.clone();
+            if let Some(entry_safety) = &config.entry_safety {
+                if let Some(enabled) = entry_safety.enabled {
+                    effective.entry_safety.enabled = enabled;
+                }
+                if let Some(min_time_to_expiry_secs) = entry_safety.min_time_to_expiry_secs {
+                    effective.entry_safety.min_time_to_expiry_secs = min_time_to_expiry_secs;
+                }
+                if let Some(require_two_sided_book) = entry_safety.require_two_sided_book {
+                    effective.entry_safety.require_two_sided_book = require_two_sided_book;
+                }
+                if let Some(max_spread_bps) = entry_safety.max_spread_bps {
+                    effective.entry_safety.max_spread_bps = max_spread_bps;
+                }
+                if let Some(require_exit_depth) = entry_safety.require_exit_depth {
+                    effective.entry_safety.require_exit_depth = require_exit_depth;
+                }
+                if let Some(exit_depth_size_fraction) = entry_safety.exit_depth_size_fraction {
+                    effective.entry_safety.exit_depth_size_fraction = exit_depth_size_fraction;
+                }
+                if let Some(exit_depth_slippage_bps) = entry_safety.exit_depth_slippage_bps {
+                    effective.entry_safety.exit_depth_slippage_bps = exit_depth_slippage_bps;
+                }
+                if let Some(min_entry_price) = entry_safety.min_entry_price {
+                    effective.entry_safety.min_entry_price = min_entry_price;
+                }
+                if let Some(max_entry_price) = entry_safety.max_entry_price {
+                    effective.entry_safety.max_entry_price = max_entry_price;
+                }
+            }
         }
         effective
     }
@@ -1071,6 +1100,7 @@ pub struct EffectiveCopyTradeProcessConfig {
     pub hard_reject_segment_sample_size: i32,
     pub unknown_segment_policy: String,
     pub segment_allowlist: Vec<String>,
+    pub entry_safety: EffectiveEntrySafetyProcessConfig,
 }
 
 impl Default for EffectiveCopyTradeProcessConfig {
@@ -1112,6 +1142,36 @@ impl Default for EffectiveCopyTradeProcessConfig {
             hard_reject_segment_sample_size: 10,
             unknown_segment_policy: "neutral".to_string(),
             segment_allowlist: Vec::new(),
+            entry_safety: EffectiveEntrySafetyProcessConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveEntrySafetyProcessConfig {
+    pub enabled: bool,
+    pub min_time_to_expiry_secs: i64,
+    pub require_two_sided_book: bool,
+    pub max_spread_bps: Decimal,
+    pub require_exit_depth: bool,
+    pub exit_depth_size_fraction: Decimal,
+    pub exit_depth_slippage_bps: Decimal,
+    pub min_entry_price: Decimal,
+    pub max_entry_price: Decimal,
+}
+
+impl Default for EffectiveEntrySafetyProcessConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_time_to_expiry_secs: 0,
+            require_two_sided_book: false,
+            max_spread_bps: Decimal::ZERO,
+            require_exit_depth: false,
+            exit_depth_size_fraction: dec!(1.0),
+            exit_depth_slippage_bps: dec!(150),
+            min_entry_price: Decimal::ZERO,
+            max_entry_price: dec!(1.0),
         }
     }
 }
@@ -1190,6 +1250,30 @@ pub struct CopyTradeProcessConfig {
     pub unknown_segment_policy: Option<String>,
     #[serde(default)]
     pub segment_allowlist: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_safety: Option<EntrySafetyProcessConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntrySafetyProcessConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub min_time_to_expiry_secs: Option<i64>,
+    #[serde(default)]
+    pub require_two_sided_book: Option<bool>,
+    #[serde(default)]
+    pub max_spread_bps: Option<Decimal>,
+    #[serde(default)]
+    pub require_exit_depth: Option<bool>,
+    #[serde(default)]
+    pub exit_depth_size_fraction: Option<Decimal>,
+    #[serde(default)]
+    pub exit_depth_slippage_bps: Option<Decimal>,
+    #[serde(default)]
+    pub min_entry_price: Option<Decimal>,
+    #[serde(default)]
+    pub max_entry_price: Option<Decimal>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1440,5 +1524,36 @@ mod tests {
         assert_eq!(effective.batch_size, 12);
         assert!(!effective.stale_only);
         assert_eq!(effective.failure_backoff_secs, 45);
+    }
+
+    #[test]
+    fn copy_trade_entry_safety_config_overrides_defaults() {
+        let config: TradingProcessConfig = serde_json::from_value(serde_json::json!({
+            "copy_trade": {
+                "entry_safety": {
+                    "enabled": true,
+                    "min_time_to_expiry_secs": 120,
+                    "require_two_sided_book": true,
+                    "max_spread_bps": "2500",
+                    "require_exit_depth": true,
+                    "exit_depth_size_fraction": "1.0",
+                    "exit_depth_slippage_bps": "150",
+                    "min_entry_price": "0.05",
+                    "max_entry_price": "0.95"
+                }
+            }
+        }))
+        .expect("entry safety config should deserialize");
+
+        let effective = config.effective_copy_trade();
+        assert!(effective.entry_safety.enabled);
+        assert_eq!(effective.entry_safety.min_time_to_expiry_secs, 120);
+        assert!(effective.entry_safety.require_two_sided_book);
+        assert_eq!(effective.entry_safety.max_spread_bps, dec!(2500));
+        assert!(effective.entry_safety.require_exit_depth);
+        assert_eq!(effective.entry_safety.exit_depth_size_fraction, dec!(1.0));
+        assert_eq!(effective.entry_safety.exit_depth_slippage_bps, dec!(150));
+        assert_eq!(effective.entry_safety.min_entry_price, dec!(0.05));
+        assert_eq!(effective.entry_safety.max_entry_price, dec!(0.95));
     }
 }

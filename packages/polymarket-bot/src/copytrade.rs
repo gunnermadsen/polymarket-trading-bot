@@ -63,6 +63,7 @@ pub struct CopyTradeConfig {
     pub hard_reject_segment_sample_size: i32,
     pub unknown_segment_policy: String,
     pub segment_allowlist: Vec<String>,
+    pub entry_safety: CopyTradeEntrySafetyConfig,
 }
 
 impl Default for CopyTradeConfig {
@@ -104,6 +105,36 @@ impl Default for CopyTradeConfig {
             hard_reject_segment_sample_size: 10,
             unknown_segment_policy: "neutral".to_string(),
             segment_allowlist: Vec::new(),
+            entry_safety: CopyTradeEntrySafetyConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopyTradeEntrySafetyConfig {
+    pub enabled: bool,
+    pub min_time_to_expiry_secs: i64,
+    pub require_two_sided_book: bool,
+    pub max_spread_bps: Decimal,
+    pub require_exit_depth: bool,
+    pub exit_depth_size_fraction: Decimal,
+    pub exit_depth_slippage_bps: Decimal,
+    pub min_entry_price: Decimal,
+    pub max_entry_price: Decimal,
+}
+
+impl Default for CopyTradeEntrySafetyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_time_to_expiry_secs: 0,
+            require_two_sided_book: false,
+            max_spread_bps: Decimal::ZERO,
+            require_exit_depth: false,
+            exit_depth_size_fraction: dec!(1.0),
+            exit_depth_slippage_bps: dec!(150),
+            min_entry_price: Decimal::ZERO,
+            max_entry_price: dec!(1.0),
         }
     }
 }
@@ -171,6 +202,17 @@ impl From<&EffectiveCopyTradeProcessConfig> for CopyTradeConfig {
             hard_reject_segment_sample_size: config.hard_reject_segment_sample_size,
             unknown_segment_policy: config.unknown_segment_policy.clone(),
             segment_allowlist: config.segment_allowlist.clone(),
+            entry_safety: CopyTradeEntrySafetyConfig {
+                enabled: config.entry_safety.enabled,
+                min_time_to_expiry_secs: config.entry_safety.min_time_to_expiry_secs,
+                require_two_sided_book: config.entry_safety.require_two_sided_book,
+                max_spread_bps: config.entry_safety.max_spread_bps,
+                require_exit_depth: config.entry_safety.require_exit_depth,
+                exit_depth_size_fraction: config.entry_safety.exit_depth_size_fraction,
+                exit_depth_slippage_bps: config.entry_safety.exit_depth_slippage_bps,
+                min_entry_price: config.entry_safety.min_entry_price,
+                max_entry_price: config.entry_safety.max_entry_price,
+            },
         }
     }
 }
