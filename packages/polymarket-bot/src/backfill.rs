@@ -629,19 +629,24 @@ mod tests {
             book: serde_json::json!({}),
         };
 
-        assert_eq!(entry_mark_book_failure_reason(&base), None);
+        let mut strict_config = CopyTradeConfig::default();
+        strict_config.entry_safety.require_two_sided_book = true;
+        assert_eq!(
+            entry_mark_book_failure_reason(&base, OrderSide::Buy, &strict_config),
+            None
+        );
 
         let mut missing_bid = base.clone();
         missing_bid.best_bid = None;
         assert_eq!(
-            entry_mark_book_failure_reason(&missing_bid),
+            entry_mark_book_failure_reason(&missing_bid, OrderSide::Buy, &strict_config),
             Some("missing_best_bid")
         );
 
         let mut missing_ask = base.clone();
         missing_ask.best_ask = None;
         assert_eq!(
-            entry_mark_book_failure_reason(&missing_ask),
+            entry_mark_book_failure_reason(&missing_ask, OrderSide::Buy, &strict_config),
             Some("missing_best_ask")
         );
 
@@ -649,8 +654,49 @@ mod tests {
         empty.best_bid = None;
         empty.best_ask = None;
         assert_eq!(
-            entry_mark_book_failure_reason(&empty),
+            entry_mark_book_failure_reason(&empty, OrderSide::Buy, &strict_config),
             Some("empty_orderbook")
+        );
+    }
+
+    #[test]
+    fn entry_markability_allows_side_specific_book_when_two_sided_book_not_required() {
+        let mut config = CopyTradeConfig::default();
+        config.entry_safety.require_two_sided_book = false;
+        let base = OrderbookSnapshot {
+            snapshot_id: Uuid::new_v4(),
+            timestamp_utc: Utc::now(),
+            market_id: Some("market".to_string()),
+            token_id: "token".to_string(),
+            best_bid: Some(dec!(0.49)),
+            best_ask: Some(dec!(0.51)),
+            tick_size: None,
+            stale_level_count: 0,
+            fresh_depth_bid: None,
+            fresh_depth_ask: None,
+            book: serde_json::json!({}),
+        };
+
+        let mut bid_only = base.clone();
+        bid_only.best_ask = None;
+        assert_eq!(
+            entry_mark_book_failure_reason(&bid_only, OrderSide::Sell, &config),
+            None
+        );
+        assert_eq!(
+            entry_mark_book_failure_reason(&bid_only, OrderSide::Buy, &config),
+            Some("missing_best_ask")
+        );
+
+        let mut ask_only = base;
+        ask_only.best_bid = None;
+        assert_eq!(
+            entry_mark_book_failure_reason(&ask_only, OrderSide::Buy, &config),
+            None
+        );
+        assert_eq!(
+            entry_mark_book_failure_reason(&ask_only, OrderSide::Sell, &config),
+            Some("missing_best_bid")
         );
     }
 
@@ -1337,7 +1383,7 @@ async fn ensure_order_plan_markable_at_entry(
             &book,
         )?;
         store.insert_orderbook_snapshot(&snapshot).await?;
-        if let Some(reason) = entry_mark_book_failure_reason(&snapshot) {
+        if let Some(reason) = entry_mark_book_failure_reason(&snapshot, request.side, config) {
             record_entry_mark_failure(
                 store,
                 request.process_id,
@@ -1803,12 +1849,26 @@ async fn record_entry_mark_failure(
         .await
 }
 
-fn entry_mark_book_failure_reason(snapshot: &OrderbookSnapshot) -> Option<&'static str> {
-    match (snapshot.best_bid, snapshot.best_ask) {
-        (Some(_), Some(_)) => None,
-        (None, Some(_)) => Some("missing_best_bid"),
-        (Some(_), None) => Some("missing_best_ask"),
-        (None, None) => Some("empty_orderbook"),
+fn entry_mark_book_failure_reason(
+    snapshot: &OrderbookSnapshot,
+    side: OrderSide,
+    config: &CopyTradeConfig,
+) -> Option<&'static str> {
+    if config.entry_safety.require_two_sided_book {
+        return match (snapshot.best_bid, snapshot.best_ask) {
+            (Some(_), Some(_)) => None,
+            (None, Some(_)) => Some("missing_best_bid"),
+            (Some(_), None) => Some("missing_best_ask"),
+            (None, None) => Some("empty_orderbook"),
+        };
+    }
+
+    match (side, snapshot.best_bid, snapshot.best_ask) {
+        (_, None, None) => Some("empty_orderbook"),
+        (OrderSide::Buy, _, Some(_)) => None,
+        (OrderSide::Buy, _, None) => Some("missing_best_ask"),
+        (OrderSide::Sell, Some(_), _) => None,
+        (OrderSide::Sell, None, _) => Some("missing_best_bid"),
     }
 }
 
