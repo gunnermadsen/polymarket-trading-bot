@@ -4146,7 +4146,7 @@ impl Store {
                 source_signal_id,
                 source_timestamp,
                 mark_price,
-                'backtest_wallet_trade',
+                'data_api_trade',
                 GREATEST(0, floor(extract(epoch from ($2 - source_timestamp)) * 1000))::bigint,
                 gross_unrealized_pnl,
                 gross_unrealized_pnl,
