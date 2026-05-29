@@ -214,6 +214,9 @@ pub async fn run_backtest_replay(
         }
         ledger.observe_trade(&trade, &classification);
     }
+    ledger.clear_replay_state();
+    open_notional_by_process.clear();
+    open_notional_by_process.shrink_to_fit();
 
     for process in &job.processes {
         summary.marks_inserted += store
@@ -390,6 +393,15 @@ struct PointInTimeScoreLedger {
 }
 
 impl PointInTimeScoreLedger {
+    fn clear_replay_state(&mut self) {
+        self.wallet_stats.clear();
+        self.wallet_stats.shrink_to_fit();
+        self.segment_stats.clear();
+        self.segment_stats.shrink_to_fit();
+        self.positions.clear();
+        self.positions.shrink_to_fit();
+    }
+
     fn wallet_performance(&self, wallet: &str) -> Option<CopyTradeWalletPerformance> {
         let stats = self.wallet_stats.get(&wallet.to_ascii_lowercase())?;
         Some(stats.wallet_performance(wallet))
