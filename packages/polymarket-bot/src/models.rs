@@ -520,6 +520,50 @@ pub struct WhaleTrade {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GammaMarketMetadata {
+    pub cache_key: String,
+    pub lookup_type: String,
+    pub lookup_slug: String,
+    pub event_slug: Option<String>,
+    pub market_slug: Option<String>,
+    pub gamma_event_id: Option<String>,
+    pub gamma_market_id: Option<String>,
+    pub category: Option<String>,
+    pub series_slug: Option<String>,
+    pub tag_slugs: Vec<String>,
+    pub sport_key: Option<String>,
+    pub taxonomy_segment: Option<String>,
+    pub taxonomy_source: String,
+    pub taxonomy_confidence: Decimal,
+    pub taxonomy_version: String,
+    pub raw_payload: serde_json::Value,
+    pub fetched_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletTradeTaxonomyCandidate {
+    pub trade_id: Uuid,
+    pub title: Option<String>,
+    pub slug: Option<String>,
+    pub event_slug: Option<String>,
+    pub market_id: Option<String>,
+    pub condition_id: Option<String>,
+    pub asset: String,
+    pub raw_payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletTradeTaxonomyUpdate {
+    pub trade_id: Uuid,
+    pub taxonomy_segment: String,
+    pub taxonomy_source: String,
+    pub taxonomy_confidence: Decimal,
+    pub taxonomy_version: String,
+    pub taxonomy_metadata: serde_json::Value,
+    pub taxonomy_fetched_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletScore {
     pub proxy_wallet: String,
     pub score_version: String,
@@ -547,6 +591,28 @@ pub struct WalletPerformance {
     pub win_rate: Decimal,
     pub rank_score: Decimal,
     pub raw_payload: serde_json::Value,
+    pub metadata: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletSegmentPerformance {
+    pub proxy_wallet: String,
+    pub segment_key: String,
+    pub score_version: String,
+    pub classifier_version: String,
+    pub score: Decimal,
+    pub confidence: Decimal,
+    pub closed_positions: i32,
+    pub winning_positions: i32,
+    pub losing_positions: i32,
+    pub win_rate: Decimal,
+    pub realized_pnl_usd: Decimal,
+    pub total_bought_usd: Decimal,
+    pub roi: Decimal,
+    pub observed_trade_count: i32,
+    pub observed_volume_usd: Decimal,
+    pub sample_start: Option<DateTime<Utc>>,
+    pub sample_end: Option<DateTime<Utc>>,
     pub metadata: serde_json::Value,
 }
 
@@ -606,6 +672,10 @@ impl TradingProcess {
     pub fn effective_copy_trade(&self) -> EffectiveCopyTradeProcessConfig {
         self.config.effective_copy_trade()
     }
+
+    pub fn effective_exit_rules(&self) -> EffectiveProcessExitRulesConfig {
+        self.config.effective_exit_rules()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -616,6 +686,10 @@ pub struct TradingProcessConfig {
     pub whale: Option<WhaleProcessConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_trade: Option<CopyTradeProcessConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_rules: Option<ProcessExitRulesConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark_refresh: Option<MarkRefreshProcessConfig>,
     #[serde(default)]
     pub raw: serde_json::Value,
 }
@@ -738,6 +812,161 @@ impl TradingProcessConfig {
             if let Some(mrs_percentile_floor) = config.mrs_percentile_floor {
                 effective.mrs_percentile_floor = mrs_percentile_floor;
             }
+            if let Some(mrs_score_version) = &config.mrs_score_version {
+                effective.mrs_score_version = mrs_score_version.clone();
+            }
+            if let Some(segment_scoring_enabled) = config.segment_scoring_enabled {
+                effective.segment_scoring_enabled = segment_scoring_enabled;
+            }
+            if let Some(segment_scoring_mode) = &config.segment_scoring_mode {
+                effective.segment_scoring_mode = segment_scoring_mode.clone();
+            }
+            if let Some(segment_score_version) = &config.segment_score_version {
+                effective.segment_score_version = segment_score_version.clone();
+            }
+            if let Some(segment_classifier_version) = &config.segment_classifier_version {
+                effective.segment_classifier_version = segment_classifier_version.clone();
+            }
+            if let Some(min_segment_score) = config.min_segment_score {
+                effective.min_segment_score = min_segment_score;
+            }
+            if let Some(segment_mrs_percentile_floor) = config.segment_mrs_percentile_floor {
+                effective.segment_mrs_percentile_floor = segment_mrs_percentile_floor;
+            }
+            if let Some(min_segment_confidence) = config.min_segment_confidence {
+                effective.min_segment_confidence = min_segment_confidence;
+            }
+            if let Some(min_segment_closed_positions) = config.min_segment_closed_positions {
+                effective.min_segment_closed_positions = min_segment_closed_positions;
+            }
+            if let Some(min_segment_win_rate) = config.min_segment_win_rate {
+                effective.min_segment_win_rate = min_segment_win_rate;
+            }
+            if let Some(reject_negative_segment_roi_sample_size) =
+                config.reject_negative_segment_roi_sample_size
+            {
+                effective.reject_negative_segment_roi_sample_size =
+                    reject_negative_segment_roi_sample_size;
+            }
+            if let Some(hard_reject_segment_win_rate_below) =
+                config.hard_reject_segment_win_rate_below
+            {
+                effective.hard_reject_segment_win_rate_below = hard_reject_segment_win_rate_below;
+            }
+            if let Some(hard_reject_segment_sample_size) = config.hard_reject_segment_sample_size {
+                effective.hard_reject_segment_sample_size = hard_reject_segment_sample_size;
+            }
+            if let Some(unknown_segment_policy) = &config.unknown_segment_policy {
+                effective.unknown_segment_policy = unknown_segment_policy.clone();
+            }
+            effective.segment_allowlist = config.segment_allowlist.clone();
+            if let Some(entry_safety) = &config.entry_safety {
+                if let Some(enabled) = entry_safety.enabled {
+                    effective.entry_safety.enabled = enabled;
+                }
+                if let Some(min_time_to_expiry_secs) = entry_safety.min_time_to_expiry_secs {
+                    effective.entry_safety.min_time_to_expiry_secs = min_time_to_expiry_secs;
+                }
+                if let Some(require_two_sided_book) = entry_safety.require_two_sided_book {
+                    effective.entry_safety.require_two_sided_book = require_two_sided_book;
+                }
+                if let Some(max_spread_bps) = entry_safety.max_spread_bps {
+                    effective.entry_safety.max_spread_bps = max_spread_bps;
+                }
+                if let Some(require_exit_depth) = entry_safety.require_exit_depth {
+                    effective.entry_safety.require_exit_depth = require_exit_depth;
+                }
+                if let Some(exit_depth_size_fraction) = entry_safety.exit_depth_size_fraction {
+                    effective.entry_safety.exit_depth_size_fraction = exit_depth_size_fraction;
+                }
+                if let Some(exit_depth_slippage_bps) = entry_safety.exit_depth_slippage_bps {
+                    effective.entry_safety.exit_depth_slippage_bps = exit_depth_slippage_bps;
+                }
+                if let Some(min_entry_price) = entry_safety.min_entry_price {
+                    effective.entry_safety.min_entry_price = min_entry_price;
+                }
+                if let Some(max_entry_price) = entry_safety.max_entry_price {
+                    effective.entry_safety.max_entry_price = max_entry_price;
+                }
+            }
+        }
+        effective
+    }
+
+    pub fn effective_exit_rules(&self) -> EffectiveProcessExitRulesConfig {
+        let mut effective = EffectiveProcessExitRulesConfig::default();
+        if let Some(config) = &self.exit_rules {
+            if let Some(take_profit) = &config.take_profit {
+                if let Some(take_profit_enabled) = take_profit.take_profit_enabled {
+                    effective.take_profit.take_profit_enabled = take_profit_enabled;
+                }
+                if let Some(take_profit_roi) = take_profit.take_profit_roi {
+                    effective.take_profit.take_profit_roi = take_profit_roi;
+                }
+                if let Some(poll_interval_secs) = take_profit.poll_interval_secs {
+                    effective.take_profit.poll_interval_secs = poll_interval_secs;
+                }
+                if let Some(min_hold_secs) = take_profit.min_hold_secs {
+                    effective.take_profit.min_hold_secs = min_hold_secs;
+                }
+                if let Some(require_fresh_mark_secs) = take_profit.require_fresh_mark_secs {
+                    effective.take_profit.require_fresh_mark_secs = require_fresh_mark_secs;
+                }
+                if let Some(exit_size_fraction) = take_profit.exit_size_fraction {
+                    effective.take_profit.exit_size_fraction = exit_size_fraction;
+                }
+                if let Some(max_exit_slippage_bps) = take_profit.max_exit_slippage_bps {
+                    effective.take_profit.max_exit_slippage_bps = max_exit_slippage_bps;
+                }
+            }
+            if let Some(stop_loss) = &config.stop_loss {
+                if let Some(stop_loss_enabled) = stop_loss.stop_loss_enabled {
+                    effective.stop_loss.stop_loss_enabled = stop_loss_enabled;
+                }
+                if let Some(stop_loss_roi) = stop_loss.stop_loss_roi {
+                    effective.stop_loss.stop_loss_roi = stop_loss_roi;
+                }
+                if let Some(poll_interval_secs) = stop_loss.poll_interval_secs {
+                    effective.stop_loss.poll_interval_secs = poll_interval_secs;
+                }
+                if let Some(min_hold_secs) = stop_loss.min_hold_secs {
+                    effective.stop_loss.min_hold_secs = min_hold_secs;
+                }
+                if let Some(require_fresh_mark_secs) = stop_loss.require_fresh_mark_secs {
+                    effective.stop_loss.require_fresh_mark_secs = require_fresh_mark_secs;
+                }
+                if let Some(exit_size_fraction) = stop_loss.exit_size_fraction {
+                    effective.stop_loss.exit_size_fraction = exit_size_fraction;
+                }
+                if let Some(max_exit_slippage_bps) = stop_loss.max_exit_slippage_bps {
+                    effective.stop_loss.max_exit_slippage_bps = max_exit_slippage_bps;
+                }
+            }
+        }
+        effective
+    }
+
+    pub fn effective_mark_refresh(&self) -> EffectiveMarkRefreshProcessConfig {
+        let mut effective = EffectiveMarkRefreshProcessConfig::default();
+        if let Some(config) = &self.mark_refresh {
+            if let Some(enabled) = config.enabled {
+                effective.enabled = enabled;
+            }
+            if let Some(poll_interval_secs) = config.poll_interval_secs {
+                effective.poll_interval_secs = poll_interval_secs;
+            }
+            if let Some(max_mark_age_secs) = config.max_mark_age_secs {
+                effective.max_mark_age_secs = max_mark_age_secs;
+            }
+            if let Some(batch_size) = config.batch_size {
+                effective.batch_size = batch_size;
+            }
+            if let Some(stale_only) = config.stale_only {
+                effective.stale_only = stale_only;
+            }
+            if let Some(failure_backoff_secs) = config.failure_backoff_secs {
+                effective.failure_backoff_secs = failure_backoff_secs;
+            }
         }
         effective
     }
@@ -856,6 +1085,22 @@ pub struct EffectiveCopyTradeProcessConfig {
     pub mrs_enforce: bool,
     pub min_mrs_score: Decimal,
     pub mrs_percentile_floor: Decimal,
+    pub mrs_score_version: String,
+    pub segment_scoring_enabled: bool,
+    pub segment_scoring_mode: String,
+    pub segment_score_version: String,
+    pub segment_classifier_version: String,
+    pub min_segment_score: Decimal,
+    pub segment_mrs_percentile_floor: Decimal,
+    pub min_segment_confidence: Decimal,
+    pub min_segment_closed_positions: i32,
+    pub min_segment_win_rate: Decimal,
+    pub reject_negative_segment_roi_sample_size: i32,
+    pub hard_reject_segment_win_rate_below: Decimal,
+    pub hard_reject_segment_sample_size: i32,
+    pub unknown_segment_policy: String,
+    pub segment_allowlist: Vec<String>,
+    pub entry_safety: EffectiveEntrySafetyProcessConfig,
 }
 
 impl Default for EffectiveCopyTradeProcessConfig {
@@ -882,6 +1127,51 @@ impl Default for EffectiveCopyTradeProcessConfig {
             mrs_enforce: false,
             min_mrs_score: dec!(80),
             mrs_percentile_floor: dec!(0.80),
+            mrs_score_version: "mrs_v1".to_string(),
+            segment_scoring_enabled: false,
+            segment_scoring_mode: "shadow".to_string(),
+            segment_score_version: "mrs_segment_v1".to_string(),
+            segment_classifier_version: "segment_rules_v1".to_string(),
+            min_segment_score: dec!(50),
+            segment_mrs_percentile_floor: dec!(0.95),
+            min_segment_confidence: dec!(0.10),
+            min_segment_closed_positions: 5,
+            min_segment_win_rate: dec!(0.52),
+            reject_negative_segment_roi_sample_size: 5,
+            hard_reject_segment_win_rate_below: dec!(0.40),
+            hard_reject_segment_sample_size: 10,
+            unknown_segment_policy: "neutral".to_string(),
+            segment_allowlist: Vec::new(),
+            entry_safety: EffectiveEntrySafetyProcessConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveEntrySafetyProcessConfig {
+    pub enabled: bool,
+    pub min_time_to_expiry_secs: i64,
+    pub require_two_sided_book: bool,
+    pub max_spread_bps: Decimal,
+    pub require_exit_depth: bool,
+    pub exit_depth_size_fraction: Decimal,
+    pub exit_depth_slippage_bps: Decimal,
+    pub min_entry_price: Decimal,
+    pub max_entry_price: Decimal,
+}
+
+impl Default for EffectiveEntrySafetyProcessConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_time_to_expiry_secs: 0,
+            require_two_sided_book: false,
+            max_spread_bps: Decimal::ZERO,
+            require_exit_depth: false,
+            exit_depth_size_fraction: dec!(1.0),
+            exit_depth_slippage_bps: dec!(150),
+            min_entry_price: Decimal::ZERO,
+            max_entry_price: dec!(1.0),
         }
     }
 }
@@ -930,6 +1220,212 @@ pub struct CopyTradeProcessConfig {
     pub min_mrs_score: Option<Decimal>,
     #[serde(default)]
     pub mrs_percentile_floor: Option<Decimal>,
+    #[serde(default)]
+    pub mrs_score_version: Option<String>,
+    #[serde(default)]
+    pub segment_scoring_enabled: Option<bool>,
+    #[serde(default)]
+    pub segment_scoring_mode: Option<String>,
+    #[serde(default)]
+    pub segment_score_version: Option<String>,
+    #[serde(default)]
+    pub segment_classifier_version: Option<String>,
+    #[serde(default)]
+    pub min_segment_score: Option<Decimal>,
+    #[serde(default)]
+    pub segment_mrs_percentile_floor: Option<Decimal>,
+    #[serde(default)]
+    pub min_segment_confidence: Option<Decimal>,
+    #[serde(default)]
+    pub min_segment_closed_positions: Option<i32>,
+    #[serde(default)]
+    pub min_segment_win_rate: Option<Decimal>,
+    #[serde(default)]
+    pub reject_negative_segment_roi_sample_size: Option<i32>,
+    #[serde(default)]
+    pub hard_reject_segment_win_rate_below: Option<Decimal>,
+    #[serde(default)]
+    pub hard_reject_segment_sample_size: Option<i32>,
+    #[serde(default)]
+    pub unknown_segment_policy: Option<String>,
+    #[serde(default)]
+    pub segment_allowlist: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_safety: Option<EntrySafetyProcessConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntrySafetyProcessConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub min_time_to_expiry_secs: Option<i64>,
+    #[serde(default)]
+    pub require_two_sided_book: Option<bool>,
+    #[serde(default)]
+    pub max_spread_bps: Option<Decimal>,
+    #[serde(default)]
+    pub require_exit_depth: Option<bool>,
+    #[serde(default)]
+    pub exit_depth_size_fraction: Option<Decimal>,
+    #[serde(default)]
+    pub exit_depth_slippage_bps: Option<Decimal>,
+    #[serde(default)]
+    pub min_entry_price: Option<Decimal>,
+    #[serde(default)]
+    pub max_entry_price: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveProcessExitRulesConfig {
+    pub take_profit: EffectiveTakeProfitExitRuleProcessConfig,
+    pub stop_loss: EffectiveStopLossExitRuleProcessConfig,
+}
+
+impl Default for EffectiveProcessExitRulesConfig {
+    fn default() -> Self {
+        Self {
+            take_profit: EffectiveTakeProfitExitRuleProcessConfig::default(),
+            stop_loss: EffectiveStopLossExitRuleProcessConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveTakeProfitExitRuleProcessConfig {
+    pub take_profit_enabled: bool,
+    pub take_profit_roi: Decimal,
+    pub poll_interval_secs: i64,
+    pub min_hold_secs: i64,
+    pub require_fresh_mark_secs: i64,
+    pub exit_size_fraction: Decimal,
+    pub max_exit_slippage_bps: Decimal,
+}
+
+impl Default for EffectiveTakeProfitExitRuleProcessConfig {
+    fn default() -> Self {
+        Self {
+            take_profit_enabled: false,
+            take_profit_roi: dec!(0.10),
+            poll_interval_secs: 10,
+            min_hold_secs: 60,
+            require_fresh_mark_secs: 60,
+            exit_size_fraction: dec!(1.0),
+            max_exit_slippage_bps: dec!(150),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessExitRulesConfig {
+    #[serde(
+        default,
+        alias = "take-profit",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub take_profit: Option<TakeProfitExitRuleProcessConfig>,
+    #[serde(default, alias = "stop-loss", skip_serializing_if = "Option::is_none")]
+    pub stop_loss: Option<StopLossExitRuleProcessConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TakeProfitExitRuleProcessConfig {
+    #[serde(default)]
+    pub take_profit_enabled: Option<bool>,
+    #[serde(default)]
+    pub take_profit_roi: Option<Decimal>,
+    #[serde(default)]
+    pub poll_interval_secs: Option<i64>,
+    #[serde(default)]
+    pub min_hold_secs: Option<i64>,
+    #[serde(default)]
+    pub require_fresh_mark_secs: Option<i64>,
+    #[serde(default)]
+    pub exit_size_fraction: Option<Decimal>,
+    #[serde(default)]
+    pub max_exit_slippage_bps: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveStopLossExitRuleProcessConfig {
+    pub stop_loss_enabled: bool,
+    pub stop_loss_roi: Decimal,
+    pub poll_interval_secs: i64,
+    pub min_hold_secs: i64,
+    pub require_fresh_mark_secs: i64,
+    pub exit_size_fraction: Decimal,
+    pub max_exit_slippage_bps: Decimal,
+}
+
+impl Default for EffectiveStopLossExitRuleProcessConfig {
+    fn default() -> Self {
+        Self {
+            stop_loss_enabled: false,
+            stop_loss_roi: dec!(-0.10),
+            poll_interval_secs: 10,
+            min_hold_secs: 60,
+            require_fresh_mark_secs: 60,
+            exit_size_fraction: dec!(1.0),
+            max_exit_slippage_bps: dec!(150),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StopLossExitRuleProcessConfig {
+    #[serde(default)]
+    pub stop_loss_enabled: Option<bool>,
+    #[serde(default)]
+    pub stop_loss_roi: Option<Decimal>,
+    #[serde(default)]
+    pub poll_interval_secs: Option<i64>,
+    #[serde(default)]
+    pub min_hold_secs: Option<i64>,
+    #[serde(default)]
+    pub require_fresh_mark_secs: Option<i64>,
+    #[serde(default)]
+    pub exit_size_fraction: Option<Decimal>,
+    #[serde(default)]
+    pub max_exit_slippage_bps: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveMarkRefreshProcessConfig {
+    pub enabled: bool,
+    pub poll_interval_secs: i64,
+    pub max_mark_age_secs: i64,
+    pub batch_size: i64,
+    pub stale_only: bool,
+    pub failure_backoff_secs: i64,
+}
+
+impl Default for EffectiveMarkRefreshProcessConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            poll_interval_secs: 15,
+            max_mark_age_secs: 60,
+            batch_size: 50,
+            stale_only: true,
+            failure_backoff_secs: 300,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarkRefreshProcessConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub poll_interval_secs: Option<i64>,
+    #[serde(default)]
+    pub max_mark_age_secs: Option<i64>,
+    #[serde(default)]
+    pub batch_size: Option<i64>,
+    #[serde(default)]
+    pub stale_only: Option<bool>,
+    #[serde(default)]
+    pub failure_backoff_secs: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -989,4 +1485,75 @@ pub struct WhalePollCheckpoint {
     pub pages_seen: i64,
     pub trades_seen: i64,
     pub state: serde_json::Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mark_refresh_defaults_are_disabled_and_conservative() {
+        let effective = TradingProcessConfig::default().effective_mark_refresh();
+
+        assert!(!effective.enabled);
+        assert_eq!(effective.poll_interval_secs, 15);
+        assert_eq!(effective.max_mark_age_secs, 60);
+        assert_eq!(effective.batch_size, 50);
+        assert!(effective.stale_only);
+        assert_eq!(effective.failure_backoff_secs, 300);
+    }
+
+    #[test]
+    fn mark_refresh_config_overrides_defaults() {
+        let config: TradingProcessConfig = serde_json::from_value(serde_json::json!({
+            "mark_refresh": {
+                "enabled": true,
+                "poll_interval_secs": 5,
+                "max_mark_age_secs": 30,
+                "batch_size": 12,
+                "stale_only": false,
+                "failure_backoff_secs": 45
+            }
+        }))
+        .expect("mark refresh config should deserialize");
+
+        let effective = config.effective_mark_refresh();
+        assert!(effective.enabled);
+        assert_eq!(effective.poll_interval_secs, 5);
+        assert_eq!(effective.max_mark_age_secs, 30);
+        assert_eq!(effective.batch_size, 12);
+        assert!(!effective.stale_only);
+        assert_eq!(effective.failure_backoff_secs, 45);
+    }
+
+    #[test]
+    fn copy_trade_entry_safety_config_overrides_defaults() {
+        let config: TradingProcessConfig = serde_json::from_value(serde_json::json!({
+            "copy_trade": {
+                "entry_safety": {
+                    "enabled": true,
+                    "min_time_to_expiry_secs": 120,
+                    "require_two_sided_book": true,
+                    "max_spread_bps": "2500",
+                    "require_exit_depth": true,
+                    "exit_depth_size_fraction": "1.0",
+                    "exit_depth_slippage_bps": "150",
+                    "min_entry_price": "0.05",
+                    "max_entry_price": "0.95"
+                }
+            }
+        }))
+        .expect("entry safety config should deserialize");
+
+        let effective = config.effective_copy_trade();
+        assert!(effective.entry_safety.enabled);
+        assert_eq!(effective.entry_safety.min_time_to_expiry_secs, 120);
+        assert!(effective.entry_safety.require_two_sided_book);
+        assert_eq!(effective.entry_safety.max_spread_bps, dec!(2500));
+        assert!(effective.entry_safety.require_exit_depth);
+        assert_eq!(effective.entry_safety.exit_depth_size_fraction, dec!(1.0));
+        assert_eq!(effective.entry_safety.exit_depth_slippage_bps, dec!(150));
+        assert_eq!(effective.entry_safety.min_entry_price, dec!(0.05));
+        assert_eq!(effective.entry_safety.max_entry_price, dec!(0.95));
+    }
 }

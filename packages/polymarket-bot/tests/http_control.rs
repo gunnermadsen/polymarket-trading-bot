@@ -206,6 +206,34 @@ impl ControlApi for FakeControlApi {
         }))
     }
 
+    async fn recompute_mrs_segment_scores(
+        &self,
+        _request: http::MrsRecomputeRequest,
+    ) -> Result<Value, HttpError> {
+        Ok(serde_json::json!({
+            "score_version": "mrs_segment_v1",
+            "updated_segments": 1,
+            "summary": {
+                "segments": [],
+                "top_wallets": []
+            }
+        }))
+    }
+
+    async fn mrs_segment_summary(
+        &self,
+        _request: http::TradePnlListRequest,
+    ) -> Result<Value, HttpError> {
+        Ok(serde_json::json!({
+            "score_version": "mrs_segment_v1",
+            "segments": [{
+                "segment_key": "crypto",
+                "wallets_scored": 1
+            }],
+            "top_wallets": []
+        }))
+    }
+
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError> {
         Ok(LiveVenueStatus {
             mode: "sim".to_string(),

@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use anyhow::{bail, Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
@@ -13,12 +15,21 @@ use crate::{
     execution::OrderPlanReport,
     models::{
         BackfillJob, BackfillJobStatus, ConversionRequest, ConversionResult,
-        CopyTradeBacktestResult, CopyTradeBacktestRun, CopyTradeSignal, FillRecord, Market,
-        OrderRecord, OrderRequest, OrderState, OutcomeToken, SignalCandidate, TradingProcess,
-        TradingProcessConfig, WalletPerformance, WalletScore, WalletScoreCalibrationSnapshot,
-        WhalePollCheckpoint, WhaleTrade,
+        CopyTradeBacktestResult, CopyTradeBacktestRun, CopyTradeSignal, DataApiClosedPosition,
+        FillRecord, GammaMarketMetadata, Market, OrderRecord, OrderRequest, OrderState,
+        OutcomeToken, SignalCandidate, TradingProcess, TradingProcessConfig, WalletPerformance,
+        WalletScore, WalletScoreCalibrationSnapshot, WalletSegmentPerformance,
+        WalletTradeTaxonomyCandidate, WalletTradeTaxonomyUpdate, WhalePollCheckpoint, WhaleTrade,
     },
     orderbook::LocalOrderBook,
+    segments::{
+        classify_gamma_taxonomy_segment, normalize_gamma_segment_key, score_wallet_segment,
+        SegmentClassification, WalletSegmentPerformanceInput, GAMMA_SEGMENT_CLASSIFIER_VERSION,
+        MRS_SEGMENT_V2_SCORE_VERSION,
+    },
+    taxonomy::{
+        cache_key, fallback_taxonomy_update, taxonomy_update_from_metadata, GAMMA_TAXONOMY_VERSION,
+    },
     wallets::{score_mrs, MrsScoreInput, MRS_SCORE_VERSION},
 };
 
@@ -44,6 +55,7 @@ WITH open_positions AS MATERIALIZED (
   FROM polymarket.trade_positions p
   WHERE p.status IN ('open', 'partially_closed')
     AND p.open_size > 0
+    AND ($1::uuid IS NULL OR p.process_id IS NOT DISTINCT FROM $1::uuid)
 ),
 open_tokens AS MATERIALIZED (
   SELECT DISTINCT token_id
@@ -221,6 +233,33 @@ pub struct WhaleLedTradeExitCandidate {
     pub exit_timestamp: DateTime<Utc>,
     pub reference_exit_price: Decimal,
     pub exit_size: Decimal,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub struct TakeProfitTradeExitCandidate {
+    pub exit_purpose: String,
+    pub process_id: Option<Uuid>,
+    pub position_id: Uuid,
+    pub source_signal_id: Uuid,
+    pub proxy_wallet: Option<String>,
+    pub market_id: Option<String>,
+    pub token_id: String,
+    pub side: String,
+    pub entry_price: Decimal,
+    pub entry_size: Decimal,
+    pub open_size: Decimal,
+    pub entry_fee: Decimal,
+    pub entry_notional: Decimal,
+    pub exit_source_trade_id: Uuid,
+    pub exit_timestamp: DateTime<Utc>,
+    pub reference_exit_price: Decimal,
+    pub order_limit_price: Decimal,
+    pub exit_size: Decimal,
+    pub trigger_roi: Decimal,
+    pub threshold_roi: Decimal,
+    pub take_profit_roi: Decimal,
+    pub latest_mark_timestamp: DateTime<Utc>,
+    pub max_exit_slippage_bps: Decimal,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2625,6 +2664,35 @@ impl Store {
         Ok(())
     }
 
+    pub async fn fetch_market_end_date_for_entry(
+        &self,
+        market_id: &str,
+        token_id: &str,
+    ) -> Result<Option<DateTime<Utc>>> {
+        let row = sqlx::query_scalar::<_, DateTime<Utc>>(
+            r#"
+            SELECT m.end_date
+            FROM polymarket.markets m
+            WHERE m.market_id = $1
+              AND m.end_date IS NOT NULL
+            UNION ALL
+            SELECT m.end_date
+            FROM polymarket.outcome_tokens ot
+            JOIN polymarket.markets m ON m.market_id = ot.market_id
+            WHERE ot.token_id = $2
+              AND m.end_date IS NOT NULL
+            ORDER BY 1 ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(market_id)
+        .bind(token_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to fetch market end date for entry safety")?;
+        Ok(row)
+    }
+
     pub async fn insert_orderbook_snapshot(&self, snapshot: &OrderbookSnapshot) -> Result<()> {
         sqlx::query(
             r#"
@@ -3027,6 +3095,199 @@ impl Store {
             .collect())
     }
 
+    pub async fn fetch_take_profit_trade_exit_candidates(
+        &self,
+        process_id: Uuid,
+        take_profit_roi: Decimal,
+        exit_size_fraction: Decimal,
+        min_hold: chrono::Duration,
+        require_fresh_mark: chrono::Duration,
+        max_exit_slippage_bps: Decimal,
+        limit: i64,
+    ) -> Result<Vec<TakeProfitTradeExitCandidate>> {
+        self.fetch_risk_control_trade_exit_candidates(
+            process_id,
+            "take_profit_exit",
+            take_profit_roi,
+            exit_size_fraction,
+            min_hold,
+            require_fresh_mark,
+            max_exit_slippage_bps,
+            limit,
+        )
+        .await
+    }
+
+    pub async fn fetch_stop_loss_trade_exit_candidates(
+        &self,
+        process_id: Uuid,
+        stop_loss_roi: Decimal,
+        exit_size_fraction: Decimal,
+        min_hold: chrono::Duration,
+        require_fresh_mark: chrono::Duration,
+        max_exit_slippage_bps: Decimal,
+        limit: i64,
+    ) -> Result<Vec<TakeProfitTradeExitCandidate>> {
+        self.fetch_risk_control_trade_exit_candidates(
+            process_id,
+            "stop_loss_exit",
+            stop_loss_roi,
+            exit_size_fraction,
+            min_hold,
+            require_fresh_mark,
+            max_exit_slippage_bps,
+            limit,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn fetch_risk_control_trade_exit_candidates(
+        &self,
+        process_id: Uuid,
+        exit_purpose: &str,
+        threshold_roi: Decimal,
+        exit_size_fraction: Decimal,
+        min_hold: chrono::Duration,
+        require_fresh_mark: chrono::Duration,
+        max_exit_slippage_bps: Decimal,
+        limit: i64,
+    ) -> Result<Vec<TakeProfitTradeExitCandidate>> {
+        let rows = sqlx::query_as::<_, TakeProfitTradeExitCandidate>(
+            r#"
+            WITH prepared AS MATERIALIZED (
+              SELECT
+                $8::text AS exit_purpose,
+                p.process_id,
+                p.position_id,
+                p.source_signal_id,
+                p.proxy_wallet,
+                p.market_id,
+                p.token_id,
+                p.side,
+                p.entry_price,
+                p.entry_size,
+                p.open_size,
+                p.entry_fee,
+                p.entry_notional,
+                p.entry_timestamp,
+                (
+                  substr(md5(p.position_id::text || '|' || $8::text || '|' || $2::text), 1, 8) || '-' ||
+                  substr(md5(p.position_id::text || '|' || $8::text || '|' || $2::text), 9, 4) || '-' ||
+                  substr(md5(p.position_id::text || '|' || $8::text || '|' || $2::text), 13, 4) || '-' ||
+                  substr(md5(p.position_id::text || '|' || $8::text || '|' || $2::text), 17, 4) || '-' ||
+                  substr(md5(p.position_id::text || '|' || $8::text || '|' || $2::text), 21, 12)
+                )::uuid AS exit_source_trade_id,
+                now() AS exit_timestamp,
+                p.latest_mark_price AS reference_exit_price,
+                CASE
+                  WHEN p.side = 'buy' THEN GREATEST(
+                    0::numeric,
+                    p.latest_mark_price * (1 - ($6::numeric / 10000))
+                  )
+                  ELSE LEAST(
+                    1::numeric,
+                    p.latest_mark_price * (1 + ($6::numeric / 10000))
+                  )
+                END AS order_limit_price,
+                LEAST(
+                  p.open_size,
+                  p.open_size * LEAST(1::numeric, GREATEST(0::numeric, $3::numeric))
+                ) AS exit_size,
+                CASE
+                  WHEN p.side = 'buy' THEN
+                    (p.open_size * (p.latest_mark_price - p.entry_price))
+                      / NULLIF(p.entry_price * p.open_size, 0)
+                  ELSE
+                    (p.open_size * (p.entry_price - p.latest_mark_price))
+                      / NULLIF(p.entry_price * p.open_size, 0)
+                END AS trigger_roi,
+                $2::numeric AS threshold_roi,
+                $2::numeric AS take_profit_roi,
+                p.latest_mark_timestamp,
+                $6::numeric AS max_exit_slippage_bps
+              FROM polymarket.trade_positions p
+              WHERE p.process_id = $1
+                AND p.status IN ('open', 'partially_closed')
+                AND p.open_size > 0
+                AND p.entry_price > 0
+                AND p.latest_mark_price IS NOT NULL
+                AND p.latest_mark_timestamp IS NOT NULL
+                AND p.latest_mark_timestamp >= now() - ($5::bigint * interval '1 millisecond')
+                AND p.entry_timestamp <= now() - ($4::bigint * interval '1 millisecond')
+            )
+            SELECT
+              exit_purpose,
+              process_id,
+              position_id,
+              source_signal_id,
+              proxy_wallet,
+              market_id,
+              token_id,
+              side,
+              entry_price,
+              entry_size,
+              open_size,
+              entry_fee,
+              entry_notional,
+              exit_source_trade_id,
+              exit_timestamp,
+              reference_exit_price,
+              order_limit_price,
+              exit_size,
+              trigger_roi,
+              threshold_roi,
+              take_profit_roi,
+              latest_mark_timestamp,
+              max_exit_slippage_bps
+            FROM prepared p
+            WHERE (
+                ($8::text = 'take_profit_exit' AND p.trigger_roi >= $2)
+                OR ($8::text = 'stop_loss_exit' AND p.trigger_roi <= $2)
+              )
+              AND p.exit_size > 0
+              AND NOT EXISTS (
+                SELECT 1
+                FROM polymarket.trade_exits te
+                WHERE te.position_id = p.position_id
+                  AND te.is_synthetic = false
+                  AND (
+                    te.exit_source_trade_id = p.exit_source_trade_id
+                    OR te.metadata #>> '{purpose}' IN ('take_profit_exit', 'stop_loss_exit')
+                    OR te.metadata #>> '{source}' IN ('take_profit_exit', 'stop_loss_exit')
+                  )
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM polymarket.orders o
+                WHERE o.raw_payload #>> '{request,metadata,purpose}' IN ('take_profit_exit', 'stop_loss_exit')
+                  AND o.raw_payload #>> '{request,metadata,position_id}' = p.position_id::text
+                  AND o.created_at > now() - interval '30 seconds'
+              )
+            ORDER BY
+              CASE WHEN $8::text = 'stop_loss_exit' THEN p.trigger_roi END ASC,
+              CASE WHEN $8::text = 'take_profit_exit' THEN p.trigger_roi END DESC,
+              p.entry_timestamp ASC
+            LIMIT $7
+            "#,
+        )
+        .bind(process_id)
+        .bind(threshold_roi)
+        .bind(exit_size_fraction)
+        .bind(min_hold.num_milliseconds().max(0))
+        .bind(require_fresh_mark.num_milliseconds().max(0))
+        .bind(max_exit_slippage_bps.max(Decimal::ZERO))
+        .bind(limit)
+        .bind(exit_purpose)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch risk-control trade exit candidates")?;
+        Ok(rows
+            .into_iter()
+            .filter(|row| row.exit_size > Decimal::ZERO)
+            .collect())
+    }
+
     pub async fn reconcile_trade_positions_from_executable_exits(&self) -> Result<u64> {
         let result = sqlx::query(
             r#"
@@ -3262,6 +3523,219 @@ impl Store {
         Ok(1)
     }
 
+    pub async fn apply_take_profit_trade_exit(
+        &self,
+        candidate: &TakeProfitTradeExitCandidate,
+        report: &OrderPlanReport,
+    ) -> Result<u64> {
+        let close_order_id = report.orders.first().map(|order| order.order_id.clone());
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin risk-control exit transaction")?;
+        let duplicate_exists = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT EXISTS (
+              SELECT 1
+              FROM polymarket.trade_exits
+              WHERE position_id = $1
+                AND is_synthetic = false
+                AND (
+                  exit_source_trade_id = $2
+                  OR ($3::text IS NOT NULL AND metadata #>> '{close_order_id}' = $3)
+                  OR metadata #>> '{purpose}' IN ('take_profit_exit', 'stop_loss_exit')
+                  OR metadata #>> '{source}' IN ('take_profit_exit', 'stop_loss_exit')
+                )
+            )
+            "#,
+        )
+        .bind(candidate.position_id)
+        .bind(candidate.exit_source_trade_id)
+        .bind(close_order_id.as_deref())
+        .fetch_one(&mut *tx)
+        .await
+        .context("failed to check duplicate risk-control trade exit")?;
+        if duplicate_exists {
+            tx.commit()
+                .await
+                .context("failed to commit duplicate risk-control exit transaction")?;
+            return Ok(0);
+        }
+
+        let Some(current_open_size) = sqlx::query_scalar::<_, Decimal>(
+            r#"
+            SELECT open_size
+            FROM polymarket.trade_positions
+            WHERE position_id = $1
+              AND status IN ('open', 'partially_closed')
+              AND open_size > 0
+            FOR UPDATE
+            "#,
+        )
+        .bind(candidate.position_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("failed to lock risk-control trade position")?
+        else {
+            tx.commit()
+                .await
+                .context("failed to commit missing risk-control position transaction")?;
+            return Ok(0);
+        };
+
+        let applied_fills = cap_fills_to_size(&report.fills, current_open_size);
+        let filled_size: Decimal = applied_fills.iter().map(|fill| fill.size).sum();
+        if filled_size <= Decimal::ZERO {
+            tx.commit()
+                .await
+                .context("failed to commit empty risk-control exit transaction")?;
+            return Ok(0);
+        }
+        let exit_fee: Decimal = applied_fills.iter().map(|fill| fill.fee).sum();
+        let exit_notional: Decimal = applied_fills
+            .iter()
+            .map(|fill| fill.price * fill.size)
+            .sum();
+        let exit_price = exit_notional / filled_size;
+        let entry_value = candidate.entry_price * filled_size;
+        let gross_pnl = if candidate.side == "buy" {
+            exit_notional - entry_value
+        } else {
+            entry_value - exit_notional
+        };
+        let allocated_entry_fee = if candidate.entry_size > Decimal::ZERO {
+            candidate.entry_fee * (filled_size / candidate.entry_size)
+        } else {
+            Decimal::ZERO
+        };
+        let net_pnl = gross_pnl - allocated_entry_fee - exit_fee;
+        let reference_notional = candidate.reference_exit_price * filled_size;
+        let slippage_cost = if candidate.side == "buy" {
+            (reference_notional - exit_notional).max(Decimal::ZERO)
+        } else {
+            (exit_notional - reference_notional).max(Decimal::ZERO)
+        };
+        let fill_payloads: Vec<_> = applied_fills
+            .iter()
+            .map(|fill| serde_json::to_value(fill))
+            .collect::<std::result::Result<_, _>>()?;
+        let exit_timestamp = applied_fills
+            .iter()
+            .map(|fill| fill.filled_at)
+            .min()
+            .unwrap_or(candidate.exit_timestamp);
+        let metadata = serde_json::json!({
+            "source": candidate.exit_purpose.as_str(),
+            "purpose": candidate.exit_purpose.as_str(),
+            "close_order_id": close_order_id,
+            "reference_exit_price": candidate.reference_exit_price,
+            "order_limit_price": candidate.order_limit_price,
+            "reference_exit_notional": reference_notional,
+            "trigger_roi": candidate.trigger_roi,
+            "threshold_roi": candidate.threshold_roi,
+            "take_profit_roi": candidate.take_profit_roi,
+            "stop_loss_roi": if candidate.exit_purpose == "stop_loss_exit" {
+                Some(candidate.threshold_roi)
+            } else {
+                None
+            },
+            "latest_mark_timestamp": candidate.latest_mark_timestamp,
+            "max_exit_slippage_bps": candidate.max_exit_slippage_bps,
+            "allocated_entry_fee": allocated_entry_fee,
+            "execution_source": applied_fills
+                .first()
+                .map(|fill| serialized_name(&fill.source).unwrap_or_else(|_| "unknown".to_string()))
+                .unwrap_or_else(|| "unknown".to_string()),
+            "applied_fill_size": filled_size,
+            "position_open_size_at_lock": current_open_size,
+            "fills": fill_payloads
+        });
+
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO polymarket.trade_exits (
+              position_id, process_id, source_signal_id, timestamp_utc, exit_type, is_synthetic,
+              exit_trigger_wallet, exit_source_trade_id, exit_price, exit_size,
+              exit_notional, exit_fee, slippage_cost, gross_pnl, net_pnl, roi, metadata
+            )
+            VALUES (
+              $1,$2,$3,$4,'risk_control',false,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+              CASE WHEN $14 > 0 THEN $13 / $14 ELSE 0 END,
+              $15
+            )
+            ON CONFLICT (position_id, exit_source_trade_id) DO NOTHING
+            "#,
+        )
+        .bind(candidate.position_id)
+        .bind(candidate.process_id)
+        .bind(candidate.source_signal_id)
+        .bind(exit_timestamp)
+        .bind(candidate.proxy_wallet.as_deref())
+        .bind(candidate.exit_source_trade_id)
+        .bind(exit_price)
+        .bind(filled_size)
+        .bind(exit_notional)
+        .bind(exit_fee)
+        .bind(slippage_cost)
+        .bind(gross_pnl)
+        .bind(net_pnl)
+        .bind(candidate.entry_notional)
+        .bind(metadata)
+        .execute(&mut *tx)
+        .await
+        .context("failed to insert risk-control trade exit")?;
+
+        if inserted.rows_affected() == 0 {
+            tx.commit()
+                .await
+                .context("failed to commit duplicate risk-control exit transaction")?;
+            return Ok(0);
+        }
+
+        sqlx::query(
+            r#"
+            UPDATE polymarket.trade_positions p
+            SET
+              open_size = GREATEST(0, p.open_size - $2),
+              realized_pnl = p.realized_pnl + $3,
+              status = CASE
+                WHEN GREATEST(0, p.open_size - $2) <= 0.000000001 THEN 'closed'
+                ELSE 'partially_closed'
+              END,
+              unrealized_pnl = CASE
+                WHEN GREATEST(0, p.open_size - $2) <= 0.000000001 THEN 0
+                WHEN p.open_size > 0 THEN p.unrealized_pnl * (GREATEST(0, p.open_size - $2) / p.open_size)
+                ELSE 0
+              END,
+              roi = CASE
+                WHEN p.entry_notional > 0 THEN (
+                  p.realized_pnl + $3 + CASE
+                    WHEN GREATEST(0, p.open_size - $2) <= 0.000000001 THEN 0
+                    WHEN p.open_size > 0 THEN p.unrealized_pnl * (GREATEST(0, p.open_size - $2) / p.open_size)
+                    ELSE 0
+                  END
+                ) / p.entry_notional
+                ELSE 0
+              END,
+              updated_at = now()
+            WHERE p.position_id = $1
+            "#,
+        )
+        .bind(candidate.position_id)
+        .bind(filled_size)
+        .bind(net_pnl)
+        .execute(&mut *tx)
+        .await
+        .context("failed to update trade position from risk-control exit")?;
+
+        tx.commit()
+            .await
+            .context("failed to commit risk-control exit transaction")?;
+        Ok(1)
+    }
+
     pub async fn apply_whale_led_trade_exits(&self) -> Result<u64> {
         let result = sqlx::query(
             r#"
@@ -3412,9 +3886,19 @@ impl Store {
 
     pub async fn mark_open_trade_positions(&self) -> Result<u64> {
         let result = sqlx::query(MARK_OPEN_TRADE_POSITIONS_SQL)
+            .bind(Option::<Uuid>::None)
             .execute(&self.pool)
             .await
             .context("failed to mark open trade positions")?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn mark_open_trade_positions_for_process(&self, process_id: Uuid) -> Result<u64> {
+        let result = sqlx::query(MARK_OPEN_TRADE_POSITIONS_SQL)
+            .bind(Some(process_id))
+            .execute(&self.pool)
+            .await
+            .context("failed to mark open trade positions for process")?;
         Ok(result.rows_affected())
     }
 
@@ -3423,6 +3907,24 @@ impl Store {
         limit: i64,
         max_mark_age: chrono::Duration,
         failure_backoff: chrono::Duration,
+    ) -> Result<Vec<OpenMarkToken>> {
+        self.open_trade_position_mark_tokens_for_process(
+            None,
+            limit,
+            max_mark_age,
+            failure_backoff,
+            true,
+        )
+        .await
+    }
+
+    pub async fn open_trade_position_mark_tokens_for_process(
+        &self,
+        process_id: Option<Uuid>,
+        limit: i64,
+        max_mark_age: chrono::Duration,
+        failure_backoff: chrono::Duration,
+        stale_only: bool,
     ) -> Result<Vec<OpenMarkToken>> {
         let max_mark_age_ms = max_mark_age.num_milliseconds().max(0);
         let failure_backoff_ms = failure_backoff.num_milliseconds().max(0);
@@ -3437,7 +3939,10 @@ impl Store {
               FROM polymarket.trade_positions p
               WHERE p.status IN ('open', 'partially_closed')
                 AND p.open_size > 0
+                AND ($4::uuid IS NULL OR p.process_id IS NOT DISTINCT FROM $4::uuid)
                 AND (
+                  $5::boolean = false
+                  OR
                   p.latest_mark_timestamp IS NULL
                   OR p.latest_mark_timestamp < now() - ($1::bigint * interval '1 millisecond')
                 )
@@ -3449,7 +3954,7 @@ impl Store {
               SELECT 1
               FROM polymarket.orderbook_snapshots b
               WHERE b.token_id = t.token_id
-                AND b.timestamp_utc >= now() - interval '15 minutes'
+                AND b.timestamp_utc >= now() - ($1::bigint * interval '1 millisecond')
                 AND (b.best_bid IS NOT NULL OR b.best_ask IS NOT NULL)
               LIMIT 1
             )
@@ -3470,6 +3975,8 @@ impl Store {
         .bind(max_mark_age_ms)
         .bind(failure_backoff_ms)
         .bind(limit.max(0))
+        .bind(process_id)
+        .bind(stale_only)
         .fetch_all(&self.pool)
         .await
         .context("failed to list open trade position tokens needing marks")?;
@@ -4284,6 +4791,285 @@ impl Store {
         Ok(())
     }
 
+    pub async fn upsert_gamma_market_metadata(&self, metadata: &GammaMarketMetadata) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO polymarket.gamma_market_metadata (
+              cache_key, lookup_type, lookup_slug, event_slug, market_slug,
+              gamma_event_id, gamma_market_id, category, series_slug, tag_slugs,
+              sport_key, taxonomy_segment, taxonomy_source, taxonomy_confidence,
+              taxonomy_version, raw_payload, fetched_at, updated_at
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now())
+            ON CONFLICT (cache_key) DO UPDATE SET
+              lookup_type = EXCLUDED.lookup_type,
+              lookup_slug = EXCLUDED.lookup_slug,
+              event_slug = EXCLUDED.event_slug,
+              market_slug = EXCLUDED.market_slug,
+              gamma_event_id = EXCLUDED.gamma_event_id,
+              gamma_market_id = EXCLUDED.gamma_market_id,
+              category = EXCLUDED.category,
+              series_slug = EXCLUDED.series_slug,
+              tag_slugs = EXCLUDED.tag_slugs,
+              sport_key = EXCLUDED.sport_key,
+              taxonomy_segment = EXCLUDED.taxonomy_segment,
+              taxonomy_source = EXCLUDED.taxonomy_source,
+              taxonomy_confidence = EXCLUDED.taxonomy_confidence,
+              taxonomy_version = EXCLUDED.taxonomy_version,
+              raw_payload = EXCLUDED.raw_payload,
+              fetched_at = EXCLUDED.fetched_at,
+              updated_at = now()
+            "#,
+        )
+        .bind(&metadata.cache_key)
+        .bind(&metadata.lookup_type)
+        .bind(&metadata.lookup_slug)
+        .bind(&metadata.event_slug)
+        .bind(&metadata.market_slug)
+        .bind(&metadata.gamma_event_id)
+        .bind(&metadata.gamma_market_id)
+        .bind(&metadata.category)
+        .bind(&metadata.series_slug)
+        .bind(&metadata.tag_slugs)
+        .bind(&metadata.sport_key)
+        .bind(&metadata.taxonomy_segment)
+        .bind(&metadata.taxonomy_source)
+        .bind(metadata.taxonomy_confidence)
+        .bind(&metadata.taxonomy_version)
+        .bind(&metadata.raw_payload)
+        .bind(metadata.fetched_at)
+        .execute(&self.pool)
+        .await
+        .context("failed to upsert Gamma market metadata")?;
+        Ok(())
+    }
+
+    pub async fn fetch_gamma_market_metadata_by_lookup(
+        &self,
+        lookup_type: &str,
+        lookup_slug: &str,
+    ) -> Result<Option<GammaMarketMetadata>> {
+        let row = sqlx::query_as::<_, GammaMarketMetadataRow>(
+            r#"
+            SELECT cache_key, lookup_type, lookup_slug, event_slug, market_slug,
+              gamma_event_id, gamma_market_id, category, series_slug, tag_slugs,
+              sport_key, taxonomy_segment, taxonomy_source, taxonomy_confidence,
+              taxonomy_version, raw_payload, fetched_at
+            FROM polymarket.gamma_market_metadata
+            WHERE cache_key = $1
+            LIMIT 1
+            "#,
+        )
+        .bind(cache_key(lookup_type, lookup_slug))
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to fetch Gamma market metadata")?;
+        Ok(row.map(Into::into))
+    }
+
+    pub async fn fetch_wallet_trade_gamma_segment_classification(
+        &self,
+        trade_id: Uuid,
+    ) -> Result<Option<SegmentClassification>> {
+        let row = sqlx::query_as::<_, WalletTradeGammaSegmentRow>(
+            r#"
+            SELECT lower(proxy_wallet) AS proxy_wallet, taxonomy_segment, taxonomy_source,
+              COALESCE(taxonomy_confidence, 0)::numeric AS taxonomy_confidence,
+              cash_value, timestamp_utc, trade_id,
+              COALESCE(taxonomy_metadata, '{}'::jsonb) AS taxonomy_metadata
+            FROM polymarket.wallet_trades
+            WHERE trade_id = $1
+              AND taxonomy_version = $2
+              AND taxonomy_source IN ('gamma', 'keyword_fallback')
+              AND taxonomy_segment IS NOT NULL
+            LIMIT 1
+            "#,
+        )
+        .bind(trade_id)
+        .bind(GAMMA_TAXONOMY_VERSION)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to fetch wallet trade Gamma segment classification")?;
+
+        Ok(row.and_then(|row| {
+            classify_gamma_taxonomy_segment(
+                &row.taxonomy_segment,
+                row.taxonomy_confidence,
+                serde_json::json!({
+                    "trade_id": row.trade_id,
+                    "taxonomy_segment": row.taxonomy_segment,
+                    "taxonomy_source": row.taxonomy_source,
+                    "taxonomy_metadata": row.taxonomy_metadata
+                }),
+            )
+        }))
+    }
+
+    async fn fetch_gamma_segment_lookup_map(&self) -> Result<HashMap<String, String>> {
+        let rows = sqlx::query_as::<_, GammaSegmentLookupRow>(
+            r#"
+            SELECT lookup_slug, event_slug, market_slug, taxonomy_segment, COALESCE(taxonomy_confidence, 0)::numeric AS taxonomy_confidence
+            FROM polymarket.gamma_market_metadata
+            WHERE taxonomy_version = $1
+              AND taxonomy_source = 'gamma'
+              AND taxonomy_segment IS NOT NULL
+            "#,
+        )
+        .bind(GAMMA_TAXONOMY_VERSION)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch Gamma segment lookup map")?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let Some(classification) = classify_gamma_taxonomy_segment(
+                &row.taxonomy_segment,
+                row.taxonomy_confidence,
+                serde_json::json!({
+                    "lookup_slug": row.lookup_slug,
+                    "event_slug": row.event_slug,
+                    "market_slug": row.market_slug
+                }),
+            ) else {
+                continue;
+            };
+            for key in [Some(row.lookup_slug), row.event_slug, row.market_slug]
+                .into_iter()
+                .flatten()
+                .filter(|value| !value.is_empty())
+            {
+                map.insert(key.to_ascii_lowercase(), classification.segment_key.clone());
+            }
+        }
+        Ok(map)
+    }
+
+    pub async fn fetch_unresolved_wallet_trade_taxonomy_candidates(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<WalletTradeTaxonomyCandidate>> {
+        let rows = sqlx::query_as::<_, WalletTradeTaxonomyCandidateRow>(
+            r#"
+            SELECT trade_id, title, slug, event_slug, market_id, condition_id, asset, raw_payload
+            FROM polymarket.wallet_trades
+            WHERE taxonomy_version IS NULL
+              AND (event_slug IS NOT NULL OR slug IS NOT NULL)
+            ORDER BY timestamp_utc DESC
+            LIMIT $1
+            "#,
+        )
+        .bind(limit.clamp(1, 10_000))
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch unresolved wallet trade taxonomy candidates")?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn update_wallet_trade_taxonomy(
+        &self,
+        update: &WalletTradeTaxonomyUpdate,
+    ) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            UPDATE polymarket.wallet_trades
+            SET
+              taxonomy_segment = $2,
+              taxonomy_source = $3,
+              taxonomy_confidence = $4,
+              taxonomy_version = $5,
+              taxonomy_fetched_at = $6,
+              taxonomy_metadata = $7
+            WHERE trade_id = $1
+            "#,
+        )
+        .bind(update.trade_id)
+        .bind(&update.taxonomy_segment)
+        .bind(&update.taxonomy_source)
+        .bind(update.taxonomy_confidence)
+        .bind(&update.taxonomy_version)
+        .bind(update.taxonomy_fetched_at)
+        .bind(&update.taxonomy_metadata)
+        .execute(&self.pool)
+        .await
+        .context("failed to update wallet trade taxonomy")?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn apply_cached_taxonomy_to_trade(&self, trade: &WhaleTrade) -> Result<bool> {
+        let candidate = WalletTradeTaxonomyCandidate {
+            trade_id: trade.trade_id,
+            title: trade.title.clone(),
+            slug: trade.slug.clone(),
+            event_slug: trade.event_slug.clone(),
+            market_id: trade.market_id.clone(),
+            condition_id: trade.condition_id.clone(),
+            asset: trade.asset.clone(),
+            raw_payload: trade.raw_payload.clone(),
+        };
+        let mut metadata = if let Some(event_slug) = trade.event_slug.as_deref() {
+            self.fetch_gamma_market_metadata_by_lookup("event_slug", event_slug)
+                .await?
+        } else {
+            None
+        };
+        if metadata.is_none() {
+            if let Some(slug) = trade.slug.as_deref() {
+                metadata = self
+                    .fetch_gamma_market_metadata_by_lookup("market_slug", slug)
+                    .await?;
+            }
+        }
+        let update = metadata
+            .as_ref()
+            .and_then(|metadata| taxonomy_update_from_metadata(&candidate, metadata))
+            .unwrap_or_else(|| fallback_taxonomy_update(&candidate));
+        Ok(self.update_wallet_trade_taxonomy(&update).await? > 0)
+    }
+
+    pub async fn wallet_trade_taxonomy_status(&self) -> Result<serde_json::Value> {
+        let value = sqlx::query_scalar::<_, serde_json::Value>(
+            r#"
+            WITH totals AS (
+              SELECT
+                count(*)::integer AS total_trades,
+                count(*) FILTER (WHERE taxonomy_version = $1)::integer AS labeled_trades,
+                count(*) FILTER (WHERE taxonomy_source = 'gamma')::integer AS gamma_labeled_trades,
+                count(*) FILTER (WHERE taxonomy_source = 'keyword_fallback')::integer AS fallback_labeled_trades,
+                count(*) FILTER (WHERE taxonomy_segment = 'other')::integer AS other_labeled_trades,
+                count(*) FILTER (WHERE taxonomy_version IS NULL)::integer AS unresolved_trades
+              FROM polymarket.wallet_trades
+            ),
+            cache AS (
+              SELECT
+                count(*)::integer AS cached_metadata,
+                count(*) FILTER (WHERE lookup_type = 'event_slug')::integer AS cached_events,
+                count(*) FILTER (WHERE lookup_type = 'market_slug')::integer AS cached_markets
+              FROM polymarket.gamma_market_metadata
+            ),
+            top_segments AS (
+              SELECT taxonomy_segment, taxonomy_source, count(*)::integer AS trades
+              FROM polymarket.wallet_trades
+              WHERE taxonomy_version = $1
+              GROUP BY taxonomy_segment, taxonomy_source
+              ORDER BY trades DESC, taxonomy_segment
+              LIMIT 25
+            )
+            SELECT jsonb_build_object(
+              'taxonomy_version', $1,
+              'totals', to_jsonb(totals),
+              'cache', to_jsonb(cache),
+              'top_segments', COALESCE((SELECT jsonb_agg(to_jsonb(top_segments)) FROM top_segments), '[]'::jsonb),
+              'updated_at', now()
+            )
+            FROM totals, cache
+            "#,
+        )
+        .bind(GAMMA_TAXONOMY_VERSION)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to build wallet trade taxonomy status")?;
+        Ok(value)
+    }
+
     pub async fn fetch_recent_whale_trades(&self, since: DateTime<Utc>) -> Result<Vec<WhaleTrade>> {
         let rows = sqlx::query_as::<_, WhaleTradeRow>(
             r#"
@@ -4315,6 +5101,146 @@ impl Store {
         .await
         .context("failed to fetch recent whale wallets")?;
         Ok(rows)
+    }
+
+    pub async fn fetch_wallet_observed_trades(
+        &self,
+        proxy_wallet: &str,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<WhaleTrade>> {
+        let rows = sqlx::query_as::<_, WhaleTradeRow>(
+            r#"
+            SELECT trade_id, proxy_wallet, asset, condition_id, market_id, side, outcome,
+              price, size, cash_value, timestamp_utc, title, slug, event_slug,
+              transaction_hash, raw_payload
+            FROM polymarket.wallet_trades
+            WHERE lower(proxy_wallet) = lower($1)
+              AND timestamp_utc >= $2
+            ORDER BY timestamp_utc DESC
+            "#,
+        )
+        .bind(proxy_wallet)
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch wallet observed trades")?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    #[allow(dead_code)]
+    async fn fetch_wallet_observed_trades_for_wallets(
+        &self,
+        proxy_wallets: &[String],
+        since: DateTime<Utc>,
+    ) -> Result<HashMap<String, Vec<WhaleTrade>>> {
+        if proxy_wallets.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let wallet_keys = proxy_wallets
+            .iter()
+            .map(|wallet| wallet.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        let rows = sqlx::query_as::<_, WhaleTradeRow>(
+            r#"
+            SELECT trade_id, proxy_wallet, asset, condition_id, market_id, side, outcome,
+              price, size, cash_value, timestamp_utc, title, slug, event_slug,
+              transaction_hash, raw_payload
+            FROM polymarket.wallet_trades
+            WHERE lower(proxy_wallet) = ANY($1)
+              AND timestamp_utc >= $2
+            ORDER BY proxy_wallet, timestamp_utc DESC
+            "#,
+        )
+        .bind(&wallet_keys)
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch observed trades for wallet segment recompute batch")?;
+
+        let mut by_wallet = HashMap::<String, Vec<WhaleTrade>>::new();
+        for row in rows {
+            let trade: WhaleTrade = row.into();
+            by_wallet
+                .entry(trade.proxy_wallet.to_ascii_lowercase())
+                .or_default()
+                .push(trade);
+        }
+        Ok(by_wallet)
+    }
+
+    async fn fetch_wallet_observed_gamma_segment_inputs(
+        &self,
+        proxy_wallets: &[String],
+        since: DateTime<Utc>,
+    ) -> Result<HashMap<String, HashMap<String, WalletSegmentPerformanceInput>>> {
+        if proxy_wallets.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let wallet_keys = proxy_wallets
+            .iter()
+            .map(|wallet| wallet.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        let rows = sqlx::query_as::<_, WalletTradeGammaSegmentRow>(
+            r#"
+            SELECT lower(proxy_wallet) AS proxy_wallet, taxonomy_segment, taxonomy_source,
+              COALESCE(taxonomy_confidence, 0)::numeric AS taxonomy_confidence,
+              cash_value, timestamp_utc, trade_id,
+              COALESCE(taxonomy_metadata, '{}'::jsonb) AS taxonomy_metadata
+            FROM polymarket.wallet_trades
+            WHERE lower(proxy_wallet) = ANY($1)
+              AND timestamp_utc >= $2
+              AND taxonomy_version = $3
+              AND taxonomy_source IN ('gamma', 'keyword_fallback')
+              AND taxonomy_segment IS NOT NULL
+            ORDER BY proxy_wallet, timestamp_utc DESC
+            "#,
+        )
+        .bind(&wallet_keys)
+        .bind(since)
+        .bind(GAMMA_TAXONOMY_VERSION)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch Gamma-labeled observed trades for segment v2 recompute")?;
+
+        let mut by_wallet =
+            HashMap::<String, HashMap<String, WalletSegmentPerformanceInput>>::new();
+        for row in rows {
+            let Some(classification) = classify_gamma_taxonomy_segment(
+                &row.taxonomy_segment,
+                row.taxonomy_confidence,
+                serde_json::json!({
+                    "trade_id": row.trade_id,
+                    "taxonomy_segment": row.taxonomy_segment,
+                    "taxonomy_metadata": row.taxonomy_metadata
+                }),
+            ) else {
+                continue;
+            };
+            let wallet = row.proxy_wallet.to_ascii_lowercase();
+            let entry = by_wallet
+                .entry(wallet.clone())
+                .or_default()
+                .entry(classification.segment_key.clone())
+                .or_insert_with(|| WalletSegmentPerformanceInput {
+                    proxy_wallet: wallet,
+                    segment_key: classification.segment_key.clone(),
+                    classifier_version: classification.classifier_version.clone(),
+                    ..WalletSegmentPerformanceInput::default()
+                });
+            entry.observed_trade_count = entry.observed_trade_count.saturating_add(1);
+            entry.observed_volume_usd += row.cash_value;
+            entry.sample_start = Some(
+                entry
+                    .sample_start
+                    .map_or(row.timestamp_utc, |value| value.min(row.timestamp_utc)),
+            );
+            entry.sample_end = Some(
+                entry
+                    .sample_end
+                    .map_or(row.timestamp_utc, |value| value.max(row.timestamp_utc)),
+            );
+        }
+        Ok(by_wallet)
     }
 
     pub async fn fetch_wallet_observed_trade_stats(
@@ -4445,6 +5371,433 @@ impl Store {
             updated = updated.saturating_add(1);
         }
         Ok(updated)
+    }
+
+    pub async fn recompute_wallet_segment_scores_from_existing(
+        &self,
+        since: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<u64> {
+        self.recompute_wallet_segment_scores_from_gamma_taxonomy(since, limit)
+            .await
+    }
+
+    pub async fn recompute_wallet_segment_scores_from_gamma_taxonomy(
+        &self,
+        since: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<u64> {
+        let performances = self
+            .compute_wallet_segment_performance_from_gamma_taxonomy(since, limit)
+            .await?;
+        let mut updated = 0u64;
+        for performance in performances {
+            self.upsert_wallet_segment_performance(&performance).await?;
+            updated = updated.saturating_add(1);
+        }
+        Ok(updated)
+    }
+
+    pub async fn recompute_wallet_segment_v2_scores_from_existing(
+        &self,
+        since: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<u64> {
+        let gamma_lookup = self.fetch_gamma_segment_lookup_map().await?;
+        let mut updated = 0u64;
+        let requested = limit.max(1);
+        let batch_size = 50i64;
+        let mut offset = 0i64;
+        while offset < requested {
+            let rows = sqlx::query_as::<_, WalletPerformanceRow>(
+                r#"
+                SELECT proxy_wallet, sample_updated_at, realized_pnl_usd, total_bought_usd,
+                  roi, closed_positions, winning_positions, win_rate, rank_score,
+                  raw_payload, metadata
+                FROM polymarket.wallet_performance
+                ORDER BY rank_score DESC, realized_pnl_usd DESC, roi DESC, proxy_wallet
+                LIMIT $1 OFFSET $2
+                "#,
+            )
+            .bind(batch_size.min(requested - offset))
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to fetch wallet performance rows for segment v2 recompute")?;
+            if rows.is_empty() {
+                break;
+            }
+
+            let wallet_keys = rows
+                .iter()
+                .map(|row| row.proxy_wallet.clone())
+                .collect::<Vec<_>>();
+            let observed_by_wallet = self
+                .fetch_wallet_observed_gamma_segment_inputs(&wallet_keys, since)
+                .await?;
+
+            for row in rows {
+                let wallet = row.proxy_wallet.to_ascii_lowercase();
+                let mut by_segment = observed_by_wallet.get(&wallet).cloned().unwrap_or_default();
+                for position in closed_positions_from_raw_payload(&row.raw_payload)? {
+                    let Some(segment_key) =
+                        gamma_segment_for_closed_position(&position, &gamma_lookup)
+                    else {
+                        continue;
+                    };
+                    let entry = by_segment.entry(segment_key.clone()).or_insert_with(|| {
+                        WalletSegmentPerformanceInput {
+                            proxy_wallet: wallet.clone(),
+                            segment_key,
+                            classifier_version: GAMMA_SEGMENT_CLASSIFIER_VERSION.to_string(),
+                            ..WalletSegmentPerformanceInput::default()
+                        }
+                    });
+                    let realized_pnl = position.realized_pnl.unwrap_or(Decimal::ZERO);
+                    entry.realized_pnl_usd += realized_pnl;
+                    entry.total_bought_usd += position.total_bought.unwrap_or(Decimal::ZERO);
+                    entry.closed_positions = entry.closed_positions.saturating_add(1);
+                    if realized_pnl > Decimal::ZERO {
+                        entry.winning_positions = entry.winning_positions.saturating_add(1);
+                    }
+                    if let Some(timestamp) = position.timestamp.and_then(timestamp_from_secs) {
+                        entry.sample_start = Some(
+                            entry
+                                .sample_start
+                                .map_or(timestamp, |value| value.min(timestamp)),
+                        );
+                        entry.sample_end = Some(
+                            entry
+                                .sample_end
+                                .map_or(timestamp, |value| value.max(timestamp)),
+                        );
+                    }
+                }
+
+                for input in by_segment.into_values() {
+                    let mut performance =
+                        score_wallet_segment(input).into_wallet_segment_performance();
+                    performance.score_version = MRS_SEGMENT_V2_SCORE_VERSION.to_string();
+                    performance.classifier_version = GAMMA_SEGMENT_CLASSIFIER_VERSION.to_string();
+                    performance.metadata = merge_json(
+                        performance.metadata,
+                        serde_json::json!({
+                            "source": "gamma_taxonomy_segment_v2_recompute",
+                            "score_basis": MRS_SEGMENT_V2_SCORE_VERSION,
+                            "score_version": MRS_SEGMENT_V2_SCORE_VERSION,
+                            "classifier_version": GAMMA_SEGMENT_CLASSIFIER_VERSION,
+                            "sample_updated_at": row.sample_updated_at,
+                            "wallet_performance": {
+                                "closed_positions": row.closed_positions,
+                                "winning_positions": row.winning_positions,
+                                "realized_pnl_usd": row.realized_pnl_usd,
+                                "roi": row.roi,
+                                "win_rate": row.win_rate
+                            }
+                        }),
+                    );
+                    self.upsert_wallet_segment_performance(&performance).await?;
+                    updated = updated.saturating_add(1);
+                }
+            }
+            offset += batch_size;
+        }
+        self.refresh_wallet_segment_v2_percentiles().await?;
+        Ok(updated)
+    }
+
+    pub async fn compute_wallet_segment_performance_from_gamma_taxonomy(
+        &self,
+        since: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<WalletSegmentPerformance>> {
+        let rows = sqlx::query_as::<_, GammaWalletSegmentPerformanceInputRow>(
+            r#"
+            WITH eligible_trades AS (
+              SELECT
+                lower(proxy_wallet) AS proxy_wallet,
+                taxonomy_segment AS segment_key,
+                taxonomy_source,
+                taxonomy_confidence,
+                side,
+                cash_value,
+                condition_id,
+                market_id,
+                slug,
+                asset,
+                timestamp_utc
+              FROM polymarket.wallet_trades
+              WHERE timestamp_utc >= $1
+                AND taxonomy_version = $2
+                AND taxonomy_segment IS NOT NULL
+                AND taxonomy_segment <> ''
+            ),
+            ranked_wallets AS (
+              SELECT
+                proxy_wallet,
+                count(*)::integer AS observed_trade_count,
+                COALESCE(sum(cash_value), 0)::numeric AS observed_volume_usd,
+                max(timestamp_utc) AS latest_trade_at
+              FROM eligible_trades
+              GROUP BY proxy_wallet
+              ORDER BY observed_volume_usd DESC, observed_trade_count DESC, latest_trade_at DESC, proxy_wallet
+              LIMIT $3
+            )
+            SELECT
+              trades.proxy_wallet,
+              trades.segment_key,
+              count(*)::integer AS observed_trade_count,
+              COALESCE(sum(trades.cash_value), 0)::numeric AS observed_volume_usd,
+              COALESCE(sum(trades.cash_value) FILTER (WHERE upper(trades.side) = 'BUY'), 0)::numeric AS buy_volume_usd,
+              COALESCE(sum(trades.cash_value) FILTER (WHERE upper(trades.side) = 'SELL'), 0)::numeric AS sell_volume_usd,
+              count(DISTINCT COALESCE(trades.condition_id, trades.market_id, trades.slug, trades.asset))::integer AS observed_market_count,
+              COALESCE(avg(trades.taxonomy_confidence), 0)::numeric AS avg_taxonomy_confidence,
+              min(trades.timestamp_utc) AS sample_start,
+              max(trades.timestamp_utc) AS sample_end,
+              jsonb_build_object(
+                'source', 'wallet_trades_gamma_taxonomy',
+                'taxonomy_version', $2,
+                'taxonomy_sources', COALESCE(
+                  jsonb_agg(DISTINCT trades.taxonomy_source) FILTER (WHERE trades.taxonomy_source IS NOT NULL),
+                  '[]'::jsonb
+                )
+              ) AS taxonomy_metadata
+            FROM eligible_trades trades
+            JOIN ranked_wallets wallets ON wallets.proxy_wallet = trades.proxy_wallet
+            GROUP BY trades.proxy_wallet, trades.segment_key
+            ORDER BY observed_volume_usd DESC, observed_trade_count DESC, trades.proxy_wallet, trades.segment_key
+            "#,
+        )
+        .bind(since)
+        .bind(GAMMA_TAXONOMY_VERSION)
+        .bind(limit.max(1))
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to compute wallet segment performance from Gamma taxonomy")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| row.into_wallet_segment_performance())
+            .collect())
+    }
+
+    pub async fn upsert_wallet_segment_performance(
+        &self,
+        performance: &WalletSegmentPerformance,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO polymarket.wallet_segment_performance (
+              proxy_wallet, segment_key, score_version, classifier_version, score, confidence,
+              closed_positions, winning_positions, losing_positions, win_rate,
+              realized_pnl_usd, total_bought_usd, roi, observed_trade_count,
+              observed_volume_usd, sample_start, sample_end, metadata, updated_at
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,now())
+            ON CONFLICT (proxy_wallet, segment_key, score_version) DO UPDATE SET
+              classifier_version = EXCLUDED.classifier_version,
+              score = EXCLUDED.score,
+              confidence = EXCLUDED.confidence,
+              closed_positions = EXCLUDED.closed_positions,
+              winning_positions = EXCLUDED.winning_positions,
+              losing_positions = EXCLUDED.losing_positions,
+              win_rate = EXCLUDED.win_rate,
+              realized_pnl_usd = EXCLUDED.realized_pnl_usd,
+              total_bought_usd = EXCLUDED.total_bought_usd,
+              roi = EXCLUDED.roi,
+              observed_trade_count = EXCLUDED.observed_trade_count,
+              observed_volume_usd = EXCLUDED.observed_volume_usd,
+              sample_start = EXCLUDED.sample_start,
+              sample_end = EXCLUDED.sample_end,
+              metadata = EXCLUDED.metadata,
+              updated_at = now()
+            "#,
+        )
+        .bind(&performance.proxy_wallet)
+        .bind(&performance.segment_key)
+        .bind(&performance.score_version)
+        .bind(&performance.classifier_version)
+        .bind(performance.score)
+        .bind(performance.confidence)
+        .bind(performance.closed_positions)
+        .bind(performance.winning_positions)
+        .bind(performance.losing_positions)
+        .bind(performance.win_rate)
+        .bind(performance.realized_pnl_usd)
+        .bind(performance.total_bought_usd)
+        .bind(performance.roi)
+        .bind(performance.observed_trade_count)
+        .bind(performance.observed_volume_usd)
+        .bind(performance.sample_start)
+        .bind(performance.sample_end)
+        .bind(&performance.metadata)
+        .execute(&self.pool)
+        .await
+        .context("failed to upsert wallet segment performance")?;
+        Ok(())
+    }
+
+    pub async fn fetch_wallet_segment_performance(
+        &self,
+        proxy_wallet: &str,
+        segment_key: &str,
+        score_version: &str,
+    ) -> Result<Option<WalletSegmentPerformance>> {
+        let row = sqlx::query_as::<_, WalletSegmentPerformanceRow>(
+            r#"
+            SELECT proxy_wallet, segment_key, score_version, classifier_version, score, confidence,
+              closed_positions, winning_positions, losing_positions, win_rate,
+              realized_pnl_usd, total_bought_usd, roi, observed_trade_count,
+              observed_volume_usd, sample_start, sample_end, metadata
+            FROM polymarket.wallet_segment_performance
+            WHERE lower(proxy_wallet) = lower($1)
+              AND segment_key = $2
+              AND score_version = $3
+            LIMIT 1
+            "#,
+        )
+        .bind(proxy_wallet)
+        .bind(segment_key)
+        .bind(score_version)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to fetch wallet segment performance")?;
+        Ok(row.map(Into::into))
+    }
+
+    pub async fn refresh_wallet_segment_v2_percentiles(&self) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            WITH ranked AS (
+              SELECT
+                proxy_wallet,
+                segment_key,
+                score_version,
+                cume_dist() OVER (
+                  PARTITION BY segment_key, score_version
+                  ORDER BY score ASC, realized_pnl_usd ASC, proxy_wallet ASC
+                ) AS segment_percentile,
+                row_number() OVER (
+                  PARTITION BY segment_key, score_version
+                  ORDER BY score DESC, realized_pnl_usd DESC, proxy_wallet ASC
+                ) AS segment_rank,
+                count(*) OVER (PARTITION BY segment_key, score_version) AS segment_wallet_count
+              FROM polymarket.wallet_segment_performance
+              WHERE score_version = $1
+            )
+            UPDATE polymarket.wallet_segment_performance wsp
+            SET metadata = COALESCE(wsp.metadata, '{}'::jsonb)
+                || jsonb_build_object(
+                  'segment_percentile', round(r.segment_percentile::numeric, 6)::text,
+                  'segment_rank', r.segment_rank,
+                  'segment_wallet_count', r.segment_wallet_count
+                ),
+                updated_at = now()
+            FROM ranked r
+            WHERE wsp.proxy_wallet = r.proxy_wallet
+              AND wsp.segment_key = r.segment_key
+              AND wsp.score_version = r.score_version
+            "#,
+        )
+        .bind(MRS_SEGMENT_V2_SCORE_VERSION)
+        .execute(&self.pool)
+        .await
+        .context("failed to refresh wallet segment v2 percentiles")?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn wallet_segment_summary(&self, limit: i64) -> Result<serde_json::Value> {
+        self.wallet_segment_summary_by_version(MRS_SEGMENT_V2_SCORE_VERSION, limit)
+            .await
+    }
+
+    pub async fn wallet_segment_summary_by_version(
+        &self,
+        score_version: &str,
+        limit: i64,
+    ) -> Result<serde_json::Value> {
+        let value = sqlx::query_scalar::<_, serde_json::Value>(
+            r#"
+            WITH segment_status AS (
+              SELECT
+                count(*)::integer AS scored_rows,
+                count(DISTINCT proxy_wallet)::integer AS wallets_scored,
+                count(DISTINCT segment_key)::integer AS segments_scored,
+                max(updated_at) AS last_updated_at
+              FROM polymarket.wallet_segment_performance
+              WHERE score_version = $1
+            ),
+            taxonomy_status AS (
+              SELECT
+                count(*) FILTER (WHERE taxonomy_version = $3)::integer AS labeled_trades,
+                count(DISTINCT lower(proxy_wallet)) FILTER (WHERE taxonomy_version = $3)::integer AS wallets_with_labeled_trades,
+                count(DISTINCT taxonomy_segment) FILTER (
+                  WHERE taxonomy_version = $3
+                    AND taxonomy_segment IS NOT NULL
+                    AND taxonomy_segment <> ''
+                )::integer AS taxonomy_segments
+              FROM polymarket.wallet_trades
+            ),
+            by_segment AS (
+              SELECT
+                segment_key,
+                count(*)::integer AS wallets_scored,
+                count(*) FILTER (WHERE closed_positions > 0)::integer AS wallets_with_closed_positions,
+                COALESCE(avg(score), 0) AS avg_score,
+                COALESCE(avg(win_rate), 0) AS avg_win_rate,
+                COALESCE(avg(roi), 0) AS avg_roi,
+                COALESCE(sum(observed_trade_count), 0)::integer AS observed_trade_count,
+                COALESCE(sum(observed_volume_usd), 0) AS observed_volume_usd
+              FROM polymarket.wallet_segment_performance
+              WHERE score_version = $1
+              GROUP BY segment_key
+            ),
+            top_wallets AS (
+              SELECT
+                proxy_wallet,
+                segment_key,
+                score,
+                confidence,
+                closed_positions,
+                win_rate,
+                roi,
+                realized_pnl_usd,
+                observed_trade_count,
+                updated_at
+              FROM polymarket.wallet_segment_performance
+              WHERE score_version = $1
+              ORDER BY score DESC, realized_pnl_usd DESC, proxy_wallet
+              LIMIT $2
+            )
+            SELECT jsonb_build_object(
+              'score_version', $1,
+              'taxonomy_version', $3,
+              'status', to_jsonb(segment_status),
+              'taxonomy_status', to_jsonb(taxonomy_status),
+              'segments', COALESCE((SELECT jsonb_agg(to_jsonb(by_segment) ORDER BY segment_key) FROM by_segment), '[]'::jsonb),
+              'top_wallets', COALESCE((SELECT jsonb_agg(to_jsonb(top_wallets) ORDER BY score DESC, realized_pnl_usd DESC) FROM top_wallets), '[]'::jsonb),
+              'updated_at', now()
+            )
+            FROM segment_status
+            CROSS JOIN taxonomy_status
+            "#,
+        )
+        .bind(score_version)
+        .bind(limit.max(1))
+        .bind(GAMMA_TAXONOMY_VERSION)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to fetch wallet segment summary")?;
+        Ok(value)
+    }
+
+    pub async fn wallet_segment_status(
+        &self,
+        score_version: &str,
+        limit: i64,
+    ) -> Result<serde_json::Value> {
+        self.wallet_segment_summary_by_version(score_version, limit)
+            .await
     }
 
     pub async fn upsert_wallet_score(&self, score: &WalletScore) -> Result<()> {
@@ -4913,6 +6266,17 @@ fn merge_json(mut left: serde_json::Value, right: serde_json::Value) -> serde_js
     left
 }
 
+fn closed_positions_from_raw_payload(
+    raw_payload: &serde_json::Value,
+) -> Result<Vec<DataApiClosedPosition>> {
+    if raw_payload.is_array() {
+        serde_json::from_value(raw_payload.clone())
+            .context("failed to deserialize wallet performance closed-position payload")
+    } else {
+        Ok(Vec::new())
+    }
+}
+
 #[derive(sqlx::FromRow)]
 struct BackfillJobRow {
     job_id: Uuid,
@@ -4977,6 +6341,99 @@ struct WhaleTradeRow {
     event_slug: Option<String>,
     transaction_hash: Option<String>,
     raw_payload: serde_json::Value,
+}
+
+#[derive(sqlx::FromRow)]
+struct WalletTradeGammaSegmentRow {
+    proxy_wallet: String,
+    taxonomy_segment: String,
+    taxonomy_source: String,
+    taxonomy_confidence: Decimal,
+    cash_value: Decimal,
+    timestamp_utc: DateTime<Utc>,
+    trade_id: Uuid,
+    taxonomy_metadata: serde_json::Value,
+}
+
+#[derive(sqlx::FromRow)]
+struct GammaSegmentLookupRow {
+    lookup_slug: String,
+    event_slug: Option<String>,
+    market_slug: Option<String>,
+    taxonomy_segment: String,
+    taxonomy_confidence: Decimal,
+}
+
+#[derive(sqlx::FromRow)]
+struct GammaMarketMetadataRow {
+    cache_key: String,
+    lookup_type: String,
+    lookup_slug: String,
+    event_slug: Option<String>,
+    market_slug: Option<String>,
+    gamma_event_id: Option<String>,
+    gamma_market_id: Option<String>,
+    category: Option<String>,
+    series_slug: Option<String>,
+    tag_slugs: Vec<String>,
+    sport_key: Option<String>,
+    taxonomy_segment: Option<String>,
+    taxonomy_source: String,
+    taxonomy_confidence: Decimal,
+    taxonomy_version: String,
+    raw_payload: serde_json::Value,
+    fetched_at: DateTime<Utc>,
+}
+
+impl From<GammaMarketMetadataRow> for GammaMarketMetadata {
+    fn from(row: GammaMarketMetadataRow) -> Self {
+        Self {
+            cache_key: row.cache_key,
+            lookup_type: row.lookup_type,
+            lookup_slug: row.lookup_slug,
+            event_slug: row.event_slug,
+            market_slug: row.market_slug,
+            gamma_event_id: row.gamma_event_id,
+            gamma_market_id: row.gamma_market_id,
+            category: row.category,
+            series_slug: row.series_slug,
+            tag_slugs: row.tag_slugs,
+            sport_key: row.sport_key,
+            taxonomy_segment: row.taxonomy_segment,
+            taxonomy_source: row.taxonomy_source,
+            taxonomy_confidence: row.taxonomy_confidence,
+            taxonomy_version: row.taxonomy_version,
+            raw_payload: row.raw_payload,
+            fetched_at: row.fetched_at,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct WalletTradeTaxonomyCandidateRow {
+    trade_id: Uuid,
+    title: Option<String>,
+    slug: Option<String>,
+    event_slug: Option<String>,
+    market_id: Option<String>,
+    condition_id: Option<String>,
+    asset: String,
+    raw_payload: serde_json::Value,
+}
+
+impl From<WalletTradeTaxonomyCandidateRow> for WalletTradeTaxonomyCandidate {
+    fn from(row: WalletTradeTaxonomyCandidateRow) -> Self {
+        Self {
+            trade_id: row.trade_id,
+            title: row.title,
+            slug: row.slug,
+            event_slug: row.event_slug,
+            market_id: row.market_id,
+            condition_id: row.condition_id,
+            asset: row.asset,
+            raw_payload: row.raw_payload,
+        }
+    }
 }
 
 impl From<WhaleTradeRow> for WhaleTrade {
@@ -5104,6 +6561,124 @@ impl From<WalletPerformanceRow> for WalletPerformance {
 }
 
 #[derive(sqlx::FromRow)]
+struct WalletSegmentPerformanceRow {
+    proxy_wallet: String,
+    segment_key: String,
+    score_version: String,
+    classifier_version: String,
+    score: Decimal,
+    confidence: Decimal,
+    closed_positions: i32,
+    winning_positions: i32,
+    losing_positions: i32,
+    win_rate: Decimal,
+    realized_pnl_usd: Decimal,
+    total_bought_usd: Decimal,
+    roi: Decimal,
+    observed_trade_count: i32,
+    observed_volume_usd: Decimal,
+    sample_start: Option<DateTime<Utc>>,
+    sample_end: Option<DateTime<Utc>>,
+    metadata: serde_json::Value,
+}
+
+#[derive(sqlx::FromRow)]
+struct GammaWalletSegmentPerformanceInputRow {
+    proxy_wallet: String,
+    segment_key: String,
+    observed_trade_count: i32,
+    observed_volume_usd: Decimal,
+    buy_volume_usd: Decimal,
+    sell_volume_usd: Decimal,
+    observed_market_count: i32,
+    avg_taxonomy_confidence: Decimal,
+    sample_start: Option<DateTime<Utc>>,
+    sample_end: Option<DateTime<Utc>>,
+    taxonomy_metadata: serde_json::Value,
+}
+
+impl GammaWalletSegmentPerformanceInputRow {
+    fn into_wallet_segment_performance(self) -> WalletSegmentPerformance {
+        let taxonomy_confidence = self
+            .avg_taxonomy_confidence
+            .max(Decimal::ZERO)
+            .min(Decimal::ONE);
+        let taxonomy_segment = self.segment_key;
+        let classification = classify_gamma_taxonomy_segment(
+            &taxonomy_segment,
+            taxonomy_confidence,
+            self.taxonomy_metadata.clone(),
+        );
+        let segment_key = classification
+            .as_ref()
+            .map(|classification| classification.segment_key.clone())
+            .or_else(|| normalize_gamma_segment_key(&taxonomy_segment))
+            .unwrap_or_else(|| taxonomy_segment.trim().to_ascii_lowercase());
+        let input = WalletSegmentPerformanceInput {
+            proxy_wallet: self.proxy_wallet,
+            segment_key,
+            classifier_version: GAMMA_SEGMENT_CLASSIFIER_VERSION.to_string(),
+            closed_positions: 0,
+            winning_positions: 0,
+            realized_pnl_usd: Decimal::ZERO,
+            total_bought_usd: self.buy_volume_usd,
+            observed_trade_count: self.observed_trade_count,
+            observed_volume_usd: self.observed_volume_usd,
+            sample_start: self.sample_start,
+            sample_end: self.sample_end,
+        };
+        let mut performance = score_wallet_segment(input).into_wallet_segment_performance();
+        performance.score_version = MRS_SEGMENT_V2_SCORE_VERSION.to_string();
+        performance.confidence = ((performance.confidence * dec!(0.70))
+            + (taxonomy_confidence * dec!(0.30)))
+        .min(Decimal::ONE)
+        .round_dp(4);
+        performance.metadata = merge_json(
+            performance.metadata,
+            serde_json::json!({
+                "source": "wallet_trades_gamma_taxonomy",
+                "score_basis": MRS_SEGMENT_V2_SCORE_VERSION,
+                "score_version": MRS_SEGMENT_V2_SCORE_VERSION,
+                "classifier_version": GAMMA_SEGMENT_CLASSIFIER_VERSION,
+                "raw_taxonomy_segment": taxonomy_segment,
+                "taxonomy_confidence": taxonomy_confidence,
+                "observed_market_count": self.observed_market_count,
+                "buy_volume_usd": self.buy_volume_usd,
+                "sell_volume_usd": self.sell_volume_usd,
+                "closed_positions_basis": "not_inferred_from_wallet_trades",
+                "taxonomy": self.taxonomy_metadata
+            }),
+        );
+        performance
+    }
+}
+
+impl From<WalletSegmentPerformanceRow> for WalletSegmentPerformance {
+    fn from(row: WalletSegmentPerformanceRow) -> Self {
+        Self {
+            proxy_wallet: row.proxy_wallet,
+            segment_key: row.segment_key,
+            score_version: row.score_version,
+            classifier_version: row.classifier_version,
+            score: row.score,
+            confidence: row.confidence,
+            closed_positions: row.closed_positions,
+            winning_positions: row.winning_positions,
+            losing_positions: row.losing_positions,
+            win_rate: row.win_rate,
+            realized_pnl_usd: row.realized_pnl_usd,
+            total_bought_usd: row.total_bought_usd,
+            roi: row.roi,
+            observed_trade_count: row.observed_trade_count,
+            observed_volume_usd: row.observed_volume_usd,
+            sample_start: row.sample_start,
+            sample_end: row.sample_end,
+            metadata: row.metadata,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
 struct WhalePollCheckpointRow {
     checkpoint_name: String,
     last_polled_at: Option<DateTime<Utc>>,
@@ -5191,6 +6766,32 @@ fn push_position_mismatch(
         delta_size,
         mismatch_type: mismatch_type.to_string(),
     });
+}
+
+fn gamma_segment_for_closed_position(
+    position: &DataApiClosedPosition,
+    lookup: &HashMap<String, String>,
+) -> Option<String> {
+    [
+        position.slug.as_deref(),
+        position.event_slug.as_deref(),
+        position.condition_id.as_deref(),
+        position.asset.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|key| {
+        let key = key.to_ascii_lowercase();
+        lookup
+            .get(&key)
+            .or_else(|| lookup.get(&format!("event:{key}")))
+            .or_else(|| lookup.get(&format!("market:{key}")))
+            .cloned()
+    })
+}
+
+fn timestamp_from_secs(timestamp: i64) -> Option<DateTime<Utc>> {
+    Utc.timestamp_opt(timestamp, 0).single()
 }
 
 #[cfg(test)]

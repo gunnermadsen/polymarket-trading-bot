@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 pub mod account_reconcile;
 pub mod backfill;
 pub mod clob;
@@ -14,7 +16,9 @@ pub mod models;
 pub mod orderbook;
 pub mod risk;
 pub mod scanner;
+pub mod segments;
 pub mod store;
+pub mod taxonomy;
 pub mod trade_pnl;
 pub mod wallet;
 pub mod wallets;

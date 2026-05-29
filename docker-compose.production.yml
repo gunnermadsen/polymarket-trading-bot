@@ -4,9 +4,17 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "5"
 
-x-secret-env-file: &secret-env-file
-  - path: ./.env
-    required: false
+x-app-env-file: &app-env-file
+  path: ./.env
+  required: false
+
+x-postgres-env-file: &postgres-env-file
+  path: ./.env.postgres
+  required: false
+
+x-grafana-env-file: &grafana-env-file
+  path: ./.env.grafana
+  required: false
 
 x-watchtower-labels: &watchtower-labels
   com.centurylinklabs.watchtower.enable: "true"
@@ -19,7 +27,8 @@ services:
     mem_limit: 1280m
     cpus: "0.65"
     logging: *default-logging
-    env_file: *secret-env-file
+    env_file:
+      - *postgres-env-file
     environment:
       POSTGRES_USER: "postgres"
       POSTGRES_DB: "polymarket"
@@ -43,7 +52,9 @@ services:
     cpus: "0.25"
     labels: *watchtower-labels
     logging: *default-logging
-    env_file: *secret-env-file
+    env_file:
+      - *app-env-file
+      - *postgres-env-file
     environment:
       NODE_ENV: "development"
       POSTGRES_HOST: "timescaledb-0"
@@ -67,7 +78,9 @@ services:
     cpus: "0.30"
     labels: *watchtower-labels
     logging: *default-logging
-    env_file: *secret-env-file
+    env_file:
+      - *app-env-file
+      - *postgres-env-file
     environment:
       RUST_LOG: "info"
       POSTGRES_HOST: "timescaledb-0"
@@ -96,6 +109,34 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  grafana:
+    image: grafana/grafana:${GRAFANA_VERSION:-12.4.2}
+    container_name: grafana
+    hostname: grafana
+    mem_limit: 256m
+    cpus: "0.20"
+    labels: *watchtower-labels
+    logging: *default-logging
+    entrypoint:
+      - /usr/local/bin/grafana-provisioning-entrypoint.sh
+    env_file:
+      - *postgres-env-file
+      - *grafana-env-file
+    environment:
+      GF_USERS_DEFAULT_THEME: "dark"
+      GF_DATE_FORMATS_DEFAULT_TIMEZONE: "browser"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./common/configs/grafana/provisioning:/etc/grafana/provisioning-src:ro
+      - ./common/configs/grafana/dashboards:/etc/grafana/dashboards/polymarket-bot:ro
+      - ./common/scripts/grafana-provisioning-entrypoint.sh:/usr/local/bin/grafana-provisioning-entrypoint.sh:ro
+    depends_on:
+      timescaledb-0:
+        condition: service_healthy
+    restart: unless-stopped
+
   watchtower:
     image: containrrr/watchtower:1.7.1
     container_name: watchtower
@@ -119,3 +160,4 @@ services:
 
 volumes:
   timescaledb-0-data:
+  grafana-data:

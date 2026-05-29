@@ -29,11 +29,20 @@ use polymarket_bot::{
         HttpError, MetricsResponse, TradingProcessResetResponse, TradingProcessResponse,
         TradingProcessStatusResponse, TradingProcessesResponse,
     },
-    models::{TradingProcess, WhalePollCheckpoint},
+    models::{
+        EffectiveMarkRefreshProcessConfig, EffectiveProcessExitRulesConfig, TradingProcess,
+        WhalePollCheckpoint,
+    },
     risk::{RiskLimits, RiskState},
     scanner::{scan_markets_for_signal1, ScannerConfig, ScannerCycleReport},
+    segments::score_wallet_segments_from_samples,
     store::Store,
-    trade_pnl::{mark_trade_pnl_now_with_config, refresh_trade_pnl_with_config, TradePnlConfig},
+    taxonomy::{fallback_taxonomy_update, taxonomy_update_from_metadata},
+    trade_pnl::{
+        execute_stop_loss_exits_for_process, execute_take_profit_exits_for_process,
+        mark_trade_pnl_now_with_config, refresh_process_marks_with_config,
+        refresh_trade_pnl_with_config, TradePnlConfig,
+    },
     wallets::{score_closed_position_performance, score_mrs, MrsScoreInput},
 };
 use tokio::time::MissedTickBehavior;
@@ -43,6 +52,8 @@ use tracing_subscriber::EnvFilter;
 const SCAN_CYCLE_TIMEOUT: Duration = Duration::from_secs(8);
 const WHALE_POLL_TIMEOUT: Duration = Duration::from_secs(60);
 const WHALE_POLL_SCHEDULER_INTERVAL: Duration = Duration::from_secs(5);
+const TAKE_PROFIT_EXIT_TIMEOUT: Duration = Duration::from_secs(60);
+const MARK_REFRESH_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Default, Clone)]
 struct RuntimeMetrics {
@@ -100,6 +111,7 @@ impl RuntimeMetrics {
 
 struct RuntimeControl {
     store: Store,
+    gamma: GammaClient,
     data_api: DataApiClient,
     clob: ClobClient,
     venues: ExecutionVenues,
@@ -146,6 +158,8 @@ struct ProcessRuntimeConfig {
     wallets: Vec<String>,
     market_ids: Vec<String>,
     copy_trade: CopyTradeConfig,
+    exit_rules: EffectiveProcessExitRulesConfig,
+    mark_refresh: EffectiveMarkRefreshProcessConfig,
 }
 
 #[derive(Debug, Default)]
@@ -560,6 +574,178 @@ impl ControlApi for RuntimeControl {
             "lookback_days": lookback_days,
             "limit": limit,
             "top_scores": top_scores
+        }))
+    }
+
+    async fn recompute_mrs_segment_scores(
+        &self,
+        request: control_http::MrsRecomputeRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        let lookback_days = request.lookback_days.unwrap_or(150).clamp(1, 365);
+        let limit = request.limit.unwrap_or(20_000).clamp(1, 100_000);
+        let since = Utc::now() - chrono::Duration::days(lookback_days);
+        let updated = self
+            .store
+            .recompute_wallet_segment_v2_scores_from_existing(since, limit)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        let summary = self
+            .store
+            .wallet_segment_summary(20)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        Ok(serde_json::json!({
+            "score_version": polymarket_bot::segments::MRS_SEGMENT_V2_SCORE_VERSION,
+            "classifier_version": polymarket_bot::segments::GAMMA_SEGMENT_CLASSIFIER_VERSION,
+            "updated_segments": updated,
+            "lookback_days": lookback_days,
+            "limit": limit,
+            "summary": summary
+        }))
+    }
+
+    async fn mrs_segment_summary(
+        &self,
+        request: control_http::TradePnlListRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        self.store
+            .wallet_segment_summary(request.limit.unwrap_or(20).clamp(1, 100))
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))
+    }
+
+    async fn gamma_taxonomy_status(&self) -> Result<serde_json::Value, HttpError> {
+        self.store
+            .wallet_trade_taxonomy_status()
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))
+    }
+
+    async fn gamma_taxonomy_backfill(
+        &self,
+        request: control_http::GammaTaxonomyBackfillRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        let limit = request.limit.unwrap_or(500).clamp(1, 5_000);
+        let candidates = self
+            .store
+            .fetch_unresolved_wallet_trade_taxonomy_candidates(limit)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        let mut gamma_event_hits = 0usize;
+        let mut gamma_market_hits = 0usize;
+        let mut fallback_hits = 0usize;
+        let mut dry_run_updates = 0usize;
+        let mut updated_trades = 0u64;
+        let mut errors = Vec::new();
+
+        for candidate in &candidates {
+            let mut metadata = None;
+            if let Some(event_slug) = candidate
+                .event_slug
+                .as_deref()
+                .filter(|slug| !slug.is_empty())
+            {
+                metadata = self
+                    .store
+                    .fetch_gamma_market_metadata_by_lookup("event_slug", event_slug)
+                    .await
+                    .map_err(|error| HttpError::internal(error.to_string()))?;
+                if metadata.is_none() {
+                    match self.gamma.fetch_event_taxonomy_by_slug(event_slug).await {
+                        Ok(Some(fetched)) => {
+                            if !request.dry_run {
+                                self.store
+                                    .upsert_gamma_market_metadata(&fetched)
+                                    .await
+                                    .map_err(|error| HttpError::internal(error.to_string()))?;
+                            }
+                            metadata = Some(fetched);
+                        }
+                        Ok(None) => {}
+                        Err(error) => errors.push(serde_json::json!({
+                            "trade_id": candidate.trade_id,
+                            "lookup": "event_slug",
+                            "slug": event_slug,
+                            "error": error.to_string()
+                        })),
+                    }
+                }
+                if metadata.is_some() {
+                    gamma_event_hits += 1;
+                }
+            }
+
+            if metadata.is_none() {
+                if let Some(slug) = candidate.slug.as_deref().filter(|slug| !slug.is_empty()) {
+                    metadata = self
+                        .store
+                        .fetch_gamma_market_metadata_by_lookup("market_slug", slug)
+                        .await
+                        .map_err(|error| HttpError::internal(error.to_string()))?;
+                    if metadata.is_none() {
+                        match self.gamma.fetch_market_taxonomy_by_slug(slug).await {
+                            Ok(Some(fetched)) => {
+                                if !request.dry_run {
+                                    self.store
+                                        .upsert_gamma_market_metadata(&fetched)
+                                        .await
+                                        .map_err(|error| HttpError::internal(error.to_string()))?;
+                                }
+                                metadata = Some(fetched);
+                            }
+                            Ok(None) => {}
+                            Err(error) => errors.push(serde_json::json!({
+                                "trade_id": candidate.trade_id,
+                                "lookup": "market_slug",
+                                "slug": slug,
+                                "error": error.to_string()
+                            })),
+                        }
+                    }
+                    if metadata.is_some() {
+                        gamma_market_hits += 1;
+                    }
+                }
+            }
+
+            let update = metadata
+                .as_ref()
+                .and_then(|metadata| taxonomy_update_from_metadata(candidate, metadata))
+                .or_else(|| {
+                    request
+                        .fallback_keywords
+                        .then(|| fallback_taxonomy_update(candidate))
+                });
+
+            if let Some(update) = update {
+                if update.taxonomy_source == "keyword_fallback" {
+                    fallback_hits += 1;
+                }
+                if request.dry_run {
+                    dry_run_updates += 1;
+                } else {
+                    updated_trades += self
+                        .store
+                        .update_wallet_trade_taxonomy(&update)
+                        .await
+                        .map_err(|error| HttpError::internal(error.to_string()))?;
+                }
+            }
+        }
+
+        let error_count = errors.len();
+        Ok(serde_json::json!({
+            "taxonomy_version": polymarket_bot::taxonomy::GAMMA_TAXONOMY_VERSION,
+            "dry_run": request.dry_run,
+            "fallback_keywords": request.fallback_keywords,
+            "candidates": candidates.len(),
+            "gamma_event_hits": gamma_event_hits,
+            "gamma_market_hits": gamma_market_hits,
+            "fallback_hits": fallback_hits,
+            "dry_run_updates": dry_run_updates,
+            "updated_trades": updated_trades,
+            "errors": errors,
+            "error_count": error_count
         }))
     }
 
@@ -987,6 +1173,7 @@ async fn main() -> Result<()> {
     if config.http.enabled {
         let control: control_http::SharedControlApi = Arc::new(RuntimeControl {
             store: store.clone(),
+            gamma: gamma.clone(),
             data_api: data_api.clone(),
             clob: clob.clone(),
             venues: venues.clone(),
@@ -1010,6 +1197,17 @@ async fn main() -> Result<()> {
             }
         });
     }
+    tokio::spawn(run_take_profit_exit_scheduler(
+        store.clone(),
+        clob.clone(),
+        venues.clone(),
+        trade_pnl_config.clone(),
+    ));
+    tokio::spawn(run_mark_refresh_scheduler(
+        store.clone(),
+        clob.clone(),
+        trade_pnl_config.clone(),
+    ));
     let mut scan_interval = tokio::time::interval(config.scan_interval);
     scan_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut health_interval = tokio::time::interval(config.health_interval);
@@ -1296,6 +1494,337 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+async fn run_take_profit_exit_scheduler(
+    store: Store,
+    clob: ClobClient,
+    venues: ExecutionVenues,
+    trade_pnl_config: TradePnlConfig,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut last_take_profit_check_by_process: HashMap<uuid::Uuid, chrono::DateTime<Utc>> =
+        HashMap::new();
+
+    loop {
+        interval.tick().await;
+        let processes = match store.list_trading_processes(100).await {
+            Ok(processes) => processes,
+            Err(error) => {
+                warn!(error = %error, "failed to list trading processes for take-profit exits");
+                continue;
+            }
+        };
+
+        for process in processes {
+            if process.process_type != "copy_trade"
+                || !process.enabled
+                || process.status != "running"
+            {
+                continue;
+            }
+            let runtime_config = match runtime_config_from_process(&process) {
+                Ok(config) => config,
+                Err(error) => {
+                    warn!(error = %error, process_id = %process.process_id, "invalid trading process config for take-profit exits");
+                    continue;
+                }
+            };
+            let take_profit = &runtime_config.exit_rules.take_profit;
+            let stop_loss = &runtime_config.exit_rules.stop_loss;
+            if !take_profit.take_profit_enabled && !stop_loss.stop_loss_enabled {
+                continue;
+            }
+
+            let now = Utc::now();
+            let poll_interval_secs = [
+                take_profit
+                    .take_profit_enabled
+                    .then_some(take_profit.poll_interval_secs.max(1)),
+                stop_loss
+                    .stop_loss_enabled
+                    .then_some(stop_loss.poll_interval_secs.max(1)),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(10);
+            if last_take_profit_check_by_process
+                .get(&process.process_id)
+                .map(|last_checked_at| (now - *last_checked_at).num_seconds() < poll_interval_secs)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            last_take_profit_check_by_process.insert(process.process_id, now);
+
+            let venue = match venues.for_mode(runtime_config.execution_mode) {
+                Ok(venue) => venue,
+                Err(error) => {
+                    warn!(error = %error, process_id = %process.process_id, "risk-control exit venue is not available");
+                    continue;
+                }
+            };
+            let checkpoint_name = format!("risk_control:{}", process.process_id);
+            let execution = tokio::time::timeout(TAKE_PROFIT_EXIT_TIMEOUT, async {
+                let take_profit_report = execute_take_profit_exits_for_process(
+                    &store,
+                    Some(venue.as_ref()),
+                    Some(&clob),
+                    process.process_id,
+                    take_profit,
+                    &trade_pnl_config,
+                )
+                .await?;
+                let stop_loss_report = execute_stop_loss_exits_for_process(
+                    &store,
+                    Some(venue.as_ref()),
+                    Some(&clob),
+                    process.process_id,
+                    stop_loss,
+                    &trade_pnl_config,
+                )
+                .await?;
+                Ok::<_, anyhow::Error>((take_profit_report, stop_loss_report))
+            })
+            .await;
+
+            match execution {
+                Ok(Ok((take_profit_report, stop_loss_report))) => {
+                    if take_profit_report.exits_applied > 0 {
+                        info!(
+                            process_id = %process.process_id,
+                            exits_applied = take_profit_report.exits_applied,
+                            candidates_evaluated = take_profit_report.candidates_evaluated,
+                            "take-profit exits applied"
+                        );
+                    }
+                    if stop_loss_report.exits_applied > 0 {
+                        info!(
+                            process_id = %process.process_id,
+                            exits_applied = stop_loss_report.exits_applied,
+                            candidates_evaluated = stop_loss_report.candidates_evaluated,
+                            "stop-loss exits applied"
+                        );
+                    }
+                    if let Err(error) = store
+                        .upsert_whale_poll_checkpoint(&WhalePollCheckpoint {
+                            checkpoint_name,
+                            last_polled_at: Some(Utc::now()),
+                            next_cursor: None,
+                            last_trade_timestamp_utc: None,
+                            last_trade_id: None,
+                            pages_seen: 0,
+                            trades_seen: (take_profit_report.candidates_evaluated
+                                + stop_loss_report.candidates_evaluated)
+                                as i64,
+                            state: serde_json::json!({
+                                "status": "ok",
+                                "take_profit_enabled": take_profit.take_profit_enabled,
+                                "take_profit_roi": take_profit.take_profit_roi,
+                                "stop_loss_enabled": stop_loss.stop_loss_enabled,
+                                "stop_loss_roi": stop_loss.stop_loss_roi,
+                                "poll_interval_secs": poll_interval_secs,
+                                "take_profit_report": take_profit_report,
+                                "stop_loss_report": stop_loss_report
+                            }),
+                        })
+                        .await
+                    {
+                        warn!(error = %error, process_id = %process.process_id, "failed to record risk-control checkpoint");
+                    }
+                }
+                Ok(Err(error)) => {
+                    warn!(error = %error, process_id = %process.process_id, "risk-control exit scheduler failed");
+                    if let Err(checkpoint_error) = store
+                        .upsert_whale_poll_checkpoint(&WhalePollCheckpoint {
+                            checkpoint_name,
+                            last_polled_at: Some(Utc::now()),
+                            next_cursor: None,
+                            last_trade_timestamp_utc: None,
+                            last_trade_id: None,
+                            pages_seen: 0,
+                            trades_seen: 0,
+                            state: serde_json::json!({
+                                "status": "error",
+                                "error": error.to_string()
+                            }),
+                        })
+                        .await
+                    {
+                        warn!(error = %checkpoint_error, process_id = %process.process_id, "failed to record risk-control error checkpoint");
+                    }
+                }
+                Err(_) => {
+                    warn!(process_id = %process.process_id, "risk-control exit scheduler timed out");
+                    if let Err(checkpoint_error) = store
+                        .upsert_whale_poll_checkpoint(&WhalePollCheckpoint {
+                            checkpoint_name,
+                            last_polled_at: Some(Utc::now()),
+                            next_cursor: None,
+                            last_trade_timestamp_utc: None,
+                            last_trade_id: None,
+                            pages_seen: 0,
+                            trades_seen: 0,
+                            state: serde_json::json!({
+                                "status": "timeout"
+                            }),
+                        })
+                        .await
+                    {
+                        warn!(error = %checkpoint_error, process_id = %process.process_id, "failed to record risk-control timeout checkpoint");
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn run_mark_refresh_scheduler(
+    store: Store,
+    clob: ClobClient,
+    trade_pnl_config: TradePnlConfig,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut last_mark_refresh_by_process: HashMap<uuid::Uuid, chrono::DateTime<Utc>> =
+        HashMap::new();
+
+    loop {
+        interval.tick().await;
+        let processes = match store.list_trading_processes(100).await {
+            Ok(processes) => processes,
+            Err(error) => {
+                warn!(error = %error, "failed to list trading processes for mark refresh");
+                continue;
+            }
+        };
+
+        for process in processes {
+            if process.process_type != "copy_trade"
+                || !process.enabled
+                || process.status != "running"
+            {
+                continue;
+            }
+            let runtime_config = match runtime_config_from_process(&process) {
+                Ok(config) => config,
+                Err(error) => {
+                    warn!(error = %error, process_id = %process.process_id, "invalid trading process config for mark refresh");
+                    continue;
+                }
+            };
+            let mark_refresh = &runtime_config.mark_refresh;
+            if !mark_refresh.enabled {
+                continue;
+            }
+
+            let now = Utc::now();
+            let poll_interval_secs = mark_refresh.poll_interval_secs.max(1);
+            if last_mark_refresh_by_process
+                .get(&process.process_id)
+                .map(|last_checked_at| (now - *last_checked_at).num_seconds() < poll_interval_secs)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            last_mark_refresh_by_process.insert(process.process_id, now);
+
+            let checkpoint_name = format!("mark_refresh:{}", process.process_id);
+            let execution = tokio::time::timeout(
+                MARK_REFRESH_TIMEOUT,
+                refresh_process_marks_with_config(
+                    &store,
+                    Some(&clob),
+                    process.process_id,
+                    mark_refresh,
+                    &trade_pnl_config,
+                ),
+            )
+            .await;
+
+            match execution {
+                Ok(Ok(report)) => {
+                    if report.mark_orderbook_snapshots_inserted > 0 || report.marks_written > 0 {
+                        info!(
+                            process_id = %process.process_id,
+                            tokens_selected = report.tokens_selected,
+                            snapshots_inserted = report.mark_orderbook_snapshots_inserted,
+                            marks_written = report.marks_written,
+                            refresh_failures = report.mark_orderbook_refresh_failures,
+                            "process marks refreshed"
+                        );
+                    }
+                    if let Err(error) = store
+                        .upsert_whale_poll_checkpoint(&WhalePollCheckpoint {
+                            checkpoint_name,
+                            last_polled_at: Some(Utc::now()),
+                            next_cursor: None,
+                            last_trade_timestamp_utc: None,
+                            last_trade_id: None,
+                            pages_seen: 0,
+                            trades_seen: report.tokens_selected as i64,
+                            state: serde_json::json!({
+                                "status": if report.mark_orderbook_refresh_failures > 0 { "degraded" } else { "ok" },
+                                "enabled": mark_refresh.enabled,
+                                "poll_interval_secs": poll_interval_secs,
+                                "max_mark_age_secs": mark_refresh.max_mark_age_secs,
+                                "batch_size": mark_refresh.batch_size,
+                                "stale_only": mark_refresh.stale_only,
+                                "failure_backoff_secs": mark_refresh.failure_backoff_secs,
+                                "report": report
+                            }),
+                        })
+                        .await
+                    {
+                        warn!(error = %error, process_id = %process.process_id, "failed to record mark refresh checkpoint");
+                    }
+                }
+                Ok(Err(error)) => {
+                    warn!(error = %error, process_id = %process.process_id, "mark refresh scheduler failed");
+                    if let Err(checkpoint_error) = store
+                        .upsert_whale_poll_checkpoint(&WhalePollCheckpoint {
+                            checkpoint_name,
+                            last_polled_at: Some(Utc::now()),
+                            next_cursor: None,
+                            last_trade_timestamp_utc: None,
+                            last_trade_id: None,
+                            pages_seen: 0,
+                            trades_seen: 0,
+                            state: serde_json::json!({
+                                "status": "error",
+                                "error": error.to_string()
+                            }),
+                        })
+                        .await
+                    {
+                        warn!(error = %checkpoint_error, process_id = %process.process_id, "failed to record mark refresh error checkpoint");
+                    }
+                }
+                Err(_) => {
+                    warn!(process_id = %process.process_id, "mark refresh scheduler timed out");
+                    if let Err(checkpoint_error) = store
+                        .upsert_whale_poll_checkpoint(&WhalePollCheckpoint {
+                            checkpoint_name,
+                            last_polled_at: Some(Utc::now()),
+                            next_cursor: None,
+                            last_trade_timestamp_utc: None,
+                            last_trade_id: None,
+                            pages_seen: 0,
+                            trades_seen: 0,
+                            state: serde_json::json!({
+                                "status": "timeout"
+                            }),
+                        })
+                        .await
+                    {
+                        warn!(error = %checkpoint_error, process_id = %process.process_id, "failed to record mark refresh timeout checkpoint");
+                    }
+                }
+            }
+        }
+    }
+}
+
 async fn poll_live_whales_once(
     store: &Store,
     data_api: &DataApiClient,
@@ -1369,6 +1898,13 @@ async fn poll_live_whales_once(
             store.ensure_whale_wallet(&trade).await?;
             if store.upsert_whale_trade(&trade).await? {
                 store.record_wallet_observed_trade(&trade).await?;
+                if let Err(error) = store.apply_cached_taxonomy_to_trade(&trade).await {
+                    warn!(
+                        error = %error,
+                        trade_id = %trade.trade_id,
+                        "failed to apply cached Gamma taxonomy to live wallet trade"
+                    );
+                }
             } else if let Some(existing_trade) = store.fetch_whale_trade_by_identity(&trade).await?
             {
                 trade = existing_trade;
@@ -1457,6 +1993,27 @@ async fn ensure_live_wallet_performance(
             }),
         );
         store.upsert_wallet_score(&mrs_score).await?;
+        let observed_trades = store
+            .fetch_wallet_observed_trades(
+                &trade.proxy_wallet,
+                Utc::now() - chrono::Duration::days(150),
+            )
+            .await?;
+        for mut segment_performance in
+            score_wallet_segments_from_samples(&trade.proxy_wallet, &positions, &observed_trades)
+        {
+            segment_performance.metadata = merge_json(
+                segment_performance.metadata,
+                serde_json::json!({
+                    "source": "live_trade_score_update",
+                    "trigger_trade_id": trade.trade_id,
+                    "trigger_transaction_hash": trade.transaction_hash
+                }),
+            );
+            store
+                .upsert_wallet_segment_performance(&segment_performance)
+                .await?;
+        }
     }
     Ok(())
 }
@@ -1520,6 +2077,8 @@ fn runtime_config_from_process(process: &TradingProcess) -> Result<ProcessRuntim
     let execution = process.config.effective_execution();
     let backfill = process.config.effective_backfill();
     let copy_trade = process.config.effective_copy_trade();
+    let exit_rules = process.config.effective_exit_rules();
+    let mark_refresh = process.config.effective_mark_refresh();
     let execution_mode = parse_process_execution_mode(&execution.mode)?;
     Ok(ProcessRuntimeConfig {
         process_id: process.process_id,
@@ -1558,8 +2117,49 @@ fn runtime_config_from_process(process: &TradingProcess) -> Result<ProcessRuntim
             mrs_enforce: copy_trade.mrs_enforce && execution_mode == ExecutionMode::Sim,
             min_mrs_score: copy_trade.min_mrs_score,
             mrs_percentile_floor: copy_trade.mrs_percentile_floor,
+            mrs_score_version: copy_trade.mrs_score_version,
+            segment_scoring_enabled: copy_trade.segment_scoring_enabled,
+            segment_scoring_mode: effective_segment_scoring_mode(
+                &copy_trade.segment_scoring_mode,
+                execution_mode,
+            ),
+            segment_score_version: copy_trade.segment_score_version,
+            segment_classifier_version: copy_trade.segment_classifier_version,
+            min_segment_score: copy_trade.min_segment_score,
+            segment_mrs_percentile_floor: copy_trade.segment_mrs_percentile_floor,
+            min_segment_confidence: copy_trade.min_segment_confidence,
+            min_segment_closed_positions: copy_trade.min_segment_closed_positions,
+            min_segment_win_rate: copy_trade.min_segment_win_rate,
+            reject_negative_segment_roi_sample_size: copy_trade
+                .reject_negative_segment_roi_sample_size,
+            hard_reject_segment_win_rate_below: copy_trade.hard_reject_segment_win_rate_below,
+            hard_reject_segment_sample_size: copy_trade.hard_reject_segment_sample_size,
+            unknown_segment_policy: copy_trade.unknown_segment_policy,
+            segment_allowlist: copy_trade.segment_allowlist,
+            entry_safety: polymarket_bot::copytrade::CopyTradeEntrySafetyConfig {
+                enabled: copy_trade.entry_safety.enabled,
+                min_time_to_expiry_secs: copy_trade.entry_safety.min_time_to_expiry_secs,
+                require_two_sided_book: copy_trade.entry_safety.require_two_sided_book,
+                max_spread_bps: copy_trade.entry_safety.max_spread_bps,
+                require_exit_depth: copy_trade.entry_safety.require_exit_depth,
+                exit_depth_size_fraction: copy_trade.entry_safety.exit_depth_size_fraction,
+                exit_depth_slippage_bps: copy_trade.entry_safety.exit_depth_slippage_bps,
+                min_entry_price: copy_trade.entry_safety.min_entry_price,
+                max_entry_price: copy_trade.entry_safety.max_entry_price,
+            },
         },
+        exit_rules,
+        mark_refresh,
     })
+}
+
+fn effective_segment_scoring_mode(configured: &str, execution_mode: ExecutionMode) -> String {
+    match (configured, execution_mode) {
+        ("sim_enforce", ExecutionMode::Sim) => "sim_enforce".to_string(),
+        ("live_enforce", ExecutionMode::Live) => "live_enforce".to_string(),
+        ("off", _) => "off".to_string(),
+        _ => "shadow".to_string(),
+    }
 }
 
 fn parse_process_execution_mode(mode: &str) -> Result<ExecutionMode> {

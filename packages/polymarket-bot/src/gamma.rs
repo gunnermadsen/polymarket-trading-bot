@@ -8,8 +8,9 @@ use rust_decimal_macros::dec;
 use serde::Deserialize;
 
 use crate::{
-    models::{Market, OutcomeToken, TokenSide},
+    models::{GammaMarketMetadata, Market, OutcomeToken, TokenSide},
     risk::normalize_underlying_key,
+    taxonomy::{metadata_from_gamma_event, metadata_from_gamma_market},
 };
 
 #[derive(Debug, Clone)]
@@ -100,6 +101,66 @@ impl GammaClient {
             .context("failed to decode Gamma events")?;
 
         Ok(markets_from_gamma_events(events))
+    }
+
+    pub async fn fetch_event_taxonomy_by_slug(
+        &self,
+        event_slug: &str,
+    ) -> Result<Option<GammaMarketMetadata>> {
+        let slug = event_slug.trim();
+        if slug.is_empty() {
+            return Ok(None);
+        }
+        let mut url = reqwest::Url::parse(&format!("{}/events", self.base_url))
+            .context("failed to build Gamma events URL")?;
+        url.query_pairs_mut()
+            .append_pair("slug", slug)
+            .append_pair("limit", "1");
+        let events: Vec<serde_json::Value> = self
+            .http
+            .get(url.clone())
+            .send()
+            .await
+            .with_context(|| format!("failed to request Gamma event taxonomy from {url}"))?
+            .error_for_status()
+            .context("Gamma event taxonomy response was not successful")?
+            .json()
+            .await
+            .context("failed to decode Gamma event taxonomy")?;
+        Ok(events
+            .into_iter()
+            .next()
+            .and_then(|event| metadata_from_gamma_event(slug, &event)))
+    }
+
+    pub async fn fetch_market_taxonomy_by_slug(
+        &self,
+        market_slug: &str,
+    ) -> Result<Option<GammaMarketMetadata>> {
+        let slug = market_slug.trim();
+        if slug.is_empty() {
+            return Ok(None);
+        }
+        let mut url = reqwest::Url::parse(&format!("{}/markets", self.base_url))
+            .context("failed to build Gamma markets URL")?;
+        url.query_pairs_mut()
+            .append_pair("slug", slug)
+            .append_pair("limit", "1");
+        let markets: Vec<serde_json::Value> = self
+            .http
+            .get(url.clone())
+            .send()
+            .await
+            .with_context(|| format!("failed to request Gamma market taxonomy from {url}"))?
+            .error_for_status()
+            .context("Gamma market taxonomy response was not successful")?
+            .json()
+            .await
+            .context("failed to decode Gamma market taxonomy")?;
+        Ok(markets
+            .into_iter()
+            .next()
+            .and_then(|market| metadata_from_gamma_market(slug, &market)))
     }
 }
 

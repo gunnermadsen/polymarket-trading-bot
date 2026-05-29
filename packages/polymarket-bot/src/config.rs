@@ -188,9 +188,9 @@ impl AppConfig {
             postgres: PostgresConfig {
                 host: env_or("POSTGRES_HOST", "localhost"),
                 port: parse_u16("POSTGRES_PORT", 5432),
-                database: env_or("POSTGRES_DB", "capitonic_timescale"),
+                database: env_or("POSTGRES_DB", "polymarket"),
                 user: env_or("POSTGRES_USER", "postgres"),
-                password: env_or("POSTGRES_PASSWORD", "postgres"),
+                password: required_env("POSTGRES_PASSWORD")?,
                 ssl_mode: env_or("POSTGRES_SSL_MODE", "disable"),
                 ssl_root_cert: first_non_empty_env(&["POSTGRES_SSL_CA_FILE", "PGSSLROOTCERT"]),
             },
@@ -369,6 +369,13 @@ fn env_or(key: &str, default: &str) -> String {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| default.to_string())
+}
+
+fn required_env(key: &str) -> Result<String> {
+    match env::var(key).ok().filter(|value| !value.trim().is_empty()) {
+        Some(value) => Ok(value),
+        None => bail!("{key} is required"),
+    }
 }
 
 fn first_non_empty_env(keys: &[&str]) -> Option<String> {
