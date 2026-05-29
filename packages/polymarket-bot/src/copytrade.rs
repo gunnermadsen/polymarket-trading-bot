@@ -40,6 +40,7 @@ pub struct CopyTradeConfig {
     pub copy_size_fraction: Decimal,
     pub max_follow_lag_secs: i64,
     pub max_price_slippage_bps: Decimal,
+    pub entry_pricing_mode: String,
     pub min_book_depth_usd: Decimal,
     pub backtest_horizon_secs: i64,
     pub taker_fee_rate: Decimal,
@@ -82,6 +83,7 @@ impl Default for CopyTradeConfig {
             copy_size_fraction: dec!(0.02),
             max_follow_lag_secs: 300,
             max_price_slippage_bps: dec!(150),
+            entry_pricing_mode: "signal_limit".to_string(),
             min_book_depth_usd: dec!(25),
             backtest_horizon_secs: 3600,
             taker_fee_rate: dec!(0.03),
@@ -179,6 +181,7 @@ impl From<&EffectiveCopyTradeProcessConfig> for CopyTradeConfig {
             copy_size_fraction: config.copy_size_fraction,
             max_follow_lag_secs: config.max_follow_lag_secs,
             max_price_slippage_bps: config.max_price_slippage_bps,
+            entry_pricing_mode: config.entry_pricing_mode.clone(),
             min_book_depth_usd: config.min_book_depth_usd,
             backtest_horizon_secs: config.backtest_horizon_secs,
             taker_fee_rate: config.taker_fee_rate,
@@ -523,6 +526,7 @@ pub fn evaluate_copy_trade_with_segment(
         },
         "lag_secs": lag_secs,
         "slippage_bps": slippage_bps,
+        "entry_pricing_mode": config.entry_pricing_mode.as_str(),
         "available_depth_usd": observed.available_depth_usd,
         "process_id": process_id,
         "config": config,
@@ -1028,7 +1032,7 @@ fn shares_for_notional(notional: Decimal, price: Decimal, side: OrderSide) -> De
     Decimal::ZERO
 }
 
-fn clob_tick_price(price: Decimal, side: OrderSide) -> Decimal {
+pub(crate) fn clob_tick_price(price: Decimal, side: OrderSide) -> Decimal {
     let rounded = match side {
         OrderSide::Buy => price.round_dp_with_strategy(2, RoundingStrategy::ToPositiveInfinity),
         OrderSide::Sell => price.round_dp_with_strategy(2, RoundingStrategy::ToNegativeInfinity),

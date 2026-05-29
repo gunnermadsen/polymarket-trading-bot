@@ -2340,6 +2340,7 @@ fn runtime_config_from_process(process: &TradingProcess) -> Result<ProcessRuntim
             copy_size_fraction: copy_trade.copy_size_fraction,
             max_follow_lag_secs: copy_trade.max_follow_lag_secs,
             max_price_slippage_bps: copy_trade.max_price_slippage_bps,
+            entry_pricing_mode: copy_trade.entry_pricing_mode,
             min_book_depth_usd: copy_trade.min_book_depth_usd,
             backtest_horizon_secs: copy_trade.backtest_horizon_secs,
             taker_fee_rate: copy_trade.taker_fee_rate,

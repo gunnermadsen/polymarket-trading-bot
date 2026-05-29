@@ -11,15 +11,15 @@ use uuid::Uuid;
 use crate::{
     clob::ClobClient,
     copytrade::{
-        evaluate_copy_trade_with_segment, run_copy_trade_backtest, CopyTradeConfig,
-        CopyTradeMrsScore, CopyTradeSegmentScore, CopyTradeWalletPerformance, ObservedMarket,
-        COPY_SCORE_VERSION,
+        clob_tick_price, evaluate_copy_trade_with_segment, run_copy_trade_backtest,
+        CopyTradeConfig, CopyTradeMrsScore, CopyTradeSegmentScore, CopyTradeWalletPerformance,
+        ObservedMarket, COPY_SCORE_VERSION,
     },
     data_api::{ClosedPositionsQuery, DataApiClient, TradesQuery},
     execution::{execute_order_plan, ExecutionVenue, OrderPlan, OrderPlanReport},
     models::{
-        BackfillJobStatus, CopyTradeBacktestRun, DataApiClosedPosition, OrderRequest, OrderState,
-        WhaleTrade,
+        BackfillJobStatus, CopyTradeBacktestRun, DataApiClosedPosition, OrderRequest, OrderSide,
+        OrderState, WhaleTrade,
     },
     orderbook::{BookSide, LocalOrderBook},
     segments::{
@@ -751,6 +751,43 @@ mod tests {
     }
 
     #[test]
+    fn marketable_entry_pricing_reprices_buy_within_slippage() {
+        let now = Utc::now();
+        let mut request = safety_order(OrderSide::Buy, dec!(0.50));
+        request.size = dec!(2);
+        let mut book = safety_book(dec!(0.49), dec!(10), dec!(0.505));
+        book.upsert_level(BookSide::Ask, dec!(0.51), dec!(10), now);
+        let mut config = CopyTradeConfig::default();
+        config.entry_pricing_mode = "marketable_limit".to_string();
+        config.max_price_slippage_bps = dec!(250);
+
+        let rejection = apply_entry_pricing(&mut request, &book, &config, now);
+
+        assert!(rejection.is_none());
+        assert_eq!(request.price, dec!(0.51));
+        assert_eq!(request.metadata["entry_pricing"]["decision"], "repriced");
+    }
+
+    #[test]
+    fn marketable_entry_pricing_rejects_buy_outside_slippage() {
+        let now = Utc::now();
+        let mut request = safety_order(OrderSide::Buy, dec!(0.50));
+        request.size = dec!(2);
+        let book = safety_book(dec!(0.49), dec!(10), dec!(0.53));
+        let mut config = CopyTradeConfig::default();
+        config.entry_pricing_mode = "marketable_limit".to_string();
+        config.max_price_slippage_bps = dec!(250);
+
+        let rejection = apply_entry_pricing(&mut request, &book, &config, now).unwrap();
+
+        assert_eq!(
+            rejection["reject_reason"],
+            "entry_pricing_depth_unavailable_within_slippage"
+        );
+        assert_eq!(request.price, dec!(0.50));
+    }
+
+    #[test]
     fn entry_safety_accepts_liquid_two_sided_book() {
         let now = Utc::now();
         let request = safety_order(OrderSide::Buy, dec!(0.51));
@@ -1128,7 +1165,7 @@ pub async fn run_resolved_copy_trade_signal(
     }
     if config.require_entry_markability {
         if let Some(rejection) =
-            ensure_order_plan_markable_at_entry(store, clob, &plan, &config.copy_trade).await?
+            ensure_order_plan_markable_at_entry(store, clob, &mut plan, &config.copy_trade).await?
         {
             summary.rejections += 1;
             store
@@ -1235,7 +1272,7 @@ fn copy_signal_execution_status(execution: &OrderPlanReport) -> (&'static str, s
 async fn ensure_order_plan_markable_at_entry(
     store: &Store,
     clob: Option<&ClobClient>,
-    plan: &OrderPlan,
+    plan: &mut OrderPlan,
     config: &CopyTradeConfig,
 ) -> Result<Option<serde_json::Value>> {
     let Some(clob) = clob else {
@@ -1262,7 +1299,7 @@ async fn ensure_order_plan_markable_at_entry(
         })));
     };
 
-    for request in &plan.orders {
+    for request in &mut plan.orders {
         let fetched = clob.fetch_orderbook(&request.token_id).await;
         let book = match fetched {
             Ok(book) => book,
@@ -1336,8 +1373,29 @@ async fn ensure_order_plan_markable_at_entry(
             } else {
                 None
             };
+        let now = Utc::now();
+        if let Some(rejection) = apply_entry_pricing(request, &book, config, now) {
+            record_entry_mark_failure(
+                store,
+                request.process_id,
+                &request.market_id,
+                &request.token_id,
+                rejection
+                    .get("reject_reason")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("entry_pricing_rejected"),
+                serde_json::json!({
+                    "operation": "copy_trade_entry_pricing",
+                    "client_order_id": request.client_order_id,
+                    "plan_id": plan.plan_id,
+                    "entry_pricing": rejection
+                }),
+            )
+            .await?;
+            return Ok(Some(rejection));
+        }
         if let Some(rejection) =
-            entry_safety_rejection(request, &book, market_end_date, config, Utc::now())
+            entry_safety_rejection(request, &book, market_end_date, config, now)
         {
             record_entry_mark_failure(
                 store,
@@ -1369,6 +1427,169 @@ async fn ensure_order_plan_markable_at_entry(
     }
 
     Ok(None)
+}
+
+fn apply_entry_pricing(
+    request: &mut OrderRequest,
+    book: &LocalOrderBook,
+    config: &CopyTradeConfig,
+    now: DateTime<Utc>,
+) -> Option<serde_json::Value> {
+    if config.entry_pricing_mode != "marketable_limit" {
+        return None;
+    }
+    if request.size <= Decimal::ZERO || request.price <= Decimal::ZERO {
+        return Some(entry_pricing_reject(
+            request,
+            book,
+            config,
+            "entry_pricing_invalid_order_size_or_price",
+            serde_json::json!({}),
+        ));
+    }
+
+    let slippage = config.max_price_slippage_bps.max(Decimal::ZERO) / Decimal::from(10000);
+    let max_age = Duration::seconds(10);
+    let (walk, adjusted_price, allowed_limit) = match request.side {
+        OrderSide::Buy => {
+            let max_allowed_price = request.price * (Decimal::ONE + slippage);
+            let walk = book.depth_walk_buy_limit(request.size, max_allowed_price, max_age, now);
+            let Some(walk) = walk else {
+                return Some(entry_pricing_reject(
+                    request,
+                    book,
+                    config,
+                    "entry_pricing_depth_unavailable_within_slippage",
+                    serde_json::json!({
+                        "entry_pricing": {
+                            "allowed_limit_price": max_allowed_price
+                        }
+                    }),
+                ));
+            };
+            let Some(last_fill) = walk.fills.last() else {
+                return Some(entry_pricing_reject(
+                    request,
+                    book,
+                    config,
+                    "entry_pricing_depth_unavailable_within_slippage",
+                    serde_json::json!({}),
+                ));
+            };
+            let adjusted_price = clob_tick_price(last_fill.price, request.side);
+            if adjusted_price > max_allowed_price {
+                return Some(entry_pricing_reject(
+                    request,
+                    book,
+                    config,
+                    "entry_pricing_tick_exceeds_slippage",
+                    serde_json::json!({
+                        "entry_pricing": {
+                            "allowed_limit_price": max_allowed_price,
+                            "unrounded_limit_price": last_fill.price,
+                            "adjusted_limit_price": adjusted_price
+                        }
+                    }),
+                ));
+            }
+            (walk, adjusted_price, max_allowed_price)
+        }
+        OrderSide::Sell => {
+            let min_allowed_price = request.price * (Decimal::ONE - slippage);
+            let walk = book.depth_walk_sell_limit(request.size, min_allowed_price, max_age, now);
+            let Some(walk) = walk else {
+                return Some(entry_pricing_reject(
+                    request,
+                    book,
+                    config,
+                    "entry_pricing_depth_unavailable_within_slippage",
+                    serde_json::json!({
+                        "entry_pricing": {
+                            "allowed_limit_price": min_allowed_price
+                        }
+                    }),
+                ));
+            };
+            let Some(last_fill) = walk.fills.last() else {
+                return Some(entry_pricing_reject(
+                    request,
+                    book,
+                    config,
+                    "entry_pricing_depth_unavailable_within_slippage",
+                    serde_json::json!({}),
+                ));
+            };
+            let adjusted_price = clob_tick_price(last_fill.price, request.side);
+            if adjusted_price < min_allowed_price {
+                return Some(entry_pricing_reject(
+                    request,
+                    book,
+                    config,
+                    "entry_pricing_tick_exceeds_slippage",
+                    serde_json::json!({
+                        "entry_pricing": {
+                            "allowed_limit_price": min_allowed_price,
+                            "unrounded_limit_price": last_fill.price,
+                            "adjusted_limit_price": adjusted_price
+                        }
+                    }),
+                ));
+            }
+            (walk, adjusted_price, min_allowed_price)
+        }
+    };
+
+    let original_price = request.price;
+    request.price = adjusted_price;
+    request.metadata = merge_order_metadata(
+        request.metadata.clone(),
+        &serde_json::json!({
+            "entry_pricing": {
+                "mode": config.entry_pricing_mode.as_str(),
+                "decision": "repriced",
+                "original_limit_price": original_price,
+                "adjusted_limit_price": adjusted_price,
+                "allowed_limit_price": allowed_limit,
+                "max_price_slippage_bps": config.max_price_slippage_bps,
+                "best_bid": book.best_bid(),
+                "best_ask": book.best_ask(),
+                "depth_walk_total": walk.total,
+                "depth_walk_fillable_size": request.size,
+                "depth_walk_avg_price": if request.size > Decimal::ZERO {
+                    Some(walk.total / request.size)
+                } else {
+                    None
+                }
+            }
+        }),
+    );
+    None
+}
+
+fn entry_pricing_reject(
+    request: &OrderRequest,
+    book: &LocalOrderBook,
+    config: &CopyTradeConfig,
+    reason: &'static str,
+    extra: serde_json::Value,
+) -> serde_json::Value {
+    let mut metadata = serde_json::json!({
+        "status": "rejected",
+        "reject_reason": reason,
+        "entry_pricing": {
+            "mode": config.entry_pricing_mode.as_str(),
+            "decision": "rejected",
+            "reject_reason": reason,
+            "requested_side": request.side,
+            "requested_size": request.size,
+            "original_limit_price": request.price,
+            "max_price_slippage_bps": config.max_price_slippage_bps,
+            "best_bid": book.best_bid(),
+            "best_ask": book.best_ask()
+        }
+    });
+    merge_object(&mut metadata, extra);
+    metadata
 }
 
 fn entry_safety_rejection(

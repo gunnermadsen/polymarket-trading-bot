@@ -788,6 +788,9 @@ impl TradingProcessConfig {
             if let Some(max_price_slippage_bps) = config.max_price_slippage_bps {
                 effective.max_price_slippage_bps = max_price_slippage_bps;
             }
+            if let Some(entry_pricing_mode) = &config.entry_pricing_mode {
+                effective.entry_pricing_mode = entry_pricing_mode.clone();
+            }
             if let Some(min_book_depth_usd) = config.min_book_depth_usd {
                 effective.min_book_depth_usd = min_book_depth_usd;
             }
@@ -1077,6 +1080,7 @@ pub struct EffectiveCopyTradeProcessConfig {
     pub copy_size_fraction: Decimal,
     pub max_follow_lag_secs: i64,
     pub max_price_slippage_bps: Decimal,
+    pub entry_pricing_mode: String,
     pub min_book_depth_usd: Decimal,
     pub backtest_horizon_secs: i64,
     pub taker_fee_rate: Decimal,
@@ -1119,6 +1123,7 @@ impl Default for EffectiveCopyTradeProcessConfig {
             copy_size_fraction: dec!(0.10),
             max_follow_lag_secs: 1800,
             max_price_slippage_bps: dec!(150),
+            entry_pricing_mode: "signal_limit".to_string(),
             min_book_depth_usd: dec!(25),
             backtest_horizon_secs: 3600,
             taker_fee_rate: dec!(0.03),
@@ -1204,6 +1209,8 @@ pub struct CopyTradeProcessConfig {
     pub max_follow_lag_secs: Option<i64>,
     #[serde(default)]
     pub max_price_slippage_bps: Option<Decimal>,
+    #[serde(default)]
+    pub entry_pricing_mode: Option<String>,
     #[serde(default)]
     pub min_book_depth_usd: Option<Decimal>,
     #[serde(default)]
@@ -1575,5 +1582,21 @@ mod tests {
         assert_eq!(effective.entry_safety.exit_depth_slippage_bps, dec!(150));
         assert_eq!(effective.entry_safety.min_entry_price, dec!(0.05));
         assert_eq!(effective.entry_safety.max_entry_price, dec!(0.95));
+    }
+
+    #[test]
+    fn copy_trade_entry_pricing_mode_overrides_default() {
+        let default = TradingProcessConfig::default().effective_copy_trade();
+        assert_eq!(default.entry_pricing_mode, "signal_limit");
+
+        let config: TradingProcessConfig = serde_json::from_value(serde_json::json!({
+            "copy_trade": {
+                "entry_pricing_mode": "marketable_limit"
+            }
+        }))
+        .expect("entry pricing config should deserialize");
+
+        let effective = config.effective_copy_trade();
+        assert_eq!(effective.entry_pricing_mode, "marketable_limit");
     }
 }
