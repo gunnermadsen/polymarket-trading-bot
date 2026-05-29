@@ -432,7 +432,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  COALESCE(SUM(unrealized_pnl) FILTER (WHERE status IN ('open', 'partially_closed')), 0)::double precision AS \"Total Unrealized PnL\"\nFROM polymarket.trade_positions\nWHERE process_id IS NOT NULL;",
+          "rawSql": "SELECT\n  COALESCE(SUM(tp.unrealized_pnl) FILTER (WHERE tp.status IN ('open', 'partially_closed')), 0)::double precision AS \"Total Unrealized PnL\"\nFROM polymarket.trade_positions tp\nJOIN polymarket.trading_processes p\n  ON p.process_id = tp.process_id\nWHERE tp.process_id IS NOT NULL\n  AND p.process_scope IS DISTINCT FROM 'backtest';",
           "refId": "A",
           "sql": {
             "columns": [
@@ -519,7 +519,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  COALESCE(SUM(realized_pnl), 0)::double precision AS \"Total Realized PnL\"\nFROM polymarket.trade_positions\nWHERE process_id IS NOT NULL;",
+          "rawSql": "SELECT\n  COALESCE(SUM(tp.realized_pnl), 0)::double precision AS \"Total Realized PnL\"\nFROM polymarket.trade_positions tp\nJOIN polymarket.trading_processes p\n  ON p.process_id = tp.process_id\nWHERE tp.process_id IS NOT NULL\n  AND p.process_scope IS DISTINCT FROM 'backtest';",
           "refId": "A",
           "sql": {
             "columns": [
@@ -767,6 +767,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 7,
+  "version": 8,
   "weekStart": ""
 }
