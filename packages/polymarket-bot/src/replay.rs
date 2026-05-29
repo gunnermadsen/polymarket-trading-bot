@@ -2,29 +2,20 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::Result;
-use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
-    account_reconcile::{AccountReconcileReport, AccountReconcileRequest},
+    backfill::{run_resolved_copy_trade_signal, CopyTradeRunConfig, ResolvedCopyTradeSignal},
+    clob::ClobClient,
     copytrade::{
-        evaluate_copy_trade_with_segment, CopyTradeConfig, CopyTradeMrsScore,
-        CopyTradeSegmentScore, CopyTradeWalletPerformance, ObservedMarket,
+        CopyTradeConfig, CopyTradeMrsScore, CopyTradeSegmentScore, CopyTradeWalletPerformance,
+        ObservedMarket,
     },
-    execution::{
-        execute_order_plan, ExecutionVenue, LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics,
-        LiveOrderDryRunRequest, LivePoly1271FunderProbeRequest, LivePoly1271FunderProbeResponse,
-        LiveVenueStatus, LiveWalletAddressDiagnostics, OrderPlan, ReconciliationReport,
-    },
-    models::{
-        ConversionRequest, ConversionResult, FillRecord, FillSource, OrderRecord, OrderRequest,
-        OrderState, SignalStatus, TradingProcessConfig, WhaleTrade,
-    },
+    execution::{execute_order_plan, ExecutionVenue, OrderPlan},
+    models::{TradingProcessConfig, WhaleTrade},
     segments::{
         classify_trade_segment, score_wallet_segment, SegmentClassification,
         WalletSegmentPerformanceInput, GAMMA_SEGMENT_CLASSIFIER_VERSION,
@@ -99,6 +90,8 @@ pub struct BacktestReplayProcess {
 
 pub async fn run_backtest_replay(
     store: Store,
+    venue: Arc<dyn ExecutionVenue>,
+    clob: ClobClient,
     job: BacktestReplayJob,
 ) -> Result<BacktestReplaySummary> {
     store
@@ -129,6 +122,17 @@ pub async fn run_backtest_replay(
         ..BacktestReplaySummary::default()
     };
     let mut ledger = PointInTimeScoreLedger::default();
+    let mut open_notional_by_process = HashMap::<Uuid, Decimal>::new();
+    for process in &job.processes {
+        if process.process_config.effective_execution().execute_signals {
+            open_notional_by_process.insert(
+                process.backtest_process_id,
+                store
+                    .process_open_notional(process.backtest_process_id)
+                    .await?,
+            );
+        }
+    }
 
     for trade in trades {
         let classification = classify_for_replay(&store, &trade, &job.processes).await?;
@@ -141,6 +145,7 @@ pub async fn run_backtest_replay(
         for process in &job.processes {
             let mut config = process.config.clone();
             config.mrs_enforce = config.mrs_enforce || config.segment_scoring_enabled;
+            let execution = process.process_config.effective_execution();
             let performance = ledger.wallet_performance(&trade.proxy_wallet);
             let mrs_score = ledger.mrs_score(&trade.proxy_wallet, &config.mrs_score_version);
             let segment_score = ledger.segment_score(
@@ -148,64 +153,44 @@ pub async fn run_backtest_replay(
                 &classification.segment_key,
                 &config.segment_score_version,
             );
-            let decision = evaluate_copy_trade_with_segment(
-                &trade,
-                performance.as_ref(),
-                mrs_score.as_ref(),
-                segment_score.as_ref(),
-                Some(classification.clone()),
-                ObservedMarket {
-                    observed_price: trade.price,
-                    available_depth_usd: trade.cash_value,
-                    observed_at: trade.timestamp_utc,
-                },
-                &config,
-                Some(process.backtest_process_id),
-            );
-
-            store.insert_signal(&decision.signal_candidate).await?;
-            store
-                .insert_copy_trade_signal(&decision.copy_signal)
-                .await?;
-            summary.signals_inserted += 1;
-            if decision.signal_candidate.status == SignalStatus::Detected {
-                summary.signals_detected += 1;
-            } else {
-                summary.rejections += 1;
-            }
-
-            let Some(mut plan) = decision.order_plan else {
-                continue;
-            };
-            for order in &mut plan.orders {
-                order.metadata = merge_json(
-                    order.metadata.clone(),
-                    serde_json::json!({
+            let trade_summary = run_resolved_copy_trade_signal(
+                &store,
+                Some(venue.as_ref()),
+                Some(&clob),
+                ResolvedCopyTradeSignal {
+                    trade: &trade,
+                    performance: performance.as_ref(),
+                    mrs_score: mrs_score.as_ref(),
+                    segment_score: segment_score.as_ref(),
+                    segment_classification: classification.clone(),
+                    observed: ObservedMarket {
+                        observed_price: trade.price,
+                        available_depth_usd: trade.cash_value,
+                        observed_at: trade.timestamp_utc,
+                    },
+                    order_metadata: serde_json::json!({
                         "backtest": true,
                         "backtest_run_id": job.backtest_run_id,
                         "source_process_id": process.source_process_id,
                         "backtest_process_id": process.backtest_process_id,
                         "backtest_fill_timestamp": trade.timestamp_utc
                     }),
-                );
-            }
-            let venue = HistoricalReplayVenue::default();
-            let execution = execute_order_plan(&venue, plan).await?;
-            summary.orders_inserted += execution.orders.len();
-            summary.fills_inserted += execution.fills.len();
-            store.persist_order_plan_report(&execution).await?;
-            let (status, metadata) = copy_signal_execution_status(&execution);
-            if status == "rejected" {
-                summary.rejections += 1;
-            }
-            store
-                .update_copy_trade_signal_status(
-                    decision.copy_signal.signal_id,
-                    decision.copy_signal.timestamp_utc,
-                    status,
-                    metadata,
-                )
-                .await?;
+                },
+                &CopyTradeRunConfig {
+                    process_id: Some(process.backtest_process_id),
+                    copy_trade: config,
+                    execute_signals: execution.execute_signals,
+                    require_entry_markability: true,
+                },
+                false,
+                open_notional_by_process.get_mut(&process.backtest_process_id),
+            )
+            .await?;
+            summary.signals_inserted += trade_summary.signals_inserted;
+            summary.signals_detected += trade_summary.signals_detected;
+            summary.orders_inserted += trade_summary.orders_inserted;
+            summary.fills_inserted += trade_summary.fills_inserted;
+            summary.rejections += trade_summary.rejections;
             summary.positions_created += store.backfill_trade_positions_from_copy_signals().await?;
             summary.whale_exits_applied += store
                 .apply_backtest_whale_led_trade_exits_for_process_until(
@@ -215,7 +200,7 @@ pub async fn run_backtest_replay(
                 .await?;
             let risk_control = execute_replay_risk_control_exits(
                 &store,
-                &venue,
+                venue.as_ref(),
                 process,
                 job.backtest_run_id,
                 trade.timestamp_utc,
@@ -395,40 +380,6 @@ async fn classify_for_replay(
         }
     }
     Ok(classify_trade_segment(trade))
-}
-
-fn copy_signal_execution_status(
-    execution: &crate::execution::OrderPlanReport,
-) -> (&'static str, serde_json::Value) {
-    let has_fill = !execution.fills.is_empty()
-        || execution.orders.iter().any(|order| {
-            matches!(
-                order.state,
-                OrderState::Filled | OrderState::PartiallyFilled
-            )
-        });
-    let all_terminal_rejected = !execution.orders.is_empty()
-        && execution.orders.iter().all(|order| {
-            matches!(
-                order.state,
-                OrderState::Rejected | OrderState::Cancelled | OrderState::Expired
-            )
-        });
-    let status = if has_fill {
-        "filled"
-    } else if all_terminal_rejected {
-        "rejected"
-    } else {
-        "submitted"
-    };
-    (
-        status,
-        serde_json::json!({
-            "orders": execution.orders.len(),
-            "fills": execution.fills.len(),
-            "backtest": true
-        }),
-    )
 }
 
 #[derive(Debug, Default)]
@@ -710,165 +661,6 @@ impl ReplayStats {
             sample_end: None,
         }
     }
-}
-
-#[derive(Debug, Clone, Default)]
-struct HistoricalReplayVenue {
-    state: Arc<Mutex<HistoricalReplayState>>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct HistoricalReplayState {
-    orders: HashMap<String, OrderRecord>,
-    fills_by_order: HashMap<String, Vec<FillRecord>>,
-}
-
-#[async_trait]
-impl ExecutionVenue for HistoricalReplayVenue {
-    async fn submit_order(&self, request: OrderRequest) -> Result<OrderRecord> {
-        let timestamp = replay_timestamp(&request).unwrap_or_else(Utc::now);
-        let order_id = format!("backtest-{}", request.client_order_id);
-        let order = OrderRecord {
-            order_id: order_id.clone(),
-            request: request.clone(),
-            state: if request.size > Decimal::ZERO {
-                OrderState::Filled
-            } else {
-                OrderState::Rejected
-            },
-            created_at: timestamp,
-            updated_at: timestamp,
-        };
-        let fills = if order.state == OrderState::Filled {
-            vec![FillRecord {
-                fill_id: Uuid::new_v5(
-                    &Uuid::NAMESPACE_URL,
-                    format!("polymarket-backtest-fill:{order_id}:0").as_bytes(),
-                ),
-                process_id: request.process_id,
-                order_id: order_id.clone(),
-                token_id: request.token_id.clone(),
-                price: request.price,
-                size: request.size,
-                fee: request.price * request.size * dec!(0.03),
-                source: FillSource::Sim,
-                filled_at: timestamp,
-            }]
-        } else {
-            Vec::new()
-        };
-        let mut state = self.state.lock().await;
-        state.orders.insert(order_id.clone(), order.clone());
-        state.fills_by_order.insert(order_id, fills);
-        Ok(order)
-    }
-
-    async fn cancel_order(&self, order_id: &str) -> Result<OrderRecord> {
-        let mut state = self.state.lock().await;
-        if let Some(order) = state.orders.get_mut(order_id) {
-            order.state = OrderState::Cancelled;
-            return Ok(order.clone());
-        }
-        anyhow::bail!("backtest order not found: {order_id}")
-    }
-
-    async fn cancel_all(&self) -> Result<usize> {
-        Ok(0)
-    }
-
-    async fn get_balances(&self) -> Result<Vec<(String, Decimal)>> {
-        Ok(Vec::new())
-    }
-
-    async fn get_open_orders(&self) -> Result<Vec<OrderRecord>> {
-        Ok(Vec::new())
-    }
-
-    async fn convert_negative_risk(&self, _request: ConversionRequest) -> Result<ConversionResult> {
-        anyhow::bail!("backtest venue does not support conversions")
-    }
-
-    async fn split_ctf(&self, _market_id: &str, _size: Decimal) -> Result<ConversionResult> {
-        anyhow::bail!("backtest venue does not support split_ctf")
-    }
-
-    async fn merge_ctf(&self, _market_id: &str, _size: Decimal) -> Result<ConversionResult> {
-        anyhow::bail!("backtest venue does not support merge_ctf")
-    }
-
-    async fn reconcile(&self) -> Result<ReconciliationReport> {
-        Ok(ReconciliationReport {
-            open_orders: 0,
-            balances_checked: true,
-            mismatches_found: 0,
-            unresolved_count: 0,
-            checked_at: Utc::now(),
-        })
-    }
-
-    async fn fills_for_order(&self, order_id: &str) -> Result<Vec<FillRecord>> {
-        Ok(self
-            .state
-            .lock()
-            .await
-            .fills_by_order
-            .get(order_id)
-            .cloned()
-            .unwrap_or_default())
-    }
-
-    async fn live_status(&self) -> Result<LiveVenueStatus> {
-        anyhow::bail!("backtest venue does not expose live status")
-    }
-
-    async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics> {
-        anyhow::bail!("backtest venue does not expose live diagnostics")
-    }
-
-    async fn live_wallet_address_diagnostics(
-        &self,
-        _candidate_addresses: Vec<String>,
-    ) -> Result<LiveWalletAddressDiagnostics> {
-        anyhow::bail!("backtest venue does not expose live wallet diagnostics")
-    }
-
-    async fn live_order_dry_run(
-        &self,
-        _request: LiveOrderDryRunRequest,
-    ) -> Result<LiveOrderDryRunDiagnostics> {
-        anyhow::bail!("backtest venue does not support live dry runs")
-    }
-
-    async fn live_poly1271_funder_probe(
-        &self,
-        _request: LivePoly1271FunderProbeRequest,
-    ) -> Result<LivePoly1271FunderProbeResponse> {
-        anyhow::bail!("backtest venue does not support live funder probes")
-    }
-
-    async fn live_account_reconcile(
-        &self,
-        _request: AccountReconcileRequest,
-    ) -> Result<AccountReconcileReport> {
-        anyhow::bail!("backtest venue does not support live account reconciliation")
-    }
-
-    async fn set_live_entries_enabled(
-        &self,
-        _enabled: bool,
-        _reason: Option<String>,
-    ) -> Result<LiveVenueStatus> {
-        anyhow::bail!("backtest venue does not support live entries")
-    }
-}
-
-fn replay_timestamp(request: &OrderRequest) -> Option<DateTime<Utc>> {
-    request
-        .metadata
-        .get("backtest_fill_timestamp")
-        .and_then(|value| value.as_str())
-        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-        .map(|value| value.with_timezone(&Utc))
 }
 
 fn merge_json(mut left: serde_json::Value, right: serde_json::Value) -> serde_json::Value {

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -195,7 +195,7 @@ fn allocate_level_fee(fill: FillQuote, total_fee: Decimal, total_notional: Decim
 #[async_trait]
 impl ExecutionVenue for SimVenue {
     async fn submit_order(&self, mut request: OrderRequest) -> Result<OrderRecord> {
-        let now = Utc::now();
+        let now = requested_execution_timestamp(&request).unwrap_or_else(Utc::now);
         let order_id = format!("{}-{}", self.order_prefix, request.client_order_id);
         {
             let state = self.state.lock().await;
@@ -508,6 +508,16 @@ impl ExecutionVenue for SimVenue {
     ) -> Result<LiveVenueStatus> {
         self.live_status().await
     }
+}
+
+fn requested_execution_timestamp(request: &OrderRequest) -> Option<DateTime<Utc>> {
+    request
+        .metadata
+        .get("backtest_fill_timestamp")
+        .or_else(|| request.metadata.get("reference_exit_timestamp"))
+        .and_then(|value| value.as_str())
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
 }
 
 impl Default for SimVenue {

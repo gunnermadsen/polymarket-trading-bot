@@ -23,7 +23,7 @@ use crate::{
     },
     orderbook::{BookSide, LocalOrderBook},
     segments::{
-        classify_trade_segment, score_wallet_segments_from_samples,
+        classify_trade_segment, score_wallet_segments_from_samples, SegmentClassification,
         GAMMA_SEGMENT_CLASSIFIER_VERSION,
     },
     store::{OrderbookSnapshot, Store, TradeMarkSourceFailure},
@@ -116,10 +116,21 @@ pub struct CopyTradeRunConfig {
 pub struct CopyTradeRunSummary {
     pub trades_evaluated: usize,
     pub signals_inserted: usize,
+    pub signals_detected: usize,
     pub orders_inserted: usize,
     pub fills_inserted: usize,
     pub rejections: usize,
     pub dry_run: bool,
+}
+
+pub struct ResolvedCopyTradeSignal<'a> {
+    pub trade: &'a WhaleTrade,
+    pub performance: Option<&'a CopyTradeWalletPerformance>,
+    pub mrs_score: Option<&'a CopyTradeMrsScore>,
+    pub segment_score: Option<&'a CopyTradeSegmentScore>,
+    pub segment_classification: SegmentClassification,
+    pub observed: ObservedMarket,
+    pub order_metadata: serde_json::Value,
 }
 
 impl WhaleBackfillRequest {
@@ -984,124 +995,33 @@ pub async fn run_copy_trade_signal_engine(
                 ))
                 .and_then(|score| score.as_ref())
         };
-        let decision = evaluate_copy_trade_with_segment(
-            trade,
-            performance,
-            mrs_score,
-            segment_score,
-            Some(segment_classification),
-            ObservedMarket {
-                observed_price: trade.price,
-                available_depth_usd: trade.cash_value,
-                observed_at,
+        let trade_summary = run_resolved_copy_trade_signal(
+            store,
+            venue,
+            clob,
+            ResolvedCopyTradeSignal {
+                trade,
+                performance,
+                mrs_score,
+                segment_score,
+                segment_classification,
+                observed: ObservedMarket {
+                    observed_price: trade.price,
+                    available_depth_usd: trade.cash_value,
+                    observed_at,
+                },
+                order_metadata: serde_json::Value::Null,
             },
-            &copy_config,
-            config.process_id,
-        );
-
-        if dry_run {
-            if decision.order_plan.is_some() {
-                summary.signals_inserted += 1;
-            } else {
-                summary.rejections += 1;
-            }
-            continue;
-        }
-
-        store.insert_signal(&decision.signal_candidate).await?;
-        store
-            .insert_copy_trade_signal(&decision.copy_signal)
-            .await?;
-        summary.signals_inserted += 1;
-        if decision.order_plan.is_none() {
-            summary.rejections += 1;
-            continue;
-        }
-
-        if !config.execute_signals {
-            continue;
-        }
-        let Some(venue) = venue else {
-            continue;
-        };
-        let Some(plan) = decision.order_plan else {
-            continue;
-        };
-        if let Some(current_open_notional) = open_notional_with_in_run_orders {
-            let order_notional: Decimal = plan
-                .orders
-                .iter()
-                .map(|order| order.price * order.size)
-                .sum();
-            let max_open_notional = config.copy_trade.max_open_notional_usd;
-            if max_open_notional > Decimal::ZERO
-                && current_open_notional + order_notional > max_open_notional
-            {
-                summary.rejections += 1;
-                store
-                    .update_copy_trade_signal_status(
-                        decision.copy_signal.signal_id,
-                        decision.copy_signal.timestamp_utc,
-                        "rejected",
-                        serde_json::json!({
-                            "reason": "copy_open_notional_cap_exceeded",
-                            "current_open_notional_usd": current_open_notional,
-                            "order_notional_usd": order_notional,
-                            "max_open_notional_usd": max_open_notional
-                        }),
-                    )
-                    .await?;
-                continue;
-            }
-        }
-        if config.require_entry_markability {
-            if let Some(rejection) =
-                ensure_order_plan_markable_at_entry(store, clob, &plan, &config.copy_trade).await?
-            {
-                summary.rejections += 1;
-                store
-                    .update_copy_trade_signal_status(
-                        decision.copy_signal.signal_id,
-                        decision.copy_signal.timestamp_utc,
-                        "rejected",
-                        rejection,
-                    )
-                    .await?;
-                continue;
-            }
-        }
-        let execution = execute_order_plan(venue, plan).await?;
-        summary.orders_inserted += execution.orders.len();
-        summary.fills_inserted += execution.fills.len();
-        store.persist_order_plan_report(&execution).await?;
-        let (status, metadata) = copy_signal_execution_status(&execution);
-        if status == "rejected" {
-            summary.rejections += 1;
-        } else if let Some(current_open_notional) = open_notional_with_in_run_orders.as_mut() {
-            let filled_notional: Decimal = execution
-                .fills
-                .iter()
-                .map(|fill| fill.price * fill.size)
-                .sum();
-            let order_notional: Decimal = execution
-                .orders
-                .iter()
-                .map(|order| order.request.price * order.request.size)
-                .sum();
-            *current_open_notional += if filled_notional > Decimal::ZERO {
-                filled_notional
-            } else {
-                order_notional
-            };
-        }
-        store
-            .update_copy_trade_signal_status(
-                decision.copy_signal.signal_id,
-                decision.copy_signal.timestamp_utc,
-                status,
-                metadata,
-            )
-            .await?;
+            config,
+            dry_run,
+            open_notional_with_in_run_orders.as_mut(),
+        )
+        .await?;
+        summary.signals_inserted += trade_summary.signals_inserted;
+        summary.signals_detected += trade_summary.signals_detected;
+        summary.orders_inserted += trade_summary.orders_inserted;
+        summary.fills_inserted += trade_summary.fills_inserted;
+        summary.rejections += trade_summary.rejections;
     }
 
     if !dry_run && summary.trades_evaluated > 0 {
@@ -1109,6 +1029,159 @@ pub async fn run_copy_trade_signal_engine(
     }
 
     Ok(summary)
+}
+
+pub async fn run_resolved_copy_trade_signal(
+    store: &Store,
+    venue: Option<&dyn ExecutionVenue>,
+    clob: Option<&ClobClient>,
+    resolved: ResolvedCopyTradeSignal<'_>,
+    config: &CopyTradeRunConfig,
+    dry_run: bool,
+    mut open_notional_with_in_run_orders: Option<&mut Decimal>,
+) -> Result<CopyTradeRunSummary> {
+    let mut summary = CopyTradeRunSummary {
+        trades_evaluated: 1,
+        dry_run,
+        ..CopyTradeRunSummary::default()
+    };
+    let decision = evaluate_copy_trade_with_segment(
+        resolved.trade,
+        resolved.performance,
+        resolved.mrs_score,
+        resolved.segment_score,
+        Some(resolved.segment_classification),
+        resolved.observed,
+        &config.copy_trade,
+        config.process_id,
+    );
+
+    if dry_run {
+        if decision.order_plan.is_some() {
+            summary.signals_inserted += 1;
+            summary.signals_detected += 1;
+        } else {
+            summary.rejections += 1;
+        }
+        return Ok(summary);
+    }
+
+    store.insert_signal(&decision.signal_candidate).await?;
+    store
+        .insert_copy_trade_signal(&decision.copy_signal)
+        .await?;
+    summary.signals_inserted += 1;
+    if decision.signal_candidate.status == crate::models::SignalStatus::Detected {
+        summary.signals_detected += 1;
+    }
+    if decision.order_plan.is_none() {
+        summary.rejections += 1;
+        return Ok(summary);
+    }
+
+    if !config.execute_signals {
+        return Ok(summary);
+    }
+    let Some(venue) = venue else {
+        return Ok(summary);
+    };
+    let Some(mut plan) = decision.order_plan else {
+        return Ok(summary);
+    };
+    if resolved.order_metadata.is_object() {
+        for order in &mut plan.orders {
+            order.metadata = merge_order_metadata(order.metadata.clone(), &resolved.order_metadata);
+        }
+    }
+    if let Some(current_open_notional) = open_notional_with_in_run_orders.as_deref_mut() {
+        let order_notional: Decimal = plan
+            .orders
+            .iter()
+            .map(|order| order.price * order.size)
+            .sum();
+        let max_open_notional = config.copy_trade.max_open_notional_usd;
+        if max_open_notional > Decimal::ZERO
+            && *current_open_notional + order_notional > max_open_notional
+        {
+            summary.rejections += 1;
+            store
+                .update_copy_trade_signal_status(
+                    decision.copy_signal.signal_id,
+                    decision.copy_signal.timestamp_utc,
+                    "rejected",
+                    serde_json::json!({
+                        "reason": "copy_open_notional_cap_exceeded",
+                        "current_open_notional_usd": *current_open_notional,
+                        "order_notional_usd": order_notional,
+                        "max_open_notional_usd": max_open_notional
+                    }),
+                )
+                .await?;
+            return Ok(summary);
+        }
+    }
+    if config.require_entry_markability {
+        if let Some(rejection) =
+            ensure_order_plan_markable_at_entry(store, clob, &plan, &config.copy_trade).await?
+        {
+            summary.rejections += 1;
+            store
+                .update_copy_trade_signal_status(
+                    decision.copy_signal.signal_id,
+                    decision.copy_signal.timestamp_utc,
+                    "rejected",
+                    rejection,
+                )
+                .await?;
+            return Ok(summary);
+        }
+    }
+    let execution = execute_order_plan(venue, plan).await?;
+    summary.orders_inserted += execution.orders.len();
+    summary.fills_inserted += execution.fills.len();
+    store.persist_order_plan_report(&execution).await?;
+    let (status, metadata) = copy_signal_execution_status(&execution);
+    if status == "rejected" {
+        summary.rejections += 1;
+    } else if let Some(current_open_notional) = open_notional_with_in_run_orders.as_deref_mut() {
+        let filled_notional: Decimal = execution
+            .fills
+            .iter()
+            .map(|fill| fill.price * fill.size)
+            .sum();
+        let order_notional: Decimal = execution
+            .orders
+            .iter()
+            .map(|order| order.request.price * order.request.size)
+            .sum();
+        *current_open_notional += if filled_notional > Decimal::ZERO {
+            filled_notional
+        } else {
+            order_notional
+        };
+    }
+    store
+        .update_copy_trade_signal_status(
+            decision.copy_signal.signal_id,
+            decision.copy_signal.timestamp_utc,
+            status,
+            metadata,
+        )
+        .await?;
+
+    Ok(summary)
+}
+
+fn merge_order_metadata(
+    mut left: serde_json::Value,
+    right: &serde_json::Value,
+) -> serde_json::Value {
+    if let (Some(left), Some(right)) = (left.as_object_mut(), right.as_object()) {
+        for (key, value) in right {
+            left.insert(key.clone(), value.clone());
+        }
+    }
+    left
 }
 
 fn copy_signal_execution_status(execution: &OrderPlanReport) -> (&'static str, serde_json::Value) {

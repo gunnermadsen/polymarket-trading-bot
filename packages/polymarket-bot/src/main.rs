@@ -612,8 +612,12 @@ impl ControlApi for RuntimeControl {
             processes: replay_processes,
         };
         let store = self.store.clone();
+        let venue = self.venues.sim.clone();
+        let clob = self.clob.clone();
         tokio::spawn(async move {
-            if let Err(error) = run_backtest_replay(store.clone(), job.clone()).await {
+            if let Err(error) =
+                run_backtest_replay(store.clone(), venue.clone(), clob.clone(), job.clone()).await
+            {
                 let _ = store
                     .mark_backtest_run_status(
                         job.backtest_run_id,
