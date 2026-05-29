@@ -21,6 +21,19 @@
   "links": [],
   "panels": [
     {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 14,
+      "panels": [],
+      "title": "Live Trading",
+      "type": "row"
+    },
+    {
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgres"
@@ -51,7 +64,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 0
+        "y": 1
       },
       "id": 3,
       "options": {
@@ -78,7 +91,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "select count(*) as \"Enabled Processes\" from polymarket.trading_processes where enabled = true;",
+          "rawSql": "SELECT count(*) AS \"Enabled Processes\"\nFROM polymarket.trading_processes\nWHERE enabled = true\n  AND process_scope IS DISTINCT FROM 'backtest';",
           "refId": "A",
           "sql": {
             "columns": [
@@ -107,7 +120,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "select count(*) as \"Disabled Processes\" from polymarket.trading_processes where enabled = false;",
+          "rawSql": "SELECT count(*) AS \"Disabled Processes\"\nFROM polymarket.trading_processes\nWHERE enabled = false\n  AND process_scope IS DISTINCT FROM 'backtest';",
           "refId": "B",
           "sql": {
             "columns": [
@@ -198,7 +211,7 @@
         "h": 12,
         "w": 9,
         "x": 5,
-        "y": 0
+        "y": 1
       },
       "id": 6,
       "options": {
@@ -226,7 +239,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "WITH mark_points AS (\n  SELECT\n    $__timeGroup(m.timestamp_utc, $__interval) AS \"time\",\n    COALESCE(m.process_id, p.process_id) AS process_id,\n    m.position_id,\n    m.timestamp_utc,\n    m.net_unrealized_pnl\n  FROM polymarket.trade_marks m\n  JOIN polymarket.trade_positions p\n    ON p.position_id = m.position_id\n  WHERE $__timeFilter(m.timestamp_utc)\n    AND p.status IN ('open', 'partially_closed')\n    AND COALESCE(m.process_id, p.process_id) IS NOT NULL\n), latest_marks AS (\n  SELECT\n    \"time\",\n    process_id,\n    position_id,\n    net_unrealized_pnl,\n    ROW_NUMBER() OVER (\n      PARTITION BY \"time\", process_id, position_id\n      ORDER BY timestamp_utc DESC\n    ) AS mark_rank\n  FROM mark_points\n)\nSELECT\n  \"time\",\n  left(process_id::text, 8) AS metric,\n  SUM(net_unrealized_pnl)::double precision AS value\nFROM latest_marks\nWHERE mark_rank = 1\nGROUP BY 1, 2\nORDER BY 1, 2;",
+          "rawSql": "WITH mark_points AS (\n  SELECT\n    $__timeGroup(m.timestamp_utc, $__interval) AS \"time\",\n    COALESCE(m.process_id, tp.process_id) AS process_id,\n    m.position_id,\n    m.timestamp_utc,\n    m.net_unrealized_pnl\n  FROM polymarket.trade_marks m\n  JOIN polymarket.trade_positions tp\n    ON tp.position_id = m.position_id\n  JOIN polymarket.trading_processes proc\n    ON proc.process_id = COALESCE(m.process_id, tp.process_id)\n  WHERE $__timeFilter(m.timestamp_utc)\n    AND tp.status IN ('open', 'partially_closed')\n    AND COALESCE(m.process_id, tp.process_id) IS NOT NULL\n    AND proc.process_scope IS DISTINCT FROM 'backtest'\n), latest_marks AS (\n  SELECT\n    \"time\",\n    process_id,\n    position_id,\n    net_unrealized_pnl,\n    ROW_NUMBER() OVER (\n      PARTITION BY \"time\", process_id, position_id\n      ORDER BY timestamp_utc DESC\n    ) AS mark_rank\n  FROM mark_points\n)\nSELECT\n  \"time\",\n  left(process_id::text, 8) AS metric,\n  SUM(net_unrealized_pnl)::double precision AS value\nFROM latest_marks\nWHERE mark_rank = 1\nGROUP BY 1, 2\nORDER BY 1, 2;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -317,7 +330,7 @@
         "h": 12,
         "w": 10,
         "x": 14,
-        "y": 0
+        "y": 1
       },
       "id": 1,
       "options": {
@@ -345,7 +358,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "WITH exit_events AS (\n  SELECT\n    COALESCE(e.process_id, p.process_id) AS process_id,\n    e.timestamp_utc,\n    e.net_pnl\n  FROM polymarket.trade_exits e\n  JOIN polymarket.trade_positions p\n    ON p.position_id = e.position_id\n  WHERE NOT e.is_synthetic\n    AND COALESCE(e.process_id, p.process_id) IS NOT NULL\n), baseline AS (\n  SELECT\n    process_id,\n    COALESCE(SUM(net_pnl), 0) AS realized_before\n  FROM exit_events\n  WHERE timestamp_utc < $__timeFrom()\n  GROUP BY process_id\n), bucketed AS (\n  SELECT\n    $__timeGroupAlias(timestamp_utc, $__interval),\n    process_id,\n    SUM(net_pnl) AS bucket_realized_pnl\n  FROM exit_events\n  WHERE $__timeFilter(timestamp_utc)\n  GROUP BY 1, process_id\n)\nSELECT\n  b.\"time\",\n  left(b.process_id::text, 8) AS metric,\n  (\n    COALESCE(bl.realized_before, 0)\n    + SUM(b.bucket_realized_pnl) OVER (\n      PARTITION BY b.process_id\n      ORDER BY b.\"time\"\n      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n    )\n  )::double precision AS value\nFROM bucketed b\nLEFT JOIN baseline bl\n  ON bl.process_id = b.process_id\nORDER BY b.\"time\", metric;",
+          "rawSql": "WITH exit_events AS (\n  SELECT\n    COALESCE(e.process_id, tp.process_id) AS process_id,\n    e.timestamp_utc,\n    e.net_pnl\n  FROM polymarket.trade_exits e\n  JOIN polymarket.trade_positions tp\n    ON tp.position_id = e.position_id\n  JOIN polymarket.trading_processes proc\n    ON proc.process_id = COALESCE(e.process_id, tp.process_id)\n  WHERE NOT e.is_synthetic\n    AND COALESCE(e.process_id, tp.process_id) IS NOT NULL\n    AND proc.process_scope IS DISTINCT FROM 'backtest'\n), baseline AS (\n  SELECT\n    process_id,\n    COALESCE(SUM(net_pnl), 0) AS realized_before\n  FROM exit_events\n  WHERE timestamp_utc < $__timeFrom()\n  GROUP BY process_id\n), bucketed AS (\n  SELECT\n    $__timeGroupAlias(timestamp_utc, $__interval),\n    process_id,\n    SUM(net_pnl) AS bucket_realized_pnl\n  FROM exit_events\n  WHERE $__timeFilter(timestamp_utc)\n  GROUP BY 1, process_id\n)\nSELECT\n  b.\"time\",\n  left(b.process_id::text, 8) AS metric,\n  (\n    COALESCE(bl.realized_before, 0)\n    + SUM(b.bucket_realized_pnl) OVER (\n      PARTITION BY b.process_id\n      ORDER BY b.\"time\"\n      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n    )\n  )::double precision AS value\nFROM bucketed b\nLEFT JOIN baseline bl\n  ON bl.process_id = b.process_id\nORDER BY b.\"time\", metric;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -402,7 +415,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 5
+        "y": 6
       },
       "id": 4,
       "options": {
@@ -489,7 +502,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 10
+        "y": 11
       },
       "id": 5,
       "options": {
@@ -702,7 +715,7 @@
         "h": 8,
         "w": 19,
         "x": 5,
-        "y": 12
+        "y": 13
       },
       "id": 2,
       "options": {
@@ -725,7 +738,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH position_pnl AS (\n  SELECT\n    process_id,\n    MAX(updated_at) AS last_position_updated,\n    COUNT(*) FILTER (WHERE status IN ('open', 'partially_closed')) AS open_positions,\n    COUNT(*) FILTER (WHERE status = 'closed' AND realized_pnl > 0) AS winning_closed_positions,\n    COUNT(*) FILTER (WHERE status = 'closed' AND realized_pnl < 0) AS losing_closed_positions,\n    COALESCE(SUM(unrealized_pnl) FILTER (WHERE status IN ('open', 'partially_closed')), 0) AS unrealized_pnl,\n    COALESCE(SUM(realized_pnl), 0) AS realized_pnl,\n    COALESCE(SUM(entry_notional), 0) AS entry_notional\n  FROM polymarket.trade_positions\n  WHERE process_id IS NOT NULL\n  GROUP BY process_id\n)\nSELECT\n  p.name AS process_name,\n  GREATEST(p.updated_at, COALESCE(position_pnl.last_position_updated, p.updated_at)) AS last_updated,\n  COALESCE(position_pnl.open_positions, 0)::integer AS open_positions,\n  COALESCE(position_pnl.winning_closed_positions, 0)::integer AS winning_closed_positions,\n  COALESCE(position_pnl.losing_closed_positions, 0)::integer AS losing_closed_positions,\n  COALESCE(position_pnl.unrealized_pnl, 0)::double precision AS unrealized_pnl,\n  COALESCE(position_pnl.realized_pnl, 0)::double precision AS realized_pnl,\n  CASE\n    WHEN COALESCE(position_pnl.entry_notional, 0) > 0\n      THEN ((COALESCE(position_pnl.realized_pnl, 0) + COALESCE(position_pnl.unrealized_pnl, 0)) / position_pnl.entry_notional)::double precision\n    ELSE 0::double precision\n  END AS roi\nFROM polymarket.trading_processes p\nLEFT JOIN position_pnl\n  ON position_pnl.process_id = p.process_id\nWHERE p.enabled = true\n  AND p.status NOT IN ('stopped', 'failed', 'expired')\nORDER BY last_updated DESC, p.name;",
+          "rawSql": "WITH position_pnl AS (\n  SELECT\n    process_id,\n    MAX(updated_at) AS last_position_updated,\n    COUNT(*) FILTER (WHERE status IN ('open', 'partially_closed')) AS open_positions,\n    COUNT(*) FILTER (WHERE status = 'closed' AND realized_pnl > 0) AS winning_closed_positions,\n    COUNT(*) FILTER (WHERE status = 'closed' AND realized_pnl < 0) AS losing_closed_positions,\n    COALESCE(SUM(unrealized_pnl) FILTER (WHERE status IN ('open', 'partially_closed')), 0) AS unrealized_pnl,\n    COALESCE(SUM(realized_pnl), 0) AS realized_pnl,\n    COALESCE(SUM(entry_notional), 0) AS entry_notional\n  FROM polymarket.trade_positions\n  WHERE process_id IS NOT NULL\n  GROUP BY process_id\n)\nSELECT\n  p.name AS process_name,\n  GREATEST(p.updated_at, COALESCE(position_pnl.last_position_updated, p.updated_at)) AS last_updated,\n  COALESCE(position_pnl.open_positions, 0)::integer AS open_positions,\n  COALESCE(position_pnl.winning_closed_positions, 0)::integer AS winning_closed_positions,\n  COALESCE(position_pnl.losing_closed_positions, 0)::integer AS losing_closed_positions,\n  COALESCE(position_pnl.unrealized_pnl, 0)::double precision AS unrealized_pnl,\n  COALESCE(position_pnl.realized_pnl, 0)::double precision AS realized_pnl,\n  CASE\n    WHEN COALESCE(position_pnl.entry_notional, 0) > 0\n      THEN ((COALESCE(position_pnl.realized_pnl, 0) + COALESCE(position_pnl.unrealized_pnl, 0)) / position_pnl.entry_notional)::double precision\n    ELSE 0::double precision\n  END AS roi\nFROM polymarket.trading_processes p\nLEFT JOIN position_pnl\n  ON position_pnl.process_id = p.process_id\nWHERE p.enabled = true\n  AND p.process_scope IS DISTINCT FROM 'backtest'\n  AND p.status NOT IN ('stopped', 'failed', 'expired')\nORDER BY last_updated DESC, p.name;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -755,7 +768,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 20
+        "y": 21
       },
       "id": 7,
       "panels": [],
@@ -793,7 +806,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 21
+        "y": 22
       },
       "id": 8,
       "options": {
@@ -970,7 +983,7 @@
         "h": 12,
         "w": 9,
         "x": 5,
-        "y": 21
+        "y": 22
       },
       "id": 9,
       "options": {
@@ -1089,7 +1102,7 @@
         "h": 12,
         "w": 10,
         "x": 14,
-        "y": 21
+        "y": 22
       },
       "id": 10,
       "options": {
@@ -1174,7 +1187,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 26
+        "y": 27
       },
       "id": 11,
       "options": {
@@ -1261,7 +1274,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 31
+        "y": 32
       },
       "id": 12,
       "options": {
@@ -1474,7 +1487,7 @@
         "h": 8,
         "w": 19,
         "x": 5,
-        "y": 33
+        "y": 34
       },
       "id": 13,
       "options": {
@@ -1539,6 +1552,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 9,
+  "version": 11,
   "weekStart": ""
 }
