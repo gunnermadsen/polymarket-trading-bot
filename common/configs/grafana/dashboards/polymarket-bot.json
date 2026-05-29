@@ -651,12 +651,48 @@
           {
             "matcher": {
               "id": "byName",
+              "options": "open_positions"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 135
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "winning_closed_positions"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 176
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "losing_closed_positions"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 166
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
               "options": "process_name"
             },
             "properties": [
               {
                 "id": "custom.width",
-                "value": 555
+                "value": 360
               }
             ]
           }
@@ -689,7 +725,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH position_pnl AS (\n  SELECT\n    process_id,\n    MAX(updated_at) AS last_position_updated,\n    COALESCE(SUM(unrealized_pnl) FILTER (WHERE status IN ('open', 'partially_closed')), 0) AS unrealized_pnl,\n    COALESCE(SUM(realized_pnl), 0) AS realized_pnl,\n    COALESCE(SUM(entry_notional), 0) AS entry_notional\n  FROM polymarket.trade_positions\n  WHERE process_id IS NOT NULL\n  GROUP BY process_id\n)\nSELECT\n  p.name AS process_name,\n  GREATEST(p.updated_at, COALESCE(position_pnl.last_position_updated, p.updated_at)) AS last_updated,\n  COALESCE(position_pnl.unrealized_pnl, 0)::double precision AS unrealized_pnl,\n  COALESCE(position_pnl.realized_pnl, 0)::double precision AS realized_pnl,\n  CASE\n    WHEN COALESCE(position_pnl.entry_notional, 0) > 0\n      THEN ((COALESCE(position_pnl.realized_pnl, 0) + COALESCE(position_pnl.unrealized_pnl, 0)) / position_pnl.entry_notional)::double precision\n    ELSE 0::double precision\n  END AS roi\nFROM polymarket.trading_processes p\nLEFT JOIN position_pnl\n  ON position_pnl.process_id = p.process_id\nWHERE p.enabled = true\n  AND p.status NOT IN ('stopped', 'failed', 'expired')\nORDER BY last_updated DESC, p.name;",
+          "rawSql": "WITH position_pnl AS (\n  SELECT\n    process_id,\n    MAX(updated_at) AS last_position_updated,\n    COUNT(*) FILTER (WHERE status IN ('open', 'partially_closed')) AS open_positions,\n    COUNT(*) FILTER (WHERE status = 'closed' AND realized_pnl > 0) AS winning_closed_positions,\n    COUNT(*) FILTER (WHERE status = 'closed' AND realized_pnl < 0) AS losing_closed_positions,\n    COALESCE(SUM(unrealized_pnl) FILTER (WHERE status IN ('open', 'partially_closed')), 0) AS unrealized_pnl,\n    COALESCE(SUM(realized_pnl), 0) AS realized_pnl,\n    COALESCE(SUM(entry_notional), 0) AS entry_notional\n  FROM polymarket.trade_positions\n  WHERE process_id IS NOT NULL\n  GROUP BY process_id\n)\nSELECT\n  p.name AS process_name,\n  GREATEST(p.updated_at, COALESCE(position_pnl.last_position_updated, p.updated_at)) AS last_updated,\n  COALESCE(position_pnl.open_positions, 0)::integer AS open_positions,\n  COALESCE(position_pnl.winning_closed_positions, 0)::integer AS winning_closed_positions,\n  COALESCE(position_pnl.losing_closed_positions, 0)::integer AS losing_closed_positions,\n  COALESCE(position_pnl.unrealized_pnl, 0)::double precision AS unrealized_pnl,\n  COALESCE(position_pnl.realized_pnl, 0)::double precision AS realized_pnl,\n  CASE\n    WHEN COALESCE(position_pnl.entry_notional, 0) > 0\n      THEN ((COALESCE(position_pnl.realized_pnl, 0) + COALESCE(position_pnl.unrealized_pnl, 0)) / position_pnl.entry_notional)::double precision\n    ELSE 0::double precision\n  END AS roi\nFROM polymarket.trading_processes p\nLEFT JOIN position_pnl\n  ON position_pnl.process_id = p.process_id\nWHERE p.enabled = true\n  AND p.status NOT IN ('stopped', 'failed', 'expired')\nORDER BY last_updated DESC, p.name;",
           "refId": "A",
           "sql": {
             "columns": [
