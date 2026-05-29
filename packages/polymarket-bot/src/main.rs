@@ -503,25 +503,24 @@ impl ControlApi for RuntimeControl {
                 .clone()
                 .unwrap_or_else(|| source.process_id.to_string());
             let process_key = format!(
-                "backtest-{}-{}",
-                run.backtest_run_id.simple(),
-                source_key.chars().take(32).collect::<String>()
+                "backtest-{}",
+                source_key.chars().take(96).collect::<String>()
             );
             let backtest_process = match self
                 .store
-                .create_trading_process_with_status(
+                .upsert_trading_process_by_key(
                     &format!("Backtest replay: {}", source.name),
                     &source.process_type,
                     "backtest",
-                    Some(&process_key),
-                    "queued",
+                    &process_key,
                     false,
+                    "queued",
                     config,
                     serde_json::json!({
                         "backtest": true,
-                        "backtest_run_id": run.backtest_run_id,
                         "source_process_id": source.process_id,
                         "source_process_key": source.process_key,
+                        "last_backtest_run_id": run.backtest_run_id,
                         "request": request_json.clone()
                     }),
                 )

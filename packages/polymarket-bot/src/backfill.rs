@@ -1045,7 +1045,7 @@ pub async fn run_resolved_copy_trade_signal(
         dry_run,
         ..CopyTradeRunSummary::default()
     };
-    let decision = evaluate_copy_trade_with_segment(
+    let mut decision = evaluate_copy_trade_with_segment(
         resolved.trade,
         resolved.performance,
         resolved.mrs_score,
@@ -1055,6 +1055,12 @@ pub async fn run_resolved_copy_trade_signal(
         &config.copy_trade,
         config.process_id,
     );
+    if resolved.order_metadata.is_object() {
+        decision.copy_signal.metadata = merge_json(
+            decision.copy_signal.metadata.clone(),
+            resolved.order_metadata.clone(),
+        );
+    }
 
     if dry_run {
         if decision.order_plan.is_some() {
