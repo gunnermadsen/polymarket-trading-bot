@@ -1444,6 +1444,26 @@ pub struct CopyTradeBacktestRun {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BacktestRun {
+    pub backtest_run_id: Uuid,
+    pub status: String,
+    pub range_start: DateTime<Utc>,
+    pub range_end: DateTime<Utc>,
+    pub warmup_start: DateTime<Utc>,
+    pub lookback_days: i32,
+    pub warmup_days: i32,
+    pub source_process_ids: Vec<Uuid>,
+    pub backtest_process_ids: Vec<Uuid>,
+    pub request: serde_json::Value,
+    pub summary: serde_json::Value,
+    pub error: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CopyTradeBacktestResult {
     pub result_id: Uuid,
     pub backtest_id: Uuid,
