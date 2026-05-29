@@ -24,7 +24,8 @@ use crate::{
         LivePoly1271FunderProbeRequest, LivePoly1271FunderProbeResponse, LiveVenueStatus,
         LiveWalletAddressDiagnostics,
     },
-    models::{BackfillJob, BackfillJobStatus, TradingProcess, TradingProcessConfig},
+    models::{BackfillJob, BackfillJobStatus, BacktestRun, TradingProcess, TradingProcessConfig},
+    replay::{BacktestReplayQueued, BacktestReplayRequest},
     store::TradingProcessResetReport,
 };
 
@@ -79,6 +80,21 @@ pub trait ControlApi: Send + Sync + 'static {
         &self,
         request: CopyTradeReplayRequest,
     ) -> Result<serde_json::Value, HttpError>;
+
+    async fn start_backtest_replay(
+        &self,
+        request: BacktestReplayRequest,
+    ) -> Result<BacktestReplayQueued, HttpError>;
+
+    async fn get_backtest_run(
+        &self,
+        backtest_run_id: Uuid,
+    ) -> Result<BacktestRunResponse, HttpError>;
+
+    async fn list_backtest_runs(
+        &self,
+        request: ListBacktestRunsRequest,
+    ) -> Result<BacktestRunsResponse, HttpError>;
 
     async fn list_backfill_jobs(&self) -> Result<BackfillJobsResponse, HttpError>;
 
@@ -375,6 +391,31 @@ impl ControlApi for PlaceholderControlApi {
         Err(HttpError::not_implemented("copy-trade replay is not wired"))
     }
 
+    async fn start_backtest_replay(
+        &self,
+        _request: BacktestReplayRequest,
+    ) -> Result<BacktestReplayQueued, HttpError> {
+        Err(HttpError::not_implemented("backtest replay is not wired"))
+    }
+
+    async fn get_backtest_run(
+        &self,
+        _backtest_run_id: Uuid,
+    ) -> Result<BacktestRunResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "backtest run lookup is not wired",
+        ))
+    }
+
+    async fn list_backtest_runs(
+        &self,
+        _request: ListBacktestRunsRequest,
+    ) -> Result<BacktestRunsResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "backtest run listing is not wired",
+        ))
+    }
+
     async fn recompute_mrs_scores(
         &self,
         _request: MrsRecomputeRequest,
@@ -535,6 +576,9 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
             "/copy-trade/replay-existing",
             post(replay_existing_copy_trades),
         )
+        .route("/backtests/replay", post(start_backtest_replay))
+        .route("/backtests", get(list_backtest_runs))
+        .route("/backtests/:backtest_run_id", get(get_backtest_run))
         .route(
             "/copy-trade/calibration",
             post(start_copy_trade_calibration),
@@ -661,6 +705,31 @@ async fn replay_existing_copy_trades(
         .replay_existing_copy_trades(request)
         .await
         .map(Json)
+}
+
+async fn start_backtest_replay(
+    State(state): State<HttpState>,
+    Json(request): Json<BacktestReplayRequest>,
+) -> Result<Json<BacktestReplayQueued>, HttpError> {
+    state.control.start_backtest_replay(request).await.map(Json)
+}
+
+async fn get_backtest_run(
+    State(state): State<HttpState>,
+    Path(backtest_run_id): Path<Uuid>,
+) -> Result<Json<BacktestRunResponse>, HttpError> {
+    state
+        .control
+        .get_backtest_run(backtest_run_id)
+        .await
+        .map(Json)
+}
+
+async fn list_backtest_runs(
+    State(state): State<HttpState>,
+    Query(request): Query<ListBacktestRunsRequest>,
+) -> Result<Json<BacktestRunsResponse>, HttpError> {
+    state.control.list_backtest_runs(request).await.map(Json)
 }
 
 async fn list_backfill_jobs(
@@ -1153,6 +1222,11 @@ pub struct ListTradingProcessesRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListBacktestRunsRequest {
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpsertTradingProcessByKeyRequest {
     pub name: String,
     #[serde(default = "default_process_type")]
@@ -1203,6 +1277,16 @@ pub struct TradingProcessStatusResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradingProcessResetResponse {
     pub report: TradingProcessResetReport,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BacktestRunResponse {
+    pub backtest_run: BacktestRun,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BacktestRunsResponse {
+    pub backtest_runs: Vec<BacktestRun>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

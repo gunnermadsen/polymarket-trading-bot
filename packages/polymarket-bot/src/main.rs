@@ -25,14 +25,16 @@ use polymarket_bot::{
     gamma::GammaClient,
     http as control_http,
     http::{
-        BackfillJobResponse, BackfillJobsResponse, CancelBackfillJobResponse, ControlApi,
-        HttpError, MetricsResponse, TradingProcessResetResponse, TradingProcessResponse,
-        TradingProcessStatusResponse, TradingProcessesResponse,
+        BackfillJobResponse, BackfillJobsResponse, BacktestRunResponse, BacktestRunsResponse,
+        CancelBackfillJobResponse, ControlApi, HttpError, MetricsResponse,
+        TradingProcessResetResponse, TradingProcessResponse, TradingProcessStatusResponse,
+        TradingProcessesResponse,
     },
     models::{
-        EffectiveMarkRefreshProcessConfig, EffectiveProcessExitRulesConfig, TradingProcess,
-        WhalePollCheckpoint,
+        EffectiveMarkRefreshProcessConfig, EffectiveProcessExitRulesConfig, ProcessExecutionConfig,
+        TradingProcess, WhalePollCheckpoint,
     },
+    replay::{run_backtest_replay, BacktestReplayJob, BacktestReplayProcess, BacktestReplayQueued},
     risk::{RiskLimits, RiskState},
     scanner::{scan_markets_for_signal1, ScannerConfig, ScannerCycleReport},
     segments::score_wallet_segments_from_samples,
@@ -45,6 +47,7 @@ use polymarket_bot::{
     },
     wallets::{score_closed_position_performance, score_mrs, MrsScoreInput},
 };
+use rust_decimal_macros::dec;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -438,6 +441,231 @@ impl ControlApi for RuntimeControl {
             "dry_run": request.dry_run,
             "summary": summary
         }))
+    }
+
+    async fn start_backtest_replay(
+        &self,
+        request: polymarket_bot::replay::BacktestReplayRequest,
+    ) -> Result<BacktestReplayQueued, HttpError> {
+        if request.process_ids.is_empty() {
+            return Err(HttpError::bad_request(
+                "process_ids must contain at least one source process id",
+            ));
+        }
+        let lookback_days = request.lookback_days.unwrap_or(3).max(1);
+        let warmup_days = request.warmup_days.unwrap_or(7).max(0);
+        let range_end = Utc::now();
+        let range_start = range_end - chrono::Duration::days(i64::from(lookback_days));
+        let warmup_start = range_start - chrono::Duration::days(i64::from(warmup_days));
+        let min_trade_usd = request.min_trade_usd.unwrap_or(dec!(100));
+        let max_trades = request.max_trades.unwrap_or(50_000).clamp(1, 250_000);
+        let request_json = serde_json::to_value(&request)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?;
+
+        let mut source_processes = Vec::new();
+        for source_process_id in &request.process_ids {
+            let source = self
+                .store
+                .get_trading_process(*source_process_id)
+                .await
+                .map_err(|error| HttpError::internal(error.to_string()))?
+                .ok_or_else(|| HttpError::not_found("source trading process not found"))?;
+            source_processes.push(source);
+        }
+
+        let run = self
+            .store
+            .create_backtest_run(
+                range_start,
+                range_end,
+                warmup_start,
+                lookback_days,
+                warmup_days,
+                &request.process_ids,
+                request_json.clone(),
+            )
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+
+        let mut replay_processes = Vec::new();
+        let mut backtest_process_ids = Vec::new();
+        for source in source_processes {
+            let mut config = source.config.clone();
+            let taker_fee_rate = config.effective_execution().taker_fee_rate;
+            config.execution = Some(ProcessExecutionConfig {
+                mode: Some("sim".to_string()),
+                execute_signals: request.execute_signals,
+                live_capital: false,
+                taker_fee_rate: Some(taker_fee_rate),
+            });
+            let source_key = source
+                .process_key
+                .clone()
+                .unwrap_or_else(|| source.process_id.to_string());
+            let process_key = format!(
+                "backtest-{}-{}",
+                run.backtest_run_id.simple(),
+                source_key.chars().take(32).collect::<String>()
+            );
+            let backtest_process = match self
+                .store
+                .create_trading_process_with_status(
+                    &format!("Backtest replay: {}", source.name),
+                    &source.process_type,
+                    "backtest",
+                    Some(&process_key),
+                    "queued",
+                    false,
+                    config,
+                    serde_json::json!({
+                        "backtest": true,
+                        "backtest_run_id": run.backtest_run_id,
+                        "source_process_id": source.process_id,
+                        "source_process_key": source.process_key,
+                        "request": request_json.clone()
+                    }),
+                )
+                .await
+            {
+                Ok(process) => process,
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = self
+                        .store
+                        .mark_backtest_run_status(
+                            run.backtest_run_id,
+                            "failed",
+                            serde_json::json!({"started": false}),
+                            Some(&message),
+                        )
+                        .await;
+                    return Err(HttpError::internal(message));
+                }
+            };
+            let runtime_config = match runtime_config_from_process(&backtest_process) {
+                Ok(config) => config,
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = self
+                        .store
+                        .update_trading_process_status(
+                            backtest_process.process_id,
+                            "failed",
+                            false,
+                            Some(&message),
+                        )
+                        .await;
+                    let _ = self
+                        .store
+                        .mark_backtest_run_status(
+                            run.backtest_run_id,
+                            "failed",
+                            serde_json::json!({"started": false}),
+                            Some(&message),
+                        )
+                        .await;
+                    return Err(HttpError::bad_request(message));
+                }
+            };
+            backtest_process_ids.push(backtest_process.process_id);
+            replay_processes.push(BacktestReplayProcess {
+                source_process_id: source.process_id,
+                backtest_process_id: backtest_process.process_id,
+                config: runtime_config.copy_trade,
+                process_config: backtest_process.config,
+            });
+            if let Err(error) = self
+                .store
+                .add_backtest_process_to_run(run.backtest_run_id, backtest_process.process_id)
+                .await
+            {
+                let message = error.to_string();
+                let _ = self
+                    .store
+                    .update_trading_process_status(
+                        backtest_process.process_id,
+                        "failed",
+                        false,
+                        Some(&message),
+                    )
+                    .await;
+                let _ = self
+                    .store
+                    .mark_backtest_run_status(
+                        run.backtest_run_id,
+                        "failed",
+                        serde_json::json!({"started": false}),
+                        Some(&message),
+                    )
+                    .await;
+                return Err(HttpError::internal(message));
+            }
+        }
+
+        let job = BacktestReplayJob {
+            backtest_run_id: run.backtest_run_id,
+            range_start,
+            range_end,
+            warmup_start,
+            min_trade_usd,
+            max_trades,
+            processes: replay_processes,
+        };
+        let store = self.store.clone();
+        tokio::spawn(async move {
+            if let Err(error) = run_backtest_replay(store.clone(), job.clone()).await {
+                let _ = store
+                    .mark_backtest_run_status(
+                        job.backtest_run_id,
+                        "failed",
+                        serde_json::json!({}),
+                        Some(&error.to_string()),
+                    )
+                    .await;
+                for process in &job.processes {
+                    let _ = store
+                        .update_trading_process_status(
+                            process.backtest_process_id,
+                            "failed",
+                            false,
+                            Some(&error.to_string()),
+                        )
+                        .await;
+                }
+                error!(error = %error, backtest_run_id = %job.backtest_run_id, "backtest replay failed");
+            }
+        });
+
+        Ok(BacktestReplayQueued {
+            backtest_run_id: run.backtest_run_id,
+            status: "queued".to_string(),
+            backtest_process_ids,
+        })
+    }
+
+    async fn get_backtest_run(
+        &self,
+        backtest_run_id: uuid::Uuid,
+    ) -> Result<BacktestRunResponse, HttpError> {
+        let backtest_run = self
+            .store
+            .get_backtest_run(backtest_run_id)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?
+            .ok_or_else(|| HttpError::not_found("backtest run not found"))?;
+        Ok(BacktestRunResponse { backtest_run })
+    }
+
+    async fn list_backtest_runs(
+        &self,
+        request: control_http::ListBacktestRunsRequest,
+    ) -> Result<BacktestRunsResponse, HttpError> {
+        let backtest_runs = self
+            .store
+            .list_backtest_runs(request.limit.unwrap_or(20).clamp(1, 100))
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        Ok(BacktestRunsResponse { backtest_runs })
     }
 
     async fn list_backfill_jobs(&self) -> Result<BackfillJobsResponse, HttpError> {

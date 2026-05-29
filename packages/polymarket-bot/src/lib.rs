@@ -14,6 +14,7 @@ pub mod http;
 pub mod idempotency;
 pub mod models;
 pub mod orderbook;
+pub mod replay;
 pub mod risk;
 pub mod scanner;
 pub mod segments;

@@ -15,13 +15,14 @@ use polymarket_bot::{
     },
     http::{
         self, BackfillJobResponse, BackfillJobsResponse, BackfillWhalesRequest,
-        CancelBackfillJobResponse, ControlApi, CopyTradeBacktestRequest,
-        CopyTradeCalibrationRequest, HttpError, MetricsResponse,
+        BacktestRunResponse, BacktestRunsResponse, CancelBackfillJobResponse, ControlApi,
+        CopyTradeBacktestRequest, CopyTradeCalibrationRequest, HttpError, MetricsResponse,
     },
     models::{
-        BackfillJob, BackfillJobStatus, ProcessExecutionConfig, TradingProcess,
+        BackfillJob, BackfillJobStatus, BacktestRun, ProcessExecutionConfig, TradingProcess,
         TradingProcessConfig,
     },
+    replay::{BacktestReplayQueued, BacktestReplayRequest},
     store::TradingProcessResetReport,
 };
 use rust_decimal::Decimal;
@@ -114,6 +115,35 @@ impl ControlApi for FakeControlApi {
                 "signals_inserted": 1
             }
         }))
+    }
+
+    async fn start_backtest_replay(
+        &self,
+        _request: BacktestReplayRequest,
+    ) -> Result<BacktestReplayQueued, HttpError> {
+        Ok(BacktestReplayQueued {
+            backtest_run_id: Uuid::new_v4(),
+            status: "queued".to_string(),
+            backtest_process_ids: vec![Uuid::new_v4()],
+        })
+    }
+
+    async fn get_backtest_run(
+        &self,
+        backtest_run_id: Uuid,
+    ) -> Result<BacktestRunResponse, HttpError> {
+        Ok(BacktestRunResponse {
+            backtest_run: test_backtest_run(backtest_run_id),
+        })
+    }
+
+    async fn list_backtest_runs(
+        &self,
+        _request: http::ListBacktestRunsRequest,
+    ) -> Result<BacktestRunsResponse, HttpError> {
+        Ok(BacktestRunsResponse {
+            backtest_runs: vec![test_backtest_run(Uuid::new_v4())],
+        })
     }
 
     async fn get_backfill_job(&self, _job_id: Uuid) -> Result<BackfillJobResponse, HttpError> {
@@ -1165,6 +1195,28 @@ fn test_job(status: BackfillJobStatus, request: Value) -> BackfillJob {
         request,
         summary: serde_json::json!({}),
         error: None,
+    }
+}
+
+fn test_backtest_run(backtest_run_id: Uuid) -> BacktestRun {
+    let now = Utc::now();
+    BacktestRun {
+        backtest_run_id,
+        status: "completed".to_string(),
+        range_start: now - chrono::Duration::days(1),
+        range_end: now,
+        warmup_start: now - chrono::Duration::days(2),
+        lookback_days: 1,
+        warmup_days: 1,
+        source_process_ids: vec![Uuid::new_v4()],
+        backtest_process_ids: vec![Uuid::new_v4()],
+        request: serde_json::json!({}),
+        summary: serde_json::json!({}),
+        error: None,
+        started_at: Some(now),
+        completed_at: Some(now),
+        created_at: now,
+        updated_at: now,
     }
 }
 
