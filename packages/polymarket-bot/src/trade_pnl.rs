@@ -715,7 +715,7 @@ fn close_order_request(candidate: &WhaleLedTradeExitCandidate) -> OrderRequest {
     }
 }
 
-fn risk_control_order_request(candidate: &TakeProfitTradeExitCandidate) -> OrderRequest {
+pub(crate) fn risk_control_order_request(candidate: &TakeProfitTradeExitCandidate) -> OrderRequest {
     let side = if candidate.side == "buy" {
         OrderSide::Sell
     } else {

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,7 @@ use crate::{
     execution::{
         execute_order_plan, ExecutionVenue, LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics,
         LiveOrderDryRunRequest, LivePoly1271FunderProbeRequest, LivePoly1271FunderProbeResponse,
-        LiveVenueStatus, LiveWalletAddressDiagnostics, ReconciliationReport,
+        LiveVenueStatus, LiveWalletAddressDiagnostics, OrderPlan, ReconciliationReport,
     },
     models::{
         ConversionRequest, ConversionResult, FillRecord, FillSource, OrderRecord, OrderRequest,
@@ -30,6 +30,7 @@ use crate::{
         WalletSegmentPerformanceInput, GAMMA_SEGMENT_CLASSIFIER_VERSION,
     },
     store::Store,
+    trade_pnl::risk_control_order_request,
     wallets::{score_mrs, MrsScoreInput},
 };
 
@@ -69,6 +70,10 @@ pub struct BacktestReplaySummary {
     pub fills_inserted: usize,
     pub positions_created: u64,
     pub whale_exits_applied: u64,
+    pub take_profit_exits_applied: u64,
+    pub stop_loss_exits_applied: u64,
+    pub risk_control_exit_orders_inserted: usize,
+    pub risk_control_exit_fills_inserted: usize,
     pub marks_inserted: u64,
     pub process_count: usize,
 }
@@ -208,6 +213,19 @@ pub async fn run_backtest_replay(
                     trade.timestamp_utc,
                 )
                 .await?;
+            let risk_control = execute_replay_risk_control_exits(
+                &store,
+                &venue,
+                process,
+                job.backtest_run_id,
+                trade.timestamp_utc,
+            )
+            .await?;
+            summary.marks_inserted += risk_control.marks_inserted;
+            summary.take_profit_exits_applied += risk_control.take_profit_exits_applied;
+            summary.stop_loss_exits_applied += risk_control.stop_loss_exits_applied;
+            summary.risk_control_exit_orders_inserted += risk_control.orders_inserted;
+            summary.risk_control_exit_fills_inserted += risk_control.fills_inserted;
         }
         ledger.observe_trade(&trade, &classification);
     }
@@ -229,6 +247,136 @@ pub async fn run_backtest_replay(
         )
         .await?;
     Ok(summary)
+}
+
+#[derive(Debug, Default)]
+struct ReplayRiskControlReport {
+    marks_inserted: u64,
+    take_profit_exits_applied: u64,
+    stop_loss_exits_applied: u64,
+    orders_inserted: usize,
+    fills_inserted: usize,
+}
+
+async fn execute_replay_risk_control_exits(
+    store: &Store,
+    venue: &dyn ExecutionVenue,
+    process: &BacktestReplayProcess,
+    backtest_run_id: Uuid,
+    as_of: DateTime<Utc>,
+) -> Result<ReplayRiskControlReport> {
+    let exit_rules = process.process_config.effective_exit_rules();
+    let take_profit = &exit_rules.take_profit;
+    let stop_loss = &exit_rules.stop_loss;
+    if !take_profit.take_profit_enabled && !stop_loss.stop_loss_enabled {
+        return Ok(ReplayRiskControlReport::default());
+    }
+
+    let mut report = ReplayRiskControlReport {
+        marks_inserted: store
+            .mark_open_trade_positions_for_process_as_of(process.backtest_process_id, as_of)
+            .await?,
+        ..ReplayRiskControlReport::default()
+    };
+
+    if take_profit.take_profit_enabled {
+        let candidates = store
+            .fetch_take_profit_trade_exit_candidates_as_of(
+                process.backtest_process_id,
+                take_profit.take_profit_roi,
+                take_profit.exit_size_fraction,
+                Duration::seconds(take_profit.min_hold_secs.max(0)),
+                Duration::seconds(take_profit.require_fresh_mark_secs.max(0)),
+                take_profit.max_exit_slippage_bps,
+                100,
+                as_of,
+            )
+            .await?;
+        let applied = execute_replay_risk_control_candidates(
+            store,
+            venue,
+            process,
+            backtest_run_id,
+            candidates,
+        )
+        .await?;
+        report.take_profit_exits_applied += applied.exits_applied;
+        report.orders_inserted += applied.orders_inserted;
+        report.fills_inserted += applied.fills_inserted;
+    }
+
+    if stop_loss.stop_loss_enabled && stop_loss.stop_loss_roi < Decimal::ZERO {
+        let candidates = store
+            .fetch_stop_loss_trade_exit_candidates_as_of(
+                process.backtest_process_id,
+                stop_loss.stop_loss_roi,
+                stop_loss.exit_size_fraction,
+                Duration::seconds(stop_loss.min_hold_secs.max(0)),
+                Duration::seconds(stop_loss.require_fresh_mark_secs.max(0)),
+                stop_loss.max_exit_slippage_bps,
+                100,
+                as_of,
+            )
+            .await?;
+        let applied = execute_replay_risk_control_candidates(
+            store,
+            venue,
+            process,
+            backtest_run_id,
+            candidates,
+        )
+        .await?;
+        report.stop_loss_exits_applied += applied.exits_applied;
+        report.orders_inserted += applied.orders_inserted;
+        report.fills_inserted += applied.fills_inserted;
+    }
+
+    Ok(report)
+}
+
+#[derive(Debug, Default)]
+struct ReplayRiskControlApplied {
+    exits_applied: u64,
+    orders_inserted: usize,
+    fills_inserted: usize,
+}
+
+async fn execute_replay_risk_control_candidates(
+    store: &Store,
+    venue: &dyn ExecutionVenue,
+    process: &BacktestReplayProcess,
+    backtest_run_id: Uuid,
+    candidates: Vec<crate::store::TakeProfitTradeExitCandidate>,
+) -> Result<ReplayRiskControlApplied> {
+    let mut report = ReplayRiskControlApplied::default();
+    for candidate in candidates {
+        let mut request = risk_control_order_request(&candidate);
+        request.metadata = merge_json(
+            request.metadata.clone(),
+            serde_json::json!({
+                "backtest": true,
+                "backtest_run_id": backtest_run_id,
+                "source_process_id": process.source_process_id,
+                "backtest_process_id": process.backtest_process_id,
+                "backtest_fill_timestamp": candidate.exit_timestamp
+            }),
+        );
+        let execution = execute_order_plan(
+            venue,
+            OrderPlan {
+                plan_id: Uuid::new_v4(),
+                orders: vec![request],
+            },
+        )
+        .await?;
+        report.orders_inserted += execution.orders.len();
+        report.fills_inserted += execution.fills.len();
+        store.persist_order_plan_report(&execution).await?;
+        report.exits_applied += store
+            .apply_take_profit_trade_exit(&candidate, &execution)
+            .await?;
+    }
+    Ok(report)
 }
 
 async fn classify_for_replay(

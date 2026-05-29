@@ -3205,6 +3205,32 @@ impl Store {
             require_fresh_mark,
             max_exit_slippage_bps,
             limit,
+            Utc::now(),
+        )
+        .await
+    }
+
+    pub async fn fetch_take_profit_trade_exit_candidates_as_of(
+        &self,
+        process_id: Uuid,
+        take_profit_roi: Decimal,
+        exit_size_fraction: Decimal,
+        min_hold: chrono::Duration,
+        require_fresh_mark: chrono::Duration,
+        max_exit_slippage_bps: Decimal,
+        limit: i64,
+        as_of: DateTime<Utc>,
+    ) -> Result<Vec<TakeProfitTradeExitCandidate>> {
+        self.fetch_risk_control_trade_exit_candidates(
+            process_id,
+            "take_profit_exit",
+            take_profit_roi,
+            exit_size_fraction,
+            min_hold,
+            require_fresh_mark,
+            max_exit_slippage_bps,
+            limit,
+            as_of,
         )
         .await
     }
@@ -3228,6 +3254,32 @@ impl Store {
             require_fresh_mark,
             max_exit_slippage_bps,
             limit,
+            Utc::now(),
+        )
+        .await
+    }
+
+    pub async fn fetch_stop_loss_trade_exit_candidates_as_of(
+        &self,
+        process_id: Uuid,
+        stop_loss_roi: Decimal,
+        exit_size_fraction: Decimal,
+        min_hold: chrono::Duration,
+        require_fresh_mark: chrono::Duration,
+        max_exit_slippage_bps: Decimal,
+        limit: i64,
+        as_of: DateTime<Utc>,
+    ) -> Result<Vec<TakeProfitTradeExitCandidate>> {
+        self.fetch_risk_control_trade_exit_candidates(
+            process_id,
+            "stop_loss_exit",
+            stop_loss_roi,
+            exit_size_fraction,
+            min_hold,
+            require_fresh_mark,
+            max_exit_slippage_bps,
+            limit,
+            as_of,
         )
         .await
     }
@@ -3243,6 +3295,7 @@ impl Store {
         require_fresh_mark: chrono::Duration,
         max_exit_slippage_bps: Decimal,
         limit: i64,
+        as_of: DateTime<Utc>,
     ) -> Result<Vec<TakeProfitTradeExitCandidate>> {
         let rows = sqlx::query_as::<_, TakeProfitTradeExitCandidate>(
             r#"
@@ -3269,7 +3322,7 @@ impl Store {
                   substr(md5(p.position_id::text || '|' || $8::text || '|' || $2::text), 17, 4) || '-' ||
                   substr(md5(p.position_id::text || '|' || $8::text || '|' || $2::text), 21, 12)
                 )::uuid AS exit_source_trade_id,
-                now() AS exit_timestamp,
+                $9::timestamptz AS exit_timestamp,
                 p.latest_mark_price AS reference_exit_price,
                 CASE
                   WHEN p.side = 'buy' THEN GREATEST(
@@ -3304,8 +3357,9 @@ impl Store {
                 AND p.entry_price > 0
                 AND p.latest_mark_price IS NOT NULL
                 AND p.latest_mark_timestamp IS NOT NULL
-                AND p.latest_mark_timestamp >= now() - ($5::bigint * interval '1 millisecond')
-                AND p.entry_timestamp <= now() - ($4::bigint * interval '1 millisecond')
+                AND p.latest_mark_timestamp >= $9::timestamptz - ($5::bigint * interval '1 millisecond')
+                AND p.latest_mark_timestamp <= $9::timestamptz
+                AND p.entry_timestamp <= $9::timestamptz - ($4::bigint * interval '1 millisecond')
             )
             SELECT
               exit_purpose,
@@ -3353,7 +3407,10 @@ impl Store {
                 FROM polymarket.orders o
                 WHERE o.raw_payload #>> '{request,metadata,purpose}' IN ('take_profit_exit', 'stop_loss_exit')
                   AND o.raw_payload #>> '{request,metadata,position_id}' = p.position_id::text
-                  AND o.created_at > now() - interval '30 seconds'
+                  AND COALESCE(
+                    (o.raw_payload #>> '{request,metadata,reference_exit_timestamp}')::timestamptz,
+                    o.created_at
+                  ) > $9::timestamptz - interval '30 seconds'
               )
             ORDER BY
               CASE WHEN $8::text = 'stop_loss_exit' THEN p.trigger_roi END ASC,
@@ -3370,6 +3427,7 @@ impl Store {
         .bind(max_exit_slippage_bps.max(Decimal::ZERO))
         .bind(limit)
         .bind(exit_purpose)
+        .bind(as_of)
         .fetch_all(&self.pool)
         .await
         .context("failed to fetch risk-control trade exit candidates")?;
