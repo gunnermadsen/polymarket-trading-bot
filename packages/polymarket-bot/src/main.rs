@@ -2368,6 +2368,7 @@ fn runtime_config_from_process(process: &TradingProcess) -> Result<ProcessRuntim
             hard_reject_segment_sample_size: copy_trade.hard_reject_segment_sample_size,
             unknown_segment_policy: copy_trade.unknown_segment_policy,
             segment_allowlist: copy_trade.segment_allowlist,
+            segment_denylist: copy_trade.segment_denylist,
             entry_safety: polymarket_bot::copytrade::CopyTradeEntrySafetyConfig {
                 enabled: copy_trade.entry_safety.enabled,
                 min_time_to_expiry_secs: copy_trade.entry_safety.min_time_to_expiry_secs,

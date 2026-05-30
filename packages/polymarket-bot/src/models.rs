@@ -863,6 +863,7 @@ impl TradingProcessConfig {
                 effective.unknown_segment_policy = unknown_segment_policy.clone();
             }
             effective.segment_allowlist = config.segment_allowlist.clone();
+            effective.segment_denylist = config.segment_denylist.clone();
             if let Some(entry_safety) = &config.entry_safety {
                 if let Some(enabled) = entry_safety.enabled {
                     effective.entry_safety.enabled = enabled;
@@ -1104,6 +1105,7 @@ pub struct EffectiveCopyTradeProcessConfig {
     pub hard_reject_segment_sample_size: i32,
     pub unknown_segment_policy: String,
     pub segment_allowlist: Vec<String>,
+    pub segment_denylist: Vec<String>,
     pub entry_safety: EffectiveEntrySafetyProcessConfig,
 }
 
@@ -1147,6 +1149,7 @@ impl Default for EffectiveCopyTradeProcessConfig {
             hard_reject_segment_sample_size: 10,
             unknown_segment_policy: "neutral".to_string(),
             segment_allowlist: Vec::new(),
+            segment_denylist: Vec::new(),
             entry_safety: EffectiveEntrySafetyProcessConfig::default(),
         }
     }
@@ -1257,6 +1260,8 @@ pub struct CopyTradeProcessConfig {
     pub unknown_segment_policy: Option<String>,
     #[serde(default)]
     pub segment_allowlist: Vec<String>,
+    #[serde(default)]
+    pub segment_denylist: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_safety: Option<EntrySafetyProcessConfig>,
 }
@@ -1598,5 +1603,27 @@ mod tests {
 
         let effective = config.effective_copy_trade();
         assert_eq!(effective.entry_pricing_mode, "marketable_limit");
+    }
+
+    #[test]
+    fn copy_trade_segment_lists_override_defaults() {
+        let default = TradingProcessConfig::default().effective_copy_trade();
+        assert!(default.segment_allowlist.is_empty());
+        assert!(default.segment_denylist.is_empty());
+
+        let config: TradingProcessConfig = serde_json::from_value(serde_json::json!({
+            "copy_trade": {
+                "segment_allowlist": ["politics.general"],
+                "segment_denylist": ["crypto.bitcoin.short_interval", "sports.general"]
+            }
+        }))
+        .expect("segment list config should deserialize");
+
+        let effective = config.effective_copy_trade();
+        assert_eq!(effective.segment_allowlist, vec!["politics.general"]);
+        assert_eq!(
+            effective.segment_denylist,
+            vec!["crypto.bitcoin.short_interval", "sports.general"]
+        );
     }
 }
