@@ -146,6 +146,33 @@ pub trait ControlApi: Send + Sync + 'static {
         request: TradePnlListRequest,
     ) -> Result<serde_json::Value, HttpError>;
 
+    async fn recompute_expectancy_flow(
+        &self,
+        _request: ExpectancyFlowRecomputeRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "expectancy flow recompute is not wired",
+        ))
+    }
+
+    async fn expectancy_flow_cells(
+        &self,
+        _request: ExpectancyFlowCellsRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "expectancy flow cell listing is not wired",
+        ))
+    }
+
+    async fn expectancy_flow_wallet_cells(
+        &self,
+        _request: ExpectancyFlowWalletCellsRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "expectancy flow wallet cell listing is not wired",
+        ))
+    }
+
     async fn gamma_taxonomy_status(&self) -> Result<serde_json::Value, HttpError> {
         Err(HttpError::not_implemented(
             "Gamma taxonomy status is not wired",
@@ -600,6 +627,18 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
             "/wallets/mrs/segments/recompute",
             post(recompute_mrs_segment_scores),
         )
+        .route(
+            "/copy-trade/expectancy-flow/recompute",
+            post(recompute_expectancy_flow),
+        )
+        .route(
+            "/copy-trade/expectancy-flow/cells",
+            get(expectancy_flow_cells),
+        )
+        .route(
+            "/copy-trade/expectancy-flow/wallet-cells",
+            get(expectancy_flow_wallet_cells),
+        )
         .route("/gamma/taxonomy/status", get(gamma_taxonomy_status))
         .route("/gamma/taxonomy/backfill", post(gamma_taxonomy_backfill))
         .route("/live/status", get(live_status))
@@ -829,6 +868,35 @@ async fn mrs_segment_summary(
     Query(request): Query<TradePnlListRequest>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
     state.control.mrs_segment_summary(request).await.map(Json)
+}
+
+async fn recompute_expectancy_flow(
+    State(state): State<HttpState>,
+    Json(request): Json<ExpectancyFlowRecomputeRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state
+        .control
+        .recompute_expectancy_flow(request)
+        .await
+        .map(Json)
+}
+
+async fn expectancy_flow_cells(
+    State(state): State<HttpState>,
+    Query(request): Query<ExpectancyFlowCellsRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state.control.expectancy_flow_cells(request).await.map(Json)
+}
+
+async fn expectancy_flow_wallet_cells(
+    State(state): State<HttpState>,
+    Query(request): Query<ExpectancyFlowWalletCellsRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state
+        .control
+        .expectancy_flow_wallet_cells(request)
+        .await
+        .map(Json)
 }
 
 async fn gamma_taxonomy_status(
@@ -1146,6 +1214,27 @@ pub struct TradePnlListRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MrsRecomputeRequest {
     pub lookback_days: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpectancyFlowRecomputeRequest {
+    #[serde(default)]
+    pub process_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpectancyFlowCellsRequest {
+    #[serde(default)]
+    pub process_id: Option<Uuid>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpectancyFlowWalletCellsRequest {
+    #[serde(default)]
+    pub process_id: Option<Uuid>,
+    pub proxy_wallet: String,
     pub limit: Option<i64>,
 }
 

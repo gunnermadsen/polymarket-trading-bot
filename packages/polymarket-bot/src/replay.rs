@@ -153,6 +153,24 @@ pub async fn run_backtest_replay(
                 &classification.segment_key,
                 &config.segment_score_version,
             );
+            let expectancy = if config.expectancy_flow.enabled {
+                Some(
+                    store
+                        .fetch_expectancy_input(
+                            process.backtest_process_id,
+                            &config.expectancy_flow.score_version,
+                            &trade.proxy_wallet,
+                            &classification.segment_key,
+                            &trade.side,
+                            trade.price,
+                            config.expectancy_flow.horizon_secs,
+                            config.expectancy_flow.min_trade_usd,
+                        )
+                        .await?,
+                )
+            } else {
+                None
+            };
             let trade_summary = run_resolved_copy_trade_signal(
                 &store,
                 Some(venue.as_ref()),
@@ -163,6 +181,7 @@ pub async fn run_backtest_replay(
                     mrs_score: mrs_score.as_ref(),
                     segment_score: segment_score.as_ref(),
                     segment_classification: classification.clone(),
+                    expectancy,
                     observed: ObservedMarket {
                         observed_price: trade.price,
                         available_depth_usd: trade.cash_value,

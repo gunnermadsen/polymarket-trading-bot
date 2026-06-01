@@ -264,6 +264,49 @@ impl ControlApi for FakeControlApi {
         }))
     }
 
+    async fn recompute_expectancy_flow(
+        &self,
+        request: http::ExpectancyFlowRecomputeRequest,
+    ) -> Result<Value, HttpError> {
+        Ok(serde_json::json!({
+            "process_id": request.process_id.unwrap_or_else(Uuid::nil),
+            "score_version": "expectancy_flow_v1",
+            "status": "queued"
+        }))
+    }
+
+    async fn expectancy_flow_cells(
+        &self,
+        request: http::ExpectancyFlowCellsRequest,
+    ) -> Result<Value, HttpError> {
+        Ok(serde_json::json!({
+            "process_id": request.process_id.unwrap_or_else(Uuid::nil),
+            "score_version": "expectancy_flow_v1",
+            "cells": [{
+                "cell_key": "crypto.bitcoin.short_interval|buy|40-60c|3600",
+                "sample_count": 42,
+                "win_rate": "0.62",
+                "expectancy": "0.04"
+            }]
+        }))
+    }
+
+    async fn expectancy_flow_wallet_cells(
+        &self,
+        request: http::ExpectancyFlowWalletCellsRequest,
+    ) -> Result<Value, HttpError> {
+        Ok(serde_json::json!({
+            "process_id": request.process_id.unwrap_or_else(Uuid::nil),
+            "score_version": "expectancy_flow_v1",
+            "proxy_wallet": request.proxy_wallet,
+            "cells": [{
+                "cell_key": "crypto.bitcoin.short_interval|buy|40-60c|3600",
+                "sample_count": 12,
+                "expectancy": "0.07"
+            }]
+        }))
+    }
+
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError> {
         Ok(LiveVenueStatus {
             mode: "sim".to_string(),
@@ -702,6 +745,8 @@ impl ControlApi for FakeControlApi {
                 trade_exits_deleted: 2,
                 trade_positions_deleted: 1,
                 wallet_performance_deleted: 1,
+                expectancy_flow_cells_deleted: 0,
+                expectancy_flow_wallet_cells_deleted: 0,
                 process_events_deleted: 1,
                 copy_trade_backtest_results_deleted: 0,
                 copy_trade_backtest_runs_deleted: 0,
@@ -1026,6 +1071,76 @@ async fn authenticated_admin_can_read_live_status_and_halt() {
         .await
         .unwrap();
     assert_eq!(halt_response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn authenticated_admin_can_manage_expectancy_flow_cells() {
+    let app = http::router(Arc::new(FakeControlApi), "secret");
+    let process_id = Uuid::new_v4();
+
+    let recompute_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/copy-trade/expectancy-flow/recompute")
+                .header(AUTHORIZATION, "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "process_id": process_id }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(recompute_response.status(), StatusCode::OK);
+    let recompute_body = to_bytes(recompute_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let recompute_json: Value = serde_json::from_slice(&recompute_body).unwrap();
+    assert_eq!(recompute_json["process_id"], process_id.to_string());
+    assert_eq!(recompute_json["status"], "queued");
+
+    let cells_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/admin/copy-trade/expectancy-flow/cells?process_id={process_id}&limit=5"
+                ))
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cells_response.status(), StatusCode::OK);
+    let cells_body = to_bytes(cells_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let cells_json: Value = serde_json::from_slice(&cells_body).unwrap();
+    assert_eq!(cells_json["score_version"], "expectancy_flow_v1");
+    assert_eq!(cells_json["cells"][0]["sample_count"], 42);
+
+    let wallet_cells_response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/admin/copy-trade/expectancy-flow/wallet-cells?process_id={process_id}&proxy_wallet=0xabc&limit=5"
+                ))
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wallet_cells_response.status(), StatusCode::OK);
+    let wallet_cells_body = to_bytes(wallet_cells_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let wallet_cells_json: Value = serde_json::from_slice(&wallet_cells_body).unwrap();
+    assert_eq!(wallet_cells_json["proxy_wallet"], "0xabc");
+    assert_eq!(wallet_cells_json["cells"][0]["expectancy"], "0.07");
 }
 
 #[tokio::test]

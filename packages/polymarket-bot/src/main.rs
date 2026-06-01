@@ -845,6 +845,111 @@ impl ControlApi for RuntimeControl {
             .map_err(|error| HttpError::internal(error.to_string()))
     }
 
+    async fn recompute_expectancy_flow(
+        &self,
+        request: control_http::ExpectancyFlowRecomputeRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        let runtime_config = self.resolve_process_config(request.process_id).await?;
+        let process = self
+            .store
+            .get_trading_process(runtime_config.process_id)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?
+            .ok_or_else(|| HttpError::not_found("trading process not found"))?;
+        let config = process.config.effective_expectancy_flow();
+        let store = self.store.clone();
+        let process_id = process.process_id;
+        let score_version = config.score_version.clone();
+        let response_score_version = score_version.clone();
+        tokio::spawn(async move {
+            match store
+                .recompute_expectancy_flow_cells(process_id, &config)
+                .await
+            {
+                Ok(report) => info!(
+                    process_id = %report.process_id,
+                    score_version = %report.score_version,
+                    cells_recomputed = report.cells_recomputed,
+                    wallet_cells_recomputed = report.wallet_cells_recomputed,
+                    "expectancy flow recompute completed"
+                ),
+                Err(error) => warn!(
+                    process_id = %process_id,
+                    score_version = %score_version,
+                    error = %error,
+                    "expectancy flow recompute failed"
+                ),
+            }
+        });
+        Ok(serde_json::json!({
+            "status": "queued",
+            "process_id": process_id,
+            "score_version": response_score_version
+        }))
+    }
+
+    async fn expectancy_flow_cells(
+        &self,
+        request: control_http::ExpectancyFlowCellsRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        let runtime_config = self.resolve_process_config(request.process_id).await?;
+        let process = self
+            .store
+            .get_trading_process(runtime_config.process_id)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?
+            .ok_or_else(|| HttpError::not_found("trading process not found"))?;
+        let config = process.config.effective_expectancy_flow();
+        let cells = self
+            .store
+            .list_expectancy_flow_cells(
+                process.process_id,
+                &config.score_version,
+                request.limit.unwrap_or(50).clamp(1, 500),
+            )
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        Ok(serde_json::json!({
+            "process_id": process.process_id,
+            "score_version": config.score_version,
+            "cells": cells
+        }))
+    }
+
+    async fn expectancy_flow_wallet_cells(
+        &self,
+        request: control_http::ExpectancyFlowWalletCellsRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        let proxy_wallet = request.proxy_wallet.trim();
+        if proxy_wallet.is_empty() {
+            return Err(HttpError::bad_request("proxy_wallet is required"));
+        }
+        let runtime_config = self.resolve_process_config(request.process_id).await?;
+        let process = self
+            .store
+            .get_trading_process(runtime_config.process_id)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?
+            .ok_or_else(|| HttpError::not_found("trading process not found"))?;
+        let config = process.config.effective_expectancy_flow();
+        let cells = self
+            .store
+            .list_expectancy_flow_wallet_cells(
+                process.process_id,
+                &config.score_version,
+                proxy_wallet,
+                request.limit.unwrap_or(50).clamp(1, 500),
+            )
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        Ok(serde_json::json!({
+            "process_id": process.process_id,
+            "score_version": config.score_version,
+            "proxy_wallet": proxy_wallet,
+            "cells": cells
+        }))
+    }
+
     async fn gamma_taxonomy_status(&self) -> Result<serde_json::Value, HttpError> {
         self.store
             .wallet_trade_taxonomy_status()
@@ -2308,6 +2413,7 @@ fn runtime_config_from_process(process: &TradingProcess) -> Result<ProcessRuntim
     let execution = process.config.effective_execution();
     let backfill = process.config.effective_backfill();
     let copy_trade = process.config.effective_copy_trade();
+    let expectancy_flow = process.config.effective_expectancy_flow();
     let exit_rules = process.config.effective_exit_rules();
     let mark_refresh = process.config.effective_mark_refresh();
     let execution_mode = parse_process_execution_mode(&execution.mode)?;
@@ -2369,6 +2475,7 @@ fn runtime_config_from_process(process: &TradingProcess) -> Result<ProcessRuntim
             unknown_segment_policy: copy_trade.unknown_segment_policy,
             segment_allowlist: copy_trade.segment_allowlist,
             segment_denylist: copy_trade.segment_denylist,
+            expectancy_flow: (&expectancy_flow).into(),
             entry_safety: polymarket_bot::copytrade::CopyTradeEntrySafetyConfig {
                 enabled: copy_trade.entry_safety.enabled,
                 min_time_to_expiry_secs: copy_trade.entry_safety.min_time_to_expiry_secs,

@@ -12,9 +12,11 @@ use crate::{
     execution::OrderPlan,
     idempotency::{deterministic_client_order_id, ClientOrderIdSeed},
     models::{
-        CopyTradeBacktestResult, CopyTradeSignal, EffectiveCopyTradeProcessConfig, OrderRequest,
-        OrderSide, OrderType, SignalCandidate, SignalStatus, SignalType, WalletPerformance,
-        WalletScore, WalletScoreCalibrationSnapshot, WalletSegmentPerformance, WhaleTrade,
+        CopyTradeBacktestResult, CopyTradeSignal, EffectiveCopyTradeProcessConfig,
+        EffectiveExpectancyFlowProcessConfig, ExpectancyFlowCell, ExpectancyFlowWalletCell,
+        OrderRequest, OrderSide, OrderType, SignalCandidate, SignalStatus, SignalType,
+        WalletPerformance, WalletScore, WalletScoreCalibrationSnapshot, WalletSegmentPerformance,
+        WhaleTrade,
     },
     segments::{
         classify_trade_segment, normalize_gamma_segment_key, SegmentClassification,
@@ -65,6 +67,7 @@ pub struct CopyTradeConfig {
     pub unknown_segment_policy: String,
     pub segment_allowlist: Vec<String>,
     pub segment_denylist: Vec<String>,
+    pub expectancy_flow: CopyTradeExpectancyFlowConfig,
     pub entry_safety: CopyTradeEntrySafetyConfig,
 }
 
@@ -109,9 +112,94 @@ impl Default for CopyTradeConfig {
             unknown_segment_policy: "neutral".to_string(),
             segment_allowlist: Vec::new(),
             segment_denylist: Vec::new(),
+            expectancy_flow: CopyTradeExpectancyFlowConfig::default(),
             entry_safety: CopyTradeEntrySafetyConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopyTradeExpectancyFlowConfig {
+    pub enabled: bool,
+    pub enforce: bool,
+    pub score_version: String,
+    pub min_trade_usd: Decimal,
+    pub horizon_secs: i64,
+    pub min_cell_trades: i32,
+    pub min_cell_covered: i32,
+    pub min_win_rate: Decimal,
+    pub min_avg_roi: Decimal,
+    pub min_median_roi: Decimal,
+    pub allowed_cells: Vec<String>,
+    pub denied_cells: Vec<String>,
+    pub wallet_filter: CopyTradeExpectancyWalletFilterConfig,
+}
+
+impl Default for CopyTradeExpectancyFlowConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            enforce: false,
+            score_version: "expectancy_flow_v1".to_string(),
+            min_trade_usd: dec!(500),
+            horizon_secs: 3600,
+            min_cell_trades: 50,
+            min_cell_covered: 25,
+            min_win_rate: dec!(0.55),
+            min_avg_roi: dec!(0.02),
+            min_median_roi: Decimal::ZERO,
+            allowed_cells: Vec::new(),
+            denied_cells: Vec::new(),
+            wallet_filter: CopyTradeExpectancyWalletFilterConfig::default(),
+        }
+    }
+}
+
+impl From<&EffectiveExpectancyFlowProcessConfig> for CopyTradeExpectancyFlowConfig {
+    fn from(config: &EffectiveExpectancyFlowProcessConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            enforce: config.enforce,
+            score_version: config.score_version.clone(),
+            min_trade_usd: config.min_trade_usd,
+            horizon_secs: config.horizon_secs,
+            min_cell_trades: config.min_cell_trades,
+            min_cell_covered: config.min_cell_covered,
+            min_win_rate: config.min_win_rate,
+            min_avg_roi: config.min_avg_roi,
+            min_median_roi: config.min_median_roi,
+            allowed_cells: config.allowed_cells.clone(),
+            denied_cells: config.denied_cells.clone(),
+            wallet_filter: CopyTradeExpectancyWalletFilterConfig {
+                enabled: config.wallet_filter.enabled,
+                min_wallet_cell_covered: config.wallet_filter.min_wallet_cell_covered,
+                min_wallet_cell_avg_roi: config.wallet_filter.min_wallet_cell_avg_roi,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopyTradeExpectancyWalletFilterConfig {
+    pub enabled: bool,
+    pub min_wallet_cell_covered: i32,
+    pub min_wallet_cell_avg_roi: Decimal,
+}
+
+impl Default for CopyTradeExpectancyWalletFilterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_wallet_cell_covered: 3,
+            min_wallet_cell_avg_roi: Decimal::ZERO,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CopyTradeExpectancyInput {
+    pub cell: Option<ExpectancyFlowCell>,
+    pub wallet_cell: Option<ExpectancyFlowWalletCell>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,6 +296,7 @@ impl From<&EffectiveCopyTradeProcessConfig> for CopyTradeConfig {
             unknown_segment_policy: config.unknown_segment_policy.clone(),
             segment_allowlist: config.segment_allowlist.clone(),
             segment_denylist: config.segment_denylist.clone(),
+            expectancy_flow: CopyTradeExpectancyFlowConfig::default(),
             entry_safety: CopyTradeEntrySafetyConfig {
                 enabled: config.entry_safety.enabled,
                 min_time_to_expiry_secs: config.entry_safety.min_time_to_expiry_secs,
@@ -366,6 +455,7 @@ pub fn evaluate_copy_trade(
         mrs_score,
         segment_score,
         None,
+        None,
         observed,
         config,
         process_id,
@@ -378,6 +468,7 @@ pub fn evaluate_copy_trade_with_segment(
     mrs_score: Option<&CopyTradeMrsScore>,
     segment_score: Option<&CopyTradeSegmentScore>,
     segment_classification: Option<SegmentClassification>,
+    expectancy: Option<&CopyTradeExpectancyInput>,
     observed: ObservedMarket,
     config: &CopyTradeConfig,
     process_id: Option<Uuid>,
@@ -405,6 +496,13 @@ pub fn evaluate_copy_trade_with_segment(
         evaluate_segment_filter(&segment_classification.segment_key, config);
     let segment_decision =
         evaluate_segment_gate(&segment_classification.segment_key, segment_score, config);
+    let expectancy_decision = evaluate_expectancy_flow(
+        &segment_classification.segment_key,
+        &side,
+        trade.price,
+        expectancy,
+        &config.expectancy_flow,
+    );
 
     if !config.enabled {
         reject_reason = Some("copy_trade_disabled");
@@ -416,6 +514,8 @@ pub fn evaluate_copy_trade_with_segment(
         reject_reason = Some("sell_entries_disabled");
     } else if segment_filter_decision.enforced_reject {
         reject_reason = Some(segment_filter_decision.reason);
+    } else if expectancy_decision.enforced_reject {
+        reject_reason = Some(expectancy_decision.reason);
     } else if config.mrs_enabled && config.mrs_enforce && mrs_score.is_none() {
         reject_reason = Some("missing_mrs_score");
     } else if config.mrs_enabled
@@ -528,6 +628,7 @@ pub fn evaluate_copy_trade_with_segment(
             "reject_reason": segment_filter_decision.reject_reason,
             "enforced_reject": segment_filter_decision.enforced_reject
         },
+        "expectancy_flow": expectancy_decision.metadata,
         "lag_secs": lag_secs,
         "slippage_bps": slippage_bps,
         "entry_pricing_mode": config.entry_pricing_mode.as_str(),
@@ -633,6 +734,228 @@ struct SegmentFilterDecision {
     enforced_reject: bool,
     allowed_segments: Vec<String>,
     denied_segments: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ExpectancyFlowDecision {
+    reason: &'static str,
+    enforced_reject: bool,
+    metadata: serde_json::Value,
+}
+
+pub fn expectancy_price_bucket(price: Decimal) -> &'static str {
+    if price < dec!(0.20) {
+        "<20c"
+    } else if price < dec!(0.40) {
+        "20-40c"
+    } else if price < dec!(0.60) {
+        "40-60c"
+    } else if price < dec!(0.80) {
+        "60-80c"
+    } else {
+        "80c+"
+    }
+}
+
+pub fn expectancy_cell_key(
+    segment_key: &str,
+    side: &str,
+    price_bucket: &str,
+    horizon_secs: i64,
+) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        segment_key.trim().to_ascii_lowercase(),
+        side.trim().to_ascii_lowercase(),
+        price_bucket.trim(),
+        horizon_secs
+    )
+}
+
+fn evaluate_expectancy_flow(
+    segment_key: &str,
+    side: &str,
+    price: Decimal,
+    input: Option<&CopyTradeExpectancyInput>,
+    config: &CopyTradeExpectancyFlowConfig,
+) -> ExpectancyFlowDecision {
+    let price_bucket = expectancy_price_bucket(price);
+    let cell_key = expectancy_cell_key(segment_key, side, price_bucket, config.horizon_secs);
+    let allowed_cells = normalized_expectancy_cells(&config.allowed_cells);
+    let denied_cells = normalized_expectancy_cells(&config.denied_cells);
+    let mut reject_reason = None;
+    let cell = input.and_then(|input| input.cell.as_ref());
+    let wallet_cell = input.and_then(|input| input.wallet_cell.as_ref());
+
+    if !config.enabled {
+        return ExpectancyFlowDecision {
+            reason: "expectancy_flow_disabled",
+            enforced_reject: false,
+            metadata: serde_json::json!({
+                "enabled": false,
+                "enforced": config.enforce,
+                "decision": "disabled",
+                "cell_key": cell_key,
+                "segment_key": segment_key,
+                "side": side.to_ascii_lowercase(),
+                "price_bucket": price_bucket,
+                "horizon_secs": config.horizon_secs,
+                "allowed_cells": allowed_cells,
+                "denied_cells": denied_cells,
+            }),
+        };
+    }
+
+    if denied_cells.contains(&cell_key) {
+        reject_reason = Some("expectancy_cell_denylisted");
+    } else if !allowed_cells.is_empty() && !allowed_cells.contains(&cell_key) {
+        reject_reason = Some("expectancy_cell_not_allowlisted");
+    } else if price <= Decimal::ZERO {
+        reject_reason = Some("expectancy_invalid_price");
+    } else if cell.is_none() {
+        reject_reason = Some("missing_expectancy_cell");
+    } else if cell
+        .map(|cell| cell.sample_count < config.min_cell_trades)
+        .unwrap_or(true)
+    {
+        reject_reason = Some("expectancy_cell_trades_below_threshold");
+    } else if cell
+        .map(|cell| cell.sample_count < config.min_cell_covered)
+        .unwrap_or(true)
+    {
+        reject_reason = Some("expectancy_cell_coverage_below_threshold");
+    } else if cell
+        .map(|cell| cell.win_rate < config.min_win_rate)
+        .unwrap_or(true)
+    {
+        reject_reason = Some("expectancy_cell_win_rate_below_threshold");
+    } else if cell
+        .map(|cell| cell.expectancy < config.min_avg_roi)
+        .unwrap_or(true)
+    {
+        reject_reason = Some("expectancy_cell_avg_roi_below_threshold");
+    } else if cell
+        .map(|cell| cell.mean_return < config.min_median_roi)
+        .unwrap_or(true)
+    {
+        reject_reason = Some("expectancy_cell_median_roi_below_threshold");
+    } else if config.wallet_filter.enabled && wallet_cell.is_none() {
+        reject_reason = Some("missing_expectancy_wallet_cell");
+    } else if config.wallet_filter.enabled
+        && wallet_cell
+            .map(|cell| cell.sample_count < config.wallet_filter.min_wallet_cell_covered)
+            .unwrap_or(true)
+    {
+        reject_reason = Some("expectancy_wallet_cell_coverage_below_threshold");
+    } else if config.wallet_filter.enabled
+        && wallet_cell
+            .map(|cell| cell.expectancy < config.wallet_filter.min_wallet_cell_avg_roi)
+            .unwrap_or(true)
+    {
+        reject_reason = Some("expectancy_wallet_cell_avg_roi_below_threshold");
+    }
+
+    let decision = match (reject_reason, config.enforce) {
+        (Some(_), true) => "rejected",
+        (Some(_), false) => "would_reject",
+        (None, true) => "accepted",
+        (None, false) => "would_accept",
+    };
+    let reason = reject_reason.unwrap_or("expectancy_flow_passed");
+    ExpectancyFlowDecision {
+        reason,
+        enforced_reject: reject_reason.is_some() && config.enforce,
+        metadata: serde_json::json!({
+            "enabled": config.enabled,
+            "enforced": config.enforce,
+            "decision": decision,
+            "reason": reason,
+            "reject_reason": reject_reason,
+            "cell_key": cell_key,
+            "segment_key": segment_key,
+            "side": side.to_ascii_lowercase(),
+            "price_bucket": price_bucket,
+            "horizon_secs": config.horizon_secs,
+            "allowed_cells": allowed_cells,
+            "denied_cells": denied_cells,
+            "thresholds": {
+                "min_trade_usd": config.min_trade_usd,
+                "min_cell_trades": config.min_cell_trades,
+                "min_cell_covered": config.min_cell_covered,
+                "min_win_rate": config.min_win_rate,
+                "min_avg_roi": config.min_avg_roi,
+                "min_median_roi": config.min_median_roi,
+                "wallet_filter": config.wallet_filter
+            },
+            "cell": cell.map(expectancy_cell_metadata),
+            "wallet_cell": wallet_cell.map(expectancy_wallet_cell_metadata)
+        }),
+    }
+}
+
+fn normalized_expectancy_cells(cells: &[String]) -> BTreeSet<String> {
+    cells
+        .iter()
+        .filter_map(|cell| {
+            let parts = cell
+                .split('|')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>();
+            if parts.len() != 4 {
+                return None;
+            }
+            Some(expectancy_cell_key(
+                parts[0],
+                parts[1],
+                parts[2],
+                parts[3].parse::<i64>().ok()?,
+            ))
+        })
+        .collect()
+}
+
+fn expectancy_cell_metadata(cell: &ExpectancyFlowCell) -> serde_json::Value {
+    serde_json::json!({
+        "cell_key": cell.cell_key,
+        "dimensions": cell.dimensions,
+        "horizon_secs": cell.horizon_secs,
+        "lookback_days": cell.lookback_days,
+        "trades": cell.sample_count,
+        "covered_trades": cell.sample_count,
+        "wins": cell.winning_count,
+        "losses": cell.losing_count,
+        "win_rate": cell.win_rate,
+        "avg_roi": cell.expectancy,
+        "median_roi": cell.mean_return,
+        "confidence": cell.confidence,
+        "sample_start": cell.sample_start,
+        "sample_end": cell.sample_end,
+        "score_version": cell.score_version,
+        "updated_at": cell.updated_at
+    })
+}
+
+fn expectancy_wallet_cell_metadata(cell: &ExpectancyFlowWalletCell) -> serde_json::Value {
+    serde_json::json!({
+        "proxy_wallet": cell.proxy_wallet,
+        "cell_key": cell.cell_key,
+        "dimensions": cell.dimensions,
+        "horizon_secs": cell.horizon_secs,
+        "lookback_days": cell.lookback_days,
+        "trades": cell.sample_count,
+        "covered_trades": cell.sample_count,
+        "wins": cell.winning_count,
+        "losses": cell.losing_count,
+        "win_rate": cell.win_rate,
+        "avg_roi": cell.expectancy,
+        "median_roi": cell.mean_return,
+        "confidence": cell.confidence,
+        "sample_start": cell.sample_start,
+        "sample_end": cell.sample_end,
+        "score_version": cell.score_version,
+        "updated_at": cell.updated_at
+    })
 }
 
 fn evaluate_segment_filter(segment_key: &str, config: &CopyTradeConfig) -> SegmentFilterDecision {
@@ -1091,11 +1414,14 @@ mod tests {
 
     use crate::{
         copytrade::{
-            clob_tick_price, evaluate_copy_trade, run_copy_trade_backtest, CopyTradeConfig,
-            CopyTradeMrsScore, CopyTradeSegmentScore, CopyTradeWalletPerformance, ObservedMarket,
+            clob_tick_price, evaluate_copy_trade, evaluate_copy_trade_with_segment,
+            run_copy_trade_backtest, CopyTradeConfig, CopyTradeExpectancyInput, CopyTradeMrsScore,
+            CopyTradeSegmentScore, CopyTradeWalletPerformance, ObservedMarket,
         },
-        models::{OrderSide, WalletScore, WhaleTrade},
-        segments::MRS_SEGMENT_V2_SCORE_VERSION,
+        models::{
+            ExpectancyFlowCell, ExpectancyFlowWalletCell, OrderSide, WalletScore, WhaleTrade,
+        },
+        segments::{SegmentClassification, MRS_SEGMENT_V2_SCORE_VERSION},
     };
 
     fn trade(wallet: &str, asset: &str, price: rust_decimal::Decimal, minutes: i64) -> WhaleTrade {
@@ -1173,6 +1499,86 @@ mod tests {
         }
     }
 
+    fn segment_classification(segment_key: &str) -> SegmentClassification {
+        SegmentClassification {
+            segment_key: segment_key.to_string(),
+            classifier_version: "gamma_taxonomy_v1".to_string(),
+            confidence: dec!(0.95),
+            matched_rule: "test".to_string(),
+            matched_terms: vec![],
+            source_fields: serde_json::json!({}),
+        }
+    }
+
+    fn expectancy_cell(
+        process_id: Uuid,
+        cell_key: String,
+        sample_count: i32,
+        win_rate: rust_decimal::Decimal,
+        expectancy: rust_decimal::Decimal,
+        mean_return: rust_decimal::Decimal,
+    ) -> ExpectancyFlowCell {
+        ExpectancyFlowCell {
+            process_id,
+            score_version: "expectancy_flow_v1".to_string(),
+            cell_key,
+            dimensions: serde_json::json!({
+                "segment_key": "crypto.bitcoin.short_interval",
+                "side": "buy",
+                "price_bucket_min": "0.40",
+                "price_bucket_max": "0.60"
+            }),
+            horizon_secs: 3600,
+            lookback_days: 30,
+            sample_count,
+            winning_count: sample_count,
+            losing_count: 0,
+            observed_volume_usd: dec!(10000),
+            realized_pnl_usd: dec!(100),
+            mean_price_delta: dec!(0.02),
+            mean_return,
+            win_rate,
+            expectancy,
+            confidence: dec!(0.90),
+            sample_start: Some(Utc::now() - chrono::Duration::days(1)),
+            sample_end: Some(Utc::now()),
+            metadata: serde_json::json!({}),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn expectancy_wallet_cell(
+        process_id: Uuid,
+        proxy_wallet: &str,
+        cell_key: String,
+        sample_count: i32,
+        expectancy: rust_decimal::Decimal,
+    ) -> ExpectancyFlowWalletCell {
+        ExpectancyFlowWalletCell {
+            process_id,
+            score_version: "expectancy_flow_v1".to_string(),
+            proxy_wallet: proxy_wallet.to_string(),
+            cell_key,
+            dimensions: serde_json::json!({}),
+            horizon_secs: 3600,
+            lookback_days: 30,
+            sample_count,
+            winning_count: sample_count,
+            losing_count: 0,
+            observed_volume_usd: dec!(5000),
+            realized_pnl_usd: dec!(100),
+            mean_price_delta: dec!(0.02),
+            mean_return: expectancy,
+            win_rate: dec!(0.80),
+            expectancy,
+            confidence: dec!(0.80),
+            sample_start: Some(Utc::now() - chrono::Duration::days(1)),
+            sample_end: Some(Utc::now()),
+            metadata: serde_json::json!({}),
+            updated_at: Utc::now(),
+        }
+    }
+
     #[test]
     fn evaluates_qualified_whale_trade_into_order_plan() {
         let config = CopyTradeConfig::default();
@@ -1194,6 +1600,97 @@ mod tests {
         assert_eq!(decision.copy_signal.status, "detected");
         let order = &decision.order_plan.as_ref().unwrap().orders[0];
         assert_eq!(order.price, dec!(0.51));
+    }
+
+    #[test]
+    fn expectancy_flow_enforce_rejects_when_cell_is_missing() {
+        let mut config = CopyTradeConfig::default();
+        config.expectancy_flow.enabled = true;
+        config.expectancy_flow.enforce = true;
+        config.expectancy_flow.min_cell_trades = 5;
+        config.expectancy_flow.min_cell_covered = 5;
+        let trade = trade("0xabc", "token", dec!(0.50), 0);
+        let wallet_performance = performance("0xabc", dec!(1000), dec!(0.10), 10);
+
+        let decision = evaluate_copy_trade_with_segment(
+            &trade,
+            Some(&wallet_performance),
+            None,
+            None,
+            Some(segment_classification("crypto.bitcoin.short_interval")),
+            None,
+            ObservedMarket {
+                observed_price: dec!(0.50),
+                available_depth_usd: dec!(1000),
+                observed_at: trade.timestamp_utc + chrono::Duration::seconds(10),
+            },
+            &config,
+            None,
+        );
+
+        assert_eq!(decision.copy_signal.status, "rejected");
+        assert_eq!(decision.copy_signal.reason, "missing_expectancy_cell");
+        assert_eq!(
+            decision.copy_signal.metadata["expectancy_flow"]["cell_key"],
+            "crypto.bitcoin.short_interval|buy|40-60c|3600"
+        );
+    }
+
+    #[test]
+    fn expectancy_flow_enforce_allows_positive_cell() {
+        let mut config = CopyTradeConfig::default();
+        config.expectancy_flow.enabled = true;
+        config.expectancy_flow.enforce = true;
+        config.expectancy_flow.min_cell_trades = 5;
+        config.expectancy_flow.min_cell_covered = 5;
+        config.expectancy_flow.min_win_rate = dec!(0.55);
+        config.expectancy_flow.min_avg_roi = dec!(0.02);
+        config.expectancy_flow.min_median_roi = dec!(0.01);
+        config.expectancy_flow.wallet_filter.enabled = true;
+        config.expectancy_flow.wallet_filter.min_wallet_cell_covered = 2;
+        config.expectancy_flow.wallet_filter.min_wallet_cell_avg_roi = dec!(0.01);
+        let trade = trade("0xabc", "token", dec!(0.50), 0);
+        let wallet_performance = performance("0xabc", dec!(1000), dec!(0.10), 10);
+        let cell_key = "crypto.bitcoin.short_interval|buy|40-60c|3600".to_string();
+        let input = CopyTradeExpectancyInput {
+            cell: Some(expectancy_cell(
+                Uuid::new_v4(),
+                cell_key.clone(),
+                12,
+                dec!(0.65),
+                dec!(0.05),
+                dec!(0.04),
+            )),
+            wallet_cell: Some(expectancy_wallet_cell(
+                Uuid::new_v4(),
+                "0xabc",
+                cell_key,
+                4,
+                dec!(0.06),
+            )),
+        };
+
+        let decision = evaluate_copy_trade_with_segment(
+            &trade,
+            Some(&wallet_performance),
+            None,
+            None,
+            Some(segment_classification("crypto.bitcoin.short_interval")),
+            Some(&input),
+            ObservedMarket {
+                observed_price: dec!(0.50),
+                available_depth_usd: dec!(1000),
+                observed_at: trade.timestamp_utc + chrono::Duration::seconds(10),
+            },
+            &config,
+            None,
+        );
+
+        assert_eq!(decision.copy_signal.status, "detected");
+        assert_eq!(
+            decision.copy_signal.metadata["expectancy_flow"]["reason"],
+            "expectancy_flow_passed"
+        );
     }
 
     #[test]

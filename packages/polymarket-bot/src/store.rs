@@ -10,16 +10,19 @@ use uuid::Uuid;
 
 use crate::{
     config::PostgresConfig,
+    copytrade::{expectancy_price_bucket, CopyTradeExpectancyInput},
     events::ServiceEvent,
     execution::live::LiveVenueEvent,
     execution::OrderPlanReport,
     models::{
         BackfillJob, BackfillJobStatus, BacktestRun, ConversionRequest, ConversionResult,
         CopyTradeBacktestResult, CopyTradeBacktestRun, CopyTradeSignal, DataApiClosedPosition,
-        FillRecord, GammaMarketMetadata, Market, OrderRecord, OrderRequest, OrderState,
-        OutcomeToken, SignalCandidate, TradingProcess, TradingProcessConfig, WalletPerformance,
-        WalletScore, WalletScoreCalibrationSnapshot, WalletSegmentPerformance,
-        WalletTradeTaxonomyCandidate, WalletTradeTaxonomyUpdate, WhalePollCheckpoint, WhaleTrade,
+        EffectiveExpectancyFlowProcessConfig, ExpectancyFlowCell, ExpectancyFlowRecomputeReport,
+        ExpectancyFlowWalletCell, FillRecord, GammaMarketMetadata, Market, OrderRecord,
+        OrderRequest, OrderState, OutcomeToken, SignalCandidate, TradingProcess,
+        TradingProcessConfig, WalletPerformance, WalletScore, WalletScoreCalibrationSnapshot,
+        WalletSegmentPerformance, WalletTradeTaxonomyCandidate, WalletTradeTaxonomyUpdate,
+        WhalePollCheckpoint, WhaleTrade,
     },
     orderbook::LocalOrderBook,
     segments::{
@@ -443,6 +446,8 @@ pub struct TradingProcessResetReport {
     pub trade_exits_deleted: u64,
     pub trade_positions_deleted: u64,
     pub wallet_performance_deleted: u64,
+    pub expectancy_flow_cells_deleted: u64,
+    pub expectancy_flow_wallet_cells_deleted: u64,
     pub process_events_deleted: u64,
     pub copy_trade_backtest_results_deleted: u64,
     pub copy_trade_backtest_runs_deleted: u64,
@@ -1432,6 +1437,21 @@ impl Store {
                 .await
                 .context("failed to delete reset wallet performance")?
                 .rows_affected();
+        let expectancy_flow_wallet_cells_deleted = sqlx::query(
+            "DELETE FROM polymarket.expectancy_flow_wallet_cells WHERE process_id = $1",
+        )
+        .bind(process_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to delete reset expectancy flow wallet cells")?
+        .rows_affected();
+        let expectancy_flow_cells_deleted =
+            sqlx::query("DELETE FROM polymarket.expectancy_flow_cells WHERE process_id = $1")
+                .bind(process_id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to delete reset expectancy flow cells")?
+                .rows_affected();
         let process_events_deleted =
             sqlx::query("DELETE FROM polymarket.trading_process_events WHERE process_id = $1")
                 .bind(process_id)
@@ -1474,6 +1494,8 @@ impl Store {
             trade_exits_deleted,
             trade_positions_deleted,
             wallet_performance_deleted,
+            expectancy_flow_cells_deleted,
+            expectancy_flow_wallet_cells_deleted,
             process_events_deleted,
             copy_trade_backtest_results_deleted,
             copy_trade_backtest_runs_deleted,
@@ -6205,6 +6227,712 @@ impl Store {
             .await
     }
 
+    pub async fn upsert_expectancy_flow_cell(&self, cell: &ExpectancyFlowCell) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO polymarket.expectancy_flow_cells (
+              process_id, score_version, cell_key, dimensions, horizon_secs, lookback_days,
+              sample_count, winning_count, losing_count, observed_volume_usd, realized_pnl_usd,
+              mean_price_delta, mean_return, win_rate, expectancy, confidence,
+              sample_start, sample_end, metadata, updated_at
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,now())
+            ON CONFLICT (process_id, score_version, cell_key) DO UPDATE SET
+              dimensions = EXCLUDED.dimensions,
+              horizon_secs = EXCLUDED.horizon_secs,
+              lookback_days = EXCLUDED.lookback_days,
+              sample_count = EXCLUDED.sample_count,
+              winning_count = EXCLUDED.winning_count,
+              losing_count = EXCLUDED.losing_count,
+              observed_volume_usd = EXCLUDED.observed_volume_usd,
+              realized_pnl_usd = EXCLUDED.realized_pnl_usd,
+              mean_price_delta = EXCLUDED.mean_price_delta,
+              mean_return = EXCLUDED.mean_return,
+              win_rate = EXCLUDED.win_rate,
+              expectancy = EXCLUDED.expectancy,
+              confidence = EXCLUDED.confidence,
+              sample_start = EXCLUDED.sample_start,
+              sample_end = EXCLUDED.sample_end,
+              metadata = EXCLUDED.metadata,
+              updated_at = now()
+            "#,
+        )
+        .bind(cell.process_id)
+        .bind(&cell.score_version)
+        .bind(&cell.cell_key)
+        .bind(&cell.dimensions)
+        .bind(cell.horizon_secs)
+        .bind(cell.lookback_days)
+        .bind(cell.sample_count)
+        .bind(cell.winning_count)
+        .bind(cell.losing_count)
+        .bind(cell.observed_volume_usd)
+        .bind(cell.realized_pnl_usd)
+        .bind(cell.mean_price_delta)
+        .bind(cell.mean_return)
+        .bind(cell.win_rate)
+        .bind(cell.expectancy)
+        .bind(cell.confidence)
+        .bind(cell.sample_start)
+        .bind(cell.sample_end)
+        .bind(&cell.metadata)
+        .execute(&self.pool)
+        .await
+        .context("failed to upsert expectancy flow cell")?;
+        Ok(())
+    }
+
+    pub async fn upsert_expectancy_flow_wallet_cell(
+        &self,
+        cell: &ExpectancyFlowWalletCell,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO polymarket.expectancy_flow_wallet_cells (
+              process_id, score_version, proxy_wallet, cell_key, dimensions,
+              horizon_secs, lookback_days, sample_count, winning_count, losing_count,
+              observed_volume_usd, realized_pnl_usd, mean_price_delta, mean_return,
+              win_rate, expectancy, confidence, sample_start, sample_end, metadata, updated_at
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,now())
+            ON CONFLICT (process_id, score_version, proxy_wallet, cell_key) DO UPDATE SET
+              dimensions = EXCLUDED.dimensions,
+              horizon_secs = EXCLUDED.horizon_secs,
+              lookback_days = EXCLUDED.lookback_days,
+              sample_count = EXCLUDED.sample_count,
+              winning_count = EXCLUDED.winning_count,
+              losing_count = EXCLUDED.losing_count,
+              observed_volume_usd = EXCLUDED.observed_volume_usd,
+              realized_pnl_usd = EXCLUDED.realized_pnl_usd,
+              mean_price_delta = EXCLUDED.mean_price_delta,
+              mean_return = EXCLUDED.mean_return,
+              win_rate = EXCLUDED.win_rate,
+              expectancy = EXCLUDED.expectancy,
+              confidence = EXCLUDED.confidence,
+              sample_start = EXCLUDED.sample_start,
+              sample_end = EXCLUDED.sample_end,
+              metadata = EXCLUDED.metadata,
+              updated_at = now()
+            "#,
+        )
+        .bind(cell.process_id)
+        .bind(&cell.score_version)
+        .bind(&cell.proxy_wallet)
+        .bind(&cell.cell_key)
+        .bind(&cell.dimensions)
+        .bind(cell.horizon_secs)
+        .bind(cell.lookback_days)
+        .bind(cell.sample_count)
+        .bind(cell.winning_count)
+        .bind(cell.losing_count)
+        .bind(cell.observed_volume_usd)
+        .bind(cell.realized_pnl_usd)
+        .bind(cell.mean_price_delta)
+        .bind(cell.mean_return)
+        .bind(cell.win_rate)
+        .bind(cell.expectancy)
+        .bind(cell.confidence)
+        .bind(cell.sample_start)
+        .bind(cell.sample_end)
+        .bind(&cell.metadata)
+        .execute(&self.pool)
+        .await
+        .context("failed to upsert expectancy flow wallet cell")?;
+        Ok(())
+    }
+
+    pub async fn fetch_expectancy_input(
+        &self,
+        process_id: Uuid,
+        score_version: &str,
+        proxy_wallet: &str,
+        segment_key: &str,
+        side: &str,
+        price: Decimal,
+        horizon_secs: i64,
+        min_trade_usd: Decimal,
+    ) -> Result<CopyTradeExpectancyInput> {
+        let side = side.trim().to_ascii_lowercase();
+        let price_bucket = expectancy_price_bucket(price);
+        let bucket_bounds = expectancy_bucket_bounds(price_bucket);
+        let cell = self
+            .fetch_latest_expectancy_flow_cell_by_dimensions(
+                process_id,
+                score_version,
+                segment_key,
+                &side,
+                bucket_bounds.0,
+                horizon_secs,
+                min_trade_usd,
+            )
+            .await?;
+        let wallet_cell = self
+            .fetch_latest_expectancy_flow_wallet_cell_by_dimensions(
+                process_id,
+                score_version,
+                proxy_wallet,
+                segment_key,
+                &side,
+                bucket_bounds.0,
+                horizon_secs,
+                min_trade_usd,
+            )
+            .await?;
+        Ok(CopyTradeExpectancyInput { cell, wallet_cell })
+    }
+
+    pub async fn fetch_latest_expectancy_flow_cell_by_dimensions(
+        &self,
+        process_id: Uuid,
+        score_version: &str,
+        segment_key: &str,
+        side: &str,
+        price_bucket_min: Decimal,
+        horizon_secs: i64,
+        _min_trade_usd: Decimal,
+    ) -> Result<Option<ExpectancyFlowCell>> {
+        let row = sqlx::query_as::<_, ExpectancyFlowCellRow>(
+            r#"
+            SELECT process_id, score_version, cell_key, dimensions, horizon_secs, lookback_days,
+              sample_count, winning_count, losing_count, observed_volume_usd, realized_pnl_usd,
+              mean_price_delta, mean_return, win_rate, expectancy, confidence,
+              sample_start, sample_end, metadata, updated_at
+            FROM polymarket.expectancy_flow_cells
+            WHERE process_id = $1
+              AND score_version = $2
+              AND dimensions #>> '{segment_key}' = $3
+              AND dimensions #>> '{side}' = $4
+              AND (dimensions #>> '{price_bucket_min}')::numeric = $5
+              AND horizon_secs = $6
+            ORDER BY updated_at DESC, confidence DESC, expectancy DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(process_id)
+        .bind(score_version)
+        .bind(segment_key)
+        .bind(side)
+        .bind(price_bucket_min)
+        .bind(horizon_secs)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to fetch latest expectancy flow cell by dimensions")?;
+        Ok(row.map(Into::into))
+    }
+
+    pub async fn fetch_latest_expectancy_flow_wallet_cell_by_dimensions(
+        &self,
+        process_id: Uuid,
+        score_version: &str,
+        proxy_wallet: &str,
+        segment_key: &str,
+        side: &str,
+        price_bucket_min: Decimal,
+        horizon_secs: i64,
+        _min_trade_usd: Decimal,
+    ) -> Result<Option<ExpectancyFlowWalletCell>> {
+        let row = sqlx::query_as::<_, ExpectancyFlowWalletCellRow>(
+            r#"
+            SELECT process_id, score_version, proxy_wallet, cell_key, dimensions,
+              horizon_secs, lookback_days, sample_count, winning_count, losing_count,
+              observed_volume_usd, realized_pnl_usd, mean_price_delta, mean_return,
+              win_rate, expectancy, confidence, sample_start, sample_end, metadata, updated_at
+            FROM polymarket.expectancy_flow_wallet_cells
+            WHERE process_id = $1
+              AND score_version = $2
+              AND lower(proxy_wallet) = lower($3)
+              AND dimensions #>> '{segment_key}' = $4
+              AND dimensions #>> '{side}' = $5
+              AND (dimensions #>> '{price_bucket_min}')::numeric = $6
+              AND horizon_secs = $7
+            ORDER BY updated_at DESC, confidence DESC, expectancy DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(process_id)
+        .bind(score_version)
+        .bind(proxy_wallet)
+        .bind(segment_key)
+        .bind(side)
+        .bind(price_bucket_min)
+        .bind(horizon_secs)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to fetch latest expectancy flow wallet cell by dimensions")?;
+        Ok(row.map(Into::into))
+    }
+
+    pub async fn fetch_expectancy_flow_cell(
+        &self,
+        process_id: Uuid,
+        score_version: &str,
+        cell_key: &str,
+    ) -> Result<Option<ExpectancyFlowCell>> {
+        let row = sqlx::query_as::<_, ExpectancyFlowCellRow>(
+            r#"
+            SELECT process_id, score_version, cell_key, dimensions, horizon_secs, lookback_days,
+              sample_count, winning_count, losing_count, observed_volume_usd, realized_pnl_usd,
+              mean_price_delta, mean_return, win_rate, expectancy, confidence,
+              sample_start, sample_end, metadata, updated_at
+            FROM polymarket.expectancy_flow_cells
+            WHERE process_id = $1 AND score_version = $2 AND cell_key = $3
+            LIMIT 1
+            "#,
+        )
+        .bind(process_id)
+        .bind(score_version)
+        .bind(cell_key)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to fetch expectancy flow cell")?;
+        Ok(row.map(Into::into))
+    }
+
+    pub async fn list_expectancy_flow_cells(
+        &self,
+        process_id: Uuid,
+        score_version: &str,
+        limit: i64,
+    ) -> Result<Vec<ExpectancyFlowCell>> {
+        let rows = sqlx::query_as::<_, ExpectancyFlowCellRow>(
+            r#"
+            SELECT process_id, score_version, cell_key, dimensions, horizon_secs, lookback_days,
+              sample_count, winning_count, losing_count, observed_volume_usd, realized_pnl_usd,
+              mean_price_delta, mean_return, win_rate, expectancy, confidence,
+              sample_start, sample_end, metadata, updated_at
+            FROM polymarket.expectancy_flow_cells
+            WHERE process_id = $1 AND score_version = $2
+            ORDER BY confidence DESC, expectancy DESC, sample_count DESC, cell_key
+            LIMIT $3
+            "#,
+        )
+        .bind(process_id)
+        .bind(score_version)
+        .bind(limit.max(1))
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to list expectancy flow cells")?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn fetch_expectancy_flow_wallet_cell(
+        &self,
+        process_id: Uuid,
+        score_version: &str,
+        proxy_wallet: &str,
+        cell_key: &str,
+    ) -> Result<Option<ExpectancyFlowWalletCell>> {
+        let row = sqlx::query_as::<_, ExpectancyFlowWalletCellRow>(
+            r#"
+            SELECT process_id, score_version, proxy_wallet, cell_key, dimensions,
+              horizon_secs, lookback_days, sample_count, winning_count, losing_count,
+              observed_volume_usd, realized_pnl_usd, mean_price_delta, mean_return,
+              win_rate, expectancy, confidence, sample_start, sample_end, metadata, updated_at
+            FROM polymarket.expectancy_flow_wallet_cells
+            WHERE process_id = $1
+              AND score_version = $2
+              AND lower(proxy_wallet) = lower($3)
+              AND cell_key = $4
+            LIMIT 1
+            "#,
+        )
+        .bind(process_id)
+        .bind(score_version)
+        .bind(proxy_wallet)
+        .bind(cell_key)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to fetch expectancy flow wallet cell")?;
+        Ok(row.map(Into::into))
+    }
+
+    pub async fn list_expectancy_flow_wallet_cells(
+        &self,
+        process_id: Uuid,
+        score_version: &str,
+        proxy_wallet: &str,
+        limit: i64,
+    ) -> Result<Vec<ExpectancyFlowWalletCell>> {
+        let rows = sqlx::query_as::<_, ExpectancyFlowWalletCellRow>(
+            r#"
+            SELECT process_id, score_version, proxy_wallet, cell_key, dimensions,
+              horizon_secs, lookback_days, sample_count, winning_count, losing_count,
+              observed_volume_usd, realized_pnl_usd, mean_price_delta, mean_return,
+              win_rate, expectancy, confidence, sample_start, sample_end, metadata, updated_at
+            FROM polymarket.expectancy_flow_wallet_cells
+            WHERE process_id = $1
+              AND score_version = $2
+              AND lower(proxy_wallet) = lower($3)
+            ORDER BY confidence DESC, expectancy DESC, sample_count DESC, cell_key
+            LIMIT $4
+            "#,
+        )
+        .bind(process_id)
+        .bind(score_version)
+        .bind(proxy_wallet)
+        .bind(limit.max(1))
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to list expectancy flow wallet cells")?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn recompute_expectancy_flow_cells(
+        &self,
+        process_id: Uuid,
+        config: &EffectiveExpectancyFlowProcessConfig,
+    ) -> Result<ExpectancyFlowRecomputeReport> {
+        let cells_recomputed = self
+            .recompute_expectancy_flow_global_cells(process_id, config)
+            .await?;
+        let wallet_cells_recomputed = if config.include_wallet_cells {
+            self.recompute_expectancy_flow_wallet_cells(process_id, config)
+                .await?
+        } else {
+            sqlx::query(
+                "DELETE FROM polymarket.expectancy_flow_wallet_cells WHERE process_id = $1 AND score_version = $2",
+            )
+            .bind(process_id)
+            .bind(&config.score_version)
+            .execute(&self.pool)
+            .await
+            .context("failed to clear disabled expectancy flow wallet cells")?
+            .rows_affected()
+        };
+        Ok(ExpectancyFlowRecomputeReport {
+            process_id,
+            score_version: config.score_version.clone(),
+            cells_recomputed,
+            wallet_cells_recomputed,
+        })
+    }
+
+    async fn recompute_expectancy_flow_global_cells(
+        &self,
+        process_id: Uuid,
+        config: &EffectiveExpectancyFlowProcessConfig,
+    ) -> Result<u64> {
+        let rows = sqlx::query_scalar::<_, i64>(
+            r#"
+            WITH deleted AS (
+              DELETE FROM polymarket.expectancy_flow_cells
+              WHERE process_id = $1 AND score_version = $2
+            ),
+            source_trades AS MATERIALIZED (
+              SELECT
+                wt.trade_id,
+                wt.proxy_wallet AS proxy_wallet,
+                wt.asset,
+                wt.side,
+                wt.price,
+                wt.size,
+                wt.cash_value,
+                wt.timestamp_utc,
+                CASE WHEN $8::boolean THEN COALESCE(wt.market_id, wt.condition_id, wt.asset) ELSE 'all' END AS market_key,
+                CASE WHEN $9::boolean THEN COALESCE(NULLIF(wt.taxonomy_segment, ''), 'unknown') ELSE 'all' END AS segment_key,
+                (floor((wt.price * 10000) / GREATEST($6::numeric, 1)) * GREATEST($6::numeric, 1))::integer AS price_bucket_bps
+              FROM polymarket.wallet_trades wt
+              WHERE wt.timestamp_utc >= now() - ($4::integer * interval '1 day')
+                AND wt.price > 0
+                AND wt.cash_value > 0
+                AND wt.size > 0
+            ),
+            observations AS MATERIALIZED (
+              SELECT
+                st.*,
+                mark.timestamp_utc AS mark_timestamp,
+                mark.mark_price
+              FROM source_trades st
+              JOIN LATERAL (
+                SELECT
+                  ob.timestamp_utc,
+                  CASE
+                    WHEN ob.best_bid IS NOT NULL AND ob.best_ask IS NOT NULL THEN (ob.best_bid + ob.best_ask) / 2
+                    WHEN ob.best_bid IS NOT NULL THEN ob.best_bid
+                    ELSE ob.best_ask
+                  END AS mark_price
+                FROM polymarket.orderbook_snapshots ob
+                WHERE ob.token_id = st.asset
+                  AND ob.timestamp_utc >= st.timestamp_utc + ($5::bigint * interval '1 second')
+                  AND ob.timestamp_utc <= st.timestamp_utc + (($5::bigint + $7::bigint) * interval '1 second')
+                  AND (ob.best_bid IS NOT NULL OR ob.best_ask IS NOT NULL)
+                ORDER BY ob.timestamp_utc ASC
+                LIMIT 1
+              ) mark ON true
+            ),
+            prepared AS MATERIALIZED (
+              SELECT
+                *,
+                CASE
+                  WHEN upper(side) = 'SELL' THEN price - mark_price
+                  ELSE mark_price - price
+                END AS price_delta,
+                CASE
+                  WHEN upper(side) = 'SELL' THEN (price - mark_price) * size
+                  ELSE (mark_price - price) * size
+                END AS pnl_usd,
+                CASE
+                  WHEN cash_value > 0 THEN
+                    CASE
+                      WHEN upper(side) = 'SELL' THEN ((price - mark_price) * size) / cash_value
+                      ELSE ((mark_price - price) * size) / cash_value
+                    END
+                  ELSE 0
+                END AS return_on_notional
+              FROM observations
+              WHERE mark_price >= 0 AND mark_price <= 1
+            ),
+            grouped AS MATERIALIZED (
+              SELECT
+                lower(COALESCE(NULLIF(side, ''), 'unknown')) AS side_key,
+                market_key,
+                segment_key,
+                price_bucket_bps,
+                count(*)::integer AS sample_count,
+                count(*) FILTER (WHERE pnl_usd > 0)::integer AS winning_count,
+                count(*) FILTER (WHERE pnl_usd < 0)::integer AS losing_count,
+                COALESCE(sum(cash_value), 0)::numeric AS observed_volume_usd,
+                COALESCE(sum(pnl_usd), 0)::numeric AS realized_pnl_usd,
+                COALESCE(avg(price_delta), 0)::numeric AS mean_price_delta,
+                COALESCE(avg(return_on_notional), 0)::numeric AS mean_return,
+                COALESCE(avg(return_on_notional), 0)::numeric AS expectancy,
+                min(timestamp_utc) AS sample_start,
+                max(timestamp_utc) AS sample_end
+              FROM prepared
+              GROUP BY lower(COALESCE(NULLIF(side, ''), 'unknown')), market_key, segment_key, price_bucket_bps
+              HAVING count(*) >= GREATEST($10::integer, 1)
+              ORDER BY expectancy DESC, sample_count DESC
+              LIMIT $11
+            ),
+            inserted AS (
+              INSERT INTO polymarket.expectancy_flow_cells (
+                process_id, score_version, cell_key, dimensions, horizon_secs, lookback_days,
+                sample_count, winning_count, losing_count, observed_volume_usd, realized_pnl_usd,
+                mean_price_delta, mean_return, win_rate, expectancy, confidence,
+                sample_start, sample_end, metadata, updated_at
+              )
+              SELECT
+                $1,
+                $2,
+                md5(concat_ws('|', $2, side_key, market_key, segment_key, price_bucket_bps::text)),
+                jsonb_build_object(
+                  'side', side_key,
+                  'market_key', market_key,
+                  'segment_key', segment_key,
+                  'price_bucket_bps', price_bucket_bps,
+                  'price_bucket_min', price_bucket_bps::numeric / 10000,
+                  'price_bucket_max', (price_bucket_bps + GREATEST($6::integer, 1))::numeric / 10000
+                ),
+                $5,
+                $4,
+                sample_count,
+                winning_count,
+                losing_count,
+                observed_volume_usd,
+                realized_pnl_usd,
+                mean_price_delta,
+                mean_return,
+                CASE WHEN sample_count > 0 THEN winning_count::numeric / sample_count ELSE 0 END,
+                expectancy,
+                LEAST(1::numeric, sample_count::numeric / GREATEST(($10::numeric * 3), 1)),
+                sample_start,
+                sample_end,
+                jsonb_build_object(
+                  'source', 'wallet_trades_orderbook_snapshots',
+                  'enabled', $3,
+                  'max_snapshot_lag_secs', $7,
+                  'include_market_dimension', $8,
+                  'include_taxonomy_segment', $9,
+                  'recomputed_at', now()
+                ),
+                now()
+              FROM grouped
+              RETURNING 1
+            )
+            SELECT count(*)::bigint FROM inserted
+            "#,
+        )
+        .bind(process_id)
+        .bind(&config.score_version)
+        .bind(config.enabled)
+        .bind(config.recompute_lookback_days.max(0))
+        .bind(config.horizon_secs.max(1))
+        .bind(config.price_bucket_bps.max(1))
+        .bind(config.max_snapshot_lag_secs.max(1))
+        .bind(config.include_market_dimension)
+        .bind(config.include_taxonomy_segment)
+        .bind(config.min_trades_per_cell.max(1))
+        .bind(config.max_cells.max(1))
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to recompute expectancy flow cells")?;
+        Ok(rows.max(0) as u64)
+    }
+
+    async fn recompute_expectancy_flow_wallet_cells(
+        &self,
+        process_id: Uuid,
+        config: &EffectiveExpectancyFlowProcessConfig,
+    ) -> Result<u64> {
+        let rows = sqlx::query_scalar::<_, i64>(
+            r#"
+            WITH deleted AS (
+              DELETE FROM polymarket.expectancy_flow_wallet_cells
+              WHERE process_id = $1 AND score_version = $2
+            ),
+            source_trades AS MATERIALIZED (
+              SELECT
+                wt.trade_id,
+                wt.proxy_wallet AS proxy_wallet,
+                wt.asset,
+                wt.side,
+                wt.price,
+                wt.size,
+                wt.cash_value,
+                wt.timestamp_utc,
+                CASE WHEN $8::boolean THEN COALESCE(wt.market_id, wt.condition_id, wt.asset) ELSE 'all' END AS market_key,
+                CASE WHEN $9::boolean THEN COALESCE(NULLIF(wt.taxonomy_segment, ''), 'unknown') ELSE 'all' END AS segment_key,
+                (floor((wt.price * 10000) / GREATEST($6::numeric, 1)) * GREATEST($6::numeric, 1))::integer AS price_bucket_bps
+              FROM polymarket.wallet_trades wt
+              WHERE wt.timestamp_utc >= now() - ($4::integer * interval '1 day')
+                AND wt.price > 0
+                AND wt.cash_value > 0
+                AND wt.size > 0
+            ),
+            observations AS MATERIALIZED (
+              SELECT
+                st.*,
+                mark.timestamp_utc AS mark_timestamp,
+                mark.mark_price
+              FROM source_trades st
+              JOIN LATERAL (
+                SELECT
+                  ob.timestamp_utc,
+                  CASE
+                    WHEN ob.best_bid IS NOT NULL AND ob.best_ask IS NOT NULL THEN (ob.best_bid + ob.best_ask) / 2
+                    WHEN ob.best_bid IS NOT NULL THEN ob.best_bid
+                    ELSE ob.best_ask
+                  END AS mark_price
+                FROM polymarket.orderbook_snapshots ob
+                WHERE ob.token_id = st.asset
+                  AND ob.timestamp_utc >= st.timestamp_utc + ($5::bigint * interval '1 second')
+                  AND ob.timestamp_utc <= st.timestamp_utc + (($5::bigint + $7::bigint) * interval '1 second')
+                  AND (ob.best_bid IS NOT NULL OR ob.best_ask IS NOT NULL)
+                ORDER BY ob.timestamp_utc ASC
+                LIMIT 1
+              ) mark ON true
+            ),
+            prepared AS MATERIALIZED (
+              SELECT
+                *,
+                CASE
+                  WHEN upper(side) = 'SELL' THEN price - mark_price
+                  ELSE mark_price - price
+                END AS price_delta,
+                CASE
+                  WHEN upper(side) = 'SELL' THEN (price - mark_price) * size
+                  ELSE (mark_price - price) * size
+                END AS pnl_usd,
+                CASE
+                  WHEN cash_value > 0 THEN
+                    CASE
+                      WHEN upper(side) = 'SELL' THEN ((price - mark_price) * size) / cash_value
+                      ELSE ((mark_price - price) * size) / cash_value
+                    END
+                  ELSE 0
+                END AS return_on_notional
+              FROM observations
+              WHERE mark_price >= 0 AND mark_price <= 1
+            ),
+            grouped AS MATERIALIZED (
+              SELECT
+                proxy_wallet,
+                lower(COALESCE(NULLIF(side, ''), 'unknown')) AS side_key,
+                market_key,
+                segment_key,
+                price_bucket_bps,
+                count(*)::integer AS sample_count,
+                count(*) FILTER (WHERE pnl_usd > 0)::integer AS winning_count,
+                count(*) FILTER (WHERE pnl_usd < 0)::integer AS losing_count,
+                COALESCE(sum(cash_value), 0)::numeric AS observed_volume_usd,
+                COALESCE(sum(pnl_usd), 0)::numeric AS realized_pnl_usd,
+                COALESCE(avg(price_delta), 0)::numeric AS mean_price_delta,
+                COALESCE(avg(return_on_notional), 0)::numeric AS mean_return,
+                COALESCE(avg(return_on_notional), 0)::numeric AS expectancy,
+                min(timestamp_utc) AS sample_start,
+                max(timestamp_utc) AS sample_end
+              FROM prepared
+              GROUP BY proxy_wallet, lower(COALESCE(NULLIF(side, ''), 'unknown')), market_key, segment_key, price_bucket_bps
+              HAVING count(*) >= GREATEST($10::integer, 1)
+              ORDER BY expectancy DESC, sample_count DESC
+              LIMIT $11
+            ),
+            inserted AS (
+              INSERT INTO polymarket.expectancy_flow_wallet_cells (
+                process_id, score_version, proxy_wallet, cell_key, dimensions, horizon_secs,
+                lookback_days, sample_count, winning_count, losing_count, observed_volume_usd,
+                realized_pnl_usd, mean_price_delta, mean_return, win_rate, expectancy,
+                confidence, sample_start, sample_end, metadata, updated_at
+              )
+              SELECT
+                $1,
+                $2,
+                proxy_wallet,
+                md5(concat_ws('|', $2, proxy_wallet, side_key, market_key, segment_key, price_bucket_bps::text)),
+                jsonb_build_object(
+                  'side', side_key,
+                  'market_key', market_key,
+                  'segment_key', segment_key,
+                  'price_bucket_bps', price_bucket_bps,
+                  'price_bucket_min', price_bucket_bps::numeric / 10000,
+                  'price_bucket_max', (price_bucket_bps + GREATEST($6::integer, 1))::numeric / 10000
+                ),
+                $5,
+                $4,
+                sample_count,
+                winning_count,
+                losing_count,
+                observed_volume_usd,
+                realized_pnl_usd,
+                mean_price_delta,
+                mean_return,
+                CASE WHEN sample_count > 0 THEN winning_count::numeric / sample_count ELSE 0 END,
+                expectancy,
+                LEAST(1::numeric, sample_count::numeric / GREATEST(($10::numeric * 3), 1)),
+                sample_start,
+                sample_end,
+                jsonb_build_object(
+                  'source', 'wallet_trades_orderbook_snapshots',
+                  'enabled', $3,
+                  'max_snapshot_lag_secs', $7,
+                  'include_market_dimension', $8,
+                  'include_taxonomy_segment', $9,
+                  'recomputed_at', now()
+                ),
+                now()
+              FROM grouped
+              RETURNING 1
+            )
+            SELECT count(*)::bigint FROM inserted
+            "#,
+        )
+        .bind(process_id)
+        .bind(&config.score_version)
+        .bind(config.enabled)
+        .bind(config.recompute_lookback_days.max(0))
+        .bind(config.horizon_secs.max(1))
+        .bind(config.price_bucket_bps.max(1))
+        .bind(config.max_snapshot_lag_secs.max(1))
+        .bind(config.include_market_dimension)
+        .bind(config.include_taxonomy_segment)
+        .bind(config.min_trades_per_cell.max(1))
+        .bind(config.max_cells.max(1))
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to recompute expectancy flow wallet cells")?;
+        Ok(rows.max(0) as u64)
+    }
+
     pub async fn upsert_wallet_score(&self, score: &WalletScore) -> Result<()> {
         sqlx::query(
             r#"
@@ -6992,6 +7720,120 @@ impl From<WhaleTradeRow> for WhaleTrade {
             event_slug: row.event_slug,
             transaction_hash: row.transaction_hash,
             raw_payload: row.raw_payload,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct ExpectancyFlowCellRow {
+    process_id: Uuid,
+    score_version: String,
+    cell_key: String,
+    dimensions: serde_json::Value,
+    horizon_secs: i64,
+    lookback_days: i32,
+    sample_count: i32,
+    winning_count: i32,
+    losing_count: i32,
+    observed_volume_usd: Decimal,
+    realized_pnl_usd: Decimal,
+    mean_price_delta: Decimal,
+    mean_return: Decimal,
+    win_rate: Decimal,
+    expectancy: Decimal,
+    confidence: Decimal,
+    sample_start: Option<DateTime<Utc>>,
+    sample_end: Option<DateTime<Utc>>,
+    metadata: serde_json::Value,
+    updated_at: DateTime<Utc>,
+}
+
+fn expectancy_bucket_bounds(price_bucket: &str) -> (Decimal, Decimal) {
+    match price_bucket {
+        "<20c" => (Decimal::ZERO, dec!(0.20)),
+        "20-40c" => (dec!(0.20), dec!(0.40)),
+        "40-60c" => (dec!(0.40), dec!(0.60)),
+        "60-80c" => (dec!(0.60), dec!(0.80)),
+        _ => (dec!(0.80), dec!(1.00)),
+    }
+}
+
+impl From<ExpectancyFlowCellRow> for ExpectancyFlowCell {
+    fn from(row: ExpectancyFlowCellRow) -> Self {
+        Self {
+            process_id: row.process_id,
+            score_version: row.score_version,
+            cell_key: row.cell_key,
+            dimensions: row.dimensions,
+            horizon_secs: row.horizon_secs,
+            lookback_days: row.lookback_days,
+            sample_count: row.sample_count,
+            winning_count: row.winning_count,
+            losing_count: row.losing_count,
+            observed_volume_usd: row.observed_volume_usd,
+            realized_pnl_usd: row.realized_pnl_usd,
+            mean_price_delta: row.mean_price_delta,
+            mean_return: row.mean_return,
+            win_rate: row.win_rate,
+            expectancy: row.expectancy,
+            confidence: row.confidence,
+            sample_start: row.sample_start,
+            sample_end: row.sample_end,
+            metadata: row.metadata,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct ExpectancyFlowWalletCellRow {
+    process_id: Uuid,
+    score_version: String,
+    proxy_wallet: String,
+    cell_key: String,
+    dimensions: serde_json::Value,
+    horizon_secs: i64,
+    lookback_days: i32,
+    sample_count: i32,
+    winning_count: i32,
+    losing_count: i32,
+    observed_volume_usd: Decimal,
+    realized_pnl_usd: Decimal,
+    mean_price_delta: Decimal,
+    mean_return: Decimal,
+    win_rate: Decimal,
+    expectancy: Decimal,
+    confidence: Decimal,
+    sample_start: Option<DateTime<Utc>>,
+    sample_end: Option<DateTime<Utc>>,
+    metadata: serde_json::Value,
+    updated_at: DateTime<Utc>,
+}
+
+impl From<ExpectancyFlowWalletCellRow> for ExpectancyFlowWalletCell {
+    fn from(row: ExpectancyFlowWalletCellRow) -> Self {
+        Self {
+            process_id: row.process_id,
+            score_version: row.score_version,
+            proxy_wallet: row.proxy_wallet,
+            cell_key: row.cell_key,
+            dimensions: row.dimensions,
+            horizon_secs: row.horizon_secs,
+            lookback_days: row.lookback_days,
+            sample_count: row.sample_count,
+            winning_count: row.winning_count,
+            losing_count: row.losing_count,
+            observed_volume_usd: row.observed_volume_usd,
+            realized_pnl_usd: row.realized_pnl_usd,
+            mean_price_delta: row.mean_price_delta,
+            mean_return: row.mean_return,
+            win_rate: row.win_rate,
+            expectancy: row.expectancy,
+            confidence: row.confidence,
+            sample_start: row.sample_start,
+            sample_end: row.sample_end,
+            metadata: row.metadata,
+            updated_at: row.updated_at,
         }
     }
 }

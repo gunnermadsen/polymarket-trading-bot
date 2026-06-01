@@ -12,8 +12,8 @@ use crate::{
     clob::ClobClient,
     copytrade::{
         clob_tick_price, evaluate_copy_trade_with_segment, run_copy_trade_backtest,
-        CopyTradeConfig, CopyTradeMrsScore, CopyTradeSegmentScore, CopyTradeWalletPerformance,
-        ObservedMarket, COPY_SCORE_VERSION,
+        CopyTradeConfig, CopyTradeExpectancyInput, CopyTradeMrsScore, CopyTradeSegmentScore,
+        CopyTradeWalletPerformance, ObservedMarket, COPY_SCORE_VERSION,
     },
     data_api::{ClosedPositionsQuery, DataApiClient, TradesQuery},
     execution::{execute_order_plan, ExecutionVenue, OrderPlan, OrderPlanReport},
@@ -129,6 +129,7 @@ pub struct ResolvedCopyTradeSignal<'a> {
     pub mrs_score: Option<&'a CopyTradeMrsScore>,
     pub segment_score: Option<&'a CopyTradeSegmentScore>,
     pub segment_classification: SegmentClassification,
+    pub expectancy: Option<CopyTradeExpectancyInput>,
     pub observed: ObservedMarket,
     pub order_metadata: serde_json::Value,
 }
@@ -1078,6 +1079,26 @@ pub async fn run_copy_trade_signal_engine(
                 ))
                 .and_then(|score| score.as_ref())
         };
+        let expectancy = if dry_run || !copy_config.expectancy_flow.enabled {
+            None
+        } else if let Some(process_id) = config.process_id {
+            Some(
+                store
+                    .fetch_expectancy_input(
+                        process_id,
+                        &copy_config.expectancy_flow.score_version,
+                        &trade.proxy_wallet,
+                        &segment_classification.segment_key,
+                        &trade.side,
+                        trade.price,
+                        copy_config.expectancy_flow.horizon_secs,
+                        copy_config.expectancy_flow.min_trade_usd,
+                    )
+                    .await?,
+            )
+        } else {
+            None
+        };
         let trade_summary = run_resolved_copy_trade_signal(
             store,
             venue,
@@ -1088,6 +1109,7 @@ pub async fn run_copy_trade_signal_engine(
                 mrs_score,
                 segment_score,
                 segment_classification,
+                expectancy,
                 observed: ObservedMarket {
                     observed_price: trade.price,
                     available_depth_usd: trade.cash_value,
@@ -1134,6 +1156,7 @@ pub async fn run_resolved_copy_trade_signal(
         resolved.mrs_score,
         resolved.segment_score,
         Some(resolved.segment_classification),
+        resolved.expectancy.as_ref(),
         resolved.observed,
         &config.copy_trade,
         config.process_id,
