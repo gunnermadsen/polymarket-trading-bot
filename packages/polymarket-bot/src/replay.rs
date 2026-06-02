@@ -295,6 +295,7 @@ async fn execute_replay_risk_control_exits(
                 Duration::seconds(take_profit.min_hold_secs.max(0)),
                 Duration::seconds(take_profit.require_fresh_mark_secs.max(0)),
                 take_profit.max_exit_slippage_bps,
+                &take_profit.exit_pricing_mode,
                 100,
                 as_of,
             )
@@ -321,6 +322,7 @@ async fn execute_replay_risk_control_exits(
                 Duration::seconds(stop_loss.min_hold_secs.max(0)),
                 Duration::seconds(stop_loss.require_fresh_mark_secs.max(0)),
                 stop_loss.max_exit_slippage_bps,
+                &stop_loss.exit_pricing_mode,
                 100,
                 as_of,
             )

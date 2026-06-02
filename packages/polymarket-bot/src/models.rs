@@ -785,6 +785,13 @@ impl TradingProcessConfig {
             if let Some(max_open_notional_usd) = config.max_open_notional_usd {
                 effective.max_open_notional_usd = max_open_notional_usd;
             }
+            if let Some(max_open_notional_per_token_usd) = config.max_open_notional_per_token_usd {
+                effective.max_open_notional_per_token_usd = max_open_notional_per_token_usd;
+            }
+            if let Some(max_open_notional_per_market_usd) = config.max_open_notional_per_market_usd
+            {
+                effective.max_open_notional_per_market_usd = max_open_notional_per_market_usd;
+            }
             if let Some(copy_size_fraction) = config.copy_size_fraction {
                 effective.copy_size_fraction = copy_size_fraction;
             }
@@ -1018,6 +1025,9 @@ impl TradingProcessConfig {
                 if let Some(max_exit_slippage_bps) = take_profit.max_exit_slippage_bps {
                     effective.take_profit.max_exit_slippage_bps = max_exit_slippage_bps;
                 }
+                if let Some(exit_pricing_mode) = &take_profit.exit_pricing_mode {
+                    effective.take_profit.exit_pricing_mode = exit_pricing_mode.clone();
+                }
             }
             if let Some(stop_loss) = &config.stop_loss {
                 if let Some(stop_loss_enabled) = stop_loss.stop_loss_enabled {
@@ -1040,6 +1050,9 @@ impl TradingProcessConfig {
                 }
                 if let Some(max_exit_slippage_bps) = stop_loss.max_exit_slippage_bps {
                     effective.stop_loss.max_exit_slippage_bps = max_exit_slippage_bps;
+                }
+                if let Some(exit_pricing_mode) = &stop_loss.exit_pricing_mode {
+                    effective.stop_loss.exit_pricing_mode = exit_pricing_mode.clone();
                 }
             }
         }
@@ -1174,6 +1187,8 @@ pub struct EffectiveCopyTradeProcessConfig {
     pub min_copy_size_usd: Decimal,
     pub max_copy_size_usd: Decimal,
     pub max_open_notional_usd: Decimal,
+    pub max_open_notional_per_token_usd: Decimal,
+    pub max_open_notional_per_market_usd: Decimal,
     pub copy_size_fraction: Decimal,
     pub max_follow_lag_secs: i64,
     pub max_price_slippage_bps: Decimal,
@@ -1218,6 +1233,8 @@ impl Default for EffectiveCopyTradeProcessConfig {
             min_copy_size_usd: dec!(2),
             max_copy_size_usd: dec!(2),
             max_open_notional_usd: dec!(20),
+            max_open_notional_per_token_usd: Decimal::ZERO,
+            max_open_notional_per_market_usd: Decimal::ZERO,
             copy_size_fraction: dec!(0.10),
             max_follow_lag_secs: 1800,
             max_price_slippage_bps: dec!(150),
@@ -1302,6 +1319,10 @@ pub struct CopyTradeProcessConfig {
     pub max_copy_size_usd: Option<Decimal>,
     #[serde(default)]
     pub max_open_notional_usd: Option<Decimal>,
+    #[serde(default)]
+    pub max_open_notional_per_token_usd: Option<Decimal>,
+    #[serde(default)]
+    pub max_open_notional_per_market_usd: Option<Decimal>,
     #[serde(default)]
     pub copy_size_fraction: Option<Decimal>,
     #[serde(default)]
@@ -1554,6 +1575,7 @@ pub struct EffectiveTakeProfitExitRuleProcessConfig {
     pub require_fresh_mark_secs: i64,
     pub exit_size_fraction: Decimal,
     pub max_exit_slippage_bps: Decimal,
+    pub exit_pricing_mode: String,
 }
 
 impl Default for EffectiveTakeProfitExitRuleProcessConfig {
@@ -1566,6 +1588,7 @@ impl Default for EffectiveTakeProfitExitRuleProcessConfig {
             require_fresh_mark_secs: 60,
             exit_size_fraction: dec!(1.0),
             max_exit_slippage_bps: dec!(150),
+            exit_pricing_mode: "mark_limit".to_string(),
         }
     }
 }
@@ -1598,6 +1621,8 @@ pub struct TakeProfitExitRuleProcessConfig {
     pub exit_size_fraction: Option<Decimal>,
     #[serde(default)]
     pub max_exit_slippage_bps: Option<Decimal>,
+    #[serde(default)]
+    pub exit_pricing_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1609,6 +1634,7 @@ pub struct EffectiveStopLossExitRuleProcessConfig {
     pub require_fresh_mark_secs: i64,
     pub exit_size_fraction: Decimal,
     pub max_exit_slippage_bps: Decimal,
+    pub exit_pricing_mode: String,
 }
 
 impl Default for EffectiveStopLossExitRuleProcessConfig {
@@ -1621,6 +1647,7 @@ impl Default for EffectiveStopLossExitRuleProcessConfig {
             require_fresh_mark_secs: 60,
             exit_size_fraction: dec!(1.0),
             max_exit_slippage_bps: dec!(150),
+            exit_pricing_mode: "mark_limit".to_string(),
         }
     }
 }
@@ -1641,6 +1668,8 @@ pub struct StopLossExitRuleProcessConfig {
     pub exit_size_fraction: Option<Decimal>,
     #[serde(default)]
     pub max_exit_slippage_bps: Option<Decimal>,
+    #[serde(default)]
+    pub exit_pricing_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

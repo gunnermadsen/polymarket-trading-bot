@@ -277,12 +277,16 @@ pub struct TakeProfitTradeExitCandidate {
     pub exit_timestamp: DateTime<Utc>,
     pub reference_exit_price: Decimal,
     pub order_limit_price: Decimal,
+    pub marketable_exit_price: Option<Decimal>,
+    pub best_bid: Option<Decimal>,
+    pub best_ask: Option<Decimal>,
     pub exit_size: Decimal,
     pub trigger_roi: Decimal,
     pub threshold_roi: Decimal,
     pub take_profit_roi: Decimal,
     pub latest_mark_timestamp: DateTime<Utc>,
     pub max_exit_slippage_bps: Decimal,
+    pub exit_pricing_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2617,6 +2621,32 @@ impl Store {
         Ok(mismatches)
     }
 
+    pub async fn open_trade_position_notional_for_process_scope(
+        &self,
+        process_id: Uuid,
+        token_id: Option<&str>,
+        market_id: Option<&str>,
+    ) -> Result<Decimal> {
+        let notional = sqlx::query_scalar::<_, Decimal>(
+            r#"
+            SELECT COALESCE(sum(open_size * entry_price), 0)
+            FROM polymarket.trade_positions
+            WHERE process_id = $1
+              AND status IN ('open', 'partially_closed')
+              AND open_size > 0
+              AND ($2::text IS NULL OR token_id = $2)
+              AND ($3::text IS NULL OR market_id = $3)
+            "#,
+        )
+        .bind(process_id)
+        .bind(token_id)
+        .bind(market_id)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to fetch open trade position notional for process scope")?;
+        Ok(notional)
+    }
+
     pub async fn account_position_mismatches(
         &self,
         account_address: &str,
@@ -3216,6 +3246,7 @@ impl Store {
         min_hold: chrono::Duration,
         require_fresh_mark: chrono::Duration,
         max_exit_slippage_bps: Decimal,
+        exit_pricing_mode: &str,
         limit: i64,
     ) -> Result<Vec<TakeProfitTradeExitCandidate>> {
         self.fetch_risk_control_trade_exit_candidates(
@@ -3226,6 +3257,7 @@ impl Store {
             min_hold,
             require_fresh_mark,
             max_exit_slippage_bps,
+            exit_pricing_mode,
             limit,
             Utc::now(),
         )
@@ -3240,6 +3272,7 @@ impl Store {
         min_hold: chrono::Duration,
         require_fresh_mark: chrono::Duration,
         max_exit_slippage_bps: Decimal,
+        exit_pricing_mode: &str,
         limit: i64,
         as_of: DateTime<Utc>,
     ) -> Result<Vec<TakeProfitTradeExitCandidate>> {
@@ -3251,6 +3284,7 @@ impl Store {
             min_hold,
             require_fresh_mark,
             max_exit_slippage_bps,
+            exit_pricing_mode,
             limit,
             as_of,
         )
@@ -3265,6 +3299,7 @@ impl Store {
         min_hold: chrono::Duration,
         require_fresh_mark: chrono::Duration,
         max_exit_slippage_bps: Decimal,
+        exit_pricing_mode: &str,
         limit: i64,
     ) -> Result<Vec<TakeProfitTradeExitCandidate>> {
         self.fetch_risk_control_trade_exit_candidates(
@@ -3275,6 +3310,7 @@ impl Store {
             min_hold,
             require_fresh_mark,
             max_exit_slippage_bps,
+            exit_pricing_mode,
             limit,
             Utc::now(),
         )
@@ -3289,6 +3325,7 @@ impl Store {
         min_hold: chrono::Duration,
         require_fresh_mark: chrono::Duration,
         max_exit_slippage_bps: Decimal,
+        exit_pricing_mode: &str,
         limit: i64,
         as_of: DateTime<Utc>,
     ) -> Result<Vec<TakeProfitTradeExitCandidate>> {
@@ -3300,6 +3337,7 @@ impl Store {
             min_hold,
             require_fresh_mark,
             max_exit_slippage_bps,
+            exit_pricing_mode,
             limit,
             as_of,
         )
@@ -3316,6 +3354,7 @@ impl Store {
         min_hold: chrono::Duration,
         require_fresh_mark: chrono::Duration,
         max_exit_slippage_bps: Decimal,
+        exit_pricing_mode: &str,
         limit: i64,
         as_of: DateTime<Utc>,
     ) -> Result<Vec<TakeProfitTradeExitCandidate>> {
@@ -3356,6 +3395,21 @@ impl Store {
                     p.latest_mark_price * (1 + ($6::numeric / 10000))
                   )
                 END AS order_limit_price,
+                CASE
+                  WHEN $10::text = 'marketable_limit'
+                    AND p.side = 'buy'
+                    AND ob.best_bid IS NOT NULL
+                    AND ob.best_bid >= GREATEST(0::numeric, p.latest_mark_price * (1 - ($6::numeric / 10000)))
+                    THEN ob.best_bid
+                  WHEN $10::text = 'marketable_limit'
+                    AND p.side <> 'buy'
+                    AND ob.best_ask IS NOT NULL
+                    AND ob.best_ask <= LEAST(1::numeric, p.latest_mark_price * (1 + ($6::numeric / 10000)))
+                    THEN ob.best_ask
+                  ELSE NULL
+                END AS marketable_exit_price,
+                ob.best_bid,
+                ob.best_ask,
                 LEAST(
                   p.open_size,
                   p.open_size * LEAST(1::numeric, GREATEST(0::numeric, $3::numeric))
@@ -3371,8 +3425,18 @@ impl Store {
                 $2::numeric AS threshold_roi,
                 $2::numeric AS take_profit_roi,
                 p.latest_mark_timestamp,
-                $6::numeric AS max_exit_slippage_bps
+                $6::numeric AS max_exit_slippage_bps,
+                $10::text AS exit_pricing_mode
               FROM polymarket.trade_positions p
+              LEFT JOIN LATERAL (
+                SELECT best_bid, best_ask, timestamp_utc
+                FROM polymarket.orderbook_snapshots ob
+                WHERE ob.token_id = p.token_id
+                  AND ob.timestamp_utc >= $9::timestamptz - ($5::bigint * interval '1 millisecond')
+                  AND ob.timestamp_utc <= $9::timestamptz
+                ORDER BY ob.timestamp_utc DESC
+                LIMIT 1
+              ) ob ON true
               WHERE p.process_id = $1
                 AND p.status IN ('open', 'partially_closed')
                 AND p.open_size > 0
@@ -3401,12 +3465,16 @@ impl Store {
               exit_timestamp,
               reference_exit_price,
               order_limit_price,
+              marketable_exit_price,
+              best_bid,
+              best_ask,
               exit_size,
               trigger_roi,
               threshold_roi,
               take_profit_roi,
               latest_mark_timestamp,
-              max_exit_slippage_bps
+              max_exit_slippage_bps,
+              exit_pricing_mode
             FROM prepared p
             WHERE (
                 ($8::text = 'take_profit_exit' AND p.trigger_roi >= $2)
@@ -3450,6 +3518,7 @@ impl Store {
         .bind(limit)
         .bind(exit_purpose)
         .bind(as_of)
+        .bind(exit_pricing_mode)
         .fetch_all(&self.pool)
         .await
         .context("failed to fetch risk-control trade exit candidates")?;

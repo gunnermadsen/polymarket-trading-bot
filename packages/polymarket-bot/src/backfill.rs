@@ -1205,12 +1205,86 @@ pub async fn run_resolved_copy_trade_signal(
             order.metadata = merge_order_metadata(order.metadata.clone(), &resolved.order_metadata);
         }
     }
+    let order_notional: Decimal = plan
+        .orders
+        .iter()
+        .map(|order| order.price * order.size)
+        .sum();
+    if let Some(process_id) = config.process_id {
+        for order in &plan.orders {
+            if config.copy_trade.max_open_notional_per_token_usd > Decimal::ZERO {
+                let current_token_notional = store
+                    .open_trade_position_notional_for_process_scope(
+                        process_id,
+                        Some(&order.token_id),
+                        None,
+                    )
+                    .await?;
+                let planned_token_notional: Decimal = plan
+                    .orders
+                    .iter()
+                    .filter(|candidate| candidate.token_id == order.token_id)
+                    .map(|candidate| candidate.price * candidate.size)
+                    .sum();
+                if current_token_notional + planned_token_notional
+                    > config.copy_trade.max_open_notional_per_token_usd
+                {
+                    summary.rejections += 1;
+                    store
+                        .update_copy_trade_signal_status(
+                            decision.copy_signal.signal_id,
+                            decision.copy_signal.timestamp_utc,
+                            "rejected",
+                            serde_json::json!({
+                                "reason": "copy_token_open_notional_cap_exceeded",
+                                "token_id": order.token_id,
+                                "current_open_token_notional_usd": current_token_notional,
+                                "order_token_notional_usd": planned_token_notional,
+                                "max_open_notional_per_token_usd": config.copy_trade.max_open_notional_per_token_usd
+                            }),
+                        )
+                        .await?;
+                    return Ok(summary);
+                }
+            }
+            if config.copy_trade.max_open_notional_per_market_usd > Decimal::ZERO {
+                let current_market_notional = store
+                    .open_trade_position_notional_for_process_scope(
+                        process_id,
+                        None,
+                        Some(&order.market_id),
+                    )
+                    .await?;
+                let planned_market_notional: Decimal = plan
+                    .orders
+                    .iter()
+                    .filter(|candidate| candidate.market_id == order.market_id)
+                    .map(|candidate| candidate.price * candidate.size)
+                    .sum();
+                if current_market_notional + planned_market_notional
+                    > config.copy_trade.max_open_notional_per_market_usd
+                {
+                    summary.rejections += 1;
+                    store
+                        .update_copy_trade_signal_status(
+                            decision.copy_signal.signal_id,
+                            decision.copy_signal.timestamp_utc,
+                            "rejected",
+                            serde_json::json!({
+                                "reason": "copy_market_open_notional_cap_exceeded",
+                                "market_id": order.market_id,
+                                "current_open_market_notional_usd": current_market_notional,
+                                "order_market_notional_usd": planned_market_notional,
+                                "max_open_notional_per_market_usd": config.copy_trade.max_open_notional_per_market_usd
+                            }),
+                        )
+                        .await?;
+                    return Ok(summary);
+                }
+            }
+        }
+    }
     if let Some(current_open_notional) = open_notional_with_in_run_orders.as_deref_mut() {
-        let order_notional: Decimal = plan
-            .orders
-            .iter()
-            .map(|order| order.price * order.size)
-            .sum();
         let max_open_notional = config.copy_trade.max_open_notional_usd;
         if max_open_notional > Decimal::ZERO
             && *current_open_notional + order_notional > max_open_notional
