@@ -1251,7 +1251,7 @@ impl Default for EffectiveCopyTradeProcessConfig {
             segment_scoring_enabled: false,
             segment_scoring_mode: "shadow".to_string(),
             segment_score_version: "mrs_segment_v1".to_string(),
-            segment_classifier_version: "segment_rules_v1".to_string(),
+            segment_classifier_version: "gamma_taxonomy_v1".to_string(),
             min_segment_score: dec!(50),
             segment_mrs_percentile_floor: dec!(0.95),
             min_segment_confidence: dec!(0.10),

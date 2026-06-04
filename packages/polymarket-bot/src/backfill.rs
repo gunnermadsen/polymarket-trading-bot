@@ -22,10 +22,7 @@ use crate::{
         OrderState, WhaleTrade,
     },
     orderbook::{BookSide, LocalOrderBook},
-    segments::{
-        classify_trade_segment, score_wallet_segments_from_samples, SegmentClassification,
-        GAMMA_SEGMENT_CLASSIFIER_VERSION,
-    },
+    segments::{SegmentClassification, GAMMA_SEGMENT_CLASSIFIER_VERSION},
     store::{OrderbookSnapshot, Store, TradeMarkSourceFailure},
     trade_pnl::{refresh_trade_pnl_with_config, TradePnlConfig},
     wallets::{
@@ -128,7 +125,7 @@ pub struct ResolvedCopyTradeSignal<'a> {
     pub performance: Option<&'a CopyTradeWalletPerformance>,
     pub mrs_score: Option<&'a CopyTradeMrsScore>,
     pub segment_score: Option<&'a CopyTradeSegmentScore>,
-    pub segment_classification: SegmentClassification,
+    pub segment_classification: Option<SegmentClassification>,
     pub expectancy: Option<CopyTradeExpectancyInput>,
     pub observed: ObservedMarket,
     pub order_metadata: serde_json::Value,
@@ -346,22 +343,6 @@ pub async fn run_job(
                     }),
                 );
                 store.upsert_wallet_score(&mrs_score).await?;
-                let observed_trades = store.fetch_wallet_observed_trades(wallet, cutoff).await?;
-                for mut segment_performance in
-                    score_wallet_segments_from_samples(wallet, &positions, &observed_trades)
-                {
-                    segment_performance.metadata = merge_json(
-                        segment_performance.metadata,
-                        serde_json::json!({
-                            "source": "historic_backfill",
-                            "lookback_days": request.lookback_days,
-                            "min_trade_usd": request.min_trade_usd
-                        }),
-                    );
-                    store
-                        .upsert_wallet_segment_performance(&segment_performance)
-                        .await?;
-                }
             }
             closed_positions.push((wallet.clone(), positions));
 
@@ -387,6 +368,9 @@ pub async fn run_job(
             for score in &scores {
                 store.upsert_wallet_score(score).await?;
             }
+            store
+                .recompute_wallet_segment_v2_scores_from_existing(cutoff, wallets.len() as i64)
+                .await?;
         }
     }
 
@@ -1041,54 +1025,59 @@ pub async fn run_copy_trade_signal_engine(
                 store
                     .fetch_wallet_trade_gamma_segment_classification(trade.trade_id)
                     .await?
-                    .unwrap_or_else(|| classify_trade_segment(trade))
             } else {
-                classify_trade_segment(trade)
+                None
             };
-        if !dry_run
-            && copy_config.segment_scoring_enabled
-            && !persisted_segment_by_wallet_segment.contains_key(&(
-                trade.proxy_wallet.clone(),
-                segment_classification.segment_key.clone(),
-            ))
-        {
-            let persisted = store
-                .fetch_wallet_segment_performance(
-                    &trade.proxy_wallet,
-                    &segment_classification.segment_key,
-                    &copy_config.segment_score_version,
-                )
-                .await?
-                .as_ref()
-                .map(CopyTradeSegmentScore::from);
-            persisted_segment_by_wallet_segment.insert(
-                (
+        if let Some(classification) = segment_classification.as_ref() {
+            if !dry_run
+                && copy_config.segment_scoring_enabled
+                && !persisted_segment_by_wallet_segment.contains_key(&(
                     trade.proxy_wallet.clone(),
-                    segment_classification.segment_key.clone(),
-                ),
-                persisted,
-            );
+                    classification.segment_key.clone(),
+                ))
+            {
+                let persisted = store
+                    .fetch_wallet_segment_performance(
+                        &trade.proxy_wallet,
+                        &classification.segment_key,
+                        &copy_config.segment_score_version,
+                    )
+                    .await?
+                    .as_ref()
+                    .map(CopyTradeSegmentScore::from);
+                persisted_segment_by_wallet_segment.insert(
+                    (
+                        trade.proxy_wallet.clone(),
+                        classification.segment_key.clone(),
+                    ),
+                    persisted,
+                );
+            }
         }
         let segment_score = if dry_run || !copy_config.segment_scoring_enabled {
             None
-        } else {
+        } else if let Some(classification) = segment_classification.as_ref() {
             persisted_segment_by_wallet_segment
                 .get(&(
                     trade.proxy_wallet.clone(),
-                    segment_classification.segment_key.clone(),
+                    classification.segment_key.clone(),
                 ))
                 .and_then(|score| score.as_ref())
+        } else {
+            None
         };
         let expectancy = if dry_run || !copy_config.expectancy_flow.enabled {
             None
-        } else if let Some(process_id) = config.process_id {
+        } else if let (Some(process_id), Some(classification)) =
+            (config.process_id, segment_classification.as_ref())
+        {
             Some(
                 store
                     .fetch_expectancy_input(
                         process_id,
                         &copy_config.expectancy_flow.score_version,
                         &trade.proxy_wallet,
-                        &segment_classification.segment_key,
+                        &classification.segment_key,
                         &trade.side,
                         trade.price,
                         copy_config.expectancy_flow.horizon_secs,
@@ -1155,7 +1144,7 @@ pub async fn run_resolved_copy_trade_signal(
         resolved.performance,
         resolved.mrs_score,
         resolved.segment_score,
-        Some(resolved.segment_classification),
+        resolved.segment_classification.clone(),
         resolved.expectancy.as_ref(),
         resolved.observed,
         &config.copy_trade,

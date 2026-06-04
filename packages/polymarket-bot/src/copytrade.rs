@@ -18,10 +18,7 @@ use crate::{
         WalletPerformance, WalletScore, WalletScoreCalibrationSnapshot, WalletSegmentPerformance,
         WhaleTrade,
     },
-    segments::{
-        classify_trade_segment, normalize_gamma_segment_key, SegmentClassification,
-        MRS_SEGMENT_V2_SCORE_VERSION,
-    },
+    segments::{normalize_gamma_segment_key, SegmentClassification, MRS_SEGMENT_V2_SCORE_VERSION},
 };
 
 pub const COPY_SCORE_VERSION: &str = "whale_score_v1";
@@ -104,7 +101,7 @@ impl Default for CopyTradeConfig {
             segment_scoring_enabled: false,
             segment_scoring_mode: "shadow".to_string(),
             segment_score_version: "mrs_segment_v1".to_string(),
-            segment_classifier_version: "segment_rules_v1".to_string(),
+            segment_classifier_version: "gamma_taxonomy_v1".to_string(),
             min_segment_score: dec!(50),
             segment_mrs_percentile_floor: dec!(0.95),
             min_segment_confidence: dec!(0.10),
@@ -498,19 +495,26 @@ pub fn evaluate_copy_trade_with_segment(
         .max(0);
     let slippage_bps = price_slippage_bps(trade.price, observed.observed_price);
     let mut reject_reason = None;
-    let segment_classification =
-        segment_classification.unwrap_or_else(|| classify_trade_segment(trade));
-    let segment_filter_decision =
-        evaluate_segment_filter(&segment_classification.segment_key, config);
-    let segment_decision =
-        evaluate_segment_gate(&segment_classification.segment_key, segment_score, config);
-    let expectancy_decision = evaluate_expectancy_flow(
-        &segment_classification.segment_key,
-        &side,
-        trade.price,
-        expectancy,
-        &config.expectancy_flow,
-    );
+    let segment_key = segment_classification
+        .as_ref()
+        .map(|classification| classification.segment_key.as_str());
+    let segment_filter_decision = segment_key
+        .map(|segment_key| evaluate_segment_filter(segment_key, config))
+        .unwrap_or_else(|| missing_gamma_segment_filter_decision(config));
+    let segment_decision = segment_key
+        .map(|segment_key| evaluate_segment_gate(segment_key, segment_score, config))
+        .unwrap_or_else(|| missing_gamma_segment_gate_decision(config));
+    let expectancy_decision = segment_key
+        .map(|segment_key| {
+            evaluate_expectancy_flow(
+                segment_key,
+                &side,
+                trade.price,
+                expectancy,
+                &config.expectancy_flow,
+            )
+        })
+        .unwrap_or_else(|| missing_gamma_expectancy_decision(&side, trade.price, config));
 
     if !config.enabled {
         reject_reason = Some("copy_trade_disabled");
@@ -520,6 +524,8 @@ pub fn evaluate_copy_trade_with_segment(
         reject_reason = Some("unsupported_trade_side");
     } else if side == "SELL" && !config.allow_sell_entries {
         reject_reason = Some("sell_entries_disabled");
+    } else if segment_classification.is_none() {
+        reject_reason = Some("missing_gamma_taxonomy");
     } else if segment_filter_decision.enforced_reject {
         reject_reason = Some(segment_filter_decision.reason);
     } else if expectancy_decision.enforced_reject {
@@ -594,12 +600,12 @@ pub fn evaluate_copy_trade_with_segment(
             "mode": config.segment_scoring_mode,
             "score_version_config": config.segment_score_version,
             "classifier_version_config": config.segment_classifier_version,
-            "segment_key": segment_classification.segment_key,
-            "classifier_version": segment_classification.classifier_version,
-            "classifier_confidence": segment_classification.confidence,
-            "matched_rule": segment_classification.matched_rule,
-            "matched_terms": segment_classification.matched_terms,
-            "source_fields": segment_classification.source_fields,
+            "segment_key": segment_classification.as_ref().map(|classification| classification.segment_key.as_str()),
+            "classifier_version": segment_classification.as_ref().map(|classification| classification.classifier_version.as_str()),
+            "classifier_confidence": segment_classification.as_ref().map(|classification| classification.confidence),
+            "matched_rule": segment_classification.as_ref().map(|classification| classification.matched_rule.as_str()),
+            "matched_terms": segment_classification.as_ref().map(|classification| classification.matched_terms.clone()),
+            "source_fields": segment_classification.as_ref().map(|classification| classification.source_fields.clone()),
             "score": segment_score.map(|score| score.score),
             "score_version": segment_score.map(|score| score.score_version.as_str()),
             "confidence": segment_score.map(|score| score.confidence),
@@ -631,7 +637,7 @@ pub fn evaluate_copy_trade_with_segment(
             "enabled": !config.segment_allowlist.is_empty() || !config.segment_denylist.is_empty(),
             "allowed_segments": segment_filter_decision.allowed_segments,
             "denied_segments": segment_filter_decision.denied_segments,
-            "segment_key": segment_classification.segment_key,
+            "segment_key": segment_classification.as_ref().map(|classification| classification.segment_key.as_str()),
             "decision": segment_filter_decision.decision,
             "reject_reason": segment_filter_decision.reject_reason,
             "enforced_reject": segment_filter_decision.enforced_reject
@@ -749,6 +755,85 @@ struct ExpectancyFlowDecision {
     reason: &'static str,
     enforced_reject: bool,
     metadata: serde_json::Value,
+}
+
+fn missing_gamma_segment_filter_decision(config: &CopyTradeConfig) -> SegmentFilterDecision {
+    SegmentFilterDecision {
+        decision: "rejected",
+        reject_reason: Some("missing_gamma_taxonomy"),
+        reason: "missing_gamma_taxonomy",
+        enforced_reject: true,
+        allowed_segments: normalized_segments(&config.segment_allowlist),
+        denied_segments: normalized_segments(&config.segment_denylist),
+    }
+}
+
+fn missing_gamma_segment_gate_decision(config: &CopyTradeConfig) -> SegmentGateDecision {
+    if !config.segment_scoring_enabled || config.segment_scoring_mode == "off" {
+        return SegmentGateDecision {
+            decision: "disabled",
+            reject_reason: None,
+            reason: "segment_scoring_disabled",
+            enforced_reject: false,
+        };
+    }
+
+    let enforce = matches!(
+        config.segment_scoring_mode.as_str(),
+        "sim_enforce" | "live_enforce"
+    );
+    SegmentGateDecision {
+        decision: if enforce { "rejected" } else { "would_reject" },
+        reject_reason: Some("missing_gamma_taxonomy"),
+        reason: "missing_gamma_taxonomy",
+        enforced_reject: enforce,
+    }
+}
+
+fn missing_gamma_expectancy_decision(
+    side: &str,
+    price: Decimal,
+    config: &CopyTradeConfig,
+) -> ExpectancyFlowDecision {
+    let price_bucket = expectancy_price_bucket(price);
+    let reason = if config.expectancy_flow.enabled {
+        "missing_gamma_taxonomy"
+    } else {
+        "expectancy_flow_disabled"
+    };
+    ExpectancyFlowDecision {
+        reason,
+        enforced_reject: config.expectancy_flow.enabled && config.expectancy_flow.enforce,
+        metadata: serde_json::json!({
+            "enabled": config.expectancy_flow.enabled,
+            "enforced": config.expectancy_flow.enforce,
+            "decision": if config.expectancy_flow.enabled {
+                if config.expectancy_flow.enforce { "rejected" } else { "would_reject" }
+            } else {
+                "disabled"
+            },
+            "reason": reason,
+            "reject_reason": config.expectancy_flow.enabled.then_some("missing_gamma_taxonomy"),
+            "cell_key": null,
+            "segment_key": null,
+            "side": side.to_ascii_lowercase(),
+            "price_bucket": price_bucket,
+            "horizon_secs": config.expectancy_flow.horizon_secs,
+            "allowed_cells": normalized_expectancy_cells(&config.expectancy_flow.allowed_cells),
+            "denied_cells": normalized_expectancy_cells(&config.expectancy_flow.denied_cells),
+            "thresholds": {
+                "min_trade_usd": config.expectancy_flow.min_trade_usd,
+                "min_cell_trades": config.expectancy_flow.min_cell_trades,
+                "min_cell_covered": config.expectancy_flow.min_cell_covered,
+                "min_win_rate": config.expectancy_flow.min_win_rate,
+                "min_avg_roi": config.expectancy_flow.min_avg_roi,
+                "min_median_roi": config.expectancy_flow.min_median_roi,
+                "wallet_filter": config.expectancy_flow.wallet_filter
+            },
+            "cell": null,
+            "wallet_cell": null
+        }),
+    }
 }
 
 pub fn expectancy_price_bucket(price: Decimal) -> &'static str {
@@ -1417,19 +1502,22 @@ fn closed_positions_from_score(score: &WalletScore) -> i32 {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
+    use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
     use uuid::Uuid;
 
     use crate::{
         copytrade::{
-            clob_tick_price, evaluate_copy_trade, evaluate_copy_trade_with_segment,
-            run_copy_trade_backtest, CopyTradeConfig, CopyTradeExpectancyInput, CopyTradeMrsScore,
-            CopyTradeSegmentScore, CopyTradeWalletPerformance, ObservedMarket,
+            clob_tick_price, evaluate_copy_trade_with_segment, run_copy_trade_backtest,
+            CopyTradeConfig, CopyTradeExpectancyInput, CopyTradeMrsScore, CopyTradeSegmentScore,
+            CopyTradeWalletPerformance, ObservedMarket,
         },
         models::{
             ExpectancyFlowCell, ExpectancyFlowWalletCell, OrderSide, WalletScore, WhaleTrade,
         },
-        segments::{SegmentClassification, MRS_SEGMENT_V2_SCORE_VERSION},
+        segments::{
+            SegmentClassification, GAMMA_SEGMENT_CLASSIFIER_VERSION, MRS_SEGMENT_V2_SCORE_VERSION,
+        },
     };
 
     fn trade(wallet: &str, asset: &str, price: rust_decimal::Decimal, minutes: i64) -> WhaleTrade {
@@ -1492,7 +1580,7 @@ mod tests {
             segment_key: segment_key.to_string(),
             score,
             score_version: "mrs_segment_v1".to_string(),
-            classifier_version: "segment_rules_v1".to_string(),
+            classifier_version: GAMMA_SEGMENT_CLASSIFIER_VERSION.to_string(),
             confidence: dec!(0.90),
             closed_positions: 12,
             winning_positions: 4,
@@ -1516,6 +1604,28 @@ mod tests {
             matched_terms: vec![],
             source_fields: serde_json::json!({}),
         }
+    }
+
+    fn evaluate_default_copy_trade(
+        trade: &WhaleTrade,
+        performance: Option<&CopyTradeWalletPerformance>,
+        mrs_score: Option<&CopyTradeMrsScore>,
+        segment_score: Option<&CopyTradeSegmentScore>,
+        observed: ObservedMarket,
+        config: &CopyTradeConfig,
+        process_id: Option<Uuid>,
+    ) -> super::CopyTradeDecision {
+        evaluate_copy_trade_with_segment(
+            trade,
+            performance,
+            mrs_score,
+            segment_score,
+            Some(segment_classification("crypto")),
+            None,
+            observed,
+            config,
+            process_id,
+        )
     }
 
     fn expectancy_cell(
@@ -1592,7 +1702,7 @@ mod tests {
         let config = CopyTradeConfig::default();
         let trade = trade("0xabc", "token", dec!(0.50), 0);
         let wallet_performance = performance("0xabc", dec!(1000), dec!(0.10), 10);
-        let decision = evaluate_copy_trade(
+        let decision = evaluate_default_copy_trade(
             &trade,
             Some(&wallet_performance),
             None,
@@ -1683,7 +1793,7 @@ mod tests {
             Some(&wallet_performance),
             None,
             None,
-            Some(segment_classification("crypto.bitcoin.short_interval")),
+            Some(segment_classification("sports.general")),
             Some(&input),
             ObservedMarket {
                 observed_price: dec!(0.50),
@@ -1708,7 +1818,7 @@ mod tests {
         config.max_copy_size_usd = dec!(2);
         let trade = trade("0xabc", "token", dec!(0.37), 0);
         let wallet_performance = performance("0xabc", dec!(1000), dec!(0.10), 10);
-        let decision = evaluate_copy_trade(
+        let decision = evaluate_default_copy_trade(
             &trade,
             Some(&wallet_performance),
             None,
@@ -1737,7 +1847,7 @@ mod tests {
         config.max_copy_size_usd = dec!(2);
         let trade = trade("0xabc", "token", dec!(0.15), 0);
         let wallet_performance = performance("0xabc", dec!(1000), dec!(0.10), 10);
-        let decision = evaluate_copy_trade(
+        let decision = evaluate_default_copy_trade(
             &trade,
             Some(&wallet_performance),
             None,
@@ -1769,10 +1879,12 @@ mod tests {
         let config = CopyTradeConfig::default();
         let trade = trade("0xabc", "token", dec!(0.50), 0);
         let wallet_performance = performance("0xabc", dec!(20), dec!(0.10), 10);
-        let decision = evaluate_copy_trade(
+        let decision = evaluate_copy_trade_with_segment(
             &trade,
             Some(&wallet_performance),
             None,
+            None,
+            Some(segment_classification("sports.general")),
             None,
             ObservedMarket {
                 observed_price: dec!(0.50),
@@ -1788,7 +1900,7 @@ mod tests {
             Some("pnl_below_threshold")
         );
 
-        let missing = evaluate_copy_trade(
+        let missing = evaluate_default_copy_trade(
             &trade,
             None,
             None,
@@ -1812,7 +1924,7 @@ mod tests {
         let config = CopyTradeConfig::default();
         let trade = trade("0xabc", "token", dec!(0.50), 0);
 
-        let low_roi = evaluate_copy_trade(
+        let low_roi = evaluate_default_copy_trade(
             &trade,
             Some(&performance("0xabc", dec!(1000), dec!(0.01), 10)),
             None,
@@ -1830,7 +1942,7 @@ mod tests {
             Some("roi_below_threshold")
         );
 
-        let low_closed_positions = evaluate_copy_trade(
+        let low_closed_positions = evaluate_default_copy_trade(
             &trade,
             Some(&performance("0xabc", dec!(1000), dec!(0.10), 1)),
             None,
@@ -1872,7 +1984,7 @@ mod tests {
             metadata: serde_json::json!({}),
         };
 
-        let low = evaluate_copy_trade(
+        let low = evaluate_default_copy_trade(
             &trade,
             Some(&wallet_performance),
             Some(&low_mrs),
@@ -1890,7 +2002,7 @@ mod tests {
             Some("mrs_score_below_threshold")
         );
 
-        let high = evaluate_copy_trade(
+        let high = evaluate_default_copy_trade(
             &trade,
             Some(&wallet_performance),
             Some(&high_mrs),
@@ -1922,7 +2034,7 @@ mod tests {
         );
 
         config.mrs_enforce = false;
-        let observe_only = evaluate_copy_trade(
+        let observe_only = evaluate_default_copy_trade(
             &trade,
             Some(&wallet_performance),
             Some(&low_mrs),
@@ -1948,7 +2060,7 @@ mod tests {
         let wallet_performance = performance("0xabc", dec!(1000), dec!(0.10), 10);
         let segment = segment_score("crypto", dec!(25));
 
-        let decision = evaluate_copy_trade(
+        let decision = evaluate_default_copy_trade(
             &trade,
             Some(&wallet_performance),
             None,
@@ -1983,7 +2095,7 @@ mod tests {
         let wallet_performance = performance("0xabc", dec!(1000), dec!(0.10), 10);
         let segment = segment_score("crypto", dec!(25));
 
-        let decision = evaluate_copy_trade(
+        let decision = evaluate_default_copy_trade(
             &trade,
             Some(&wallet_performance),
             None,
@@ -2022,7 +2134,7 @@ mod tests {
             metadata: serde_json::json!({}),
         };
 
-        let decision = evaluate_copy_trade(
+        let decision = evaluate_default_copy_trade(
             &trade,
             Some(&wallet_performance),
             Some(&mrs),
@@ -2060,7 +2172,7 @@ mod tests {
         segment.realized_pnl_usd = dec!(500);
         segment.percentile = Some(dec!(0.90));
 
-        let low = evaluate_copy_trade(
+        let low = evaluate_default_copy_trade(
             &trade,
             Some(&wallet_performance),
             None,
@@ -2079,7 +2191,7 @@ mod tests {
         );
 
         segment.percentile = Some(dec!(0.95));
-        let high = evaluate_copy_trade(
+        let high = evaluate_default_copy_trade(
             &trade,
             Some(&wallet_performance),
             None,
@@ -2104,10 +2216,12 @@ mod tests {
         trade.title = Some("Will the NBA Finals go seven games?".to_string());
         let wallet_performance = performance("0xabc", dec!(1000), dec!(0.10), 10);
 
-        let decision = evaluate_copy_trade(
+        let decision = evaluate_copy_trade_with_segment(
             &trade,
             Some(&wallet_performance),
             None,
+            None,
+            Some(segment_classification("sports.general")),
             None,
             ObservedMarket {
                 observed_price: dec!(0.50),
@@ -2137,10 +2251,12 @@ mod tests {
         trade.event_slug = Some("btc-updown-5m-1779894000".to_string());
         let wallet_performance = performance("0xabc", dec!(1000), dec!(0.10), 10);
 
-        let decision = evaluate_copy_trade(
+        let decision = evaluate_copy_trade_with_segment(
             &trade,
             Some(&wallet_performance),
             None,
+            None,
+            Some(segment_classification("crypto.bitcoin.short_interval")),
             None,
             ObservedMarket {
                 observed_price: dec!(0.50),
@@ -2171,10 +2287,12 @@ mod tests {
         trade.event_slug = Some("btc-updown-5m-1779894000".to_string());
         let wallet_performance = performance("0xabc", dec!(1000), dec!(0.10), 10);
 
-        let decision = evaluate_copy_trade(
+        let decision = evaluate_copy_trade_with_segment(
             &trade,
             Some(&wallet_performance),
             None,
+            None,
+            Some(segment_classification("crypto.bitcoin.short_interval")),
             None,
             ObservedMarket {
                 observed_price: dec!(0.50),
@@ -2197,7 +2315,7 @@ mod tests {
     }
 
     #[test]
-    fn backtest_uses_future_prices_and_returns_calibration_snapshot() {
+    fn backtest_without_gamma_classification_rejects_unlabeled_trades() {
         let mut config = CopyTradeConfig::default();
         config.backtest_horizon_secs = 60;
         config.taker_fee_rate = dec!(0);
@@ -2207,8 +2325,8 @@ mod tests {
         ];
         let scores = vec![score("0xabc", dec!(80))];
         let (result, calibration) = run_copy_trade_backtest(&trades, &scores, &config);
-        assert_eq!(result.signal_count, 1);
-        assert!(result.net_pnl_usd > dec!(0));
+        assert_eq!(result.signal_count, 0);
+        assert_eq!(result.net_pnl_usd, Decimal::ZERO);
         assert_eq!(calibration.wallet_count, 1);
     }
 }

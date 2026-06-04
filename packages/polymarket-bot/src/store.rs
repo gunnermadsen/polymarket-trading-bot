@@ -30,9 +30,7 @@ use crate::{
         SegmentClassification, WalletSegmentPerformanceInput, GAMMA_SEGMENT_CLASSIFIER_VERSION,
         MRS_SEGMENT_V2_SCORE_VERSION,
     },
-    taxonomy::{
-        cache_key, fallback_taxonomy_update, taxonomy_update_from_metadata, GAMMA_TAXONOMY_VERSION,
-    },
+    taxonomy::{cache_key, taxonomy_update_from_metadata, GAMMA_TAXONOMY_VERSION},
     wallets::{score_mrs, MrsScoreInput, MRS_SCORE_VERSION},
 };
 
@@ -5346,7 +5344,7 @@ impl Store {
             FROM polymarket.wallet_trades
             WHERE trade_id = $1
               AND taxonomy_version = $2
-              AND taxonomy_source IN ('gamma', 'keyword_fallback')
+              AND taxonomy_source = 'gamma'
               AND taxonomy_segment IS NOT NULL
             LIMIT 1
             "#,
@@ -5484,10 +5482,12 @@ impl Store {
                     .await?;
             }
         }
-        let update = metadata
+        let Some(update) = metadata
             .as_ref()
             .and_then(|metadata| taxonomy_update_from_metadata(&candidate, metadata))
-            .unwrap_or_else(|| fallback_taxonomy_update(&candidate));
+        else {
+            return Ok(false);
+        };
         Ok(self.update_wallet_trade_taxonomy(&update).await? > 0)
     }
 
@@ -5686,7 +5686,7 @@ impl Store {
             WHERE lower(proxy_wallet) = ANY($1)
               AND timestamp_utc >= $2
               AND taxonomy_version = $3
-              AND taxonomy_source IN ('gamma', 'keyword_fallback')
+              AND taxonomy_source = 'gamma'
               AND taxonomy_segment IS NOT NULL
             ORDER BY proxy_wallet, timestamp_utc DESC
             "#,
@@ -6025,6 +6025,7 @@ impl Store {
               FROM polymarket.wallet_trades
               WHERE timestamp_utc >= $1
                 AND taxonomy_version = $2
+                AND taxonomy_source = 'gamma'
                 AND taxonomy_segment IS NOT NULL
                 AND taxonomy_segment <> ''
             ),
@@ -6705,6 +6706,15 @@ impl Store {
                 AND wt.price > 0
                 AND wt.cash_value > 0
                 AND wt.size > 0
+                AND (
+                  $9::boolean = false
+                  OR (
+                    wt.taxonomy_version = $12
+                    AND wt.taxonomy_source = 'gamma'
+                    AND wt.taxonomy_segment IS NOT NULL
+                    AND wt.taxonomy_segment <> ''
+                  )
+                )
             ),
             observations AS MATERIALIZED (
               SELECT
@@ -6832,6 +6842,7 @@ impl Store {
         .bind(config.include_taxonomy_segment)
         .bind(config.min_trades_per_cell.max(1))
         .bind(config.max_cells.max(1))
+        .bind(GAMMA_TAXONOMY_VERSION)
         .fetch_one(&self.pool)
         .await
         .context("failed to recompute expectancy flow cells")?;
@@ -6867,6 +6878,15 @@ impl Store {
                 AND wt.price > 0
                 AND wt.cash_value > 0
                 AND wt.size > 0
+                AND (
+                  $9::boolean = false
+                  OR (
+                    wt.taxonomy_version = $12
+                    AND wt.taxonomy_source = 'gamma'
+                    AND wt.taxonomy_segment IS NOT NULL
+                    AND wt.taxonomy_segment <> ''
+                  )
+                )
             ),
             observations AS MATERIALIZED (
               SELECT
@@ -6996,6 +7016,7 @@ impl Store {
         .bind(config.include_taxonomy_segment)
         .bind(config.min_trades_per_cell.max(1))
         .bind(config.max_cells.max(1))
+        .bind(GAMMA_TAXONOMY_VERSION)
         .fetch_one(&self.pool)
         .await
         .context("failed to recompute expectancy flow wallet cells")?;

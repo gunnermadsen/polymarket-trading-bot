@@ -37,9 +37,8 @@ use polymarket_bot::{
     replay::{run_backtest_replay, BacktestReplayJob, BacktestReplayProcess, BacktestReplayQueued},
     risk::{RiskLimits, RiskState},
     scanner::{scan_markets_for_signal1, ScannerConfig, ScannerCycleReport},
-    segments::score_wallet_segments_from_samples,
     store::Store,
-    taxonomy::{fallback_taxonomy_update, taxonomy_update_from_metadata},
+    taxonomy::taxonomy_update_from_metadata,
     trade_pnl::{
         execute_stop_loss_exits_for_process, execute_take_profit_exits_for_process,
         mark_trade_pnl_now_with_config, refresh_process_marks_with_config,
@@ -969,7 +968,6 @@ impl ControlApi for RuntimeControl {
             .map_err(|error| HttpError::internal(error.to_string()))?;
         let mut gamma_event_hits = 0usize;
         let mut gamma_market_hits = 0usize;
-        let mut fallback_hits = 0usize;
         let mut dry_run_updates = 0usize;
         let mut updated_trades = 0u64;
         let mut errors = Vec::new();
@@ -1046,17 +1044,9 @@ impl ControlApi for RuntimeControl {
 
             let update = metadata
                 .as_ref()
-                .and_then(|metadata| taxonomy_update_from_metadata(candidate, metadata))
-                .or_else(|| {
-                    request
-                        .fallback_keywords
-                        .then(|| fallback_taxonomy_update(candidate))
-                });
+                .and_then(|metadata| taxonomy_update_from_metadata(candidate, metadata));
 
             if let Some(update) = update {
-                if update.taxonomy_source == "keyword_fallback" {
-                    fallback_hits += 1;
-                }
                 if request.dry_run {
                     dry_run_updates += 1;
                 } else {
@@ -1073,11 +1063,12 @@ impl ControlApi for RuntimeControl {
         Ok(serde_json::json!({
             "taxonomy_version": polymarket_bot::taxonomy::GAMMA_TAXONOMY_VERSION,
             "dry_run": request.dry_run,
-            "fallback_keywords": request.fallback_keywords,
+            "fallback_keywords": false,
+            "fallback_keywords_ignored": request.fallback_keywords,
             "candidates": candidates.len(),
             "gamma_event_hits": gamma_event_hits,
             "gamma_market_hits": gamma_market_hits,
-            "fallback_hits": fallback_hits,
+            "fallback_hits": 0,
             "dry_run_updates": dry_run_updates,
             "updated_trades": updated_trades,
             "errors": errors,
@@ -2329,27 +2320,14 @@ async fn ensure_live_wallet_performance(
             }),
         );
         store.upsert_wallet_score(&mrs_score).await?;
-        let observed_trades = store
-            .fetch_wallet_observed_trades(
-                &trade.proxy_wallet,
+    }
+    if !checked_wallets.is_empty() {
+        store
+            .recompute_wallet_segment_v2_scores_from_existing(
                 Utc::now() - chrono::Duration::days(150),
+                checked_wallets.len().max(1) as i64,
             )
             .await?;
-        for mut segment_performance in
-            score_wallet_segments_from_samples(&trade.proxy_wallet, &positions, &observed_trades)
-        {
-            segment_performance.metadata = merge_json(
-                segment_performance.metadata,
-                serde_json::json!({
-                    "source": "live_trade_score_update",
-                    "trigger_trade_id": trade.trade_id,
-                    "trigger_transaction_hash": trade.transaction_hash
-                }),
-            );
-            store
-                .upsert_wallet_segment_performance(&segment_performance)
-                .await?;
-        }
     }
     Ok(())
 }

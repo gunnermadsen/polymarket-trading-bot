@@ -17,8 +17,8 @@ use crate::{
     execution::{execute_order_plan, ExecutionVenue, OrderPlan},
     models::{TradingProcessConfig, WhaleTrade},
     segments::{
-        classify_trade_segment, score_wallet_segment, SegmentClassification,
-        WalletSegmentPerformanceInput, GAMMA_SEGMENT_CLASSIFIER_VERSION,
+        score_wallet_segment, SegmentClassification, WalletSegmentPerformanceInput,
+        GAMMA_SEGMENT_CLASSIFIER_VERSION,
     },
     store::Store,
     trade_pnl::risk_control_order_request,
@@ -138,7 +138,9 @@ pub async fn run_backtest_replay(
         let classification = classify_for_replay(&store, &trade, &job.processes).await?;
         if trade.timestamp_utc < job.range_start {
             summary.warmup_trades += 1;
-            ledger.observe_trade(&trade, &classification);
+            if let Some(classification) = classification.as_ref() {
+                ledger.observe_trade(&trade, classification);
+            }
             continue;
         }
         summary.replay_trades += 1;
@@ -148,12 +150,16 @@ pub async fn run_backtest_replay(
             let execution = process.process_config.effective_execution();
             let performance = ledger.wallet_performance(&trade.proxy_wallet);
             let mrs_score = ledger.mrs_score(&trade.proxy_wallet, &config.mrs_score_version);
-            let segment_score = ledger.segment_score(
-                &trade.proxy_wallet,
-                &classification.segment_key,
-                &config.segment_score_version,
-            );
-            let expectancy = if config.expectancy_flow.enabled {
+            let segment_score = classification.as_ref().and_then(|classification| {
+                ledger.segment_score(
+                    &trade.proxy_wallet,
+                    &classification.segment_key,
+                    &config.segment_score_version,
+                )
+            });
+            let expectancy = if let (true, Some(classification)) =
+                (config.expectancy_flow.enabled, classification.as_ref())
+            {
                 Some(
                     store
                         .fetch_expectancy_input(
@@ -231,7 +237,9 @@ pub async fn run_backtest_replay(
             summary.risk_control_exit_orders_inserted += risk_control.orders_inserted;
             summary.risk_control_exit_fills_inserted += risk_control.fills_inserted;
         }
-        ledger.observe_trade(&trade, &classification);
+        if let Some(classification) = classification.as_ref() {
+            ledger.observe_trade(&trade, classification);
+        }
     }
     ledger.clear_replay_state();
     open_notional_by_process.clear();
@@ -392,18 +400,15 @@ async fn classify_for_replay(
     store: &Store,
     trade: &WhaleTrade,
     processes: &[BacktestReplayProcess],
-) -> Result<SegmentClassification> {
+) -> Result<Option<SegmentClassification>> {
     if processes.iter().any(|process| {
         process.config.segment_classifier_version == GAMMA_SEGMENT_CLASSIFIER_VERSION
     }) {
-        if let Some(classification) = store
+        return store
             .fetch_wallet_trade_gamma_segment_classification(trade.trade_id)
-            .await?
-        {
-            return Ok(classification);
-        }
+            .await;
     }
-    Ok(classify_trade_segment(trade))
+    Ok(None)
 }
 
 #[derive(Debug, Default)]

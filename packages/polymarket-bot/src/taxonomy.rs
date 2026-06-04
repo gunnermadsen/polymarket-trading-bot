@@ -4,10 +4,7 @@ use rust_decimal_macros::dec;
 
 use crate::{
     models::{GammaMarketMetadata, WalletTradeTaxonomyCandidate, WalletTradeTaxonomyUpdate},
-    segments::{
-        classify_segment, SegmentText, GAMMA_SEGMENT_CLASSIFIER_VERSION,
-        MRS_SEGMENT_V2_SCORE_VERSION,
-    },
+    segments::{GAMMA_SEGMENT_CLASSIFIER_VERSION, MRS_SEGMENT_V2_SCORE_VERSION},
 };
 
 pub const GAMMA_TAXONOMY_VERSION: &str = "gamma_taxonomy_v1";
@@ -135,30 +132,6 @@ pub fn taxonomy_update_from_metadata(
             "gamma_market_id": metadata.gamma_market_id
         }),
     })
-}
-
-pub fn fallback_taxonomy_update(trade: &WalletTradeTaxonomyCandidate) -> WalletTradeTaxonomyUpdate {
-    let classification = classify_segment(SegmentText {
-        title: trade.title.as_deref(),
-        slug: trade.slug.as_deref(),
-        event_slug: trade.event_slug.as_deref(),
-        question: None,
-    });
-    WalletTradeTaxonomyUpdate {
-        trade_id: trade.trade_id,
-        taxonomy_segment: classification.segment_key,
-        taxonomy_source: "keyword_fallback".to_string(),
-        taxonomy_confidence: classification.confidence,
-        taxonomy_version: GAMMA_TAXONOMY_VERSION.to_string(),
-        taxonomy_fetched_at: Utc::now(),
-        taxonomy_metadata: serde_json::json!({
-            "source": "keyword_fallback",
-            "classifier_version": classification.classifier_version,
-            "matched_rule": classification.matched_rule,
-            "matched_terms": classification.matched_terms,
-            "source_fields": classification.source_fields
-        }),
-    }
 }
 
 pub fn cache_key(lookup_type: &str, slug: &str) -> String {
@@ -503,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_uses_existing_keyword_classifier() {
+    fn gamma_metadata_is_required_for_taxonomy_update() {
         let trade = WalletTradeTaxonomyCandidate {
             trade_id: uuid::Uuid::nil(),
             title: Some("Will Bitcoin hit 120k?".to_string()),
@@ -515,8 +488,28 @@ mod tests {
             raw_payload: serde_json::json!({}),
         };
 
-        let update = fallback_taxonomy_update(&trade);
-        assert_eq!(update.taxonomy_segment, "crypto");
-        assert_eq!(update.taxonomy_source, "keyword_fallback");
+        let metadata = GammaMarketMetadata {
+            cache_key: cache_key("market_slug", "bitcoin-120k"),
+            lookup_type: "market_slug".to_string(),
+            lookup_slug: "bitcoin-120k".to_string(),
+            event_slug: None,
+            market_slug: Some("bitcoin-120k".to_string()),
+            gamma_event_id: None,
+            gamma_market_id: None,
+            category: Some("Crypto".to_string()),
+            series_slug: None,
+            tag_slugs: vec!["bitcoin".to_string()],
+            sport_key: None,
+            taxonomy_segment: Some("crypto.bitcoin".to_string()),
+            taxonomy_source: "gamma".to_string(),
+            taxonomy_confidence: dec!(0.95),
+            taxonomy_version: GAMMA_TAXONOMY_VERSION.to_string(),
+            raw_payload: serde_json::json!({}),
+            fetched_at: Utc::now(),
+        };
+
+        let update = taxonomy_update_from_metadata(&trade, &metadata).unwrap();
+        assert_eq!(update.taxonomy_segment, "crypto.bitcoin");
+        assert_eq!(update.taxonomy_source, "gamma");
     }
 }
