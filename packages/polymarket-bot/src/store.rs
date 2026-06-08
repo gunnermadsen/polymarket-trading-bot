@@ -21,8 +21,8 @@ use crate::{
         ExpectancyFlowWalletCell, FillRecord, GammaMarketMetadata, Market, OrderRecord,
         OrderRequest, OrderState, OutcomeToken, SignalCandidate, TradingProcess,
         TradingProcessConfig, WalletPerformance, WalletScore, WalletScoreCalibrationSnapshot,
-        WalletSegmentPerformance, WalletTradeTaxonomyCandidate, WalletTradeTaxonomyUpdate,
-        WhalePollCheckpoint, WhaleTrade,
+        WalletScoreRefreshJob, WalletScoreRefreshStatus, WalletSegmentPerformance,
+        WalletTradeTaxonomyCandidate, WalletTradeTaxonomyUpdate, WhalePollCheckpoint, WhaleTrade,
     },
     orderbook::LocalOrderBook,
     segments::{
@@ -5231,6 +5231,37 @@ impl Store {
         Ok(())
     }
 
+    pub async fn ensure_wallet_address(
+        &self,
+        proxy_wallet: &str,
+        seen_at: DateTime<Utc>,
+        metadata: serde_json::Value,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO polymarket.wallets (
+              proxy_wallet, first_seen_at, last_seen_at, raw_payload, updated_at
+            )
+            VALUES (lower($1),$2,$2,$3,now())
+            ON CONFLICT (proxy_wallet) DO UPDATE SET
+              first_seen_at = LEAST(COALESCE(polymarket.wallets.first_seen_at, EXCLUDED.first_seen_at), EXCLUDED.first_seen_at),
+              last_seen_at = GREATEST(COALESCE(polymarket.wallets.last_seen_at, EXCLUDED.last_seen_at), EXCLUDED.last_seen_at),
+              raw_payload = CASE
+                WHEN EXCLUDED.raw_payload = '{}'::jsonb THEN polymarket.wallets.raw_payload
+                ELSE EXCLUDED.raw_payload
+              END,
+              updated_at = now()
+            "#,
+        )
+        .bind(proxy_wallet)
+        .bind(seen_at)
+        .bind(metadata)
+        .execute(&self.pool)
+        .await
+        .context("failed to ensure wallet address")?;
+        Ok(())
+    }
+
     pub async fn record_wallet_observed_trade(&self, trade: &WhaleTrade) -> Result<()> {
         sqlx::query(
             r#"
@@ -5790,6 +5821,161 @@ impl Store {
         Ok(row.map(Into::into))
     }
 
+    pub async fn enqueue_wallet_score_refresh(
+        &self,
+        proxy_wallet: &str,
+        score_version: &str,
+        segment_score_version: &str,
+        refresh_reason: &str,
+        last_seen_trade_id: Option<Uuid>,
+        metadata: serde_json::Value,
+    ) -> Result<WalletScoreRefreshJob> {
+        let wallet = proxy_wallet.trim().to_ascii_lowercase();
+        if wallet.is_empty() {
+            bail!("proxy wallet is required for wallet score refresh");
+        }
+        self.ensure_wallet_address(&wallet, Utc::now(), serde_json::json!({}))
+            .await?;
+        let row = sqlx::query_as::<_, WalletScoreRefreshJobRow>(
+            r#"
+            INSERT INTO polymarket.wallet_score_refresh_jobs (
+              proxy_wallet, score_version, segment_score_version, status, refresh_reason,
+              last_seen_trade_id, requested_at, available_at, last_error, request_metadata,
+              result_metadata, updated_at
+            )
+            VALUES (lower($1), $2, $3, 'queued', $4, $5, now(), now(), NULL, $6, '{}'::jsonb, now())
+            ON CONFLICT (proxy_wallet, score_version, segment_score_version) DO UPDATE SET
+              status = 'queued',
+              refresh_reason = EXCLUDED.refresh_reason,
+              last_seen_trade_id = COALESCE(EXCLUDED.last_seen_trade_id, polymarket.wallet_score_refresh_jobs.last_seen_trade_id),
+              requested_at = now(),
+              available_at = now(),
+              started_at = NULL,
+              completed_at = NULL,
+              last_error = NULL,
+              request_metadata = polymarket.wallet_score_refresh_jobs.request_metadata || EXCLUDED.request_metadata,
+              updated_at = now()
+            RETURNING queue_id, proxy_wallet, score_version, status, refresh_reason,
+              requested_at, available_at, started_at, completed_at, attempt_count,
+              max_attempts, last_error, request_metadata, result_metadata
+            "#,
+        )
+        .bind(&wallet)
+        .bind(score_version)
+        .bind(segment_score_version)
+        .bind(refresh_reason)
+        .bind(last_seen_trade_id)
+        .bind(metadata)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to enqueue wallet score refresh")?;
+        row.try_into()
+    }
+
+    pub async fn claim_wallet_score_refresh_jobs(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<WalletScoreRefreshJob>> {
+        let rows = sqlx::query_as::<_, WalletScoreRefreshJobRow>(
+            r#"
+            WITH claimed AS (
+              SELECT queue_id
+              FROM polymarket.wallet_score_refresh_jobs
+              WHERE status IN ('queued', 'failed')
+                AND available_at <= now()
+                AND attempt_count < max_attempts
+              ORDER BY available_at ASC, requested_at ASC
+              LIMIT $1
+              FOR UPDATE SKIP LOCKED
+            )
+            UPDATE polymarket.wallet_score_refresh_jobs q
+            SET status = 'running',
+                started_at = now(),
+                completed_at = NULL,
+                attempt_count = q.attempt_count + 1,
+                last_error = NULL,
+                updated_at = now()
+            FROM claimed
+            WHERE q.queue_id = claimed.queue_id
+            RETURNING q.queue_id, q.proxy_wallet, q.score_version, q.status, q.refresh_reason,
+              q.requested_at, q.available_at, q.started_at, q.completed_at, q.attempt_count,
+              q.max_attempts, q.last_error, q.request_metadata, q.result_metadata
+            "#,
+        )
+        .bind(limit.clamp(1, 500))
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to claim wallet score refresh jobs")?;
+        rows.into_iter().map(TryInto::try_into).collect()
+    }
+
+    pub async fn complete_wallet_score_refresh_job(
+        &self,
+        queue_id: Uuid,
+        result_metadata: serde_json::Value,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE polymarket.wallet_score_refresh_jobs
+            SET status = 'completed',
+                completed_at = now(),
+                last_error = NULL,
+                result_metadata = $2,
+                updated_at = now()
+            WHERE queue_id = $1
+            "#,
+        )
+        .bind(queue_id)
+        .bind(result_metadata)
+        .execute(&self.pool)
+        .await
+        .context("failed to complete wallet score refresh job")?;
+        Ok(())
+    }
+
+    pub async fn fail_wallet_score_refresh_job(&self, queue_id: Uuid, error: &str) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE polymarket.wallet_score_refresh_jobs
+            SET status = CASE WHEN attempt_count >= max_attempts THEN 'failed' ELSE 'queued' END,
+                available_at = now() + (LEAST(attempt_count, 10) * interval '60 seconds'),
+                last_error = $2,
+                updated_at = now()
+            WHERE queue_id = $1
+            "#,
+        )
+        .bind(queue_id)
+        .bind(error)
+        .execute(&self.pool)
+        .await
+        .context("failed to fail wallet score refresh job")?;
+        Ok(())
+    }
+
+    pub async fn list_wallet_score_refresh_jobs(
+        &self,
+        status: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<WalletScoreRefreshJob>> {
+        let rows = sqlx::query_as::<_, WalletScoreRefreshJobRow>(
+            r#"
+            SELECT queue_id, proxy_wallet, score_version, status, refresh_reason,
+              requested_at, available_at, started_at, completed_at, attempt_count,
+              max_attempts, last_error, request_metadata, result_metadata
+            FROM polymarket.wallet_score_refresh_jobs
+            WHERE ($1::text IS NULL OR status = $1)
+            ORDER BY updated_at DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(status)
+        .bind(limit.clamp(1, 500))
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to list wallet score refresh jobs")?;
+        rows.into_iter().map(TryInto::try_into).collect()
+    }
+
     pub async fn fetch_top_mrs_scores(&self, limit: i64) -> Result<Vec<WalletScore>> {
         let rows = sqlx::query_as::<_, WalletScoreRow>(
             r#"
@@ -5999,6 +6185,122 @@ impl Store {
             offset += batch_size;
         }
         self.refresh_wallet_segment_v2_percentiles().await?;
+        Ok(updated)
+    }
+
+    pub async fn recompute_wallet_segment_v2_scores_for_wallets(
+        &self,
+        proxy_wallets: &[String],
+        since: DateTime<Utc>,
+        refresh_percentiles: bool,
+    ) -> Result<u64> {
+        let wallet_keys = proxy_wallets
+            .iter()
+            .map(|wallet| wallet.trim().to_ascii_lowercase())
+            .filter(|wallet| !wallet.is_empty())
+            .collect::<Vec<_>>();
+        if wallet_keys.is_empty() {
+            return Ok(0);
+        }
+
+        let gamma_lookup = self.fetch_gamma_segment_lookup_map().await?;
+        let mut updated = 0u64;
+        for wallet_chunk in wallet_keys.chunks(10) {
+            let rows = sqlx::query_as::<_, WalletPerformanceRow>(
+                r#"
+                SELECT proxy_wallet, sample_updated_at, realized_pnl_usd, total_bought_usd,
+                  roi, closed_positions, winning_positions, win_rate, rank_score,
+                  raw_payload, metadata
+                FROM polymarket.wallet_performance
+                WHERE lower(proxy_wallet) = ANY($1)
+                ORDER BY proxy_wallet
+                "#,
+            )
+            .bind(wallet_chunk)
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to fetch wallet performance rows for targeted segment v2 recompute")?;
+            if rows.is_empty() {
+                continue;
+            }
+
+            let chunk_wallets = rows
+                .iter()
+                .map(|row| row.proxy_wallet.clone())
+                .collect::<Vec<_>>();
+            let observed_by_wallet = self
+                .fetch_wallet_observed_gamma_segment_inputs(&chunk_wallets, since)
+                .await?;
+
+            for row in rows {
+                let wallet = row.proxy_wallet.to_ascii_lowercase();
+                let mut by_segment = observed_by_wallet.get(&wallet).cloned().unwrap_or_default();
+                for position in closed_positions_from_raw_payload(&row.raw_payload)? {
+                    let Some(segment_key) =
+                        gamma_segment_for_closed_position(&position, &gamma_lookup)
+                    else {
+                        continue;
+                    };
+                    let entry = by_segment.entry(segment_key.clone()).or_insert_with(|| {
+                        WalletSegmentPerformanceInput {
+                            proxy_wallet: wallet.clone(),
+                            segment_key,
+                            classifier_version: GAMMA_SEGMENT_CLASSIFIER_VERSION.to_string(),
+                            ..WalletSegmentPerformanceInput::default()
+                        }
+                    });
+                    let realized_pnl = position.realized_pnl.unwrap_or(Decimal::ZERO);
+                    entry.realized_pnl_usd += realized_pnl;
+                    entry.total_bought_usd += position.total_bought.unwrap_or(Decimal::ZERO);
+                    entry.closed_positions = entry.closed_positions.saturating_add(1);
+                    if realized_pnl > Decimal::ZERO {
+                        entry.winning_positions = entry.winning_positions.saturating_add(1);
+                    }
+                    if let Some(timestamp) = position.timestamp.and_then(timestamp_from_secs) {
+                        entry.sample_start = Some(
+                            entry
+                                .sample_start
+                                .map_or(timestamp, |value| value.min(timestamp)),
+                        );
+                        entry.sample_end = Some(
+                            entry
+                                .sample_end
+                                .map_or(timestamp, |value| value.max(timestamp)),
+                        );
+                    }
+                }
+
+                for input in by_segment.into_values() {
+                    let mut performance =
+                        score_wallet_segment(input).into_wallet_segment_performance();
+                    performance.score_version = MRS_SEGMENT_V2_SCORE_VERSION.to_string();
+                    performance.classifier_version = GAMMA_SEGMENT_CLASSIFIER_VERSION.to_string();
+                    performance.metadata = merge_json(
+                        performance.metadata,
+                        serde_json::json!({
+                            "source": "targeted_gamma_taxonomy_segment_v2_recompute",
+                            "score_basis": MRS_SEGMENT_V2_SCORE_VERSION,
+                            "score_version": MRS_SEGMENT_V2_SCORE_VERSION,
+                            "classifier_version": GAMMA_SEGMENT_CLASSIFIER_VERSION,
+                            "sample_updated_at": row.sample_updated_at,
+                            "wallet_performance": {
+                                "closed_positions": row.closed_positions,
+                                "winning_positions": row.winning_positions,
+                                "realized_pnl_usd": row.realized_pnl_usd,
+                                "roi": row.roi,
+                                "win_rate": row.win_rate
+                            }
+                        }),
+                    );
+                    self.upsert_wallet_segment_performance(&performance).await?;
+                    updated = updated.saturating_add(1);
+                }
+            }
+        }
+
+        if refresh_percentiles && updated > 0 {
+            self.refresh_wallet_segment_v2_percentiles().await?;
+        }
         Ok(updated)
     }
 
@@ -7944,6 +8246,24 @@ struct WalletScoreRow {
     metadata: serde_json::Value,
 }
 
+#[derive(sqlx::FromRow)]
+struct WalletScoreRefreshJobRow {
+    queue_id: Uuid,
+    proxy_wallet: String,
+    score_version: String,
+    status: String,
+    refresh_reason: String,
+    requested_at: DateTime<Utc>,
+    available_at: DateTime<Utc>,
+    started_at: Option<DateTime<Utc>>,
+    completed_at: Option<DateTime<Utc>>,
+    attempt_count: i32,
+    max_attempts: i32,
+    last_error: Option<String>,
+    request_metadata: serde_json::Value,
+    result_metadata: serde_json::Value,
+}
+
 #[derive(Debug, Clone)]
 pub struct WalletObservedTradeStats {
     pub observed_trade_count: i32,
@@ -7993,6 +8313,37 @@ impl From<WalletScoreRow> for WalletScore {
             score: row.score,
             metadata: row.metadata,
         }
+    }
+}
+
+impl TryFrom<WalletScoreRefreshJobRow> for WalletScoreRefreshJob {
+    type Error = anyhow::Error;
+
+    fn try_from(row: WalletScoreRefreshJobRow) -> Result<Self> {
+        let status = match row.status.as_str() {
+            "queued" => WalletScoreRefreshStatus::Queued,
+            "running" => WalletScoreRefreshStatus::Running,
+            "completed" => WalletScoreRefreshStatus::Completed,
+            "failed" => WalletScoreRefreshStatus::Failed,
+            "cancelled" => WalletScoreRefreshStatus::Cancelled,
+            other => bail!("unknown wallet score refresh status {other}"),
+        };
+        Ok(Self {
+            queue_id: row.queue_id,
+            proxy_wallet: row.proxy_wallet,
+            score_version: row.score_version,
+            status,
+            refresh_reason: row.refresh_reason,
+            requested_at: row.requested_at,
+            available_at: row.available_at,
+            started_at: row.started_at,
+            completed_at: row.completed_at,
+            attempt_count: row.attempt_count,
+            max_attempts: row.max_attempts,
+            last_error: row.last_error,
+            request_metadata: row.request_metadata,
+            result_metadata: row.result_metadata,
+        })
     }
 }
 

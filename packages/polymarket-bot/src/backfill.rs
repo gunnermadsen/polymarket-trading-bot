@@ -24,7 +24,6 @@ use crate::{
     orderbook::{BookSide, LocalOrderBook},
     segments::{SegmentClassification, GAMMA_SEGMENT_CLASSIFIER_VERSION},
     store::{OrderbookSnapshot, Store, TradeMarkSourceFailure},
-    trade_pnl::{refresh_trade_pnl_with_config, TradePnlConfig},
     wallets::{
         score_closed_position_performance, score_closed_position_wallets, score_mrs, score_wallets,
         MrsScoreInput,
@@ -1116,10 +1115,6 @@ pub async fn run_copy_trade_signal_engine(
         summary.orders_inserted += trade_summary.orders_inserted;
         summary.fills_inserted += trade_summary.fills_inserted;
         summary.rejections += trade_summary.rejections;
-    }
-
-    if !dry_run && summary.trades_evaluated > 0 {
-        refresh_trade_pnl_with_config(store, venue, clob, &TradePnlConfig::default()).await?;
     }
 
     Ok(summary)

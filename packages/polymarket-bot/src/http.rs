@@ -141,6 +141,33 @@ pub trait ControlApi: Send + Sync + 'static {
         request: MrsRecomputeRequest,
     ) -> Result<serde_json::Value, HttpError>;
 
+    async fn enqueue_wallet_score_refresh(
+        &self,
+        _request: WalletScoreRefreshEnqueueRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "wallet score refresh enqueue is not wired",
+        ))
+    }
+
+    async fn process_wallet_score_refresh(
+        &self,
+        _request: WalletScoreRefreshProcessRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "wallet score refresh processing is not wired",
+        ))
+    }
+
+    async fn list_wallet_score_refresh_jobs(
+        &self,
+        _request: WalletScoreRefreshJobsRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "wallet score refresh job listing is not wired",
+        ))
+    }
+
     async fn mrs_segment_summary(
         &self,
         request: TradePnlListRequest,
@@ -459,6 +486,33 @@ impl ControlApi for PlaceholderControlApi {
         ))
     }
 
+    async fn enqueue_wallet_score_refresh(
+        &self,
+        _request: WalletScoreRefreshEnqueueRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "wallet score refresh enqueue is not wired",
+        ))
+    }
+
+    async fn process_wallet_score_refresh(
+        &self,
+        _request: WalletScoreRefreshProcessRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "wallet score refresh processing is not wired",
+        ))
+    }
+
+    async fn list_wallet_score_refresh_jobs(
+        &self,
+        _request: WalletScoreRefreshJobsRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "wallet score refresh job listing is not wired",
+        ))
+    }
+
     async fn mrs_segment_summary(
         &self,
         _request: TradePnlListRequest,
@@ -622,6 +676,18 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .route("/trades/pnl/backfill", post(trade_pnl_backfill))
         .route("/trades/pnl/mark-now", post(trade_pnl_mark_now))
         .route("/wallets/mrs/recompute", post(recompute_mrs_scores))
+        .route(
+            "/wallets/scoring/refresh/enqueue",
+            post(enqueue_wallet_score_refresh),
+        )
+        .route(
+            "/wallets/scoring/refresh/process",
+            post(process_wallet_score_refresh),
+        )
+        .route(
+            "/wallets/scoring/refresh/jobs",
+            get(list_wallet_score_refresh_jobs),
+        )
         .route("/wallets/mrs/segments", get(mrs_segment_summary))
         .route(
             "/wallets/mrs/segments/recompute",
@@ -859,6 +925,39 @@ async fn recompute_mrs_segment_scores(
     state
         .control
         .recompute_mrs_segment_scores(request)
+        .await
+        .map(Json)
+}
+
+async fn enqueue_wallet_score_refresh(
+    State(state): State<HttpState>,
+    Json(request): Json<WalletScoreRefreshEnqueueRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state
+        .control
+        .enqueue_wallet_score_refresh(request)
+        .await
+        .map(Json)
+}
+
+async fn process_wallet_score_refresh(
+    State(state): State<HttpState>,
+    Json(request): Json<WalletScoreRefreshProcessRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state
+        .control
+        .process_wallet_score_refresh(request)
+        .await
+        .map(Json)
+}
+
+async fn list_wallet_score_refresh_jobs(
+    State(state): State<HttpState>,
+    Query(request): Query<WalletScoreRefreshJobsRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state
+        .control
+        .list_wallet_score_refresh_jobs(request)
         .await
         .map(Json)
 }
@@ -1214,6 +1313,45 @@ pub struct TradePnlListRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MrsRecomputeRequest {
     pub lookback_days: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletScoreRefreshEnqueueRequest {
+    #[serde(default)]
+    pub wallets: Vec<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub score_version: Option<String>,
+    #[serde(default)]
+    pub segment_score_version: Option<String>,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletScoreRefreshProcessRequest {
+    #[serde(default)]
+    pub wallets: Vec<String>,
+    #[serde(default)]
+    pub use_queue: Option<bool>,
+    pub lookback_days: Option<i64>,
+    pub page_limit: Option<usize>,
+    pub max_pages: Option<usize>,
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub refresh_percentiles: bool,
+    #[serde(default)]
+    pub score_version: Option<String>,
+    #[serde(default)]
+    pub segment_score_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletScoreRefreshJobsRequest {
+    #[serde(default)]
+    pub status: Option<String>,
     pub limit: Option<i64>,
 }
 

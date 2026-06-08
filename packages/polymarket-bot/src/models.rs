@@ -579,6 +579,34 @@ pub struct WalletScore {
     pub metadata: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WalletScoreRefreshStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletScoreRefreshJob {
+    pub queue_id: Uuid,
+    pub proxy_wallet: String,
+    pub score_version: String,
+    pub status: WalletScoreRefreshStatus,
+    pub refresh_reason: String,
+    pub requested_at: DateTime<Utc>,
+    pub available_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub attempt_count: i32,
+    pub max_attempts: i32,
+    pub last_error: Option<String>,
+    pub request_metadata: serde_json::Value,
+    pub result_metadata: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletPerformance {
     pub proxy_wallet: String,

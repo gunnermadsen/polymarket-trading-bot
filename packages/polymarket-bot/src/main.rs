@@ -47,6 +47,7 @@ use polymarket_bot::{
     wallets::{score_closed_position_performance, score_mrs, MrsScoreInput},
 };
 use rust_decimal_macros::dec;
+use serde::Serialize;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -834,6 +835,202 @@ impl ControlApi for RuntimeControl {
         }))
     }
 
+    async fn enqueue_wallet_score_refresh(
+        &self,
+        request: control_http::WalletScoreRefreshEnqueueRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        if request.wallets.is_empty() {
+            return Err(HttpError::bad_request(
+                "wallets must contain at least one wallet",
+            ));
+        }
+        let score_version = request
+            .score_version
+            .unwrap_or_else(|| polymarket_bot::wallets::MRS_SCORE_VERSION.to_string());
+        let segment_score_version = request
+            .segment_score_version
+            .unwrap_or_else(|| polymarket_bot::segments::MRS_SEGMENT_V2_SCORE_VERSION.to_string());
+        validate_supported_score_versions(&score_version, &segment_score_version)?;
+        let reason = request
+            .reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty())
+            .unwrap_or("admin_requested");
+        let mut jobs = Vec::new();
+        for wallet in request.wallets.iter().take(1_000) {
+            let wallet = wallet.trim();
+            if wallet.is_empty() {
+                continue;
+            }
+            let job = self
+                .store
+                .enqueue_wallet_score_refresh(
+                    wallet,
+                    &score_version,
+                    &segment_score_version,
+                    reason,
+                    None,
+                    request.metadata.clone(),
+                )
+                .await
+                .map_err(|error| HttpError::internal(error.to_string()))?;
+            jobs.push(job);
+        }
+        Ok(serde_json::json!({
+            "enqueued": jobs.len(),
+            "score_version": score_version,
+            "segment_score_version": segment_score_version,
+            "jobs": jobs
+        }))
+    }
+
+    async fn process_wallet_score_refresh(
+        &self,
+        request: control_http::WalletScoreRefreshProcessRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        let lookback_days = request.lookback_days.unwrap_or(150).clamp(1, 365);
+        let page_limit = request.page_limit.unwrap_or(50).clamp(1, 250);
+        let max_pages = request.max_pages.unwrap_or(1).clamp(1, 10);
+        let limit = request.limit.unwrap_or(25).clamp(1, 250);
+        let score_version = request
+            .score_version
+            .unwrap_or_else(|| polymarket_bot::wallets::MRS_SCORE_VERSION.to_string());
+        let segment_score_version = request
+            .segment_score_version
+            .unwrap_or_else(|| polymarket_bot::segments::MRS_SEGMENT_V2_SCORE_VERSION.to_string());
+        validate_supported_score_versions(&score_version, &segment_score_version)?;
+
+        let mut claimed_jobs = Vec::new();
+        let wallets = if request.wallets.is_empty() {
+            if request.use_queue.unwrap_or(true) {
+                claimed_jobs = self
+                    .store
+                    .claim_wallet_score_refresh_jobs(limit)
+                    .await
+                    .map_err(|error| HttpError::internal(error.to_string()))?;
+                claimed_jobs
+                    .iter()
+                    .map(|job| job.proxy_wallet.clone())
+                    .collect::<Vec<_>>()
+            } else {
+                return Err(HttpError::bad_request(
+                    "wallets must be provided when use_queue is false",
+                ));
+            }
+        } else {
+            request
+                .wallets
+                .iter()
+                .take(limit as usize)
+                .map(|wallet| wallet.trim().to_ascii_lowercase())
+                .filter(|wallet| !wallet.is_empty())
+                .collect::<Vec<_>>()
+        };
+
+        let since = Utc::now() - chrono::Duration::days(lookback_days);
+        let mut processed = 0u64;
+        let mut failed = 0u64;
+        let mut segment_scores_updated = 0u64;
+        let mut results = Vec::new();
+
+        for wallet in wallets {
+            let queue_id = claimed_jobs
+                .iter()
+                .find(|job| job.proxy_wallet.eq_ignore_ascii_case(&wallet))
+                .map(|job| job.queue_id);
+            match recompute_single_wallet_scores(
+                &self.store,
+                &self.data_api,
+                &wallet,
+                since,
+                lookback_days,
+                page_limit,
+                max_pages,
+                false,
+            )
+            .await
+            {
+                Ok(report) => {
+                    processed = processed.saturating_add(1);
+                    segment_scores_updated =
+                        segment_scores_updated.saturating_add(report.segment_scores_updated);
+                    if let Some(queue_id) = queue_id {
+                        self.store
+                            .complete_wallet_score_refresh_job(
+                                queue_id,
+                                serde_json::to_value(&report)
+                                    .map_err(|error| HttpError::internal(error.to_string()))?,
+                            )
+                            .await
+                            .map_err(|error| HttpError::internal(error.to_string()))?;
+                    }
+                    results.push(
+                        serde_json::to_value(report)
+                            .map_err(|error| HttpError::internal(error.to_string()))?,
+                    );
+                }
+                Err(error) => {
+                    failed = failed.saturating_add(1);
+                    if let Some(queue_id) = queue_id {
+                        if let Err(fail_error) = self
+                            .store
+                            .fail_wallet_score_refresh_job(queue_id, &error.to_string())
+                            .await
+                        {
+                            warn!(
+                                error = %fail_error,
+                                queue_id = %queue_id,
+                                "failed to update wallet score refresh job failure"
+                            );
+                        }
+                    }
+                    results.push(serde_json::json!({
+                        "proxy_wallet": wallet,
+                        "status": "failed",
+                        "error": error.to_string()
+                    }));
+                }
+            }
+        }
+
+        if request.refresh_percentiles && segment_scores_updated > 0 {
+            self.store
+                .refresh_wallet_segment_v2_percentiles()
+                .await
+                .map_err(|error| HttpError::internal(error.to_string()))?;
+        }
+
+        Ok(serde_json::json!({
+            "status": "completed",
+            "processed_wallets": processed,
+            "failed_wallets": failed,
+            "segment_scores_updated": segment_scores_updated,
+            "lookback_days": lookback_days,
+            "page_limit": page_limit,
+            "max_pages": max_pages,
+            "refresh_percentiles": request.refresh_percentiles,
+            "results": results
+        }))
+    }
+
+    async fn list_wallet_score_refresh_jobs(
+        &self,
+        request: control_http::WalletScoreRefreshJobsRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        let status = request
+            .status
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let jobs = self
+            .store
+            .list_wallet_score_refresh_jobs(status, request.limit.unwrap_or(50))
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        Ok(serde_json::json!({ "jobs": jobs }))
+    }
+
     async fn mrs_segment_summary(
         &self,
         request: control_http::TradePnlListRequest,
@@ -1419,6 +1616,96 @@ impl ControlApi for RuntimeControl {
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
         Ok(TradingProcessResetResponse { report })
     }
+}
+
+#[derive(Debug, Serialize)]
+struct WalletScoreRefreshProcessReport {
+    proxy_wallet: String,
+    closed_positions: usize,
+    mrs_score: rust_decimal::Decimal,
+    segment_scores_updated: u64,
+}
+
+fn validate_supported_score_versions(
+    score_version: &str,
+    segment_score_version: &str,
+) -> Result<(), HttpError> {
+    if score_version != polymarket_bot::wallets::MRS_SCORE_VERSION {
+        return Err(HttpError::bad_request(format!(
+            "unsupported score_version {score_version}"
+        )));
+    }
+    if segment_score_version != polymarket_bot::segments::MRS_SEGMENT_V2_SCORE_VERSION {
+        return Err(HttpError::bad_request(format!(
+            "unsupported segment_score_version {segment_score_version}"
+        )));
+    }
+    Ok(())
+}
+
+async fn recompute_single_wallet_scores(
+    store: &Store,
+    data_api: &DataApiClient,
+    proxy_wallet: &str,
+    since: chrono::DateTime<Utc>,
+    lookback_days: i64,
+    page_limit: usize,
+    max_pages: usize,
+    refresh_percentiles_inline: bool,
+) -> Result<WalletScoreRefreshProcessReport> {
+    let wallet = proxy_wallet.trim().to_ascii_lowercase();
+    if wallet.is_empty() {
+        bail!("proxy wallet is required");
+    }
+    store
+        .ensure_wallet_address(
+            &wallet,
+            Utc::now(),
+            serde_json::json!({
+                "source": "wallet_score_refresh"
+            }),
+        )
+        .await?;
+    let positions =
+        fetch_closed_positions_for_wallet(data_api, &wallet, page_limit, max_pages).await?;
+    let performance_score = score_closed_position_performance(&wallet, &positions);
+    let performance = performance_score
+        .clone()
+        .into_wallet_performance(Utc::now(), serde_json::to_value(&positions)?);
+    store.upsert_wallet_performance(&performance).await?;
+    let observed_stats = store
+        .fetch_wallet_observed_trade_stats(&wallet, since)
+        .await?;
+    let mut mrs_input = MrsScoreInput::from(&performance_score);
+    mrs_input.observed_trade_count = observed_stats.observed_trade_count;
+    mrs_input.observed_volume_usd = observed_stats.observed_volume_usd;
+    mrs_input.observed_market_count = observed_stats.observed_market_count;
+    mrs_input.avg_trade_size = observed_stats.avg_trade_size;
+    let mut mrs_score = score_mrs(mrs_input).into_wallet_score();
+    mrs_score.metadata = merge_json(
+        mrs_score.metadata,
+        serde_json::json!({
+            "source": "wallet_score_refresh_job",
+            "lookback_days": lookback_days,
+            "sample_start": observed_stats.sample_start,
+            "sample_end": observed_stats.sample_end
+        }),
+    );
+    store.upsert_wallet_score(&mrs_score).await?;
+    let segment_scores_updated = store
+        .recompute_wallet_segment_v2_scores_for_wallets(
+            std::slice::from_ref(&wallet),
+            since,
+            refresh_percentiles_inline,
+        )
+        .await?;
+    let report = WalletScoreRefreshProcessReport {
+        proxy_wallet: wallet,
+        closed_positions: positions.len(),
+        mrs_score: mrs_score.score,
+        segment_scores_updated,
+    };
+    Ok(report)
 }
 
 #[tokio::main]
@@ -2248,12 +2535,32 @@ async fn poll_live_whales_once(
                 );
                 continue;
             }
+            if let Err(error) = store
+                .enqueue_wallet_score_refresh(
+                    &trade.proxy_wallet,
+                    polymarket_bot::wallets::MRS_SCORE_VERSION,
+                    polymarket_bot::segments::MRS_SEGMENT_V2_SCORE_VERSION,
+                    "live_trade_observed",
+                    Some(trade.trade_id),
+                    serde_json::json!({
+                        "source": "live_whale_poll",
+                        "trade_id": trade.trade_id,
+                        "transaction_hash": trade.transaction_hash,
+                        "timestamp_utc": trade.timestamp_utc
+                    }),
+                )
+                .await
+            {
+                warn!(
+                    error = %error,
+                    proxy_wallet = %trade.proxy_wallet,
+                    trade_id = %trade.trade_id,
+                    "failed to enqueue wallet score refresh"
+                );
+            }
             trades.push(trade);
         }
     }
-
-    ensure_live_wallet_performance(store, data_api, &trades, runtime_config.live_page_limit, 1)
-        .await?;
 
     run_copy_trade_signal_engine(
         store,
@@ -2269,67 +2576,6 @@ async fn poll_live_whales_once(
         false,
     )
     .await
-}
-
-async fn ensure_live_wallet_performance(
-    store: &Store,
-    data_api: &DataApiClient,
-    trades: &[polymarket_bot::models::WhaleTrade],
-    page_limit: usize,
-    max_pages: usize,
-) -> Result<()> {
-    let mut checked_wallets = HashSet::new();
-    for trade in trades {
-        if !checked_wallets.insert(trade.proxy_wallet.clone()) {
-            continue;
-        }
-        let positions = fetch_closed_positions_for_wallet(
-            data_api,
-            &trade.proxy_wallet,
-            page_limit.max(50),
-            max_pages.max(1),
-        )
-        .await?;
-        let performance_score = score_closed_position_performance(&trade.proxy_wallet, &positions);
-        let performance = performance_score
-            .clone()
-            .into_wallet_performance(Utc::now(), serde_json::to_value(&positions)?);
-        let wallet_score = performance_score.clone().into_wallet_score();
-        store.upsert_wallet_performance(&performance).await?;
-        store.upsert_wallet_score(&wallet_score).await?;
-        let stats = store
-            .fetch_wallet_observed_trade_stats(
-                &trade.proxy_wallet,
-                Utc::now() - chrono::Duration::days(150),
-            )
-            .await?;
-        let mut mrs_input = MrsScoreInput::from(&performance_score);
-        mrs_input.observed_trade_count = stats.observed_trade_count;
-        mrs_input.observed_volume_usd = stats.observed_volume_usd;
-        mrs_input.observed_market_count = stats.observed_market_count;
-        mrs_input.avg_trade_size = stats.avg_trade_size;
-        let mut mrs_score = score_mrs(mrs_input).into_wallet_score();
-        mrs_score.metadata = merge_json(
-            mrs_score.metadata,
-            serde_json::json!({
-                "source": "live_trade_score_update",
-                "sample_start": stats.sample_start,
-                "sample_end": stats.sample_end,
-                "trigger_trade_id": trade.trade_id,
-                "trigger_transaction_hash": trade.transaction_hash
-            }),
-        );
-        store.upsert_wallet_score(&mrs_score).await?;
-    }
-    if !checked_wallets.is_empty() {
-        store
-            .recompute_wallet_segment_v2_scores_from_existing(
-                Utc::now() - chrono::Duration::days(150),
-                checked_wallets.len().max(1) as i64,
-            )
-            .await?;
-    }
-    Ok(())
 }
 
 fn merge_json(mut left: serde_json::Value, right: serde_json::Value) -> serde_json::Value {
