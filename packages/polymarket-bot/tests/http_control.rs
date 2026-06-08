@@ -1296,6 +1296,130 @@ async fn authenticated_admin_can_manage_trading_processes() {
     assert_eq!(stop_response.status(), StatusCode::OK);
 }
 
+#[tokio::test]
+async fn trading_process_config_does_not_accept_hot_path_scoring_recompute_controls() {
+    let app = http::router(Arc::new(FakeControlApi), "secret");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/trading-processes")
+                .header(AUTHORIZATION, "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"hot-path-canary",
+                        "process_type":"copy_trade",
+                        "enabled":true,
+                        "config":{
+                            "recompute_mrs_scores":true,
+                            "score_backfill_enabled":true,
+                            "execution":{
+                                "mode":"sim",
+                                "execute_signals":true,
+                                "live_capital":false,
+                                "recompute_scores":true,
+                                "backfill_scores":true
+                            },
+                            "copy_trade":{
+                                "enabled":true,
+                                "mrs_enabled":true,
+                                "mrs_enforce":true,
+                                "min_mrs_score":"80",
+                                "recompute_mrs_scores":true,
+                                "recompute_segment_scores":true,
+                                "score_backfill_enabled":true
+                            },
+                            "expectancy_flow":{
+                                "enabled":true,
+                                "enforce":true,
+                                "recompute_lookback_days":14,
+                                "recompute_on_trade":true,
+                                "score_backfill_enabled":true,
+                                "wallet_filter":{
+                                    "enabled":true,
+                                    "mrs_enabled":true,
+                                    "recompute_mrs_scores":true
+                                }
+                            }
+                        }
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let config = &json["process"]["config"];
+
+    assert_eq!(config["execution"]["mode"], "sim");
+    assert_eq!(config["execution"]["execute_signals"], true);
+    assert_eq!(config["copy_trade"]["mrs_enforce"], true);
+    assert_eq!(config["expectancy_flow"]["recompute_lookback_days"], 14);
+    assert_no_hot_path_scoring_recompute_fields(config);
+}
+
+#[tokio::test]
+async fn trading_process_upsert_does_not_accept_hot_path_scoring_backfill_controls() {
+    let app = http::router(Arc::new(FakeControlApi), "secret");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/admin/trading-processes/by-key/hot-path-canary")
+                .header(AUTHORIZATION, "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"hot-path-canary",
+                        "process_type":"copy_trade",
+                        "process_scope":"production",
+                        "enabled":true,
+                        "status":"running",
+                        "config":{
+                            "execution":{
+                                "mode":"live",
+                                "execute_signals":true,
+                                "live_capital":true
+                            },
+                            "copy_trade":{
+                                "enabled":true,
+                                "segment_scoring_enabled":true,
+                                "segment_scoring_mode":"live_enforce",
+                                "segment_score_version":"mrs_segment_v1",
+                                "segment_score_backfill_enabled":true,
+                                "backfill_segment_scores":true
+                            },
+                            "expectancy_flow":{
+                                "enabled":true,
+                                "wallet_filter":{
+                                    "enabled":true,
+                                    "mrs_enabled":true,
+                                    "mrs_score_backfill_enabled":true
+                                }
+                            }
+                        }
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let config = &json["process"]["config"];
+
+    assert_eq!(json["process"]["process_key"], "hot-path-canary");
+    assert_eq!(config["execution"]["mode"], "live");
+    assert_eq!(config["copy_trade"]["segment_scoring_mode"], "live_enforce");
+    assert_no_hot_path_scoring_recompute_fields(config);
+}
+
 fn test_job(status: BackfillJobStatus, request: Value) -> BackfillJob {
     BackfillJob {
         job_id: Uuid::new_v4(),
@@ -1332,6 +1456,38 @@ fn test_backtest_run(backtest_run_id: Uuid) -> BacktestRun {
         completed_at: Some(now),
         created_at: now,
         updated_at: now,
+    }
+}
+
+fn assert_no_hot_path_scoring_recompute_fields(value: &Value) {
+    const FORBIDDEN_KEYS: &[&str] = &[
+        "backfill_scores",
+        "backfill_segment_scores",
+        "recompute_mrs_scores",
+        "recompute_on_trade",
+        "recompute_scores",
+        "recompute_segment_scores",
+        "mrs_score_backfill_enabled",
+        "score_backfill_enabled",
+        "segment_score_backfill_enabled",
+    ];
+
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                assert!(
+                    !FORBIDDEN_KEYS.contains(&key.as_str()),
+                    "trading process config must not accept hot-path scoring recompute/backfill field `{key}`"
+                );
+                assert_no_hot_path_scoring_recompute_fields(child);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                assert_no_hot_path_scoring_recompute_fields(child);
+            }
+        }
+        _ => {}
     }
 }
 
