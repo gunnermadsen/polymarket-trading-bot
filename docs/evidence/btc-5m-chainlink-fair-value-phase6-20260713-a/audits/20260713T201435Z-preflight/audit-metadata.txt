@@ -1,0 +1,6 @@
+audit_mode=preflight
+experiment_key=btc-5m-chainlink-fair-value-phase6-20260713-a
+preregistration_sha256=dec3ed895085f9d4e3625f16a7e131f6a292fe3dc59322149451d4afe600ffd2
+started_at_utc=2026-07-13T20:14:35Z
+repository_root=/Users/gunnermadsen/development/polymarket-bot
+git_commit=869bd9538ddfa3ac873df7313c645d8bb9161929

@@ -21,6 +21,19 @@
   "links": [],
   "panels": [
     {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 14,
+      "panels": [],
+      "title": "BTC 5-Minute Realtime Paper",
+      "type": "row"
+    },
+    {
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgres"
@@ -45,14 +58,68 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Active Sessions"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 1
+                    },
+                    {
+                      "color": "red",
+                      "value": 2
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^(Lifecycle Mismatch|Failures 24h)$/"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 0
+        "y": 1
       },
+      "description": "A live paper session exists only when the trading process and its paper experiment both claim to be running and the process heartbeat is fresh. The bot service itself may be healthy while Active Sessions is zero.",
       "id": 3,
       "options": {
         "colorMode": "value",
@@ -74,11 +141,14 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "dataset": "polymarket",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "select count(*) as \"Enabled Processes\" from polymarket.trading_processes where enabled = true;",
+          "rawSql": "SELECT count(DISTINCT p.process_id) AS \"Active Sessions\"\nFROM polymarket.trading_processes p\nJOIN polymarket.btc_paper_experiments e\n  ON e.process_id=p.process_id\n AND e.status='running'\n AND e.stopped_at IS NULL\nWHERE p.process_scope='realtime_paper'\n  AND p.enabled\n  AND p.status IN ('starting','running','stopping')\n  AND p.stopped_at IS NULL\n  AND COALESCE(p.heartbeat_at,p.updated_at,p.started_at,p.created_at)>=now()-interval '2 minutes';",
           "refId": "A",
           "sql": {
             "columns": [
@@ -99,7 +169,6 @@
           }
         },
         {
-          "dataset": "polymarket",
           "datasource": {
             "type": "grafana-postgresql-datasource",
             "uid": "postgres"
@@ -107,8 +176,36 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "select count(*) as \"Disabled Processes\" from polymarket.trading_processes where enabled = false;",
+          "rawSql": "SELECT count(DISTINCT p.process_id) AS \"Lifecycle Mismatch\"\nFROM polymarket.trading_processes p\nLEFT JOIN polymarket.btc_paper_experiments e\n  ON e.process_id=p.process_id\n AND e.status='running'\n AND e.stopped_at IS NULL\nWHERE p.process_scope='realtime_paper'\n  AND (\n    (\n      p.enabled\n      AND p.status IN ('starting','running','stopping')\n      AND p.stopped_at IS NULL\n    ) <> (e.experiment_id IS NOT NULL)\n    OR (\n      (\n        (p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL)\n        OR e.experiment_id IS NOT NULL\n      )\n      AND COALESCE(p.heartbeat_at,p.updated_at,p.started_at,p.created_at)<now()-interval '2 minutes'\n    )\n  );",
           "refId": "B",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT count(*) AS \"Failures 24h\"\n    FROM polymarket.trading_processes\n    WHERE process_scope = 'realtime_paper'\n      AND status = 'failed'\n      AND updated_at >= now()-interval '24 hours';",
+          "refId": "C",
           "sql": {
             "columns": [
               {
@@ -128,7 +225,7 @@
           }
         }
       ],
-      "title": "Number of Active Trading Processes",
+      "title": "Realtime Process Health",
       "type": "stat"
     },
     {
@@ -198,7 +295,7 @@
         "h": 12,
         "w": 9,
         "x": 5,
-        "y": 0
+        "y": 1
       },
       "id": 6,
       "options": {
@@ -226,7 +323,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "WITH mark_points AS (\n  SELECT\n    $__timeGroup(m.timestamp_utc, $__interval) AS \"time\",\n    COALESCE(m.process_id, p.process_id) AS process_id,\n    m.position_id,\n    m.timestamp_utc,\n    m.net_unrealized_pnl\n  FROM polymarket.trade_marks m\n  JOIN polymarket.trade_positions p\n    ON p.position_id = m.position_id\n  WHERE $__timeFilter(m.timestamp_utc)\n    AND p.status IN ('open', 'partially_closed')\n    AND COALESCE(m.process_id, p.process_id) IS NOT NULL\n), latest_marks AS (\n  SELECT\n    \"time\",\n    process_id,\n    position_id,\n    net_unrealized_pnl,\n    ROW_NUMBER() OVER (\n      PARTITION BY \"time\", process_id, position_id\n      ORDER BY timestamp_utc DESC\n    ) AS mark_rank\n  FROM mark_points\n)\nSELECT\n  \"time\",\n  left(process_id::text, 8) AS metric,\n  SUM(net_unrealized_pnl)::double precision AS value\nFROM latest_marks\nWHERE mark_rank = 1\nGROUP BY 1, 2\nORDER BY 1, 2;",
+          "rawSql": "WITH bounds AS MATERIALIZED (\n  SELECT $__timeFrom()::timestamptz AS from_ts,$__timeTo()::timestamptz AS to_ts\n), buckets AS MATERIALIZED (\n  SELECT generate_series(date_bin('5 minutes',from_ts,timestamptz '1970-01-01'),to_ts,interval '5 minutes') AS \"time\" FROM bounds\n  UNION SELECT to_ts FROM bounds\n), active AS MATERIALIZED (\n  SELECT e.experiment_id,e.process_id,e.name\n  FROM polymarket.btc_paper_experiments e\n  JOIN polymarket.trading_processes p USING(process_id)\n  WHERE p.process_scope='realtime_paper'\n    AND e.status='running' AND e.stopped_at IS NULL\n    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n    AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes'\n), entries AS MATERIALIZED (\n  SELECT a.process_id,a.name,o.order_id,o.token_id,MIN(f.timestamp_utc) AS entry_at,\n         SUM(f.size)::numeric AS filled_size,SUM(f.price*f.size)::numeric AS entry_cost,\n         SUM(f.fee)::numeric AS entry_fees,m.official_resolution_received_at AS resolved_at\n  FROM active a\n  JOIN polymarket.orders o ON o.process_id=a.process_id\n    AND o.raw_payload#>>'{request,metadata,experiment_id}'=a.experiment_id::text\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.source='paper'\n  JOIN polymarket.btc_interval_markets m ON m.market_id=o.market_id\n  GROUP BY a.process_id,a.name,o.order_id,o.token_id,m.official_resolution_received_at\n), points AS MATERIALIZED (\n  SELECT b.\"time\",e.process_id,e.name,e.filled_size*mark.best_bid-e.entry_cost-e.entry_fees AS value\n  FROM buckets b JOIN entries e ON e.entry_at<=b.\"time\" AND (e.resolved_at IS NULL OR b.\"time\"<e.resolved_at)\n  JOIN LATERAL (\n    SELECT c.best_bid FROM polymarket.orderbook_checkpoints c\n    WHERE c.token_id=e.token_id AND c.integrity_status='ok' AND c.best_bid IS NOT NULL\n      AND c.source_timestamp BETWEEN b.\"time\"-interval '2 seconds' AND b.\"time\"+interval '1 second'\n      AND c.received_at BETWEEN b.\"time\"-interval '2 seconds' AND b.\"time\"\n    ORDER BY c.source_timestamp DESC,c.received_at DESC,c.ingest_sequence DESC LIMIT 1\n  ) mark ON true\n)\nSELECT \"time\",name||' ['||left(process_id::text,8)||']' AS metric,SUM(value)::double precision AS value\nFROM points GROUP BY \"time\",process_id,name ORDER BY \"time\",metric;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -247,7 +344,7 @@
           }
         }
       ],
-      "title": "Unrealized PnL by Process",
+      "title": "Active Fresh Unrealized PnL by Process",
       "type": "timeseries"
     },
     {
@@ -317,7 +414,7 @@
         "h": 12,
         "w": 10,
         "x": 14,
-        "y": 0
+        "y": 1
       },
       "id": 1,
       "options": {
@@ -345,7 +442,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "WITH exit_events AS (\n  SELECT\n    COALESCE(e.process_id, p.process_id) AS process_id,\n    e.timestamp_utc,\n    e.net_pnl\n  FROM polymarket.trade_exits e\n  JOIN polymarket.trade_positions p\n    ON p.position_id = e.position_id\n  WHERE NOT e.is_synthetic\n    AND COALESCE(e.process_id, p.process_id) IS NOT NULL\n), baseline AS (\n  SELECT\n    process_id,\n    COALESCE(SUM(net_pnl), 0) AS realized_before\n  FROM exit_events\n  WHERE timestamp_utc < $__timeFrom()\n  GROUP BY process_id\n), bucketed AS (\n  SELECT\n    $__timeGroupAlias(timestamp_utc, $__interval),\n    process_id,\n    SUM(net_pnl) AS bucket_realized_pnl\n  FROM exit_events\n  WHERE $__timeFilter(timestamp_utc)\n  GROUP BY 1, process_id\n)\nSELECT\n  b.\"time\",\n  left(b.process_id::text, 8) AS metric,\n  (\n    COALESCE(bl.realized_before, 0)\n    + SUM(b.bucket_realized_pnl) OVER (\n      PARTITION BY b.process_id\n      ORDER BY b.\"time\"\n      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n    )\n  )::double precision AS value\nFROM bucketed b\nLEFT JOIN baseline bl\n  ON bl.process_id = b.process_id\nORDER BY b.\"time\", metric;",
+          "rawSql": "WITH bounds AS MATERIALIZED (\n  SELECT $__timeFrom()::timestamptz AS from_ts,$__timeTo()::timestamptz AS to_ts\n), buckets AS MATERIALIZED (\n  SELECT generate_series(date_bin('5 minutes',from_ts,timestamptz '1970-01-01'),to_ts,interval '5 minutes') AS \"time\" FROM bounds\n  UNION SELECT to_ts FROM bounds\n), active AS MATERIALIZED (\n  SELECT e.*\n  FROM polymarket.btc_paper_experiments e\n  JOIN polymarket.trading_processes p USING(process_id)\n  WHERE p.process_scope='realtime_paper'\n    AND e.status='running' AND e.stopped_at IS NULL\n    AND p.enabled AND p.status IN ('starting','running','stopping')\n    AND p.stopped_at IS NULL\n    AND COALESCE(p.heartbeat_at,p.updated_at,p.started_at,p.created_at)>=now()-interval '2 minutes'\n), entries AS MATERIALIZED (\n  SELECT o.order_id,o.token_id,o.market_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS fees\n  FROM active a JOIN polymarket.orders o ON o.process_id=a.process_id\n    AND o.raw_payload#>>'{request,metadata,experiment_id}'=a.experiment_id::text\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.source='paper'\n  GROUP BY o.order_id,o.token_id,o.market_id\n), exits AS MATERIALIZED (\n  SELECT m.official_resolution_received_at AS realized_at,\n         (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.fees)::numeric AS net_pnl\n  FROM entries e JOIN polymarket.btc_interval_markets m USING(market_id) CROSS JOIN bounds b\n  WHERE m.official_outcome IS NOT NULL AND m.official_resolution_received_at IS NOT NULL\n    AND m.official_resolution_received_at<=b.to_ts\n)\nSELECT b.\"time\",a.name||' ['||left(a.process_id::text,8)||']' AS metric,\n       COALESCE(SUM(x.net_pnl) FILTER(WHERE x.realized_at<=b.\"time\"),0)::double precision AS value\nFROM active a CROSS JOIN buckets b LEFT JOIN exits x ON true\nGROUP BY b.\"time\",a.experiment_id,a.name,a.process_id\nORDER BY b.\"time\",metric;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -366,7 +463,8 @@
           }
         }
       ],
-      "title": "Cumulative Realized PnL by Process",
+      "description": "Cumulative realized PnL for fresh, currently running paper sessions only. Stopped experiments are available in the evidence and history rows below, not in this live row.",
+      "title": "Active Cumulative Net Realized PnL",
       "type": "timeseries"
     },
     {
@@ -402,7 +500,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 5
+        "y": 6
       },
       "id": 4,
       "options": {
@@ -432,7 +530,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  COALESCE(SUM(unrealized_pnl) FILTER (WHERE status IN ('open', 'partially_closed')), 0)::double precision AS \"Total Unrealized PnL\"\nFROM polymarket.trade_positions\nWHERE process_id IS NOT NULL;",
+          "rawSql": "WITH active AS MATERIALIZED (\n  SELECT e.experiment_id,e.process_id\n  FROM polymarket.btc_paper_experiments e JOIN polymarket.trading_processes p USING(process_id)\n  WHERE p.process_scope='realtime_paper'\n    AND e.status='running' AND e.stopped_at IS NULL\n    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n    AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes'\n), open_entries AS MATERIALIZED (\n  SELECT e.process_id,o.order_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees\n  FROM active e JOIN polymarket.orders o ON o.process_id=e.process_id\n    AND o.raw_payload#>>'{request,metadata,experiment_id}'=e.experiment_id::text\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.source='paper'\n  JOIN polymarket.btc_interval_markets m ON m.market_id=o.market_id\n  WHERE m.official_resolution_received_at IS NULL\n  GROUP BY e.process_id,o.order_id,o.token_id\n), marked AS MATERIALIZED (\n  SELECT e.*,mark.best_bid,mark.source_timestamp AS mark_at\n  FROM open_entries e LEFT JOIN LATERAL (\n    SELECT c.best_bid,c.source_timestamp FROM polymarket.orderbook_checkpoints c\n    WHERE c.token_id=e.token_id AND c.integrity_status='ok' AND c.best_bid IS NOT NULL\n      AND c.source_timestamp BETWEEN now()-interval '2 seconds' AND now()+interval '1 second'\n      AND c.received_at BETWEEN now()-interval '2 seconds' AND now()\n    ORDER BY c.source_timestamp DESC,c.received_at DESC,c.ingest_sequence DESC LIMIT 1\n  ) mark ON true\n), summary AS (\n  SELECT COUNT(*) AS open_count,COUNT(best_bid) AS fresh_count,\n         COALESCE(SUM(filled_size*best_bid-entry_cost-entry_fees) FILTER(WHERE best_bid IS NOT NULL),0) AS value,\n         MAX(mark_at) AS latest_mark_at FROM marked\n)\nSELECT CASE WHEN open_count=0 THEN 0::double precision\n            WHEN fresh_count=open_count THEN value::double precision ELSE NULL::double precision END AS \"Fresh Unrealized PnL\",\n       open_count AS \"Open Positions\",open_count-fresh_count AS \"Stale or Unpriced\"\nFROM summary;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -453,7 +551,7 @@
           }
         }
       ],
-      "title": "Total Unrealized PnL",
+      "title": "Active Fresh Unrealized PnL",
       "type": "stat"
     },
     {
@@ -489,7 +587,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 10
+        "y": 11
       },
       "id": 5,
       "options": {
@@ -519,7 +617,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  COALESCE(SUM(realized_pnl), 0)::double precision AS \"Total Realized PnL\"\nFROM polymarket.trade_positions\nWHERE process_id IS NOT NULL;",
+          "rawSql": "WITH active AS MATERIALIZED (\n  SELECT e.experiment_id FROM polymarket.btc_paper_experiments e\n  JOIN polymarket.trading_processes p USING(process_id)\n  WHERE p.process_scope='realtime_paper'\n    AND e.status='running' AND e.stopped_at IS NULL\n    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n    AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes'\n)\nSELECT COALESCE(SUM(e.net_pnl),0)::double precision AS \"Active Net Realized PnL\"\nFROM polymarket.btc_paper_experiments e JOIN active USING(experiment_id);",
           "refId": "A",
           "sql": {
             "columns": [
@@ -540,7 +638,7 @@
           }
         }
       ],
-      "title": "Total Realized PnL",
+      "title": "Active Net Realized PnL",
       "type": "stat"
     },
     {
@@ -662,25 +760,53 @@
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "winning_closed_positions"
+              "id": "byRegexp",
+              "options": "/^(gross_pnl|fees_paid|total_pnl)$/"
             },
             "properties": [
               {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
                 "id": "custom.width",
-                "value": 176
+                "value": 140
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^(last_heartbeat|latest_mark_at)$/"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              },
+              {
+                "id": "custom.width",
+                "value": 166
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "losing_closed_positions"
+              "options": "heartbeat_age_seconds"
             },
             "properties": [
               {
+                "id": "unit",
+                "value": "s"
+              },
+              {
                 "id": "custom.width",
-                "value": 166
+                "value": 150
               }
             ]
           },
@@ -702,7 +828,7 @@
         "h": 8,
         "w": 19,
         "x": 5,
-        "y": 12
+        "y": 13
       },
       "id": 2,
       "options": {
@@ -710,8 +836,8 @@
         "showHeader": true,
         "sortBy": [
           {
-            "desc": false,
-            "displayName": "roi"
+            "desc": true,
+            "displayName": "last_updated"
           }
         ]
       },
@@ -725,7 +851,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH position_pnl AS (\n  SELECT\n    process_id,\n    MAX(updated_at) AS last_position_updated,\n    COUNT(*) FILTER (WHERE status IN ('open', 'partially_closed')) AS open_positions,\n    COUNT(*) FILTER (WHERE status = 'closed' AND realized_pnl > 0) AS winning_closed_positions,\n    COUNT(*) FILTER (WHERE status = 'closed' AND realized_pnl < 0) AS losing_closed_positions,\n    COALESCE(SUM(unrealized_pnl) FILTER (WHERE status IN ('open', 'partially_closed')), 0) AS unrealized_pnl,\n    COALESCE(SUM(realized_pnl), 0) AS realized_pnl,\n    COALESCE(SUM(entry_notional), 0) AS entry_notional\n  FROM polymarket.trade_positions\n  WHERE process_id IS NOT NULL\n  GROUP BY process_id\n)\nSELECT\n  p.name AS process_name,\n  GREATEST(p.updated_at, COALESCE(position_pnl.last_position_updated, p.updated_at)) AS last_updated,\n  COALESCE(position_pnl.open_positions, 0)::integer AS open_positions,\n  COALESCE(position_pnl.winning_closed_positions, 0)::integer AS winning_closed_positions,\n  COALESCE(position_pnl.losing_closed_positions, 0)::integer AS losing_closed_positions,\n  COALESCE(position_pnl.unrealized_pnl, 0)::double precision AS unrealized_pnl,\n  COALESCE(position_pnl.realized_pnl, 0)::double precision AS realized_pnl,\n  CASE\n    WHEN COALESCE(position_pnl.entry_notional, 0) > 0\n      THEN ((COALESCE(position_pnl.realized_pnl, 0) + COALESCE(position_pnl.unrealized_pnl, 0)) / position_pnl.entry_notional)::double precision\n    ELSE 0::double precision\n  END AS roi\nFROM polymarket.trading_processes p\nLEFT JOIN position_pnl\n  ON position_pnl.process_id = p.process_id\nWHERE p.enabled = true\n  AND p.status NOT IN ('stopped', 'failed', 'expired')\nORDER BY last_updated DESC, p.name;",
+          "rawSql": "WITH active AS MATERIALIZED (\n  SELECT e.*,p.name AS process_name,p.process_type,p.process_scope,p.status AS process_status,\n         p.heartbeat_at,p.updated_at AS process_updated_at\n  FROM polymarket.btc_paper_experiments e JOIN polymarket.trading_processes p USING(process_id)\n  WHERE p.process_scope='realtime_paper'\n    AND e.status='running' AND e.stopped_at IS NULL\n    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n    AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes'\n), open_entries AS MATERIALIZED (\n  SELECT a.process_id,o.order_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees\n  FROM active a JOIN polymarket.orders o ON o.process_id=a.process_id\n    AND o.raw_payload#>>'{request,metadata,experiment_id}'=a.experiment_id::text\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.source='paper'\n  JOIN polymarket.btc_interval_markets m ON m.market_id=o.market_id\n  WHERE m.official_resolution_received_at IS NULL\n  GROUP BY a.process_id,o.order_id,o.token_id\n), marked AS MATERIALIZED (\n  SELECT e.*,mark.best_bid,mark.source_timestamp AS mark_at\n  FROM open_entries e LEFT JOIN LATERAL (\n    SELECT c.best_bid,c.source_timestamp FROM polymarket.orderbook_checkpoints c\n    WHERE c.token_id=e.token_id AND c.integrity_status='ok' AND c.best_bid IS NOT NULL\n      AND c.source_timestamp BETWEEN now()-interval '2 seconds' AND now()+interval '1 second'\n      AND c.received_at BETWEEN now()-interval '2 seconds' AND now()\n    ORDER BY c.source_timestamp DESC,c.received_at DESC,c.ingest_sequence DESC LIMIT 1\n  ) mark ON true\n), open_pnl AS MATERIALIZED (\n  SELECT process_id,COUNT(*) AS open_count,COUNT(*) FILTER(WHERE best_bid IS NULL) AS stale_or_unpriced,\n         MAX(mark_at) AS latest_mark_at,\n         CASE WHEN COUNT(*)=COUNT(best_bid)\n              THEN COALESCE(SUM(filled_size*best_bid-entry_cost-entry_fees),0) END AS unrealized_pnl\n  FROM marked GROUP BY process_id\n), metrics AS MATERIALIZED (\n  SELECT a.*,COALESCE(o.open_count,0) AS open_positions,COALESCE(o.stale_or_unpriced,0) AS stale_or_unpriced,\n         o.latest_mark_at,\n         CASE WHEN COALESCE(o.open_count,0)=0 THEN 0::numeric ELSE o.unrealized_pnl END AS unrealized_pnl,\n         CASE WHEN a.config#>>'{raw,paper,venue,starting_collateral_usd}'~'^[0-9]+([.][0-9]+)?$'\n              THEN (a.config#>>'{raw,paper,venue,starting_collateral_usd}')::numeric END AS roi_denominator\n  FROM active a LEFT JOIN open_pnl o USING(process_id)\n)\nSELECT process_name,process_type,process_scope,\n       COALESCE(config#>>'{execution,mode}','unknown') AS execution_mode,process_status AS status,\n       heartbeat_at AS last_heartbeat,EXTRACT(epoch FROM now()-COALESCE(heartbeat_at,process_updated_at))::bigint AS heartbeat_age_seconds,\n       GREATEST(process_updated_at,updated_at,COALESCE(latest_mark_at,updated_at)) AS last_updated,\n       markets_observed,snapshots_recorded,decisions_recorded,trades_entered,trades_resolved,\n       open_positions,stale_or_unpriced,latest_mark_at,\n       gross_pnl::double precision,fees_paid::double precision,net_pnl::double precision AS realized_pnl,\n       unrealized_pnl::double precision,(net_pnl+unrealized_pnl)::double precision AS total_pnl,\n       CASE WHEN roi_denominator>0 THEN ((net_pnl+unrealized_pnl)/roi_denominator)::double precision END AS roi\nFROM metrics ORDER BY last_updated DESC,process_name;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -746,8 +872,1803 @@
           }
         }
       ],
-      "title": "Active Processes",
+      "title": "Active Process PnL and Runtime Stats",
       "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "id": 15,
+      "panels": [],
+      "title": "Paper Experiment Evidence",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "footer": {
+              "reducers": []
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^(gross_pnl|fees_paid|net_pnl|net_per_resolved_trade)$/"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 4
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^(started_at|stopped_at|latest_at|decision_at|latest_disconnected_at)$/"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^(available_collateral_usd|cumulative_entry_debits_usd|cumulative_payouts_usd)$/"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 4
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "capital_reconciled_at"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "id": 16,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH target AS MATERIALIZED (\n  SELECT e.*,p.name AS process_name,p.status AS process_status,p.enabled,p.heartbeat_at,\n         p.stopped_at AS process_stopped_at,p.last_error\n  FROM polymarket.btc_paper_experiments e JOIN polymarket.trading_processes p USING(process_id)\n  WHERE p.process_scope='realtime_paper'\n  ORDER BY CASE WHEN e.status='running' AND e.stopped_at IS NULL\n                 AND p.enabled AND p.status IN ('starting','running','stopping')\n                 AND p.stopped_at IS NULL AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes'\n                THEN 0 ELSE 1 END,e.started_at DESC LIMIT 1\n), windows AS MATERIALIZED (\n  SELECT m.* FROM target t\n  JOIN (SELECT DISTINCT experiment_id,market_id FROM polymarket.btc_strategy_decisions) d USING(experiment_id)\n  JOIN polymarket.btc_interval_markets m USING(market_id)\n  WHERE m.window_start>=t.started_at AND m.window_end<=COALESCE(t.stopped_at,now())\n)\nSELECT t.name,t.process_status,t.started_at,t.stopped_at,\n       EXTRACT(epoch FROM COALESCE(t.stopped_at,now())-t.started_at)/3600 AS runtime_hours,\n       COUNT(w.market_id) AS complete_windows,\n       COUNT(w.market_id) FILTER(WHERE w.official_outcome IS NOT NULL) AS resolved_windows,\n       COUNT(w.market_id) FILTER(WHERE w.official_resolution_received_at<=w.window_end+interval '120 seconds') AS resolved_within_slo,\n       100.0*COUNT(w.market_id) FILTER(WHERE w.official_resolution_received_at<=w.window_end+interval '120 seconds')/NULLIF(COUNT(w.market_id),0) AS resolution_slo_pct,\n       t.snapshots_recorded,t.decisions_recorded,t.trades_entered,t.trades_resolved,\n       t.gross_pnl::double precision,t.fees_paid::double precision,t.net_pnl::double precision,\n       (t.net_pnl/NULLIF(t.trades_resolved,0))::double precision AS net_per_resolved_trade,\n       NULLIF(t.summary#>>'{paper_capital,venue,available_collateral_usd}','')::double precision AS available_collateral_usd,\n       NULLIF(t.summary#>>'{paper_capital,venue,entry_debits_usd}','')::double precision AS cumulative_entry_debits_usd,\n       NULLIF(t.summary#>>'{paper_capital,venue,settlement_credits_usd}','')::double precision AS cumulative_payouts_usd,\n       COALESCE(NULLIF(t.summary#>>'{paper_capital,ledger,settlements_credited}','')::bigint,0) AS settlements_credited,\n       COALESCE(NULLIF(t.summary#>>'{paper_capital,ledger,settlements_pending}','')::bigint,0) AS settlements_pending,\n       GREATEST(t.trades_entered-COALESCE(NULLIF(t.summary#>>'{paper_capital,ledger,settlements_credited}','')::bigint,0),0) AS unsettled_filled_orders,\n       NULLIF(t.summary#>>'{paper_capital,reconciled_at}','')::timestamptz AS capital_reconciled_at,\n       t.config_hash,t.stop_reason,t.last_error\nFROM target t LEFT JOIN windows w ON true\nGROUP BY t.experiment_id,t.name,t.process_status,t.started_at,t.stopped_at,t.snapshots_recorded,\n         t.decisions_recorded,t.trades_entered,t.trades_resolved,t.gross_pnl,t.fees_paid,t.net_pnl,\n         t.summary,t.config_hash,t.stop_reason,t.last_error;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Current / Latest Paper Experiment",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^(Available Collateral|Cumulative Payouts|Collateral Reconciliation Gap|Entry Debit Reconciliation Gap|Payout Reconciliation Gap|PnL Reconciliation Gap)$/"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 6
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^(Non-paper Fill Rows|Pending Settlement Credits|Collateral Reconciliation Gap|Entry Debit Reconciliation Gap|Payout Reconciliation Gap|Settlement Count Gap|PnL Reconciliation Gap)$/"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1e-7
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 29
+      },
+      "id": 17,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH target AS MATERIALIZED (\n SELECT e.* FROM polymarket.btc_paper_experiments e JOIN polymarket.trading_processes p USING(process_id)\n WHERE p.process_scope='realtime_paper'\n ORDER BY CASE WHEN e.status='running' AND e.stopped_at IS NULL\n                    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n                    AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes' THEN 0 ELSE 1 END,e.started_at DESC LIMIT 1\n), windows AS MATERIALIZED (\n SELECT m.* FROM target t\n JOIN (SELECT DISTINCT experiment_id,market_id FROM polymarket.btc_strategy_decisions) d USING(experiment_id)\n JOIN polymarket.btc_interval_markets m USING(market_id)\n WHERE m.window_start>=t.started_at AND m.window_end<=COALESCE(t.stopped_at,now())\n)\nSELECT COUNT(*) AS \"Complete Windows\",COUNT(*) FILTER(WHERE official_outcome IS NOT NULL) AS \"Official Resolved\",\n COUNT(*) FILTER(WHERE official_resolution_received_at<=window_end+interval '120 seconds') AS \"Within 120s\",\n COUNT(*) FILTER(WHERE official_outcome IS NOT NULL AND official_resolution_received_at>window_end+interval '120 seconds') AS \"Late\",\n COUNT(*) FILTER(WHERE official_outcome IS NULL AND now()>window_end+interval '120 seconds') AS \"Overdue\",\n ROUND(100.0*COUNT(*) FILTER(WHERE official_resolution_received_at<=window_end+interval '120 seconds')/NULLIF(COUNT(*),0),2) AS \"Resolution SLO %\"\nFROM windows;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Official Resolution Health",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^(Overdue|Late|Non-paper Fill Rows|rejected_full|rejected_closed|tasks_failed|queue_depth)$/"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 29
+      },
+      "id": 18,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH target AS MATERIALIZED (\n SELECT e.*\n FROM polymarket.btc_paper_experiments e JOIN polymarket.trading_processes p USING(process_id)\n WHERE p.process_scope='realtime_paper'\n ORDER BY CASE WHEN e.status='running' AND e.stopped_at IS NULL\n                    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n                    AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes' THEN 0 ELSE 1 END,e.started_at DESC LIMIT 1\n), decision_stats AS (\n SELECT COUNT(*) FILTER(WHERE d.order_plan_id IS NOT NULL) AS plans,\n        COUNT(*) FILTER(WHERE d.action='buy' AND d.status='filled') AS filled,\n        COUNT(*) FILTER(WHERE d.action='buy' AND d.status='rejected') AS rejected\n FROM polymarket.btc_strategy_decisions d JOIN target USING(experiment_id)\n), experiment_orders AS MATERIALIZED (\n SELECT o.* FROM polymarket.orders o JOIN target t\n   ON o.raw_payload#>>'{request,metadata,experiment_id}'=t.experiment_id::text\n), fill_stats AS (\n SELECT COUNT(*) FILTER(WHERE f.source='paper') AS paper_fill_rows,\n        COUNT(*) FILTER(WHERE f.source<>'paper') AS nonpaper_fill_rows,\n        COALESCE(SUM(f.fee) FILTER(WHERE f.source='paper'),0)::numeric AS fees,\n        COALESCE(SUM(f.price*f.size) FILTER(WHERE f.source='paper'),0)::numeric AS notional\n FROM experiment_orders o LEFT JOIN polymarket.fills f USING(order_id)\n), ledger_stats AS (\n SELECT COUNT(*) AS discovered,\n        COUNT(*) FILTER(WHERE l.credit_status='credited') AS credited,\n        COUNT(*) FILTER(WHERE l.credit_status='pending') AS pending,\n        COALESCE(SUM(l.payout) FILTER(WHERE l.credit_status='credited'),0)::numeric AS payout_credited,\n        COALESCE(SUM(l.net_pnl),0)::numeric AS ledger_net_pnl\n FROM polymarket.btc_paper_settlement_ledger l JOIN target USING(experiment_id)\n), capital AS (\n SELECT NULLIF(t.summary#>>'{paper_capital,venue,starting_collateral_usd}','')::numeric AS starting_collateral,\n        NULLIF(t.summary#>>'{paper_capital,venue,available_collateral_usd}','')::numeric AS available_collateral,\n        NULLIF(t.summary#>>'{paper_capital,venue,entry_debits_usd}','')::numeric AS entry_debits,\n        NULLIF(t.summary#>>'{paper_capital,venue,settlement_credits_usd}','')::numeric AS settlement_credits,\n        NULLIF(t.summary#>>'{paper_capital,venue,settlements_applied}','')::bigint AS settlements_applied,\n        t.net_pnl::numeric AS experiment_net_pnl\n FROM target t\n)\nSELECT d.plans AS \"Order Plans\",d.filled AS \"Filled Plans\",d.rejected AS \"Rejected Plans\",\n ROUND(100.0*d.filled/NULLIF(d.plans,0),2) AS \"Paper Fill Rate %\",\n f.paper_fill_rows AS \"Paper Fill Rows\",f.nonpaper_fill_rows AS \"Non-paper Fill Rows\",\n c.available_collateral::double precision AS \"Available Collateral\",\n c.settlement_credits::double precision AS \"Cumulative Payouts\",\n GREATEST(d.filled-l.credited,0) AS \"Unsettled Filled Orders\",l.pending AS \"Pending Settlement Credits\",\n ABS(c.available_collateral-(c.starting_collateral-c.entry_debits+c.settlement_credits))::double precision AS \"Collateral Reconciliation Gap\",\n ABS(c.entry_debits-(f.notional+f.fees))::double precision AS \"Entry Debit Reconciliation Gap\",\n ABS(c.settlement_credits-l.payout_credited)::double precision AS \"Payout Reconciliation Gap\",\n ABS(c.settlements_applied-l.credited)::bigint AS \"Settlement Count Gap\",\n ABS(c.experiment_net_pnl-l.ledger_net_pnl)::double precision AS \"PnL Reconciliation Gap\"\nFROM decision_stats d CROSS JOIN fill_stats f CROSS JOIN ledger_stats l CROSS JOIN capital c;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Paper Execution, Capital, and Settlement Safety",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 29
+      },
+      "id": 19,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH target AS MATERIALIZED (\n SELECT e.* FROM polymarket.btc_paper_experiments e JOIN polymarket.trading_processes p USING(process_id)\n WHERE p.process_scope='realtime_paper'\n ORDER BY CASE WHEN e.status='running' AND e.stopped_at IS NULL\n                    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n                    AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes' THEN 0 ELSE 1 END,e.started_at DESC LIMIT 1\n), windows AS MATERIALIZED (\n SELECT m.* FROM target t\n JOIN (SELECT DISTINCT experiment_id,market_id FROM polymarket.btc_strategy_decisions) d USING(experiment_id)\n JOIN polymarket.btc_interval_markets m USING(market_id)\n WHERE m.window_start>=t.started_at AND m.window_end<=COALESCE(t.stopped_at,now())\n)\nSELECT COUNT(w.market_id) FILTER(WHERE w.official_outcome IS NOT NULL) AS \"Resolved Windows\",\n       2000::bigint AS \"Window Target\",\n       ROUND(100.0*COUNT(w.market_id) FILTER(WHERE w.official_outcome IS NOT NULL)/2000,2) AS \"Window Progress %\",\n       MAX(t.trades_resolved) AS \"Resolved Trades\",100::bigint AS \"Trade Target\",\n       ROUND(100.0*MAX(t.trades_resolved)/100,2) AS \"Trade Progress %\"\nFROM target t LEFT JOIN windows w ON true;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Experiment Collection Progress",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "footer": {
+              "reducers": []
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^(gross_pnl|fees_paid|net_pnl|net_per_resolved_trade)$/"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 4
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^(started_at|stopped_at|latest_at|decision_at|latest_disconnected_at)$/"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 35
+      },
+      "id": 20,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT e.name,e.strategy_version,e.status,p.status AS process_status,e.started_at,e.stopped_at,\n ROUND((EXTRACT(epoch FROM COALESCE(e.stopped_at,now())-e.started_at)/3600)::numeric,2) AS runtime_hours,\n w.complete_windows,w.resolved_windows,w.within_slo,e.snapshots_recorded,e.decisions_recorded,\n e.trades_entered,e.trades_resolved,e.gross_pnl::double precision,e.fees_paid::double precision,\n e.net_pnl::double precision,(e.net_pnl/NULLIF(e.trades_resolved,0))::double precision AS net_per_trade,\n e.stop_reason,p.last_error,left(e.config_hash,12) AS config_hash\nFROM polymarket.btc_paper_experiments e JOIN polymarket.trading_processes p USING(process_id)\nLEFT JOIN LATERAL (\n SELECT COUNT(*) AS complete_windows,COUNT(*) FILTER(WHERE m.official_outcome IS NOT NULL) AS resolved_windows,\n        COUNT(*) FILTER(WHERE m.official_resolution_received_at<=m.window_end+interval '120 seconds') AS within_slo\n FROM (SELECT DISTINCT market_id FROM polymarket.btc_strategy_decisions WHERE experiment_id=e.experiment_id) d\n JOIN polymarket.btc_interval_markets m USING(market_id)\n WHERE m.window_start>=e.started_at AND m.window_end<=COALESCE(e.stopped_at,now())\n) w ON true\nWHERE p.process_scope='realtime_paper' ORDER BY e.started_at DESC LIMIT 20;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Recent Realtime Paper Experiments",
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 43
+      },
+      "id": 21,
+      "panels": [],
+      "title": "Market Data, Decisions, and ML Shadow",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "footer": {
+              "reducers": []
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^(started_at|stopped_at|latest_at|decision_at|latest_disconnected_at)$/"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 44
+      },
+      "id": 22,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH target AS MATERIALIZED (\n SELECT e.experiment_id FROM polymarket.btc_paper_experiments e JOIN polymarket.trading_processes p USING(process_id)\n WHERE p.process_scope='realtime_paper'\n ORDER BY CASE WHEN e.status='running' AND e.stopped_at IS NULL\n                    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n                    AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes' THEN 0 ELSE 1 END,e.started_at DESC LIMIT 1\n), totals AS (\n SELECT COUNT(*)::numeric n FROM polymarket.btc_strategy_decisions d JOIN target USING(experiment_id)\n)\nSELECT CASE WHEN d.action='buy' AND d.status='filled' THEN 'filled'\n            WHEN d.action='buy' THEN COALESCE(d.reject_reason,'buy_rejected')\n            ELSE COALESCE(d.reject_reason,'no_trade') END AS reason,\n       COUNT(*) AS decisions,ROUND(100.0*COUNT(*)/NULLIF(MAX(totals.n),0),2) AS pct_of_decisions,\n       MAX(d.decision_at) AS latest_at\nFROM polymarket.btc_strategy_decisions d JOIN target USING(experiment_id) CROSS JOIN totals\nGROUP BY reason ORDER BY decisions DESC;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Decision / Rejection Funnel",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "footer": {
+              "reducers": []
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^(started_at|stopped_at|latest_at|decision_at|latest_disconnected_at)$/"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      },
+      "id": 23,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH target AS MATERIALIZED (\n SELECT e.experiment_id,e.stopped_at,\n        CASE WHEN e.status='running' AND e.stopped_at IS NULL\n                  AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n                  AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes' THEN true ELSE false END AS is_active\n FROM polymarket.btc_paper_experiments e JOIN polymarket.trading_processes p USING(process_id)\n WHERE p.process_scope='realtime_paper'\n ORDER BY CASE WHEN e.status='running' AND e.stopped_at IS NULL\n                    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n                    AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes' THEN 0 ELSE 1 END,e.started_at DESC LIMIT 1\n), latest AS MATERIALIZED (\n SELECT d.decision_at,s.* FROM polymarket.btc_strategy_decisions d JOIN target USING(experiment_id)\n JOIN polymarket.btc_feature_snapshots s USING(snapshot_id) ORDER BY d.decision_at DESC LIMIT 1\n), recent AS (\n SELECT COUNT(*) AS total,COUNT(*) FILTER(WHERE s.readiness_status='ready') AS ready\n FROM polymarket.btc_strategy_decisions d JOIN target t USING(experiment_id)\n JOIN polymarket.btc_feature_snapshots s USING(snapshot_id)\n WHERE d.decision_at>=COALESCE(t.stopped_at,now())-interval '15 minutes'\n)\nSELECT l.decision_at,l.readiness_status,l.chainlink_age_ms,l.binance_age_ms,l.book_age_ms,l.source_skew_ms,\n       CASE WHEN t.is_active THEN ROUND(EXTRACT(epoch FROM now()-l.received_at)*1000) END AS live_snapshot_age_ms,\n       ROUND(100.0*r.ready/NULLIF(r.total,0),2) AS \"Ready % Last 15m\",\n       l.quality_flags#>'{quality_flags}' AS quality_flags\nFROM latest l CROSS JOIN target t CROSS JOIN recent r;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Latest Feature / Data Freshness",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "footer": {
+              "reducers": []
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^(started_at|stopped_at|latest_at|decision_at|latest_disconnected_at)$/"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 52
+      },
+      "id": 24,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH target AS MATERIALIZED (\n SELECT e.started_at,COALESCE(e.stopped_at,now()) AS ended_at\n FROM polymarket.btc_paper_experiments e JOIN polymarket.trading_processes p USING(process_id)\n WHERE p.process_scope='realtime_paper'\n ORDER BY CASE WHEN e.status='running' AND e.stopped_at IS NULL\n                    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n                    AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes' THEN 0 ELSE 1 END,e.started_at DESC LIMIT 1\n), sessions AS MATERIALIZED (\n SELECT s.*,LAG(s.disconnected_at) OVER(PARTITION BY s.feed_name ORDER BY s.started_at) AS previous_disconnect\n FROM polymarket.feed_sessions s CROSS JOIN target t\n WHERE s.started_at<t.ended_at AND COALESCE(s.disconnected_at,t.ended_at)>=t.started_at\n)\nSELECT feed_name,COUNT(*) AS sessions,\n COUNT(*) FILTER(WHERE disconnect_reason IS NOT NULL AND disconnect_reason NOT IN ('market_watch_changed','shutdown')) AS abnormal_disconnects,\n ROUND(MAX(EXTRACT(epoch FROM started_at-previous_disconnect)) FILTER(WHERE started_at>previous_disconnect)::numeric,2) AS max_reconnect_gap_s,\n SUM(messages_received) AS messages_received,SUM(messages_persisted) AS messages_persisted,\n SUM(decode_errors) AS decode_errors,SUM(integrity_gaps) AS integrity_gaps,\n SUM(dropped_messages) AS dropped_messages,MAX(disconnected_at) AS latest_disconnected_at\nFROM sessions GROUP BY feed_name ORDER BY feed_name;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Feed Sessions / Disconnect Health",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^(Overdue|Late|Non-paper Fill Rows|rejected_full|rejected_closed|tasks_failed|queue_depth)$/"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 59
+      },
+      "id": 25,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH target AS MATERIALIZED (\n SELECT e.summary,e.config AS experiment_config FROM polymarket.btc_paper_experiments e\n JOIN polymarket.trading_processes p USING(process_id) WHERE p.process_scope='realtime_paper'\n ORDER BY CASE WHEN e.status='running' AND e.stopped_at IS NULL\n                    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n                    AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes' THEN 0 ELSE 1 END,e.started_at DESC LIMIT 1\n)\nSELECT COALESCE((summary#>>'{ml_shadow_runtime,enqueued}')::bigint,0) AS enqueued,\n COALESCE((summary#>>'{ml_shadow_runtime,completed}')::bigint,0) AS completed,\n COALESCE((summary#>>'{ml_shadow_runtime,queue_depth}')::bigint,0) AS queue_depth,\n COALESCE((summary#>>'{ml_shadow_runtime,queue_high_water}')::bigint,0) AS high_water,\n COALESCE((summary#>>'{ml_shadow_runtime,rejected_full}')::bigint,0) AS rejected_full,\n COALESCE((summary#>>'{ml_shadow_runtime,rejected_closed}')::bigint,0) AS rejected_closed,\n COALESCE((summary#>>'{ml_shadow_runtime,tasks_failed}')::bigint,0) AS tasks_failed,\n COALESCE((experiment_config#>>'{raw,ml_shadow,execution_authority}')::boolean,false) AS execution_authority\nFROM target;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "ML Shadow Queue / Authority",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "footer": {
+              "reducers": []
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 16,
+        "x": 8,
+        "y": 59
+      },
+      "id": 26,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH target AS MATERIALIZED (\n SELECT e.experiment_id FROM polymarket.btc_paper_experiments e JOIN polymarket.trading_processes p USING(process_id)\n WHERE p.process_scope='realtime_paper'\n ORDER BY CASE WHEN e.status='running' AND e.stopped_at IS NULL\n                    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n                    AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes' THEN 0 ELSE 1 END,e.started_at DESC LIMIT 1\n), snapshots AS MATERIALIZED (\n SELECT DISTINCT d.snapshot_id FROM polymarket.btc_strategy_decisions d JOIN target USING(experiment_id)\n), vectors AS (\n SELECT v.task,COUNT(*) AS vectors FROM polymarket.ml_feature_vectors v JOIN snapshots USING(snapshot_id) GROUP BY v.task\n), predictions AS (\n SELECT p.task,COUNT(*) AS predictions,COUNT(*) FILTER(WHERE p.status<>'predicted') AS failed,\n        COUNT(*) FILTER(WHERE p.metadata->>'schema_canary'='true') AS canary,\n        COUNT(*) FILTER(WHERE p.metadata->>'influenced_order_plan'='true') AS influenced,\n        AVG(p.inference_latency_us) AS avg_latency_us,MAX(p.inference_latency_us) AS max_latency_us\n FROM polymarket.ml_shadow_predictions p JOIN snapshots USING(snapshot_id) GROUP BY p.task\n)\nSELECT COALESCE(v.task,p.task) AS task,COALESCE(v.vectors,0) AS vectors,COALESCE(p.predictions,0) AS predictions,\n ROUND(100.0*COALESCE(p.predictions,0)/NULLIF(v.vectors,0),2) AS \"Coverage %\",\n COALESCE(p.failed,0) AS failed,COALESCE(p.canary,0) AS canary,\n COALESCE(p.influenced,0) AS influenced_orders,ROUND(p.avg_latency_us,2) AS avg_latency_us,p.max_latency_us\nFROM vectors v FULL JOIN predictions p USING(task) ORDER BY task;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "ML Shadow Coverage / Canary Status",
+      "type": "table"
+    },
+    {
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 65
+      },
+      "id": 7,
+      "panels": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 5,
+            "x": 0,
+            "y": 22
+          },
+          "id": 8,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "percentChangeColorMode": "standard",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showPercentChange": false,
+            "textMode": "auto",
+            "wideLayout": true
+          },
+          "pluginVersion": "12.4.2",
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "postgres"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "SELECT COUNT(*) AS \"Total Backtests\"\nFROM polymarket.trading_processes\nWHERE process_scope = 'backtest';",
+              "refId": "A",
+              "sql": {
+                "columns": [
+                  {
+                    "parameters": [],
+                    "type": "function"
+                  }
+                ],
+                "groupBy": [
+                  {
+                    "property": {
+                      "type": "string"
+                    },
+                    "type": "groupBy"
+                  }
+                ],
+                "limit": 50
+              }
+            },
+            {
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "postgres"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "SELECT COUNT(*) AS \"Completed Backtests\"\nFROM polymarket.trading_processes\nWHERE process_scope = 'backtest'\n  AND status = 'completed';",
+              "refId": "B",
+              "sql": {
+                "columns": [
+                  {
+                    "parameters": [],
+                    "type": "function"
+                  }
+                ],
+                "groupBy": [
+                  {
+                    "property": {
+                      "type": "string"
+                    },
+                    "type": "groupBy"
+                  }
+                ],
+                "limit": 50
+              }
+            },
+            {
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "postgres"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "SELECT COUNT(*) AS \"Failed Backtests\"\nFROM polymarket.trading_processes\nWHERE process_scope = 'backtest'\n  AND status = 'failed';",
+              "refId": "C",
+              "sql": {
+                "columns": [
+                  {
+                    "parameters": [],
+                    "type": "function"
+                  }
+                ],
+                "groupBy": [
+                  {
+                    "property": {
+                      "type": "string"
+                    },
+                    "type": "groupBy"
+                  }
+                ],
+                "limit": 50
+              }
+            }
+          ],
+          "title": "Number of Replay Backtest Processes",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "decimals": 2,
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": 0
+                  },
+                  {
+                    "color": "green",
+                    "value": 0
+                  }
+                ]
+              },
+              "unit": "currencyUSD"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 9,
+            "x": 5,
+            "y": 22
+          },
+          "id": 9,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.4.2",
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "postgres"
+              },
+              "editorMode": "code",
+              "format": "time_series",
+              "rawQuery": true,
+              "rawSql": "WITH buckets AS (\n  SELECT generate_series($__timeFrom()::timestamptz, $__timeTo()::timestamptz, interval '15 minutes') AS \"time\"\n  UNION\n  SELECT $__timeTo()::timestamptz AS \"time\"\n), positions AS (\n  SELECT\n    tp.position_id,\n    tp.process_id,\n    tp.entry_timestamp\n  FROM polymarket.trade_positions tp\n  JOIN polymarket.trading_processes proc\n    ON proc.process_id = tp.process_id\n  WHERE tp.status IN ('open', 'partially_closed')\n    AND tp.open_size > 0\n    AND tp.process_id IS NOT NULL\n    AND proc.process_scope = 'backtest'\n), position_marks AS (\n  SELECT\n    b.\"time\",\n    p.process_id,\n    latest_mark.net_unrealized_pnl\n  FROM buckets b\n  JOIN positions p\n    ON p.entry_timestamp <= b.\"time\"\n  JOIN LATERAL (\n    SELECT m.net_unrealized_pnl\n    FROM polymarket.trade_marks m\n    WHERE m.position_id = p.position_id\n      AND m.timestamp_utc <= b.\"time\"\n      AND m.timestamp_utc >= $__timeTo()::timestamptz - interval '48 hours'\n    ORDER BY m.timestamp_utc DESC\n    LIMIT 1\n  ) latest_mark ON true\n)\nSELECT\n  \"time\",\n  left(process_id::text, 8) AS metric,\n  SUM(net_unrealized_pnl)::double precision AS value\nFROM position_marks\nGROUP BY 1, 2\nORDER BY 1, 2;",
+              "refId": "A",
+              "sql": {
+                "columns": [
+                  {
+                    "parameters": [],
+                    "type": "function"
+                  }
+                ],
+                "groupBy": [
+                  {
+                    "property": {
+                      "type": "string"
+                    },
+                    "type": "groupBy"
+                  }
+                ],
+                "limit": 50
+              }
+            }
+          ],
+          "title": "Backtest Unrealized PnL by Process",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "decimals": 2,
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": 0
+                  },
+                  {
+                    "color": "green",
+                    "value": 0
+                  }
+                ]
+              },
+              "unit": "currencyUSD"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 10,
+            "x": 14,
+            "y": 22
+          },
+          "id": 10,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.4.2",
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "postgres"
+              },
+              "editorMode": "code",
+              "format": "time_series",
+              "rawQuery": true,
+              "rawSql": "WITH buckets AS (\n  SELECT generate_series($__timeFrom()::timestamptz, $__timeTo()::timestamptz, interval '15 minutes') AS \"time\"\n  UNION\n  SELECT $__timeTo()::timestamptz AS \"time\"\n), exit_events AS (\n  SELECT\n    COALESCE(e.process_id, tp.process_id) AS process_id,\n    e.timestamp_utc,\n    e.net_pnl\n  FROM polymarket.trade_exits e\n  JOIN polymarket.trade_positions tp\n    ON tp.position_id = e.position_id\n  JOIN polymarket.trading_processes proc\n    ON proc.process_id = COALESCE(e.process_id, tp.process_id)\n  WHERE NOT e.is_synthetic\n    AND COALESCE(e.process_id, tp.process_id) IS NOT NULL\n    AND e.timestamp_utc <= $__timeTo()::timestamptz\n    AND proc.process_scope = 'backtest'\n), processes AS (\n  SELECT DISTINCT process_id\n  FROM exit_events\n)\nSELECT\n  b.\"time\",\n  left(p.process_id::text, 8) AS metric,\n  COALESCE(SUM(e.net_pnl), 0)::double precision AS value\nFROM processes p\nCROSS JOIN buckets b\nLEFT JOIN exit_events e\n  ON e.process_id = p.process_id\n AND e.timestamp_utc <= b.\"time\"\nGROUP BY b.\"time\", p.process_id\nORDER BY b.\"time\", metric;",
+              "refId": "A",
+              "sql": {
+                "columns": [
+                  {
+                    "parameters": [],
+                    "type": "function"
+                  }
+                ],
+                "groupBy": [
+                  {
+                    "property": {
+                      "type": "string"
+                    },
+                    "type": "groupBy"
+                  }
+                ],
+                "limit": 50
+              }
+            }
+          ],
+          "title": "Backtest Cumulative Realized PnL by Process",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "decimals": 2,
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": 0
+                  },
+                  {
+                    "color": "green",
+                    "value": 0
+                  }
+                ]
+              },
+              "unit": "currencyUSD"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 5,
+            "x": 0,
+            "y": 27
+          },
+          "id": 11,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "percentChangeColorMode": "standard",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showPercentChange": false,
+            "textMode": "auto",
+            "wideLayout": true
+          },
+          "pluginVersion": "12.4.2",
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "postgres"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "SELECT\n  COALESCE(SUM(tp.unrealized_pnl) FILTER (WHERE tp.status IN ('open', 'partially_closed')), 0)::double precision AS \"Backtest Total Unrealized PnL\"\nFROM polymarket.trade_positions tp\nJOIN polymarket.trading_processes p\n  ON p.process_id = tp.process_id\nWHERE tp.process_id IS NOT NULL\n  AND p.process_scope = 'backtest';",
+              "refId": "A",
+              "sql": {
+                "columns": [
+                  {
+                    "parameters": [],
+                    "type": "function"
+                  }
+                ],
+                "groupBy": [
+                  {
+                    "property": {
+                      "type": "string"
+                    },
+                    "type": "groupBy"
+                  }
+                ],
+                "limit": 50
+              }
+            }
+          ],
+          "title": "Backtest Total Unrealized PnL",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "decimals": 2,
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": 0
+                  },
+                  {
+                    "color": "green",
+                    "value": 0
+                  }
+                ]
+              },
+              "unit": "currencyUSD"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 5,
+            "x": 0,
+            "y": 32
+          },
+          "id": 12,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "percentChangeColorMode": "standard",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showPercentChange": false,
+            "textMode": "auto",
+            "wideLayout": true
+          },
+          "pluginVersion": "12.4.2",
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "postgres"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "SELECT\n  COALESCE(SUM(tp.realized_pnl), 0)::double precision AS \"Backtest Total Realized PnL\"\nFROM polymarket.trade_positions tp\nJOIN polymarket.trading_processes p\n  ON p.process_id = tp.process_id\nWHERE tp.process_id IS NOT NULL\n  AND p.process_scope = 'backtest';",
+              "refId": "A",
+              "sql": {
+                "columns": [
+                  {
+                    "parameters": [],
+                    "type": "function"
+                  }
+                ],
+                "groupBy": [
+                  {
+                    "property": {
+                      "type": "string"
+                    },
+                    "type": "groupBy"
+                  }
+                ],
+                "limit": 50
+              }
+            }
+          ],
+          "title": "Backtest Total Realized PnL",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "footer": {
+                  "reducers": []
+                },
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": 0
+                  },
+                  {
+                    "color": "green",
+                    "value": 0
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "last_updated"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "dateTimeAsIso"
+                  },
+                  {
+                    "id": "custom.width",
+                    "value": 166
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "unrealized_pnl"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "currencyUSD"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 2
+                  },
+                  {
+                    "id": "custom.width",
+                    "value": 181
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "realized_pnl"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "currencyUSD"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 2
+                  },
+                  {
+                    "id": "custom.width",
+                    "value": 199
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "roi"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "percentunit"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 2
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "open_positions"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 135
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "winning_closed_positions"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 176
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "losing_closed_positions"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 166
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "process_name"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 360
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 19,
+            "x": 5,
+            "y": 34
+          },
+          "id": 13,
+          "options": {
+            "cellHeight": "sm",
+            "showHeader": true,
+            "sortBy": [
+              {
+                "desc": false,
+                "displayName": "roi"
+              }
+            ]
+          },
+          "pluginVersion": "12.4.2",
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "postgres"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "WITH position_pnl AS (\n  SELECT\n    process_id,\n    MAX(updated_at) AS last_position_updated,\n    COUNT(*) FILTER (WHERE status IN ('open', 'partially_closed')) AS open_positions,\n    COUNT(*) FILTER (WHERE status IN ('closed', 'resolved') AND realized_pnl > 0) AS winning_closed_positions,\n    COUNT(*) FILTER (WHERE status IN ('closed', 'resolved') AND realized_pnl < 0) AS losing_closed_positions,\n    COALESCE(SUM(unrealized_pnl) FILTER (WHERE status IN ('open', 'partially_closed')), 0) AS unrealized_pnl,\n    COALESCE(SUM(realized_pnl), 0) AS realized_pnl,\n    COALESCE(SUM(entry_notional), 0) AS entry_notional\n  FROM polymarket.trade_positions\n  WHERE process_id IS NOT NULL\n  GROUP BY process_id\n)\nSELECT\n  p.name AS process_name,\n  GREATEST(p.updated_at, COALESCE(position_pnl.last_position_updated, p.updated_at)) AS last_updated,\n  COALESCE(position_pnl.open_positions, 0)::integer AS open_positions,\n  COALESCE(position_pnl.winning_closed_positions, 0)::integer AS winning_closed_positions,\n  COALESCE(position_pnl.losing_closed_positions, 0)::integer AS losing_closed_positions,\n  COALESCE(position_pnl.unrealized_pnl, 0)::double precision AS unrealized_pnl,\n  COALESCE(position_pnl.realized_pnl, 0)::double precision AS realized_pnl,\n  CASE\n    WHEN COALESCE(position_pnl.entry_notional, 0) > 0\n      THEN ((COALESCE(position_pnl.realized_pnl, 0) + COALESCE(position_pnl.unrealized_pnl, 0)) / position_pnl.entry_notional)::double precision\n    ELSE 0::double precision\n  END AS roi\nFROM polymarket.trading_processes p\nLEFT JOIN position_pnl\n  ON position_pnl.process_id = p.process_id\nWHERE p.process_scope = 'backtest'\nORDER BY last_updated DESC, p.name;",
+              "refId": "A",
+              "sql": {
+                "columns": [
+                  {
+                    "parameters": [],
+                    "type": "function"
+                  }
+                ],
+                "groupBy": [
+                  {
+                    "property": {
+                      "type": "string"
+                    },
+                    "type": "groupBy"
+                  }
+                ],
+                "limit": 50
+              }
+            }
+          ],
+          "title": "Backtest Processes",
+          "type": "table"
+        }
+      ],
+      "title": "Legacy Replay Backtests (Deprecated)",
+      "type": "row"
     }
   ],
   "preload": false,
@@ -767,6 +2688,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 7,
+  "version": 21,
   "weekStart": ""
 }

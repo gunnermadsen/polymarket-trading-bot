@@ -28,6 +28,16 @@ pub struct AppConfig {
     pub risk: RiskConfig,
     pub http: HttpConfig,
     pub whale: WhaleConfig,
+    pub btc: BtcConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct BtcConfig {
+    pub realtime_enabled: bool,
+    pub paper_enabled: bool,
+    pub ml_shadow_enabled: bool,
+    pub rtds_ws_url: String,
+    pub binance_ws_url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -117,7 +127,7 @@ pub struct WhaleConfig {
 impl AppConfig {
     pub fn from_env() -> Result<Self> {
         let live = LiveExecutionConfig {
-            order_submit_enabled: false,
+            order_submit_enabled: parse_bool("POLYMARKET_LIVE_ORDER_SUBMIT_ENABLED", false),
             max_order_notional_usd: parse_decimal(
                 "POLYMARKET_LIVE_MAX_ORDER_NOTIONAL_USD",
                 dec!(2),
@@ -130,7 +140,7 @@ impl AppConfig {
                 "POLYMARKET_LIVE_REQUIRE_IDEMPOTENCY_CLEAN",
                 true,
             ),
-            user_ws_enabled: parse_bool("POLYMARKET_LIVE_USER_WS_ENABLED", true),
+            user_ws_enabled: parse_bool("POLYMARKET_LIVE_USER_WS_ENABLED", false),
             user_ws_url: env_or(
                 "POLYMARKET_LIVE_USER_WS_URL",
                 "wss://ws-subscriptions-clob.polymarket.com/ws/user",
@@ -156,18 +166,69 @@ impl AppConfig {
             funder_address: first_non_empty_env(&["POLYMARKET_FUNDER_ADDRESS"]),
             signature_type: first_non_empty_env(&["POLYMARKET_SIGNATURE_TYPE"]),
         };
-        let live = LiveExecutionConfig {
-            order_submit_enabled: live.submit_auth_available(),
-            ..live
-        };
-        if live.live_auth_available() {
+        if live.order_submit_enabled || live.live_auth_available() {
             live.validate_for_live()?;
         }
 
+        let scan_enabled = parse_bool("POLYMARKET_SCAN_ENABLED", false);
+        let signal2_enabled = parse_bool("POLYMARKET_SIGNAL2_ENABLED", false);
+        let signal3_enabled = parse_bool("POLYMARKET_SIGNAL3_ENABLED", false);
+        let whale_backfill_enabled = parse_bool("POLYMARKET_WHALE_BACKFILL_ENABLED", false);
+        let whale_live_enabled = parse_bool("POLYMARKET_WHALE_LIVE_ENABLED", false);
+        let copy_trade_enabled = parse_bool("POLYMARKET_COPY_TRADE_ENABLED", false);
+        let copy_execute_enabled = parse_bool("POLYMARKET_COPY_EXECUTE_ENABLED", false);
+
+        let btc = BtcConfig {
+            realtime_enabled: parse_bool("POLYMARKET_BTC_REALTIME_ENABLED", false),
+            paper_enabled: parse_bool("POLYMARKET_BTC_PAPER_ENABLED", false),
+            ml_shadow_enabled: parse_bool("POLYMARKET_BTC_ML_SHADOW_ENABLED", false),
+            rtds_ws_url: env_or(
+                "POLYMARKET_BTC_RTDS_WS_URL",
+                "wss://ws-live-data.polymarket.com",
+            ),
+            binance_ws_url: env_or(
+                "POLYMARKET_BTC_BINANCE_WS_URL",
+                "wss://stream.binance.com:9443/ws/btcusdt@aggTrade",
+            ),
+        };
+        if btc.paper_enabled && !btc.realtime_enabled {
+            bail!("POLYMARKET_BTC_PAPER_ENABLED requires POLYMARKET_BTC_REALTIME_ENABLED");
+        }
+        if btc.ml_shadow_enabled && !btc.realtime_enabled {
+            bail!("POLYMARKET_BTC_ML_SHADOW_ENABLED requires POLYMARKET_BTC_REALTIME_ENABLED");
+        }
+        if btc.realtime_enabled || btc.paper_enabled {
+            let mut conflicting_flags = Vec::new();
+            for (name, enabled) in [
+                (
+                    "POLYMARKET_LIVE_ORDER_SUBMIT_ENABLED",
+                    live.order_submit_enabled,
+                ),
+                ("POLYMARKET_LIVE_USER_WS_ENABLED", live.user_ws_enabled),
+                ("POLYMARKET_SCAN_ENABLED", scan_enabled),
+                ("POLYMARKET_SIGNAL2_ENABLED", signal2_enabled),
+                ("POLYMARKET_SIGNAL3_ENABLED", signal3_enabled),
+                ("POLYMARKET_WHALE_BACKFILL_ENABLED", whale_backfill_enabled),
+                ("POLYMARKET_WHALE_LIVE_ENABLED", whale_live_enabled),
+                ("POLYMARKET_COPY_TRADE_ENABLED", copy_trade_enabled),
+                ("POLYMARKET_COPY_EXECUTE_ENABLED", copy_execute_enabled),
+            ] {
+                if enabled {
+                    conflicting_flags.push(name);
+                }
+            }
+            if !conflicting_flags.is_empty() {
+                bail!(
+                    "BTC realtime/paper experiments require an isolated process; disable {}",
+                    conflicting_flags.join(", ")
+                );
+            }
+        }
+
         Ok(Self {
-            scan_enabled: parse_bool("POLYMARKET_SCAN_ENABLED", true),
-            signal2_enabled: parse_bool("POLYMARKET_SIGNAL2_ENABLED", false),
-            signal3_enabled: parse_bool("POLYMARKET_SIGNAL3_ENABLED", false),
+            scan_enabled,
+            signal2_enabled,
+            signal3_enabled,
             live,
             gamma_base_url: env_or(
                 "POLYMARKET_GAMMA_BASE_URL",
@@ -212,9 +273,9 @@ impl AppConfig {
                 admin_token: env_or("POLYMARKET_HTTP_ADMIN_TOKEN", "dev-polymarket-admin"),
             },
             whale: WhaleConfig {
-                backfill_enabled: parse_bool("POLYMARKET_WHALE_BACKFILL_ENABLED", false),
-                live_enabled: parse_bool("POLYMARKET_WHALE_LIVE_ENABLED", false),
-                copy_trade_enabled: parse_bool("POLYMARKET_COPY_TRADE_ENABLED", true),
+                backfill_enabled: whale_backfill_enabled,
+                live_enabled: whale_live_enabled,
+                copy_trade_enabled,
                 lookback_days: parse_u32("POLYMARKET_WHALE_BACKFILL_LOOKBACK_DAYS", 30),
                 min_trade_usd: parse_decimal("POLYMARKET_WHALE_MIN_TRADE_USD", dec!(500)),
                 min_wallet_score: parse_decimal("POLYMARKET_COPY_MIN_WALLET_SCORE", dec!(0)),
@@ -243,7 +304,7 @@ impl AppConfig {
                     "POLYMARKET_COPY_BACKTEST_HORIZON_SECS",
                     3600,
                 )),
-                copy_execute_enabled: parse_bool("POLYMARKET_COPY_EXECUTE_ENABLED", true),
+                copy_execute_enabled,
                 copy_allow_sell_entries: parse_bool("POLYMARKET_COPY_ALLOW_SELL_ENTRIES", false),
                 live_poll_interval: Duration::from_secs(parse_u64(
                     "POLYMARKET_WHALE_LIVE_POLL_INTERVAL_SECS",
@@ -261,6 +322,7 @@ impl AppConfig {
                     300,
                 )),
             },
+            btc,
         })
     }
 }

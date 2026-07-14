@@ -1,0 +1,3 @@
+runtime_orchestration=docker_compose
+host_service_dependency=false
+host_sleep_management=external_environment_responsibility

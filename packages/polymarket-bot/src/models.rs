@@ -579,6 +579,34 @@ pub struct WalletScore {
     pub metadata: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WalletScoreRefreshStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletScoreRefreshJob {
+    pub queue_id: Uuid,
+    pub proxy_wallet: String,
+    pub score_version: String,
+    pub status: WalletScoreRefreshStatus,
+    pub refresh_reason: String,
+    pub requested_at: DateTime<Utc>,
+    pub available_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub attempt_count: i32,
+    pub max_attempts: i32,
+    pub last_error: Option<String>,
+    pub request_metadata: serde_json::Value,
+    pub result_metadata: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletPerformance {
     pub proxy_wallet: String,
@@ -673,6 +701,10 @@ impl TradingProcess {
         self.config.effective_copy_trade()
     }
 
+    pub fn effective_expectancy_flow(&self) -> EffectiveExpectancyFlowProcessConfig {
+        self.config.effective_expectancy_flow()
+    }
+
     pub fn effective_exit_rules(&self) -> EffectiveProcessExitRulesConfig {
         self.config.effective_exit_rules()
     }
@@ -686,6 +718,8 @@ pub struct TradingProcessConfig {
     pub whale: Option<WhaleProcessConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_trade: Option<CopyTradeProcessConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expectancy_flow: Option<ExpectancyFlowProcessConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_rules: Option<ProcessExitRulesConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -779,6 +813,13 @@ impl TradingProcessConfig {
             if let Some(max_open_notional_usd) = config.max_open_notional_usd {
                 effective.max_open_notional_usd = max_open_notional_usd;
             }
+            if let Some(max_open_notional_per_token_usd) = config.max_open_notional_per_token_usd {
+                effective.max_open_notional_per_token_usd = max_open_notional_per_token_usd;
+            }
+            if let Some(max_open_notional_per_market_usd) = config.max_open_notional_per_market_usd
+            {
+                effective.max_open_notional_per_market_usd = max_open_notional_per_market_usd;
+            }
             if let Some(copy_size_fraction) = config.copy_size_fraction {
                 effective.copy_size_fraction = copy_size_fraction;
             }
@@ -787,6 +828,9 @@ impl TradingProcessConfig {
             }
             if let Some(max_price_slippage_bps) = config.max_price_slippage_bps {
                 effective.max_price_slippage_bps = max_price_slippage_bps;
+            }
+            if let Some(entry_pricing_mode) = &config.entry_pricing_mode {
+                effective.entry_pricing_mode = entry_pricing_mode.clone();
             }
             if let Some(min_book_depth_usd) = config.min_book_depth_usd {
                 effective.min_book_depth_usd = min_book_depth_usd;
@@ -860,6 +904,7 @@ impl TradingProcessConfig {
                 effective.unknown_segment_policy = unknown_segment_policy.clone();
             }
             effective.segment_allowlist = config.segment_allowlist.clone();
+            effective.segment_denylist = config.segment_denylist.clone();
             if let Some(entry_safety) = &config.entry_safety {
                 if let Some(enabled) = entry_safety.enabled {
                     effective.entry_safety.enabled = enabled;
@@ -893,6 +938,96 @@ impl TradingProcessConfig {
         effective
     }
 
+    pub fn effective_expectancy_flow(&self) -> EffectiveExpectancyFlowProcessConfig {
+        let mut effective = EffectiveExpectancyFlowProcessConfig::default();
+        if let Some(config) = &self.expectancy_flow {
+            if let Some(enabled) = config.enabled {
+                effective.enabled = enabled;
+            }
+            if let Some(enforce) = config.enforce {
+                effective.enforce = enforce;
+            }
+            if let Some(score_version) = &config.score_version {
+                effective.score_version = score_version.clone();
+            }
+            if let Some(recompute_lookback_days) = config.recompute_lookback_days {
+                effective.recompute_lookback_days = recompute_lookback_days;
+            }
+            if let Some(min_trade_usd) = config.min_trade_usd {
+                effective.min_trade_usd = min_trade_usd;
+            }
+            if let Some(horizon_secs) = config.horizon_secs {
+                effective.horizon_secs = horizon_secs;
+            }
+            if let Some(max_snapshot_lag_secs) = config.max_snapshot_lag_secs {
+                effective.max_snapshot_lag_secs = max_snapshot_lag_secs;
+            }
+            if let Some(price_bucket_bps) = config.price_bucket_bps {
+                effective.price_bucket_bps = price_bucket_bps;
+            }
+            if let Some(min_cell_trades) = config.min_cell_trades {
+                effective.min_cell_trades = min_cell_trades;
+                effective.min_trades_per_cell = min_cell_trades;
+            }
+            if let Some(min_trades_per_cell) = config.min_trades_per_cell {
+                effective.min_trades_per_cell = min_trades_per_cell;
+            }
+            if let Some(min_cell_covered) = config.min_cell_covered {
+                effective.min_cell_covered = min_cell_covered;
+            }
+            if let Some(min_win_rate) = config.min_win_rate {
+                effective.min_win_rate = min_win_rate;
+            }
+            if let Some(min_avg_roi) = config.min_avg_roi {
+                effective.min_avg_roi = min_avg_roi;
+            }
+            if let Some(min_median_roi) = config.min_median_roi {
+                effective.min_median_roi = min_median_roi;
+            }
+            if let Some(include_wallet_cells) = config.include_wallet_cells {
+                effective.include_wallet_cells = include_wallet_cells;
+            }
+            if let Some(include_market_dimension) = config.include_market_dimension {
+                effective.include_market_dimension = include_market_dimension;
+            }
+            if let Some(include_taxonomy_segment) = config.include_taxonomy_segment {
+                effective.include_taxonomy_segment = include_taxonomy_segment;
+            }
+            if let Some(max_cells) = config.max_cells {
+                effective.max_cells = max_cells;
+            }
+            effective.allowed_cells = config.allowed_cells.clone();
+            effective.denied_cells = config.denied_cells.clone();
+            if let Some(wallet_filter) = &config.wallet_filter {
+                if let Some(enabled) = wallet_filter.enabled {
+                    effective.wallet_filter.enabled = enabled;
+                }
+                if let Some(min_wallet_cell_covered) = wallet_filter.min_wallet_cell_covered {
+                    effective.wallet_filter.min_wallet_cell_covered = min_wallet_cell_covered;
+                }
+                if let Some(min_wallet_cell_avg_roi) = wallet_filter.min_wallet_cell_avg_roi {
+                    effective.wallet_filter.min_wallet_cell_avg_roi = min_wallet_cell_avg_roi;
+                }
+                if let Some(mrs_enabled) = wallet_filter.mrs_enabled {
+                    effective.wallet_filter.mrs_enabled = mrs_enabled;
+                }
+                if let Some(mrs_enforce) = wallet_filter.mrs_enforce {
+                    effective.wallet_filter.mrs_enforce = mrs_enforce;
+                }
+                if let Some(min_mrs_score) = wallet_filter.min_mrs_score {
+                    effective.wallet_filter.min_mrs_score = min_mrs_score;
+                }
+                if let Some(mrs_percentile_floor) = wallet_filter.mrs_percentile_floor {
+                    effective.wallet_filter.mrs_percentile_floor = mrs_percentile_floor;
+                }
+                if let Some(mrs_score_version) = &wallet_filter.mrs_score_version {
+                    effective.wallet_filter.mrs_score_version = mrs_score_version.clone();
+                }
+            }
+        }
+        effective
+    }
+
     pub fn effective_exit_rules(&self) -> EffectiveProcessExitRulesConfig {
         let mut effective = EffectiveProcessExitRulesConfig::default();
         if let Some(config) = &self.exit_rules {
@@ -918,6 +1053,9 @@ impl TradingProcessConfig {
                 if let Some(max_exit_slippage_bps) = take_profit.max_exit_slippage_bps {
                     effective.take_profit.max_exit_slippage_bps = max_exit_slippage_bps;
                 }
+                if let Some(exit_pricing_mode) = &take_profit.exit_pricing_mode {
+                    effective.take_profit.exit_pricing_mode = exit_pricing_mode.clone();
+                }
             }
             if let Some(stop_loss) = &config.stop_loss {
                 if let Some(stop_loss_enabled) = stop_loss.stop_loss_enabled {
@@ -940,6 +1078,9 @@ impl TradingProcessConfig {
                 }
                 if let Some(max_exit_slippage_bps) = stop_loss.max_exit_slippage_bps {
                     effective.stop_loss.max_exit_slippage_bps = max_exit_slippage_bps;
+                }
+                if let Some(exit_pricing_mode) = &stop_loss.exit_pricing_mode {
+                    effective.stop_loss.exit_pricing_mode = exit_pricing_mode.clone();
                 }
             }
         }
@@ -1074,9 +1215,12 @@ pub struct EffectiveCopyTradeProcessConfig {
     pub min_copy_size_usd: Decimal,
     pub max_copy_size_usd: Decimal,
     pub max_open_notional_usd: Decimal,
+    pub max_open_notional_per_token_usd: Decimal,
+    pub max_open_notional_per_market_usd: Decimal,
     pub copy_size_fraction: Decimal,
     pub max_follow_lag_secs: i64,
     pub max_price_slippage_bps: Decimal,
+    pub entry_pricing_mode: String,
     pub min_book_depth_usd: Decimal,
     pub backtest_horizon_secs: i64,
     pub taker_fee_rate: Decimal,
@@ -1100,6 +1244,7 @@ pub struct EffectiveCopyTradeProcessConfig {
     pub hard_reject_segment_sample_size: i32,
     pub unknown_segment_policy: String,
     pub segment_allowlist: Vec<String>,
+    pub segment_denylist: Vec<String>,
     pub entry_safety: EffectiveEntrySafetyProcessConfig,
 }
 
@@ -1116,9 +1261,12 @@ impl Default for EffectiveCopyTradeProcessConfig {
             min_copy_size_usd: dec!(2),
             max_copy_size_usd: dec!(2),
             max_open_notional_usd: dec!(20),
+            max_open_notional_per_token_usd: Decimal::ZERO,
+            max_open_notional_per_market_usd: Decimal::ZERO,
             copy_size_fraction: dec!(0.10),
             max_follow_lag_secs: 1800,
             max_price_slippage_bps: dec!(150),
+            entry_pricing_mode: "signal_limit".to_string(),
             min_book_depth_usd: dec!(25),
             backtest_horizon_secs: 3600,
             taker_fee_rate: dec!(0.03),
@@ -1131,7 +1279,7 @@ impl Default for EffectiveCopyTradeProcessConfig {
             segment_scoring_enabled: false,
             segment_scoring_mode: "shadow".to_string(),
             segment_score_version: "mrs_segment_v1".to_string(),
-            segment_classifier_version: "segment_rules_v1".to_string(),
+            segment_classifier_version: "gamma_taxonomy_v1".to_string(),
             min_segment_score: dec!(50),
             segment_mrs_percentile_floor: dec!(0.95),
             min_segment_confidence: dec!(0.10),
@@ -1142,6 +1290,7 @@ impl Default for EffectiveCopyTradeProcessConfig {
             hard_reject_segment_sample_size: 10,
             unknown_segment_policy: "neutral".to_string(),
             segment_allowlist: Vec::new(),
+            segment_denylist: Vec::new(),
             entry_safety: EffectiveEntrySafetyProcessConfig::default(),
         }
     }
@@ -1199,11 +1348,17 @@ pub struct CopyTradeProcessConfig {
     #[serde(default)]
     pub max_open_notional_usd: Option<Decimal>,
     #[serde(default)]
+    pub max_open_notional_per_token_usd: Option<Decimal>,
+    #[serde(default)]
+    pub max_open_notional_per_market_usd: Option<Decimal>,
+    #[serde(default)]
     pub copy_size_fraction: Option<Decimal>,
     #[serde(default)]
     pub max_follow_lag_secs: Option<i64>,
     #[serde(default)]
     pub max_price_slippage_bps: Option<Decimal>,
+    #[serde(default)]
+    pub entry_pricing_mode: Option<String>,
     #[serde(default)]
     pub min_book_depth_usd: Option<Decimal>,
     #[serde(default)]
@@ -1250,8 +1405,156 @@ pub struct CopyTradeProcessConfig {
     pub unknown_segment_policy: Option<String>,
     #[serde(default)]
     pub segment_allowlist: Vec<String>,
+    #[serde(default)]
+    pub segment_denylist: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_safety: Option<EntrySafetyProcessConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveExpectancyFlowProcessConfig {
+    pub enabled: bool,
+    pub enforce: bool,
+    pub score_version: String,
+    pub recompute_lookback_days: i32,
+    pub min_trade_usd: Decimal,
+    pub horizon_secs: i64,
+    pub max_snapshot_lag_secs: i64,
+    pub price_bucket_bps: i32,
+    pub min_cell_trades: i32,
+    pub min_trades_per_cell: i32,
+    pub min_cell_covered: i32,
+    pub min_win_rate: Decimal,
+    pub min_avg_roi: Decimal,
+    pub min_median_roi: Decimal,
+    pub include_wallet_cells: bool,
+    pub include_market_dimension: bool,
+    pub include_taxonomy_segment: bool,
+    pub max_cells: i64,
+    pub allowed_cells: Vec<String>,
+    pub denied_cells: Vec<String>,
+    pub wallet_filter: EffectiveExpectancyWalletFilterProcessConfig,
+}
+
+impl Default for EffectiveExpectancyFlowProcessConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            enforce: false,
+            score_version: "expectancy_flow_v1".to_string(),
+            recompute_lookback_days: 30,
+            min_trade_usd: dec!(500),
+            horizon_secs: 3600,
+            max_snapshot_lag_secs: 900,
+            price_bucket_bps: 2000,
+            min_cell_trades: 50,
+            min_trades_per_cell: 10,
+            min_cell_covered: 25,
+            min_win_rate: dec!(0.55),
+            min_avg_roi: dec!(0.02),
+            min_median_roi: Decimal::ZERO,
+            include_wallet_cells: false,
+            include_market_dimension: false,
+            include_taxonomy_segment: true,
+            max_cells: 1000,
+            allowed_cells: Vec::new(),
+            denied_cells: Vec::new(),
+            wallet_filter: EffectiveExpectancyWalletFilterProcessConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveExpectancyWalletFilterProcessConfig {
+    pub enabled: bool,
+    pub min_wallet_cell_covered: i32,
+    pub min_wallet_cell_avg_roi: Decimal,
+    pub mrs_enabled: bool,
+    pub mrs_enforce: bool,
+    pub min_mrs_score: Decimal,
+    pub mrs_percentile_floor: Decimal,
+    pub mrs_score_version: String,
+}
+
+impl Default for EffectiveExpectancyWalletFilterProcessConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_wallet_cell_covered: 3,
+            min_wallet_cell_avg_roi: Decimal::ZERO,
+            mrs_enabled: true,
+            mrs_enforce: false,
+            min_mrs_score: dec!(80),
+            mrs_percentile_floor: dec!(0.80),
+            mrs_score_version: "mrs_v1".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpectancyFlowProcessConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub enforce: Option<bool>,
+    #[serde(default)]
+    pub score_version: Option<String>,
+    #[serde(default)]
+    pub recompute_lookback_days: Option<i32>,
+    #[serde(default)]
+    pub min_trade_usd: Option<Decimal>,
+    #[serde(default)]
+    pub horizon_secs: Option<i64>,
+    #[serde(default)]
+    pub max_snapshot_lag_secs: Option<i64>,
+    #[serde(default)]
+    pub price_bucket_bps: Option<i32>,
+    #[serde(default)]
+    pub min_cell_trades: Option<i32>,
+    #[serde(default)]
+    pub min_trades_per_cell: Option<i32>,
+    #[serde(default)]
+    pub min_cell_covered: Option<i32>,
+    #[serde(default)]
+    pub min_win_rate: Option<Decimal>,
+    #[serde(default)]
+    pub min_avg_roi: Option<Decimal>,
+    #[serde(default)]
+    pub min_median_roi: Option<Decimal>,
+    #[serde(default)]
+    pub include_wallet_cells: Option<bool>,
+    #[serde(default)]
+    pub include_market_dimension: Option<bool>,
+    #[serde(default)]
+    pub include_taxonomy_segment: Option<bool>,
+    #[serde(default)]
+    pub max_cells: Option<i64>,
+    #[serde(default)]
+    pub allowed_cells: Vec<String>,
+    #[serde(default)]
+    pub denied_cells: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallet_filter: Option<ExpectancyWalletFilterProcessConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpectancyWalletFilterProcessConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub min_wallet_cell_covered: Option<i32>,
+    #[serde(default)]
+    pub min_wallet_cell_avg_roi: Option<Decimal>,
+    #[serde(default)]
+    pub mrs_enabled: Option<bool>,
+    #[serde(default)]
+    pub mrs_enforce: Option<bool>,
+    #[serde(default)]
+    pub min_mrs_score: Option<Decimal>,
+    #[serde(default)]
+    pub mrs_percentile_floor: Option<Decimal>,
+    #[serde(default)]
+    pub mrs_score_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1300,6 +1603,7 @@ pub struct EffectiveTakeProfitExitRuleProcessConfig {
     pub require_fresh_mark_secs: i64,
     pub exit_size_fraction: Decimal,
     pub max_exit_slippage_bps: Decimal,
+    pub exit_pricing_mode: String,
 }
 
 impl Default for EffectiveTakeProfitExitRuleProcessConfig {
@@ -1312,6 +1616,7 @@ impl Default for EffectiveTakeProfitExitRuleProcessConfig {
             require_fresh_mark_secs: 60,
             exit_size_fraction: dec!(1.0),
             max_exit_slippage_bps: dec!(150),
+            exit_pricing_mode: "mark_limit".to_string(),
         }
     }
 }
@@ -1344,6 +1649,8 @@ pub struct TakeProfitExitRuleProcessConfig {
     pub exit_size_fraction: Option<Decimal>,
     #[serde(default)]
     pub max_exit_slippage_bps: Option<Decimal>,
+    #[serde(default)]
+    pub exit_pricing_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1355,6 +1662,7 @@ pub struct EffectiveStopLossExitRuleProcessConfig {
     pub require_fresh_mark_secs: i64,
     pub exit_size_fraction: Decimal,
     pub max_exit_slippage_bps: Decimal,
+    pub exit_pricing_mode: String,
 }
 
 impl Default for EffectiveStopLossExitRuleProcessConfig {
@@ -1367,6 +1675,7 @@ impl Default for EffectiveStopLossExitRuleProcessConfig {
             require_fresh_mark_secs: 60,
             exit_size_fraction: dec!(1.0),
             max_exit_slippage_bps: dec!(150),
+            exit_pricing_mode: "mark_limit".to_string(),
         }
     }
 }
@@ -1387,6 +1696,8 @@ pub struct StopLossExitRuleProcessConfig {
     pub exit_size_fraction: Option<Decimal>,
     #[serde(default)]
     pub max_exit_slippage_bps: Option<Decimal>,
+    #[serde(default)]
+    pub exit_pricing_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1429,6 +1740,63 @@ pub struct MarkRefreshProcessConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpectancyFlowCell {
+    pub process_id: Uuid,
+    pub score_version: String,
+    pub cell_key: String,
+    pub dimensions: serde_json::Value,
+    pub horizon_secs: i64,
+    pub lookback_days: i32,
+    pub sample_count: i32,
+    pub winning_count: i32,
+    pub losing_count: i32,
+    pub observed_volume_usd: Decimal,
+    pub realized_pnl_usd: Decimal,
+    pub mean_price_delta: Decimal,
+    pub mean_return: Decimal,
+    pub win_rate: Decimal,
+    pub expectancy: Decimal,
+    pub confidence: Decimal,
+    pub sample_start: Option<DateTime<Utc>>,
+    pub sample_end: Option<DateTime<Utc>>,
+    pub metadata: serde_json::Value,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpectancyFlowWalletCell {
+    pub process_id: Uuid,
+    pub score_version: String,
+    pub proxy_wallet: String,
+    pub cell_key: String,
+    pub dimensions: serde_json::Value,
+    pub horizon_secs: i64,
+    pub lookback_days: i32,
+    pub sample_count: i32,
+    pub winning_count: i32,
+    pub losing_count: i32,
+    pub observed_volume_usd: Decimal,
+    pub realized_pnl_usd: Decimal,
+    pub mean_price_delta: Decimal,
+    pub mean_return: Decimal,
+    pub win_rate: Decimal,
+    pub expectancy: Decimal,
+    pub confidence: Decimal,
+    pub sample_start: Option<DateTime<Utc>>,
+    pub sample_end: Option<DateTime<Utc>>,
+    pub metadata: serde_json::Value,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExpectancyFlowRecomputeReport {
+    pub process_id: Uuid,
+    pub score_version: String,
+    pub cells_recomputed: u64,
+    pub wallet_cells_recomputed: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CopyTradeBacktestRun {
     pub backtest_id: Uuid,
     pub job_id: Option<Uuid>,
@@ -1441,6 +1809,26 @@ pub struct CopyTradeBacktestRun {
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BacktestRun {
+    pub backtest_run_id: Uuid,
+    pub status: String,
+    pub range_start: DateTime<Utc>,
+    pub range_end: DateTime<Utc>,
+    pub warmup_start: DateTime<Utc>,
+    pub lookback_days: i32,
+    pub warmup_days: i32,
+    pub source_process_ids: Vec<Uuid>,
+    pub backtest_process_ids: Vec<Uuid>,
+    pub request: serde_json::Value,
+    pub summary: serde_json::Value,
+    pub error: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1527,6 +1915,56 @@ mod tests {
     }
 
     #[test]
+    fn expectancy_flow_defaults_are_disabled_and_process_configurable() {
+        let effective = TradingProcessConfig::default().effective_expectancy_flow();
+
+        assert!(!effective.enabled);
+        assert_eq!(effective.score_version, "expectancy_flow_v1");
+        assert_eq!(effective.recompute_lookback_days, 30);
+        assert_eq!(effective.horizon_secs, 3600);
+        assert_eq!(effective.max_snapshot_lag_secs, 900);
+        assert_eq!(effective.price_bucket_bps, 2000);
+        assert_eq!(effective.min_trades_per_cell, 10);
+        assert!(!effective.include_wallet_cells);
+        assert!(!effective.include_market_dimension);
+        assert!(effective.include_taxonomy_segment);
+        assert_eq!(effective.max_cells, 1000);
+    }
+
+    #[test]
+    fn expectancy_flow_storage_config_overrides_defaults() {
+        let config: TradingProcessConfig = serde_json::from_value(serde_json::json!({
+            "expectancy_flow": {
+                "enabled": true,
+                "score_version": "expectancy_flow_v2",
+                "recompute_lookback_days": 14,
+                "horizon_secs": 7200,
+                "max_snapshot_lag_secs": 300,
+                "price_bucket_bps": 250,
+                "min_trades_per_cell": 5,
+                "include_wallet_cells": true,
+                "include_market_dimension": true,
+                "include_taxonomy_segment": false,
+                "max_cells": 250
+            }
+        }))
+        .expect("expectancy flow config should deserialize");
+
+        let effective = config.effective_expectancy_flow();
+        assert!(effective.enabled);
+        assert_eq!(effective.score_version, "expectancy_flow_v2");
+        assert_eq!(effective.recompute_lookback_days, 14);
+        assert_eq!(effective.horizon_secs, 7200);
+        assert_eq!(effective.max_snapshot_lag_secs, 300);
+        assert_eq!(effective.price_bucket_bps, 250);
+        assert_eq!(effective.min_trades_per_cell, 5);
+        assert!(effective.include_wallet_cells);
+        assert!(effective.include_market_dimension);
+        assert!(!effective.include_taxonomy_segment);
+        assert_eq!(effective.max_cells, 250);
+    }
+
+    #[test]
     fn copy_trade_entry_safety_config_overrides_defaults() {
         let config: TradingProcessConfig = serde_json::from_value(serde_json::json!({
             "copy_trade": {
@@ -1555,5 +1993,180 @@ mod tests {
         assert_eq!(effective.entry_safety.exit_depth_slippage_bps, dec!(150));
         assert_eq!(effective.entry_safety.min_entry_price, dec!(0.05));
         assert_eq!(effective.entry_safety.max_entry_price, dec!(0.95));
+    }
+
+    #[test]
+    fn copy_trade_entry_pricing_mode_overrides_default() {
+        let default = TradingProcessConfig::default().effective_copy_trade();
+        assert_eq!(default.entry_pricing_mode, "signal_limit");
+
+        let config: TradingProcessConfig = serde_json::from_value(serde_json::json!({
+            "copy_trade": {
+                "entry_pricing_mode": "marketable_limit"
+            }
+        }))
+        .expect("entry pricing config should deserialize");
+
+        let effective = config.effective_copy_trade();
+        assert_eq!(effective.entry_pricing_mode, "marketable_limit");
+    }
+
+    #[test]
+    fn copy_trade_segment_lists_override_defaults() {
+        let default = TradingProcessConfig::default().effective_copy_trade();
+        assert!(default.segment_allowlist.is_empty());
+        assert!(default.segment_denylist.is_empty());
+
+        let config: TradingProcessConfig = serde_json::from_value(serde_json::json!({
+            "copy_trade": {
+                "segment_allowlist": ["politics.general"],
+                "segment_denylist": ["crypto.bitcoin.short_interval", "sports.general"]
+            }
+        }))
+        .expect("segment list config should deserialize");
+
+        let effective = config.effective_copy_trade();
+        assert_eq!(effective.segment_allowlist, vec!["politics.general"]);
+        assert_eq!(
+            effective.segment_denylist,
+            vec!["crypto.bitcoin.short_interval", "sports.general"]
+        );
+    }
+
+    #[test]
+    fn expectancy_flow_config_overrides_defaults() {
+        let default = TradingProcessConfig::default().effective_expectancy_flow();
+        assert!(!default.enabled);
+        assert!(!default.enforce);
+        assert_eq!(default.min_trade_usd, dec!(500));
+        assert_eq!(default.horizon_secs, 3600);
+        assert!(!default.wallet_filter.enabled);
+        assert!(default.wallet_filter.mrs_enabled);
+        assert!(!default.wallet_filter.mrs_enforce);
+        assert_eq!(default.wallet_filter.min_mrs_score, dec!(80));
+        assert_eq!(default.wallet_filter.mrs_percentile_floor, dec!(0.80));
+        assert_eq!(default.wallet_filter.mrs_score_version, "mrs_v1");
+
+        let config: TradingProcessConfig = serde_json::from_value(serde_json::json!({
+            "expectancy_flow": {
+                "enabled": true,
+                "enforce": true,
+                "min_trade_usd": "250",
+                "horizon_secs": 1800,
+                "min_cell_trades": 75,
+                "min_cell_covered": 30,
+                "min_win_rate": "0.58",
+                "min_avg_roi": "0.03",
+                "min_median_roi": "0.01",
+                "allowed_cells": ["sports.nba|buy|60-80c|3600"],
+                "denied_cells": ["other|buy|60-80c|3600"],
+                "wallet_filter": {
+                    "enabled": true,
+                    "min_wallet_cell_covered": 5,
+                    "min_wallet_cell_avg_roi": "0.02",
+                    "mrs_enabled": false,
+                    "mrs_enforce": true,
+                    "min_mrs_score": "92.5",
+                    "mrs_percentile_floor": "0.91",
+                    "mrs_score_version": "expectancy_flow_mrs_v2"
+                }
+            }
+        }))
+        .expect("expectancy flow config should deserialize");
+
+        let effective = config.effective_expectancy_flow();
+        assert!(effective.enabled);
+        assert!(effective.enforce);
+        assert_eq!(effective.min_trade_usd, dec!(250));
+        assert_eq!(effective.horizon_secs, 1800);
+        assert_eq!(effective.min_cell_trades, 75);
+        assert_eq!(effective.min_cell_covered, 30);
+        assert_eq!(effective.min_win_rate, dec!(0.58));
+        assert_eq!(effective.min_avg_roi, dec!(0.03));
+        assert_eq!(effective.min_median_roi, dec!(0.01));
+        assert_eq!(effective.allowed_cells, vec!["sports.nba|buy|60-80c|3600"]);
+        assert_eq!(effective.denied_cells, vec!["other|buy|60-80c|3600"]);
+        assert!(effective.wallet_filter.enabled);
+        assert_eq!(effective.wallet_filter.min_wallet_cell_covered, 5);
+        assert_eq!(effective.wallet_filter.min_wallet_cell_avg_roi, dec!(0.02));
+        assert!(!effective.wallet_filter.mrs_enabled);
+        assert!(effective.wallet_filter.mrs_enforce);
+        assert_eq!(effective.wallet_filter.min_mrs_score, dec!(92.5));
+        assert_eq!(effective.wallet_filter.mrs_percentile_floor, dec!(0.91));
+        assert_eq!(
+            effective.wallet_filter.mrs_score_version,
+            "expectancy_flow_mrs_v2"
+        );
+    }
+
+    #[test]
+    fn expectancy_flow_mrs_is_independent_from_copy_trade_mrs() {
+        let copy_only_config: TradingProcessConfig = serde_json::from_value(serde_json::json!({
+            "copy_trade": {
+                "mrs_enabled": false,
+                "mrs_enforce": true,
+                "min_mrs_score": "10",
+                "mrs_percentile_floor": "0.10",
+                "mrs_score_version": "copy_trade_mrs"
+            }
+        }))
+        .expect("copy-trade-only config should deserialize");
+
+        let copy_only_expectancy_flow = copy_only_config.effective_expectancy_flow();
+        assert!(copy_only_expectancy_flow.wallet_filter.mrs_enabled);
+        assert!(!copy_only_expectancy_flow.wallet_filter.mrs_enforce);
+        assert_eq!(
+            copy_only_expectancy_flow.wallet_filter.min_mrs_score,
+            dec!(80)
+        );
+        assert_eq!(
+            copy_only_expectancy_flow.wallet_filter.mrs_percentile_floor,
+            dec!(0.80)
+        );
+        assert_eq!(
+            copy_only_expectancy_flow.wallet_filter.mrs_score_version,
+            "mrs_v1"
+        );
+
+        let config: TradingProcessConfig = serde_json::from_value(serde_json::json!({
+            "copy_trade": {
+                "mrs_enabled": false,
+                "mrs_enforce": true,
+                "min_mrs_score": "10",
+                "mrs_percentile_floor": "0.10",
+                "mrs_score_version": "copy_trade_mrs"
+            },
+            "expectancy_flow": {
+                "wallet_filter": {
+                    "mrs_enabled": true,
+                    "mrs_enforce": false,
+                    "min_mrs_score": "95",
+                    "mrs_percentile_floor": "0.95",
+                    "mrs_score_version": "expectancy_flow_mrs"
+                }
+            }
+        }))
+        .expect("combined strategy config should deserialize");
+
+        let copy_trade = config.effective_copy_trade();
+        let expectancy_flow = config.effective_expectancy_flow();
+
+        assert!(!copy_trade.mrs_enabled);
+        assert!(copy_trade.mrs_enforce);
+        assert_eq!(copy_trade.min_mrs_score, dec!(10));
+        assert_eq!(copy_trade.mrs_percentile_floor, dec!(0.10));
+        assert_eq!(copy_trade.mrs_score_version, "copy_trade_mrs");
+
+        assert!(expectancy_flow.wallet_filter.mrs_enabled);
+        assert!(!expectancy_flow.wallet_filter.mrs_enforce);
+        assert_eq!(expectancy_flow.wallet_filter.min_mrs_score, dec!(95));
+        assert_eq!(
+            expectancy_flow.wallet_filter.mrs_percentile_floor,
+            dec!(0.95)
+        );
+        assert_eq!(
+            expectancy_flow.wallet_filter.mrs_score_version,
+            "expectancy_flow_mrs"
+        );
     }
 }

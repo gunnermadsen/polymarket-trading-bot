@@ -309,6 +309,7 @@ pub async fn execute_take_profit_exits_for_process(
             min_hold,
             require_fresh_mark,
             take_profit_config.max_exit_slippage_bps,
+            &take_profit_config.exit_pricing_mode,
             100,
         )
         .await?;
@@ -433,6 +434,7 @@ pub async fn execute_stop_loss_exits_for_process(
             min_hold,
             require_fresh_mark,
             stop_loss_config.max_exit_slippage_bps,
+            &stop_loss_config.exit_pricing_mode,
             100,
         )
         .await?;
@@ -715,12 +717,15 @@ fn close_order_request(candidate: &WhaleLedTradeExitCandidate) -> OrderRequest {
     }
 }
 
-fn risk_control_order_request(candidate: &TakeProfitTradeExitCandidate) -> OrderRequest {
+pub(crate) fn risk_control_order_request(candidate: &TakeProfitTradeExitCandidate) -> OrderRequest {
     let side = if candidate.side == "buy" {
         OrderSide::Sell
     } else {
         OrderSide::Buy
     };
+    let limit_price = candidate
+        .marketable_exit_price
+        .unwrap_or(candidate.order_limit_price);
     OrderRequest {
         client_order_id: deterministic_client_order_id(&ClientOrderIdSeed {
             strategy_version: "whale-follow-v1",
@@ -730,7 +735,7 @@ fn risk_control_order_request(candidate: &TakeProfitTradeExitCandidate) -> Order
             market_id: candidate.market_id.as_deref().unwrap_or("unknown"),
             token_id: &candidate.token_id,
             side,
-            notional_key: &(candidate.order_limit_price * candidate.exit_size)
+            notional_key: &(limit_price * candidate.exit_size)
                 .round_dp(4)
                 .normalize()
                 .to_string(),
@@ -743,7 +748,7 @@ fn risk_control_order_request(candidate: &TakeProfitTradeExitCandidate) -> Order
         token_id: candidate.token_id.clone(),
         side,
         order_type: OrderType::Fok,
-        price: candidate.order_limit_price,
+        price: limit_price,
         size: candidate.exit_size,
         signal_id: None,
         metadata: serde_json::json!({
@@ -755,6 +760,11 @@ fn risk_control_order_request(candidate: &TakeProfitTradeExitCandidate) -> Order
             "exit_source_trade_id": candidate.exit_source_trade_id,
             "reference_exit_price": candidate.reference_exit_price,
             "order_limit_price": candidate.order_limit_price,
+            "selected_order_limit_price": limit_price,
+            "marketable_exit_price": candidate.marketable_exit_price,
+            "best_bid": candidate.best_bid,
+            "best_ask": candidate.best_ask,
+            "exit_pricing_mode": candidate.exit_pricing_mode,
             "reference_exit_timestamp": candidate.exit_timestamp,
             "latest_mark_timestamp": candidate.latest_mark_timestamp,
             "trigger_roi": candidate.trigger_roi,
@@ -821,12 +831,16 @@ mod tests {
             exit_timestamp: Utc::now(),
             reference_exit_price: dec!(0.44),
             order_limit_price: dec!(0.4334),
+            marketable_exit_price: None,
+            best_bid: None,
+            best_ask: None,
             exit_size: dec!(25),
             trigger_roi: dec!(0.10),
             threshold_roi: dec!(0.10),
             take_profit_roi: dec!(0.10),
             latest_mark_timestamp: Utc::now(),
             max_exit_slippage_bps: dec!(150),
+            exit_pricing_mode: "mark_limit".to_string(),
         }
     }
 
@@ -895,6 +909,32 @@ mod tests {
         assert_eq!(
             request.metadata["trigger_roi"],
             serde_json::json!(candidate.trigger_roi)
+        );
+    }
+
+    #[test]
+    fn risk_control_order_uses_marketable_exit_price_when_available() {
+        let mut candidate = take_profit_candidate("buy");
+        candidate.exit_pricing_mode = "marketable_limit".to_string();
+        candidate.marketable_exit_price = Some(dec!(0.4325));
+        candidate.best_bid = Some(dec!(0.4325));
+        candidate.best_ask = Some(dec!(0.45));
+
+        let request = risk_control_order_request(&candidate);
+
+        assert_eq!(request.side, OrderSide::Sell);
+        assert_eq!(request.price, dec!(0.4325));
+        assert_eq!(
+            request.metadata["selected_order_limit_price"],
+            serde_json::json!(dec!(0.4325))
+        );
+        assert_eq!(
+            request.metadata["order_limit_price"],
+            serde_json::json!(dec!(0.4334))
+        );
+        assert_eq!(
+            request.metadata["exit_pricing_mode"],
+            serde_json::json!("marketable_limit")
         );
     }
 

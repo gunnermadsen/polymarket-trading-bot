@@ -24,7 +24,8 @@ use crate::{
         LivePoly1271FunderProbeRequest, LivePoly1271FunderProbeResponse, LiveVenueStatus,
         LiveWalletAddressDiagnostics,
     },
-    models::{BackfillJob, BackfillJobStatus, TradingProcess, TradingProcessConfig},
+    models::{BackfillJob, BackfillJobStatus, BacktestRun, TradingProcess, TradingProcessConfig},
+    replay::{BacktestReplayQueued, BacktestReplayRequest},
     store::TradingProcessResetReport,
 };
 
@@ -58,7 +59,27 @@ impl AdminAuth {
 
 #[async_trait]
 pub trait ControlApi: Send + Sync + 'static {
+    async fn health(&self) -> Result<HealthResponse, HttpError> {
+        Ok(HealthResponse {
+            service: SERVICE_NAME.to_string(),
+            status: HealthStatus::Ok,
+            checked_at: Utc::now(),
+        })
+    }
+
     async fn metrics(&self) -> Result<MetricsResponse, HttpError>;
+
+    async fn btc_realtime_status(&self) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "BTC realtime status is not wired",
+        ))
+    }
+
+    async fn btc_paper_experiment_status(&self) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "BTC paper experiment status is not wired",
+        ))
+    }
 
     async fn start_whales_backfill(
         &self,
@@ -79,6 +100,21 @@ pub trait ControlApi: Send + Sync + 'static {
         &self,
         request: CopyTradeReplayRequest,
     ) -> Result<serde_json::Value, HttpError>;
+
+    async fn start_backtest_replay(
+        &self,
+        request: BacktestReplayRequest,
+    ) -> Result<BacktestReplayQueued, HttpError>;
+
+    async fn get_backtest_run(
+        &self,
+        backtest_run_id: Uuid,
+    ) -> Result<BacktestRunResponse, HttpError>;
+
+    async fn list_backtest_runs(
+        &self,
+        request: ListBacktestRunsRequest,
+    ) -> Result<BacktestRunsResponse, HttpError>;
 
     async fn list_backfill_jobs(&self) -> Result<BackfillJobsResponse, HttpError>;
 
@@ -125,10 +161,64 @@ pub trait ControlApi: Send + Sync + 'static {
         request: MrsRecomputeRequest,
     ) -> Result<serde_json::Value, HttpError>;
 
+    async fn enqueue_wallet_score_refresh(
+        &self,
+        _request: WalletScoreRefreshEnqueueRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "wallet score refresh enqueue is not wired",
+        ))
+    }
+
+    async fn process_wallet_score_refresh(
+        &self,
+        _request: WalletScoreRefreshProcessRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "wallet score refresh processing is not wired",
+        ))
+    }
+
+    async fn list_wallet_score_refresh_jobs(
+        &self,
+        _request: WalletScoreRefreshJobsRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "wallet score refresh job listing is not wired",
+        ))
+    }
+
     async fn mrs_segment_summary(
         &self,
         request: TradePnlListRequest,
     ) -> Result<serde_json::Value, HttpError>;
+
+    async fn recompute_expectancy_flow(
+        &self,
+        _request: ExpectancyFlowRecomputeRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "expectancy flow recompute is not wired",
+        ))
+    }
+
+    async fn expectancy_flow_cells(
+        &self,
+        _request: ExpectancyFlowCellsRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "expectancy flow cell listing is not wired",
+        ))
+    }
+
+    async fn expectancy_flow_wallet_cells(
+        &self,
+        _request: ExpectancyFlowWalletCellsRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "expectancy flow wallet cell listing is not wired",
+        ))
+    }
 
     async fn gamma_taxonomy_status(&self) -> Result<serde_json::Value, HttpError> {
         Err(HttpError::not_implemented(
@@ -222,6 +312,15 @@ pub trait ControlApi: Send + Sync + 'static {
     ) -> Result<TradingProcessStatusResponse, HttpError> {
         Err(HttpError::not_implemented(
             "trading process status is not wired",
+        ))
+    }
+
+    async fn preview_trading_process_start(
+        &self,
+        _process_id: Uuid,
+    ) -> Result<TradingProcessStartPreviewResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading process start preview is not wired",
         ))
     }
 
@@ -375,6 +474,31 @@ impl ControlApi for PlaceholderControlApi {
         Err(HttpError::not_implemented("copy-trade replay is not wired"))
     }
 
+    async fn start_backtest_replay(
+        &self,
+        _request: BacktestReplayRequest,
+    ) -> Result<BacktestReplayQueued, HttpError> {
+        Err(HttpError::not_implemented("backtest replay is not wired"))
+    }
+
+    async fn get_backtest_run(
+        &self,
+        _backtest_run_id: Uuid,
+    ) -> Result<BacktestRunResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "backtest run lookup is not wired",
+        ))
+    }
+
+    async fn list_backtest_runs(
+        &self,
+        _request: ListBacktestRunsRequest,
+    ) -> Result<BacktestRunsResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "backtest run listing is not wired",
+        ))
+    }
+
     async fn recompute_mrs_scores(
         &self,
         _request: MrsRecomputeRequest,
@@ -388,6 +512,33 @@ impl ControlApi for PlaceholderControlApi {
     ) -> Result<serde_json::Value, HttpError> {
         Err(HttpError::not_implemented(
             "MRS segment recompute is not wired",
+        ))
+    }
+
+    async fn enqueue_wallet_score_refresh(
+        &self,
+        _request: WalletScoreRefreshEnqueueRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "wallet score refresh enqueue is not wired",
+        ))
+    }
+
+    async fn process_wallet_score_refresh(
+        &self,
+        _request: WalletScoreRefreshProcessRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "wallet score refresh processing is not wired",
+        ))
+    }
+
+    async fn list_wallet_score_refresh_jobs(
+        &self,
+        _request: WalletScoreRefreshJobsRequest,
+    ) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "wallet score refresh job listing is not wired",
         ))
     }
 
@@ -495,6 +646,15 @@ impl ControlApi for PlaceholderControlApi {
         ))
     }
 
+    async fn preview_trading_process_start(
+        &self,
+        _process_id: Uuid,
+    ) -> Result<TradingProcessStartPreviewResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading process start preview is not wired",
+        ))
+    }
+
     async fn update_trading_process(
         &self,
         _process_id: Uuid,
@@ -529,16 +689,21 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
     let admin_auth = AdminAuth::new(admin_bearer_token);
 
     let admin_routes = Router::new()
-        .route("/backfill/whales", post(start_whales_backfill))
-        .route("/copy-trade/backtest", post(start_copy_trade_backtest))
+        .route("/strategy/btc-5m/readiness", get(btc_realtime_status))
+        .route(
+            "/strategy/btc-5m/paper-experiment",
+            get(btc_paper_experiment_status),
+        )
+        .route("/backfill/whales", post(legacy_copy_endpoint_gone))
+        .route("/copy-trade/backtest", post(legacy_copy_endpoint_gone))
         .route(
             "/copy-trade/replay-existing",
-            post(replay_existing_copy_trades),
+            post(legacy_copy_endpoint_gone),
         )
-        .route(
-            "/copy-trade/calibration",
-            post(start_copy_trade_calibration),
-        )
+        .route("/backtests/replay", post(legacy_copy_endpoint_gone))
+        .route("/backtests", get(list_backtest_runs))
+        .route("/backtests/:backtest_run_id", get(get_backtest_run))
+        .route("/copy-trade/calibration", post(legacy_copy_endpoint_gone))
         .route("/backfill/jobs", get(list_backfill_jobs))
         .route("/backfill/jobs/:job_id", get(get_backfill_job))
         .route("/backfill/jobs/:job_id/cancel", post(cancel_backfill_job))
@@ -551,10 +716,34 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .route("/trades/pnl/backfill", post(trade_pnl_backfill))
         .route("/trades/pnl/mark-now", post(trade_pnl_mark_now))
         .route("/wallets/mrs/recompute", post(recompute_mrs_scores))
+        .route(
+            "/wallets/scoring/refresh/enqueue",
+            post(enqueue_wallet_score_refresh),
+        )
+        .route(
+            "/wallets/scoring/refresh/process",
+            post(process_wallet_score_refresh),
+        )
+        .route(
+            "/wallets/scoring/refresh/jobs",
+            get(list_wallet_score_refresh_jobs),
+        )
         .route("/wallets/mrs/segments", get(mrs_segment_summary))
         .route(
             "/wallets/mrs/segments/recompute",
             post(recompute_mrs_segment_scores),
+        )
+        .route(
+            "/copy-trade/expectancy-flow/recompute",
+            post(recompute_expectancy_flow),
+        )
+        .route(
+            "/copy-trade/expectancy-flow/cells",
+            get(expectancy_flow_cells),
+        )
+        .route(
+            "/copy-trade/expectancy-flow/wallet-cells",
+            get(expectancy_flow_wallet_cells),
         )
         .route("/gamma/taxonomy/status", get(gamma_taxonomy_status))
         .route("/gamma/taxonomy/backfill", post(gamma_taxonomy_backfill))
@@ -587,6 +776,10 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
             get(get_trading_process_status),
         )
         .route(
+            "/trading-processes/:process_id/start-preview",
+            get(preview_trading_process_start),
+        )
+        .route(
             "/trading-processes/:process_id",
             get(get_trading_process).patch(update_trading_process),
         )
@@ -611,56 +804,48 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .with_state(state)
 }
 
-async fn health() -> Json<HealthResponse> {
-    Json(HealthResponse {
-        service: SERVICE_NAME.to_string(),
-        status: HealthStatus::Ok,
-        checked_at: Utc::now(),
-    })
+async fn health(State(state): State<HttpState>) -> Result<Json<HealthResponse>, HttpError> {
+    state.control.health().await.map(Json)
 }
 
 async fn metrics(State(state): State<HttpState>) -> Result<Json<MetricsResponse>, HttpError> {
     state.control.metrics().await.map(Json)
 }
 
-async fn start_whales_backfill(
+async fn btc_realtime_status(
     State(state): State<HttpState>,
-    Json(request): Json<BackfillWhalesRequest>,
-) -> Result<Json<BackfillJobResponse>, HttpError> {
-    state.control.start_whales_backfill(request).await.map(Json)
-}
-
-async fn start_copy_trade_backtest(
-    State(state): State<HttpState>,
-    Json(request): Json<CopyTradeBacktestRequest>,
-) -> Result<Json<BackfillJobResponse>, HttpError> {
-    state
-        .control
-        .start_copy_trade_backtest(request)
-        .await
-        .map(Json)
-}
-
-async fn start_copy_trade_calibration(
-    State(state): State<HttpState>,
-    Json(request): Json<CopyTradeCalibrationRequest>,
-) -> Result<Json<BackfillJobResponse>, HttpError> {
-    state
-        .control
-        .start_copy_trade_calibration(request)
-        .await
-        .map(Json)
-}
-
-async fn replay_existing_copy_trades(
-    State(state): State<HttpState>,
-    Json(request): Json<CopyTradeReplayRequest>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
+    state.control.btc_realtime_status().await.map(Json)
+}
+
+async fn btc_paper_experiment_status(
+    State(state): State<HttpState>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state.control.btc_paper_experiment_status().await.map(Json)
+}
+
+async fn legacy_copy_endpoint_gone() -> Result<Json<serde_json::Value>, HttpError> {
+    Err(HttpError::gone(
+        "legacy copy-trade and wallet-address workflows are disabled",
+    ))
+}
+
+async fn get_backtest_run(
+    State(state): State<HttpState>,
+    Path(backtest_run_id): Path<Uuid>,
+) -> Result<Json<BacktestRunResponse>, HttpError> {
     state
         .control
-        .replay_existing_copy_trades(request)
+        .get_backtest_run(backtest_run_id)
         .await
         .map(Json)
+}
+
+async fn list_backtest_runs(
+    State(state): State<HttpState>,
+    Query(request): Query<ListBacktestRunsRequest>,
+) -> Result<Json<BacktestRunsResponse>, HttpError> {
+    state.control.list_backtest_runs(request).await.map(Json)
 }
 
 async fn list_backfill_jobs(
@@ -755,11 +940,73 @@ async fn recompute_mrs_segment_scores(
         .map(Json)
 }
 
+async fn enqueue_wallet_score_refresh(
+    State(state): State<HttpState>,
+    Json(request): Json<WalletScoreRefreshEnqueueRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state
+        .control
+        .enqueue_wallet_score_refresh(request)
+        .await
+        .map(Json)
+}
+
+async fn process_wallet_score_refresh(
+    State(state): State<HttpState>,
+    Json(request): Json<WalletScoreRefreshProcessRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state
+        .control
+        .process_wallet_score_refresh(request)
+        .await
+        .map(Json)
+}
+
+async fn list_wallet_score_refresh_jobs(
+    State(state): State<HttpState>,
+    Query(request): Query<WalletScoreRefreshJobsRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state
+        .control
+        .list_wallet_score_refresh_jobs(request)
+        .await
+        .map(Json)
+}
+
 async fn mrs_segment_summary(
     State(state): State<HttpState>,
     Query(request): Query<TradePnlListRequest>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
     state.control.mrs_segment_summary(request).await.map(Json)
+}
+
+async fn recompute_expectancy_flow(
+    State(state): State<HttpState>,
+    Json(request): Json<ExpectancyFlowRecomputeRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state
+        .control
+        .recompute_expectancy_flow(request)
+        .await
+        .map(Json)
+}
+
+async fn expectancy_flow_cells(
+    State(state): State<HttpState>,
+    Query(request): Query<ExpectancyFlowCellsRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state.control.expectancy_flow_cells(request).await.map(Json)
+}
+
+async fn expectancy_flow_wallet_cells(
+    State(state): State<HttpState>,
+    Query(request): Query<ExpectancyFlowWalletCellsRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state
+        .control
+        .expectancy_flow_wallet_cells(request)
+        .await
+        .map(Json)
 }
 
 async fn gamma_taxonomy_status(
@@ -907,6 +1154,17 @@ async fn get_trading_process_status(
     state
         .control
         .get_trading_process_status(process_id)
+        .await
+        .map(Json)
+}
+
+async fn preview_trading_process_start(
+    State(state): State<HttpState>,
+    Path(process_id): Path<Uuid>,
+) -> Result<Json<TradingProcessStartPreviewResponse>, HttpError> {
+    state
+        .control
+        .preview_trading_process_start(process_id)
         .await
         .map(Json)
 }
@@ -1081,6 +1339,66 @@ pub struct MrsRecomputeRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletScoreRefreshEnqueueRequest {
+    #[serde(default)]
+    pub wallets: Vec<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub score_version: Option<String>,
+    #[serde(default)]
+    pub segment_score_version: Option<String>,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletScoreRefreshProcessRequest {
+    #[serde(default)]
+    pub wallets: Vec<String>,
+    #[serde(default)]
+    pub use_queue: Option<bool>,
+    pub lookback_days: Option<i64>,
+    pub page_limit: Option<usize>,
+    pub max_pages: Option<usize>,
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub refresh_percentiles: bool,
+    #[serde(default)]
+    pub score_version: Option<String>,
+    #[serde(default)]
+    pub segment_score_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletScoreRefreshJobsRequest {
+    #[serde(default)]
+    pub status: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpectancyFlowRecomputeRequest {
+    #[serde(default)]
+    pub process_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpectancyFlowCellsRequest {
+    #[serde(default)]
+    pub process_id: Option<Uuid>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpectancyFlowWalletCellsRequest {
+    #[serde(default)]
+    pub process_id: Option<Uuid>,
+    pub proxy_wallet: String,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GammaTaxonomyBackfillRequest {
     pub limit: Option<i64>,
     #[serde(default)]
@@ -1153,6 +1471,11 @@ pub struct ListTradingProcessesRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListBacktestRunsRequest {
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpsertTradingProcessByKeyRequest {
     pub name: String,
     #[serde(default = "default_process_type")]
@@ -1201,8 +1524,28 @@ pub struct TradingProcessStatusResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradingProcessStartPreviewResponse {
+    pub process_id: Uuid,
+    pub experiment_id: Uuid,
+    pub experiment_key: String,
+    pub preregistration_sha256: String,
+    pub config_hash: String,
+    pub frozen_process_config: TradingProcessConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradingProcessResetResponse {
     pub report: TradingProcessResetReport,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BacktestRunResponse {
+    pub backtest_run: BacktestRun,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BacktestRunsResponse {
+    pub backtest_runs: Vec<BacktestRun>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1242,6 +1585,14 @@ impl HttpError {
 
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, "not_found", message)
+    }
+
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, "conflict", message)
+    }
+
+    pub fn gone(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::GONE, "gone", message)
     }
 
     pub fn not_implemented(message: impl Into<String>) -> Self {

@@ -2,6 +2,7 @@
 
 pub mod account_reconcile;
 pub mod backfill;
+pub mod btc;
 pub mod clob;
 pub mod config;
 pub mod copytrade;
@@ -12,8 +13,10 @@ pub mod execution;
 pub mod gamma;
 pub mod http;
 pub mod idempotency;
+pub mod ml;
 pub mod models;
 pub mod orderbook;
+pub mod replay;
 pub mod risk;
 pub mod scanner;
 pub mod segments;

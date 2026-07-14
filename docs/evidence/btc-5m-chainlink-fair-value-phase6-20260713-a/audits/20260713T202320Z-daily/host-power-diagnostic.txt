@@ -1,0 +1,21 @@
+2026-07-13 15:23:20 -0500 
+Assertion status system-wide:
+   BackgroundTask                 0
+   ApplePushServiceTask           0
+   UserIsActive                   1
+   PreventUserIdleDisplaySleep    1
+   PreventSystemSleep             0
+   ExternalMedia                  0
+   InternalPreventDisplaySleep    1
+   PreventUserIdleSystemSleep     1
+   NetworkClientActive            0
+Listed by owning process:
+   pid 8922(Caffeine): [0x000fbbc6000584a9] 00:00:04 PreventUserIdleDisplaySleep named: "Caffeine prevents sleep"  
+	Timeout will fire in 3 secs Action=<unknown action>
+   pid 1781(WindowServer): [0x000fb92b00098455] 00:00:00 UserIsActive named: "com.apple.iohideventsystem.queue.tickle serviceID:100000a35 service:AppleHIDKeyboardEventDriverV2 product:Apple Internal Keyboard / Trackpad eventType:3"  
+	Timeout will fire in 600 secs Action=TimeoutActionRelease
+   pid 1727(powerd): [0x000f576500018c85] 07:08:21 PreventUserIdleSystemSleep named: "Powerd - Prevent sleep while display is on"  
+   pid 1727(powerd): [0x000000bf001084ec] 00:00:06 InternalPreventDisplaySleep named: "com.apple.powermanagement.delayDisplayOff"  
+	Timeout will fire in 293 secs Action=TimeoutActionTurnOff
+   pid 58657(ChatGPT): [0x000fa37b0001a459] 01:43:43 NoIdleSleepAssertion named: "Electron"  
+No kernel assertions.

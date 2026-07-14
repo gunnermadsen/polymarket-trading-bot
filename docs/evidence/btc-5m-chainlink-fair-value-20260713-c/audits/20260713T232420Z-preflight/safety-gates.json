@@ -1,0 +1,9 @@
+{
+  "exact_safe_config": true,
+  "all_live_credentials_blank": true,
+  "exact_source_endpoints": true,
+  "expected_source_endpoints": {
+    "rtds_ws_url": "wss://ws-live-data.polymarket.com",
+    "binance_ws_url": "wss://stream.binance.com:9443/ws/btcusdt@aggTrade"
+  }
+}
