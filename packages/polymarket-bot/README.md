@@ -17,11 +17,11 @@ in parallel. Live processes require CLOB credentials and wallet secrets to be
 present in the runtime environment, and host configuration only supplies venue
 URLs plus hard risk caps.
 
-## Build
+## Build and test
 
 ```bash
-cargo test
-cargo build --release
+docker compose --profile test build polymarket-bot polymarket-bot-test
+docker compose --profile test run --rm --no-deps polymarket-bot-test
 ```
 
 ## Derive CLOB Credentials
@@ -32,10 +32,13 @@ From the repository root, add the wallet private key secret to `.env`:
 POLYMARKET_PRIVATE_KEY=...
 ```
 
-Then run:
+Use the production Compose definition for this separately authorized live-setup
+operation; the realtime-paper Compose environment deliberately blanks every
+live credential:
 
 ```bash
-cargo run --manifest-path packages/polymarket-bot/Cargo.toml --bin derive-clob-creds
+docker compose -f docker-compose.production.yml run --rm --no-deps \
+  --entrypoint derive-clob-creds polymarket-bot
 ```
 
 The command prints:

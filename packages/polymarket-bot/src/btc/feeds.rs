@@ -1,0 +1,2005 @@
+use std::{
+    collections::{BTreeMap, HashMap},
+    str::FromStr,
+};
+
+use anyhow::{bail, Context, Result};
+use chrono::{DateTime, Duration, Utc};
+use rust_decimal::{Decimal, RoundingStrategy};
+use serde_json::Value;
+use uuid::Uuid;
+
+use super::types::{
+    BookReadiness, BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, MarketFeedEvent,
+    MarketFeedEventType, OrderbookCheckpoint, OrderbookLevel, Readiness, RealtimeState,
+    ReferencePriceSource, ReferencePriceTick, SourceReadiness,
+};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClobMessage {
+    Book {
+        market_id: String,
+        token_id: String,
+        bids: Vec<OrderbookLevel>,
+        asks: Vec<OrderbookLevel>,
+        source_timestamp: DateTime<Utc>,
+        source_hash: Option<String>,
+        raw_payload: Value,
+    },
+    PriceChange {
+        market_id: String,
+        changes: Vec<PriceChange>,
+        source_timestamp: DateTime<Utc>,
+        raw_payload: Value,
+    },
+    BestBidAsk {
+        market_id: String,
+        token_id: String,
+        best_bid: Option<Decimal>,
+        best_ask: Option<Decimal>,
+        source_timestamp: DateTime<Utc>,
+        raw_payload: Value,
+    },
+    TickSizeChange {
+        market_id: String,
+        token_id: String,
+        old_tick_size: Decimal,
+        new_tick_size: Decimal,
+        source_timestamp: DateTime<Utc>,
+        raw_payload: Value,
+    },
+    LastTradePrice {
+        market_id: String,
+        token_id: String,
+        price: Decimal,
+        size: Decimal,
+        source_timestamp: DateTime<Utc>,
+        raw_payload: Value,
+    },
+    MarketResolved {
+        market_id: String,
+        winning_token_id: String,
+        winning_outcome: String,
+        source_timestamp: DateTime<Utc>,
+        raw_payload: Value,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PriceChange {
+    pub token_id: String,
+    pub side: BookUpdateSide,
+    pub price: Decimal,
+    pub size: Decimal,
+    pub source_hash: Option<String>,
+    pub best_bid: Option<Decimal>,
+    pub best_ask: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BookUpdateSide {
+    Bid,
+    Ask,
+}
+
+pub fn parse_clob_messages(value: &Value) -> Result<Vec<ClobMessage>> {
+    if let Some(messages) = value.as_array() {
+        let mut parsed = Vec::with_capacity(messages.len());
+        for message in messages {
+            parsed.extend(parse_clob_messages(message)?);
+        }
+        return Ok(parsed);
+    }
+    let object = value
+        .as_object()
+        .context("CLOB market websocket message must be an object or array")?;
+    let event_type = required_string(object, &["event_type"])?;
+    // Subscription-wide lifecycle notifications do not mutate a token book. The exact current
+    // market set is owned by Gamma discovery, so these are benign control messages.
+    if event_type == "new_market" {
+        return Ok(Vec::new());
+    }
+    let source_timestamp = timestamp_field(object, &["timestamp"])?;
+    let market_id = required_string(object, &["market"])?;
+    let raw_payload = value.clone();
+    let parsed = match event_type.as_str() {
+        "book" => ClobMessage::Book {
+            market_id,
+            token_id: required_string(object, &["asset_id"])?,
+            bids: parse_levels(object.get("bids"), "bids")?,
+            asks: parse_levels(object.get("asks"), "asks")?,
+            source_timestamp,
+            source_hash: string_field(object, &["hash"]),
+            raw_payload,
+        },
+        "price_change" => {
+            let raw_changes = object
+                .get("price_changes")
+                .and_then(Value::as_array)
+                .context("price_change message is missing price_changes")?;
+            if raw_changes.is_empty() {
+                bail!("price_change message contains no changes");
+            }
+            let mut changes = Vec::with_capacity(raw_changes.len());
+            for raw in raw_changes {
+                let change = raw
+                    .as_object()
+                    .context("price_change entry must be an object")?;
+                changes.push(PriceChange {
+                    token_id: required_string(change, &["asset_id"])?,
+                    side: match required_string(change, &["side"])?
+                        .to_ascii_uppercase()
+                        .as_str()
+                    {
+                        "BUY" => BookUpdateSide::Bid,
+                        "SELL" => BookUpdateSide::Ask,
+                        side => bail!("unsupported CLOB price_change side {side}"),
+                    },
+                    price: required_decimal(change, &["price"])?,
+                    size: required_decimal(change, &["size"])?,
+                    source_hash: string_field(change, &["hash"]),
+                    best_bid: optional_decimal_field(change, &["best_bid"])?,
+                    best_ask: optional_decimal_field(change, &["best_ask"])?,
+                });
+            }
+            ClobMessage::PriceChange {
+                market_id,
+                changes,
+                source_timestamp,
+                raw_payload,
+            }
+        }
+        "best_bid_ask" => ClobMessage::BestBidAsk {
+            market_id,
+            token_id: required_string(object, &["asset_id"])?,
+            best_bid: optional_decimal_field(object, &["best_bid"])?,
+            best_ask: optional_decimal_field(object, &["best_ask"])?,
+            source_timestamp,
+            raw_payload,
+        },
+        "tick_size_change" => ClobMessage::TickSizeChange {
+            market_id,
+            token_id: required_string(object, &["asset_id"])?,
+            old_tick_size: required_decimal(object, &["old_tick_size"])?,
+            new_tick_size: required_decimal(object, &["new_tick_size"])?,
+            source_timestamp,
+            raw_payload,
+        },
+        "last_trade_price" => ClobMessage::LastTradePrice {
+            market_id,
+            token_id: required_string(object, &["asset_id"])?,
+            price: required_decimal(object, &["price"])?,
+            size: required_decimal(object, &["size"])?,
+            source_timestamp,
+            raw_payload,
+        },
+        "market_resolved" => ClobMessage::MarketResolved {
+            market_id,
+            winning_token_id: required_string(object, &["winning_asset_id"])?,
+            winning_outcome: required_string(object, &["winning_outcome"])?,
+            source_timestamp,
+            raw_payload,
+        },
+        other => bail!("unsupported CLOB market event type {other}"),
+    };
+    Ok(vec![parsed])
+}
+
+pub fn parse_rtds_reference_tick(
+    value: &Value,
+    connection_id: Uuid,
+    ingest_sequence: u64,
+    received_at: DateTime<Utc>,
+) -> Result<ReferencePriceTick> {
+    let object = value
+        .as_object()
+        .context("RTDS message must be an object")?;
+    let topic = required_string(object, &["topic"])?;
+    let event_type = required_string(object, &["type"])?;
+    if event_type != "update" {
+        bail!("RTDS message is not a live price update");
+    }
+    let source = match topic.as_str() {
+        "crypto_prices" => ReferencePriceSource::RtdsBinance,
+        "crypto_prices_chainlink" => ReferencePriceSource::RtdsChainlink,
+        other => bail!("unsupported RTDS price topic {other}"),
+    };
+    let payload = object
+        .get("payload")
+        .and_then(Value::as_object)
+        .context("RTDS price update is missing payload")?;
+    let raw_symbol = required_string(payload, &["symbol"])?;
+    let expected_symbol = match source {
+        ReferencePriceSource::RtdsBinance => "btcusdt",
+        ReferencePriceSource::RtdsChainlink => "btc/usd",
+        ReferencePriceSource::DirectBinance => unreachable!(),
+    };
+    if raw_symbol.to_ascii_lowercase() != expected_symbol {
+        bail!("RTDS update has unexpected symbol {raw_symbol}");
+    }
+    let price = required_decimal(payload, &["value"])?;
+    let source_timestamp = timestamp_field(payload, &["timestamp"])?;
+    let envelope_timestamp = Some(timestamp_field(object, &["timestamp"])?);
+    reference_tick(
+        source,
+        "BTCUSD",
+        price,
+        source_timestamp,
+        envelope_timestamp,
+        received_at,
+        connection_id,
+        ingest_sequence,
+        None,
+        value.clone(),
+    )
+}
+
+pub fn parse_binance_agg_trade(
+    value: &Value,
+    connection_id: Uuid,
+    ingest_sequence: u64,
+    received_at: DateTime<Utc>,
+) -> Result<ReferencePriceTick> {
+    let object = value
+        .as_object()
+        .context("Binance aggregate trade must be an object")?;
+    if required_string(object, &["e"])? != "aggTrade" {
+        bail!("Binance message is not an aggregate trade");
+    }
+    let symbol = required_string(object, &["s"])?;
+    if !symbol.eq_ignore_ascii_case("BTCUSDT") {
+        bail!("Binance aggregate trade has unexpected symbol {symbol}");
+    }
+    let price = required_decimal(object, &["p"])?;
+    let source_timestamp = timestamp_field(object, &["T"])?;
+    let envelope_timestamp = Some(timestamp_field(object, &["E"])?);
+    let source_event_id = Some(required_string(object, &["a"])?);
+    reference_tick(
+        ReferencePriceSource::DirectBinance,
+        "BTCUSD",
+        price,
+        source_timestamp,
+        envelope_timestamp,
+        received_at,
+        connection_id,
+        ingest_sequence,
+        source_event_id,
+        value.clone(),
+    )
+}
+
+fn reference_tick(
+    source: ReferencePriceSource,
+    symbol: &str,
+    price: Decimal,
+    source_timestamp: DateTime<Utc>,
+    envelope_timestamp: Option<DateTime<Utc>>,
+    received_at: DateTime<Utc>,
+    connection_id: Uuid,
+    ingest_sequence: u64,
+    source_event_id: Option<String>,
+    raw_payload: Value,
+) -> Result<ReferencePriceTick> {
+    // Keep the in-memory tick identical to its durable representation. PostgreSQL rounds
+    // numeric(30,10) values away from zero at the midpoint and stores timestamptz values at
+    // microsecond precision. Boundary ticks are compared exactly after persistence and restart,
+    // so allowing additional live precision here would turn an idempotent insert into a false
+    // immutable-data conflict.
+    let price = price.round_dp_with_strategy(10, RoundingStrategy::MidpointAwayFromZero);
+    ensure_positive_price(price)?;
+    let source_timestamp = canonical_timestamp(source_timestamp);
+    let envelope_timestamp = envelope_timestamp.map(canonical_timestamp);
+    let received_at = canonical_timestamp(received_at);
+    let dedup_key = format!(
+        "{}:{}:{}:{}:{}",
+        source.as_str(),
+        symbol,
+        source_timestamp.timestamp_millis(),
+        source_event_id.as_deref().unwrap_or("-"),
+        price.normalize()
+    );
+    Ok(ReferencePriceTick {
+        tick_id: Uuid::new_v5(&Uuid::NAMESPACE_URL, dedup_key.as_bytes()),
+        dedup_key,
+        source,
+        symbol: symbol.to_string(),
+        price,
+        source_timestamp,
+        envelope_timestamp,
+        received_at,
+        connection_id,
+        ingest_sequence,
+        source_event_id,
+        raw_payload,
+    })
+}
+
+fn canonical_timestamp(timestamp: DateTime<Utc>) -> DateTime<Utc> {
+    DateTime::from_timestamp_micros(timestamp.timestamp_micros())
+        .expect("a valid DateTime must remain valid at microsecond precision")
+}
+
+#[derive(Debug, Clone)]
+struct FeedBook {
+    market_id: String,
+    wire_market_id: String,
+    token_id: String,
+    tick_size: Decimal,
+    bids: BTreeMap<Decimal, Decimal>,
+    asks: BTreeMap<Decimal, Decimal>,
+    bootstrapped: bool,
+    integrity_status: FeedIntegrityStatus,
+    source_timestamp: Option<DateTime<Utc>>,
+    received_at: Option<DateTime<Utc>>,
+    source_hash: Option<String>,
+    ingest_sequence: u64,
+}
+
+impl FeedBook {
+    fn new(
+        market_id: String,
+        wire_market_id: String,
+        token_id: String,
+        tick_size: Decimal,
+    ) -> Self {
+        Self {
+            market_id,
+            wire_market_id,
+            token_id,
+            tick_size,
+            bids: BTreeMap::new(),
+            asks: BTreeMap::new(),
+            bootstrapped: false,
+            integrity_status: FeedIntegrityStatus::PreSnapshot,
+            source_timestamp: None,
+            received_at: None,
+            source_hash: None,
+            ingest_sequence: 0,
+        }
+    }
+
+    fn matches_market(&self, market_id: &str) -> bool {
+        self.market_id == market_id || self.wire_market_id == market_id
+    }
+
+    fn best_bid(&self) -> Option<Decimal> {
+        self.bids.keys().next_back().copied()
+    }
+
+    fn best_ask(&self) -> Option<Decimal> {
+        self.asks.keys().next().copied()
+    }
+
+    fn validate(&mut self) {
+        self.integrity_status = if matches!(
+            (self.best_bid(), self.best_ask()),
+            (Some(bid), Some(ask)) if bid >= ask
+        ) {
+            FeedIntegrityStatus::CrossedBook
+        } else {
+            FeedIntegrityStatus::Ok
+        };
+    }
+
+    /// Reconcile only levels that the venue's authoritative top-of-book proves stale.
+    /// Missing levels are never fabricated: if the advertised top is absent after pruning,
+    /// the candidate is quarantined until a full snapshot repairs it.
+    fn reconcile_advertised_top(
+        &mut self,
+        best_bid: Option<Decimal>,
+        best_ask: Option<Decimal>,
+    ) -> FeedIntegrityStatus {
+        if best_bid.is_some_and(|price| price < Decimal::ZERO || price >= Decimal::ONE)
+            || best_ask.is_some_and(|price| price <= Decimal::ZERO || price > Decimal::ONE)
+        {
+            self.integrity_status = FeedIntegrityStatus::DecodeError;
+            return self.integrity_status;
+        }
+
+        if let Some(best_bid) = best_bid {
+            if best_bid == Decimal::ZERO {
+                self.bids.clear();
+            } else {
+                self.bids.retain(|price, _| *price <= best_bid);
+            }
+        }
+        if let Some(best_ask) = best_ask {
+            if best_ask == Decimal::ONE {
+                self.asks.clear();
+            } else {
+                self.asks.retain(|price, _| *price >= best_ask);
+            }
+        }
+
+        self.validate();
+        if self.integrity_status != FeedIntegrityStatus::Ok {
+            return self.integrity_status;
+        }
+
+        let bid_matches =
+            best_bid.is_none_or(|expected| self.best_bid().unwrap_or(Decimal::ZERO) == expected);
+        let ask_matches =
+            best_ask.is_none_or(|expected| self.best_ask().unwrap_or(Decimal::ONE) == expected);
+        if !bid_matches || !ask_matches {
+            self.integrity_status = FeedIntegrityStatus::TopOfBookMismatch;
+        }
+        self.integrity_status
+    }
+
+    fn readiness(&self, connection_id: Uuid) -> BookReadiness {
+        BookReadiness {
+            market_id: self.market_id.clone(),
+            token_id: self.token_id.clone(),
+            connection_id,
+            bootstrapped: self.bootstrapped,
+            integrity_status: self.integrity_status,
+            source_timestamp: self.source_timestamp,
+            received_at: self.received_at,
+            best_bid: self.best_bid(),
+            best_ask: self.best_ask(),
+        }
+    }
+
+    fn checkpoint(&self, connection_id: Uuid) -> Option<OrderbookCheckpoint> {
+        Some(OrderbookCheckpoint {
+            checkpoint_id: Uuid::new_v4(),
+            market_id: self.market_id.clone(),
+            token_id: self.token_id.clone(),
+            source_timestamp: self.source_timestamp?,
+            received_at: self.received_at?,
+            connection_id,
+            ingest_sequence: self.ingest_sequence,
+            source_hash: self.source_hash.clone(),
+            tick_size: self.tick_size,
+            best_bid: self.best_bid(),
+            best_ask: self.best_ask(),
+            bids: self
+                .bids
+                .iter()
+                .rev()
+                .map(|(price, size)| OrderbookLevel {
+                    price: *price,
+                    size: *size,
+                })
+                .collect(),
+            asks: self
+                .asks
+                .iter()
+                .map(|(price, size)| OrderbookLevel {
+                    price: *price,
+                    size: *size,
+                })
+                .collect(),
+            integrity_status: self.integrity_status,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BookRegistry {
+    connection_id: Uuid,
+    books: HashMap<String, FeedBook>,
+    next_sequence: u64,
+}
+
+impl BookRegistry {
+    pub fn new(connection_id: Uuid) -> Self {
+        Self {
+            connection_id,
+            books: HashMap::new(),
+            next_sequence: 1,
+        }
+    }
+
+    pub fn connection_id(&self) -> Uuid {
+        self.connection_id
+    }
+
+    pub fn register_market(&mut self, market: &BtcIntervalMarket) {
+        for token_id in [&market.up_token_id, &market.down_token_id] {
+            self.books.insert(
+                token_id.clone(),
+                FeedBook::new(
+                    market.market_id.clone(),
+                    market.condition_id.clone(),
+                    token_id.clone(),
+                    market.tick_size,
+                ),
+            );
+        }
+    }
+
+    /// A reconnect starts a new integrity epoch. Existing levels must never receive deltas from the
+    /// new socket before its initial full snapshots arrive.
+    pub fn reset_connection(&mut self, connection_id: Uuid) {
+        self.connection_id = connection_id;
+        self.next_sequence = 1;
+        for book in self.books.values_mut() {
+            book.bids.clear();
+            book.asks.clear();
+            book.bootstrapped = false;
+            book.integrity_status = FeedIntegrityStatus::PreSnapshot;
+            book.source_timestamp = None;
+            book.received_at = None;
+            book.source_hash = None;
+            book.ingest_sequence = 0;
+        }
+    }
+
+    /// Fail every bootstrapped book closed after a message-level CLOB decode failure. A later
+    /// delta cannot clear this status; only a complete venue snapshot can restore readiness.
+    pub fn quarantine(&mut self, status: FeedIntegrityStatus) {
+        for book in self.books.values_mut().filter(|book| book.bootstrapped) {
+            book.integrity_status = status;
+        }
+    }
+
+    pub fn apply(
+        &mut self,
+        message: ClobMessage,
+        received_at: DateTime<Utc>,
+    ) -> Vec<MarketFeedEvent> {
+        match message {
+            ClobMessage::Book {
+                market_id,
+                token_id,
+                bids,
+                asks,
+                source_timestamp,
+                source_hash,
+                raw_payload,
+            } => {
+                let sequence = self.take_sequence();
+                let canonical_market_id = self
+                    .books
+                    .get(&token_id)
+                    .map(|book| book.market_id.clone())
+                    .unwrap_or_else(|| market_id.clone());
+                let status = if let Some(book) = self.books.get_mut(&token_id) {
+                    if !book.matches_market(&market_id) {
+                        FeedIntegrityStatus::MarketMismatch
+                    } else {
+                        book.bids = levels_to_map(bids);
+                        book.asks = levels_to_map(asks);
+                        book.bootstrapped = true;
+                        book.source_timestamp = Some(source_timestamp);
+                        book.received_at = Some(received_at);
+                        book.source_hash = source_hash.clone();
+                        book.ingest_sequence = sequence;
+                        book.validate();
+                        book.integrity_status
+                    }
+                } else {
+                    FeedIntegrityStatus::UnknownToken
+                };
+                vec![feed_event(
+                    canonical_market_id,
+                    Some(token_id),
+                    MarketFeedEventType::Book,
+                    source_timestamp,
+                    received_at,
+                    self.connection_id,
+                    sequence,
+                    source_hash,
+                    status == FeedIntegrityStatus::Ok,
+                    status,
+                    raw_payload,
+                )]
+            }
+            ClobMessage::PriceChange {
+                market_id,
+                changes,
+                source_timestamp,
+                raw_payload,
+            } => {
+                let mut entries = Vec::with_capacity(changes.len());
+                for change in changes {
+                    let sequence = self.take_sequence();
+                    let canonical_market_id = self
+                        .books
+                        .get(&change.token_id)
+                        .map(|book| book.market_id.clone())
+                        .unwrap_or_else(|| market_id.clone());
+                    entries.push((change, sequence, canonical_market_id));
+                }
+
+                let mut by_token: HashMap<String, Vec<usize>> = HashMap::new();
+                for (index, (change, _, _)) in entries.iter().enumerate() {
+                    by_token
+                        .entry(change.token_id.clone())
+                        .or_default()
+                        .push(index);
+                }
+                let mut outcomes = vec![(false, FeedIntegrityStatus::UnknownToken); entries.len()];
+
+                for (token_id, indexes) in by_token {
+                    let status = if let Some(book) = self.books.get(&token_id).cloned() {
+                        if !book.matches_market(&market_id) {
+                            FeedIntegrityStatus::MarketMismatch
+                        } else if !book.bootstrapped {
+                            FeedIntegrityStatus::PreSnapshot
+                        } else if book.integrity_status != FeedIntegrityStatus::Ok {
+                            book.integrity_status
+                        } else if book
+                            .source_timestamp
+                            .is_some_and(|last| source_timestamp < last)
+                        {
+                            FeedIntegrityStatus::OutOfOrder
+                        } else if indexes.iter().any(|index| {
+                            let change = &entries[*index].0;
+                            change.price <= Decimal::ZERO
+                                || change.price >= Decimal::ONE
+                                || change.size < Decimal::ZERO
+                        }) {
+                            FeedIntegrityStatus::DecodeError
+                        } else {
+                            let mut candidate = book;
+                            for index in &indexes {
+                                let change = &entries[*index].0;
+                                let levels = match change.side {
+                                    BookUpdateSide::Bid => &mut candidate.bids,
+                                    BookUpdateSide::Ask => &mut candidate.asks,
+                                };
+                                if change.size == Decimal::ZERO {
+                                    levels.remove(&change.price);
+                                } else {
+                                    levels.insert(change.price, change.size);
+                                }
+                            }
+
+                            let last_index = *indexes
+                                .last()
+                                .expect("a grouped price-change token must have an entry");
+                            let best_bid = indexes
+                                .iter()
+                                .rev()
+                                .find_map(|index| entries[*index].0.best_bid);
+                            let best_ask = indexes
+                                .iter()
+                                .rev()
+                                .find_map(|index| entries[*index].0.best_ask);
+                            candidate.source_timestamp = Some(source_timestamp);
+                            candidate.received_at = Some(received_at);
+                            candidate.source_hash = indexes
+                                .iter()
+                                .rev()
+                                .find_map(|index| entries[*index].0.source_hash.clone());
+                            candidate.ingest_sequence = entries[last_index].1;
+                            let status = candidate.reconcile_advertised_top(best_bid, best_ask);
+                            if status == FeedIntegrityStatus::Ok {
+                                self.books.insert(token_id.clone(), candidate);
+                            }
+                            status
+                        }
+                    } else {
+                        FeedIntegrityStatus::UnknownToken
+                    };
+                    if matches!(
+                        status,
+                        FeedIntegrityStatus::CrossedBook
+                            | FeedIntegrityStatus::TopOfBookMismatch
+                            | FeedIntegrityStatus::DecodeError
+                    ) {
+                        if let Some(current) = self.books.get_mut(&token_id) {
+                            current.integrity_status = status;
+                        }
+                    }
+                    for index in indexes {
+                        outcomes[index] = (status == FeedIntegrityStatus::Ok, status);
+                    }
+                }
+
+                entries
+                    .into_iter()
+                    .zip(outcomes)
+                    .map(
+                        |((change, sequence, canonical_market_id), (applied, status))| {
+                            feed_event(
+                                canonical_market_id,
+                                Some(change.token_id),
+                                MarketFeedEventType::PriceChange,
+                                source_timestamp,
+                                received_at,
+                                self.connection_id,
+                                sequence,
+                                change.source_hash,
+                                applied,
+                                status,
+                                raw_payload.clone(),
+                            )
+                        },
+                    )
+                    .collect()
+            }
+            ClobMessage::BestBidAsk {
+                market_id,
+                token_id,
+                best_bid: _,
+                best_ask: _,
+                source_timestamp,
+                raw_payload,
+            } => vec![self.non_mutating_event(
+                market_id,
+                token_id,
+                MarketFeedEventType::BestBidAsk,
+                source_timestamp,
+                received_at,
+                raw_payload,
+            )],
+            ClobMessage::TickSizeChange {
+                market_id,
+                token_id,
+                old_tick_size: _,
+                new_tick_size,
+                source_timestamp,
+                raw_payload,
+            } => {
+                let sequence = self.take_sequence();
+                let mut applied = false;
+                let canonical_market_id = self
+                    .books
+                    .get(&token_id)
+                    .map(|book| book.market_id.clone())
+                    .unwrap_or_else(|| market_id.clone());
+                let status = if let Some(book) = self.books.get_mut(&token_id) {
+                    if !book.matches_market(&market_id) {
+                        FeedIntegrityStatus::MarketMismatch
+                    } else if !book.bootstrapped {
+                        FeedIntegrityStatus::PreSnapshot
+                    } else if new_tick_size <= Decimal::ZERO {
+                        FeedIntegrityStatus::DecodeError
+                    } else {
+                        book.tick_size = new_tick_size;
+                        book.ingest_sequence = sequence;
+                        applied = true;
+                        book.integrity_status
+                    }
+                } else {
+                    FeedIntegrityStatus::UnknownToken
+                };
+                vec![feed_event(
+                    canonical_market_id,
+                    Some(token_id),
+                    MarketFeedEventType::TickSizeChange,
+                    source_timestamp,
+                    received_at,
+                    self.connection_id,
+                    sequence,
+                    None,
+                    applied,
+                    status,
+                    raw_payload,
+                )]
+            }
+            ClobMessage::LastTradePrice {
+                market_id,
+                token_id,
+                price: _,
+                size: _,
+                source_timestamp,
+                raw_payload,
+            } => vec![self.non_mutating_event(
+                market_id,
+                token_id,
+                MarketFeedEventType::LastTradePrice,
+                source_timestamp,
+                received_at,
+                raw_payload,
+            )],
+            ClobMessage::MarketResolved {
+                market_id,
+                winning_token_id,
+                winning_outcome: _,
+                source_timestamp,
+                raw_payload,
+            } => vec![self.non_mutating_event(
+                market_id,
+                winning_token_id,
+                MarketFeedEventType::MarketResolved,
+                source_timestamp,
+                received_at,
+                raw_payload,
+            )],
+        }
+    }
+
+    pub fn checkpoint(&self, token_id: &str) -> Option<OrderbookCheckpoint> {
+        self.books.get(token_id)?.checkpoint(self.connection_id)
+    }
+
+    pub fn book_readiness(&self) -> Vec<BookReadiness> {
+        let mut books: Vec<_> = self
+            .books
+            .values()
+            .map(|book| book.readiness(self.connection_id))
+            .collect();
+        books.sort_by(|left, right| left.token_id.cmp(&right.token_id));
+        books
+    }
+
+    fn non_mutating_event(
+        &mut self,
+        market_id: String,
+        token_id: String,
+        event_type: MarketFeedEventType,
+        source_timestamp: DateTime<Utc>,
+        received_at: DateTime<Utc>,
+        raw_payload: Value,
+    ) -> MarketFeedEvent {
+        let sequence = self.take_sequence();
+        let canonical_market_id = self
+            .books
+            .get(&token_id)
+            .map(|book| book.market_id.clone())
+            .unwrap_or_else(|| market_id.clone());
+        let (applied, status) = match self.books.get(&token_id) {
+            Some(book) if !book.matches_market(&market_id) => {
+                (false, FeedIntegrityStatus::MarketMismatch)
+            }
+            Some(book) if book.bootstrapped => (true, book.integrity_status),
+            Some(_) => (false, FeedIntegrityStatus::PreSnapshot),
+            None => (false, FeedIntegrityStatus::UnknownToken),
+        };
+        feed_event(
+            canonical_market_id,
+            Some(token_id),
+            event_type,
+            source_timestamp,
+            received_at,
+            self.connection_id,
+            sequence,
+            None,
+            applied,
+            status,
+            raw_payload,
+        )
+    }
+
+    fn take_sequence(&mut self) -> u64 {
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        sequence
+    }
+}
+
+impl RealtimeState {
+    pub fn set_market(&mut self, market: BtcIntervalMarket) {
+        self.set_current_market(Some(market));
+    }
+
+    pub fn set_current_market(&mut self, market: Option<BtcIntervalMarket>) {
+        let changed = self.current_market.as_ref().map(|value| &value.market_id)
+            != market.as_ref().map(|value| &value.market_id);
+        self.current_market = market;
+        if changed {
+            self.resolved_outcome = None;
+        }
+    }
+
+    pub fn update_books(&mut self, registry: &BookRegistry) {
+        self.books = registry
+            .book_readiness()
+            .into_iter()
+            .map(|book| (book.token_id.clone(), book))
+            .collect();
+    }
+
+    pub fn update_reference_price(&mut self, tick: ReferencePriceTick) {
+        let replace = self
+            .reference_prices
+            .get(&tick.source)
+            .map(|current| tick.source_timestamp >= current.source_timestamp)
+            .unwrap_or(true);
+        if replace {
+            self.last_updated_at = Some(tick.received_at);
+            self.reference_prices.insert(tick.source, tick);
+        }
+    }
+
+    pub fn apply_resolution(&mut self, winning_token_id: &str) -> bool {
+        let Some(market_id) = self
+            .current_market
+            .as_ref()
+            .map(|market| market.market_id.clone())
+        else {
+            return false;
+        };
+        self.apply_market_resolution(&market_id, winning_token_id)
+    }
+
+    pub fn apply_market_resolution(&mut self, market_id: &str, winning_token_id: &str) -> bool {
+        let Some(market) = self.current_market.as_ref() else {
+            return false;
+        };
+        if market_id != market.market_id && market_id != market.condition_id {
+            return false;
+        }
+        let outcome = if winning_token_id == market.up_token_id {
+            BtcOutcome::Up
+        } else if winning_token_id == market.down_token_id {
+            BtcOutcome::Down
+        } else {
+            return false;
+        };
+        self.resolved_outcome = Some(outcome);
+        true
+    }
+
+    pub fn readiness(
+        &self,
+        now: DateTime<Utc>,
+        max_book_age: Duration,
+        max_reference_age: Duration,
+    ) -> Readiness {
+        let mut reasons = Vec::new();
+        let Some(market) = self.current_market.as_ref() else {
+            reasons.push("missing_current_market".to_string());
+            return Readiness {
+                ready: false,
+                checked_at: now,
+                market_slug: None,
+                reasons,
+                books: self.books.values().cloned().collect(),
+                sources: Vec::new(),
+            };
+        };
+        if !market.is_trade_window(now) {
+            reasons.push("market_not_in_trade_window".to_string());
+        }
+        for token_id in [&market.up_token_id, &market.down_token_id] {
+            match self.books.get(token_id) {
+                None => reasons.push(format!("missing_book:{token_id}")),
+                Some(book) if !book.bootstrapped => {
+                    reasons.push(format!("book_not_bootstrapped:{token_id}"))
+                }
+                Some(book) if book.integrity_status != FeedIntegrityStatus::Ok => {
+                    reasons.push(format!("book_integrity:{token_id}"))
+                }
+                Some(book) if book.best_bid.is_none() || book.best_ask.is_none() => {
+                    reasons.push(format!("book_has_no_two_sided_quote:{token_id}"))
+                }
+                Some(book)
+                    if book
+                        .source_timestamp
+                        .is_some_and(|timestamp| timestamp - now > max_book_age) =>
+                {
+                    reasons.push(format!("future_book_timestamp:{token_id}"))
+                }
+                Some(book)
+                    if book
+                        .received_at
+                        .map_or(true, |timestamp| now - timestamp > max_book_age) =>
+                {
+                    reasons.push(format!("stale_book:{token_id}"))
+                }
+                Some(_) => {}
+            }
+        }
+        for source in [
+            ReferencePriceSource::DirectBinance,
+            ReferencePriceSource::RtdsChainlink,
+        ] {
+            match self.reference_prices.get(&source) {
+                None => reasons.push(format!("missing_reference:{}", source.as_str())),
+                Some(tick) if tick.source_timestamp - now > max_reference_age => {
+                    reasons.push(format!("future_reference:{}", source.as_str()))
+                }
+                Some(tick) if now - tick.received_at > max_reference_age => {
+                    reasons.push(format!("stale_reference:{}", source.as_str()))
+                }
+                Some(_) => {}
+            }
+        }
+        let sources = self
+            .reference_prices
+            .values()
+            .map(|tick| SourceReadiness {
+                source: tick.source,
+                source_timestamp: tick.source_timestamp,
+                received_at: tick.received_at,
+                price: tick.price,
+            })
+            .collect();
+        Readiness {
+            ready: reasons.is_empty(),
+            checked_at: now,
+            market_slug: Some(market.event_slug.clone()),
+            reasons,
+            books: self.books.values().cloned().collect(),
+            sources,
+        }
+    }
+}
+
+fn feed_event(
+    market_id: String,
+    token_id: Option<String>,
+    event_type: MarketFeedEventType,
+    source_timestamp: DateTime<Utc>,
+    received_at: DateTime<Utc>,
+    connection_id: Uuid,
+    ingest_sequence: u64,
+    source_hash: Option<String>,
+    applied: bool,
+    integrity_status: FeedIntegrityStatus,
+    raw_payload: Value,
+) -> MarketFeedEvent {
+    MarketFeedEvent {
+        event_id: Uuid::new_v4(),
+        market_id,
+        token_id,
+        event_type,
+        source_timestamp,
+        received_at,
+        connection_id,
+        ingest_sequence,
+        source_hash,
+        applied,
+        integrity_status,
+        raw_payload,
+    }
+}
+
+fn levels_to_map(levels: Vec<OrderbookLevel>) -> BTreeMap<Decimal, Decimal> {
+    levels
+        .into_iter()
+        .filter(|level| level.price > Decimal::ZERO && level.size > Decimal::ZERO)
+        .map(|level| (level.price, level.size))
+        .collect()
+}
+
+fn parse_levels(value: Option<&Value>, field: &str) -> Result<Vec<OrderbookLevel>> {
+    let values = value
+        .and_then(Value::as_array)
+        .with_context(|| format!("CLOB book is missing {field}"))?;
+    values
+        .iter()
+        .map(|value| {
+            let object = value
+                .as_object()
+                .with_context(|| format!("CLOB {field} level must be an object"))?;
+            let price = required_decimal(object, &["price"])?;
+            let size = required_decimal(object, &["size"])?;
+            if price <= Decimal::ZERO || price >= Decimal::ONE || size < Decimal::ZERO {
+                bail!("CLOB book level has invalid price or size");
+            }
+            Ok(OrderbookLevel { price, size })
+        })
+        .collect()
+}
+
+fn required_string(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Result<String> {
+    string_field(object, keys).with_context(|| format!("missing required field {}", keys[0]))
+}
+
+fn string_field(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| match object.get(*key)? {
+        Value::String(value) => {
+            let value = value.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        }
+        Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    })
+}
+
+fn decimal_field(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<Decimal> {
+    keys.iter().find_map(|key| match object.get(*key)? {
+        Value::String(value) => Decimal::from_str(value).ok(),
+        Value::Number(value) => Decimal::from_str(&value.to_string()).ok(),
+        _ => None,
+    })
+}
+
+fn optional_decimal_field(
+    object: &serde_json::Map<String, Value>,
+    keys: &[&str],
+) -> Result<Option<Decimal>> {
+    for key in keys {
+        let Some(value) = object.get(*key) else {
+            continue;
+        };
+        if value.is_null() {
+            return Ok(None);
+        }
+        let parsed = match value {
+            Value::String(value) => Decimal::from_str(value).ok(),
+            Value::Number(value) => Decimal::from_str(&value.to_string()).ok(),
+            _ => None,
+        }
+        .with_context(|| format!("invalid decimal field {key}"))?;
+        return Ok(Some(parsed));
+    }
+    Ok(None)
+}
+
+fn required_decimal(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Result<Decimal> {
+    decimal_field(object, keys).with_context(|| format!("invalid decimal field {}", keys[0]))
+}
+
+fn timestamp_field(
+    object: &serde_json::Map<String, Value>,
+    keys: &[&str],
+) -> Result<DateTime<Utc>> {
+    let raw = keys
+        .iter()
+        .find_map(|key| object.get(*key))
+        .with_context(|| format!("missing timestamp field {}", keys[0]))?;
+    let millis = match raw {
+        Value::String(value) => value.parse::<i64>().ok(),
+        Value::Number(value) => value.as_i64(),
+        _ => None,
+    }
+    .with_context(|| format!("invalid timestamp field {}", keys[0]))?;
+    DateTime::from_timestamp_millis(millis)
+        .with_context(|| format!("timestamp field {} is out of range", keys[0]))
+}
+
+fn ensure_positive_price(price: Decimal) -> Result<()> {
+    if price <= Decimal::ZERO {
+        bail!("reference price must be positive");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::TimeZone;
+    use rust_decimal_macros::dec;
+
+    use super::*;
+
+    fn ts(millis: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp_millis(millis).unwrap()
+    }
+
+    fn market() -> BtcIntervalMarket {
+        BtcIntervalMarket {
+            event_id: "event".to_string(),
+            event_slug: "btc-updown-5m-1783902600".to_string(),
+            series_slug: "btc-up-or-down-5m".to_string(),
+            market_id: "market".to_string(),
+            condition_id: "condition".to_string(),
+            window_start: Utc.timestamp_opt(1_783_902_600, 0).unwrap(),
+            window_end: Utc.timestamp_opt(1_783_902_900, 0).unwrap(),
+            up_token_id: "up".to_string(),
+            down_token_id: "down".to_string(),
+            tick_size: dec!(0.01),
+            minimum_order_size: Some(dec!(5)),
+            resolution_source: "https://data.chain.link/streams/btc-usd".to_string(),
+            active: true,
+            closed: false,
+            accepting_orders: true,
+            fees_enabled: true,
+            fee_schedule: serde_json::json!({}),
+            raw_payload: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn parses_full_book_and_batched_price_changes() {
+        let book = serde_json::json!({
+            "event_type": "book",
+            "market": "market",
+            "asset_id": "up",
+            "timestamp": "1783902700000",
+            "hash": "h1",
+            "bids": [{"price": ".48", "size": "30"}],
+            "asks": [{"price": ".52", "size": "25"}]
+        });
+        let parsed = parse_clob_messages(&book).unwrap();
+        assert!(matches!(&parsed[0], ClobMessage::Book { token_id, .. } if token_id == "up"));
+
+        let changes = serde_json::json!({
+            "event_type": "price_change",
+            "market": "market",
+            "timestamp": 1783902701000_i64,
+            "price_changes": [{
+                "asset_id": "up", "price": ".49", "size": "20", "side": "BUY", "hash": "h2",
+                "best_bid": ".49", "best_ask": ".52"
+            }, {
+                "asset_id": "down", "price": ".53", "size": "0", "side": "SELL", "hash": "h3",
+                "best_bid": ".47", "best_ask": ".54"
+            }]
+        });
+        let parsed = parse_clob_messages(&changes).unwrap();
+        assert!(
+            matches!(&parsed[0], ClobMessage::PriceChange { changes, .. }
+            if changes.len() == 2
+                && changes[0].side == BookUpdateSide::Bid
+                && changes[1].size == Decimal::ZERO
+                && changes[0].best_bid == Some(dec!(0.49))
+                && changes[1].best_ask == Some(dec!(0.54)))
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_advertised_tops_and_out_of_range_snapshot_levels() {
+        let malformed = serde_json::json!({
+            "event_type": "price_change", "market": "market",
+            "timestamp": 1783902701000_i64,
+            "price_changes": [{
+                "asset_id": "up", "price": ".49", "size": "20", "side": "BUY",
+                "best_bid": "not-a-price", "best_ask": ".52"
+            }]
+        });
+        assert!(parse_clob_messages(&malformed).is_err());
+
+        let invalid_snapshot = serde_json::json!({
+            "event_type": "book", "market": "market", "asset_id": "up",
+            "timestamp": 1783902701000_i64,
+            "bids": [{"price": "1", "size": "10"}], "asks": []
+        });
+        assert!(parse_clob_messages(&invalid_snapshot).is_err());
+    }
+
+    #[test]
+    fn accepts_initial_message_arrays() {
+        let value = serde_json::json!([{
+            "event_type": "book", "market": "market", "asset_id": "up",
+            "timestamp": "1783902700000", "bids": [], "asks": []
+        }, {
+            "event_type": "book", "market": "market", "asset_id": "down",
+            "timestamp": "1783902700001", "bids": [], "asks": []
+        }]);
+        assert_eq!(parse_clob_messages(&value).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn ignores_new_market_control_messages() {
+        let value = serde_json::json!({"event_type": "new_market"});
+        assert!(parse_clob_messages(&value).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parses_auxiliary_clob_events() {
+        let messages = [
+            serde_json::json!({
+                "event_type": "best_bid_ask", "market": "market", "asset_id": "up",
+                "best_bid": ".4", "best_ask": ".6", "timestamp": "1783902700000"
+            }),
+            serde_json::json!({
+                "event_type": "tick_size_change", "market": "market", "asset_id": "up",
+                "old_tick_size": ".01", "new_tick_size": ".001", "timestamp": "1783902700000"
+            }),
+            serde_json::json!({
+                "event_type": "market_resolved", "market": "market",
+                "winning_asset_id": "up", "winning_outcome": "Up",
+                "timestamp": "1783902700000"
+            }),
+        ];
+        assert!(matches!(
+            parse_clob_messages(&messages[0]).unwrap()[0],
+            ClobMessage::BestBidAsk { .. }
+        ));
+        assert!(matches!(
+            parse_clob_messages(&messages[1]).unwrap()[0],
+            ClobMessage::TickSizeChange { .. }
+        ));
+        assert!(matches!(
+            parse_clob_messages(&messages[2]).unwrap()[0],
+            ClobMessage::MarketResolved { .. }
+        ));
+    }
+
+    #[test]
+    fn parses_rtds_sources_with_distinct_identity_and_timestamps() {
+        let connection = Uuid::new_v4();
+        let received = ts(1_783_902_701_250);
+        let chainlink = parse_rtds_reference_tick(
+            &serde_json::json!({
+                "topic": "crypto_prices_chainlink",
+                "type": "update",
+                "timestamp": 1783902701200_i64,
+                "payload": {
+                    "symbol": "btc/usd", "timestamp": 1783902701100_i64, "value": 67234.50
+                }
+            }),
+            connection,
+            7,
+            received,
+        )
+        .unwrap();
+        assert_eq!(chainlink.source, ReferencePriceSource::RtdsChainlink);
+        assert_eq!(chainlink.price, dec!(67234.50));
+        assert_eq!(chainlink.source_timestamp, ts(1_783_902_701_100));
+        assert_eq!(chainlink.received_at, received);
+
+        let binance = parse_rtds_reference_tick(
+            &serde_json::json!({
+                "topic": "crypto_prices", "type": "update", "timestamp": 1783902701200_i64,
+                "payload": {"symbol": "btcusdt", "timestamp": 1783902701150_i64, "value": "67235.1"}
+            }),
+            connection,
+            8,
+            received,
+        )
+        .unwrap();
+        assert_eq!(binance.source, ReferencePriceSource::RtdsBinance);
+    }
+
+    #[test]
+    fn canonicalizes_live_reference_tick_before_identity_and_downstream_use() {
+        let raw_payload = serde_json::json!({
+            "payload": {"value": "62251.646396591175"}
+        });
+        let source_timestamp = Utc
+            .timestamp_opt(1_783_902_701, 123_456_789)
+            .single()
+            .unwrap();
+        let envelope_timestamp = Utc
+            .timestamp_opt(1_783_902_701, 223_456_789)
+            .single()
+            .unwrap();
+        let received_at = Utc
+            .timestamp_opt(1_783_902_701, 323_456_789)
+            .single()
+            .unwrap();
+
+        let tick = reference_tick(
+            ReferencePriceSource::RtdsChainlink,
+            "BTCUSD",
+            dec!(62251.646396591175),
+            source_timestamp,
+            Some(envelope_timestamp),
+            received_at,
+            Uuid::new_v4(),
+            41,
+            None,
+            raw_payload.clone(),
+        )
+        .unwrap();
+
+        assert_eq!(tick.price, dec!(62251.6463965912));
+        assert_eq!(tick.source_timestamp.timestamp_subsec_nanos(), 123_456_000);
+        assert_eq!(
+            tick.envelope_timestamp.unwrap().timestamp_subsec_nanos(),
+            223_456_000
+        );
+        assert_eq!(tick.received_at.timestamp_subsec_nanos(), 323_456_000);
+        assert_eq!(
+            tick.dedup_key,
+            "rtds_chainlink:BTCUSD:1783902701123:-:62251.6463965912"
+        );
+        assert_eq!(tick.raw_payload, raw_payload);
+
+        // Delivery metadata is lineage, not source-event identity. A retransmission therefore
+        // retains the same durable identity even when it arrives on another connection later.
+        let replay = reference_tick(
+            ReferencePriceSource::RtdsChainlink,
+            "BTCUSD",
+            dec!(62251.646396591175),
+            source_timestamp,
+            Some(envelope_timestamp),
+            received_at + Duration::milliseconds(1),
+            Uuid::new_v4(),
+            1,
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
+        assert_eq!(tick.dedup_key, replay.dedup_key);
+        assert_eq!(tick.tick_id, replay.tick_id);
+        assert_ne!(tick.received_at, replay.received_at);
+        assert_ne!(tick.ingest_sequence, replay.ingest_sequence);
+    }
+
+    #[test]
+    fn reference_price_rounding_matches_postgres_numeric_midpoints() {
+        let tick = reference_tick(
+            ReferencePriceSource::RtdsChainlink,
+            "BTCUSD",
+            dec!(1.00000000005),
+            ts(1_783_902_701_100),
+            None,
+            ts(1_783_902_701_200),
+            Uuid::new_v4(),
+            1,
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
+        assert_eq!(tick.price, dec!(1.0000000001));
+    }
+
+    #[test]
+    fn parses_direct_binance_aggregate_trade_idempotently() {
+        let value = serde_json::json!({
+            "e": "aggTrade", "E": 1783902701250_i64, "s": "BTCUSDT", "a": 12345,
+            "p": "67236.12345678", "q": "0.5", "T": 1783902701200_i64, "m": false
+        });
+        let connection = Uuid::new_v4();
+        let first = parse_binance_agg_trade(&value, connection, 1, ts(1_783_902_701_300)).unwrap();
+        let second =
+            parse_binance_agg_trade(&value, Uuid::new_v4(), 99, ts(1_783_902_702_000)).unwrap();
+        assert_eq!(first.source, ReferencePriceSource::DirectBinance);
+        assert_eq!(first.price, dec!(67236.12345678));
+        assert_eq!(first.dedup_key, second.dedup_key);
+        assert_eq!(first.tick_id, second.tick_id);
+    }
+
+    #[test]
+    fn registry_quarantines_delta_before_full_snapshot() {
+        let market = market();
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&market);
+        let delta = ClobMessage::PriceChange {
+            market_id: market.market_id.clone(),
+            changes: vec![PriceChange {
+                token_id: market.up_token_id.clone(),
+                side: BookUpdateSide::Bid,
+                price: dec!(0.48),
+                size: dec!(10),
+                source_hash: None,
+                best_bid: Some(dec!(0.48)),
+                best_ask: Some(dec!(0.52)),
+            }],
+            source_timestamp: ts(1_783_902_701_000),
+            raw_payload: serde_json::json!({}),
+        };
+        let events = registry.apply(delta, ts(1_783_902_701_010));
+        assert!(!events[0].applied);
+        assert_eq!(events[0].integrity_status, FeedIntegrityStatus::PreSnapshot);
+        assert!(!registry.book_readiness()[1].bootstrapped);
+    }
+
+    #[test]
+    fn registry_accepts_condition_id_from_wire_and_persists_canonical_market_id() {
+        let market = market();
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&market);
+        let events = registry.apply(
+            ClobMessage::Book {
+                market_id: market.condition_id.clone(),
+                token_id: market.up_token_id.clone(),
+                bids: vec![OrderbookLevel {
+                    price: dec!(0.48),
+                    size: dec!(10),
+                }],
+                asks: vec![OrderbookLevel {
+                    price: dec!(0.52),
+                    size: dec!(10),
+                }],
+                source_timestamp: ts(1_783_902_701_000),
+                source_hash: None,
+                raw_payload: serde_json::json!({}),
+            },
+            ts(1_783_902_701_005),
+        );
+        assert!(events[0].applied);
+        assert_eq!(events[0].market_id, market.market_id);
+        assert!(registry.checkpoint(&market.up_token_id).is_some());
+    }
+
+    fn seed_book(registry: &mut BookRegistry, token: &str, millis: i64) {
+        registry.apply(
+            ClobMessage::Book {
+                market_id: "market".to_string(),
+                token_id: token.to_string(),
+                bids: vec![OrderbookLevel {
+                    price: dec!(0.48),
+                    size: dec!(10),
+                }],
+                asks: vec![OrderbookLevel {
+                    price: dec!(0.52),
+                    size: dec!(10),
+                }],
+                source_timestamp: ts(millis),
+                source_hash: Some(format!("hash-{token}")),
+                raw_payload: serde_json::json!({}),
+            },
+            ts(millis + 5),
+        );
+    }
+
+    fn replace_book(
+        registry: &mut BookRegistry,
+        token: &str,
+        bids: &[(Decimal, Decimal)],
+        asks: &[(Decimal, Decimal)],
+        millis: i64,
+        source_hash: &str,
+    ) -> Vec<MarketFeedEvent> {
+        registry.apply(
+            ClobMessage::Book {
+                market_id: "market".to_string(),
+                token_id: token.to_string(),
+                bids: bids
+                    .iter()
+                    .map(|(price, size)| OrderbookLevel {
+                        price: *price,
+                        size: *size,
+                    })
+                    .collect(),
+                asks: asks
+                    .iter()
+                    .map(|(price, size)| OrderbookLevel {
+                        price: *price,
+                        size: *size,
+                    })
+                    .collect(),
+                source_timestamp: ts(millis),
+                source_hash: Some(source_hash.to_string()),
+                raw_payload: serde_json::json!({}),
+            },
+            ts(millis + 1),
+        )
+    }
+
+    #[test]
+    fn registry_reconciles_fragmented_same_hash_updates_without_false_crosses() {
+        let market = market();
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&market);
+        replace_book(
+            &mut registry,
+            "up",
+            &[(dec!(0.43), dec!(10))],
+            &[(dec!(0.44), dec!(10)), (dec!(0.46), dec!(10))],
+            1_783_902_701_000,
+            "before-up",
+        );
+        replace_book(
+            &mut registry,
+            "down",
+            &[(dec!(0.56), dec!(10)), (dec!(0.54), dec!(10))],
+            &[(dec!(0.57), dec!(10))],
+            1_783_902_701_000,
+            "before-down",
+        );
+
+        let first = registry.apply(
+            ClobMessage::PriceChange {
+                market_id: "market".to_string(),
+                changes: vec![
+                    PriceChange {
+                        token_id: "up".to_string(),
+                        side: BookUpdateSide::Bid,
+                        price: dec!(0.45),
+                        size: dec!(10),
+                        source_hash: Some("transition".to_string()),
+                        best_bid: Some(dec!(0.45)),
+                        best_ask: Some(dec!(0.46)),
+                    },
+                    PriceChange {
+                        token_id: "down".to_string(),
+                        side: BookUpdateSide::Ask,
+                        price: dec!(0.55),
+                        size: dec!(10),
+                        source_hash: Some("transition".to_string()),
+                        best_bid: Some(dec!(0.54)),
+                        best_ask: Some(dec!(0.55)),
+                    },
+                ],
+                source_timestamp: ts(1_783_902_701_100),
+                raw_payload: serde_json::json!({}),
+            },
+            ts(1_783_902_701_101),
+        );
+        assert!(first
+            .iter()
+            .all(|event| { event.applied && event.integrity_status == FeedIntegrityStatus::Ok }));
+
+        let second = registry.apply(
+            ClobMessage::PriceChange {
+                market_id: "market".to_string(),
+                changes: vec![
+                    PriceChange {
+                        token_id: "down".to_string(),
+                        side: BookUpdateSide::Bid,
+                        price: dec!(0.56),
+                        size: Decimal::ZERO,
+                        source_hash: Some("transition".to_string()),
+                        best_bid: Some(dec!(0.54)),
+                        best_ask: Some(dec!(0.55)),
+                    },
+                    PriceChange {
+                        token_id: "up".to_string(),
+                        side: BookUpdateSide::Ask,
+                        price: dec!(0.44),
+                        size: Decimal::ZERO,
+                        source_hash: Some("transition".to_string()),
+                        best_bid: Some(dec!(0.45)),
+                        best_ask: Some(dec!(0.46)),
+                    },
+                ],
+                source_timestamp: ts(1_783_902_701_100),
+                raw_payload: serde_json::json!({}),
+            },
+            ts(1_783_902_701_102),
+        );
+        assert!(second
+            .iter()
+            .all(|event| { event.applied && event.integrity_status == FeedIntegrityStatus::Ok }));
+        let up = registry.checkpoint("up").unwrap();
+        let down = registry.checkpoint("down").unwrap();
+        assert_eq!(
+            (up.best_bid, up.best_ask),
+            (Some(dec!(0.45)), Some(dec!(0.46)))
+        );
+        assert_eq!(
+            (down.best_bid, down.best_ask),
+            (Some(dec!(0.54)), Some(dec!(0.55)))
+        );
+
+        assert!(
+            replace_book(
+                &mut registry,
+                "up",
+                &[(dec!(0.45), dec!(10)), (dec!(0.43), dec!(10))],
+                &[(dec!(0.46), dec!(10))],
+                1_783_902_701_100,
+                "transition",
+            )[0]
+            .applied
+        );
+        assert!(
+            replace_book(
+                &mut registry,
+                "down",
+                &[(dec!(0.54), dec!(10))],
+                &[(dec!(0.55), dec!(10)), (dec!(0.57), dec!(10))],
+                1_783_902_701_100,
+                "transition",
+            )[0]
+            .applied
+        );
+    }
+
+    #[test]
+    fn registry_applies_same_token_changes_atomically_and_preserves_batch_hash() {
+        let market = market();
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&market);
+        seed_book(&mut registry, "up", 1_783_902_701_000);
+        let events = registry.apply(
+            ClobMessage::PriceChange {
+                market_id: "market".to_string(),
+                changes: vec![
+                    PriceChange {
+                        token_id: "up".to_string(),
+                        side: BookUpdateSide::Bid,
+                        price: dec!(0.53),
+                        size: dec!(10),
+                        source_hash: Some("atomic-batch".to_string()),
+                        best_bid: Some(dec!(0.53)),
+                        best_ask: Some(dec!(0.54)),
+                    },
+                    PriceChange {
+                        token_id: "up".to_string(),
+                        side: BookUpdateSide::Ask,
+                        price: dec!(0.52),
+                        size: Decimal::ZERO,
+                        source_hash: None,
+                        best_bid: Some(dec!(0.53)),
+                        best_ask: Some(dec!(0.54)),
+                    },
+                    PriceChange {
+                        token_id: "up".to_string(),
+                        side: BookUpdateSide::Ask,
+                        price: dec!(0.54),
+                        size: dec!(10),
+                        source_hash: None,
+                        best_bid: Some(dec!(0.53)),
+                        best_ask: Some(dec!(0.54)),
+                    },
+                ],
+                source_timestamp: ts(1_783_902_701_100),
+                raw_payload: serde_json::json!({}),
+            },
+            ts(1_783_902_701_105),
+        );
+        assert!(events.iter().all(|event| event.applied));
+        let checkpoint = registry.checkpoint("up").unwrap();
+        assert_eq!(checkpoint.best_bid, Some(dec!(0.53)));
+        assert_eq!(checkpoint.best_ask, Some(dec!(0.54)));
+        assert_eq!(checkpoint.source_hash.as_deref(), Some("atomic-batch"));
+    }
+
+    #[test]
+    fn registry_quarantine_is_sticky_until_a_full_snapshot_repairs_it() {
+        let market = market();
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&market);
+        seed_book(&mut registry, "up", 1_783_902_701_000);
+
+        let mismatch = registry.apply(
+            ClobMessage::PriceChange {
+                market_id: "market".to_string(),
+                changes: vec![PriceChange {
+                    token_id: "up".to_string(),
+                    side: BookUpdateSide::Bid,
+                    price: dec!(0.48),
+                    size: Decimal::ZERO,
+                    source_hash: Some("mismatch".to_string()),
+                    best_bid: Some(dec!(0.47)),
+                    best_ask: Some(dec!(0.52)),
+                }],
+                source_timestamp: ts(1_783_902_701_100),
+                raw_payload: serde_json::json!({}),
+            },
+            ts(1_783_902_701_105),
+        );
+        assert_eq!(
+            mismatch[0].integrity_status,
+            FeedIntegrityStatus::TopOfBookMismatch
+        );
+        assert!(!mismatch[0].applied);
+        let quarantined = registry.checkpoint("up").unwrap();
+        assert_eq!(quarantined.best_bid, Some(dec!(0.48)));
+        assert_eq!(
+            quarantined.integrity_status,
+            FeedIntegrityStatus::TopOfBookMismatch
+        );
+
+        let later_delta = registry.apply(
+            ClobMessage::PriceChange {
+                market_id: "market".to_string(),
+                changes: vec![PriceChange {
+                    token_id: "up".to_string(),
+                    side: BookUpdateSide::Bid,
+                    price: dec!(0.49),
+                    size: dec!(10),
+                    source_hash: Some("later".to_string()),
+                    best_bid: Some(dec!(0.49)),
+                    best_ask: Some(dec!(0.52)),
+                }],
+                source_timestamp: ts(1_783_902_701_200),
+                raw_payload: serde_json::json!({}),
+            },
+            ts(1_783_902_701_205),
+        );
+        assert_eq!(
+            later_delta[0].integrity_status,
+            FeedIntegrityStatus::TopOfBookMismatch
+        );
+        assert!(!later_delta[0].applied);
+        assert_eq!(
+            registry.checkpoint("up").unwrap().best_bid,
+            Some(dec!(0.48))
+        );
+
+        let repaired = replace_book(
+            &mut registry,
+            "up",
+            &[(dec!(0.49), dec!(10))],
+            &[(dec!(0.53), dec!(10))],
+            1_783_902_701_300,
+            "repair",
+        );
+        assert!(repaired[0].applied);
+        assert_eq!(
+            registry.checkpoint("up").unwrap().integrity_status,
+            FeedIntegrityStatus::Ok
+        );
+    }
+
+    #[test]
+    fn registry_decode_errors_roll_back_and_require_snapshot_recovery() {
+        let market = market();
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&market);
+        seed_book(&mut registry, "up", 1_783_902_701_000);
+        let events = registry.apply(
+            ClobMessage::PriceChange {
+                market_id: "market".to_string(),
+                changes: vec![
+                    PriceChange {
+                        token_id: "up".to_string(),
+                        side: BookUpdateSide::Bid,
+                        price: dec!(0.49),
+                        size: dec!(10),
+                        source_hash: Some("bad-batch".to_string()),
+                        best_bid: Some(dec!(0.49)),
+                        best_ask: Some(dec!(0.52)),
+                    },
+                    PriceChange {
+                        token_id: "up".to_string(),
+                        side: BookUpdateSide::Ask,
+                        price: dec!(0.53),
+                        size: dec!(-1),
+                        source_hash: Some("bad-batch".to_string()),
+                        best_bid: Some(dec!(0.49)),
+                        best_ask: Some(dec!(0.52)),
+                    },
+                ],
+                source_timestamp: ts(1_783_902_701_100),
+                raw_payload: serde_json::json!({}),
+            },
+            ts(1_783_902_701_105),
+        );
+        assert!(events.iter().all(|event| {
+            !event.applied && event.integrity_status == FeedIntegrityStatus::DecodeError
+        }));
+        let checkpoint = registry.checkpoint("up").unwrap();
+        assert_eq!(
+            (checkpoint.best_bid, checkpoint.best_ask),
+            (Some(dec!(0.48)), Some(dec!(0.52)))
+        );
+        assert_eq!(
+            checkpoint.integrity_status,
+            FeedIntegrityStatus::DecodeError
+        );
+
+        let blocked = registry.apply(
+            ClobMessage::PriceChange {
+                market_id: "market".to_string(),
+                changes: vec![PriceChange {
+                    token_id: "up".to_string(),
+                    side: BookUpdateSide::Bid,
+                    price: Decimal::ONE,
+                    size: dec!(1),
+                    source_hash: None,
+                    best_bid: Some(dec!(0.49)),
+                    best_ask: Some(dec!(0.52)),
+                }],
+                source_timestamp: ts(1_783_902_701_200),
+                raw_payload: serde_json::json!({}),
+            },
+            ts(1_783_902_701_205),
+        );
+        assert_eq!(
+            blocked[0].integrity_status,
+            FeedIntegrityStatus::DecodeError
+        );
+        assert!(!blocked[0].applied);
+
+        assert!(
+            replace_book(
+                &mut registry,
+                "up",
+                &[(dec!(0.49), dec!(10))],
+                &[(dec!(0.53), dec!(10))],
+                1_783_902_701_300,
+                "repair",
+            )[0]
+            .applied
+        );
+    }
+
+    #[test]
+    fn registry_message_decode_quarantine_requires_snapshot_recovery() {
+        let market = market();
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&market);
+        seed_book(&mut registry, "up", 1_783_902_701_000);
+        registry.quarantine(FeedIntegrityStatus::DecodeError);
+        assert_eq!(
+            registry.checkpoint("up").unwrap().integrity_status,
+            FeedIntegrityStatus::DecodeError
+        );
+        assert!(
+            replace_book(
+                &mut registry,
+                "up",
+                &[(dec!(0.48), dec!(10))],
+                &[(dec!(0.52), dec!(10))],
+                1_783_902_701_100,
+                "repair",
+            )[0]
+            .applied
+        );
+    }
+
+    #[test]
+    fn registry_replaces_book_applies_zero_delete_and_rejects_out_of_order() {
+        let market = market();
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&market);
+        seed_book(&mut registry, "up", 1_783_902_701_000);
+        let event = registry.apply(
+            ClobMessage::PriceChange {
+                market_id: "market".to_string(),
+                changes: vec![PriceChange {
+                    token_id: "up".to_string(),
+                    side: BookUpdateSide::Bid,
+                    price: dec!(0.48),
+                    size: Decimal::ZERO,
+                    source_hash: Some("next".to_string()),
+                    best_bid: None,
+                    best_ask: Some(dec!(0.52)),
+                }],
+                source_timestamp: ts(1_783_902_701_100),
+                raw_payload: serde_json::json!({}),
+            },
+            ts(1_783_902_701_105),
+        );
+        assert!(event[0].applied);
+        assert_eq!(registry.checkpoint("up").unwrap().best_bid, None);
+
+        let old = registry.apply(
+            ClobMessage::PriceChange {
+                market_id: "market".to_string(),
+                changes: vec![PriceChange {
+                    token_id: "up".to_string(),
+                    side: BookUpdateSide::Bid,
+                    price: dec!(0.47),
+                    size: dec!(1),
+                    source_hash: None,
+                    best_bid: None,
+                    best_ask: None,
+                }],
+                source_timestamp: ts(1_783_902_700_000),
+                raw_payload: serde_json::json!({}),
+            },
+            ts(1_783_902_701_200),
+        );
+        assert_eq!(old[0].integrity_status, FeedIntegrityStatus::OutOfOrder);
+        assert!(!old[0].applied);
+    }
+
+    #[test]
+    fn reconnect_requires_new_full_snapshots() {
+        let market = market();
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&market);
+        seed_book(&mut registry, "up", 1_783_902_701_000);
+        assert!(registry.checkpoint("up").is_some());
+        registry.reset_connection(Uuid::new_v4());
+        assert!(registry.checkpoint("up").is_none());
+        assert!(registry
+            .book_readiness()
+            .iter()
+            .all(|book| !book.bootstrapped));
+    }
+
+    #[test]
+    fn readiness_requires_window_books_and_primary_reference_sources() {
+        let market = market();
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&market);
+        seed_book(&mut registry, "up", 1_783_902_701_000);
+        seed_book(&mut registry, "down", 1_783_902_701_000);
+        let now = ts(1_783_902_701_500);
+        let mut state = RealtimeState::default();
+        state.set_market(market);
+        state.update_books(&registry);
+        for value in [serde_json::json!({
+            "e": "aggTrade", "E": 1783902701400_i64, "s": "BTCUSDT", "a": 1,
+            "p": "67000", "q": "1", "T": 1783902701400_i64
+        })] {
+            state.update_reference_price(
+                parse_binance_agg_trade(&value, Uuid::new_v4(), 1, now).unwrap(),
+            );
+        }
+        let missing = state.readiness(now, Duration::seconds(2), Duration::seconds(2));
+        assert!(!missing.ready);
+        assert!(missing
+            .reasons
+            .iter()
+            .any(|reason| reason == "missing_reference:rtds_chainlink"));
+
+        state.update_reference_price(
+            parse_rtds_reference_tick(
+                &serde_json::json!({
+                    "topic": "crypto_prices_chainlink", "type": "update",
+                    "timestamp": 1783902701400_i64,
+                    "payload": {"symbol": "btc/usd", "timestamp": 1783902701400_i64, "value": 67000}
+                }),
+                Uuid::new_v4(),
+                2,
+                now,
+            )
+            .unwrap(),
+        );
+        assert!(
+            state
+                .readiness(now, Duration::seconds(2), Duration::seconds(2))
+                .ready
+        );
+    }
+
+    #[test]
+    fn resolution_maps_winning_token_without_position_assumptions() {
+        let mut state = RealtimeState::default();
+        state.set_market(market());
+        assert!(state.apply_resolution("down"));
+        assert_eq!(state.resolved_outcome, Some(BtcOutcome::Down));
+        assert!(!state.apply_resolution("unknown"));
+        assert_eq!(state.resolved_outcome, Some(BtcOutcome::Down));
+        assert!(!state.apply_market_resolution("older-market", "up"));
+        assert_eq!(state.resolved_outcome, Some(BtcOutcome::Down));
+        state.set_current_market(None);
+        assert_eq!(state.resolved_outcome, None);
+    }
+}

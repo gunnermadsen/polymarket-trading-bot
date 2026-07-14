@@ -1,0 +1,143 @@
+{
+  "contract_version": "btc_5m_ml_runtime_contract_v2",
+  "manifest": {
+    "seed": "schema_canary_no_training_data_v2",
+    "sha256": "d9ba98003651835e4c5591f7818076e13d1b0fc16eab1683fb47f917c58a45c6"
+  },
+  "artifacts": [
+    {
+      "task": "settlement_probability_residual",
+      "model_version": "schema_canary_v2_settlement_probability_residual",
+      "feature_schema_version": "btc_5m_ml_a_shadow_v2",
+      "feature_names": [
+        "chainlink_gap_bps",
+        "binance_return_1s",
+        "binance_return_5s",
+        "binance_return_30s",
+        "realized_volatility",
+        "binance_chainlink_basis_bps",
+        "seconds_to_close",
+        "up_best_ask",
+        "down_best_ask",
+        "up_imbalance",
+        "down_imbalance"
+      ],
+      "expected_feature_schema_sha256": "9fa7bd2fc404c0cd211cce37638cb008efd6cf4ec6a822d7294a4f974356185b",
+      "expected_artifact_sha256": "d235ca4a8c4f3269a01e968c40150d3a78a9486cf6a1c47d0b9b0a2424b79949"
+    },
+    {
+      "task": "fok_fill_probability",
+      "model_version": "schema_canary_v2_fok_fill_probability",
+      "feature_schema_version": "btc_5m_ml_b_fill_shadow_v2",
+      "feature_names": [
+        "seconds_to_close",
+        "selected_best_ask",
+        "selected_spread",
+        "selected_ask_depth",
+        "selected_imbalance",
+        "selected_net_edge_per_share"
+      ],
+      "expected_feature_schema_sha256": "40bb87bfa8ac2e65862bf95d2072a98c68568b94fbe5432b56f89021608b3ded",
+      "expected_artifact_sha256": "92492b87c0cfee7138859deb27397aaeb8f5cc10f909fa18ee6d1e7798d4617c"
+    },
+    {
+      "task": "fok_post_fill_toxicity_probability",
+      "model_version": "schema_canary_v2_fok_post_fill_toxicity_probability",
+      "feature_schema_version": "btc_5m_ml_b_toxicity_shadow_v2",
+      "feature_names": [
+        "seconds_to_close",
+        "selected_best_ask",
+        "selected_spread",
+        "selected_ask_depth",
+        "selected_imbalance",
+        "selected_net_edge_per_share"
+      ],
+      "expected_feature_schema_sha256": "a9411cac6e821aa19d8e9599442e505a41b2a140653b08f2d4e2bda851286f1c",
+      "expected_artifact_sha256": "02ad7ee0b191a3ad3932e58dc661b3d1e20315b1fd1d90c3c6a37b8eb2d3385c"
+    }
+  ],
+  "vector": {
+    "snapshot_id": "11111111-2222-5333-8444-555555555555",
+    "market_id": "runtime-contract-market",
+    "feature_as_of_ms": 1710000001000,
+    "feature_received_at_ms": 1710000001000,
+    "label_available_at_ms": 1710000002000,
+    "label": 1,
+    "task": "settlement_probability_residual",
+    "label_version": "runtime_contract_label_v2",
+    "prior_probability": 0.625,
+    "schema_version": "btc_5m_ml_a_shadow_v2",
+    "features": [
+      {
+        "name": "chainlink_gap_bps",
+        "value": -0.625,
+        "source_event_at_ms": 1710000000000,
+        "source_received_at_ms": 1710000000100
+      },
+      {
+        "name": "binance_return_1s",
+        "value": -0.5,
+        "source_event_at_ms": 1710000000001,
+        "source_received_at_ms": 1710000000101
+      },
+      {
+        "name": "binance_return_5s",
+        "value": -0.375,
+        "source_event_at_ms": 1710000000002,
+        "source_received_at_ms": 1710000000102
+      },
+      {
+        "name": "binance_return_30s",
+        "value": -0.25,
+        "source_event_at_ms": 1710000000003,
+        "source_received_at_ms": 1710000000103
+      },
+      {
+        "name": "realized_volatility",
+        "value": -0.125,
+        "source_event_at_ms": 1710000000004,
+        "source_received_at_ms": 1710000000104
+      },
+      {
+        "name": "binance_chainlink_basis_bps",
+        "value": 0.0,
+        "source_event_at_ms": 1710000000005,
+        "source_received_at_ms": 1710000000105
+      },
+      {
+        "name": "seconds_to_close",
+        "value": 0.125,
+        "source_event_at_ms": 1710000000006,
+        "source_received_at_ms": 1710000000106
+      },
+      {
+        "name": "up_best_ask",
+        "value": 0.25,
+        "source_event_at_ms": 1710000000007,
+        "source_received_at_ms": 1710000000107
+      },
+      {
+        "name": "down_best_ask",
+        "value": 0.375,
+        "source_event_at_ms": 1710000000008,
+        "source_received_at_ms": 1710000000108
+      },
+      {
+        "name": "up_imbalance",
+        "value": 0.5,
+        "source_event_at_ms": 1710000000009,
+        "source_received_at_ms": 1710000000109
+      },
+      {
+        "name": "down_imbalance",
+        "value": 0.625,
+        "source_event_at_ms": 1710000000010,
+        "source_received_at_ms": 1710000000110
+      }
+    ],
+    "expected_feature_schema_sha256": "9fa7bd2fc404c0cd211cce37638cb008efd6cf4ec6a822d7294a4f974356185b",
+    "expected_vector_sha256": "3c4b25ceebaecf09f9aba181111ecf14a815b53440478ed9cb901dfcd7c764a4",
+    "expected_probability": 0.625,
+    "expected_residual_logit": 0.0
+  }
+}

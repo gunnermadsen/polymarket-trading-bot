@@ -16,12 +16,34 @@ x-grafana-env-file: &grafana-env-file
   path: ./.env.grafana
   required: false
 
+x-btc-paper-env: &btc-paper-env
+  POLYMARKET_LIVE_ORDER_SUBMIT_ENABLED: "false"
+  POLYMARKET_LIVE_USER_WS_ENABLED: "false"
+  POLYMARKET_SCAN_ENABLED: "false"
+  POLYMARKET_SIGNAL2_ENABLED: "false"
+  POLYMARKET_SIGNAL3_ENABLED: "false"
+  POLYMARKET_COPY_TRADE_ENABLED: "false"
+  POLYMARKET_COPY_EXECUTE_ENABLED: "false"
+  POLYMARKET_WHALE_LIVE_ENABLED: "false"
+  POLYMARKET_WHALE_BACKFILL_ENABLED: "false"
+  POLYMARKET_BTC_REALTIME_ENABLED: "true"
+  POLYMARKET_BTC_PAPER_ENABLED: "true"
+  POLYMARKET_BTC_ML_SHADOW_ENABLED: "true"
+  POLYMARKET_BTC_RTDS_WS_URL: "wss://ws-live-data.polymarket.com"
+  POLYMARKET_BTC_BINANCE_WS_URL: "wss://stream.binance.com:9443/ws/btcusdt@aggTrade"
+  POLYMARKET_CLOB_API_KEY: ""
+  POLYMARKET_CLOB_SECRET: ""
+  POLYMARKET_CLOB_PASSPHRASE: ""
+  POLYMARKET_PRIVATE_KEY: ""
+  POLYMARKET_FUNDER_ADDRESS: ""
+  POLYMARKET_SIGNATURE_TYPE: ""
+
 services:
   timescaledb-0:
     image: timescale/timescaledb:2.14.2-pg14
     container_name: timescaledb-0
     hostname: timescaledb-0
-    mem_limit: 1280m
+    mem_limit: 2g
     cpus: "0.65"
     logging: *default-logging
     env_file:
@@ -29,8 +51,36 @@ services:
     environment:
       POSTGRES_USER: "postgres"
       POSTGRES_DB: "polymarket"
+      TS_TUNE_MEMORY: "2GB"
+      TS_TUNE_NUM_CPUS: "1"
+      TS_TUNE_MAX_CONNS: "25"
+      TS_TUNE_MAX_BG_WORKERS: "4"
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - autovacuum_work_mem=64MB
+      - -c
+      - work_mem=10485kB
+      - -c
+      - max_connections=25
+      - -c
+      - max_locks_per_transaction=128
+      - -c
+      - max_parallel_workers=1
+      - -c
+      - max_parallel_workers_per_gather=0
+      - -c
+      - max_worker_processes=8
+      - -c
+      - timescaledb.max_background_workers=4
     ports:
-      - "127.0.0.1:55432:5432"
+      - "127.0.0.1:${POLYMARKET_POSTGRES_HOST_PORT:-55433}:5432"
     volumes:
       - timescaledb-0-data:/var/lib/postgresql/data
     healthcheck:
@@ -73,7 +123,7 @@ services:
     build:
       context: .
       dockerfile: packages/polymarket-bot/Dockerfile
-    image: polymarket/polymarket-bot:latest
+    image: polymarket/polymarket-bot:btc-paper
     container_name: polymarket-bot
     hostname: polymarket-bot
     mem_limit: 512m
@@ -83,6 +133,7 @@ services:
       - *app-env-file
       - *postgres-env-file
     environment:
+      <<: *btc-paper-env
       RUST_LOG: "info"
       POSTGRES_HOST: "timescaledb-0"
       POSTGRES_PORT: "5432"
@@ -91,7 +142,6 @@ services:
       POSTGRES_SSL_MODE: "disable"
       POSTGRES_SSL_CA_FILE: ""
       POLYMARKET_LIVE_CLOB_BASE_URL: "https://clob.polymarket.com"
-      POLYMARKET_SCAN_ENABLED: "false"
       POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
       POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
       POLYMARKET_CLOB_WS_URL: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
@@ -102,13 +152,73 @@ services:
       POLYMARKET_EXIT_CANDIDATE_MAX_AGE_SECONDS: "900"
       POLYMARKET_MARK_FRESH_MAX_AGE_SECS: "300"
     ports:
-      - "127.0.0.1:8097:8097"
+      - "127.0.0.1:${POLYMARKET_HTTP_HOST_PORT:-8098}:8097"
     depends_on:
       db-migrate:
         condition: service_completed_successfully
       timescaledb-0:
         condition: service_healthy
+    stop_grace_period: 60s
     restart: unless-stopped
+
+  polymarket-bot-test:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: packages/polymarket-bot/Dockerfile
+      target: test
+    image: polymarket/polymarket-bot-test:btc-paper
+    mem_limit: 1g
+    cpus: "1.0"
+    logging: *default-logging
+    restart: "no"
+
+  btc-paper-audit:
+    profiles: ["ops"]
+    build:
+      context: .
+      dockerfile: packages/btc-paper-audit/Dockerfile
+    image: polymarket/btc-paper-audit:latest
+    mem_limit: 256m
+    cpus: "0.25"
+    logging: *default-logging
+    env_file:
+      - *app-env-file
+      - *postgres-env-file
+    environment:
+      <<: *btc-paper-env
+      POSTGRES_HOST: "timescaledb-0"
+      POSTGRES_PORT: "5432"
+      POLYMARKET_DB_USER: "postgres"
+      POLYMARKET_DB_NAME: "polymarket"
+      POLYMARKET_HTTP_BASE_URL: "http://polymarket-bot:8097"
+      BTC_PAPER_EXPERIMENT_MANIFEST_PATH: "/workspace/docs/experiments/btc-5m-chainlink-fair-value-20260713-c/preregistration.json"
+    volumes:
+      - ./docs/evidence:/workspace/docs/evidence
+    depends_on:
+      timescaledb-0:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: "no"
+
+  btc-ml-research:
+    profiles: ["research"]
+    build:
+      context: .
+      dockerfile: experiments/btc-updown/Dockerfile
+    image: polymarket/btc-ml-research:latest
+    mem_limit: 1g
+    cpus: "1.0"
+    logging: *default-logging
+    volumes:
+      - btc-ml-datasets:/datasets:ro
+      - btc-ml-artifacts:/artifacts
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: "no"
 
   grafana:
     image: grafana/grafana:${GRAFANA_VERSION:-12.4.2}
@@ -126,7 +236,7 @@ services:
       GF_USERS_DEFAULT_THEME: "dark"
       GF_DATE_FORMATS_DEFAULT_TIMEZONE: "browser"
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3030:3000"
     volumes:
       - grafana-data:/var/lib/grafana
       - ./common/configs/grafana/provisioning:/etc/grafana/provisioning-src:ro
@@ -140,3 +250,5 @@ services:
 volumes:
   timescaledb-0-data:
   grafana-data:
+  btc-ml-datasets:
+  btc-ml-artifacts:

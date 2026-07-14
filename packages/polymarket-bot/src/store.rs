@@ -39,6 +39,15 @@ pub struct Store {
     pool: PgPool,
 }
 
+const HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL: &str = r#"
+UPDATE polymarket.trading_processes
+SET heartbeat_at = now(),
+    updated_at = now()
+WHERE process_id = $1
+  AND enabled = true
+  AND status IN ('starting', 'running', 'stopping')
+"#;
+
 const MARK_OPEN_TRADE_POSITIONS_SQL: &str = r#"
 WITH open_positions AS MATERIALIZED (
   SELECT
@@ -738,8 +747,25 @@ impl Store {
             UPDATE polymarket.trading_processes
             SET status = $2,
                 enabled = $3,
-                started_at = CASE WHEN $2 = 'running' THEN COALESCE(started_at, now()) ELSE started_at END,
-                stopped_at = CASE WHEN $2 IN ('stopped', 'failed', 'expired', 'completed') OR $3 = false THEN now() ELSE NULL END,
+                started_at = CASE
+                  WHEN $2 = 'starting' THEN now()
+                  WHEN $2 = 'running' AND status NOT IN ('starting', 'running') THEN now()
+                  ELSE started_at
+                END,
+                heartbeat_at = CASE
+                  WHEN $2 IN ('starting', 'running') THEN NULL
+                  ELSE heartbeat_at
+                END,
+                stopped_at = CASE
+                  WHEN $2 IN ('stopped', 'failed', 'expired', 'completed') OR $3 = false THEN now()
+                  WHEN $2 IN ('starting', 'running', 'stopping') THEN NULL
+                  ELSE stopped_at
+                END,
+                stop_reason = CASE
+                  WHEN $2 IN ('starting', 'running') THEN NULL
+                  WHEN $2 IN ('stopped', 'failed', 'expired', 'completed') THEN $4
+                  ELSE stop_reason
+                END,
                 last_error = $4,
                 updated_at = now()
             WHERE process_id = $1
@@ -755,6 +781,45 @@ impl Store {
         .await
         .context("failed to update trading process status")?;
         row.map(trading_process_from_row).transpose()
+    }
+
+    /// Records control-plane liveness only while the process definition still
+    /// claims an active lifecycle. A stale manager cannot revive or make a
+    /// stopped/disabled process appear healthy.
+    pub async fn heartbeat_active_trading_process(&self, process_id: Uuid) -> Result<bool> {
+        let result = sqlx::query(HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL)
+            .bind(process_id)
+            .execute(&self.pool)
+            .await
+            .context("failed to heartbeat active trading process")?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn record_trading_process_event(
+        &self,
+        process_id: Uuid,
+        level: &str,
+        event_type: &str,
+        message: Option<&str>,
+        metadata: serde_json::Value,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO polymarket.trading_process_events (
+              event_id, process_id, timestamp_utc, level, event_type, message, metadata, created_at
+            )
+            VALUES (gen_random_uuid(), $1, now(), $2, $3, $4, $5, now())
+            "#,
+        )
+        .bind(process_id)
+        .bind(level)
+        .bind(event_type)
+        .bind(message)
+        .bind(metadata)
+        .execute(&self.pool)
+        .await
+        .context("failed to record trading process event")?;
+        Ok(())
     }
 
     pub async fn upsert_trading_process_by_key(
@@ -783,8 +848,10 @@ impl Store {
                     ELSE started_at
                   END,
                   stopped_at = CASE
-                    WHEN $6 = false OR $5 IN ('stopped', 'failed', 'expired') THEN now()
-                    ELSE NULL
+                    WHEN $5 IN ('stopped', 'failed', 'expired', 'completed')
+                      THEN COALESCE(stopped_at, now())
+                    WHEN $6 = true THEN NULL
+                    ELSE stopped_at
                   END,
                   last_error = CASE
                     WHEN $5 NOT IN ('failed', 'error') THEN NULL
@@ -805,8 +872,8 @@ impl Store {
               SELECT
                 gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8,
                 now(), now(),
-                now(),
-                CASE WHEN $6 = false OR $5 IN ('stopped', 'failed', 'expired') THEN now() ELSE NULL END,
+                CASE WHEN $6 = true AND $5 = 'running' THEN now() ELSE NULL END,
+                CASE WHEN $5 IN ('stopped', 'failed', 'expired', 'completed') THEN now() ELSE NULL END,
                 NULL
               WHERE NOT EXISTS (SELECT 1 FROM updated)
               RETURNING process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
@@ -861,6 +928,31 @@ impl Store {
         .fetch_optional(&self.pool)
         .await
         .context("failed to get trading process")?;
+        row.map(trading_process_from_row).transpose()
+    }
+
+    pub async fn get_trading_process_by_key(
+        &self,
+        process_type: &str,
+        process_scope: &str,
+        process_key: &str,
+    ) -> Result<Option<TradingProcess>> {
+        let row = sqlx::query_as::<_, TradingProcessRow>(
+            r#"
+            SELECT process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
+              created_at, updated_at, started_at, stopped_at, last_error
+            FROM polymarket.trading_processes
+            WHERE process_type = $1
+              AND process_scope = $2
+              AND process_key = $3
+            "#,
+        )
+        .bind(process_type)
+        .bind(process_scope)
+        .bind(process_key)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to get trading process by key")?;
         row.map(trading_process_from_row).transpose()
     }
 
@@ -1095,8 +1187,10 @@ impl Store {
             UPDATE polymarket.trading_processes
             SET status = 'running',
                 enabled = true,
-                started_at = COALESCE(started_at, now()),
+                started_at = now(),
+                heartbeat_at = NULL,
                 stopped_at = NULL,
+                stop_reason = NULL,
                 last_error = NULL,
                 updated_at = now()
             WHERE process_id = $1
@@ -8645,8 +8739,19 @@ mod tests {
 
     use crate::{
         models::{FillRecord, FillSource},
-        store::{cap_fills_to_size, MARK_OPEN_TRADE_POSITIONS_SQL},
+        store::{
+            cap_fills_to_size, HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL, MARK_OPEN_TRADE_POSITIONS_SQL,
+        },
     };
+
+    #[test]
+    fn manager_heartbeat_cannot_revive_inactive_processes() {
+        assert!(HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL.contains("enabled = true"));
+        assert!(HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL
+            .contains("status IN ('starting', 'running', 'stopping')"));
+        assert!(!HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL.contains("SET status"));
+        assert!(!HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL.contains("SET enabled"));
+    }
 
     #[test]
     fn cap_fills_to_size_prorates_the_terminal_fill() {

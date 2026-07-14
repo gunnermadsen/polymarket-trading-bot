@@ -44,6 +44,14 @@ impl ControlApi for FakeControlApi {
         })
     }
 
+    async fn btc_realtime_status(&self) -> Result<Value, HttpError> {
+        Ok(serde_json::json!({"enabled": true, "readiness": {"ready": true}}))
+    }
+
+    async fn btc_paper_experiment_status(&self) -> Result<Value, HttpError> {
+        Ok(serde_json::json!({"configured": true, "experiment": {"status": "running"}}))
+    }
+
     async fn start_whales_backfill(
         &self,
         request: BackfillWhalesRequest,
@@ -729,6 +737,38 @@ impl ControlApi for FakeControlApi {
         })
     }
 
+    async fn preview_trading_process_start(
+        &self,
+        process_id: Uuid,
+    ) -> Result<http::TradingProcessStartPreviewResponse, HttpError> {
+        let experiment_key = "btc-5m-paper-preview-test".to_string();
+        let experiment_id = Uuid::new_v5(
+            &Uuid::NAMESPACE_URL,
+            format!("polymarket-bot/btc-paper/{experiment_key}").as_bytes(),
+        );
+        Ok(http::TradingProcessStartPreviewResponse {
+            process_id,
+            experiment_id,
+            experiment_key,
+            preregistration_sha256: "b".repeat(64),
+            config_hash: "c".repeat(64),
+            frozen_process_config: TradingProcessConfig {
+                execution: Some(ProcessExecutionConfig {
+                    mode: Some("paper".to_string()),
+                    execute_signals: true,
+                    live_capital: false,
+                    taker_fee_rate: None,
+                }),
+                raw: serde_json::json!({
+                    "pipeline_version": "btc_realtime_paper_pipeline_v11",
+                    "process_schema_version": "btc_realtime_paper_process_v1",
+                    "preregistration_sha256": "b".repeat(64),
+                }),
+                ..TradingProcessConfig::default()
+            },
+        })
+    }
+
     async fn reset_trading_process_simulation(
         &self,
         process_id: Uuid,
@@ -776,6 +816,21 @@ async fn health_is_public_and_admin_routes_require_bearer() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
+    let process_id = Uuid::new_v4();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/admin/trading-processes/{process_id}/start-preview"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
     let response = app
         .oneshot(
             Request::builder()
@@ -789,79 +844,56 @@ async fn health_is_public_and_admin_routes_require_bearer() {
 }
 
 #[tokio::test]
-async fn authenticated_admin_can_start_whale_backfill() {
+async fn authenticated_admin_can_read_btc_experiment_status() {
     let app = http::router(Arc::new(FakeControlApi), "secret");
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/admin/backfill/whales")
-                .header(AUTHORIZATION, "Bearer secret")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"lookback_days":14,"min_trade_usd":"2500","max_pages":25,"dry_run":true}"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["job"]["status"], "queued");
-    assert_eq!(json["job"]["request"]["lookback_days"], 14);
-    assert_eq!(json["job"]["request"]["max_pages"], 25);
-    assert_eq!(json["job"]["request"]["dry_run"], true);
+    for uri in [
+        "/admin/strategy/btc-5m/readiness",
+        "/admin/strategy/btc-5m/paper-experiment",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header(AUTHORIZATION, "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+    }
 }
 
 #[tokio::test]
-async fn authenticated_admin_can_start_copy_trade_backtest() {
+async fn authenticated_admin_legacy_copy_mutations_are_gone() {
     let app = http::router(Arc::new(FakeControlApi), "secret");
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/admin/copy-trade/backtest")
-                .header(AUTHORIZATION, "Bearer secret")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"lookback_days":7,"min_wallet_score":"60","execute_signals":true,"dry_run":true}"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    for uri in [
+        "/admin/backfill/whales",
+        "/admin/copy-trade/backtest",
+        "/admin/copy-trade/calibration",
+        "/admin/copy-trade/replay-existing",
+        "/admin/backtests/replay",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header(AUTHORIZATION, "Bearer secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["job"]["request"]["mode"], "copy_trade_backtest");
-    assert_eq!(json["job"]["request"]["lookback_days"], 7);
-    assert_eq!(json["job"]["request"]["execute_signals"], true);
-}
-
-#[tokio::test]
-async fn authenticated_admin_can_start_copy_trade_calibration() {
-    let app = http::router(Arc::new(FakeControlApi), "secret");
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/admin/copy-trade/calibration")
-                .header(AUTHORIZATION, "Bearer secret")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"lookback_days":21,"dry_run":true}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["job"]["request"]["mode"], "copy_trade_calibration");
-    assert_eq!(json["job"]["request"]["lookback_days"], 21);
+        assert_eq!(response.status(), StatusCode::GONE, "{uri}");
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "gone", "{uri}");
+    }
 }
 
 #[tokio::test]
@@ -1244,6 +1276,39 @@ async fn authenticated_admin_can_manage_trading_processes() {
         .await
         .unwrap();
     assert_eq!(update_response.status(), StatusCode::OK);
+
+    let preview_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/admin/trading-processes/{process_id}/start-preview"
+                ))
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(preview_response.status(), StatusCode::OK);
+    let preview_body = to_bytes(preview_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let preview_json: Value = serde_json::from_slice(&preview_body).unwrap();
+    assert_eq!(preview_json["process_id"], process_id);
+    assert_eq!(preview_json["experiment_key"], "btc-5m-paper-preview-test");
+    assert_eq!(
+        preview_json["preregistration_sha256"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
+    assert_eq!(preview_json["config_hash"].as_str().unwrap().len(), 64);
+    assert_eq!(
+        preview_json["frozen_process_config"]["execution"]["mode"],
+        "paper"
+    );
 
     let start_response = app
         .clone()

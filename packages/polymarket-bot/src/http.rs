@@ -59,7 +59,27 @@ impl AdminAuth {
 
 #[async_trait]
 pub trait ControlApi: Send + Sync + 'static {
+    async fn health(&self) -> Result<HealthResponse, HttpError> {
+        Ok(HealthResponse {
+            service: SERVICE_NAME.to_string(),
+            status: HealthStatus::Ok,
+            checked_at: Utc::now(),
+        })
+    }
+
     async fn metrics(&self) -> Result<MetricsResponse, HttpError>;
+
+    async fn btc_realtime_status(&self) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "BTC realtime status is not wired",
+        ))
+    }
+
+    async fn btc_paper_experiment_status(&self) -> Result<serde_json::Value, HttpError> {
+        Err(HttpError::not_implemented(
+            "BTC paper experiment status is not wired",
+        ))
+    }
 
     async fn start_whales_backfill(
         &self,
@@ -292,6 +312,15 @@ pub trait ControlApi: Send + Sync + 'static {
     ) -> Result<TradingProcessStatusResponse, HttpError> {
         Err(HttpError::not_implemented(
             "trading process status is not wired",
+        ))
+    }
+
+    async fn preview_trading_process_start(
+        &self,
+        _process_id: Uuid,
+    ) -> Result<TradingProcessStartPreviewResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading process start preview is not wired",
         ))
     }
 
@@ -617,6 +646,15 @@ impl ControlApi for PlaceholderControlApi {
         ))
     }
 
+    async fn preview_trading_process_start(
+        &self,
+        _process_id: Uuid,
+    ) -> Result<TradingProcessStartPreviewResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading process start preview is not wired",
+        ))
+    }
+
     async fn update_trading_process(
         &self,
         _process_id: Uuid,
@@ -651,19 +689,21 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
     let admin_auth = AdminAuth::new(admin_bearer_token);
 
     let admin_routes = Router::new()
-        .route("/backfill/whales", post(start_whales_backfill))
-        .route("/copy-trade/backtest", post(start_copy_trade_backtest))
+        .route("/strategy/btc-5m/readiness", get(btc_realtime_status))
+        .route(
+            "/strategy/btc-5m/paper-experiment",
+            get(btc_paper_experiment_status),
+        )
+        .route("/backfill/whales", post(legacy_copy_endpoint_gone))
+        .route("/copy-trade/backtest", post(legacy_copy_endpoint_gone))
         .route(
             "/copy-trade/replay-existing",
-            post(replay_existing_copy_trades),
+            post(legacy_copy_endpoint_gone),
         )
-        .route("/backtests/replay", post(start_backtest_replay))
+        .route("/backtests/replay", post(legacy_copy_endpoint_gone))
         .route("/backtests", get(list_backtest_runs))
         .route("/backtests/:backtest_run_id", get(get_backtest_run))
-        .route(
-            "/copy-trade/calibration",
-            post(start_copy_trade_calibration),
-        )
+        .route("/copy-trade/calibration", post(legacy_copy_endpoint_gone))
         .route("/backfill/jobs", get(list_backfill_jobs))
         .route("/backfill/jobs/:job_id", get(get_backfill_job))
         .route("/backfill/jobs/:job_id/cancel", post(cancel_backfill_job))
@@ -736,6 +776,10 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
             get(get_trading_process_status),
         )
         .route(
+            "/trading-processes/:process_id/start-preview",
+            get(preview_trading_process_start),
+        )
+        .route(
             "/trading-processes/:process_id",
             get(get_trading_process).patch(update_trading_process),
         )
@@ -760,63 +804,30 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .with_state(state)
 }
 
-async fn health() -> Json<HealthResponse> {
-    Json(HealthResponse {
-        service: SERVICE_NAME.to_string(),
-        status: HealthStatus::Ok,
-        checked_at: Utc::now(),
-    })
+async fn health(State(state): State<HttpState>) -> Result<Json<HealthResponse>, HttpError> {
+    state.control.health().await.map(Json)
 }
 
 async fn metrics(State(state): State<HttpState>) -> Result<Json<MetricsResponse>, HttpError> {
     state.control.metrics().await.map(Json)
 }
 
-async fn start_whales_backfill(
+async fn btc_realtime_status(
     State(state): State<HttpState>,
-    Json(request): Json<BackfillWhalesRequest>,
-) -> Result<Json<BackfillJobResponse>, HttpError> {
-    state.control.start_whales_backfill(request).await.map(Json)
-}
-
-async fn start_copy_trade_backtest(
-    State(state): State<HttpState>,
-    Json(request): Json<CopyTradeBacktestRequest>,
-) -> Result<Json<BackfillJobResponse>, HttpError> {
-    state
-        .control
-        .start_copy_trade_backtest(request)
-        .await
-        .map(Json)
-}
-
-async fn start_copy_trade_calibration(
-    State(state): State<HttpState>,
-    Json(request): Json<CopyTradeCalibrationRequest>,
-) -> Result<Json<BackfillJobResponse>, HttpError> {
-    state
-        .control
-        .start_copy_trade_calibration(request)
-        .await
-        .map(Json)
-}
-
-async fn replay_existing_copy_trades(
-    State(state): State<HttpState>,
-    Json(request): Json<CopyTradeReplayRequest>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
-    state
-        .control
-        .replay_existing_copy_trades(request)
-        .await
-        .map(Json)
+    state.control.btc_realtime_status().await.map(Json)
 }
 
-async fn start_backtest_replay(
+async fn btc_paper_experiment_status(
     State(state): State<HttpState>,
-    Json(request): Json<BacktestReplayRequest>,
-) -> Result<Json<BacktestReplayQueued>, HttpError> {
-    state.control.start_backtest_replay(request).await.map(Json)
+) -> Result<Json<serde_json::Value>, HttpError> {
+    state.control.btc_paper_experiment_status().await.map(Json)
+}
+
+async fn legacy_copy_endpoint_gone() -> Result<Json<serde_json::Value>, HttpError> {
+    Err(HttpError::gone(
+        "legacy copy-trade and wallet-address workflows are disabled",
+    ))
 }
 
 async fn get_backtest_run(
@@ -1143,6 +1154,17 @@ async fn get_trading_process_status(
     state
         .control
         .get_trading_process_status(process_id)
+        .await
+        .map(Json)
+}
+
+async fn preview_trading_process_start(
+    State(state): State<HttpState>,
+    Path(process_id): Path<Uuid>,
+) -> Result<Json<TradingProcessStartPreviewResponse>, HttpError> {
+    state
+        .control
+        .preview_trading_process_start(process_id)
         .await
         .map(Json)
 }
@@ -1502,6 +1524,16 @@ pub struct TradingProcessStatusResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradingProcessStartPreviewResponse {
+    pub process_id: Uuid,
+    pub experiment_id: Uuid,
+    pub experiment_key: String,
+    pub preregistration_sha256: String,
+    pub config_hash: String,
+    pub frozen_process_config: TradingProcessConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradingProcessResetResponse {
     pub report: TradingProcessResetReport,
 }
@@ -1553,6 +1585,14 @@ impl HttpError {
 
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, "not_found", message)
+    }
+
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, "conflict", message)
+    }
+
+    pub fn gone(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::GONE, "gone", message)
     }
 
     pub fn not_implemented(message: impl Into<String>) -> Self {

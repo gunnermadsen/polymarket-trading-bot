@@ -7,9 +7,19 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY packages/polymarket-bot/Cargo.toml packages/polymarket-bot/Cargo.lock ./
+COPY packages/polymarket-bot/build.rs ./build.rs
 COPY packages/polymarket-bot/src ./src
 
-RUN cargo build --release
+RUN cargo build --locked --release
+
+FROM builder AS test
+
+COPY packages/polymarket-bot/tests ./tests
+COPY experiments/btc-updown/fixtures /experiments/btc-updown/fixtures
+
+RUN cargo test --locked --all-targets --no-run
+
+CMD ["cargo", "test", "--locked", "--all-targets", "--", "--include-ignored"]
 
 FROM debian:bookworm-slim
 

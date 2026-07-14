@@ -1,0 +1,444 @@
+{
+  "schema_version": "btc_realtime_paper_preregistration_v1",
+  "status": "preregistered",
+  "registered_at_utc": "2026-07-14T13:55:00Z",
+  "experiment_key": "btc-5m-chainlink-fair-value-20260714-a",
+  "purpose": "Estimate whether the frozen deterministic BTC five-minute strategy has positive realtime paper expectancy after executable prices, exact fees, and conservative execution stresses.",
+  "authority": {
+    "authoritative_report": "docs/sql/btc-5m-paper-experiment-report.sql",
+    "operational_integrity_audit": "docs/sql/btc-5m-paper-experiment-readiness.sql",
+    "archival_wrapper": "scripts/btc-paper-experiment-audit.sh",
+    "ml_may_influence_orders": false,
+    "authorizes_live_capital": false
+  },
+  "artifact_integrity": {
+    "algorithm": "sha256",
+    "sha256": {
+      "paper_experiment_report_sql": {
+        "path": "docs/sql/btc-5m-paper-experiment-report.sql",
+        "sha256": "b17e9321bfafe0715a896f11a82fd981f83c908c8af4f18e346349671b38710b"
+      },
+      "readiness_sql": {
+        "path": "docs/sql/btc-5m-paper-experiment-readiness.sql",
+        "sha256": "4e64274de307faa22cef9988860b9c0230956b4ffaa7a68661c9e6ebce6453bd"
+      },
+      "audit_wrapper": {
+        "path": "scripts/btc-paper-experiment-audit.sh",
+        "sha256": "cbbc96cbcd496ee4d5eb2d66b28363230adedcdd4018251aee93f92aaa15b667"
+      },
+      "paper_capital_migration": {
+        "path": "packages/db-migrate/src/migrations/1777123000000-AddBtcPhase6PaperCapital.ts",
+        "sha256": "408a7065685af23acda6596df8bf3e08d3a8a4817bf2cb9b819e85be44672e97"
+      },
+      "unstarted_trading_process_migration": {
+        "path": "packages/db-migrate/src/migrations/1777124000000-AllowUnstartedTradingProcesses.ts",
+        "sha256": "2404133d183cc82eecee410ec82aaacffe10944c8eeb65fb6ace1aa0baa72f03"
+      }
+    }
+  },
+  "cohort": {
+    "process_type": "btc_5m",
+    "process_scope": "realtime_paper",
+    "execution_mode": "paper",
+    "target_duration_hours": 176,
+    "maximum_collection_wall_clock_hours": 192,
+    "minimum_expected_complete_windows": 2000,
+    "minimum_qualifying_filled_orders": 100,
+    "minimum_distinct_utc_days": 7,
+    "startup_partial_window_excluded": true,
+    "window_seconds": 300,
+    "official_resolution_grace_seconds": 120,
+    "resolution_watch_retention_seconds": 3600,
+    "day_assignment": "market_window_end_utc_date",
+    "economic_unit": "filled_order_aggregated_across_all_fill_levels",
+    "process_key": "btc-5m-chainlink-fair-value-paper"
+  },
+  "frozen_runtime_contract": {
+    "pipeline_version": "btc_realtime_paper_pipeline_v11",
+    "compiled_source_identity": "tree-sha256:d1b6b77744932040539a0a6763f48cd583c3f67576d8f4fe4c0fbccf850894e4",
+    "strategy_version": "btc_5m_chainlink_fair_value_v1",
+    "feature_schema_version": "btc_5m_features_v2",
+    "strategy_interval_ms": 1000,
+    "target_size": "5",
+    "paper_arrival_latency_ms": 150,
+    "paper_visible_depth_haircut": "0.80",
+    "paper_starting_collateral_usd": "1000",
+    "live_order_submit_enabled": false,
+    "live_user_websocket_enabled": false,
+    "live_capital": false,
+    "paper_execution_enabled": true,
+    "ml_shadow_enabled": true,
+    "ml_execution_authority": false,
+    "legacy_strategies_enabled": false
+  },
+  "contracts": {
+    "process_definition_without_preregistration_sha256": {
+      "execution": {
+        "mode": "paper",
+        "execute_signals": true,
+        "live_capital": false,
+        "taker_fee_rate": null
+      },
+      "raw": {
+        "btc_realtime_paper": {
+          "schema_version": "btc_realtime_paper_process_v1",
+          "next_experiment_key": "btc-5m-chainlink-fair-value-20260714-a",
+          "strategy": {
+            "strategy_version": "btc_5m_chainlink_fair_value_v1",
+            "feature_schema_version": "btc_5m_features_v2",
+            "target_size": "5",
+            "min_seconds_after_open": 15,
+            "min_seconds_before_close": 20,
+            "max_reference_age_ms": 2000,
+            "max_chainlink_open_delay_ms": 5000,
+            "max_book_age_ms": 2000,
+            "max_source_skew_ms": 1000,
+            "max_fee_age_ms": 3600000,
+            "min_entry_price": "0.05",
+            "max_entry_price": "0.95",
+            "max_depth_participation": "0.25",
+            "volatility_floor_per_sqrt_second": "0.00005",
+            "probability_floor": "0.01",
+            "basis_lead_weight": "0.25",
+            "momentum_1s_weight": "0.05",
+            "momentum_5s_weight": "0.10",
+            "momentum_30s_weight": "0.10",
+            "max_lead_sigma_fraction": "0.25",
+            "base_probability_uncertainty": "0.015",
+            "basis_uncertainty_weight": "1",
+            "feed_age_uncertainty_per_second": "0.002",
+            "max_probability_uncertainty": "0.10",
+            "spread_reserve_fraction": "0.10",
+            "slippage_reserve_bps": "25",
+            "latency_reserve_per_share": "0.005",
+            "min_net_edge_per_share": "0.015",
+            "min_net_edge_usd": "0.02",
+            "max_fee_rate": "1"
+          },
+          "runtime": {
+            "strategy_interval_ms": 1000,
+            "official_resolution_audit_grace_secs": 120,
+            "official_resolution_watch_retention_secs": 3600
+          },
+          "paper": {
+            "arrival_latency_ms": 150,
+            "visible_depth_haircut": "0.80",
+            "starting_collateral_usd": "1000",
+            "stress_previews": [
+              {
+                "scenario_key": "latency_300ms_depth_65pct",
+                "arrival_latency_ms": 300,
+                "visible_depth_haircut": "0.65"
+              },
+              {
+                "scenario_key": "latency_600ms_depth_50pct",
+                "arrival_latency_ms": 600,
+                "visible_depth_haircut": "0.50"
+              }
+            ]
+          },
+          "ml_shadow": {
+            "enabled": true
+          }
+        }
+      }
+    },
+    "experiment_config_without_preregistration_sha256": {
+      "execution": {
+        "mode": "paper",
+        "execute_signals": true,
+        "live_capital": false,
+        "taker_fee_rate": null
+      },
+      "raw": {
+        "pipeline_version": "btc_realtime_paper_pipeline_v11",
+        "process_schema_version": "btc_realtime_paper_process_v1",
+        "build": {
+          "package_version": "0.1.0",
+          "compiled_source_identity": "tree-sha256:d1b6b77744932040539a0a6763f48cd583c3f67576d8f4fe4c0fbccf850894e4"
+        },
+        "strategy": {
+          "strategy_version": "btc_5m_chainlink_fair_value_v1",
+          "feature_schema_version": "btc_5m_features_v2",
+          "target_size": "5",
+          "min_seconds_after_open": 15,
+          "min_seconds_before_close": 20,
+          "max_reference_age_ms": 2000,
+          "max_chainlink_open_delay_ms": 5000,
+          "max_book_age_ms": 2000,
+          "max_source_skew_ms": 1000,
+          "max_fee_age_ms": 3600000,
+          "min_entry_price": "0.05",
+          "max_entry_price": "0.95",
+          "max_depth_participation": "0.25",
+          "volatility_floor_per_sqrt_second": "0.00005",
+          "probability_floor": "0.01",
+          "basis_lead_weight": "0.25",
+          "momentum_1s_weight": "0.05",
+          "momentum_5s_weight": "0.10",
+          "momentum_30s_weight": "0.10",
+          "max_lead_sigma_fraction": "0.25",
+          "base_probability_uncertainty": "0.015",
+          "basis_uncertainty_weight": "1",
+          "feed_age_uncertainty_per_second": "0.002",
+          "max_probability_uncertainty": "0.10",
+          "spread_reserve_fraction": "0.10",
+          "slippage_reserve_bps": "25",
+          "latency_reserve_per_share": "0.005",
+          "min_net_edge_per_share": "0.015",
+          "min_net_edge_usd": "0.02",
+          "max_fee_rate": "1"
+        },
+        "runtime": {
+          "enabled": true,
+          "gamma_base_url": "https://gamma-api.polymarket.com",
+          "clob_rest_base_url": "https://clob.polymarket.com",
+          "clob_ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+          "rtds_ws_url": "wss://ws-live-data.polymarket.com",
+          "binance_ws_url": "wss://stream.binance.com:9443/ws/btcusdt@aggTrade",
+          "discovery_interval": {
+            "secs": 5,
+            "nanos": 0
+          },
+          "clob_heartbeat_interval": {
+            "secs": 10,
+            "nanos": 0
+          },
+          "rtds_heartbeat_interval": {
+            "secs": 5,
+            "nanos": 0
+          },
+          "binance_heartbeat_interval": {
+            "secs": 20,
+            "nanos": 0
+          },
+          "reconnect_initial_delay": {
+            "secs": 1,
+            "nanos": 0
+          },
+          "reconnect_max_delay": {
+            "secs": 30,
+            "nanos": 0
+          },
+          "checkpoint_interval": {
+            "secs": 1,
+            "nanos": 0
+          },
+          "strategy_interval": {
+            "secs": 1,
+            "nanos": 0
+          },
+          "max_book_age": {
+            "secs": 2,
+            "nanos": 0
+          },
+          "max_reference_age": {
+            "secs": 2,
+            "nanos": 0
+          },
+          "boundary_tick_max_delay": {
+            "secs": 5,
+            "nanos": 0
+          },
+          "official_resolution_audit_grace": {
+            "secs": 120,
+            "nanos": 0
+          },
+          "official_resolution_watch_retention": {
+            "secs": 3600,
+            "nanos": 0
+          },
+          "writer_capacity": 8192
+        },
+        "paper": {
+          "execution_enabled": true,
+          "venue": {
+            "arrival_latency": {
+              "secs": 0,
+              "nanos": 150000000
+            },
+            "visible_depth_haircut": "0.80",
+            "max_book_age": [
+              2,
+              0
+            ],
+            "starting_collateral_usd": "1000"
+          },
+          "stress_previews": [
+            {
+              "scenario_key": "latency_300ms_depth_65pct",
+              "arrival_latency": {
+                "secs": 0,
+                "nanos": 300000000
+              },
+              "visible_depth_haircut": "0.65"
+            },
+            {
+              "scenario_key": "latency_600ms_depth_50pct",
+              "arrival_latency": {
+                "secs": 0,
+                "nanos": 600000000
+              },
+              "visible_depth_haircut": "0.50"
+            }
+          ]
+        },
+        "ml_shadow": {
+          "ml_a_enabled": true,
+          "ml_b_enabled": true,
+          "execution_authority": false
+        }
+      }
+    }
+  },
+  "operational_gates": {
+    "minimum_host_free_disk_before_launch_gib": 20,
+    "halt_when_host_free_disk_below_gib": 10,
+    "host_free_disk_observed_at_preregistration_gib": 45.05,
+    "host_disk_safety_budget_above_halt_at_preregistration_gib": 35.05,
+    "host_disk_capacity_basis": "The audit checks the Compose evidence bind mount. Each high-volume Timescale hypertable compresses after one day; the 20 GiB launch floor and 10 GiB hard halt preserve a wide storage margin.",
+    "minimum_window_and_label_coverage_percent": "99.5",
+    "minimum_official_resolution_slo_coverage_percent": "99.5",
+    "minimum_snapshots_per_complete_window": 285,
+    "maximum_snapshot_gap_seconds": 5,
+    "required_official_fill_coverage_percent": "100.0",
+    "maximum_live_fills": 0,
+    "maximum_non_paper_fills": 0,
+    "maximum_orphan_orders_or_fills": 0,
+    "maximum_fok_atomicity_mismatches": 0,
+    "maximum_post_label_entries": 0,
+    "maximum_duplicate_market_entries": 0,
+    "maximum_pnl_reconciliation_difference_usd": "0.000001",
+    "maximum_ml_execution_authority_events": 0,
+    "maximum_primary_writer_or_strategy_failures": 0,
+    "ml_shadow_queue_or_task_failures": "diagnostic_only_unless_they_cause_primary_snapshot_or_decision_loss_or_resource_instability"
+  },
+  "economic_gates": {
+    "minimum_point_net_expectancy_usd_per_qualifying_filled_order": "0",
+    "minimum_day_block_bootstrap_lower_95_percent_bound_usd": "0",
+    "minimum_stressed_point_expectancy_usd_per_original_qualifying_filled_order": "0",
+    "minimum_stressed_day_block_bootstrap_lower_95_percent_bound_usd": "0",
+    "minimum_uncertainty_stressed_expectancy_usd_per_original_qualifying_filled_order": "0",
+    "minimum_uncertainty_stressed_day_block_bootstrap_lower_95_percent_bound_usd": "0",
+    "minimum_each_online_counterfactual_preview_expectancy_usd_per_primary_eligible_order": "0",
+    "maximum_drawdown_usd": "100",
+    "minimum_worst_filled_order_net_pnl_usd": "-5.10",
+    "maximum_positive_pnl_share_from_one_utc_day": "0.80",
+    "maximum_positive_pnl_share_from_one_reported_regime_bucket": "0.80",
+    "minimum_leave_one_utc_day_out_expectancy_usd": "0"
+  },
+  "bootstrap": {
+    "method": "deterministic_nonparametric_utc_day_cluster_bootstrap",
+    "replicates": 10000,
+    "confidence_level": "0.95",
+    "lower_quantile": "0.025",
+    "upper_quantile": "0.975",
+    "seed": 20260713,
+    "resample_unit": "utc_day",
+    "estimator": "sum_net_pnl_divided_by_sum_qualifying_filled_orders"
+  },
+  "pessimistic_stress": {
+    "fee_multiplier": "1.25",
+    "missed_best_fill_fraction": "0.10",
+    "missed_fill_selection": "highest_unstressed_net_pnl_filled_orders_across_the_cohort",
+    "missed_fill_pnl": "0",
+    "missed_fill_denominator_treatment": "retain_in_original_qualifying_filled_order_count",
+    "rationale": "The stress simultaneously increases every realized fee by 25 percent and assumes the most profitable 10 percent of simulated filled orders would not have executed live."
+  },
+  "probability_uncertainty_stress": {
+    "multiplier": "1.25",
+    "source": "btc_strategy_decisions.metadata.fair_value.probability_uncertainty",
+    "selected_outcome_probability": "btc_strategy_decisions.fair_probability",
+    "stressed_selected_conservative_probability": "fair_probability_minus_0.25_times_probability_uncertainty",
+    "survival_rule": "stressed_net_edge_per_share_meets_frozen_min_net_edge_per_share_and_stressed_total_net_edge_meets_frozen_min_net_edge_usd",
+    "failed_survival_pnl": "0",
+    "denominator_treatment": "retain_in_original_qualifying_filled_order_count",
+    "report": [
+      "approved_opportunity_survival_count_and_rate",
+      "filled_order_survival_count_and_rate",
+      "official_outcome_net_pnl_on_surviving_filled_orders",
+      "mean_net_expectancy_per_original_qualifying_filled_order",
+      "utc_day_block_bootstrap_confidence_interval"
+    ]
+  },
+  "online_counterfactual_previews": {
+    "authority": "nonmutating_diagnostic_only",
+    "required_when_runtime_telemetry_is_available": true,
+    "scenarios": [
+      {
+        "scenario_key": "latency_300ms_depth_65pct",
+        "arrival_latency_ms": 300,
+        "visible_depth_haircut": "0.65"
+      },
+      {
+        "scenario_key": "latency_600ms_depth_50pct",
+        "arrival_latency_ms": 600,
+        "visible_depth_haircut": "0.50"
+      }
+    ],
+    "must_not_change": [
+      "deterministic_decision",
+      "primary_order_plan",
+      "paper_fill",
+      "position_or_collateral",
+      "reported_primary_strategy_pnl"
+    ],
+    "report": [
+      "eligible_order_count",
+      "counterfactual_fok_fill_count_and_rate",
+      "official_outcome_net_pnl",
+      "mean_net_expectancy_per_primary_eligible_order"
+    ]
+  },
+  "calibration_report": {
+    "label": "official_clob_binary_outcome",
+    "strategy_probability": "fair_up_probability",
+    "market_probability": "up_book_midpoint_when_bid_and_ask_are_present",
+    "metrics": [
+      "brier_score",
+      "log_loss",
+      "mean_probability_residual",
+      "decile_calibration"
+    ],
+    "calibration_is_a_promotion_gate": false
+  },
+  "regime_report": {
+    "dimensions": [
+      "seconds_to_close_fixed_buckets",
+      "realized_volatility_cohort_quartiles",
+      "quoted_spread_fixed_buckets",
+      "observed_paper_arrival_latency_fixed_buckets"
+    ],
+    "minimum_fills_for_interpretable_slice": 20,
+    "small_slices_are_diagnostic_only": true
+  },
+  "data_rules": {
+    "unverified_official_outcomes": "exclude_from_economic_numerator_and_fail_official_fill_coverage",
+    "partial_fok_fill": "operational_failure",
+    "missing_or_interpolated_market_data": "do_not_synthesize; mark_window_incomplete",
+    "configuration_or_code_change": "terminate_current_cohort_and_use_a_new_experiment_key",
+    "engine_or_recorder_gap": "retain_as_observed; never_delete_or_relabel",
+    "threshold_tuning_during_cohort": "prohibited",
+    "multiple_fill_levels": "aggregate_to_one_order_level_trade_before_expectancy_and_bootstrap",
+    "ml_shadow_predictions": "diagnostic_only_and_never_part_of_strategy_pnl"
+  },
+  "halt_conditions": [
+    "any_live_order_attempt_or_live_fill",
+    "expired_unresolved_official_resolution_watch",
+    "approved_decision_using_stale_crossed_or_unbootstrapped_book",
+    "future_data_or_post_label_entry",
+    "duplicate_entry_for_one_experiment_and_market",
+    "persistent_primary_writer_drop_or_database_error",
+    "feed_control_session_persistence_failure",
+    "paper_fok_partial_fill_or_pnl_reconciliation_mismatch",
+    "unexplained_complete_window_gap",
+    "evidence_storage_below_10_gib"
+  ],
+  "classification": {
+    "COLLECTING": "The immutable cohort is still running or has not reached its preregistered sample gates.",
+    "OPERATIONAL_FAILURE": "A final cohort fails identity, safety, completeness, official-resolution, FOK, lineage, or accounting gates; no profitability conclusion is allowed.",
+    "NO_VIABLE_EDGE": "Operational gates pass but unstressed or stressed point expectancy is non-positive.",
+    "PROMISING_INCONCLUSIVE": "Point estimates are positive but sample size, day-block confidence, drawdown, tail, or concentration gates do not all pass.",
+    "EDGE_SUPPORTED_FOR_LIVE_CANARY_PLANNING": "All preregistered operational and economic gates pass. This permits planning a separately gated tiny live FOK canary; it does not authorize live capital."
+  }
+}

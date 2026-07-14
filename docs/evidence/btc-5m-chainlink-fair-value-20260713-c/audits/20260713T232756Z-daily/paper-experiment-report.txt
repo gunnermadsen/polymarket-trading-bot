@@ -1,0 +1,146 @@
+Pager usage is off.
+BEGIN
+SET
+SET
+SET
+SET
+== realtime-paper experiment preregistered parameters ==
+ audit_mode |      preregistered_experiment_key      |        stable_process_key         |                      preregistration_sha256                      | required_complete_windows | minimum_window_and_label_coverage_pct | minimum_official_resolution_slo_pct | minimum_qualifying_filled_orders | minimum_distinct_utc_days | bootstrap_replicates | fee_stress_multiplier | missed_best_fill_fraction | probability_uncertainty_multiplier | maximum_drawdown_usd | maximum_concentration_fraction 
+------------+----------------------------------------+-----------------------------------+------------------------------------------------------------------+---------------------------+---------------------------------------+-------------------------------------+----------------------------------+---------------------------+----------------------+-----------------------+---------------------------+------------------------------------+----------------------+--------------------------------
+ daily      | btc-5m-chainlink-fair-value-20260713-c | btc-5m-chainlink-fair-value-paper | 5cd0c522bd8103b2bfc61d45c96eda09fa11cf227ce89cefe732d6f5dccd7d63 |                      2000 |                                  99.5 |                                99.5 |                              100 |                         7 |                10000 |                  1.25 |                      0.10 |                               1.25 |                  100 |                           0.80
+(1 row)
+
+== Immutable experiment identity and safety contract ==
+            experiment_id             |                  name                  | experiment_status |              process_id              | process_status | process_enabled |         heartbeat_at          |          started_at           | stopped_at | stop_reason |        strategy_version        | feature_schema_version |                           config_hash                            |                           compiled_source_identity                           |                 recorded_preregistration_sha256                  |                    raw_preregistration_sha256                    |        pipeline_version         | execution_mode | live_capital | paper_enabled | ml_execution_authority | starting_collateral_usd | exact_frozen_config_contract_match | identity_and_safety_gate_pass 
+--------------------------------------+----------------------------------------+-------------------+--------------------------------------+----------------+-----------------+-------------------------------+-------------------------------+------------+-------------+--------------------------------+------------------------+------------------------------------------------------------------+------------------------------------------------------------------------------+------------------------------------------------------------------+------------------------------------------------------------------+---------------------------------+----------------+--------------+---------------+------------------------+-------------------------+------------------------------------+-------------------------------
+ ce561c62-57f9-5e41-ba7c-b33a16130e02 | btc-5m-chainlink-fair-value-20260713-c | running           | 6af776e1-c45e-45ca-9f8a-d0ce54b8f27b | running        | t               | 2026-07-13 23:27:59.707298+00 | 2026-07-13 23:27:46.642505+00 |            |             | btc_5m_chainlink_fair_value_v1 | btc_5m_features_v2     | 51ee64dd45b0eccf42a12016b914dbb093116c7dd37beffc1edac2ccbb296ab9 | tree-sha256:d2ac586043676872cc11a700c3d09deed09a96128ac937f4bf826eb6064fd1bd | 5cd0c522bd8103b2bfc61d45c96eda09fa11cf227ce89cefe732d6f5dccd7d63 | 5cd0c522bd8103b2bfc61d45c96eda09fa11cf227ce89cefe732d6f5dccd7d63 | btc_realtime_paper_pipeline_v11 | paper          | f            | t             | f                      | 1000                    | t                                  | t
+(1 row)
+
+== Expected-window completeness and official-resolution coverage ==
+ expected_complete_windows | complete_windows | official_windows_within_slo | window_and_label_coverage_pct | official_resolution_slo_coverage_pct | first_expected_window | last_expected_window_end | operational_window_gate_pass 
+---------------------------+------------------+-----------------------------+-------------------------------+--------------------------------------+-----------------------+--------------------------+------------------------------
+                         0 |                0 |                           0 |                               |                                      |                       |                          | f
+(1 row)
+
+ window_start | window_end | snapshots | decisions | ready_snapshots | first_snapshot_at | last_snapshot_at | maximum_gap_seconds | valid_markets | local_labels | official_labels_within_slo | complete 
+--------------+------------+-----------+-----------+-----------------+-------------------+------------------+---------------------+---------------+--------------+----------------------------+----------
+(0 rows)
+
+== Safety, FOK atomicity, official-fill coverage, and accounting ==
+            experiment_id             | recorded_net_pnl | recomputed_net_pnl | process_orders_missing_or_wrong_experiment | planned_orders | non_buy_or_non_fok_orders | filled_orders | filled_orders_without_fills | partial_fok_orders | nonfilled_orders_with_fills | nonpaper_fill_rows | wrong_process_fill_rows | officially_resolved_filled_orders | official_unverified_filled_orders | post_label_entries | duplicate_market_entry_groups | prediction_authority_metadata_violations | ml_execution_authority | recorded_minus_recomputed_net_pnl | simulated_fok_fill_rate_pct | official_fill_coverage_pct | safety_execution_accounting_gate_pass 
+--------------------------------------+------------------+--------------------+--------------------------------------------+----------------+---------------------------+---------------+-----------------------------+--------------------+-----------------------------+--------------------+-------------------------+-----------------------------------+-----------------------------------+--------------------+-------------------------------+------------------------------------------+------------------------+-----------------------------------+-----------------------------+----------------------------+---------------------------------------
+ ce561c62-57f9-5e41-ba7c-b33a16130e02 |     0.0000000000 |                  0 |                                          0 |              0 |                         0 |             0 |                           0 |                  0 |                           0 |                  0 |                       0 |                                 0 |                                 0 |                  0 |                             0 |                                        0 | f                      |                      0.0000000000 |                             |                            | t
+(1 row)
+
+== Authoritative paper capital, settlement ledger, and process-fill integrity ==
+ orphan_process_fills | wrong_source_process_fills | wrong_identity_process_fills | overdue_pending_settlements | ledger_identity_or_provenance_violations | expected_eligible_settlements | credited_eligible_settlements | recent_inflight_capital_events | collateral_reconciliation_gap | entry_debit_reconciliation_gap | payout_reconciliation_gap | settlement_count_gap | experiment_ledger_net_pnl_gap | paper_capital_settlement_gate_pass 
+----------------------+----------------------------+------------------------------+-----------------------------+------------------------------------------+-------------------------------+-------------------------------+--------------------------------+-------------------------------+--------------------------------+---------------------------+----------------------+-------------------------------+------------------------------------
+                    0 |                          0 |                            0 |                           0 |                                        0 |                             0 |                             0 |                              0 |                             0 |                              0 |                         0 |                    0 |                  0.0000000000 | t
+(1 row)
+
+== Consolidated deterministic readiness and execution-parity gate ==
+ paper_capital_migrations | unstarted_process_migrations | trading_process_started_at_nullable | paper_capital_constraints | paper_capital_indexes | one_day_compression_policies | feed_decode_errors | feed_integrity_gaps | dropped_messages | unexpected_disconnects | approved_not_point_in_time_ready | arrival_causality_mismatches | dynamic_fee_mismatches | consolidated_readiness_gate_pass 
+--------------------------+------------------------------+-------------------------------------+---------------------------+-----------------------+------------------------------+--------------------+---------------------+------------------+------------------------+----------------------------------+------------------------------+------------------------+----------------------------------
+                        1 |                            1 | t                                   |                        15 |                     5 |                            4 |                  0 |                   0 |                0 |                      0 |                                0 |                            0 |                      0 | t
+(1 row)
+
+== ML shadow diagnostics (never a deterministic realtime-paper experiment profitability gate) ==
+ ml_enqueued | ml_completed | ml_rejected_full | ml_rejected_closed | ml_tasks_failed | ml_queue_depth |                               experiment_treatment                               
+-------------+--------------+------------------+--------------------+-----------------+----------------+----------------------------------------------------------------------------------
+ 13          | 13           | 0                | 0                  | 0               | 0              | diagnostic_only_unless_primary_snapshot_or_decision_loss_or_resource_instability
+(1 row)
+
+== Official-outcome fill-level aggregation ==
+ official_outcome | won | fill_level_rows | filled_orders | shares | entry_notional | payout | fees | net_pnl | mean_fill_level_net_pnl | worst_fill_level_net_pnl | best_fill_level_net_pnl 
+------------------+-----+-----------------+---------------+--------+----------------+--------+------+---------+-------------------------+--------------------------+-------------------------
+(0 rows)
+
+== Decision and execution funnel ==
+              step               | events | distinct_markets 
+---------------------------------+--------+------------------
+ feature_snapshots               |     13 |                1
+ ready_feature_snapshots         |      1 |                1
+ decisions                       |     13 |                1
+ decisions_with_fair_probability |      0 |                0
+ positive_gross_edge             |      0 |                0
+ positive_after_recorded_fee     |      0 |                0
+ positive_after_all_reserves     |      0 |                0
+ approved_order_plans            |      0 |                0
+ paper_fok_orders                |      0 |                0
+ paper_fok_filled_orders         |      0 |                0
+ paper_orders_with_fill_rows     |      0 |                0
+(11 rows)
+
+     reject_reason      |  status  |  action  | decisions | markets 
+------------------------+----------+----------+-----------+---------
+ missing_chainlink_open | rejected | no_trade |        10 |       1
+ runtime_not_ready      | rejected | no_trade |         3 |       1
+(2 rows)
+
+== Probability-uncertainty stress opportunity and fill survival ==
+ approved_opportunities | invalid_or_missing_uncertainty_inputs | mean_selected_conservative_probability | mean_uncertainty_stressed_selected_probability | uncertainty_stressed_surviving_opportunities | opportunity_survival_pct | originally_filled_opportunities | uncertainty_stressed_surviving_filled_opportunities | filled_opportunity_survival_pct | uncertainty_multiplier 
+------------------------+---------------------------------------+----------------------------------------+------------------------------------------------+----------------------------------------------+--------------------------+---------------------------------+-----------------------------------------------------+---------------------------------+------------------------
+                      0 |                                     0 |                                        |                                                |                                            0 |                          |                               0 |                                                   0 |                                 |                   1.25
+(1 row)
+
+== Qualifying-fill probability-uncertainty input integrity ==
+ qualifying_filled_orders | probability_uncertainty_input_violations 
+--------------------------+------------------------------------------
+                        0 |                                        0
+(1 row)
+
+== Non-mutating online latency/depth counterfactual previews ==
+ scenario_key | primary_eligible_orders | officially_resolved_eligible_orders | valid_preview_rows | preview_error_rows | counterfactual_fok_fills | officially_resolved_counterfactual_fok_fills | counterfactual_fok_fill_rate_pct | official_counterfactual_net_pnl | mean_net_pnl_per_primary_eligible_order | scenario_telemetry_gate_pass 
+--------------+-------------------------+-------------------------------------+--------------------+--------------------+--------------------------+----------------------------------------------+----------------------------------+---------------------------------+-----------------------------------------+------------------------------
+(0 rows)
+
+== Order-level official-outcome economics and tail statistics ==
+ qualifying_filled_orders | winners | win_rate_pct | gross_pnl | fees | net_pnl | mean_net_pnl_per_filled_order | sample_stddev_net_pnl | worst_filled_order_net_pnl | p05_net_pnl | lower_5pct_expected_shortfall | best_filled_order_net_pnl | maximum_drawdown_usd 
+--------------------------+---------+--------------+-----------+------+---------+-------------------------------+-----------------------+----------------------------+-------------+-------------------------------+---------------------------+----------------------
+                        0 |       0 |              |           |      |         |                               |                       |                            |             |                               |                           |                     
+(1 row)
+
+== Daily PnL and cumulative drawdown ==
+ outcome_day_utc | filled_orders | winners | entry_notional | fees | net_pnl | mean_net_pnl | worst_trade | best_trade | cumulative_net_pnl | running_peak | drawdown_from_prior_peak 
+-----------------+---------------+---------+----------------+------+---------+--------------+-------------+------------+--------------------+--------------+--------------------------
+(0 rows)
+
+ fills | utc_days | net_pnl | mean_net | fee_missed_stressed_net | fee_missed_stressed_mean | uncertainty_stressed_net | uncertainty_stressed_mean | worst_trade | max_drawdown | maximum_positive_day_share | minimum_loo_expectancy | economic_point_tail_concentration_gate_pass 
+-------+----------+---------+----------+-------------------------+--------------------------+--------------------------+---------------------------+-------------+--------------+----------------------------+------------------------+---------------------------------------------
+     0 |        0 |         |          |                         |                          |                          |                           |             |              |                          1 |                        | f
+(1 row)
+
+== Deterministic UTC-day cluster bootstrap (normal and preregistered stresses) ==
+ day_count | completed_replicates | normal_lower | normal_upper | fee_stress_lower | fee_stress_upper | uncertainty_stress_lower | uncertainty_stress_upper | normal_probability_positive | fee_stress_probability_positive | uncertainty_stress_probability_positive | gate_pass 
+-----------+----------------------+--------------+--------------+------------------+------------------+--------------------------+--------------------------+-----------------------------+---------------------------------+-----------------------------------------+-----------
+         0 |                    0 |      -999999 |              |          -999999 |                  |                  -999999 |                          |                             |                                 |                                         | f
+(1 row)
+
+== Official-outcome forecast calibration and residuals ==
+    forecast_source     | forecast_rows | resolved_markets | brier_score | log_loss | mean_probability_residual | mean_forecast_probability | observed_up_rate 
+------------------------+---------------+------------------+-------------+----------+---------------------------+---------------------------+------------------
+ deterministic_strategy |             0 |                0 |             |          |                           |                           |                 
+ arrival_book_midpoint  |             0 |                0 |             |          |                           |                           |                 
+(2 rows)
+
+ probability_decile | forecast_rows | resolved_markets | minimum_probability | maximum_probability | mean_forecast_probability | observed_up_rate | mean_probability_residual 
+--------------------+---------------+------------------+---------------------+---------------------+---------------------------+------------------+---------------------------
+(0 rows)
+
+ horizon_bucket | forecast_rows | resolved_markets | brier_score | log_loss | mean_probability_residual 
+----------------+---------------+------------------+-------------+----------+---------------------------
+(0 rows)
+
+== Filled-order regime slices and PnL concentration ==
+ dimension | bucket | fills | winners | win_rate_pct | net_pnl | mean_net_pnl | worst_trade | interpretable_slice | positive_pnl_share_within_dimension 
+-----------+--------+-------+---------+--------------+---------+--------------+-------------+---------------------+-------------------------------------
+(0 rows)
+
+== Preregistered realtime-paper experiment classification ==
+            experiment_id             |            experiment_name             | experiment_status | identity_gate_pass | consolidated_readiness_gate_pass | paper_capital_settlement_gate_pass | uncertainty_input_gate_pass | expected_windows | qualifying_filled_orders | experiment_classification |                                     classification_reason                                     
+--------------------------------------+----------------------------------------+-------------------+--------------------+----------------------------------+------------------------------------+-----------------------------+------------------+--------------------------+---------------------------+-----------------------------------------------------------------------------------------------
+ ce561c62-57f9-5e41-ba7c-b33a16130e02 | btc-5m-chainlink-fair-value-20260713-c | running           | t                  | t                                | t                                  | t                           |                0 |                        0 | COLLECTING                | The immutable cohort is still running; daily results are diagnostics, not a final conclusion.
+(1 row)
+
+EXPERIMENT_CLASSIFICATION= COLLECTING
+COMMIT

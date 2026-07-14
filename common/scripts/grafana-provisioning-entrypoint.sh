@@ -58,6 +58,10 @@ datasources:
       sslmode: ${GRAFANA_POSTGRES_SSL_MODE}
       postgresVersion: 1400
       timescaledb: true
+      maxOpenConns: 5
+      maxIdleConns: 2
+      maxIdleConnsAuto: false
+      connMaxLifetime: 14400
     secureJsonData:
       password: ${POSTGRES_PASSWORD_VALUE}
 EOF

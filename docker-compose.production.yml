@@ -16,15 +16,12 @@ x-grafana-env-file: &grafana-env-file
   path: ./.env.grafana
   required: false
 
-x-watchtower-labels: &watchtower-labels
-  com.centurylinklabs.watchtower.enable: "true"
-
 services:
   timescaledb-0:
     image: timescale/timescaledb:2.14.2-pg14
     container_name: timescaledb-0
     hostname: timescaledb-0
-    mem_limit: 1280m
+    mem_limit: 2g
     cpus: "0.65"
     logging: *default-logging
     env_file:
@@ -32,6 +29,34 @@ services:
     environment:
       POSTGRES_USER: "postgres"
       POSTGRES_DB: "polymarket"
+      TS_TUNE_MEMORY: "2GB"
+      TS_TUNE_NUM_CPUS: "1"
+      TS_TUNE_MAX_CONNS: "25"
+      TS_TUNE_MAX_BG_WORKERS: "4"
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - autovacuum_work_mem=64MB
+      - -c
+      - work_mem=10485kB
+      - -c
+      - max_connections=25
+      - -c
+      - max_locks_per_transaction=128
+      - -c
+      - max_parallel_workers=1
+      - -c
+      - max_parallel_workers_per_gather=0
+      - -c
+      - max_worker_processes=8
+      - -c
+      - timescaledb.max_background_workers=4
     ports:
       - "127.0.0.1:55432:5432"
     volumes:
@@ -50,7 +75,6 @@ services:
     hostname: db-migrate
     mem_limit: 256m
     cpus: "0.25"
-    labels: *watchtower-labels
     logging: *default-logging
     env_file:
       - *app-env-file
@@ -76,7 +100,6 @@ services:
     hostname: polymarket-bot
     mem_limit: 512m
     cpus: "0.30"
-    labels: *watchtower-labels
     logging: *default-logging
     env_file:
       - *app-env-file
@@ -90,7 +113,20 @@ services:
       POSTGRES_SSL_MODE: "disable"
       POSTGRES_SSL_CA_FILE: ""
       POLYMARKET_LIVE_CLOB_BASE_URL: "https://clob.polymarket.com"
+      POLYMARKET_LIVE_ORDER_SUBMIT_ENABLED: "false"
+      POLYMARKET_LIVE_USER_WS_ENABLED: "false"
       POLYMARKET_SCAN_ENABLED: "false"
+      POLYMARKET_SIGNAL2_ENABLED: "false"
+      POLYMARKET_SIGNAL3_ENABLED: "false"
+      POLYMARKET_COPY_TRADE_ENABLED: "false"
+      POLYMARKET_COPY_EXECUTE_ENABLED: "false"
+      POLYMARKET_WHALE_LIVE_ENABLED: "false"
+      POLYMARKET_WHALE_BACKFILL_ENABLED: "false"
+      POLYMARKET_BTC_REALTIME_ENABLED: "false"
+      POLYMARKET_BTC_PAPER_ENABLED: "false"
+      POLYMARKET_BTC_ML_SHADOW_ENABLED: "false"
+      POLYMARKET_BTC_RTDS_WS_URL: "wss://ws-live-data.polymarket.com"
+      POLYMARKET_BTC_BINANCE_WS_URL: "wss://stream.binance.com:9443/ws/btcusdt@aggTrade"
       POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
       POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
       POLYMARKET_CLOB_WS_URL: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
@@ -107,6 +143,7 @@ services:
         condition: service_completed_successfully
       timescaledb-0:
         condition: service_healthy
+    stop_grace_period: 60s
     restart: unless-stopped
 
   grafana:
@@ -115,7 +152,6 @@ services:
     hostname: grafana
     mem_limit: 256m
     cpus: "0.20"
-    labels: *watchtower-labels
     logging: *default-logging
     entrypoint:
       - /usr/local/bin/grafana-provisioning-entrypoint.sh
@@ -135,27 +171,6 @@ services:
     depends_on:
       timescaledb-0:
         condition: service_healthy
-    restart: unless-stopped
-
-  watchtower:
-    image: containrrr/watchtower:1.7.1
-    container_name: watchtower
-    hostname: watchtower
-    mem_limit: 128m
-    cpus: "0.10"
-    environment:
-      DOCKER_API_VERSION: "1.44"
-    logging: *default-logging
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /root/.docker/config.json:/config.json:ro
-    command:
-      - "--label-enable"
-      - "--include-stopped"
-      - "--revive-stopped"
-      - "--cleanup"
-      - "--interval"
-      - "300"
     restart: unless-stopped
 
 volumes:
