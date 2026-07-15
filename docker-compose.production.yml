@@ -156,6 +156,7 @@ services:
     mem_limit: 512m
     cpus: "0.50"
     pids_limit: 128
+    labels: *watchtower-labels
     logging: *default-logging
     env_file:
       - *postgres-env-file
