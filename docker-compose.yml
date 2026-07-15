@@ -16,28 +16,6 @@ x-grafana-env-file: &grafana-env-file
   path: ./.env.grafana
   required: false
 
-x-btc-paper-env: &btc-paper-env
-  POLYMARKET_LIVE_ORDER_SUBMIT_ENABLED: "false"
-  POLYMARKET_LIVE_USER_WS_ENABLED: "false"
-  POLYMARKET_SCAN_ENABLED: "false"
-  POLYMARKET_SIGNAL2_ENABLED: "false"
-  POLYMARKET_SIGNAL3_ENABLED: "false"
-  POLYMARKET_COPY_TRADE_ENABLED: "false"
-  POLYMARKET_COPY_EXECUTE_ENABLED: "false"
-  POLYMARKET_WHALE_LIVE_ENABLED: "false"
-  POLYMARKET_WHALE_BACKFILL_ENABLED: "false"
-  POLYMARKET_BTC_REALTIME_ENABLED: "true"
-  POLYMARKET_BTC_PAPER_ENABLED: "true"
-  POLYMARKET_BTC_ML_SHADOW_ENABLED: "true"
-  POLYMARKET_BTC_RTDS_WS_URL: "wss://ws-live-data.polymarket.com"
-  POLYMARKET_BTC_BINANCE_WS_URL: "wss://stream.binance.com:9443/ws/btcusdt@aggTrade"
-  POLYMARKET_CLOB_API_KEY: ""
-  POLYMARKET_CLOB_SECRET: ""
-  POLYMARKET_CLOB_PASSPHRASE: ""
-  POLYMARKET_PRIVATE_KEY: ""
-  POLYMARKET_FUNDER_ADDRESS: ""
-  POLYMARKET_SIGNATURE_TYPE: ""
-
 services:
   timescaledb-0:
     image: timescale/timescaledb:2.14.2-pg14
@@ -133,7 +111,6 @@ services:
       - *app-env-file
       - *postgres-env-file
     environment:
-      <<: *btc-paper-env
       RUST_LOG: "info"
       POSTGRES_HOST: "timescaledb-0"
       POSTGRES_PORT: "5432"
@@ -142,6 +119,15 @@ services:
       POSTGRES_SSL_MODE: "disable"
       POSTGRES_SSL_CA_FILE: ""
       POLYMARKET_LIVE_CLOB_BASE_URL: "https://clob.polymarket.com"
+      POLYMARKET_LIVE_ORDER_SUBMIT_ENABLED: "false"
+      POLYMARKET_LIVE_USER_WS_ENABLED: "false"
+      POLYMARKET_SCAN_ENABLED: "false"
+      POLYMARKET_COPY_TRADE_ENABLED: "false"
+      POLYMARKET_BTC_REALTIME_ENABLED: "true"
+      POLYMARKET_BTC_PAPER_ENABLED: "true"
+      POLYMARKET_BTC_ML_SHADOW_ENABLED: "true"
+      POLYMARKET_BTC_RTDS_WS_URL: "wss://ws-live-data.polymarket.com"
+      POLYMARKET_BTC_BINANCE_WS_URL: "wss://stream.binance.com:9443/ws/btcusdt@aggTrade"
       POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
       POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
       POLYMARKET_CLOB_WS_URL: "wss://ws-subscriptions-clob.polymarket.com/ws/market"

@@ -3850,8 +3850,6 @@ async fn main() -> Result<()> {
     info!(
         service = "polymarket-bot",
         scan_enabled = config.scan_enabled,
-        signal2_enabled = config.signal2_enabled,
-        signal3_enabled = config.signal3_enabled,
         live_order_submit_enabled = config.live.order_submit_enabled,
         live_user_ws_enabled = config.live.user_ws_enabled,
         legacy_copy_runtime_enabled = config.whale.copy_trade_enabled,
