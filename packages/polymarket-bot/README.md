@@ -19,9 +19,11 @@ URLs plus hard risk caps.
 
 ## Build and test
 
+The standard bot image build runs its Rust unit, integration, and contract tests
+before producing the release binary.
+
 ```bash
-docker compose --profile test build polymarket-bot polymarket-bot-test
-docker compose --profile test run --rm --no-deps polymarket-bot-test
+docker compose build polymarket-bot
 ```
 
 ## Derive CLOB Credentials

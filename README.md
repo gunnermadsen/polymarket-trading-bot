@@ -7,7 +7,6 @@ Standalone Docker stack for the Polymarket bot, its Polymarket-only migrations, 
 - `timescaledb-0`: dedicated TimescaleDB/Postgres database.
 - `db-migrate`: one-shot TypeORM migration runner with only `polymarket` migrations.
 - `polymarket-bot`: Rust bot service.
-- `polymarket-bot-test`: one-shot Rust unit, integration, and contract test job.
 - `btc-paper-audit`: one-shot readiness and expectancy evidence job.
 - `btc-ml-research`: one-shot Python ML research/test job with no trading authority.
 - `grafana`: provisioned Grafana instance with the Postgres datasource and `polymarket-bot` dashboard.
@@ -33,9 +32,8 @@ Non-secret runtime configuration belongs in `docker-compose.yml`.
 ```bash
 docker compose up -d timescaledb-0
 docker compose up --build db-migrate
-docker compose --profile test --profile ops --profile research build \
-  db-migrate polymarket-bot polymarket-bot-test btc-paper-audit btc-ml-research
-docker compose --profile test run --rm --no-deps polymarket-bot-test
+docker compose --profile ops --profile research build \
+  db-migrate polymarket-bot btc-paper-audit btc-ml-research
 docker compose --profile research run --rm --no-deps btc-ml-research
 docker compose up -d polymarket-bot grafana
 ```

@@ -90,9 +90,8 @@ From the repository root:
 
 ```bash
 docker compose up -d timescaledb-0
-docker compose --profile test --profile ops --profile research build \
-  db-migrate polymarket-bot polymarket-bot-test btc-paper-audit btc-ml-research
-docker compose --profile test run --rm --no-deps polymarket-bot-test
+docker compose --profile ops --profile research build \
+  db-migrate polymarket-bot btc-paper-audit btc-ml-research
 docker compose --profile research run --rm --no-deps btc-ml-research
 docker compose run --rm db-migrate
 docker compose up -d --no-deps polymarket-bot
@@ -452,8 +451,7 @@ ML-A/ML-B schema-canary completion requires the shared runtime-v2 fixture to pas
 
 ```bash
 docker compose run --rm btc-ml-research
-docker compose --profile test build polymarket-bot polymarket-bot-test
-docker compose --profile test run --rm --no-deps polymarket-bot-test
+docker compose build polymarket-bot
 ```
 
 These tests must reproduce the exact v2 schema, artifact, manifest, and vector hashes pinned in `experiments/btc-updown/fixtures/runtime_v2_contract.json`. Any contract edit requires a deliberate version bump and a new fixture; do not update expected hashes merely to make a drifted implementation pass. This is schema/lineage canary completion, not learned-model validation. ML-A training must eventually enforce official CLOB label provenance, and ML-B still needs explicit FOK fill/toxicity label builders. ML remains shadow-only until those definitions and the evidence gates below pass.

@@ -207,18 +207,6 @@ services:
     stop_grace_period: 60s
     restart: unless-stopped
 
-  polymarket-bot-test:
-    profiles: ["test"]
-    build:
-      context: .
-      dockerfile: packages/polymarket-bot/Dockerfile
-      target: test
-    image: polymarket/polymarket-bot-test:btc-paper
-    mem_limit: 1g
-    cpus: "1.0"
-    logging: *default-logging
-    restart: "no"
-
   btc-paper-audit:
     profiles: ["ops"]
     build:
