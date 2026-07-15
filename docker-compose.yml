@@ -207,53 +207,6 @@ services:
     stop_grace_period: 60s
     restart: unless-stopped
 
-  btc-paper-audit:
-    profiles: ["ops"]
-    build:
-      context: .
-      dockerfile: packages/btc-paper-audit/Dockerfile
-    image: polymarket/btc-paper-audit:latest
-    mem_limit: 256m
-    cpus: "0.25"
-    logging: *default-logging
-    env_file:
-      - *app-env-file
-      - *postgres-env-file
-    environment:
-      <<: *btc-paper-env
-      POSTGRES_HOST: "timescaledb-0"
-      POSTGRES_PORT: "5432"
-      POLYMARKET_DB_USER: "postgres"
-      POLYMARKET_DB_NAME: "polymarket"
-      POLYMARKET_HTTP_BASE_URL: "http://polymarket-bot:8097"
-      BTC_PAPER_EXPERIMENT_MANIFEST_PATH: "/workspace/docs/experiments/btc-5m-chainlink-fair-value-20260713-c/preregistration.json"
-    volumes:
-      - ./docs/evidence:/workspace/docs/evidence
-    depends_on:
-      timescaledb-0:
-        condition: service_healthy
-    read_only: true
-    tmpfs:
-      - /tmp
-    restart: "no"
-
-  btc-ml-research:
-    profiles: ["research"]
-    build:
-      context: .
-      dockerfile: experiments/btc-updown/Dockerfile
-    image: polymarket/btc-ml-research:latest
-    mem_limit: 1g
-    cpus: "1.0"
-    logging: *default-logging
-    volumes:
-      - btc-ml-datasets:/datasets:ro
-      - btc-ml-artifacts:/artifacts
-    read_only: true
-    tmpfs:
-      - /tmp
-    restart: "no"
-
   grafana:
     image: grafana/grafana:${GRAFANA_VERSION:-12.4.2}
     container_name: grafana
@@ -284,6 +237,4 @@ services:
 volumes:
   timescaledb-0-data:
   grafana-data:
-  btc-ml-datasets:
-  btc-ml-artifacts:
   polymarket-backfill-cache:
