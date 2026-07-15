@@ -16,6 +16,9 @@ x-grafana-env-file: &grafana-env-file
   path: ./.env.grafana
   required: false
 
+x-watchtower-labels: &watchtower-labels
+  com.centurylinklabs.watchtower.enable: "true"
+
 services:
   timescaledb-0:
     image: timescale/timescaledb:2.14.2-pg14
@@ -75,6 +78,7 @@ services:
     hostname: db-migrate
     mem_limit: 256m
     cpus: "0.25"
+    labels: *watchtower-labels
     logging: *default-logging
     env_file:
       - *app-env-file
@@ -100,6 +104,7 @@ services:
     hostname: polymarket-bot
     mem_limit: 512m
     cpus: "0.30"
+    labels: *watchtower-labels
     logging: *default-logging
     env_file:
       - *app-env-file
@@ -190,6 +195,7 @@ services:
     hostname: grafana
     mem_limit: 256m
     cpus: "0.20"
+    labels: *watchtower-labels
     logging: *default-logging
     entrypoint:
       - /usr/local/bin/grafana-provisioning-entrypoint.sh
@@ -209,6 +215,27 @@ services:
     depends_on:
       timescaledb-0:
         condition: service_healthy
+    restart: unless-stopped
+
+  watchtower:
+    image: containrrr/watchtower:1.7.1
+    container_name: watchtower
+    hostname: watchtower
+    mem_limit: 128m
+    cpus: "0.10"
+    environment:
+      DOCKER_API_VERSION: "1.44"
+    logging: *default-logging
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.docker/config.json:/config.json:ro
+    command:
+      - "--label-enable"
+      - "--include-stopped"
+      - "--revive-stopped"
+      - "--cleanup"
+      - "--interval"
+      - "300"
     restart: unless-stopped
 
 volumes:
