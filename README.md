@@ -7,9 +7,6 @@ Standalone Docker stack for the Polymarket bot, its Polymarket-only migrations, 
 - `timescaledb-0`: dedicated TimescaleDB/Postgres database.
 - `db-migrate`: one-shot TypeORM migration runner with only `polymarket` migrations.
 - `polymarket-bot`: Rust bot service.
-- `polymarket-bot-test`: one-shot Rust unit, integration, and contract test job.
-- `btc-paper-audit`: one-shot readiness and expectancy evidence job.
-- `btc-ml-research`: one-shot Python ML research/test job with no trading authority.
 - `grafana`: provisioned Grafana instance with the Postgres datasource and `polymarket-bot` dashboard.
 
 Kafka and pgbouncer are intentionally omitted.
@@ -33,18 +30,14 @@ Non-secret runtime configuration belongs in `docker-compose.yml`.
 ```bash
 docker compose up -d timescaledb-0
 docker compose up --build db-migrate
-docker compose --profile test --profile ops --profile research build \
-  db-migrate polymarket-bot polymarket-bot-test btc-paper-audit btc-ml-research
-docker compose --profile test run --rm --no-deps polymarket-bot-test
-docker compose --profile research run --rm --no-deps btc-ml-research
+docker compose build polymarket-bot
 docker compose up -d polymarket-bot grafana
 ```
 
 Starting the service leaves BTC trading inactive. Next, create or update the
-stopped API-controlled process definition, run the audit preflight, and call
-that process's `/start` endpoint. The exact payload and Docker-only commands
-are in `docs/runbooks/btc-5m-realtime-paper.md`; preflight intentionally
-requires both the running bot API and the stopped definition to exist.
+stopped API-controlled process definition and call that process's `/start`
+endpoint. Trading activity remains controlled by persistent process state, not
+by starting or stopping the bot container.
 
 The local Compose file publishes Postgres on
 `POLYMARKET_POSTGRES_HOST_PORT` (default `55433`) and bot HTTP on
@@ -60,10 +53,8 @@ to five open and two idle datasource connections so it fits within the
 Health:
 
 ```bash
-docker compose --profile ops run --rm --no-deps --entrypoint sh btc-paper-audit -ec \
-  'curl -fsS "$POLYMARKET_HTTP_BASE_URL/health"'
-docker compose --profile ops run --rm --no-deps --entrypoint sh btc-paper-audit -ec \
-  'curl -fsS "$POLYMARKET_HTTP_BASE_URL/metrics"'
+curl -fsS "http://127.0.0.1:${POLYMARKET_HTTP_HOST_PORT:-8098}/health"
+curl -fsS "http://127.0.0.1:${POLYMARKET_HTTP_HOST_PORT:-8098}/metrics"
 ```
 
 Grafana:

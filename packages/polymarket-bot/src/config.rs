@@ -14,8 +14,6 @@ pub enum ExecutionMode {
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub scan_enabled: bool,
-    pub signal2_enabled: bool,
-    pub signal3_enabled: bool,
     pub live: LiveExecutionConfig,
     pub gamma_base_url: String,
     pub clob_base_url: String,
@@ -95,8 +93,6 @@ pub struct HttpConfig {
 
 #[derive(Debug, Clone)]
 pub struct WhaleConfig {
-    pub backfill_enabled: bool,
-    pub live_enabled: bool,
     pub copy_trade_enabled: bool,
     pub lookback_days: u32,
     pub min_trade_usd: Decimal,
@@ -114,7 +110,6 @@ pub struct WhaleConfig {
     pub max_price_slippage_bps: Decimal,
     pub min_book_depth_usd: Decimal,
     pub backtest_horizon: Duration,
-    pub copy_execute_enabled: bool,
     pub copy_allow_sell_entries: bool,
     pub live_poll_interval: Duration,
     pub live_page_limit: usize,
@@ -171,12 +166,7 @@ impl AppConfig {
         }
 
         let scan_enabled = parse_bool("POLYMARKET_SCAN_ENABLED", false);
-        let signal2_enabled = parse_bool("POLYMARKET_SIGNAL2_ENABLED", false);
-        let signal3_enabled = parse_bool("POLYMARKET_SIGNAL3_ENABLED", false);
-        let whale_backfill_enabled = parse_bool("POLYMARKET_WHALE_BACKFILL_ENABLED", false);
-        let whale_live_enabled = parse_bool("POLYMARKET_WHALE_LIVE_ENABLED", false);
         let copy_trade_enabled = parse_bool("POLYMARKET_COPY_TRADE_ENABLED", false);
-        let copy_execute_enabled = parse_bool("POLYMARKET_COPY_EXECUTE_ENABLED", false);
 
         let btc = BtcConfig {
             realtime_enabled: parse_bool("POLYMARKET_BTC_REALTIME_ENABLED", false),
@@ -206,12 +196,7 @@ impl AppConfig {
                 ),
                 ("POLYMARKET_LIVE_USER_WS_ENABLED", live.user_ws_enabled),
                 ("POLYMARKET_SCAN_ENABLED", scan_enabled),
-                ("POLYMARKET_SIGNAL2_ENABLED", signal2_enabled),
-                ("POLYMARKET_SIGNAL3_ENABLED", signal3_enabled),
-                ("POLYMARKET_WHALE_BACKFILL_ENABLED", whale_backfill_enabled),
-                ("POLYMARKET_WHALE_LIVE_ENABLED", whale_live_enabled),
                 ("POLYMARKET_COPY_TRADE_ENABLED", copy_trade_enabled),
-                ("POLYMARKET_COPY_EXECUTE_ENABLED", copy_execute_enabled),
             ] {
                 if enabled {
                     conflicting_flags.push(name);
@@ -227,8 +212,6 @@ impl AppConfig {
 
         Ok(Self {
             scan_enabled,
-            signal2_enabled,
-            signal3_enabled,
             live,
             gamma_base_url: env_or(
                 "POLYMARKET_GAMMA_BASE_URL",
@@ -273,8 +256,6 @@ impl AppConfig {
                 admin_token: env_or("POLYMARKET_HTTP_ADMIN_TOKEN", "dev-polymarket-admin"),
             },
             whale: WhaleConfig {
-                backfill_enabled: whale_backfill_enabled,
-                live_enabled: whale_live_enabled,
                 copy_trade_enabled,
                 lookback_days: parse_u32("POLYMARKET_WHALE_BACKFILL_LOOKBACK_DAYS", 30),
                 min_trade_usd: parse_decimal("POLYMARKET_WHALE_MIN_TRADE_USD", dec!(500)),
@@ -304,7 +285,6 @@ impl AppConfig {
                     "POLYMARKET_COPY_BACKTEST_HORIZON_SECS",
                     3600,
                 )),
-                copy_execute_enabled,
                 copy_allow_sell_entries: parse_bool("POLYMARKET_COPY_ALLOW_SELL_ENTRIES", false),
                 live_poll_interval: Duration::from_secs(parse_u64(
                     "POLYMARKET_WHALE_LIVE_POLL_INTERVAL_SECS",
