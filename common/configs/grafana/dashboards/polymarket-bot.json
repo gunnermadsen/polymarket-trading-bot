@@ -38,6 +38,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgres"
       },
+      "description": "A live paper session exists only when the trading process and its paper experiment both claim to be running and the process heartbeat is fresh. The bot service itself may be healthy while Active Sessions is zero.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -62,7 +63,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Active Processes"
+              "options": "Active Sessions"
             },
             "properties": [
               {
@@ -72,7 +73,7 @@
                   "steps": [
                     {
                       "color": "red",
-                      "value": null
+                      "value": 0
                     },
                     {
                       "color": "green",
@@ -100,7 +101,7 @@
                   "steps": [
                     {
                       "color": "green",
-                      "value": null
+                      "value": 0
                     },
                     {
                       "color": "red",
@@ -119,7 +120,6 @@
         "x": 0,
         "y": 1
       },
-      "description": "A live paper process exists when its process lifecycle is active, it is enabled, and its heartbeat is fresh. This section is scoped exclusively by the stable trading process identity.",
       "id": 3,
       "options": {
         "colorMode": "value",
@@ -148,7 +148,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT count(*) AS \"Active Processes\"\nFROM polymarket.trading_processes p\nWHERE p.process_scope='realtime_paper'\n  AND p.enabled\n  AND p.status IN ('starting','running','stopping')\n  AND p.stopped_at IS NULL\n  AND COALESCE(p.heartbeat_at,p.updated_at,p.started_at,p.created_at)>=now()-interval '2 minutes';",
+          "rawSql": "SELECT count(DISTINCT p.process_id) AS \"Active Sessions\"\nFROM polymarket.trading_processes p\nJOIN polymarket.btc_paper_experiments e\n  ON e.process_id=p.process_id\n AND e.status='running'\n AND e.stopped_at IS NULL\nWHERE p.process_scope='realtime_paper'\n  AND p.enabled\n  AND p.status IN ('starting','running','stopping')\n  AND p.stopped_at IS NULL\n  AND COALESCE(p.heartbeat_at,p.updated_at,p.started_at,p.created_at)>=now()-interval '2 minutes';",
           "refId": "A",
           "sql": {
             "columns": [
@@ -176,7 +176,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT count(*) AS \"Lifecycle Mismatch\"\nFROM polymarket.trading_processes p\nWHERE p.process_scope='realtime_paper'\n  AND (\n    p.enabled <> (p.status IN ('starting','running','stopping'))\n    OR (p.enabled AND p.stopped_at IS NOT NULL)\n    OR (\n      p.enabled\n      AND p.status IN ('starting','running','stopping')\n      AND COALESCE(p.heartbeat_at,p.updated_at,p.started_at,p.created_at)<now()-interval '2 minutes'\n    )\n  );",
+          "rawSql": "SELECT count(DISTINCT p.process_id) AS \"Lifecycle Mismatch\"\nFROM polymarket.trading_processes p\nLEFT JOIN polymarket.btc_paper_experiments e\n  ON e.process_id=p.process_id\n AND e.status='running'\n AND e.stopped_at IS NULL\nWHERE p.process_scope='realtime_paper'\n  AND (\n    (\n      p.enabled\n      AND p.status IN ('starting','running','stopping')\n      AND p.stopped_at IS NULL\n    ) <> (e.experiment_id IS NOT NULL)\n    OR (\n      (\n        (p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL)\n        OR e.experiment_id IS NOT NULL\n      )\n      AND COALESCE(p.heartbeat_at,p.updated_at,p.started_at,p.created_at)<now()-interval '2 minutes'\n    )\n  );",
           "refId": "B",
           "sql": {
             "columns": [
@@ -233,6 +233,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgres"
       },
+      "description": "Per-process unrealized PnL sampled every 30 seconds for active realtime-paper experiments. A zero means the process has no open positions; a gap means at least one open position lacked a fresh integrity-ok best bid, so no partial total is shown.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -301,7 +302,7 @@
       "options": {
         "legend": {
           "calcs": [
-            "lastNotNull"
+            "last"
           ],
           "displayMode": "table",
           "placement": "bottom",
@@ -323,7 +324,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "WITH bounds AS MATERIALIZED (\n  SELECT $__timeFrom()::timestamptz AS from_ts,$__timeTo()::timestamptz AS to_ts\n), buckets AS MATERIALIZED (\n  SELECT generate_series(date_bin('5 minutes',from_ts,timestamptz '1970-01-01'),to_ts,interval '5 minutes') AS \"time\" FROM bounds\n  UNION SELECT to_ts FROM bounds\n), active AS MATERIALIZED (\n  SELECT p.process_id,p.name\n  FROM polymarket.trading_processes p\n  WHERE p.process_scope='realtime_paper'\n    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n    AND COALESCE(p.heartbeat_at,p.updated_at,p.started_at,p.created_at)>=now()-interval '2 minutes'\n), entries AS MATERIALIZED (\n  SELECT a.process_id,a.name,o.order_id,o.token_id,MIN(f.timestamp_utc) AS entry_at,\n         SUM(f.size)::numeric AS filled_size,SUM(f.price*f.size)::numeric AS entry_cost,\n         SUM(f.fee)::numeric AS entry_fees,m.official_resolution_received_at AS resolved_at\n  FROM active a\n  JOIN polymarket.orders o ON o.process_id=a.process_id\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.source='paper'\n  JOIN polymarket.btc_interval_markets m ON m.market_id=o.market_id\n  GROUP BY a.process_id,a.name,o.order_id,o.token_id,m.official_resolution_received_at\n), points AS MATERIALIZED (\n  SELECT b.\"time\",e.process_id,e.name,e.filled_size*mark.best_bid-e.entry_cost-e.entry_fees AS value\n  FROM buckets b JOIN entries e ON e.entry_at<=b.\"time\" AND (e.resolved_at IS NULL OR b.\"time\"<e.resolved_at)\n  JOIN LATERAL (\n    SELECT c.best_bid FROM polymarket.orderbook_checkpoints c\n    WHERE c.token_id=e.token_id AND c.integrity_status='ok' AND c.best_bid IS NOT NULL\n      AND c.source_timestamp BETWEEN b.\"time\"-interval '2 seconds' AND b.\"time\"+interval '1 second'\n      AND c.received_at BETWEEN b.\"time\"-interval '2 seconds' AND b.\"time\"\n    ORDER BY c.source_timestamp DESC,c.received_at DESC,c.ingest_sequence DESC LIMIT 1\n  ) mark ON true\n)\nSELECT \"time\",name||' ['||left(process_id::text,8)||']' AS metric,SUM(value)::double precision AS value\nFROM points GROUP BY \"time\",process_id,name ORDER BY \"time\",metric;",
+          "rawSql": "WITH bounds AS MATERIALIZED (\n  SELECT $__timeFrom()::timestamptz AS from_ts,$__timeTo()::timestamptz AS to_ts\n), buckets AS MATERIALIZED (\n  SELECT generate_series(date_bin('30 seconds',from_ts,timestamptz '1970-01-01'),to_ts,interval '30 seconds') AS \"time\" FROM bounds\n  UNION SELECT to_ts FROM bounds\n), active AS MATERIALIZED (\n  SELECT e.experiment_id,e.process_id,e.name,COALESCE(e.started_at,e.created_at) AS started_at\n  FROM polymarket.btc_paper_experiments e\n  JOIN polymarket.trading_processes p USING(process_id)\n  WHERE p.process_scope='realtime_paper'\n    AND e.status='running' AND e.stopped_at IS NULL\n    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n    AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes'\n), process_buckets AS MATERIALIZED (\n  SELECT b.\"time\",a.experiment_id,a.process_id,a.name\n  FROM active a JOIN buckets b ON b.\"time\">=a.started_at\n), entry_states AS MATERIALIZED (\n  SELECT pb.\"time\",pb.experiment_id,pb.process_id,pb.name,o.order_id,o.token_id,\n         SUM(f.size)::numeric AS filled_size,SUM(f.price*f.size)::numeric AS entry_cost,\n         SUM(f.fee)::numeric AS entry_fees\n  FROM process_buckets pb\n  JOIN polymarket.orders o ON o.process_id=pb.process_id\n    AND o.raw_payload#>>'{request,metadata,experiment_id}'=pb.experiment_id::text\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.source='paper'\n    AND f.timestamp_utc<=pb.\"time\"\n  JOIN polymarket.btc_interval_markets m ON m.market_id=o.market_id\n    AND (m.official_resolution_received_at IS NULL OR pb.\"time\"<m.official_resolution_received_at)\n  GROUP BY pb.\"time\",pb.experiment_id,pb.process_id,pb.name,o.order_id,o.token_id\n), marked AS MATERIALIZED (\n  SELECT e.*,mark.best_bid\n  FROM entry_states e\n  LEFT JOIN LATERAL (\n    SELECT c.best_bid FROM polymarket.orderbook_checkpoints c\n    WHERE c.token_id=e.token_id AND c.integrity_status='ok' AND c.best_bid IS NOT NULL\n      AND c.source_timestamp BETWEEN e.\"time\"-interval '2 seconds' AND e.\"time\"+interval '1 second'\n      AND c.received_at BETWEEN e.\"time\"-interval '2 seconds' AND e.\"time\"\n    ORDER BY c.source_timestamp DESC,c.received_at DESC,c.ingest_sequence DESC LIMIT 1\n  ) mark ON true\n), series AS MATERIALIZED (\n  SELECT pb.\"time\",pb.process_id,pb.name,\n         CASE WHEN COUNT(m.order_id)=0 THEN 0::numeric\n              WHEN COUNT(m.order_id)=COUNT(m.best_bid)\n              THEN SUM(m.filled_size*m.best_bid-m.entry_cost-m.entry_fees)\n         END AS value\n  FROM process_buckets pb\n  LEFT JOIN marked m ON m.\"time\"=pb.\"time\" AND m.experiment_id=pb.experiment_id\n    AND m.process_id=pb.process_id\n  GROUP BY pb.\"time\",pb.experiment_id,pb.process_id,pb.name\n)\nSELECT \"time\",name||' ['||left(process_id::text,8)||']' AS metric,\n       value::double precision AS value\nFROM series ORDER BY \"time\",metric;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -352,6 +353,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgres"
       },
+      "description": "Cumulative realized PnL for fresh, currently running paper sessions only. Stopped experiments are available in the evidence and history rows below, not in this live row.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -423,7 +425,7 @@
             "lastNotNull"
           ],
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
@@ -442,7 +444,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "WITH bounds AS MATERIALIZED (\n  SELECT $__timeFrom()::timestamptz AS from_ts,$__timeTo()::timestamptz AS to_ts\n), buckets AS MATERIALIZED (\n  SELECT generate_series(date_bin('5 minutes',from_ts,timestamptz '1970-01-01'),to_ts,interval '5 minutes') AS \"time\" FROM bounds\n  UNION SELECT to_ts FROM bounds\n), active AS MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at\n  FROM polymarket.trading_processes p\n  WHERE p.process_scope='realtime_paper'\n    AND p.enabled AND p.status IN ('starting','running','stopping')\n    AND p.stopped_at IS NULL\n    AND COALESCE(p.heartbeat_at,p.updated_at,p.started_at,p.created_at)>=now()-interval '2 minutes'\n), entries AS MATERIALIZED (\n  SELECT a.process_id,o.order_id,o.token_id,o.market_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS fees\n  FROM active a JOIN polymarket.orders o ON o.process_id=a.process_id\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.source='paper'\n  GROUP BY a.process_id,o.order_id,o.token_id,o.market_id\n), exits AS MATERIALIZED (\n  SELECT e.process_id,m.official_resolution_received_at AS realized_at,\n         (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.fees)::numeric AS net_pnl\n  FROM entries e JOIN polymarket.btc_interval_markets m USING(market_id) CROSS JOIN bounds b\n  WHERE m.official_outcome IS NOT NULL AND m.official_resolution_received_at IS NOT NULL\n    AND m.official_resolution_received_at<=b.to_ts\n)\nSELECT b.\"time\",a.name||' ['||left(a.process_id::text,8)||']' AS metric,\n       COALESCE(SUM(x.net_pnl) FILTER(WHERE x.realized_at<=b.\"time\"),0)::double precision AS value\nFROM active a JOIN buckets b ON b.\"time\">=a.created_at\nLEFT JOIN exits x ON x.process_id=a.process_id\nGROUP BY b.\"time\",a.name,a.process_id\nORDER BY b.\"time\",metric;",
+          "rawSql": "WITH bounds AS MATERIALIZED (\n  SELECT $__timeFrom()::timestamptz AS from_ts,$__timeTo()::timestamptz AS to_ts\n), buckets AS MATERIALIZED (\n  SELECT generate_series(date_bin('5 minutes',from_ts,timestamptz '1970-01-01'),to_ts,interval '5 minutes') AS \"time\" FROM bounds\n  UNION SELECT to_ts FROM bounds\n), active AS MATERIALIZED (\n  SELECT e.*\n  FROM polymarket.btc_paper_experiments e\n  JOIN polymarket.trading_processes p USING(process_id)\n  WHERE p.process_scope='realtime_paper'\n    AND e.status='running' AND e.stopped_at IS NULL\n    AND p.enabled AND p.status IN ('starting','running','stopping')\n    AND p.stopped_at IS NULL\n    AND COALESCE(p.heartbeat_at,p.updated_at,p.started_at,p.created_at)>=now()-interval '2 minutes'\n), entries AS MATERIALIZED (\n  SELECT a.experiment_id,a.process_id,o.order_id,o.token_id,o.market_id,\n         SUM(f.size)::numeric AS filled_size,SUM(f.price*f.size)::numeric AS entry_cost,\n         SUM(f.fee)::numeric AS fees\n  FROM active a JOIN polymarket.orders o ON o.process_id=a.process_id\n    AND o.raw_payload#>>'{request,metadata,experiment_id}'=a.experiment_id::text\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.source='paper'\n  GROUP BY a.experiment_id,a.process_id,o.order_id,o.token_id,o.market_id\n), exits AS MATERIALIZED (\n  SELECT e.experiment_id,e.process_id,m.official_resolution_received_at AS realized_at,\n         (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.fees)::numeric AS net_pnl\n  FROM entries e JOIN polymarket.btc_interval_markets m USING(market_id) CROSS JOIN bounds b\n  WHERE m.official_outcome IS NOT NULL AND m.official_resolution_received_at IS NOT NULL\n    AND m.official_resolution_received_at<=b.to_ts\n)\nSELECT b.\"time\",a.name||' ['||left(a.process_id::text,8)||']' AS metric,\n       COALESCE(SUM(x.net_pnl) FILTER(WHERE x.realized_at<=b.\"time\"),0)::double precision AS value\nFROM active a\nJOIN buckets b ON b.\"time\">=COALESCE(a.started_at,a.created_at)\nLEFT JOIN exits x ON x.experiment_id=a.experiment_id AND x.process_id=a.process_id\nGROUP BY b.\"time\",a.experiment_id,a.name,a.process_id\nORDER BY b.\"time\",metric;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -463,7 +465,6 @@
           }
         }
       ],
-      "description": "Process-lifetime cumulative realized PnL for fresh, currently running paper processes. Every process-owned order and fill contributes across restarts.",
       "title": "Active Cumulative Net Realized PnL",
       "type": "timeseries"
     },
@@ -530,7 +531,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH active AS MATERIALIZED (\n  SELECT p.process_id\n  FROM polymarket.trading_processes p\n  WHERE p.process_scope='realtime_paper'\n    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n    AND COALESCE(p.heartbeat_at,p.updated_at,p.started_at,p.created_at)>=now()-interval '2 minutes'\n), open_entries AS MATERIALIZED (\n  SELECT a.process_id,o.order_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees\n  FROM active a JOIN polymarket.orders o ON o.process_id=a.process_id\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.source='paper'\n  JOIN polymarket.btc_interval_markets m ON m.market_id=o.market_id\n  WHERE m.official_resolution_received_at IS NULL\n  GROUP BY a.process_id,o.order_id,o.token_id\n), marked AS MATERIALIZED (\n  SELECT e.*,mark.best_bid,mark.source_timestamp AS mark_at\n  FROM open_entries e LEFT JOIN LATERAL (\n    SELECT c.best_bid,c.source_timestamp FROM polymarket.orderbook_checkpoints c\n    WHERE c.token_id=e.token_id AND c.integrity_status='ok' AND c.best_bid IS NOT NULL\n      AND c.source_timestamp BETWEEN now()-interval '2 seconds' AND now()+interval '1 second'\n      AND c.received_at BETWEEN now()-interval '2 seconds' AND now()\n    ORDER BY c.source_timestamp DESC,c.received_at DESC,c.ingest_sequence DESC LIMIT 1\n  ) mark ON true\n), summary AS (\n  SELECT COUNT(*) AS open_count,COUNT(best_bid) AS fresh_count,\n         COALESCE(SUM(filled_size*best_bid-entry_cost-entry_fees) FILTER(WHERE best_bid IS NOT NULL),0) AS value,\n         MAX(mark_at) AS latest_mark_at FROM marked\n)\nSELECT CASE WHEN open_count=0 THEN 0::double precision\n            WHEN fresh_count=open_count THEN value::double precision ELSE NULL::double precision END AS \"Fresh Unrealized PnL\",\n       open_count AS \"Open Positions\",open_count-fresh_count AS \"Stale or Unpriced\"\nFROM summary;",
+          "rawSql": "WITH active AS MATERIALIZED (\n  SELECT e.experiment_id,e.process_id\n  FROM polymarket.btc_paper_experiments e JOIN polymarket.trading_processes p USING(process_id)\n  WHERE p.process_scope='realtime_paper'\n    AND e.status='running' AND e.stopped_at IS NULL\n    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n    AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes'\n), open_entries AS MATERIALIZED (\n  SELECT e.process_id,o.order_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees\n  FROM active e JOIN polymarket.orders o ON o.process_id=e.process_id\n    AND o.raw_payload#>>'{request,metadata,experiment_id}'=e.experiment_id::text\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.source='paper'\n  JOIN polymarket.btc_interval_markets m ON m.market_id=o.market_id\n  WHERE m.official_resolution_received_at IS NULL\n  GROUP BY e.process_id,o.order_id,o.token_id\n), marked AS MATERIALIZED (\n  SELECT e.*,mark.best_bid,mark.source_timestamp AS mark_at\n  FROM open_entries e LEFT JOIN LATERAL (\n    SELECT c.best_bid,c.source_timestamp FROM polymarket.orderbook_checkpoints c\n    WHERE c.token_id=e.token_id AND c.integrity_status='ok' AND c.best_bid IS NOT NULL\n      AND c.source_timestamp BETWEEN now()-interval '2 seconds' AND now()+interval '1 second'\n      AND c.received_at BETWEEN now()-interval '2 seconds' AND now()\n    ORDER BY c.source_timestamp DESC,c.received_at DESC,c.ingest_sequence DESC LIMIT 1\n  ) mark ON true\n), summary AS (\n  SELECT COUNT(*) AS open_count,COUNT(best_bid) AS fresh_count,\n         COALESCE(SUM(filled_size*best_bid-entry_cost-entry_fees) FILTER(WHERE best_bid IS NOT NULL),0) AS value,\n         MAX(mark_at) AS latest_mark_at FROM marked\n)\nSELECT CASE WHEN open_count=0 THEN 0::double precision\n            WHEN fresh_count=open_count THEN value::double precision ELSE NULL::double precision END AS \"Fresh Unrealized PnL\",\n       open_count AS \"Open Positions\",open_count-fresh_count AS \"Stale or Unpriced\"\nFROM summary;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -617,7 +618,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH active AS MATERIALIZED (\n  SELECT p.process_id\n  FROM polymarket.trading_processes p\n  WHERE p.process_scope='realtime_paper'\n    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n    AND COALESCE(p.heartbeat_at,p.updated_at,p.started_at,p.created_at)>=now()-interval '2 minutes'\n), entries AS MATERIALIZED (\n  SELECT a.process_id,o.order_id,o.token_id,o.market_id,\n         SUM(f.size)::numeric AS filled_size,SUM(f.price*f.size)::numeric AS entry_cost,\n         SUM(f.fee)::numeric AS fees\n  FROM active a JOIN polymarket.orders o ON o.process_id=a.process_id\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.source='paper'\n  GROUP BY a.process_id,o.order_id,o.token_id,o.market_id\n)\nSELECT COALESCE(SUM(\n         CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END\n         -e.entry_cost-e.fees\n       ),0)::double precision AS \"Active Net Realized PnL\"\nFROM entries e JOIN polymarket.btc_interval_markets m USING(market_id)\nWHERE m.official_outcome IS NOT NULL AND m.official_resolution_received_at IS NOT NULL;",
+          "rawSql": "WITH active AS MATERIALIZED (\n  SELECT e.experiment_id FROM polymarket.btc_paper_experiments e\n  JOIN polymarket.trading_processes p USING(process_id)\n  WHERE p.process_scope='realtime_paper'\n    AND e.status='running' AND e.stopped_at IS NULL\n    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n    AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes'\n)\nSELECT COALESCE(SUM(e.net_pnl),0)::double precision AS \"Active Net Realized PnL\"\nFROM polymarket.btc_paper_experiments e JOIN active USING(experiment_id);",
           "refId": "A",
           "sql": {
             "columns": [
@@ -851,7 +852,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH active AS MATERIALIZED (\n  SELECT p.process_id,p.name AS process_name,p.process_type,p.process_scope,p.status AS process_status,\n         p.config,p.heartbeat_at,p.updated_at AS process_updated_at\n  FROM polymarket.trading_processes p\n  WHERE p.process_scope='realtime_paper'\n    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n    AND COALESCE(p.heartbeat_at,p.updated_at,p.started_at,p.created_at)>=now()-interval '2 minutes'\n), order_states AS MATERIALIZED (\n  SELECT a.process_id,o.order_id,o.token_id,o.market_id,MAX(o.updated_at) AS order_updated_at,\n         SUM(f.size)::numeric AS filled_size,SUM(f.price*f.size)::numeric AS entry_cost,\n         SUM(f.fee)::numeric AS entry_fees\n  FROM active a JOIN polymarket.orders o ON o.process_id=a.process_id\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.source='paper'\n  GROUP BY a.process_id,o.order_id,o.token_id,o.market_id\n), decision_stats AS MATERIALIZED (\n  SELECT a.process_id,COUNT(DISTINCT d.market_id) AS markets_observed,\n         COUNT(DISTINCT d.snapshot_id) AS snapshots_recorded,COUNT(d.decision_id) AS decisions_recorded,\n         MAX(d.decision_at) AS latest_decision_at\n  FROM active a LEFT JOIN polymarket.btc_strategy_decisions d ON d.process_id=a.process_id\n  GROUP BY a.process_id\n), realized AS MATERIALIZED (\n  SELECT o.process_id,COUNT(*) AS trades_entered,\n         COUNT(*) FILTER(WHERE m.official_outcome IS NOT NULL AND m.official_resolution_received_at IS NOT NULL) AS trades_resolved,\n         COALESCE(SUM(CASE WHEN o.token_id=m.official_winning_token_id THEN o.filled_size ELSE 0::numeric END-o.entry_cost)\n           FILTER(WHERE m.official_outcome IS NOT NULL AND m.official_resolution_received_at IS NOT NULL),0) AS gross_pnl,\n         COALESCE(SUM(o.entry_fees) FILTER(WHERE m.official_outcome IS NOT NULL AND m.official_resolution_received_at IS NOT NULL),0) AS fees_paid,\n         COALESCE(SUM(CASE WHEN o.token_id=m.official_winning_token_id THEN o.filled_size ELSE 0::numeric END-o.entry_cost-o.entry_fees)\n           FILTER(WHERE m.official_outcome IS NOT NULL AND m.official_resolution_received_at IS NOT NULL),0) AS net_pnl,\n         MAX(o.order_updated_at) AS latest_order_at\n  FROM order_states o LEFT JOIN polymarket.btc_interval_markets m USING(market_id)\n  GROUP BY o.process_id\n), open_entries AS MATERIALIZED (\n  SELECT o.* FROM order_states o JOIN polymarket.btc_interval_markets m USING(market_id)\n  WHERE m.official_resolution_received_at IS NULL\n), marked AS MATERIALIZED (\n  SELECT e.*,mark.best_bid,mark.source_timestamp AS mark_at\n  FROM open_entries e LEFT JOIN LATERAL (\n    SELECT c.best_bid,c.source_timestamp FROM polymarket.orderbook_checkpoints c\n    WHERE c.token_id=e.token_id AND c.integrity_status='ok' AND c.best_bid IS NOT NULL\n      AND c.source_timestamp BETWEEN now()-interval '2 seconds' AND now()+interval '1 second'\n      AND c.received_at BETWEEN now()-interval '2 seconds' AND now()\n    ORDER BY c.source_timestamp DESC,c.received_at DESC,c.ingest_sequence DESC LIMIT 1\n  ) mark ON true\n), open_pnl AS MATERIALIZED (\n  SELECT process_id,COUNT(*) AS open_count,COUNT(*) FILTER(WHERE best_bid IS NULL) AS stale_or_unpriced,\n         MAX(mark_at) AS latest_mark_at,\n         CASE WHEN COUNT(*)=COUNT(best_bid)\n              THEN COALESCE(SUM(filled_size*best_bid-entry_cost-entry_fees),0) END AS unrealized_pnl\n  FROM marked GROUP BY process_id\n), metrics AS MATERIALIZED (\n  SELECT a.*,COALESCE(d.markets_observed,0) AS markets_observed,\n         COALESCE(d.snapshots_recorded,0) AS snapshots_recorded,COALESCE(d.decisions_recorded,0) AS decisions_recorded,\n         COALESCE(r.trades_entered,0) AS trades_entered,COALESCE(r.trades_resolved,0) AS trades_resolved,\n         COALESCE(r.gross_pnl,0) AS gross_pnl,COALESCE(r.fees_paid,0) AS fees_paid,COALESCE(r.net_pnl,0) AS net_pnl,\n         COALESCE(o.open_count,0) AS open_positions,COALESCE(o.stale_or_unpriced,0) AS stale_or_unpriced,o.latest_mark_at,\n         CASE WHEN COALESCE(o.open_count,0)=0 THEN 0::numeric ELSE o.unrealized_pnl END AS unrealized_pnl,\n         GREATEST(a.process_updated_at,d.latest_decision_at,r.latest_order_at,o.latest_mark_at) AS last_updated,\n         CASE WHEN a.config#>>'{raw,btc_realtime_paper,paper,starting_collateral_usd}'~'^[0-9]+([.][0-9]+)?$'\n              THEN (a.config#>>'{raw,btc_realtime_paper,paper,starting_collateral_usd}')::numeric END AS roi_denominator\n  FROM active a LEFT JOIN decision_stats d USING(process_id) LEFT JOIN realized r USING(process_id)\n  LEFT JOIN open_pnl o USING(process_id)\n)\nSELECT process_name,process_type,process_scope,\n       COALESCE(config#>>'{execution,mode}','unknown') AS execution_mode,process_status AS status,\n       heartbeat_at AS last_heartbeat,EXTRACT(epoch FROM now()-COALESCE(heartbeat_at,process_updated_at))::bigint AS heartbeat_age_seconds,\n       last_updated,markets_observed,snapshots_recorded,decisions_recorded,trades_entered,trades_resolved,\n       open_positions,stale_or_unpriced,latest_mark_at,\n       gross_pnl::double precision,fees_paid::double precision,net_pnl::double precision AS realized_pnl,\n       unrealized_pnl::double precision,(net_pnl+unrealized_pnl)::double precision AS total_pnl,\n       CASE WHEN roi_denominator>0 THEN ((net_pnl+unrealized_pnl)/roi_denominator)::double precision END AS roi\nFROM metrics ORDER BY last_updated DESC,process_name;",
+          "rawSql": "WITH active AS MATERIALIZED (\n  SELECT e.*,p.name AS process_name,p.process_type,p.process_scope,p.status AS process_status,\n         p.heartbeat_at,p.updated_at AS process_updated_at\n  FROM polymarket.btc_paper_experiments e JOIN polymarket.trading_processes p USING(process_id)\n  WHERE p.process_scope='realtime_paper'\n    AND e.status='running' AND e.stopped_at IS NULL\n    AND p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL\n    AND COALESCE(p.heartbeat_at,p.updated_at)>=now()-interval '2 minutes'\n), open_entries AS MATERIALIZED (\n  SELECT a.process_id,o.order_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees\n  FROM active a JOIN polymarket.orders o ON o.process_id=a.process_id\n    AND o.raw_payload#>>'{request,metadata,experiment_id}'=a.experiment_id::text\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.source='paper'\n  JOIN polymarket.btc_interval_markets m ON m.market_id=o.market_id\n  WHERE m.official_resolution_received_at IS NULL\n  GROUP BY a.process_id,o.order_id,o.token_id\n), marked AS MATERIALIZED (\n  SELECT e.*,mark.best_bid,mark.source_timestamp AS mark_at\n  FROM open_entries e LEFT JOIN LATERAL (\n    SELECT c.best_bid,c.source_timestamp FROM polymarket.orderbook_checkpoints c\n    WHERE c.token_id=e.token_id AND c.integrity_status='ok' AND c.best_bid IS NOT NULL\n      AND c.source_timestamp BETWEEN now()-interval '2 seconds' AND now()+interval '1 second'\n      AND c.received_at BETWEEN now()-interval '2 seconds' AND now()\n    ORDER BY c.source_timestamp DESC,c.received_at DESC,c.ingest_sequence DESC LIMIT 1\n  ) mark ON true\n), open_pnl AS MATERIALIZED (\n  SELECT process_id,COUNT(*) AS open_count,COUNT(*) FILTER(WHERE best_bid IS NULL) AS stale_or_unpriced,\n         MAX(mark_at) AS latest_mark_at,\n         CASE WHEN COUNT(*)=COUNT(best_bid)\n              THEN COALESCE(SUM(filled_size*best_bid-entry_cost-entry_fees),0) END AS unrealized_pnl\n  FROM marked GROUP BY process_id\n), metrics AS MATERIALIZED (\n  SELECT a.*,COALESCE(o.open_count,0) AS open_positions,COALESCE(o.stale_or_unpriced,0) AS stale_or_unpriced,\n         o.latest_mark_at,\n         CASE WHEN COALESCE(o.open_count,0)=0 THEN 0::numeric ELSE o.unrealized_pnl END AS unrealized_pnl,\n         CASE WHEN a.config#>>'{raw,paper,venue,starting_collateral_usd}'~'^[0-9]+([.][0-9]+)?$'\n              THEN (a.config#>>'{raw,paper,venue,starting_collateral_usd}')::numeric END AS roi_denominator\n  FROM active a LEFT JOIN open_pnl o USING(process_id)\n)\nSELECT process_name,process_type,process_scope,\n       COALESCE(config#>>'{execution,mode}','unknown') AS execution_mode,process_status AS status,\n       heartbeat_at AS last_heartbeat,EXTRACT(epoch FROM now()-COALESCE(heartbeat_at,process_updated_at))::bigint AS heartbeat_age_seconds,\n       GREATEST(process_updated_at,updated_at,COALESCE(latest_mark_at,updated_at)) AS last_updated,\n       markets_observed,snapshots_recorded,decisions_recorded,trades_entered,trades_resolved,\n       open_positions,stale_or_unpriced,latest_mark_at,\n       gross_pnl::double precision,fees_paid::double precision,net_pnl::double precision AS realized_pnl,\n       unrealized_pnl::double precision,(net_pnl+unrealized_pnl)::double precision AS total_pnl,\n       CASE WHEN roi_denominator>0 THEN ((net_pnl+unrealized_pnl)/roi_denominator)::double precision END AS roi\nFROM metrics ORDER BY last_updated DESC,process_name;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -911,7 +912,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               }
             ]
           }
@@ -1037,7 +1038,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               }
             ]
           }
@@ -1072,7 +1073,7 @@
                   "steps": [
                     {
                       "color": "green",
-                      "value": null
+                      "value": 0
                     },
                     {
                       "color": "red",
@@ -1159,7 +1160,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               }
             ]
           }
@@ -1178,7 +1179,7 @@
                   "steps": [
                     {
                       "color": "green",
-                      "value": null
+                      "value": 0
                     },
                     {
                       "color": "red",
@@ -1265,7 +1266,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               }
             ]
           }
@@ -1352,8 +1353,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               }
             ]
           }
@@ -1470,8 +1470,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               }
             ]
           }
@@ -1559,8 +1558,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               }
             ]
           }
@@ -1648,8 +1646,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               }
             ]
           }
@@ -1730,8 +1727,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               }
             ]
           }
@@ -1749,8 +1745,7 @@
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "green",
-                      "value": null
+                      "color": "green"
                     },
                     {
                       "color": "red",
@@ -1843,8 +1838,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               }
             ]
           }
@@ -2688,6 +2682,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 21,
+  "version": 38,
   "weekStart": ""
 }
