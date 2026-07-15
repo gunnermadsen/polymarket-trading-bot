@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
 use axum::{
@@ -17,6 +17,13 @@ use polymarket_bot::{
         self, BackfillJobResponse, BackfillJobsResponse, BackfillWhalesRequest,
         BacktestRunResponse, BacktestRunsResponse, CancelBackfillJobResponse, ControlApi,
         CopyTradeBacktestRequest, CopyTradeCalibrationRequest, HttpError, MetricsResponse,
+    },
+    ingestion::job::{
+        BackfillEventLevel, BackfillJob as IngestionBackfillJob,
+        BackfillJobEvent as IngestionBackfillJobEvent,
+        BackfillJobStatus as IngestionBackfillJobStatus,
+        BackfillRequest as IngestionBackfillRequest, IngesterKey, TrainingReadiness,
+        BACKFILL_REQUEST_VERSION,
     },
     models::{
         BackfillJob, BackfillJobStatus, BacktestRun, ProcessExecutionConfig, TradingProcess,
@@ -168,6 +175,90 @@ impl ControlApi for FakeControlApi {
             job_id,
             status: BackfillJobStatus::CancelRequested,
             cancel_requested: true,
+        })
+    }
+
+    async fn enqueue_ingestion_backfill(
+        &self,
+        request: IngestionBackfillRequest,
+    ) -> Result<http::IngestionBackfillEnqueueResponse, HttpError> {
+        Ok(test_ingestion_job(request.ingester, IngestionBackfillJobStatus::Queued).into())
+    }
+
+    async fn list_ingestion_backfills(
+        &self,
+        _request: http::ListIngestionBackfillsRequest,
+    ) -> Result<http::IngestionBackfillJobsResponse, HttpError> {
+        Ok(http::IngestionBackfillJobsResponse {
+            jobs: vec![test_ingestion_job(
+                IngesterKey::BtcFiveMinuteMarkets,
+                IngestionBackfillJobStatus::Completed,
+            )],
+        })
+    }
+
+    async fn get_ingestion_backfill(
+        &self,
+        _job_id: Uuid,
+    ) -> Result<http::IngestionBackfillJobResponse, HttpError> {
+        Ok(http::IngestionBackfillJobResponse {
+            job: test_ingestion_job(
+                IngesterKey::BtcFiveMinuteMarkets,
+                IngestionBackfillJobStatus::Completed,
+            ),
+        })
+    }
+
+    async fn list_ingestion_backfill_events(
+        &self,
+        job_id: Uuid,
+        _request: http::ListIngestionBackfillEventsRequest,
+    ) -> Result<http::IngestionBackfillEventsResponse, HttpError> {
+        Ok(http::IngestionBackfillEventsResponse {
+            job_id,
+            events: vec![IngestionBackfillJobEvent {
+                event_id: Uuid::new_v4(),
+                job_id,
+                timestamp_utc: Utc::now(),
+                level: BackfillEventLevel::Info,
+                message: "queued".to_string(),
+                metadata: serde_json::json!({}),
+            }],
+        })
+    }
+
+    async fn cancel_ingestion_backfill(
+        &self,
+        job_id: Uuid,
+    ) -> Result<http::IngestionBackfillCancelResponse, HttpError> {
+        Ok(http::IngestionBackfillCancelResponse {
+            job_id,
+            status: IngestionBackfillJobStatus::CancelRequested,
+            cancel_requested: true,
+        })
+    }
+
+    async fn ingestion_training_readiness(
+        &self,
+        request: http::IngestionReadinessRequest,
+    ) -> Result<TrainingReadiness, HttpError> {
+        Ok(TrainingReadiness {
+            range_start: request.range_start,
+            range_end: request.range_end,
+            expected_markets: 1,
+            valid_market_identities: 1,
+            opening_boundaries: 1,
+            final_prices: 1,
+            official_outcomes: 1,
+            aggregate_trade_covered_markets: 1,
+            one_second_kline_covered_markets: 1,
+            usable_markets: 1,
+            aggregate_trade_min_timestamp: Some(request.range_start),
+            aggregate_trade_max_timestamp: Some(request.range_end),
+            one_second_kline_min_timestamp: Some(request.range_start),
+            one_second_kline_max_timestamp: Some(request.range_end),
+            missing_by_reason: BTreeMap::new(),
+            artifact_status_counts: BTreeMap::new(),
         })
     }
 
@@ -844,6 +935,79 @@ async fn health_is_public_and_admin_routes_require_bearer() {
 }
 
 #[tokio::test]
+async fn authenticated_admin_can_list_generic_ingesters() {
+    let app = http::router(Arc::new(FakeControlApi), "secret");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/backfill/ingesters")
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["ingesters"].as_array().unwrap().len(), 4);
+}
+
+#[tokio::test]
+async fn authenticated_admin_can_enqueue_one_generic_ingester_with_http_200() {
+    let app = http::router(Arc::new(FakeControlApi), "secret");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/backfill/jobs")
+                .header(AUTHORIZATION, "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"ingester":"btc_five_minute_markets","range_start":"2026-07-13T00:00:00Z","range_end":"2026-07-13T00:05:00Z","parameters":{},"idempotency_key":"api-test"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["ingester"], "btc_five_minute_markets");
+    assert_eq!(json["status"], "queued");
+    assert!(json.get("job").is_none());
+}
+
+#[tokio::test]
+async fn authenticated_admin_can_inspect_cancel_and_check_generic_backfills() {
+    let app = http::router(Arc::new(FakeControlApi), "secret");
+    let job_id = Uuid::new_v4();
+    for (method, uri) in [
+        ("GET", format!("/admin/backfill/jobs/{job_id}")),
+        ("GET", format!("/admin/backfill/jobs/{job_id}/events")),
+        ("POST", format!("/admin/backfill/jobs/{job_id}/cancel")),
+        (
+            "GET",
+            "/admin/backfill/readiness/btc-five-minute-training?range_start=2026-07-13T00%3A00%3A00Z&range_end=2026-07-13T00%3A05%3A00Z".to_string(),
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(AUTHORIZATION, "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+}
+
+#[tokio::test]
 async fn authenticated_admin_can_read_btc_experiment_status() {
     let app = http::router(Arc::new(FakeControlApi), "secret");
     for uri in [
@@ -1483,6 +1647,41 @@ async fn trading_process_upsert_does_not_accept_hot_path_scoring_backfill_contro
     assert_eq!(config["execution"]["mode"], "live");
     assert_eq!(config["copy_trade"]["segment_scoring_mode"], "live_enforce");
     assert_no_hot_path_scoring_recompute_fields(config);
+}
+
+fn test_ingestion_job(
+    ingester: IngesterKey,
+    status: IngestionBackfillJobStatus,
+) -> IngestionBackfillJob {
+    let now = Utc::now();
+    IngestionBackfillJob {
+        job_id: Uuid::new_v4(),
+        ingester_key: ingester.as_str().to_string(),
+        request_version: BACKFILL_REQUEST_VERSION,
+        status,
+        range_start: Some(now - chrono::Duration::minutes(5)),
+        range_end: Some(now),
+        idempotency_key: Some("api-test".to_string()),
+        request: serde_json::json!({}),
+        progress: serde_json::json!({}),
+        checkpoint: serde_json::json!({}),
+        summary: serde_json::json!({}),
+        attempt: 0,
+        max_attempts: 3,
+        next_attempt_at: now,
+        worker_id: None,
+        lease_token: None,
+        lease_expires_at: None,
+        heartbeat_at: None,
+        cancel_requested_at: None,
+        requested_at: now,
+        started_at: None,
+        completed_at: None,
+        error: None,
+        updated_at: now,
+        lookback_days: None,
+        min_trade_usd: None,
+    }
 }
 
 fn test_job(status: BackfillJobStatus, request: Value) -> BackfillJob {
