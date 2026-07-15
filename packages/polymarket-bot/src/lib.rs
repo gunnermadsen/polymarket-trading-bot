@@ -12,6 +12,7 @@ pub mod execution;
 pub mod gamma;
 pub mod http;
 pub mod idempotency;
+pub mod ingestion;
 pub mod models;
 pub mod orderbook;
 pub mod replay;
