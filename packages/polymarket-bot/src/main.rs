@@ -2494,11 +2494,14 @@ impl ControlApi for RuntimeControl {
         let request = request
             .validate()
             .map_err(|error| HttpError::bad_request(error.to_string()))?;
-        let job = self
-            .ingestion
-            .enqueue(&request)
-            .await
-            .map_err(|error| HttpError::internal(error.to_string()))?;
+        let job = self.ingestion.enqueue(&request).await.map_err(|error| {
+            let message = error.to_string();
+            if message.contains("idempotency key") {
+                HttpError::conflict(message)
+            } else {
+                HttpError::internal(message)
+            }
+        })?;
         Ok(job.into())
     }
 
@@ -3927,10 +3930,6 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|_| chrono::Duration::seconds(300)),
         ..TradePnlConfig::default()
     };
-    let ingestion = IngestionRepository::connect(&config.postgres)
-        .await
-        .context("failed to connect backfill ingestion repository")?;
-
     let btc_manager = if config.btc.realtime_enabled {
         let pool = PgPoolOptions::new()
             .max_connections(4)
@@ -3963,9 +3962,12 @@ async fn main() -> Result<()> {
     let mut metrics = RuntimeMetrics::new();
     let shared_metrics = Arc::new(Mutex::new(metrics.clone()));
     if config.http.enabled {
+        let ingestion = IngestionRepository::connect(&config.postgres)
+            .await
+            .context("failed to connect backfill ingestion repository")?;
         let control: control_http::SharedControlApi = Arc::new(RuntimeControl {
             store: store.clone(),
-            ingestion: ingestion.clone(),
+            ingestion,
             gamma: gamma.clone(),
             data_api: data_api.clone(),
             clob: clob.clone(),
