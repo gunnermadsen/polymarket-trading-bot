@@ -161,6 +161,52 @@ services:
     stop_grace_period: 60s
     restart: unless-stopped
 
+  polymarket-backfill-worker:
+    build:
+      context: .
+      dockerfile: packages/polymarket-bot/Dockerfile
+    image: polymarket/polymarket-bot:btc-paper
+    container_name: polymarket-backfill-worker
+    hostname: polymarket-backfill-worker
+    entrypoint:
+      - /usr/local/bin/polymarket-backfill-worker
+    init: true
+    mem_limit: 512m
+    cpus: "0.50"
+    pids_limit: 128
+    logging: *default-logging
+    env_file:
+      - *postgres-env-file
+    environment:
+      RUST_LOG: "info"
+      POSTGRES_HOST: "timescaledb-0"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "polymarket"
+      POSTGRES_SSL_MODE: "disable"
+      POSTGRES_SSL_CA_FILE: ""
+      POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
+      POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
+      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache"
+      POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker"
+      POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
+      POLYMARKET_BACKFILL_LEASE_SECS: "60"
+      POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
+      POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "4"
+      POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
+    volumes:
+      - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      timescaledb-0:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 60s
+    restart: unless-stopped
+
   polymarket-bot-test:
     profiles: ["test"]
     build:
@@ -252,3 +298,4 @@ volumes:
   grafana-data:
   btc-ml-datasets:
   btc-ml-artifacts:
+  polymarket-backfill-cache:

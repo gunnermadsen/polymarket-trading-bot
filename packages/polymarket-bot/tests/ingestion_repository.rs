@@ -1,0 +1,721 @@
+use std::{env, sync::OnceLock, time::Duration as StdDuration};
+
+use anyhow::{anyhow, ensure, Context, Result};
+use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
+use polymarket_bot::ingestion::{
+    job::{
+        ArtifactDisposition, ArtifactSpec, BackfillArtifactStatus, BackfillJobStatus,
+        BackfillJobSummary, BackfillRequest, BinanceAggregateTradeRecord,
+        BinanceOneSecondKlineRecord, IngesterKey, ValidatedBackfillRequest, WorkerControl,
+        BACKFILL_REQUEST_VERSION,
+    },
+    repository::IngestionRepository,
+};
+use rust_decimal_macros::dec;
+use serde_json::json;
+use sqlx::{postgres::PgPoolOptions, PgPool};
+use tokio::sync::Mutex;
+use uuid::Uuid;
+
+const TEST_DATABASE_ENV: &str = "POLYMARKET_TEST_DATABASE_URL";
+const TEST_PREFIX: &str = "ingestion-repository-test";
+const ACTIVE_LEASE: StdDuration = StdDuration::from_secs(60);
+
+static TEST_SERIALIZER: OnceLock<Mutex<()>> = OnceLock::new();
+
+#[tokio::test]
+async fn enqueue_is_idempotent_and_rejects_conflicting_reuse() -> Result<()> {
+    let _guard = test_serializer().lock().await;
+    let Some(pool) = connect_test_database().await? else {
+        return Ok(());
+    };
+    let repository = IngestionRepository::from_pool(pool.clone());
+    let tag = unique_tag();
+
+    let outcome = async {
+        let start = unique_five_minute_start();
+        let initial_request = request(
+            IngesterKey::BtcFiveMinuteMarkets,
+            start,
+            start + ChronoDuration::minutes(5),
+            format!("{tag}enqueue"),
+        )?;
+
+        let first = repository.enqueue(&initial_request).await?;
+        let repeated = repository.enqueue(&initial_request).await?;
+        ensure!(
+            first.job_id == repeated.job_id,
+            "repeating an identical idempotent request created another job"
+        );
+
+        let job_count = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT count(*)
+            FROM polymarket.backfill_jobs
+            WHERE ingester_key = $1 AND idempotency_key = $2
+            "#,
+        )
+        .bind(IngesterKey::BtcFiveMinuteMarkets.as_str())
+        .bind(&initial_request.idempotency_key)
+        .fetch_one(&pool)
+        .await?;
+        ensure!(
+            job_count == 1,
+            "idempotent enqueue persisted {job_count} jobs"
+        );
+
+        let conflicting = request(
+            IngesterKey::BtcFiveMinuteMarkets,
+            start,
+            start + ChronoDuration::minutes(10),
+            initial_request.idempotency_key.clone(),
+        )?;
+        let error = repository
+            .enqueue(&conflicting)
+            .await
+            .expect_err("conflicting idempotency-key reuse must fail");
+        ensure!(
+            error.to_string().contains("different"),
+            "unexpected idempotency conflict error: {error:#}"
+        );
+        Ok(())
+    }
+    .await;
+
+    finish_committed_test(pool, &tag, outcome).await
+}
+
+#[tokio::test]
+async fn reclaimed_lease_fences_the_previous_worker() -> Result<()> {
+    let _guard = test_serializer().lock().await;
+    let Some(pool) = connect_test_database().await? else {
+        return Ok(());
+    };
+    let repository = IngestionRepository::from_pool(pool.clone());
+    let tag = unique_tag();
+
+    let outcome = async {
+        assert_no_runnable_jobs(&pool).await?;
+        let start = unique_five_minute_start();
+        let queued = repository
+            .enqueue(&request(
+                IngesterKey::BtcFiveMinuteMarkets,
+                start,
+                start + ChronoDuration::minutes(5),
+                format!("{tag}lease"),
+            )?)
+            .await?;
+
+        let first_claim = repository
+            .claim_next(&format!("{tag}worker-a"), ACTIVE_LEASE)
+            .await?
+            .context("worker A did not claim the queued test job")?;
+        ensure!(first_claim.job.job_id == queued.job_id);
+
+        sqlx::query(
+            r#"
+            UPDATE polymarket.backfill_jobs
+            SET lease_expires_at = now() - interval '1 second'
+            WHERE job_id = $1
+            "#,
+        )
+        .bind(queued.job_id)
+        .execute(&pool)
+        .await?;
+
+        let second_claim = repository
+            .claim_next(&format!("{tag}worker-b"), ACTIVE_LEASE)
+            .await?
+            .context("worker B did not reclaim the expired test lease")?;
+        ensure!(second_claim.job.job_id == queued.job_id);
+        ensure!(
+            second_claim.lease_token != first_claim.lease_token,
+            "lease reclamation reused its fencing token"
+        );
+
+        let stale_error = repository
+            .heartbeat(&first_claim, ACTIVE_LEASE)
+            .await
+            .expect_err("the stale lease holder must be fenced");
+        ensure!(
+            stale_error.to_string().contains("lost lease fencing"),
+            "unexpected stale-lease error: {stale_error:#}"
+        );
+        repository
+            .heartbeat(&second_claim, ACTIVE_LEASE)
+            .await
+            .context("the current lease holder should retain write authority")?;
+        Ok(())
+    }
+    .await;
+
+    finish_committed_test(pool, &tag, outcome).await
+}
+
+#[tokio::test]
+async fn running_job_cancellation_is_cooperative_and_terminal() -> Result<()> {
+    let _guard = test_serializer().lock().await;
+    let Some(pool) = connect_test_database().await? else {
+        return Ok(());
+    };
+    let repository = IngestionRepository::from_pool(pool.clone());
+    let tag = unique_tag();
+
+    let outcome = async {
+        assert_no_runnable_jobs(&pool).await?;
+        let start = unique_five_minute_start();
+        let queued = repository
+            .enqueue(&request(
+                IngesterKey::BtcFiveMinuteMarkets,
+                start,
+                start + ChronoDuration::minutes(5),
+                format!("{tag}cancel"),
+            )?)
+            .await?;
+        let claim = repository
+            .claim_next(&format!("{tag}worker"), ACTIVE_LEASE)
+            .await?
+            .context("worker did not claim the cancellation test job")?;
+        ensure!(claim.job.job_id == queued.job_id);
+
+        let cancellation = repository
+            .request_cancel(queued.job_id)
+            .await?
+            .context("cancellation target disappeared")?;
+        ensure!(cancellation.status == BackfillJobStatus::CancelRequested);
+        ensure!(
+            repository.is_cancel_requested(&claim).await? == WorkerControl::CancelRequested,
+            "the active worker did not observe cancellation"
+        );
+
+        let cancelled = repository
+            .mark_cancelled(&claim, &BackfillJobSummary::default())
+            .await?;
+        ensure!(cancelled.status == BackfillJobStatus::Cancelled);
+        ensure!(cancelled.completed_at.is_some());
+        ensure!(cancelled.worker_id.is_none());
+        ensure!(cancelled.lease_expires_at.is_none());
+        Ok(())
+    }
+    .await;
+
+    finish_committed_test(pool, &tag, outcome).await
+}
+
+#[tokio::test]
+async fn database_batches_are_bounded_and_idempotent() -> Result<()> {
+    let _guard = test_serializer().lock().await;
+    let Some(pool) = connect_test_database().await? else {
+        return Ok(());
+    };
+    let repository = IngestionRepository::from_pool(pool.clone());
+    let tag = unique_tag();
+
+    let outcome = async {
+        assert_no_runnable_jobs(&pool).await?;
+        let day_start = unique_day_start();
+
+        let aggregate_job = repository
+            .enqueue(&request(
+                IngesterKey::BinanceBtcusdtAggTrades,
+                day_start,
+                day_start + ChronoDuration::days(1),
+                format!("{tag}aggregate-job"),
+            )?)
+            .await?;
+        let aggregate_claim = repository
+            .claim_next(&format!("{tag}aggregate-worker"), ACTIVE_LEASE)
+            .await?
+            .context("worker did not claim the aggregate-trade test job")?;
+        ensure!(aggregate_claim.job.job_id == aggregate_job.job_id);
+        let aggregate_artifact = prepare_ingesting_artifact(
+            &repository,
+            &aggregate_claim,
+            IngesterKey::BinanceBtcusdtAggTrades,
+            &tag,
+            "aggregate",
+            day_start.date_naive(),
+        )
+        .await?;
+
+        let aggregate_id = unique_positive_i64();
+        let aggregate_records = vec![
+            aggregate_trade(aggregate_id, day_start + ChronoDuration::seconds(1)),
+            aggregate_trade(aggregate_id + 1, day_start + ChronoDuration::seconds(2)),
+        ];
+        let oversized = vec![aggregate_records[0].clone(); 4_001];
+        let oversized_error = repository
+            .insert_aggregate_trade_batch(
+                &aggregate_claim,
+                aggregate_artifact.artifact.artifact_id,
+                &oversized,
+            )
+            .await
+            .expect_err("a batch over the memory-boundary limit must fail");
+        ensure!(
+            oversized_error.to_string().contains("exceeds 4000 rows"),
+            "unexpected oversized-batch error: {oversized_error:#}"
+        );
+
+        let first_aggregate_write = repository
+            .insert_aggregate_trade_batch(
+                &aggregate_claim,
+                aggregate_artifact.artifact.artifact_id,
+                &aggregate_records,
+            )
+            .await?;
+        ensure!(first_aggregate_write.input_records == 2);
+        ensure!(first_aggregate_write.inserted_records == 2);
+        ensure!(first_aggregate_write.duplicate_records == 0);
+
+        let repeated_aggregate_write = repository
+            .insert_aggregate_trade_batch(
+                &aggregate_claim,
+                aggregate_artifact.artifact.artifact_id,
+                &aggregate_records,
+            )
+            .await?;
+        ensure!(repeated_aggregate_write.input_records == 2);
+        ensure!(repeated_aggregate_write.inserted_records == 0);
+        ensure!(repeated_aggregate_write.duplicate_records == 2);
+
+        let kline_job = repository
+            .enqueue(&request(
+                IngesterKey::BinanceBtcusdtOneSecondKlines,
+                day_start,
+                day_start + ChronoDuration::days(1),
+                format!("{tag}kline-job"),
+            )?)
+            .await?;
+        let kline_claim = repository
+            .claim_next(&format!("{tag}kline-worker"), ACTIVE_LEASE)
+            .await?
+            .context("worker did not claim the one-second-kline test job")?;
+        ensure!(kline_claim.job.job_id == kline_job.job_id);
+        let kline_artifact = prepare_ingesting_artifact(
+            &repository,
+            &kline_claim,
+            IngesterKey::BinanceBtcusdtOneSecondKlines,
+            &tag,
+            "kline",
+            day_start.date_naive(),
+        )
+        .await?;
+        let kline_records = vec![
+            one_second_kline(day_start + ChronoDuration::seconds(3)),
+            one_second_kline(day_start + ChronoDuration::seconds(4)),
+        ];
+
+        let first_kline_write = repository
+            .insert_one_second_kline_batch(
+                &kline_claim,
+                kline_artifact.artifact.artifact_id,
+                &kline_records,
+            )
+            .await?;
+        ensure!(first_kline_write.input_records == 2);
+        ensure!(first_kline_write.inserted_records == 2);
+        ensure!(first_kline_write.duplicate_records == 0);
+
+        let repeated_kline_write = repository
+            .insert_one_second_kline_batch(
+                &kline_claim,
+                kline_artifact.artifact.artifact_id,
+                &kline_records,
+            )
+            .await?;
+        ensure!(repeated_kline_write.input_records == 2);
+        ensure!(repeated_kline_write.inserted_records == 0);
+        ensure!(repeated_kline_write.duplicate_records == 2);
+        Ok(())
+    }
+    .await;
+
+    finish_committed_test(pool, &tag, outcome).await
+}
+
+#[tokio::test]
+async fn completed_artifacts_reject_updates_and_deletes() -> Result<()> {
+    let _guard = test_serializer().lock().await;
+    let Some(pool) = connect_test_database().await? else {
+        return Ok(());
+    };
+
+    assert_completed_artifact_mutation_rejected(&pool, CompletedArtifactMutation::Update).await?;
+    assert_completed_artifact_mutation_rejected(&pool, CompletedArtifactMutation::Delete).await?;
+    pool.close().await;
+    Ok(())
+}
+
+fn test_serializer() -> &'static Mutex<()> {
+    TEST_SERIALIZER.get_or_init(|| Mutex::new(()))
+}
+
+async fn connect_test_database() -> Result<Option<PgPool>> {
+    let database_url = match env::var(TEST_DATABASE_ENV) {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => {
+            eprintln!("skipping database integration test: {TEST_DATABASE_ENV} is not set");
+            return Ok(None);
+        }
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .acquire_timeout(StdDuration::from_secs(10))
+        .connect(&database_url)
+        .await
+        .with_context(|| format!("failed to connect using {TEST_DATABASE_ENV}"))?;
+    let schema_ready = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT to_regclass('polymarket.backfill_jobs') IS NOT NULL
+          AND to_regclass('polymarket.backfill_artifacts') IS NOT NULL
+          AND to_regclass('polymarket.binance_aggregate_trades') IS NOT NULL
+          AND to_regclass('polymarket.binance_one_second_klines') IS NOT NULL
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .context("failed to inspect the ingestion test schema")?;
+    ensure!(
+        schema_ready,
+        "{TEST_DATABASE_ENV} must point to a migrated disposable test database"
+    );
+    Ok(Some(pool))
+}
+
+fn unique_tag() -> String {
+    format!("{TEST_PREFIX}-{}-", Uuid::new_v4())
+}
+
+fn unique_day_start() -> DateTime<Utc> {
+    let offset = i64::try_from(Uuid::new_v4().as_u128() % 5_000).expect("offset fits i64");
+    let date = NaiveDate::from_ymd_opt(2000, 1, 1).expect("valid test date")
+        + ChronoDuration::days(offset);
+    date.and_hms_opt(0, 0, 0).expect("valid midnight").and_utc()
+}
+
+fn unique_five_minute_start() -> DateTime<Utc> {
+    unique_day_start() + ChronoDuration::minutes(5)
+}
+
+fn unique_positive_i64() -> i64 {
+    let value = Uuid::new_v4().as_u128() & 0x3fff_ffff_ffff_0000;
+    i64::try_from(value).expect("masked UUID fits i64")
+}
+
+fn request(
+    ingester: IngesterKey,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    idempotency_key: String,
+) -> Result<ValidatedBackfillRequest> {
+    Ok(BackfillRequest {
+        ingester,
+        request_version: BACKFILL_REQUEST_VERSION,
+        range_start,
+        range_end,
+        parameters: json!({}),
+        idempotency_key,
+    }
+    .validate()?)
+}
+
+async fn assert_no_runnable_jobs(pool: &PgPool) -> Result<()> {
+    let supported = IngesterKey::ALL
+        .iter()
+        .map(|ingester| ingester.as_str().to_string())
+        .collect::<Vec<_>>();
+    let runnable = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT count(*)
+        FROM polymarket.backfill_jobs
+        WHERE ingester_key = ANY($1)
+          AND (
+            (status = 'queued' AND next_attempt_at <= now() AND attempt < max_attempts)
+            OR
+            (status IN ('running', 'cancel_requested')
+              AND (lease_expires_at IS NULL OR lease_expires_at <= now()))
+          )
+        "#,
+    )
+    .bind(supported)
+    .fetch_one(pool)
+    .await?;
+    ensure!(
+        runnable == 0,
+        "{TEST_DATABASE_ENV} is not isolated: {runnable} unrelated job(s) are claimable"
+    );
+    Ok(())
+}
+
+async fn prepare_ingesting_artifact(
+    repository: &IngestionRepository,
+    claim: &polymarket_bot::ingestion::job::ClaimedJob,
+    ingester: IngesterKey,
+    tag: &str,
+    suffix: &str,
+    source_date: NaiveDate,
+) -> Result<polymarket_bot::ingestion::job::PreparedArtifact> {
+    let prepared = repository
+        .prepare_artifact(
+            claim,
+            &ArtifactSpec {
+                job_id: claim.job.job_id,
+                ingester,
+                logical_key: format!("{tag}{suffix}-logical-key"),
+                provider: format!("{tag}{suffix}-provider"),
+                source_uri: format!("https://example.invalid/{tag}{suffix}.zip"),
+                source_date: Some(source_date),
+                expected_checksum: None,
+                metadata: json!({"test": true}),
+            },
+        )
+        .await?;
+    ensure!(prepared.disposition == ArtifactDisposition::Process);
+    repository
+        .set_artifact_status(
+            claim,
+            prepared.artifact.artifact_id,
+            BackfillArtifactStatus::Ingesting,
+            json!({"test_status": "ingesting"}),
+        )
+        .await?;
+    Ok(prepared)
+}
+
+fn aggregate_trade(id: i64, timestamp: DateTime<Utc>) -> BinanceAggregateTradeRecord {
+    BinanceAggregateTradeRecord {
+        symbol: "BTCUSDT".to_string(),
+        aggregate_trade_id: id,
+        price: dec!(50000.25),
+        quantity: dec!(0.125),
+        first_trade_id: id,
+        last_trade_id: id,
+        trade_timestamp: timestamp,
+        buyer_maker: false,
+        best_match: true,
+    }
+}
+
+fn one_second_kline(open_timestamp: DateTime<Utc>) -> BinanceOneSecondKlineRecord {
+    BinanceOneSecondKlineRecord {
+        symbol: "BTCUSDT".to_string(),
+        open_timestamp,
+        close_timestamp: open_timestamp + ChronoDuration::milliseconds(999),
+        open_price: dec!(50000.00),
+        high_price: dec!(50002.00),
+        low_price: dec!(49999.00),
+        close_price: dec!(50001.00),
+        base_volume: dec!(1.25),
+        quote_volume: dec!(62500.00),
+        trade_count: 4,
+        taker_buy_base_volume: dec!(0.75),
+        taker_buy_quote_volume: dec!(37500.00),
+    }
+}
+
+async fn finish_committed_test(pool: PgPool, tag: &str, outcome: Result<()>) -> Result<()> {
+    let cleanup = cleanup_tagged_rows(&pool, tag).await;
+    pool.close().await;
+    match (outcome, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(test_error), Ok(())) => Err(test_error),
+        (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
+        (Err(test_error), Err(cleanup_error)) => Err(anyhow!(
+            "test failed: {test_error:#}; cleanup also failed: {cleanup_error:#}"
+        )),
+    }
+}
+
+async fn cleanup_tagged_rows(pool: &PgPool, tag: &str) -> Result<()> {
+    let pattern = format!("{tag}%");
+    let mut transaction = pool.begin().await?;
+    let immutable_facts = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT count(*)
+        FROM polymarket.btc_market_reference_facts AS fact
+        JOIN polymarket.backfill_artifacts AS artifact
+          ON artifact.artifact_id = fact.artifact_id
+        JOIN polymarket.backfill_jobs AS job ON job.job_id = artifact.job_id
+        WHERE job.idempotency_key LIKE $1
+        "#,
+    )
+    .bind(&pattern)
+    .fetch_one(&mut *transaction)
+    .await?;
+    ensure!(
+        immutable_facts == 0,
+        "test cleanup cannot remove {immutable_facts} immutable reference fact(s)"
+    );
+
+    sqlx::query(
+        r#"
+        DELETE FROM polymarket.binance_aggregate_trades
+        WHERE artifact_id IN (
+          SELECT artifact.artifact_id
+          FROM polymarket.backfill_artifacts AS artifact
+          JOIN polymarket.backfill_jobs AS job ON job.job_id = artifact.job_id
+          WHERE job.idempotency_key LIKE $1
+        )
+        "#,
+    )
+    .bind(&pattern)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r#"
+        DELETE FROM polymarket.binance_one_second_klines
+        WHERE artifact_id IN (
+          SELECT artifact.artifact_id
+          FROM polymarket.backfill_artifacts AS artifact
+          JOIN polymarket.backfill_jobs AS job ON job.job_id = artifact.job_id
+          WHERE job.idempotency_key LIKE $1
+        )
+        "#,
+    )
+    .bind(&pattern)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r#"
+        DELETE FROM polymarket.backfill_artifacts AS artifact
+        USING polymarket.backfill_jobs AS job
+        WHERE artifact.job_id = job.job_id AND job.idempotency_key LIKE $1
+        "#,
+    )
+    .bind(&pattern)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query("DELETE FROM polymarket.backfill_jobs WHERE idempotency_key LIKE $1")
+        .bind(&pattern)
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+
+    let remaining = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM polymarket.backfill_jobs WHERE idempotency_key LIKE $1",
+    )
+    .bind(&pattern)
+    .fetch_one(pool)
+    .await?;
+    ensure!(remaining == 0, "cleanup left {remaining} tagged job(s)");
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum CompletedArtifactMutation {
+    Update,
+    Delete,
+}
+
+impl CompletedArtifactMutation {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Update => "update",
+            Self::Delete => "delete",
+        }
+    }
+}
+
+async fn assert_completed_artifact_mutation_rejected(
+    pool: &PgPool,
+    mutation: CompletedArtifactMutation,
+) -> Result<()> {
+    let job_id = Uuid::new_v4();
+    let artifact_id = Uuid::new_v4();
+    let identity = format!("{TEST_PREFIX}-rollback-{artifact_id}");
+    let start = unique_five_minute_start();
+    let mut transaction = pool.begin().await?;
+    sqlx::query(
+        r#"
+        INSERT INTO polymarket.backfill_jobs (
+          job_id, ingester_key, request_version, status, range_start, range_end,
+          idempotency_key, request, progress, checkpoint, summary, attempt, max_attempts,
+          next_attempt_at, requested_at, started_at, completed_at, updated_at
+        )
+        VALUES (
+          $1, 'btc_five_minute_markets', 1, 'completed', $2, $3, $4,
+          '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, 1, 3,
+          now(), now(), now(), now(), now()
+        )
+        "#,
+    )
+    .bind(job_id)
+    .bind(start)
+    .bind(start + ChronoDuration::minutes(5))
+    .bind(&identity)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO polymarket.backfill_artifacts (
+          artifact_id, job_id, ingester_key, logical_key, provider, source_uri,
+          checksum_algorithm, actual_checksum, compressed_bytes, record_count,
+          status, metadata, completed_at
+        )
+        VALUES (
+          $1, $2, 'btc_five_minute_markets', $3, $4, $5,
+          'sha256', $6, 0, 0, 'completed', '{}'::jsonb, now()
+        )
+        "#,
+    )
+    .bind(artifact_id)
+    .bind(job_id)
+    .bind(format!("{identity}-logical"))
+    .bind(format!("{identity}-provider"))
+    .bind(format!("https://example.invalid/{identity}"))
+    .bind("a".repeat(64))
+    .execute(&mut *transaction)
+    .await?;
+
+    let mutation_result = match mutation {
+        CompletedArtifactMutation::Update => {
+            sqlx::query(
+                "UPDATE polymarket.backfill_artifacts SET metadata = $2 WHERE artifact_id = $1",
+            )
+            .bind(artifact_id)
+            .bind(json!({"mutated": true}))
+            .execute(&mut *transaction)
+            .await
+        }
+        CompletedArtifactMutation::Delete => {
+            sqlx::query("DELETE FROM polymarket.backfill_artifacts WHERE artifact_id = $1")
+                .bind(artifact_id)
+                .execute(&mut *transaction)
+                .await
+        }
+    };
+    let sql_state = mutation_result
+        .as_ref()
+        .err()
+        .and_then(sqlx::Error::as_database_error)
+        .and_then(|error| error.code())
+        .map(|code| code.into_owned());
+    transaction
+        .rollback()
+        .await
+        .context("failed to roll back immutable-artifact fixture")?;
+
+    ensure!(
+        mutation_result.is_err(),
+        "completed artifact {} unexpectedly succeeded",
+        mutation.name()
+    );
+    ensure!(
+        sql_state.as_deref() == Some("23000"),
+        "completed artifact {} returned SQLSTATE {:?}, expected 23000",
+        mutation.name(),
+        sql_state
+    );
+    let persisted = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM polymarket.backfill_jobs WHERE job_id = $1)",
+    )
+    .bind(job_id)
+    .fetch_one(pool)
+    .await?;
+    ensure!(
+        !persisted,
+        "rolled-back immutable-artifact fixture was unexpectedly committed"
+    );
+    Ok(())
+}
