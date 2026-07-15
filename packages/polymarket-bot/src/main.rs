@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use polymarket_bot::{
@@ -26,9 +26,14 @@ use polymarket_bot::{
     http as control_http,
     http::{
         BackfillJobResponse, BackfillJobsResponse, BacktestRunResponse, BacktestRunsResponse,
-        CancelBackfillJobResponse, ControlApi, HttpError, MetricsResponse,
+        CancelBackfillJobResponse, ControlApi, HttpError, IngestionBackfillCancelResponse,
+        IngestionBackfillEnqueueResponse, IngestionBackfillEventsResponse,
+        IngestionBackfillJobResponse, IngestionBackfillJobsResponse, MetricsResponse,
         TradingProcessResetResponse, TradingProcessResponse, TradingProcessStatusResponse,
         TradingProcessesResponse,
+    },
+    ingestion::{
+        job::BackfillRequest as IngestionBackfillRequest, repository::IngestionRepository,
     },
     models::{
         EffectiveMarkRefreshProcessConfig, EffectiveProcessExitRulesConfig, ProcessExecutionConfig,
@@ -114,6 +119,7 @@ impl RuntimeMetrics {
 
 struct RuntimeControl {
     store: Store,
+    ingestion: IngestionRepository,
     gamma: GammaClient,
     data_api: DataApiClient,
     clob: ClobClient,
@@ -703,6 +709,99 @@ impl ControlApi for RuntimeControl {
             status: job.status,
             cancel_requested: true,
         })
+    }
+
+    async fn enqueue_ingestion_backfill(
+        &self,
+        request: IngestionBackfillRequest,
+    ) -> Result<IngestionBackfillEnqueueResponse, HttpError> {
+        let request = request
+            .validate()
+            .map_err(|error| HttpError::bad_request(error.to_string()))?;
+        let job = self
+            .ingestion
+            .enqueue(&request)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        Ok(job.into())
+    }
+
+    async fn list_ingestion_backfills(
+        &self,
+        request: control_http::ListIngestionBackfillsRequest,
+    ) -> Result<IngestionBackfillJobsResponse, HttpError> {
+        let jobs = self
+            .ingestion
+            .list(request.limit.unwrap_or(50).clamp(1, 200))
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        Ok(IngestionBackfillJobsResponse { jobs })
+    }
+
+    async fn get_ingestion_backfill(
+        &self,
+        job_id: uuid::Uuid,
+    ) -> Result<IngestionBackfillJobResponse, HttpError> {
+        let job = self
+            .ingestion
+            .get(job_id)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?
+            .ok_or_else(|| HttpError::not_found("backfill job not found"))?;
+        Ok(IngestionBackfillJobResponse { job })
+    }
+
+    async fn list_ingestion_backfill_events(
+        &self,
+        job_id: uuid::Uuid,
+        request: control_http::ListIngestionBackfillEventsRequest,
+    ) -> Result<IngestionBackfillEventsResponse, HttpError> {
+        if self
+            .ingestion
+            .get(job_id)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?
+            .is_none()
+        {
+            return Err(HttpError::not_found("backfill job not found"));
+        }
+        let events = self
+            .ingestion
+            .list_events(job_id, request.limit.unwrap_or(100).clamp(1, 500))
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        Ok(IngestionBackfillEventsResponse { job_id, events })
+    }
+
+    async fn cancel_ingestion_backfill(
+        &self,
+        job_id: uuid::Uuid,
+    ) -> Result<IngestionBackfillCancelResponse, HttpError> {
+        let job = self
+            .ingestion
+            .request_cancel(job_id)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?
+            .ok_or_else(|| HttpError::not_found("backfill job not found"))?;
+        Ok(IngestionBackfillCancelResponse {
+            job_id,
+            status: job.status,
+            cancel_requested: matches!(
+                job.status,
+                polymarket_bot::ingestion::job::BackfillJobStatus::CancelRequested
+                    | polymarket_bot::ingestion::job::BackfillJobStatus::Cancelled
+            ),
+        })
+    }
+
+    async fn ingestion_training_readiness(
+        &self,
+        request: control_http::IngestionReadinessRequest,
+    ) -> Result<polymarket_bot::ingestion::job::TrainingReadiness, HttpError> {
+        self.ingestion
+            .training_readiness(request.range_start, request.range_end)
+            .await
+            .map_err(|error| HttpError::bad_request(error.to_string()))
     }
 
     async fn trade_pnl_summary(&self) -> Result<serde_json::Value, HttpError> {
@@ -1781,12 +1880,16 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|_| chrono::Duration::seconds(300)),
         ..TradePnlConfig::default()
     };
+    let ingestion = IngestionRepository::connect(&config.postgres)
+        .await
+        .context("failed to connect backfill ingestion repository")?;
 
     let mut metrics = RuntimeMetrics::new();
     let shared_metrics = Arc::new(Mutex::new(metrics.clone()));
     if config.http.enabled {
         let control: control_http::SharedControlApi = Arc::new(RuntimeControl {
             store: store.clone(),
+            ingestion: ingestion.clone(),
             gamma: gamma.clone(),
             data_api: data_api.clone(),
             clob: clob.clone(),

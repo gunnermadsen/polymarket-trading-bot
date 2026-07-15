@@ -24,6 +24,11 @@ use crate::{
         LivePoly1271FunderProbeRequest, LivePoly1271FunderProbeResponse, LiveVenueStatus,
         LiveWalletAddressDiagnostics,
     },
+    ingestion::job::{
+        BackfillJob as IngestionBackfillJob, BackfillJobEvent as IngestionBackfillJobEvent,
+        BackfillJobStatus as IngestionBackfillJobStatus,
+        BackfillRequest as IngestionBackfillRequest, IngesterKey, TrainingReadiness,
+    },
     models::{BackfillJob, BackfillJobStatus, BacktestRun, TradingProcess, TradingProcessConfig},
     replay::{BacktestReplayQueued, BacktestReplayRequest},
     store::TradingProcessResetReport,
@@ -104,6 +109,61 @@ pub trait ControlApi: Send + Sync + 'static {
         &self,
         job_id: Uuid,
     ) -> Result<CancelBackfillJobResponse, HttpError>;
+
+    async fn enqueue_ingestion_backfill(
+        &self,
+        _request: IngestionBackfillRequest,
+    ) -> Result<IngestionBackfillEnqueueResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "generic backfill enqueue is not wired",
+        ))
+    }
+
+    async fn list_ingestion_backfills(
+        &self,
+        _request: ListIngestionBackfillsRequest,
+    ) -> Result<IngestionBackfillJobsResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "generic backfill registry is not wired",
+        ))
+    }
+
+    async fn get_ingestion_backfill(
+        &self,
+        _job_id: Uuid,
+    ) -> Result<IngestionBackfillJobResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "generic backfill registry is not wired",
+        ))
+    }
+
+    async fn list_ingestion_backfill_events(
+        &self,
+        _job_id: Uuid,
+        _request: ListIngestionBackfillEventsRequest,
+    ) -> Result<IngestionBackfillEventsResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "generic backfill event registry is not wired",
+        ))
+    }
+
+    async fn cancel_ingestion_backfill(
+        &self,
+        _job_id: Uuid,
+    ) -> Result<IngestionBackfillCancelResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "generic backfill cancellation is not wired",
+        ))
+    }
+
+    async fn ingestion_training_readiness(
+        &self,
+        _request: IngestionReadinessRequest,
+    ) -> Result<TrainingReadiness, HttpError> {
+        Err(HttpError::not_implemented(
+            "BTC training-data readiness is not wired",
+        ))
+    }
 
     async fn trade_pnl_summary(&self) -> Result<serde_json::Value, HttpError>;
 
@@ -664,9 +724,24 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
             "/copy-trade/calibration",
             post(start_copy_trade_calibration),
         )
-        .route("/backfill/jobs", get(list_backfill_jobs))
-        .route("/backfill/jobs/:job_id", get(get_backfill_job))
-        .route("/backfill/jobs/:job_id/cancel", post(cancel_backfill_job))
+        .route("/backfill/ingesters", get(list_ingesters))
+        .route(
+            "/backfill/jobs",
+            get(list_ingestion_backfills).post(enqueue_ingestion_backfill),
+        )
+        .route("/backfill/jobs/:job_id", get(get_ingestion_backfill))
+        .route(
+            "/backfill/jobs/:job_id/events",
+            get(list_ingestion_backfill_events),
+        )
+        .route(
+            "/backfill/jobs/:job_id/cancel",
+            post(cancel_ingestion_backfill),
+        )
+        .route(
+            "/backfill/readiness/btc-five-minute-training",
+            get(ingestion_training_readiness),
+        )
         .route("/pnl/stats", get(trade_pnl_summary))
         .route("/trades/pnl/summary", get(trade_pnl_summary))
         .route("/trades/pnl/wallets", get(trade_pnl_wallets))
@@ -837,24 +912,80 @@ async fn list_backtest_runs(
     state.control.list_backtest_runs(request).await.map(Json)
 }
 
-async fn list_backfill_jobs(
+async fn enqueue_ingestion_backfill(
     State(state): State<HttpState>,
-) -> Result<Json<BackfillJobsResponse>, HttpError> {
-    state.control.list_backfill_jobs().await.map(Json)
+    Json(request): Json<IngestionBackfillRequest>,
+) -> Result<Json<IngestionBackfillEnqueueResponse>, HttpError> {
+    state
+        .control
+        .enqueue_ingestion_backfill(request)
+        .await
+        .map(Json)
 }
 
-async fn get_backfill_job(
-    State(state): State<HttpState>,
-    Path(job_id): Path<Uuid>,
-) -> Result<Json<BackfillJobResponse>, HttpError> {
-    state.control.get_backfill_job(job_id).await.map(Json)
+async fn list_ingesters() -> Json<IngesterListResponse> {
+    Json(IngesterListResponse {
+        ingesters: IngesterKey::ALL
+            .into_iter()
+            .map(|key| IngesterDescription {
+                key,
+                request_version: key.supported_request_version(),
+                range_alignment_seconds: if key.is_binance() { 86_400 } else { 300 },
+            })
+            .collect(),
+    })
 }
 
-async fn cancel_backfill_job(
+async fn list_ingestion_backfills(
+    State(state): State<HttpState>,
+    Query(request): Query<ListIngestionBackfillsRequest>,
+) -> Result<Json<IngestionBackfillJobsResponse>, HttpError> {
+    state
+        .control
+        .list_ingestion_backfills(request)
+        .await
+        .map(Json)
+}
+
+async fn get_ingestion_backfill(
     State(state): State<HttpState>,
     Path(job_id): Path<Uuid>,
-) -> Result<Json<CancelBackfillJobResponse>, HttpError> {
-    state.control.cancel_backfill_job(job_id).await.map(Json)
+) -> Result<Json<IngestionBackfillJobResponse>, HttpError> {
+    state.control.get_ingestion_backfill(job_id).await.map(Json)
+}
+
+async fn list_ingestion_backfill_events(
+    State(state): State<HttpState>,
+    Path(job_id): Path<Uuid>,
+    Query(request): Query<ListIngestionBackfillEventsRequest>,
+) -> Result<Json<IngestionBackfillEventsResponse>, HttpError> {
+    state
+        .control
+        .list_ingestion_backfill_events(job_id, request)
+        .await
+        .map(Json)
+}
+
+async fn cancel_ingestion_backfill(
+    State(state): State<HttpState>,
+    Path(job_id): Path<Uuid>,
+) -> Result<Json<IngestionBackfillCancelResponse>, HttpError> {
+    state
+        .control
+        .cancel_ingestion_backfill(job_id)
+        .await
+        .map(Json)
+}
+
+async fn ingestion_training_readiness(
+    State(state): State<HttpState>,
+    Query(request): Query<IngestionReadinessRequest>,
+) -> Result<Json<TrainingReadiness>, HttpError> {
+    state
+        .control
+        .ingestion_training_readiness(request)
+        .await
+        .map(Json)
 }
 
 async fn trade_pnl_summary(
@@ -1453,6 +1584,22 @@ pub struct ListBacktestRunsRequest {
     pub limit: Option<i64>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListIngestionBackfillsRequest {
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListIngestionBackfillEventsRequest {
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestionReadinessRequest {
+    pub range_start: DateTime<Utc>,
+    pub range_end: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpsertTradingProcessByKeyRequest {
     pub name: String,
@@ -1483,6 +1630,60 @@ pub struct CancelBackfillJobResponse {
     pub job_id: Uuid,
     pub status: BackfillJobStatus,
     pub cancel_requested: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestionBackfillEnqueueResponse {
+    pub job_id: Uuid,
+    pub ingester: String,
+    pub status: IngestionBackfillJobStatus,
+    pub requested_at: DateTime<Utc>,
+}
+
+impl From<IngestionBackfillJob> for IngestionBackfillEnqueueResponse {
+    fn from(job: IngestionBackfillJob) -> Self {
+        Self {
+            job_id: job.job_id,
+            ingester: job.ingester_key,
+            status: job.status,
+            requested_at: job.requested_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestionBackfillJobResponse {
+    pub job: IngestionBackfillJob,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestionBackfillJobsResponse {
+    pub jobs: Vec<IngestionBackfillJob>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestionBackfillEventsResponse {
+    pub job_id: Uuid,
+    pub events: Vec<IngestionBackfillJobEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestionBackfillCancelResponse {
+    pub job_id: Uuid,
+    pub status: IngestionBackfillJobStatus,
+    pub cancel_requested: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngesterDescription {
+    pub key: IngesterKey,
+    pub request_version: i32,
+    pub range_alignment_seconds: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngesterListResponse {
+    pub ingesters: Vec<IngesterDescription>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

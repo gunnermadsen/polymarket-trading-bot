@@ -4981,7 +4981,7 @@ impl Store {
         sqlx::query(
             r#"
             INSERT INTO polymarket.backfill_jobs (
-              job_id, job_type, status, requested_at, lookback_days, min_trade_usd,
+              job_id, ingester_key, status, requested_at, lookback_days, min_trade_usd,
               request, summary
             )
             VALUES ($1,'whales','queued',now(),$2,$3,$4,'{}'::jsonb)
@@ -5000,7 +5000,7 @@ impl Store {
     pub async fn get_backfill_job(&self, job_id: Uuid) -> Result<BackfillJob> {
         let row = sqlx::query_as::<_, BackfillJobRow>(
             r#"
-            SELECT job_id, job_type, status, requested_at, started_at, completed_at,
+            SELECT job_id, ingester_key AS job_type, status, requested_at, started_at, completed_at,
               cancel_requested_at, lookback_days, min_trade_usd, request, summary, error
             FROM polymarket.backfill_jobs
             WHERE job_id = $1
@@ -5016,9 +5016,10 @@ impl Store {
     pub async fn list_backfill_jobs(&self, limit: i64) -> Result<Vec<BackfillJob>> {
         let rows = sqlx::query_as::<_, BackfillJobRow>(
             r#"
-            SELECT job_id, job_type, status, requested_at, started_at, completed_at,
+            SELECT job_id, ingester_key AS job_type, status, requested_at, started_at, completed_at,
               cancel_requested_at, lookback_days, min_trade_usd, request, summary, error
             FROM polymarket.backfill_jobs
+            WHERE ingester_key = 'whales'
             ORDER BY requested_at DESC
             LIMIT $1
             "#,
