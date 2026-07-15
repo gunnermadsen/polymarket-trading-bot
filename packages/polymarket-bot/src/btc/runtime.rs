@@ -2225,16 +2225,9 @@ async fn acknowledge_clob_subscriptions(
         .iter()
         .map(|market| market.market_id.clone())
         .collect::<Vec<_>>();
-    let acknowledged = repository
+    repository
         .mark_official_resolution_watches_subscribed(&market_ids, connection_id, subscribed_at)
         .await?;
-    if acknowledged != market_ids.len() as u64 {
-        bail!(
-            "BTC official-resolution subscription acknowledgement mismatch: {} of {}",
-            acknowledged,
-            market_ids.len()
-        );
-    }
     Ok(())
 }
 

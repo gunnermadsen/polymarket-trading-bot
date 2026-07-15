@@ -1,4 +1,7 @@
-use std::str::FromStr;
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -64,6 +67,12 @@ pub struct BtcOfficialResolutionWatch {
     pub market: BtcIntervalMarket,
     pub status: String,
     pub deadline_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BtcOfficialResolutionSubscriptionAck {
+    pub subscribed: u64,
+    pub already_terminal: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -282,6 +291,72 @@ pub struct BtcRepositoryStatus {
     pub latest_chainlink_at: Option<DateTime<Utc>>,
     pub latest_binance_at: Option<DateTime<Utc>>,
     pub latest_book_at: Option<DateTime<Utc>>,
+}
+
+fn validate_official_resolution_subscription_ack(
+    market_ids: &[String],
+    subscribed_market_ids: &[String],
+    watch_states: &[(String, String)],
+) -> Result<BtcOfficialResolutionSubscriptionAck> {
+    let requested = market_ids.iter().cloned().collect::<HashSet<_>>();
+    if requested.len() != market_ids.len() {
+        bail!("BTC official-resolution subscription contains duplicate market ids");
+    }
+    let subscribed = subscribed_market_ids
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+    if subscribed.len() != subscribed_market_ids.len()
+        || subscribed
+            .iter()
+            .any(|market_id| !requested.contains(market_id))
+    {
+        bail!("BTC official-resolution subscription returned invalid updated market ids");
+    }
+    let states = watch_states.iter().cloned().collect::<HashMap<_, _>>();
+    if states.len() != watch_states.len() {
+        bail!("BTC official-resolution subscription returned duplicate watch rows");
+    }
+
+    let missing = requested
+        .iter()
+        .filter(|market_id| !states.contains_key(*market_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        bail!(
+            "BTC official-resolution subscription is missing durable watches for: {}",
+            missing.join(",")
+        );
+    }
+
+    let mut already_terminal = 0u64;
+    let mut invalid = Vec::new();
+    for market_id in market_ids {
+        let status = states
+            .get(market_id)
+            .expect("every requested BTC resolution watch was verified above");
+        if subscribed.contains(market_id) {
+            if status != "pending" {
+                invalid.push(format!("{market_id}={status}:updated"));
+            }
+        } else if matches!(status.as_str(), "resolved" | "resolved_late") {
+            already_terminal = already_terminal.saturating_add(1);
+        } else {
+            invalid.push(format!("{market_id}={status}:not_updated"));
+        }
+    }
+    if !invalid.is_empty() {
+        bail!(
+            "BTC official-resolution subscription has invalid durable watch states: {}",
+            invalid.join(",")
+        );
+    }
+
+    Ok(BtcOfficialResolutionSubscriptionAck {
+        subscribed: subscribed.len() as u64,
+        already_terminal,
+    })
 }
 
 impl BtcRepository {
@@ -513,11 +588,16 @@ impl BtcRepository {
         market_ids: &[String],
         connection_id: Uuid,
         subscribed_at: DateTime<Utc>,
-    ) -> Result<u64> {
+    ) -> Result<BtcOfficialResolutionSubscriptionAck> {
         if market_ids.is_empty() {
-            return Ok(0);
+            return Ok(BtcOfficialResolutionSubscriptionAck::default());
         }
-        let result = sqlx::query(
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin BTC official-resolution subscription transaction")?;
+        let subscribed_market_ids = sqlx::query_scalar::<_, String>(
             r#"
             UPDATE polymarket.btc_official_resolution_watches
             SET last_subscribed_at = $2,
@@ -525,15 +605,36 @@ impl BtcRepository {
                 subscription_count = subscription_count + 1,
                 updated_at = now()
             WHERE market_id = ANY($1) AND status = 'pending'
+            RETURNING market_id
             "#,
         )
         .bind(market_ids)
         .bind(subscribed_at)
         .bind(connection_id)
-        .execute(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .context("failed to acknowledge BTC official-resolution subscriptions")?;
-        Ok(result.rows_affected())
+        let watch_states = sqlx::query_as::<_, (String, String)>(
+            r#"
+            SELECT market_id, status
+            FROM polymarket.btc_official_resolution_watches
+            WHERE market_id = ANY($1)
+            ORDER BY market_id
+            "#,
+        )
+        .bind(market_ids)
+        .fetch_all(&mut *tx)
+        .await
+        .context("failed to verify BTC official-resolution subscription states")?;
+        let acknowledgement = validate_official_resolution_subscription_ack(
+            market_ids,
+            &subscribed_market_ids,
+            &watch_states,
+        )?;
+        tx.commit()
+            .await
+            .context("failed to commit BTC official-resolution subscriptions")?;
+        Ok(acknowledgement)
     }
 
     pub async fn mark_official_resolution_watch_checked(
@@ -3003,6 +3104,57 @@ mod tests {
 
     use super::*;
     use crate::btc::types::{FeedIntegrityStatus, MarketFeedEventType};
+
+    #[test]
+    fn resolution_subscription_ack_accepts_concurrent_terminal_transition() {
+        let requested = vec![
+            "market-a".to_string(),
+            "market-b".to_string(),
+            "market-c".to_string(),
+        ];
+        let subscribed = vec!["market-a".to_string(), "market-c".to_string()];
+        let states = vec![
+            ("market-a".to_string(), "pending".to_string()),
+            ("market-b".to_string(), "resolved".to_string()),
+            ("market-c".to_string(), "pending".to_string()),
+        ];
+
+        let acknowledgement =
+            validate_official_resolution_subscription_ack(&requested, &subscribed, &states)
+                .unwrap();
+
+        assert_eq!(acknowledgement.subscribed, 2);
+        assert_eq!(acknowledgement.already_terminal, 1);
+    }
+
+    #[test]
+    fn resolution_subscription_ack_rejects_missing_durable_watch() {
+        let requested = vec!["market-a".to_string(), "market-b".to_string()];
+        let subscribed = vec!["market-a".to_string()];
+        let states = vec![("market-a".to_string(), "pending".to_string())];
+
+        let error = validate_official_resolution_subscription_ack(&requested, &subscribed, &states)
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("missing durable watches for: market-b"));
+    }
+
+    #[test]
+    fn resolution_subscription_ack_rejects_unacknowledged_pending_or_expired_watch() {
+        for status in ["pending", "expired"] {
+            let requested = vec!["market-a".to_string()];
+            let states = vec![("market-a".to_string(), status.to_string())];
+
+            let error = validate_official_resolution_subscription_ack(&requested, &[], &states)
+                .unwrap_err();
+
+            assert!(error
+                .to_string()
+                .contains(&format!("market-a={status}:not_updated")));
+        }
+    }
 
     #[test]
     fn serializes_database_enum_names() {

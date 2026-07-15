@@ -19,7 +19,7 @@ use polymarket_bot::{
         BookRegistry, BtcPaperExperimentConfig, BtcPaperExperimentRunner, BtcRepository,
         BtcRuntime, BtcRuntimeConfig, BtcRuntimeHandle, BtcStrategyConfig, PaperPreviewConfig,
         PaperVenue as BtcPaperVenue, PaperVenueConfig, BTC_FEATURE_SCHEMA_VERSION,
-        BTC_STRATEGY_VERSION,
+        BTC_STRATEGY_VERSION, BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION,
     },
     clob::ClobClient,
     config::{AppConfig, BtcConfig, ExecutionMode},
@@ -667,6 +667,10 @@ impl BtcProcessManager {
         let strategy_object = strategy_value.as_object_mut().ok_or_else(|| {
             HttpError::internal("default BTC strategy did not serialize as object")
         })?;
+        strategy_object.insert(
+            "volatility_continuation".to_string(),
+            serde_json::Value::Null,
+        );
         for (key, value) in strategy_overrides {
             let Some(slot) = strategy_object.get_mut(key) else {
                 return Err(HttpError::bad_request(format!(
@@ -682,8 +686,10 @@ impl BtcProcessManager {
         strategy
             .validate()
             .map_err(|error| HttpError::bad_request(error.to_string()))?;
-        if strategy.strategy_version != BTC_STRATEGY_VERSION
-            || strategy.feature_schema_version != BTC_FEATURE_SCHEMA_VERSION
+        if !matches!(
+            strategy.strategy_version.as_str(),
+            BTC_STRATEGY_VERSION | BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION
+        ) || strategy.feature_schema_version != BTC_FEATURE_SCHEMA_VERSION
         {
             return Err(HttpError::bad_request(
                 "BTC strategy and feature schema versions are compiled identities and cannot be overridden",
