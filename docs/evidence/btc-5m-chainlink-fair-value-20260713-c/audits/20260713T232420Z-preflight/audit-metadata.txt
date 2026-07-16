@@ -1,6 +1,0 @@
-audit_mode=preflight
-experiment_key=btc-5m-chainlink-fair-value-20260713-c
-process_key=btc-5m-chainlink-fair-value-paper
-preregistration_sha256=9aa88dd39d08ecb1e23cc3582df1b1441ddbf8398a071d13d925a59a1bb44cc1
-started_at_utc=2026-07-13T23:24:20Z
-artifact_root=/workspace

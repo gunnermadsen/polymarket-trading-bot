@@ -1,2 +1,0 @@
-Filesystem     1024-blocks      Used Available Capacity Mounted on
-virtiofs0        482797652 432353688  50443964      90% /workspace/docs/evidence

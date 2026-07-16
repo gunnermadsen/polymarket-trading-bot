@@ -1,9 +1,0 @@
-239131efee98264a3824cc8e49b5db625d28806e0493b8927611fe81c34dbc02  ./audit-metadata.txt
-2844b9a5e7acc25613522e75415776b765647c00d598703eeda8215925f1760d  ./audit-status.json
-72e1d34e6652681d1085c2b923077c31833f9f9c2e8cf97f33903bc9de0e7601  ./evidence-storage.txt
-5eb769bc5a4b588b5d081eef8aab9f27618fec0f70c3fe56dd609809a8bac1e4  ./paper-capital-schema-gate.txt
-71c42441fd7f845535a545230434dea5b92f1e053e725ff009e9474b9360ef2d  ./postgres-memory-settings.txt
-a1c194d4875f00fc57006e5835adb9f5f0f7e4302dd2f288534a6c28150a7ea8  ./postgres-pg-isready.txt
-d27b0c2c58d5892a8895459f172be4d218e7e6eef76a857dabcd23d95d16cd0e  ./preflight-lifecycle-gate.json
-9aa88dd39d08ecb1e23cc3582df1b1441ddbf8398a071d13d925a59a1bb44cc1  ./preregistration.json
-adc4c39816c3dde5b9a4c39f25649b23112f39102ff1fc9529a75f5e4cff096b  ./safety-gates.json

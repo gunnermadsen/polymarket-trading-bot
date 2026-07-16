@@ -1,1 +1,0 @@
-The wrapper was SELECT-only and did not mutate services or experiment state.
