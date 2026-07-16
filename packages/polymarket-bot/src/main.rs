@@ -34,13 +34,12 @@ use polymarket_bot::{
     gamma::GammaClient,
     http as control_http,
     http::{
-        BackfillJobResponse, BackfillJobsResponse, BacktestRunResponse, BacktestRunsResponse,
-        CancelBackfillJobResponse, ControlApi, HealthResponse, HealthStatus, HttpError,
-        IngestionBackfillCancelResponse, IngestionBackfillEnqueueResponse,
-        IngestionBackfillEventsResponse, IngestionBackfillJobResponse,
-        IngestionBackfillJobsResponse, MetricsResponse, TradingProcessResetResponse,
-        TradingProcessResponse, TradingProcessStartPreviewResponse, TradingProcessStatusResponse,
-        TradingProcessesResponse,
+        BackfillJobResponse, BackfillJobsResponse, CancelBackfillJobResponse, ControlApi,
+        HealthResponse, HealthStatus, HttpError, IngestionBackfillCancelResponse,
+        IngestionBackfillEnqueueResponse, IngestionBackfillEventsResponse,
+        IngestionBackfillJobResponse, IngestionBackfillJobsResponse, MetricsResponse,
+        TradingProcessResetResponse, TradingProcessResponse, TradingProcessStartPreviewResponse,
+        TradingProcessStatusResponse, TradingProcessesResponse,
     },
     ingestion::{
         job::BackfillRequest as IngestionBackfillRequest, repository::IngestionRepository,
@@ -49,7 +48,6 @@ use polymarket_bot::{
         EffectiveMarkRefreshProcessConfig, EffectiveProcessExitRulesConfig, ProcessExecutionConfig,
         TradingProcess, TradingProcessConfig, WhalePollCheckpoint,
     },
-    replay::{run_backtest_replay, BacktestReplayJob, BacktestReplayProcess, BacktestReplayQueued},
     risk::{RiskLimits, RiskState},
     scanner::{scan_markets_for_signal1, ScannerConfig, ScannerCycleReport},
     store::Store,
@@ -813,10 +811,7 @@ impl BtcProcessManager {
         prepare_btc_start_definition(self.validate_resume_definition(process)?)
     }
 
-    async fn ensure_start_slot_available(
-        &self,
-        process_id: uuid::Uuid,
-    ) -> Result<(), HttpError> {
+    async fn ensure_start_slot_available(&self, process_id: uuid::Uuid) -> Result<(), HttpError> {
         if let Some(pending) = self.terminal_pending.lock().await.get(&process_id) {
             return Err(HttpError::conflict(format!(
                 "BTC experiment {} still has a pending terminal transition",
@@ -985,9 +980,11 @@ impl BtcProcessManager {
         } = self.prepare_resume_definition(&process)?;
         let current_frozen_process_config = serde_json::to_value(&frozen_process_config)
             .map_err(|error| HttpError::internal(error.to_string()))?;
-        let (config_hash, frozen_process_config_value) =
-            sqlx::query_as::<_, (String, serde_json::Value)>(
-                r#"
+        let (config_hash, frozen_process_config_value) = sqlx::query_as::<
+            _,
+            (String, serde_json::Value),
+        >(
+            r#"
                 SELECT config_hash, config
                 FROM polymarket.btc_paper_experiments
                 WHERE experiment_id = $1
@@ -996,18 +993,16 @@ impl BtcProcessManager {
                   AND status = 'running'
                   AND stopped_at IS NULL
                 "#,
-            )
-            .bind(experiment_id)
-            .bind(&experiment_key)
-            .bind(process_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|error| HttpError::internal(error.to_string()))?
-            .ok_or_else(|| {
-                HttpError::conflict(
-                    "durable BTC experiment disappeared before runtime reattachment",
-                )
-            })?;
+        )
+        .bind(experiment_id)
+        .bind(&experiment_key)
+        .bind(process_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| HttpError::internal(error.to_string()))?
+        .ok_or_else(|| {
+            HttpError::conflict("durable BTC experiment disappeared before runtime reattachment")
+        })?;
         if resume_config_without_compiled_source_identity(current_frozen_process_config)
             != resume_config_without_compiled_source_identity(frozen_process_config_value.clone())
         {
@@ -1369,13 +1364,7 @@ impl BtcProcessManager {
             ));
         }
 
-        if let Some(pending) = self
-            .terminal_pending
-            .lock()
-            .await
-            .get(&process_id)
-            .cloned()
-        {
+        if let Some(pending) = self.terminal_pending.lock().await.get(&process_id).cloned() {
             if expected_experiment_id.is_some_and(|expected| expected != pending.experiment_id) {
                 return Ok(process);
             }
@@ -1539,13 +1528,7 @@ impl BtcProcessManager {
         // Wait behind any already-admitted lifecycle transition, then inspect
         // state while owning the same gate so no start can publish afterward.
         let _transition_guard = self.transition.lock().await;
-        let pending = self
-            .terminal_pending
-            .lock()
-            .await
-            .values()
-            .next()
-            .cloned();
+        let pending = self.terminal_pending.lock().await.values().next().cloned();
         if let Some(pending) = pending {
             return Err(HttpError::conflict(format!(
                 "BTC experiment {} has a pending API lifecycle transition; service shutdown left durable state unchanged",
@@ -1674,7 +1657,8 @@ impl BtcProcessManager {
             }
             let reason = last_error.unwrap_or_else(|| {
                 if runtime_running {
-                    "manager heartbeat rejected because the durable process is not active".to_string()
+                    "manager heartbeat rejected because the durable process is not active"
+                        .to_string()
                 } else {
                     "BTC runtime child task stopped unexpectedly".to_string()
                 }
@@ -2070,387 +2054,6 @@ impl ControlApi for RuntimeControl {
             .await
             .map_err(|error| HttpError::internal(error.to_string()))?;
         Ok(BackfillJobResponse { job })
-    }
-
-    async fn start_copy_trade_backtest(
-        &self,
-        request: control_http::CopyTradeBacktestRequest,
-    ) -> Result<BackfillJobResponse, HttpError> {
-        let process_config = self.resolve_process_config(request.process_id).await?;
-        let venue = self
-            .venues
-            .for_mode(process_config.execution_mode)
-            .map_err(|error| HttpError::bad_request(error.to_string()))?;
-        let mut copy_trade_config = process_config.copy_trade;
-        if let Some(min_wallet_score) = request.min_wallet_score {
-            copy_trade_config.min_wallet_score = min_wallet_score;
-        }
-        if let Some(copy_size_fraction) = request.copy_size_fraction {
-            copy_trade_config.copy_size_fraction = copy_size_fraction;
-        }
-        if let Some(max_copy_size_usd) = request.max_copy_size_usd {
-            copy_trade_config.max_copy_size_usd = max_copy_size_usd;
-        }
-        let backfill_request = WhaleBackfillRequest {
-            lookback_days: request
-                .lookback_days
-                .unwrap_or(process_config.lookback_days as i32)
-                .max(0) as u32,
-            min_trade_usd: request
-                .min_trade_usd
-                .unwrap_or(process_config.min_trade_usd),
-            market_ids: process_config.market_ids,
-            event_ids: Vec::new(),
-            wallets: process_config.wallets,
-            mode: BackfillMode::CopyTradeBacktest,
-            dry_run: request.dry_run,
-            limit: request.page_limit.unwrap_or(process_config.page_limit),
-            max_pages: request.max_pages.unwrap_or(process_config.max_pages),
-            process_id: Some(process_config.process_id),
-            copy_min_wallet_score: copy_trade_config.min_wallet_score,
-            copy_size_fraction: copy_trade_config.copy_size_fraction,
-            copy_max_size_usd: copy_trade_config.max_copy_size_usd,
-            copy_trade_config: Some(copy_trade_config),
-            execute_signals: request.execute_signals && process_config.execute_signals,
-        };
-        let job_id = enqueue_and_spawn_with_venue(
-            self.store.clone(),
-            self.data_api.clone(),
-            Some(venue),
-            backfill_request,
-        )
-        .await
-        .map_err(|error| HttpError::internal(error.to_string()))?;
-        let job = self
-            .store
-            .get_backfill_job(job_id)
-            .await
-            .map_err(|error| HttpError::internal(error.to_string()))?;
-        Ok(BackfillJobResponse { job })
-    }
-
-    async fn start_copy_trade_calibration(
-        &self,
-        request: control_http::CopyTradeCalibrationRequest,
-    ) -> Result<BackfillJobResponse, HttpError> {
-        let process_config = self.resolve_process_config(request.process_id).await?;
-        let venue = self
-            .venues
-            .for_mode(process_config.execution_mode)
-            .map_err(|error| HttpError::bad_request(error.to_string()))?;
-        let backfill_request = WhaleBackfillRequest {
-            lookback_days: request
-                .lookback_days
-                .unwrap_or(process_config.lookback_days as i32)
-                .max(0) as u32,
-            min_trade_usd: request
-                .min_trade_usd
-                .unwrap_or(process_config.min_trade_usd),
-            market_ids: process_config.market_ids,
-            event_ids: Vec::new(),
-            wallets: process_config.wallets,
-            mode: BackfillMode::CopyTradeBacktest,
-            dry_run: true,
-            limit: request.page_limit.unwrap_or(process_config.page_limit),
-            max_pages: request.max_pages.unwrap_or(process_config.max_pages),
-            process_id: Some(process_config.process_id),
-            copy_min_wallet_score: process_config.copy_trade.min_wallet_score,
-            copy_size_fraction: process_config.copy_trade.copy_size_fraction,
-            copy_max_size_usd: process_config.copy_trade.max_copy_size_usd,
-            copy_trade_config: Some(process_config.copy_trade),
-            execute_signals: false,
-        };
-        let job_id = enqueue_and_spawn_with_venue(
-            self.store.clone(),
-            self.data_api.clone(),
-            Some(venue),
-            backfill_request,
-        )
-        .await
-        .map_err(|error| HttpError::internal(error.to_string()))?;
-        let job = self
-            .store
-            .get_backfill_job(job_id)
-            .await
-            .map_err(|error| HttpError::internal(error.to_string()))?;
-        Ok(BackfillJobResponse { job })
-    }
-
-    async fn replay_existing_copy_trades(
-        &self,
-        request: control_http::CopyTradeReplayRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        let process_config = self.resolve_process_config(request.process_id).await?;
-        if process_config.execution_mode != ExecutionMode::Sim {
-            return Err(HttpError::bad_request(
-                "copy-trade replay is simulation-only",
-            ));
-        }
-        let since = Utc::now() - chrono::Duration::days(request.lookback_days.unwrap_or(3).max(1));
-        let mut trades = self
-            .store
-            .fetch_recent_whale_trades(since)
-            .await
-            .map_err(|error| HttpError::internal(error.to_string()))?;
-        trades.sort_by_key(|trade| trade.timestamp_utc);
-        let limit = request.limit.unwrap_or(500).clamp(1, 5_000);
-        if trades.len() > limit {
-            trades = trades.split_off(trades.len() - limit);
-        }
-        let venue = self
-            .venues
-            .for_mode(process_config.execution_mode)
-            .map_err(|error| HttpError::bad_request(error.to_string()))?;
-        let summary = run_copy_trade_signal_engine(
-            &self.store,
-            Some(venue.as_ref()),
-            Some(&self.clob),
-            &trades,
-            &CopyTradeRunConfig {
-                process_id: Some(process_config.process_id),
-                copy_trade: process_config.copy_trade,
-                execute_signals: request.execute_signals,
-                require_entry_markability: false,
-            },
-            request.dry_run,
-        )
-        .await
-        .map_err(|error| HttpError::internal(error.to_string()))?;
-        Ok(serde_json::json!({
-            "process_id": process_config.process_id,
-            "trades_replayed": trades.len(),
-            "execute_signals": request.execute_signals,
-            "dry_run": request.dry_run,
-            "summary": summary
-        }))
-    }
-
-    async fn start_backtest_replay(
-        &self,
-        request: polymarket_bot::replay::BacktestReplayRequest,
-    ) -> Result<BacktestReplayQueued, HttpError> {
-        if request.process_ids.is_empty() {
-            return Err(HttpError::bad_request(
-                "process_ids must contain at least one source process id",
-            ));
-        }
-        let lookback_days = request.lookback_days.unwrap_or(3).max(1);
-        let warmup_days = request.warmup_days.unwrap_or(7).max(0);
-        let range_end = Utc::now();
-        let range_start = range_end - chrono::Duration::days(i64::from(lookback_days));
-        let warmup_start = range_start - chrono::Duration::days(i64::from(warmup_days));
-        let min_trade_usd = request.min_trade_usd.unwrap_or(dec!(100));
-        let max_trades = request.max_trades.unwrap_or(50_000).clamp(1, 250_000);
-        let request_json = serde_json::to_value(&request)
-            .map_err(|error| HttpError::bad_request(error.to_string()))?;
-
-        let mut source_processes = Vec::new();
-        for source_process_id in &request.process_ids {
-            let source = self
-                .store
-                .get_trading_process(*source_process_id)
-                .await
-                .map_err(|error| HttpError::internal(error.to_string()))?
-                .ok_or_else(|| HttpError::not_found("source trading process not found"))?;
-            source_processes.push(source);
-        }
-
-        let run = self
-            .store
-            .create_backtest_run(
-                range_start,
-                range_end,
-                warmup_start,
-                lookback_days,
-                warmup_days,
-                &request.process_ids,
-                request_json.clone(),
-            )
-            .await
-            .map_err(|error| HttpError::internal(error.to_string()))?;
-
-        let mut replay_processes = Vec::new();
-        let mut backtest_process_ids = Vec::new();
-        for source in source_processes {
-            let mut config = source.config.clone();
-            let taker_fee_rate = config.effective_execution().taker_fee_rate;
-            config.execution = Some(ProcessExecutionConfig {
-                mode: Some("sim".to_string()),
-                execute_signals: request.execute_signals,
-                live_capital: false,
-                taker_fee_rate: Some(taker_fee_rate),
-            });
-            let source_key = source
-                .process_key
-                .clone()
-                .unwrap_or_else(|| source.process_id.to_string());
-            let process_key = format!(
-                "backtest-{}",
-                source_key.chars().take(96).collect::<String>()
-            );
-            let backtest_process = match self
-                .store
-                .upsert_trading_process_by_key(
-                    &format!("Backtest replay: {}", source.name),
-                    &source.process_type,
-                    "backtest",
-                    &process_key,
-                    false,
-                    "queued",
-                    config,
-                    serde_json::json!({
-                        "backtest": true,
-                        "source_process_id": source.process_id,
-                        "source_process_key": source.process_key,
-                        "last_backtest_run_id": run.backtest_run_id,
-                        "request": request_json.clone()
-                    }),
-                )
-                .await
-            {
-                Ok(process) => process,
-                Err(error) => {
-                    let message = error.to_string();
-                    let _ = self
-                        .store
-                        .mark_backtest_run_status(
-                            run.backtest_run_id,
-                            "failed",
-                            serde_json::json!({"started": false}),
-                            Some(&message),
-                        )
-                        .await;
-                    return Err(HttpError::internal(message));
-                }
-            };
-            let runtime_config = match runtime_config_from_process(&backtest_process) {
-                Ok(config) => config,
-                Err(error) => {
-                    let message = error.to_string();
-                    let _ = self
-                        .store
-                        .update_trading_process_status(
-                            backtest_process.process_id,
-                            "failed",
-                            false,
-                            Some(&message),
-                        )
-                        .await;
-                    let _ = self
-                        .store
-                        .mark_backtest_run_status(
-                            run.backtest_run_id,
-                            "failed",
-                            serde_json::json!({"started": false}),
-                            Some(&message),
-                        )
-                        .await;
-                    return Err(HttpError::bad_request(message));
-                }
-            };
-            backtest_process_ids.push(backtest_process.process_id);
-            replay_processes.push(BacktestReplayProcess {
-                source_process_id: source.process_id,
-                backtest_process_id: backtest_process.process_id,
-                config: runtime_config.copy_trade,
-                process_config: backtest_process.config,
-            });
-            if let Err(error) = self
-                .store
-                .add_backtest_process_to_run(run.backtest_run_id, backtest_process.process_id)
-                .await
-            {
-                let message = error.to_string();
-                let _ = self
-                    .store
-                    .update_trading_process_status(
-                        backtest_process.process_id,
-                        "failed",
-                        false,
-                        Some(&message),
-                    )
-                    .await;
-                let _ = self
-                    .store
-                    .mark_backtest_run_status(
-                        run.backtest_run_id,
-                        "failed",
-                        serde_json::json!({"started": false}),
-                        Some(&message),
-                    )
-                    .await;
-                return Err(HttpError::internal(message));
-            }
-        }
-
-        let job = BacktestReplayJob {
-            backtest_run_id: run.backtest_run_id,
-            range_start,
-            range_end,
-            warmup_start,
-            min_trade_usd,
-            max_trades,
-            processes: replay_processes,
-        };
-        let store = self.store.clone();
-        let venue = self.venues.sim.clone();
-        let clob = self.clob.clone();
-        tokio::spawn(async move {
-            if let Err(error) =
-                run_backtest_replay(store.clone(), venue.clone(), clob.clone(), job.clone()).await
-            {
-                let _ = store
-                    .mark_backtest_run_status(
-                        job.backtest_run_id,
-                        "failed",
-                        serde_json::json!({}),
-                        Some(&error.to_string()),
-                    )
-                    .await;
-                for process in &job.processes {
-                    let _ = store
-                        .update_trading_process_status(
-                            process.backtest_process_id,
-                            "failed",
-                            false,
-                            Some(&error.to_string()),
-                        )
-                        .await;
-                }
-                error!(error = %error, backtest_run_id = %job.backtest_run_id, "backtest replay failed");
-            }
-        });
-
-        Ok(BacktestReplayQueued {
-            backtest_run_id: run.backtest_run_id,
-            status: "queued".to_string(),
-            backtest_process_ids,
-        })
-    }
-
-    async fn get_backtest_run(
-        &self,
-        backtest_run_id: uuid::Uuid,
-    ) -> Result<BacktestRunResponse, HttpError> {
-        let backtest_run = self
-            .store
-            .get_backtest_run(backtest_run_id)
-            .await
-            .map_err(|error| HttpError::internal(error.to_string()))?
-            .ok_or_else(|| HttpError::not_found("backtest run not found"))?;
-        Ok(BacktestRunResponse { backtest_run })
-    }
-
-    async fn list_backtest_runs(
-        &self,
-        request: control_http::ListBacktestRunsRequest,
-    ) -> Result<BacktestRunsResponse, HttpError> {
-        let backtest_runs = self
-            .store
-            .list_backtest_runs(request.limit.unwrap_or(20).clamp(1, 100))
-            .await
-            .map_err(|error| HttpError::internal(error.to_string()))?;
-        Ok(BacktestRunsResponse { backtest_runs })
     }
 
     async fn list_backfill_jobs(&self) -> Result<BackfillJobsResponse, HttpError> {
@@ -3514,7 +3117,9 @@ impl ControlApi for RuntimeControl {
                 if let Some(manager) = &self.btc_manager {
                     object.insert(
                         "active_experiment".to_string(),
-                        manager.paper_experiment_status_for_process(process_id).await?,
+                        manager
+                            .paper_experiment_status_for_process(process_id)
+                            .await?,
                     );
                 }
             }
@@ -3602,11 +3207,7 @@ impl ControlApi for RuntimeControl {
         }
         if managed_now || managed_after {
             let runtime_active = match &self.btc_manager {
-                Some(manager) => manager
-                    .active
-                    .lock()
-                    .await
-                    .contains_key(&process_id),
+                Some(manager) => manager.active.lock().await.contains_key(&process_id),
                 None => false,
             };
             let terminal_pending = match &self.btc_manager {
@@ -4864,7 +4465,6 @@ fn runtime_config_from_process(process: &TradingProcess) -> Result<ProcessRuntim
             max_price_slippage_bps: copy_trade.max_price_slippage_bps,
             entry_pricing_mode: copy_trade.entry_pricing_mode,
             min_book_depth_usd: copy_trade.min_book_depth_usd,
-            backtest_horizon_secs: copy_trade.backtest_horizon_secs,
             taker_fee_rate: copy_trade.taker_fee_rate,
             allow_sell_entries: copy_trade.allow_sell_entries,
             mrs_enabled: copy_trade.mrs_enabled,
@@ -5122,7 +4722,10 @@ mod lifecycle_tests {
 
         owned_runtimes.remove(&first_process_id);
         pending_terminals.remove(&first_process_id);
-        assert_eq!(owned_runtimes.get(&second_process_id), Some(&"second-runtime"));
+        assert_eq!(
+            owned_runtimes.get(&second_process_id),
+            Some(&"second-runtime")
+        );
         assert!(pending_terminals.is_empty());
     }
 

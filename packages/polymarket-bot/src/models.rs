@@ -835,9 +835,6 @@ impl TradingProcessConfig {
             if let Some(min_book_depth_usd) = config.min_book_depth_usd {
                 effective.min_book_depth_usd = min_book_depth_usd;
             }
-            if let Some(backtest_horizon_secs) = config.backtest_horizon_secs {
-                effective.backtest_horizon_secs = backtest_horizon_secs;
-            }
             if let Some(taker_fee_rate) = config.taker_fee_rate {
                 effective.taker_fee_rate = taker_fee_rate;
             }
@@ -1222,7 +1219,6 @@ pub struct EffectiveCopyTradeProcessConfig {
     pub max_price_slippage_bps: Decimal,
     pub entry_pricing_mode: String,
     pub min_book_depth_usd: Decimal,
-    pub backtest_horizon_secs: i64,
     pub taker_fee_rate: Decimal,
     pub allow_sell_entries: bool,
     pub mrs_enabled: bool,
@@ -1268,7 +1264,6 @@ impl Default for EffectiveCopyTradeProcessConfig {
             max_price_slippage_bps: dec!(150),
             entry_pricing_mode: "signal_limit".to_string(),
             min_book_depth_usd: dec!(25),
-            backtest_horizon_secs: 3600,
             taker_fee_rate: dec!(0.03),
             allow_sell_entries: false,
             mrs_enabled: true,
@@ -1361,8 +1356,6 @@ pub struct CopyTradeProcessConfig {
     pub entry_pricing_mode: Option<String>,
     #[serde(default)]
     pub min_book_depth_usd: Option<Decimal>,
-    #[serde(default)]
-    pub backtest_horizon_secs: Option<i64>,
     #[serde(default)]
     pub taker_fee_rate: Option<Decimal>,
     #[serde(default)]
@@ -1794,73 +1787,6 @@ pub struct ExpectancyFlowRecomputeReport {
     pub score_version: String,
     pub cells_recomputed: u64,
     pub wallet_cells_recomputed: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CopyTradeBacktestRun {
-    pub backtest_id: Uuid,
-    pub job_id: Option<Uuid>,
-    pub status: String,
-    pub score_version: String,
-    pub strategy_name: String,
-    pub range_start: Option<DateTime<Utc>>,
-    pub range_end: Option<DateTime<Utc>>,
-    pub config: serde_json::Value,
-    pub started_at: DateTime<Utc>,
-    pub completed_at: Option<DateTime<Utc>>,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BacktestRun {
-    pub backtest_run_id: Uuid,
-    pub status: String,
-    pub range_start: DateTime<Utc>,
-    pub range_end: DateTime<Utc>,
-    pub warmup_start: DateTime<Utc>,
-    pub lookback_days: i32,
-    pub warmup_days: i32,
-    pub source_process_ids: Vec<Uuid>,
-    pub backtest_process_ids: Vec<Uuid>,
-    pub request: serde_json::Value,
-    pub summary: serde_json::Value,
-    pub error: Option<String>,
-    pub started_at: Option<DateTime<Utc>>,
-    pub completed_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CopyTradeBacktestResult {
-    pub result_id: Uuid,
-    pub backtest_id: Uuid,
-    pub timestamp_utc: DateTime<Utc>,
-    pub wallet_count: i32,
-    pub signal_count: i32,
-    pub trade_count: i32,
-    pub gross_pnl_usd: Decimal,
-    pub net_pnl_usd: Decimal,
-    pub roi: Option<Decimal>,
-    pub max_drawdown: Option<Decimal>,
-    pub win_rate: Option<Decimal>,
-    pub result_summary: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WalletScoreCalibrationSnapshot {
-    pub snapshot_id: Uuid,
-    pub timestamp_utc: DateTime<Utc>,
-    pub score_version: String,
-    pub calibration_version: String,
-    pub sample_start: Option<DateTime<Utc>>,
-    pub sample_end: Option<DateTime<Utc>>,
-    pub wallet_count: i32,
-    pub trade_count: i32,
-    pub feature_weights: serde_json::Value,
-    pub thresholds: serde_json::Value,
-    pub metrics: serde_json::Value,
-    pub metadata: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

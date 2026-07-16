@@ -11,15 +11,14 @@ use uuid::Uuid;
 use crate::{
     clob::ClobClient,
     copytrade::{
-        clob_tick_price, evaluate_copy_trade_with_segment, run_copy_trade_backtest,
-        CopyTradeConfig, CopyTradeExpectancyInput, CopyTradeMrsScore, CopyTradeSegmentScore,
-        CopyTradeWalletPerformance, ObservedMarket, COPY_SCORE_VERSION,
+        clob_tick_price, evaluate_copy_trade_with_segment, CopyTradeConfig,
+        CopyTradeExpectancyInput, CopyTradeMrsScore, CopyTradeSegmentScore,
+        CopyTradeWalletPerformance, ObservedMarket,
     },
     data_api::{ClosedPositionsQuery, DataApiClient, TradesQuery},
     execution::{execute_order_plan, ExecutionVenue, OrderPlan, OrderPlanReport},
     models::{
-        BackfillJobStatus, CopyTradeBacktestRun, DataApiClosedPosition, OrderRequest, OrderSide,
-        OrderState, WhaleTrade,
+        BackfillJobStatus, DataApiClosedPosition, OrderRequest, OrderSide, OrderState, WhaleTrade,
     },
     orderbook::{BookSide, LocalOrderBook},
     segments::{SegmentClassification, GAMMA_SEGMENT_CLASSIFIER_VERSION},
@@ -38,7 +37,6 @@ pub enum BackfillMode {
     TradesOnly,
     WalletScoresOnly,
     TradesAndWalletScores,
-    CopyTradeBacktest,
     Full,
 }
 
@@ -93,8 +91,6 @@ pub struct BackfillSummary {
     pub copy_trade_orders: usize,
     pub copy_trade_fills: usize,
     pub copy_trade_rejections: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub calibration: Option<serde_json::Value>,
     pub dry_run: bool,
 }
 
@@ -373,10 +369,7 @@ pub async fn run_job(
         }
     }
 
-    if matches!(
-        request.mode,
-        BackfillMode::CopyTradeBacktest | BackfillMode::Full
-    ) {
+    if matches!(request.mode, BackfillMode::Full) {
         let copy_trade_config =
             request
                 .copy_trade_config
@@ -412,42 +405,6 @@ pub async fn run_job(
         summary.copy_trade_orders = copy_summary.orders_inserted;
         summary.copy_trade_fills = copy_summary.fills_inserted;
         summary.copy_trade_rejections = copy_summary.rejections;
-        let backtest_config = CopyTradeRunConfig {
-            process_id: request.process_id,
-            copy_trade: copy_trade_config.clone(),
-            execute_signals: request.execute_signals,
-            require_entry_markability: true,
-        };
-        let calibration = calibrate_copy_trade_thresholds(&trades_for_copy, &backtest_config);
-        if !request.dry_run {
-            let scores = score_wallets(&trades_for_copy);
-            let (backtest_result, calibration_snapshot) =
-                run_copy_trade_backtest(&trades_for_copy, &scores, &backtest_config.copy_trade);
-            let run = CopyTradeBacktestRun {
-                backtest_id: backtest_result.backtest_id,
-                job_id: Some(job_id),
-                status: "completed".to_string(),
-                score_version: COPY_SCORE_VERSION.to_string(),
-                strategy_name: "whale_follow_v1".to_string(),
-                range_start: calibration_snapshot.sample_start,
-                range_end: calibration_snapshot.sample_end,
-                config: serde_json::json!({
-                    "request": request,
-                    "source": "backfill"
-                }),
-                started_at: Utc::now(),
-                completed_at: Some(Utc::now()),
-                error: None,
-            };
-            store.upsert_copy_trade_backtest_run(&run).await?;
-            store
-                .insert_copy_trade_backtest_result(&backtest_result)
-                .await?;
-            store
-                .insert_wallet_score_calibration_snapshot(&calibration_snapshot)
-                .await?;
-        }
-        summary.calibration = Some(calibration);
     }
 
     store
@@ -1964,20 +1921,6 @@ fn entry_mark_error_reason(error: &anyhow::Error) -> &'static str {
     } else {
         "entry_orderbook_precheck_failed"
     }
-}
-
-pub fn calibrate_copy_trade_thresholds(
-    trades: &[WhaleTrade],
-    config: &CopyTradeRunConfig,
-) -> serde_json::Value {
-    let scores = score_wallets(trades);
-    let (backtest, calibration) = run_copy_trade_backtest(trades, &scores, &config.copy_trade);
-    serde_json::json!({
-        "score_version": crate::wallets::SCORE_VERSION,
-        "wallets_scored": scores.len(),
-        "backtest": backtest,
-        "calibration": calibration
-    })
 }
 
 fn merge_json(mut left: serde_json::Value, right: serde_json::Value) -> serde_json::Value {

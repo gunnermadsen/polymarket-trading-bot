@@ -15,12 +15,11 @@ use crate::{
     execution::live::LiveVenueEvent,
     execution::OrderPlanReport,
     models::{
-        BackfillJob, BackfillJobStatus, BacktestRun, ConversionRequest, ConversionResult,
-        CopyTradeBacktestResult, CopyTradeBacktestRun, CopyTradeSignal, DataApiClosedPosition,
-        EffectiveExpectancyFlowProcessConfig, ExpectancyFlowCell, ExpectancyFlowRecomputeReport,
-        ExpectancyFlowWalletCell, FillRecord, GammaMarketMetadata, Market, OrderRecord,
-        OrderRequest, OrderState, OutcomeToken, SignalCandidate, TradingProcess,
-        TradingProcessConfig, WalletPerformance, WalletScore, WalletScoreCalibrationSnapshot,
+        BackfillJob, BackfillJobStatus, ConversionRequest, ConversionResult, CopyTradeSignal,
+        DataApiClosedPosition, EffectiveExpectancyFlowProcessConfig, ExpectancyFlowCell,
+        ExpectancyFlowRecomputeReport, ExpectancyFlowWalletCell, FillRecord, GammaMarketMetadata,
+        Market, OrderRecord, OrderRequest, OrderState, OutcomeToken, SignalCandidate,
+        TradingProcess, TradingProcessConfig, WalletPerformance, WalletScore,
         WalletScoreRefreshJob, WalletScoreRefreshStatus, WalletSegmentPerformance,
         WalletTradeTaxonomyCandidate, WalletTradeTaxonomyUpdate, WhalePollCheckpoint, WhaleTrade,
     },
@@ -223,26 +222,6 @@ struct TradingProcessRow {
     started_at: Option<DateTime<Utc>>,
     stopped_at: Option<DateTime<Utc>>,
     last_error: Option<String>,
-}
-
-#[derive(Debug, FromRow)]
-struct BacktestRunRow {
-    backtest_run_id: Uuid,
-    status: String,
-    range_start: DateTime<Utc>,
-    range_end: DateTime<Utc>,
-    warmup_start: DateTime<Utc>,
-    lookback_days: i32,
-    warmup_days: i32,
-    source_process_ids: Vec<Uuid>,
-    backtest_process_ids: Vec<Uuid>,
-    request: serde_json::Value,
-    summary: serde_json::Value,
-    error: Option<String>,
-    started_at: Option<DateTime<Utc>>,
-    completed_at: Option<DateTime<Utc>>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -460,9 +439,6 @@ pub struct TradingProcessResetReport {
     pub expectancy_flow_cells_deleted: u64,
     pub expectancy_flow_wallet_cells_deleted: u64,
     pub process_events_deleted: u64,
-    pub copy_trade_backtest_results_deleted: u64,
-    pub copy_trade_backtest_runs_deleted: u64,
-    pub copy_trade_backtests_deleted: u64,
     pub backfill_job_events_deleted: u64,
     pub backfill_jobs_deleted: u64,
     pub whale_poll_checkpoints_deleted: u64,
@@ -1272,10 +1248,6 @@ impl Store {
             .execute(&mut *tx)
             .await
             .context("failed to drop reset jobs temp table")?;
-        sqlx::query("DROP TABLE IF EXISTS pg_temp.reset_process_backtests")
-            .execute(&mut *tx)
-            .await
-            .context("failed to drop reset backtests temp table")?;
         sqlx::query(
             r#"
             CREATE TEMP TABLE reset_process_signals ON COMMIT DROP AS
@@ -1360,58 +1332,6 @@ impl Store {
         .execute(&mut *tx)
         .await
         .context("failed to stage reset jobs")?;
-        sqlx::query(
-            r#"
-            CREATE TEMP TABLE reset_process_backtests ON COMMIT DROP AS
-            SELECT backtest_id
-            FROM polymarket.copy_trade_backtest_runs
-            WHERE job_id IN (SELECT job_id FROM reset_process_jobs)
-               OR config #>> '{request,process_id}' = $1::text
-               OR config ->> 'process_id' = $1::text
-            "#,
-        )
-        .bind(process_id)
-        .execute(&mut *tx)
-        .await
-        .context("failed to stage reset backtests")?;
-
-        let copy_trade_backtest_results_deleted = sqlx::query(
-            r#"
-            DELETE FROM polymarket.copy_trade_backtest_results r
-            WHERE EXISTS (
-              SELECT 1 FROM reset_process_backtests b WHERE b.backtest_id = r.backtest_id
-            )
-            "#,
-        )
-        .execute(&mut *tx)
-        .await
-        .context("failed to delete reset copy trade backtest results")?
-        .rows_affected();
-        let copy_trade_backtest_runs_deleted = sqlx::query(
-            r#"
-            DELETE FROM polymarket.copy_trade_backtest_runs r
-            WHERE EXISTS (
-              SELECT 1 FROM reset_process_backtests b WHERE b.backtest_id = r.backtest_id
-            )
-            "#,
-        )
-        .execute(&mut *tx)
-        .await
-        .context("failed to delete reset copy trade backtest runs")?
-        .rows_affected();
-        let copy_trade_backtests_deleted = sqlx::query(
-            r#"
-            DELETE FROM polymarket.copy_trade_backtests b
-            WHERE b.job_id IN (SELECT job_id FROM reset_process_jobs)
-               OR b.config #>> '{request,process_id}' = $1::text
-               OR b.config ->> 'process_id' = $1::text
-            "#,
-        )
-        .bind(process_id)
-        .execute(&mut *tx)
-        .await
-        .context("failed to delete reset copy trade backtests")?
-        .rows_affected();
         let backfill_job_events_deleted = sqlx::query(
             r#"
             DELETE FROM polymarket.backfill_job_events e
@@ -1593,9 +1513,6 @@ impl Store {
             expectancy_flow_cells_deleted,
             expectancy_flow_wallet_cells_deleted,
             process_events_deleted,
-            copy_trade_backtest_results_deleted,
-            copy_trade_backtest_runs_deleted,
-            copy_trade_backtests_deleted,
             backfill_job_events_deleted,
             backfill_jobs_deleted,
             whale_poll_checkpoints_deleted,
@@ -3356,33 +3273,6 @@ impl Store {
         .await
     }
 
-    pub async fn fetch_take_profit_trade_exit_candidates_as_of(
-        &self,
-        process_id: Uuid,
-        take_profit_roi: Decimal,
-        exit_size_fraction: Decimal,
-        min_hold: chrono::Duration,
-        require_fresh_mark: chrono::Duration,
-        max_exit_slippage_bps: Decimal,
-        exit_pricing_mode: &str,
-        limit: i64,
-        as_of: DateTime<Utc>,
-    ) -> Result<Vec<TakeProfitTradeExitCandidate>> {
-        self.fetch_risk_control_trade_exit_candidates(
-            process_id,
-            "take_profit_exit",
-            take_profit_roi,
-            exit_size_fraction,
-            min_hold,
-            require_fresh_mark,
-            max_exit_slippage_bps,
-            exit_pricing_mode,
-            limit,
-            as_of,
-        )
-        .await
-    }
-
     pub async fn fetch_stop_loss_trade_exit_candidates(
         &self,
         process_id: Uuid,
@@ -3405,33 +3295,6 @@ impl Store {
             exit_pricing_mode,
             limit,
             Utc::now(),
-        )
-        .await
-    }
-
-    pub async fn fetch_stop_loss_trade_exit_candidates_as_of(
-        &self,
-        process_id: Uuid,
-        stop_loss_roi: Decimal,
-        exit_size_fraction: Decimal,
-        min_hold: chrono::Duration,
-        require_fresh_mark: chrono::Duration,
-        max_exit_slippage_bps: Decimal,
-        exit_pricing_mode: &str,
-        limit: i64,
-        as_of: DateTime<Utc>,
-    ) -> Result<Vec<TakeProfitTradeExitCandidate>> {
-        self.fetch_risk_control_trade_exit_candidates(
-            process_id,
-            "stop_loss_exit",
-            stop_loss_roi,
-            exit_size_fraction,
-            min_hold,
-            require_fresh_mark,
-            max_exit_slippage_bps,
-            exit_pricing_mode,
-            limit,
-            as_of,
         )
         .await
     }
@@ -4192,232 +4055,6 @@ impl Store {
         .execute(&self.pool)
         .await
         .context("failed to apply whale-led trade exits")?;
-        Ok(result.rows_affected())
-    }
-
-    pub async fn apply_backtest_whale_led_trade_exits_for_process_until(
-        &self,
-        process_id: Uuid,
-        as_of: DateTime<Utc>,
-    ) -> Result<u64> {
-        let result = sqlx::query(
-            r#"
-            WITH candidates AS (
-              SELECT
-                p.process_id,
-                p.position_id,
-                p.source_signal_id,
-                p.proxy_wallet,
-                p.side,
-                p.entry_price,
-                p.entry_size,
-                p.open_size,
-                p.entry_fee,
-                p.entry_notional,
-                t.trade_id AS exit_source_trade_id,
-                t.timestamp_utc,
-                t.price AS exit_price,
-                LEAST(
-                  p.open_size,
-                  CASE
-                    WHEN p.entry_notional > 0 THEN p.open_size * LEAST(1, t.cash_value / p.entry_notional)
-                    ELSE p.open_size
-                  END
-                ) AS exit_size
-              FROM polymarket.trade_positions p
-              JOIN LATERAL (
-                SELECT wt.*
-                FROM polymarket.wallet_trades wt
-                WHERE wt.proxy_wallet = p.proxy_wallet
-                  AND wt.asset = p.token_id
-                  AND wt.timestamp_utc > p.entry_timestamp
-                  AND wt.timestamp_utc <= $2
-                  AND (
-                    (p.side = 'buy' AND upper(wt.side) = 'SELL')
-                    OR (p.side = 'sell' AND upper(wt.side) = 'BUY')
-                  )
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM polymarket.trade_exits te
-                    WHERE te.position_id = p.position_id
-                      AND te.exit_source_trade_id = wt.trade_id
-                  )
-                ORDER BY wt.timestamp_utc ASC, wt.trade_id ASC
-                LIMIT 1
-              ) t ON true
-              WHERE p.process_id = $1
-                AND p.status IN ('open', 'partially_closed')
-                AND p.open_size > 0
-            ),
-            prepared AS (
-              SELECT
-                *,
-                exit_price * exit_size AS exit_notional,
-                CASE
-                  WHEN side = 'buy' THEN exit_size * (exit_price - entry_price)
-                  ELSE exit_size * (entry_price - exit_price)
-                END AS gross_pnl,
-                CASE
-                  WHEN entry_size > 0 THEN entry_fee * (exit_size / entry_size)
-                  ELSE 0
-                END AS allocated_entry_fee
-              FROM candidates
-              WHERE exit_size > 0
-            ),
-            inserted AS (
-              INSERT INTO polymarket.trade_exits (
-                position_id, process_id, source_signal_id, timestamp_utc, exit_type, is_synthetic,
-                exit_trigger_wallet, exit_source_trade_id, exit_price, exit_size,
-                exit_notional, exit_fee, slippage_cost, gross_pnl, net_pnl, roi, metadata
-              )
-              SELECT
-                position_id,
-                process_id,
-                source_signal_id,
-                timestamp_utc,
-                CASE WHEN exit_size < open_size THEN 'whale_reduce' ELSE 'whale_exit' END,
-                true,
-                proxy_wallet,
-                exit_source_trade_id,
-                exit_price,
-                exit_size,
-                exit_notional,
-                0,
-                0,
-                gross_pnl,
-                gross_pnl - allocated_entry_fee,
-                CASE WHEN entry_notional > 0 THEN (gross_pnl - allocated_entry_fee) / entry_notional ELSE 0 END,
-                jsonb_build_object('source', 'backtest_whale_led_exit', 'as_of', $2)
-              FROM prepared
-              ON CONFLICT (position_id, exit_source_trade_id) DO NOTHING
-              RETURNING position_id, exit_size, net_pnl
-            )
-            UPDATE polymarket.trade_positions p
-            SET
-              open_size = GREATEST(0, p.open_size - i.exit_size),
-              realized_pnl = p.realized_pnl + i.net_pnl,
-              status = CASE
-                WHEN GREATEST(0, p.open_size - i.exit_size) <= 0.000000001 THEN 'closed'
-                ELSE 'partially_closed'
-              END,
-              unrealized_pnl = CASE
-                WHEN GREATEST(0, p.open_size - i.exit_size) <= 0.000000001 THEN 0
-                WHEN p.open_size > 0 THEN p.unrealized_pnl * (GREATEST(0, p.open_size - i.exit_size) / p.open_size)
-                ELSE 0
-              END,
-              roi = CASE
-                WHEN p.entry_notional > 0 THEN (
-                  p.realized_pnl + i.net_pnl + CASE
-                    WHEN GREATEST(0, p.open_size - i.exit_size) <= 0.000000001 THEN 0
-                    WHEN p.open_size > 0 THEN p.unrealized_pnl * (GREATEST(0, p.open_size - i.exit_size) / p.open_size)
-                    ELSE 0
-                  END
-                ) / p.entry_notional
-                ELSE 0
-              END,
-              updated_at = now()
-            FROM inserted i
-            WHERE p.position_id = i.position_id
-            "#,
-        )
-        .bind(process_id)
-        .bind(as_of)
-        .execute(&self.pool)
-        .await
-        .context("failed to apply backtest whale-led trade exits")?;
-        Ok(result.rows_affected())
-    }
-
-    pub async fn mark_open_trade_positions_for_process_as_of(
-        &self,
-        process_id: Uuid,
-        as_of: DateTime<Utc>,
-    ) -> Result<u64> {
-        let result = sqlx::query(
-            r#"
-            WITH open_positions AS MATERIALIZED (
-              SELECT position_id, process_id, source_signal_id, token_id, side, entry_price,
-                open_size, entry_notional, entry_timestamp, realized_pnl, latest_mark_timestamp
-              FROM polymarket.trade_positions
-              WHERE process_id = $1
-                AND status IN ('open', 'partially_closed')
-                AND open_size > 0
-            ),
-            marks AS (
-              SELECT
-                p.position_id,
-                p.process_id,
-                p.source_signal_id,
-                p.side,
-                p.entry_price,
-                p.open_size,
-                p.entry_notional,
-                wt.price AS mark_price,
-                wt.timestamp_utc AS source_timestamp,
-                wt.trade_id AS wallet_trade_id
-              FROM open_positions p
-              JOIN LATERAL (
-                SELECT trade_id, timestamp_utc, price
-                FROM polymarket.wallet_trades wt
-                WHERE wt.asset = p.token_id
-                  AND wt.timestamp_utc >= p.entry_timestamp
-                  AND wt.timestamp_utc <= $2
-                ORDER BY wt.timestamp_utc DESC, wt.trade_id DESC
-                LIMIT 1
-              ) wt ON true
-              WHERE p.latest_mark_timestamp IS NULL OR wt.timestamp_utc > p.latest_mark_timestamp
-            ),
-            prepared AS (
-              SELECT
-                *,
-                CASE
-                  WHEN side = 'buy' THEN open_size * (mark_price - entry_price)
-                  ELSE open_size * (entry_price - mark_price)
-                END AS gross_unrealized_pnl
-              FROM marks
-            ),
-            inserted AS (
-              INSERT INTO polymarket.trade_marks (
-                position_id, process_id, source_signal_id, timestamp_utc, mark_price, mark_source,
-                mark_age_ms, gross_unrealized_pnl, net_unrealized_pnl, roi, metadata
-              )
-              SELECT
-                position_id,
-                process_id,
-                source_signal_id,
-                source_timestamp,
-                mark_price,
-                'data_api_trade',
-                GREATEST(0, floor(extract(epoch from ($2 - source_timestamp)) * 1000))::bigint,
-                gross_unrealized_pnl,
-                gross_unrealized_pnl,
-                CASE WHEN entry_notional > 0 THEN gross_unrealized_pnl / entry_notional ELSE 0 END,
-                jsonb_build_object(
-                  'source', 'backtest_mark',
-                  'as_of', $2,
-                  'wallet_trade_id', wallet_trade_id
-                )
-              FROM prepared
-              RETURNING position_id, mark_price, net_unrealized_pnl, timestamp_utc
-            )
-            UPDATE polymarket.trade_positions p
-            SET latest_mark_price = i.mark_price,
-                latest_mark_timestamp = i.timestamp_utc,
-                unrealized_pnl = i.net_unrealized_pnl,
-                roi = CASE
-                  WHEN p.entry_notional > 0 THEN (p.realized_pnl + i.net_unrealized_pnl) / p.entry_notional
-                  ELSE 0
-                END,
-                updated_at = now()
-            FROM inserted i
-            WHERE p.position_id = i.position_id
-            "#,
-        )
-        .bind(process_id)
-        .bind(as_of)
-        .execute(&self.pool)
-        .await
-        .context("failed to mark backtest open trade positions")?;
         Ok(result.rows_affected())
     }
 
@@ -5676,36 +5313,6 @@ impl Store {
         .fetch_all(&self.pool)
         .await
         .context("failed to fetch recent whale trades")?;
-        Ok(rows.into_iter().map(Into::into).collect())
-    }
-
-    pub async fn fetch_whale_trades_for_replay(
-        &self,
-        range_start: DateTime<Utc>,
-        range_end: DateTime<Utc>,
-        min_trade_usd: Decimal,
-        limit: i64,
-    ) -> Result<Vec<WhaleTrade>> {
-        let rows = sqlx::query_as::<_, WhaleTradeRow>(
-            r#"
-            SELECT trade_id, proxy_wallet, asset, condition_id, market_id, side, outcome,
-              price, size, cash_value, timestamp_utc, title, slug, event_slug,
-              transaction_hash, raw_payload
-            FROM polymarket.wallet_trades
-            WHERE timestamp_utc >= $1
-              AND timestamp_utc <= $2
-              AND cash_value >= $3
-            ORDER BY timestamp_utc ASC, trade_id ASC
-            LIMIT $4
-            "#,
-        )
-        .bind(range_start)
-        .bind(range_end)
-        .bind(min_trade_usd)
-        .bind(limit.max(1))
-        .fetch_all(&self.pool)
-        .await
-        .context("failed to fetch whale trades for replay")?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
@@ -7556,49 +7163,6 @@ impl Store {
         Ok(row.map(Into::into))
     }
 
-    pub async fn insert_wallet_score_calibration_snapshot(
-        &self,
-        snapshot: &WalletScoreCalibrationSnapshot,
-    ) -> Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO polymarket.wallet_score_calibration_snapshots (
-              snapshot_id, timestamp_utc, score_version, calibration_version,
-              sample_start, sample_end, wallet_count, trade_count,
-              feature_weights, thresholds, metrics, metadata
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-            ON CONFLICT (snapshot_id, timestamp_utc) DO UPDATE SET
-              score_version = EXCLUDED.score_version,
-              calibration_version = EXCLUDED.calibration_version,
-              sample_start = EXCLUDED.sample_start,
-              sample_end = EXCLUDED.sample_end,
-              wallet_count = EXCLUDED.wallet_count,
-              trade_count = EXCLUDED.trade_count,
-              feature_weights = EXCLUDED.feature_weights,
-              thresholds = EXCLUDED.thresholds,
-              metrics = EXCLUDED.metrics,
-              metadata = EXCLUDED.metadata
-            "#,
-        )
-        .bind(snapshot.snapshot_id)
-        .bind(snapshot.timestamp_utc)
-        .bind(&snapshot.score_version)
-        .bind(&snapshot.calibration_version)
-        .bind(snapshot.sample_start)
-        .bind(snapshot.sample_end)
-        .bind(snapshot.wallet_count)
-        .bind(snapshot.trade_count)
-        .bind(&snapshot.feature_weights)
-        .bind(&snapshot.thresholds)
-        .bind(&snapshot.metrics)
-        .bind(&snapshot.metadata)
-        .execute(&self.pool)
-        .await
-        .context("failed to insert wallet score calibration snapshot")?;
-        Ok(())
-    }
-
     pub async fn insert_copy_trade_signal(&self, signal: &CopyTradeSignal) -> Result<()> {
         sqlx::query(
             r#"
@@ -7686,244 +7250,6 @@ impl Store {
         .execute(&self.pool)
         .await
         .context("failed to update copy-trade signal status by id")?;
-        Ok(())
-    }
-
-    pub async fn upsert_copy_trade_backtest_run(&self, run: &CopyTradeBacktestRun) -> Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO polymarket.copy_trade_backtest_runs (
-              backtest_id, job_id, status, score_version, strategy_name,
-              range_start, range_end, config, started_at, completed_at, error, updated_at
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now())
-            ON CONFLICT (backtest_id) DO UPDATE SET
-              job_id = EXCLUDED.job_id,
-              status = EXCLUDED.status,
-              score_version = EXCLUDED.score_version,
-              strategy_name = EXCLUDED.strategy_name,
-              range_start = EXCLUDED.range_start,
-              range_end = EXCLUDED.range_end,
-              config = EXCLUDED.config,
-              started_at = EXCLUDED.started_at,
-              completed_at = EXCLUDED.completed_at,
-              error = EXCLUDED.error,
-              updated_at = now()
-            "#,
-        )
-        .bind(run.backtest_id)
-        .bind(run.job_id)
-        .bind(&run.status)
-        .bind(&run.score_version)
-        .bind(&run.strategy_name)
-        .bind(run.range_start)
-        .bind(run.range_end)
-        .bind(&run.config)
-        .bind(run.started_at)
-        .bind(run.completed_at)
-        .bind(&run.error)
-        .execute(&self.pool)
-        .await
-        .context("failed to upsert copy-trade backtest run")?;
-        Ok(())
-    }
-
-    pub async fn create_backtest_run(
-        &self,
-        range_start: DateTime<Utc>,
-        range_end: DateTime<Utc>,
-        warmup_start: DateTime<Utc>,
-        lookback_days: i32,
-        warmup_days: i32,
-        source_process_ids: &[Uuid],
-        request: serde_json::Value,
-    ) -> Result<BacktestRun> {
-        let row = sqlx::query_as::<_, BacktestRunRow>(
-            r#"
-            INSERT INTO polymarket.backtest_runs (
-              backtest_run_id, status, range_start, range_end, warmup_start,
-              lookback_days, warmup_days, source_process_ids, request, created_at, updated_at
-            )
-            VALUES (gen_random_uuid(), 'queued', $1, $2, $3, $4, $5, $6, $7, now(), now())
-            RETURNING backtest_run_id, status, range_start, range_end, warmup_start,
-              lookback_days, warmup_days, source_process_ids, backtest_process_ids,
-              request, summary, error, started_at, completed_at, created_at, updated_at
-            "#,
-        )
-        .bind(range_start)
-        .bind(range_end)
-        .bind(warmup_start)
-        .bind(lookback_days)
-        .bind(warmup_days)
-        .bind(source_process_ids)
-        .bind(request)
-        .fetch_one(&self.pool)
-        .await
-        .context("failed to create backtest run")?;
-        Ok(row.into())
-    }
-
-    pub async fn add_backtest_process_to_run(
-        &self,
-        backtest_run_id: Uuid,
-        process_id: Uuid,
-    ) -> Result<BacktestRun> {
-        let row = sqlx::query_as::<_, BacktestRunRow>(
-            r#"
-            UPDATE polymarket.backtest_runs
-            SET backtest_process_ids = array_append(backtest_process_ids, $2),
-                updated_at = now()
-            WHERE backtest_run_id = $1
-              AND NOT ($2 = ANY(backtest_process_ids))
-            RETURNING backtest_run_id, status, range_start, range_end, warmup_start,
-              lookback_days, warmup_days, source_process_ids, backtest_process_ids,
-              request, summary, error, started_at, completed_at, created_at, updated_at
-            "#,
-        )
-        .bind(backtest_run_id)
-        .bind(process_id)
-        .fetch_optional(&self.pool)
-        .await
-        .context("failed to append backtest process id")?;
-        if let Some(row) = row {
-            return Ok(row.into());
-        }
-        self.get_backtest_run(backtest_run_id)
-            .await?
-            .context("backtest run not found after process append")
-    }
-
-    pub async fn get_backtest_run(&self, backtest_run_id: Uuid) -> Result<Option<BacktestRun>> {
-        let row = sqlx::query_as::<_, BacktestRunRow>(
-            r#"
-            SELECT backtest_run_id, status, range_start, range_end, warmup_start,
-              lookback_days, warmup_days, source_process_ids, backtest_process_ids,
-              request, summary, error, started_at, completed_at, created_at, updated_at
-            FROM polymarket.backtest_runs
-            WHERE backtest_run_id = $1
-            "#,
-        )
-        .bind(backtest_run_id)
-        .fetch_optional(&self.pool)
-        .await
-        .context("failed to fetch backtest run")?;
-        Ok(row.map(Into::into))
-    }
-
-    pub async fn list_backtest_runs(&self, limit: i64) -> Result<Vec<BacktestRun>> {
-        let rows = sqlx::query_as::<_, BacktestRunRow>(
-            r#"
-            SELECT backtest_run_id, status, range_start, range_end, warmup_start,
-              lookback_days, warmup_days, source_process_ids, backtest_process_ids,
-              request, summary, error, started_at, completed_at, created_at, updated_at
-            FROM polymarket.backtest_runs
-            ORDER BY created_at DESC
-            LIMIT $1
-            "#,
-        )
-        .bind(limit.max(1))
-        .fetch_all(&self.pool)
-        .await
-        .context("failed to list backtest runs")?;
-        Ok(rows.into_iter().map(Into::into).collect())
-    }
-
-    pub async fn mark_backtest_run_status(
-        &self,
-        backtest_run_id: Uuid,
-        status: &str,
-        summary: serde_json::Value,
-        error: Option<&str>,
-    ) -> Result<Option<BacktestRun>> {
-        let row = sqlx::query_as::<_, BacktestRunRow>(
-            r#"
-            UPDATE polymarket.backtest_runs
-            SET status = $2,
-                summary = summary || $3,
-                error = $4,
-                started_at = CASE WHEN $2 = 'running' THEN COALESCE(started_at, now()) ELSE started_at END,
-                completed_at = CASE WHEN $2 IN ('completed', 'failed', 'cancelled') THEN now() ELSE completed_at END,
-                updated_at = now()
-            WHERE backtest_run_id = $1
-            RETURNING backtest_run_id, status, range_start, range_end, warmup_start,
-              lookback_days, warmup_days, source_process_ids, backtest_process_ids,
-              request, summary, error, started_at, completed_at, created_at, updated_at
-            "#,
-        )
-        .bind(backtest_run_id)
-        .bind(status)
-        .bind(summary)
-        .bind(error)
-        .fetch_optional(&self.pool)
-        .await
-        .context("failed to mark backtest run status")?;
-        Ok(row.map(Into::into))
-    }
-
-    pub async fn complete_copy_trade_backtest_run(
-        &self,
-        backtest_id: Uuid,
-        status: &str,
-        completed_at: DateTime<Utc>,
-        error: Option<String>,
-    ) -> Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE polymarket.copy_trade_backtest_runs
-            SET status = $2, completed_at = $3, error = $4, updated_at = now()
-            WHERE backtest_id = $1
-            "#,
-        )
-        .bind(backtest_id)
-        .bind(status)
-        .bind(completed_at)
-        .bind(error)
-        .execute(&self.pool)
-        .await
-        .context("failed to complete copy-trade backtest run")?;
-        Ok(())
-    }
-
-    pub async fn insert_copy_trade_backtest_result(
-        &self,
-        result: &CopyTradeBacktestResult,
-    ) -> Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO polymarket.copy_trade_backtest_results (
-              result_id, backtest_id, timestamp_utc, wallet_count, signal_count,
-              trade_count, gross_pnl_usd, net_pnl_usd, roi, max_drawdown,
-              win_rate, result_summary
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-            ON CONFLICT (result_id, timestamp_utc) DO UPDATE SET
-              backtest_id = EXCLUDED.backtest_id,
-              wallet_count = EXCLUDED.wallet_count,
-              signal_count = EXCLUDED.signal_count,
-              trade_count = EXCLUDED.trade_count,
-              gross_pnl_usd = EXCLUDED.gross_pnl_usd,
-              net_pnl_usd = EXCLUDED.net_pnl_usd,
-              roi = EXCLUDED.roi,
-              max_drawdown = EXCLUDED.max_drawdown,
-              win_rate = EXCLUDED.win_rate,
-              result_summary = EXCLUDED.result_summary
-            "#,
-        )
-        .bind(result.result_id)
-        .bind(result.backtest_id)
-        .bind(result.timestamp_utc)
-        .bind(result.wallet_count)
-        .bind(result.signal_count)
-        .bind(result.trade_count)
-        .bind(result.gross_pnl_usd)
-        .bind(result.net_pnl_usd)
-        .bind(result.roi)
-        .bind(result.max_drawdown)
-        .bind(result.win_rate)
-        .bind(&result.result_summary)
-        .execute(&self.pool)
-        .await
-        .context("failed to insert copy-trade backtest result")?;
         Ok(())
     }
 
@@ -8616,29 +7942,6 @@ impl From<WhalePollCheckpointRow> for WhalePollCheckpoint {
             pages_seen: row.pages_seen,
             trades_seen: row.trades_seen,
             state: row.state,
-        }
-    }
-}
-
-impl From<BacktestRunRow> for BacktestRun {
-    fn from(row: BacktestRunRow) -> Self {
-        Self {
-            backtest_run_id: row.backtest_run_id,
-            status: row.status,
-            range_start: row.range_start,
-            range_end: row.range_end,
-            warmup_start: row.warmup_start,
-            lookback_days: row.lookback_days,
-            warmup_days: row.warmup_days,
-            source_process_ids: row.source_process_ids,
-            backtest_process_ids: row.backtest_process_ids,
-            request: row.request,
-            summary: row.summary,
-            error: row.error,
-            started_at: row.started_at,
-            completed_at: row.completed_at,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
         }
     }
 }
