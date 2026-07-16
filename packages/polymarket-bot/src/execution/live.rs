@@ -213,22 +213,6 @@ impl LiveVenue {
         };
 
         store.insert_fill(&fill).await?;
-        if let Some(signal_id) = order.request.signal_id {
-            store
-                .update_copy_trade_signal_status_by_id(
-                    signal_id,
-                    "filled",
-                    json!({
-                        "source": "user_ws",
-                        "venue_trade_id": event.venue_trade_id,
-                        "venue_order_id": order.order_id,
-                        "fill_size": fill.size,
-                        "fill_price": fill.price,
-                        "filled_at": fill.filled_at,
-                    }),
-                )
-                .await?;
-        }
         let order_state = if fill.size >= order.request.size {
             OrderState::Filled
         } else {
@@ -2205,7 +2189,7 @@ mod tests {
             price: dec!(0.50),
             size: dec!(2),
             signal_id: None,
-            metadata: json!({"purpose": "whale_follow_entry"}),
+            metadata: json!({"purpose": "entry"}),
         };
 
         let entry_error = venue
@@ -2216,7 +2200,7 @@ mod tests {
         assert!(entry_error.contains("live order submit is disabled or not ready"));
 
         let mut exit = base;
-        exit.metadata = json!({"purpose": "whale_led_exit"});
+        exit.metadata = json!({"purpose": "exit"});
         let exit_error = venue.submit_order(exit).await.unwrap_err().to_string();
         assert!(exit_error.contains("live persistence store is not configured"));
     }
