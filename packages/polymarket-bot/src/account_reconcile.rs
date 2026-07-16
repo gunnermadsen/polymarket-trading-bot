@@ -8,7 +8,7 @@ use crate::{
     data_api::{ActivityQuery, DataApiClient, PositionsQuery},
     execution::live::LiveVenueEvent,
     models::{DataApiActivity, DataApiPosition},
-    store::{AccountPositionMismatch, AccountPositionSnapshot, AccountTrade, Store},
+    store::{AccountPositionSnapshot, AccountTrade, Store},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,6 +21,15 @@ pub struct AccountReconcileRequest {
     pub token_id: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountPositionMismatch {
+    pub token_id: String,
+    pub db_open_size: Decimal,
+    pub account_size: Decimal,
+    pub delta_size: Decimal,
+    pub mismatch_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,7 +102,7 @@ pub async fn reconcile_account_positions(
     positions_query.limit = Some(500);
     positions_query.size_threshold = Some(Decimal::ZERO);
     let positions = data_api.fetch_positions(&positions_query).await?;
-    let mut snapshots = positions
+    let snapshots = positions
         .iter()
         .filter_map(|position| {
             account_position_snapshot_from_data_api(&account_address, position, trade_source)
@@ -106,29 +115,6 @@ pub async fn reconcile_account_positions(
                 .unwrap_or(true)
         })
         .collect::<Vec<_>>();
-    let open_tokens = store
-        .open_live_trade_position_tokens(request.token_id.as_deref())
-        .await?;
-    for token in open_tokens {
-        if !snapshots.iter().any(|snapshot| snapshot.token_id == token) {
-            snapshots.push(AccountPositionSnapshot {
-                snapshot_id: Uuid::new_v4(),
-                account_address: account_address.clone(),
-                token_id: token,
-                market_id: None,
-                size: Decimal::ZERO,
-                avg_price: None,
-                current_price: None,
-                current_value: None,
-                cash_pnl: None,
-                percent_pnl: None,
-                snapshot_at: Utc::now(),
-                source: trade_source.to_string(),
-                raw_payload: serde_json::json!({"source": "implicit_zero_absent_from_data_api_positions"}),
-            });
-        }
-    }
-
     let mut inserted_trades = 0;
     let mut inserted_snapshots = 0;
     if !request.dry_run {
@@ -144,41 +130,6 @@ pub async fn reconcile_account_positions(
         }
     }
 
-    let exit_type = if source == "manual_backfill" {
-        "manual_ui_exit_backfill"
-    } else {
-        "manual_ui_exit"
-    };
-    let exit_report = if request.dry_run {
-        store
-            .preview_manual_account_exits(&account_address, request.token_id.as_deref())
-            .await?
-    } else {
-        store
-            .apply_manual_account_exits(&account_address, request.token_id.as_deref(), exit_type)
-            .await?
-    };
-    let mut position_adjustment_report = Default::default();
-    let mismatches = if request.dry_run {
-        store
-            .preview_account_position_mismatches(
-                &account_address,
-                &snapshots,
-                request.token_id.as_deref(),
-            )
-            .await?
-    } else {
-        position_adjustment_report = store
-            .apply_account_position_mismatch_adjustments(
-                &account_address,
-                request.token_id.as_deref(),
-                exit_type,
-            )
-            .await?;
-        store
-            .account_position_mismatches(&account_address, request.token_id.as_deref())
-            .await?
-    };
     let report = AccountReconcileReport {
         account_address,
         source: source.clone(),
@@ -190,14 +141,14 @@ pub async fn reconcile_account_positions(
         account_trades_inserted: inserted_trades,
         position_snapshots_detected: snapshots.len(),
         position_snapshots_inserted: inserted_snapshots,
-        exits_detected: exit_report.exits_detected,
-        exits_applied: exit_report.exits_applied,
-        exit_size_applied: exit_report.exit_size_applied,
-        position_adjustments_detected: position_adjustment_report.exits_detected,
-        position_adjustments_applied: position_adjustment_report.exits_applied,
-        position_adjustment_size_applied: position_adjustment_report.exit_size_applied,
-        mismatches,
-        unmatched_trades: exit_report.unmatched_trades,
+        exits_detected: 0,
+        exits_applied: 0,
+        exit_size_applied: Decimal::ZERO,
+        position_adjustments_detected: 0,
+        position_adjustments_applied: 0,
+        position_adjustment_size_applied: Decimal::ZERO,
+        mismatches: Vec::new(),
+        unmatched_trades: 0,
     };
     store.insert_account_reconciliation_run(&report).await?;
     Ok(report)

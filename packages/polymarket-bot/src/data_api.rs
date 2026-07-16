@@ -1,16 +1,11 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, TimeZone, Utc};
 use reqwest::{Client, Url};
-use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-use crate::models::{
-    DataApiActivity, DataApiClosedPosition, DataApiPosition, DataApiValue, WhaleTrade,
-};
+use crate::models::{DataApiActivity, DataApiClosedPosition, DataApiPosition, DataApiValue};
 
 #[derive(Debug, Clone)]
 pub struct DataApiClient {
@@ -83,20 +78,6 @@ pub struct ValueQuery {
     pub user: String,
     #[serde(default)]
     pub markets: Vec<String>,
-}
-
-impl TradesQuery {
-    pub fn whale_page(limit: usize, offset: usize, min_trade_usd: Decimal) -> Self {
-        Self {
-            limit,
-            offset,
-            min_trade_usd,
-            user: None,
-            market: None,
-            event_id: None,
-            side: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -253,110 +234,6 @@ impl ValueQuery {
     }
 }
 
-impl ApiTrade {
-    pub fn into_whale_trade(self, min_trade_usd: Decimal) -> Option<WhaleTrade> {
-        let raw_payload = serde_json::to_value(&self).unwrap_or_else(|_| serde_json::json!({}));
-        let proxy_wallet = self.proxy_wallet?.to_ascii_lowercase();
-        let asset = self.asset.unwrap_or_default();
-        let price = decimal_from_value(self.price.as_ref())?;
-        let size = decimal_from_value(self.size.as_ref())?;
-        let cash_value = price * size;
-        if cash_value < min_trade_usd {
-            return None;
-        }
-        let timestamp_utc = timestamp_from_value(self.timestamp.as_ref())?;
-        let side = self
-            .side
-            .unwrap_or_else(|| "unknown".to_string())
-            .to_ascii_uppercase();
-        let transaction_hash = self.transaction_hash;
-        let trade_id = stable_trade_id(
-            transaction_hash.as_deref(),
-            &proxy_wallet,
-            &asset,
-            &side,
-            price,
-            size,
-            timestamp_utc,
-        );
-        Some(WhaleTrade {
-            trade_id,
-            proxy_wallet,
-            asset,
-            condition_id: self.condition_id,
-            market_id: None,
-            side,
-            outcome: self.outcome,
-            price,
-            size,
-            cash_value,
-            timestamp_utc,
-            title: self.title,
-            slug: self.slug,
-            event_slug: self.event_slug,
-            transaction_hash,
-            raw_payload,
-        })
-    }
-}
-
-fn stable_trade_id(
-    transaction_hash: Option<&str>,
-    proxy_wallet: &str,
-    asset: &str,
-    side: &str,
-    price: Decimal,
-    size: Decimal,
-    timestamp_utc: DateTime<Utc>,
-) -> Uuid {
-    let identity = format!(
-        "{}|{}|{}|{}|{}|{}|{}",
-        transaction_hash.unwrap_or(""),
-        proxy_wallet,
-        asset,
-        side,
-        price.normalize(),
-        size.normalize(),
-        timestamp_utc.timestamp()
-    );
-    Uuid::new_v5(&Uuid::NAMESPACE_URL, identity.as_bytes())
-}
-
-fn decimal_from_value(value: Option<&serde_json::Value>) -> Option<Decimal> {
-    match value? {
-        serde_json::Value::String(raw) => raw.parse().ok(),
-        serde_json::Value::Number(number) => number.as_f64().and_then(Decimal::from_f64),
-        _ => None,
-    }
-}
-
-fn timestamp_from_value(value: Option<&serde_json::Value>) -> Option<DateTime<Utc>> {
-    match value? {
-        serde_json::Value::Number(number) => {
-            let raw = number.as_i64()?;
-            let seconds = if raw > 10_000_000_000 {
-                raw / 1000
-            } else {
-                raw
-            };
-            Utc.timestamp_opt(seconds, 0).single()
-        }
-        serde_json::Value::String(raw) => raw
-            .parse::<i64>()
-            .ok()
-            .and_then(|ts| {
-                Utc.timestamp_opt(if ts > 10_000_000_000 { ts / 1000 } else { ts }, 0)
-                    .single()
-            })
-            .or_else(|| {
-                DateTime::parse_from_rfc3339(raw)
-                    .ok()
-                    .map(|dt| dt.with_timezone(&Utc))
-            }),
-        _ => None,
-    }
-}
-
 fn positions_params(query: &PositionsQuery) -> Vec<(String, String)> {
     let mut params = vec![("user".to_string(), query.user.clone())];
     push_csv(&mut params, "market", &query.markets);
@@ -469,30 +346,6 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
-
-    #[test]
-    fn converts_trade_to_whale_trade_when_cash_threshold_passes() {
-        let trade = ApiTrade {
-            proxy_wallet: Some("0xABCDEFabcdefABCDEFabcdefABCDEFabcdefabcd".to_string()),
-            asset: Some("token".to_string()),
-            condition_id: Some("0x01".to_string()),
-            size: Some(serde_json::json!("2000")),
-            price: Some(serde_json::json!("0.55")),
-            timestamp: Some(serde_json::json!(1_700_000_000_i64)),
-            title: Some("Question".to_string()),
-            slug: None,
-            event_slug: None,
-            outcome: Some("Yes".to_string()),
-            side: Some("BUY".to_string()),
-            transaction_hash: Some("0xhash".to_string()),
-        };
-        let converted = trade.into_whale_trade(dec!(1000)).unwrap();
-        assert_eq!(
-            converted.proxy_wallet,
-            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
-        );
-        assert_eq!(converted.cash_value, dec!(1100.00));
-    }
 
     #[test]
     fn positions_params_include_only_set_values_and_csv_lists() {

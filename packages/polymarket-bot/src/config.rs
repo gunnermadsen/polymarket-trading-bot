@@ -25,7 +25,6 @@ pub struct AppConfig {
     pub postgres: PostgresConfig,
     pub risk: RiskConfig,
     pub http: HttpConfig,
-    pub whale: WhaleConfig,
     pub btc: BtcConfig,
 }
 
@@ -91,33 +90,6 @@ pub struct HttpConfig {
     pub admin_token: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct WhaleConfig {
-    pub copy_trade_enabled: bool,
-    pub lookback_days: u32,
-    pub min_trade_usd: Decimal,
-    pub min_wallet_score: Decimal,
-    pub min_wallet_trades: i32,
-    pub min_wallet_realized_pnl_usd: Decimal,
-    pub min_wallet_roi: Decimal,
-    pub min_wallet_closed_positions: i32,
-    pub min_copy_size_usd: Decimal,
-    pub copy_size_fraction: Decimal,
-    pub max_copy_size_usd: Decimal,
-    pub min_liquidity_usd: Decimal,
-    pub max_price_move_pct: Decimal,
-    pub max_follow_lag: Duration,
-    pub max_price_slippage_bps: Decimal,
-    pub min_book_depth_usd: Decimal,
-    pub copy_allow_sell_entries: bool,
-    pub live_poll_interval: Duration,
-    pub live_page_limit: usize,
-    pub live_max_pages: usize,
-    pub max_pages: usize,
-    pub exit_candidate_max_age: Duration,
-    pub mark_fresh_max_age: Duration,
-}
-
 impl AppConfig {
     pub fn from_env() -> Result<Self> {
         let live = LiveExecutionConfig {
@@ -165,8 +137,6 @@ impl AppConfig {
         }
 
         let scan_enabled = parse_bool("POLYMARKET_SCAN_ENABLED", false);
-        let copy_trade_enabled = parse_bool("POLYMARKET_COPY_TRADE_ENABLED", false);
-
         let btc = BtcConfig {
             realtime_enabled: parse_bool("POLYMARKET_BTC_REALTIME_ENABLED", false),
             paper_enabled: parse_bool("POLYMARKET_BTC_PAPER_ENABLED", false),
@@ -195,7 +165,6 @@ impl AppConfig {
                 ),
                 ("POLYMARKET_LIVE_USER_WS_ENABLED", live.user_ws_enabled),
                 ("POLYMARKET_SCAN_ENABLED", scan_enabled),
-                ("POLYMARKET_COPY_TRADE_ENABLED", copy_trade_enabled),
             ] {
                 if enabled {
                     conflicting_flags.push(name);
@@ -253,49 +222,6 @@ impl AppConfig {
                 enabled: parse_bool("POLYMARKET_HTTP_ENABLED", true),
                 bind: env_or("POLYMARKET_HTTP_BIND", "0.0.0.0:8097"),
                 admin_token: env_or("POLYMARKET_HTTP_ADMIN_TOKEN", "dev-polymarket-admin"),
-            },
-            whale: WhaleConfig {
-                copy_trade_enabled,
-                lookback_days: parse_u32("POLYMARKET_WHALE_BACKFILL_LOOKBACK_DAYS", 30),
-                min_trade_usd: parse_decimal("POLYMARKET_WHALE_MIN_TRADE_USD", dec!(500)),
-                min_wallet_score: parse_decimal("POLYMARKET_COPY_MIN_WALLET_SCORE", dec!(0)),
-                min_wallet_trades: parse_i32("POLYMARKET_COPY_MIN_WALLET_TRADES", 0),
-                min_wallet_realized_pnl_usd: parse_decimal(
-                    "POLYMARKET_WHALE_MIN_REALIZED_PNL_USD",
-                    dec!(100),
-                ),
-                min_wallet_roi: parse_decimal("POLYMARKET_WHALE_MIN_ROI", dec!(0.05)),
-                min_wallet_closed_positions: parse_i32("POLYMARKET_WHALE_MIN_CLOSED_POSITIONS", 3),
-                min_copy_size_usd: parse_decimal("POLYMARKET_COPY_MIN_SIZE_USD", dec!(2)),
-                copy_size_fraction: parse_decimal("POLYMARKET_COPY_SIZE_FRACTION", dec!(0.10)),
-                max_copy_size_usd: parse_decimal("POLYMARKET_COPY_MAX_SIZE_USD", dec!(2)),
-                min_liquidity_usd: parse_decimal("POLYMARKET_COPY_MIN_LIQUIDITY_USD", dec!(1000)),
-                max_price_move_pct: parse_decimal("POLYMARKET_COPY_MAX_PRICE_MOVE_PCT", dec!(0.05)),
-                max_follow_lag: Duration::from_secs(parse_u64(
-                    "POLYMARKET_COPY_MAX_FOLLOW_LAG_SECS",
-                    1800,
-                )),
-                max_price_slippage_bps: parse_decimal(
-                    "POLYMARKET_COPY_MAX_PRICE_SLIPPAGE_BPS",
-                    dec!(150),
-                ),
-                min_book_depth_usd: parse_decimal("POLYMARKET_COPY_MIN_BOOK_DEPTH_USD", dec!(25)),
-                copy_allow_sell_entries: parse_bool("POLYMARKET_COPY_ALLOW_SELL_ENTRIES", false),
-                live_poll_interval: Duration::from_secs(parse_u64(
-                    "POLYMARKET_WHALE_LIVE_POLL_INTERVAL_SECS",
-                    15,
-                )),
-                live_page_limit: parse_usize("POLYMARKET_WHALE_LIVE_PAGE_LIMIT", 100),
-                live_max_pages: parse_usize("POLYMARKET_WHALE_LIVE_MAX_PAGES", 1),
-                max_pages: parse_usize("POLYMARKET_WHALE_BACKFILL_MAX_PAGES", 10),
-                exit_candidate_max_age: Duration::from_secs(parse_u64(
-                    "POLYMARKET_EXIT_CANDIDATE_MAX_AGE_SECONDS",
-                    900,
-                )),
-                mark_fresh_max_age: Duration::from_secs(parse_u64(
-                    "POLYMARKET_MARK_FRESH_MAX_AGE_SECS",
-                    300,
-                )),
             },
             btc,
         })
@@ -454,20 +380,6 @@ fn parse_u16(key: &str, default: u16) -> u16 {
 }
 
 fn parse_u64(key: &str, default: u64) -> u64 {
-    env::var(key)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
-}
-
-fn parse_u32(key: &str, default: u32) -> u32 {
-    env::var(key)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
-}
-
-fn parse_i32(key: &str, default: i32) -> i32 {
     env::var(key)
         .ok()
         .and_then(|value| value.parse().ok())

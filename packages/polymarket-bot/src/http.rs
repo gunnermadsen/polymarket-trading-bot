@@ -11,14 +11,12 @@ use axum::{
     Json, Router,
 };
 use chrono::{DateTime, Utc};
-use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use crate::account_reconcile::{AccountReconcileReport, AccountReconcileRequest};
 
 use crate::{
-    backfill::BackfillMode,
     execution::{
         LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics, LiveOrderDryRunRequest,
         LivePoly1271FunderProbeRequest, LivePoly1271FunderProbeResponse, LiveVenueStatus,
@@ -29,7 +27,7 @@ use crate::{
         BackfillJobStatus as IngestionBackfillJobStatus,
         BackfillRequest as IngestionBackfillRequest, IngesterKey, TrainingReadiness,
     },
-    models::{BackfillJob, BackfillJobStatus, TradingProcess, TradingProcessConfig},
+    models::{TradingProcess, TradingProcessConfig},
     store::TradingProcessResetReport,
 };
 
@@ -84,20 +82,6 @@ pub trait ControlApi: Send + Sync + 'static {
             "BTC paper experiment status is not wired",
         ))
     }
-
-    async fn start_whales_backfill(
-        &self,
-        request: BackfillWhalesRequest,
-    ) -> Result<BackfillJobResponse, HttpError>;
-
-    async fn list_backfill_jobs(&self) -> Result<BackfillJobsResponse, HttpError>;
-
-    async fn get_backfill_job(&self, job_id: Uuid) -> Result<BackfillJobResponse, HttpError>;
-
-    async fn cancel_backfill_job(
-        &self,
-        job_id: Uuid,
-    ) -> Result<CancelBackfillJobResponse, HttpError>;
 
     async fn enqueue_ingestion_backfill(
         &self,
@@ -154,32 +138,6 @@ pub trait ControlApi: Send + Sync + 'static {
         ))
     }
 
-    async fn trade_pnl_summary(&self) -> Result<serde_json::Value, HttpError>;
-
-    async fn trade_pnl_wallets(
-        &self,
-        request: TradePnlListRequest,
-    ) -> Result<serde_json::Value, HttpError>;
-
-    async fn trade_pnl_open_positions(
-        &self,
-        request: TradePnlListRequest,
-    ) -> Result<serde_json::Value, HttpError>;
-
-    async fn trade_pnl_mark_health(
-        &self,
-        request: TradePnlListRequest,
-    ) -> Result<serde_json::Value, HttpError>;
-
-    async fn trade_pnl_recent_exits(
-        &self,
-        request: TradePnlListRequest,
-    ) -> Result<serde_json::Value, HttpError>;
-
-    async fn trade_pnl_backfill(&self) -> Result<serde_json::Value, HttpError>;
-
-    async fn trade_pnl_mark_now(&self) -> Result<serde_json::Value, HttpError>;
-
     async fn recompute_mrs_scores(
         &self,
         request: MrsRecomputeRequest,
@@ -219,35 +177,8 @@ pub trait ControlApi: Send + Sync + 'static {
 
     async fn mrs_segment_summary(
         &self,
-        request: TradePnlListRequest,
+        request: WalletRowsRequest,
     ) -> Result<serde_json::Value, HttpError>;
-
-    async fn recompute_expectancy_flow(
-        &self,
-        _request: ExpectancyFlowRecomputeRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "expectancy flow recompute is not wired",
-        ))
-    }
-
-    async fn expectancy_flow_cells(
-        &self,
-        _request: ExpectancyFlowCellsRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "expectancy flow cell listing is not wired",
-        ))
-    }
-
-    async fn expectancy_flow_wallet_cells(
-        &self,
-        _request: ExpectancyFlowWalletCellsRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "expectancy flow wallet cell listing is not wired",
-        ))
-    }
 
     async fn gamma_taxonomy_status(&self) -> Result<serde_json::Value, HttpError> {
         Err(HttpError::not_implemented(
@@ -400,84 +331,6 @@ impl ControlApi for PlaceholderControlApi {
         Err(HttpError::not_implemented("metrics provider is not wired"))
     }
 
-    async fn start_whales_backfill(
-        &self,
-        _request: BackfillWhalesRequest,
-    ) -> Result<BackfillJobResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "whales backfill runner is not wired",
-        ))
-    }
-
-    async fn list_backfill_jobs(&self) -> Result<BackfillJobsResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "backfill job registry is not wired",
-        ))
-    }
-
-    async fn get_backfill_job(&self, _job_id: Uuid) -> Result<BackfillJobResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "backfill job registry is not wired",
-        ))
-    }
-
-    async fn cancel_backfill_job(
-        &self,
-        _job_id: Uuid,
-    ) -> Result<CancelBackfillJobResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "backfill job cancellation is not wired",
-        ))
-    }
-
-    async fn trade_pnl_summary(&self) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented("trade PnL summary is not wired"))
-    }
-
-    async fn trade_pnl_wallets(
-        &self,
-        _request: TradePnlListRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "trade PnL wallets are not wired",
-        ))
-    }
-
-    async fn trade_pnl_open_positions(
-        &self,
-        _request: TradePnlListRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "trade PnL open positions are not wired",
-        ))
-    }
-
-    async fn trade_pnl_mark_health(
-        &self,
-        _request: TradePnlListRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "trade PnL mark health is not wired",
-        ))
-    }
-
-    async fn trade_pnl_recent_exits(
-        &self,
-        _request: TradePnlListRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented("trade PnL exits are not wired"))
-    }
-
-    async fn trade_pnl_backfill(&self) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "trade PnL backfill is not wired",
-        ))
-    }
-
-    async fn trade_pnl_mark_now(&self) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented("trade PnL marking is not wired"))
-    }
-
     async fn recompute_mrs_scores(
         &self,
         _request: MrsRecomputeRequest,
@@ -523,7 +376,7 @@ impl ControlApi for PlaceholderControlApi {
 
     async fn mrs_segment_summary(
         &self,
-        _request: TradePnlListRequest,
+        _request: WalletRowsRequest,
     ) -> Result<serde_json::Value, HttpError> {
         Err(HttpError::not_implemented(
             "MRS segment summary is not wired",
@@ -673,7 +526,6 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
             "/strategy/btc-5m/paper-experiment",
             get(btc_paper_experiment_status),
         )
-        .route("/backfill/whales", post(legacy_copy_endpoint_gone))
         .route("/backfill/ingesters", get(list_ingesters))
         .route(
             "/backfill/jobs",
@@ -692,14 +544,6 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
             "/backfill/readiness/btc-five-minute-training",
             get(ingestion_training_readiness),
         )
-        .route("/pnl/stats", get(trade_pnl_summary))
-        .route("/trades/pnl/summary", get(trade_pnl_summary))
-        .route("/trades/pnl/wallets", get(trade_pnl_wallets))
-        .route("/trades/pnl/open", get(trade_pnl_open_positions))
-        .route("/trades/pnl/mark-health", get(trade_pnl_mark_health))
-        .route("/trades/pnl/recent-exits", get(trade_pnl_recent_exits))
-        .route("/trades/pnl/backfill", post(trade_pnl_backfill))
-        .route("/trades/pnl/mark-now", post(trade_pnl_mark_now))
         .route("/wallets/mrs/recompute", post(recompute_mrs_scores))
         .route(
             "/wallets/scoring/refresh/enqueue",
@@ -717,18 +561,6 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .route(
             "/wallets/mrs/segments/recompute",
             post(recompute_mrs_segment_scores),
-        )
-        .route(
-            "/copy-trade/expectancy-flow/recompute",
-            post(recompute_expectancy_flow),
-        )
-        .route(
-            "/copy-trade/expectancy-flow/cells",
-            get(expectancy_flow_cells),
-        )
-        .route(
-            "/copy-trade/expectancy-flow/wallet-cells",
-            get(expectancy_flow_wallet_cells),
         )
         .route("/gamma/taxonomy/status", get(gamma_taxonomy_status))
         .route("/gamma/taxonomy/backfill", post(gamma_taxonomy_backfill))
@@ -809,12 +641,6 @@ async fn btc_paper_experiment_status(
     state.control.btc_paper_experiment_status().await.map(Json)
 }
 
-async fn legacy_copy_endpoint_gone() -> Result<Json<serde_json::Value>, HttpError> {
-    Err(HttpError::gone(
-        "legacy copy-trade and wallet-address workflows are disabled",
-    ))
-}
-
 async fn enqueue_ingestion_backfill(
     State(state): State<HttpState>,
     Json(request): Json<IngestionBackfillRequest>,
@@ -891,60 +717,6 @@ async fn ingestion_training_readiness(
         .map(Json)
 }
 
-async fn trade_pnl_summary(
-    State(state): State<HttpState>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state.control.trade_pnl_summary().await.map(Json)
-}
-
-async fn trade_pnl_wallets(
-    State(state): State<HttpState>,
-    Query(request): Query<TradePnlListRequest>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state.control.trade_pnl_wallets(request).await.map(Json)
-}
-
-async fn trade_pnl_open_positions(
-    State(state): State<HttpState>,
-    Query(request): Query<TradePnlListRequest>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state
-        .control
-        .trade_pnl_open_positions(request)
-        .await
-        .map(Json)
-}
-
-async fn trade_pnl_mark_health(
-    State(state): State<HttpState>,
-    Query(request): Query<TradePnlListRequest>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state.control.trade_pnl_mark_health(request).await.map(Json)
-}
-
-async fn trade_pnl_recent_exits(
-    State(state): State<HttpState>,
-    Query(request): Query<TradePnlListRequest>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state
-        .control
-        .trade_pnl_recent_exits(request)
-        .await
-        .map(Json)
-}
-
-async fn trade_pnl_backfill(
-    State(state): State<HttpState>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state.control.trade_pnl_backfill().await.map(Json)
-}
-
-async fn trade_pnl_mark_now(
-    State(state): State<HttpState>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state.control.trade_pnl_mark_now().await.map(Json)
-}
-
 async fn recompute_mrs_scores(
     State(state): State<HttpState>,
     Json(request): Json<MrsRecomputeRequest>,
@@ -998,38 +770,9 @@ async fn list_wallet_score_refresh_jobs(
 
 async fn mrs_segment_summary(
     State(state): State<HttpState>,
-    Query(request): Query<TradePnlListRequest>,
+    Query(request): Query<WalletRowsRequest>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
     state.control.mrs_segment_summary(request).await.map(Json)
-}
-
-async fn recompute_expectancy_flow(
-    State(state): State<HttpState>,
-    Json(request): Json<ExpectancyFlowRecomputeRequest>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state
-        .control
-        .recompute_expectancy_flow(request)
-        .await
-        .map(Json)
-}
-
-async fn expectancy_flow_cells(
-    State(state): State<HttpState>,
-    Query(request): Query<ExpectancyFlowCellsRequest>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state.control.expectancy_flow_cells(request).await.map(Json)
-}
-
-async fn expectancy_flow_wallet_cells(
-    State(state): State<HttpState>,
-    Query(request): Query<ExpectancyFlowWalletCellsRequest>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state
-        .control
-        .expectancy_flow_wallet_cells(request)
-        .await
-        .map(Json)
 }
 
 async fn gamma_taxonomy_status(
@@ -1288,27 +1031,7 @@ pub struct MetricsResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BackfillWhalesRequest {
-    #[serde(default)]
-    pub process_id: Option<Uuid>,
-    pub lookback_days: Option<i32>,
-    pub min_trade_usd: Option<Decimal>,
-    pub page_limit: Option<usize>,
-    pub max_pages: Option<usize>,
-    #[serde(default)]
-    pub mode: Option<BackfillMode>,
-    #[serde(default)]
-    pub wallet_addresses: Vec<String>,
-    #[serde(default)]
-    pub market_ids: Vec<String>,
-    #[serde(default)]
-    pub dry_run: bool,
-    #[serde(default)]
-    pub request: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TradePnlListRequest {
+pub struct WalletRowsRequest {
     #[serde(default)]
     pub process_id: Option<Uuid>,
     pub limit: Option<i64>,
@@ -1360,27 +1083,6 @@ pub struct WalletScoreRefreshJobsRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExpectancyFlowRecomputeRequest {
-    #[serde(default)]
-    pub process_id: Option<Uuid>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExpectancyFlowCellsRequest {
-    #[serde(default)]
-    pub process_id: Option<Uuid>,
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExpectancyFlowWalletCellsRequest {
-    #[serde(default)]
-    pub process_id: Option<Uuid>,
-    pub proxy_wallet: String,
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GammaTaxonomyBackfillRequest {
     pub limit: Option<i64>,
     #[serde(default)]
@@ -1413,7 +1115,6 @@ impl LiveWalletDiagnosticsRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTradingProcessRequest {
     pub name: String,
-    #[serde(default = "default_process_type")]
     pub process_type: String,
     #[serde(default = "default_process_scope")]
     pub process_scope: String,
@@ -1471,7 +1172,6 @@ pub struct IngestionReadinessRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpsertTradingProcessByKeyRequest {
     pub name: String,
-    #[serde(default = "default_process_type")]
     pub process_type: String,
     #[serde(default = "default_process_scope")]
     pub process_scope: String,
@@ -1481,23 +1181,6 @@ pub struct UpsertTradingProcessByKeyRequest {
     pub config: TradingProcessConfig,
     #[serde(default)]
     pub metadata: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BackfillJobResponse {
-    pub job: BackfillJob,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BackfillJobsResponse {
-    pub jobs: Vec<BackfillJob>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CancelBackfillJobResponse {
-    pub job_id: Uuid,
-    pub status: BackfillJobStatus,
-    pub cancel_requested: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1594,10 +1277,6 @@ pub struct ErrorResponse {
 pub struct ErrorBody {
     pub code: String,
     pub message: String,
-}
-
-fn default_process_type() -> String {
-    "copy_trade".to_string()
 }
 
 fn default_process_scope() -> String {

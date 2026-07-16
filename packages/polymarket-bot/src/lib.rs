@@ -1,11 +1,9 @@
 #![recursion_limit = "256"]
 
 pub mod account_reconcile;
-pub mod backfill;
 pub mod btc;
 pub mod clob;
 pub mod config;
-pub mod copytrade;
 pub mod data_api;
 pub mod edge;
 pub mod events;
@@ -22,7 +20,6 @@ pub mod scanner;
 pub mod segments;
 pub mod store;
 pub mod taxonomy;
-pub mod trade_pnl;
 pub mod wallet;
 pub mod wallets;
 pub mod ws;

@@ -67,7 +67,7 @@ mod tests {
             strategy_version: "v1",
             process_id: None,
             source_id,
-            purpose: "whale_follow_entry",
+            purpose: "entry",
             market_id: "m1",
             token_id: "t1",
             side: OrderSide::Buy,

@@ -456,7 +456,7 @@ mod tests {
             price: dec!(0.40),
             size: dec!(10),
             signal_id: None,
-            metadata: serde_json::json!({"purpose": "whale_follow_entry"}),
+            metadata: serde_json::json!({"purpose": "entry"}),
         };
 
         let report = execute_order_plan(
@@ -490,18 +490,17 @@ mod tests {
             price: dec!(0.42),
             size: dec!(10),
             signal_id: None,
-            metadata: serde_json::json!({"purpose": "whale_follow_entry"}),
+            metadata: serde_json::json!({"purpose": "entry"}),
         };
         assert_eq!(request.intent(), OrderIntent::Entry);
 
-        request.metadata = serde_json::json!({"purpose": "whale_led_exit"});
+        request.metadata = serde_json::json!({"purpose": "exit"});
         assert_eq!(request.intent(), OrderIntent::Exit);
 
         request.metadata = serde_json::json!({"execution_intent": "risk_reduction"});
         assert_eq!(request.intent(), OrderIntent::RiskReduction);
 
-        request.metadata =
-            serde_json::json!({"execution_intent": "unexpected", "purpose": "whale_led_exit"});
+        request.metadata = serde_json::json!({"execution_intent": "unexpected", "purpose": "exit"});
         assert_eq!(request.intent(), OrderIntent::Exit);
 
         request.metadata = serde_json::json!({"execution_intent": "unexpected"});
