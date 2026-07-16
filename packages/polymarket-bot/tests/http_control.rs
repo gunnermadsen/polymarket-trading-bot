@@ -15,8 +15,7 @@ use polymarket_bot::{
     },
     http::{
         self, BackfillJobResponse, BackfillJobsResponse, BackfillWhalesRequest,
-        BacktestRunResponse, BacktestRunsResponse, CancelBackfillJobResponse, ControlApi,
-        CopyTradeBacktestRequest, CopyTradeCalibrationRequest, HttpError, MetricsResponse,
+        CancelBackfillJobResponse, ControlApi, HttpError, MetricsResponse,
     },
     ingestion::job::{
         BackfillEventLevel as IngestionBackfillEventLevel, BackfillJob as IngestionBackfillJob,
@@ -25,10 +24,9 @@ use polymarket_bot::{
         BackfillRequest as IngestionBackfillRequest, IngesterKey, TrainingReadiness,
     },
     models::{
-        BackfillJob, BackfillJobStatus, BacktestRun, ProcessExecutionConfig, TradingProcess,
+        BackfillJob, BackfillJobStatus, ProcessExecutionConfig, TradingProcess,
         TradingProcessConfig,
     },
-    replay::{BacktestReplayQueued, BacktestReplayRequest},
     store::TradingProcessResetReport,
 };
 use rust_decimal::Decimal;
@@ -81,82 +79,6 @@ impl ControlApi for FakeControlApi {
                 BackfillJobStatus::Completed,
                 serde_json::json!({}),
             )],
-        })
-    }
-
-    async fn start_copy_trade_backtest(
-        &self,
-        request: CopyTradeBacktestRequest,
-    ) -> Result<BackfillJobResponse, HttpError> {
-        Ok(BackfillJobResponse {
-            job: test_job(
-                BackfillJobStatus::Queued,
-                serde_json::json!({
-                    "mode": "copy_trade_backtest",
-                    "lookback_days": request.lookback_days,
-                    "min_wallet_score": request.min_wallet_score,
-                    "execute_signals": request.execute_signals,
-                    "dry_run": request.dry_run
-                }),
-            ),
-        })
-    }
-
-    async fn start_copy_trade_calibration(
-        &self,
-        request: CopyTradeCalibrationRequest,
-    ) -> Result<BackfillJobResponse, HttpError> {
-        Ok(BackfillJobResponse {
-            job: test_job(
-                BackfillJobStatus::Queued,
-                serde_json::json!({
-                    "mode": "copy_trade_calibration",
-                    "lookback_days": request.lookback_days,
-                    "dry_run": request.dry_run
-                }),
-            ),
-        })
-    }
-
-    async fn replay_existing_copy_trades(
-        &self,
-        _request: http::CopyTradeReplayRequest,
-    ) -> Result<Value, HttpError> {
-        Ok(serde_json::json!({
-            "trades_replayed": 1,
-            "summary": {
-                "trades_evaluated": 1,
-                "signals_inserted": 1
-            }
-        }))
-    }
-
-    async fn start_backtest_replay(
-        &self,
-        _request: BacktestReplayRequest,
-    ) -> Result<BacktestReplayQueued, HttpError> {
-        Ok(BacktestReplayQueued {
-            backtest_run_id: Uuid::new_v4(),
-            status: "queued".to_string(),
-            backtest_process_ids: vec![Uuid::new_v4()],
-        })
-    }
-
-    async fn get_backtest_run(
-        &self,
-        backtest_run_id: Uuid,
-    ) -> Result<BacktestRunResponse, HttpError> {
-        Ok(BacktestRunResponse {
-            backtest_run: test_backtest_run(backtest_run_id),
-        })
-    }
-
-    async fn list_backtest_runs(
-        &self,
-        _request: http::ListBacktestRunsRequest,
-    ) -> Result<BacktestRunsResponse, HttpError> {
-        Ok(BacktestRunsResponse {
-            backtest_runs: vec![test_backtest_run(Uuid::new_v4())],
         })
     }
 
@@ -901,9 +823,6 @@ impl ControlApi for FakeControlApi {
                 expectancy_flow_cells_deleted: 0,
                 expectancy_flow_wallet_cells_deleted: 0,
                 process_events_deleted: 1,
-                copy_trade_backtest_results_deleted: 0,
-                copy_trade_backtest_runs_deleted: 0,
-                copy_trade_backtests_deleted: 0,
                 backfill_job_events_deleted: 0,
                 backfill_jobs_deleted: 0,
                 whale_poll_checkpoints_deleted: 1,
@@ -1244,13 +1163,7 @@ async fn authenticated_admin_can_read_btc_experiment_status() {
 #[tokio::test]
 async fn authenticated_admin_legacy_copy_mutations_are_gone() {
     let app = http::router(Arc::new(FakeControlApi), "secret");
-    for uri in [
-        "/admin/backfill/whales",
-        "/admin/copy-trade/backtest",
-        "/admin/copy-trade/calibration",
-        "/admin/copy-trade/replay-existing",
-        "/admin/backtests/replay",
-    ] {
+    for uri in ["/admin/backfill/whales"] {
         let response = app
             .clone()
             .oneshot(
@@ -1269,6 +1182,32 @@ async fn authenticated_admin_legacy_copy_mutations_are_gone() {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "gone", "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn retired_replay_and_backtest_routes_are_not_found() {
+    let app = http::router(Arc::new(FakeControlApi), "secret");
+    for uri in [
+        "/admin/copy-trade/backtest",
+        "/admin/copy-trade/calibration",
+        "/admin/copy-trade/replay-existing",
+        "/admin/backtests/replay",
+        "/admin/backtests",
+        "/admin/backtests/00000000-0000-0000-0000-000000000000",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header(AUTHORIZATION, "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
     }
 }
 
@@ -1926,28 +1865,6 @@ fn test_ingestion_job(
         updated_at: now,
         lookback_days: None,
         min_trade_usd: None,
-    }
-}
-
-fn test_backtest_run(backtest_run_id: Uuid) -> BacktestRun {
-    let now = Utc::now();
-    BacktestRun {
-        backtest_run_id,
-        status: "completed".to_string(),
-        range_start: now - chrono::Duration::days(1),
-        range_end: now,
-        warmup_start: now - chrono::Duration::days(2),
-        lookback_days: 1,
-        warmup_days: 1,
-        source_process_ids: vec![Uuid::new_v4()],
-        backtest_process_ids: vec![Uuid::new_v4()],
-        request: serde_json::json!({}),
-        summary: serde_json::json!({}),
-        error: None,
-        started_at: Some(now),
-        completed_at: Some(now),
-        created_at: now,
-        updated_at: now,
     }
 }
 

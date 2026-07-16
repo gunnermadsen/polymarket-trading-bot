@@ -63,7 +63,7 @@ Open `http://127.0.0.1:3030` in a browser.
 
 Log in with `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` from `.env.grafana`.
 The provisioned dashboard refreshes every 15 seconds. Current process and P&L
-panels include only enabled, non-backtest processes in a running lifecycle with
+panels include only enabled processes in a running lifecycle with
 a heartbeat/update no older than two minutes. Stopped experiments remain in
 the realized-P&L history but do not contribute to current realized or
 unrealized totals. Recreate Grafana after changing the provisioned JSON:

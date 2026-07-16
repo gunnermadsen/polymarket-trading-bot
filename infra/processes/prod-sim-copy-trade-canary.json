@@ -40,7 +40,6 @@
       "max_follow_lag_secs": 1800,
       "max_price_slippage_bps": "150",
       "min_book_depth_usd": "25",
-      "backtest_horizon_secs": 3600,
       "taker_fee_rate": "0.03",
       "allow_sell_entries": false
     }

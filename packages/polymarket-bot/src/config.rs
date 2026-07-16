@@ -109,7 +109,6 @@ pub struct WhaleConfig {
     pub max_follow_lag: Duration,
     pub max_price_slippage_bps: Decimal,
     pub min_book_depth_usd: Decimal,
-    pub backtest_horizon: Duration,
     pub copy_allow_sell_entries: bool,
     pub live_poll_interval: Duration,
     pub live_page_limit: usize,
@@ -281,10 +280,6 @@ impl AppConfig {
                     dec!(150),
                 ),
                 min_book_depth_usd: parse_decimal("POLYMARKET_COPY_MIN_BOOK_DEPTH_USD", dec!(25)),
-                backtest_horizon: Duration::from_secs(parse_u64(
-                    "POLYMARKET_COPY_BACKTEST_HORIZON_SECS",
-                    3600,
-                )),
                 copy_allow_sell_entries: parse_bool("POLYMARKET_COPY_ALLOW_SELL_ENTRIES", false),
                 live_poll_interval: Duration::from_secs(parse_u64(
                     "POLYMARKET_WHALE_LIVE_POLL_INTERVAL_SECS",

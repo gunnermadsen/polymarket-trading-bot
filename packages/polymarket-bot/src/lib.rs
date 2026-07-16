@@ -17,7 +17,6 @@ pub mod ingestion;
 pub mod ml;
 pub mod models;
 pub mod orderbook;
-pub mod replay;
 pub mod risk;
 pub mod scanner;
 pub mod segments;

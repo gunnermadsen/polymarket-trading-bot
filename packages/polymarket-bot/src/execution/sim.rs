@@ -513,8 +513,7 @@ impl ExecutionVenue for SimVenue {
 fn requested_execution_timestamp(request: &OrderRequest) -> Option<DateTime<Utc>> {
     request
         .metadata
-        .get("backtest_fill_timestamp")
-        .or_else(|| request.metadata.get("reference_exit_timestamp"))
+        .get("reference_exit_timestamp")
         .and_then(|value| value.as_str())
         .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
         .map(|value| value.with_timezone(&Utc))
