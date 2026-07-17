@@ -60,7 +60,6 @@ impl fmt::Debug for GrafanaLiveConfig {
 pub struct BtcConfig {
     pub realtime_enabled: bool,
     pub paper_enabled: bool,
-    pub ml_shadow_enabled: bool,
     pub rtds_ws_url: String,
     pub binance_ws_url: String,
 }
@@ -162,7 +161,6 @@ impl AppConfig {
         let btc = BtcConfig {
             realtime_enabled: parse_bool("POLYMARKET_BTC_REALTIME_ENABLED", false),
             paper_enabled: parse_bool("POLYMARKET_BTC_PAPER_ENABLED", false),
-            ml_shadow_enabled: parse_bool("POLYMARKET_BTC_ML_SHADOW_ENABLED", false),
             rtds_ws_url: env_or(
                 "POLYMARKET_BTC_RTDS_WS_URL",
                 "wss://ws-live-data.polymarket.com",
@@ -174,9 +172,6 @@ impl AppConfig {
         };
         if btc.paper_enabled && !btc.realtime_enabled {
             bail!("POLYMARKET_BTC_PAPER_ENABLED requires POLYMARKET_BTC_REALTIME_ENABLED");
-        }
-        if btc.ml_shadow_enabled && !btc.realtime_enabled {
-            bail!("POLYMARKET_BTC_ML_SHADOW_ENABLED requires POLYMARKET_BTC_REALTIME_ENABLED");
         }
 
         let grafana_live = GrafanaLiveConfig {

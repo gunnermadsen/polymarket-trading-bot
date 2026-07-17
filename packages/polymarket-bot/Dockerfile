@@ -10,7 +10,7 @@ COPY packages/polymarket-bot/Cargo.toml packages/polymarket-bot/Cargo.lock ./
 COPY packages/polymarket-bot/build.rs ./build.rs
 COPY packages/polymarket-bot/src ./src
 COPY packages/polymarket-bot/tests ./tests
-COPY experiments/btc-updown/fixtures /experiments/btc-updown/fixtures
+COPY README.md /README.md
 
 RUN cargo test --locked --all-targets -- --include-ignored \
     && cargo build --locked --release

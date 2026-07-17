@@ -58,16 +58,25 @@ export class RetirePolymarketWhaleCopyTrading1784224000000 implements MigrationI
       WHERE job_id IN (SELECT job_id FROM retired_whale_copy_jobs);
     `);
 
-    await queryRunner.query(`
-      DELETE FROM polymarket.fills
-      WHERE process_id IN (SELECT process_id FROM retired_whale_copy_processes);
-
-      DELETE FROM polymarket.orders
-      WHERE process_id IN (SELECT process_id FROM retired_whale_copy_processes);
-
-      DELETE FROM polymarket.signal_candidates
-      WHERE process_id IN (SELECT process_id FROM retired_whale_copy_processes);
+    const retiredWhaleCopyProcesses: Array<{ process_id: string }> = await queryRunner.query(`
+      SELECT process_id::text AS process_id
+      FROM retired_whale_copy_processes;
     `);
+
+    for (const { process_id: whaleCopyProcessId } of retiredWhaleCopyProcesses) {
+      await queryRunner.query(
+        `DELETE FROM polymarket.fills WHERE process_id = $1;`,
+        [whaleCopyProcessId],
+      );
+      await queryRunner.query(
+        `DELETE FROM polymarket.orders WHERE process_id = $1;`,
+        [whaleCopyProcessId],
+      );
+      await queryRunner.query(
+        `DELETE FROM polymarket.signal_candidates WHERE process_id = $1;`,
+        [whaleCopyProcessId],
+      );
+    }
 
     await queryRunner.query(`
       DROP TABLE IF EXISTS polymarket.trade_mark_source_failures;

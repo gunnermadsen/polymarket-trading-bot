@@ -11,7 +11,6 @@ pub mod grafana_live;
 pub mod http;
 pub mod idempotency;
 pub mod ingestion;
-pub mod ml;
 pub mod models;
 pub mod orderbook;
 pub mod risk;
