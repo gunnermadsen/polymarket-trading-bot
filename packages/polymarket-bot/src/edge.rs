@@ -3,8 +3,6 @@ use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
-use crate::orderbook::FillQuote;
-
 #[derive(Debug, Clone)]
 pub struct ThresholdState {
     pub bootstrap_threshold: Decimal,
@@ -38,13 +36,6 @@ impl WorstCaseLoss {
     pub fn passes(self) -> bool {
         self.amount <= self.cap
     }
-}
-
-pub fn compute_taker_fee(fills: &[FillQuote], fee_rate: Decimal) -> Decimal {
-    fills
-        .iter()
-        .map(|fill| fill.size * fee_rate * fill.price * (Decimal::ONE - fill.price))
-        .sum()
 }
 
 pub fn dynamic_threshold(state: &ThresholdState) -> Decimal {
@@ -212,24 +203,7 @@ mod tests {
     use chrono::Duration;
     use rust_decimal_macros::dec;
 
-    use crate::orderbook::FillQuote;
-
     use super::*;
-
-    #[test]
-    fn fee_is_computed_per_fill_level() {
-        let fills = vec![
-            FillQuote {
-                price: dec!(0.40),
-                size: dec!(10),
-            },
-            FillQuote {
-                price: dec!(0.60),
-                size: dec!(5),
-            },
-        ];
-        assert_eq!(compute_taker_fee(&fills, dec!(0.02)), dec!(0.0720));
-    }
 
     #[test]
     fn carry_reserve_only_applies_after_two_days() {

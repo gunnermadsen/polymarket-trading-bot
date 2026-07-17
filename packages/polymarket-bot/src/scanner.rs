@@ -7,10 +7,10 @@ use uuid::Uuid;
 use crate::{
     clob::ClobClient,
     edge::{
-        cheap_basket_edge, cheap_basket_worst_case_loss, compute_taker_fee, dynamic_threshold,
-        leg_risk_reserve, Reserves, ThresholdState,
+        cheap_basket_edge, cheap_basket_worst_case_loss, dynamic_threshold, leg_risk_reserve,
+        Reserves, ThresholdState,
     },
-    execution::{execute_order_plan, ExecutionVenue, OrderPlan},
+    execution::{execute_order_plan, fees::compute_taker_fee, ExecutionVenue, OrderPlan},
     idempotency::{deterministic_client_order_id, ClientOrderIdSeed},
     models::{
         Market, OrderRequest, OrderSide, OrderType, OutcomeToken, SignalCandidate, SignalStatus,

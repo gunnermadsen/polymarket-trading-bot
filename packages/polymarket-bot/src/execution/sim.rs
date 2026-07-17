@@ -10,12 +10,12 @@ use uuid::Uuid;
 use crate::{
     account_reconcile::{AccountReconcileReport, AccountReconcileRequest},
     clob::ClobClient,
-    edge::compute_taker_fee,
     execution::{
-        ExecutionVenue, LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics,
-        LiveOrderDryRunRequest, LivePoly1271FunderProbeCandidate, LivePoly1271FunderProbeRequest,
-        LivePoly1271FunderProbeResponse, LiveVenueStatus, LiveWalletAddressDiagnostics,
-        LiveWalletCandidateAddressDiagnostics, LiveWalletTokenBalances, ReconciliationReport,
+        fees::compute_taker_fee, ExecutionVenue, LiveIdentityDiagnostics,
+        LiveOrderDryRunDiagnostics, LiveOrderDryRunRequest, LivePoly1271FunderProbeCandidate,
+        LivePoly1271FunderProbeRequest, LivePoly1271FunderProbeResponse, LiveVenueStatus,
+        LiveWalletAddressDiagnostics, LiveWalletCandidateAddressDiagnostics,
+        LiveWalletTokenBalances, ReconciliationReport,
     },
     models::{
         ConversionRequest, ConversionResult, FillRecord, FillSource, OrderRecord, OrderRequest,
