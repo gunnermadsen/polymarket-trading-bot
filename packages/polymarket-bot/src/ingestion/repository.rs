@@ -880,6 +880,11 @@ impl IngestionRepository {
         let mut tx = self.pool.begin().await?;
         require_active_lease(&mut tx, claim).await?;
         require_writable_artifact(&mut tx, claim, artifact_id).await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(&market.event_slug)
+            .execute(&mut *tx)
+            .await
+            .context("failed to lock ingested BTC interval market identity")?;
         let result = sqlx::query(
             r#"
             INSERT INTO polymarket.btc_interval_markets (

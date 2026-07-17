@@ -406,6 +406,16 @@ impl BtcRepository {
             })
             .unwrap_or(&market.event_slug);
         let now = Utc::now();
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin BTC interval market upsert transaction")?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(&market.event_slug)
+            .execute(&mut *tx)
+            .await
+            .context("failed to lock BTC interval market identity")?;
         let result = sqlx::query(
             r#"
             INSERT INTO polymarket.btc_interval_markets (
@@ -469,7 +479,7 @@ impl BtcRepository {
         .bind(now)
         .bind(now)
         .bind(&market.raw_payload)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .context("failed to upsert BTC interval market")?;
         if result.rows_affected() != 1 {
@@ -478,6 +488,9 @@ impl BtcRepository {
                 market.market_id
             );
         }
+        tx.commit()
+            .await
+            .context("failed to commit BTC interval market upsert")?;
         Ok(())
     }
 
