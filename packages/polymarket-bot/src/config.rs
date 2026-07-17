@@ -13,15 +13,12 @@ pub enum ExecutionMode {
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
-    pub scan_enabled: bool,
     pub live: LiveExecutionConfig,
     pub gamma_base_url: String,
     pub clob_base_url: String,
     pub clob_ws_url: String,
     pub data_api_base_url: String,
-    pub scan_interval: Duration,
     pub health_interval: Duration,
-    pub max_markets_per_scan: usize,
     pub postgres: PostgresConfig,
     pub risk: RiskConfig,
     pub http: HttpConfig,
@@ -50,12 +47,7 @@ pub struct PostgresConfig {
 
 #[derive(Debug, Clone)]
 pub struct RiskConfig {
-    pub daily_pnl_target_usd: Decimal,
-    pub bootstrap_threshold: Decimal,
     pub taker_fee_rate: Decimal,
-    pub target_size: Decimal,
-    pub fill_confidence_discount_default: Decimal,
-    pub fill_confidence_discount_tight: Decimal,
     pub max_simultaneous_conversions: usize,
 }
 
@@ -136,7 +128,6 @@ impl AppConfig {
             live.validate_for_live()?;
         }
 
-        let scan_enabled = parse_bool("POLYMARKET_SCAN_ENABLED", false);
         let btc = BtcConfig {
             realtime_enabled: parse_bool("POLYMARKET_BTC_REALTIME_ENABLED", false),
             paper_enabled: parse_bool("POLYMARKET_BTC_PAPER_ENABLED", false),
@@ -164,7 +155,6 @@ impl AppConfig {
                     live.order_submit_enabled,
                 ),
                 ("POLYMARKET_LIVE_USER_WS_ENABLED", live.user_ws_enabled),
-                ("POLYMARKET_SCAN_ENABLED", scan_enabled),
             ] {
                 if enabled {
                     conflicting_flags.push(name);
@@ -179,7 +169,6 @@ impl AppConfig {
         }
 
         Ok(Self {
-            scan_enabled,
             live,
             gamma_base_url: env_or(
                 "POLYMARKET_GAMMA_BASE_URL",
@@ -194,9 +183,7 @@ impl AppConfig {
                 "POLYMARKET_DATA_API_BASE_URL",
                 "https://data-api.polymarket.com",
             ),
-            scan_interval: Duration::from_secs(parse_u64("POLYMARKET_SCAN_INTERVAL_SECS", 30)),
             health_interval: Duration::from_secs(parse_u64("POLYMARKET_HEALTH_INTERVAL_SECS", 30)),
-            max_markets_per_scan: parse_usize("POLYMARKET_MAX_MARKETS_PER_SCAN", 50),
             postgres: PostgresConfig {
                 host: env_or("POSTGRES_HOST", "localhost"),
                 port: parse_u16("POSTGRES_PORT", 5432),
@@ -207,12 +194,7 @@ impl AppConfig {
                 ssl_root_cert: first_non_empty_env(&["POSTGRES_SSL_CA_FILE", "PGSSLROOTCERT"]),
             },
             risk: RiskConfig {
-                daily_pnl_target_usd: parse_decimal("POLYMARKET_DAILY_PNL_TARGET_USD", dec!(1000)),
-                bootstrap_threshold: parse_decimal("POLYMARKET_BOOTSTRAP_THRESHOLD", dec!(0.020)),
                 taker_fee_rate: parse_decimal("POLYMARKET_TAKER_FEE_RATE", dec!(0.03)),
-                target_size: parse_decimal("POLYMARKET_TARGET_SIZE", dec!(5)),
-                fill_confidence_discount_default: dec!(0.80),
-                fill_confidence_discount_tight: dec!(0.65),
                 max_simultaneous_conversions: parse_usize(
                     "POLYMARKET_MAX_SIMULTANEOUS_CONVERSIONS",
                     3,

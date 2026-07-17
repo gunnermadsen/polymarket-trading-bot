@@ -39,8 +39,6 @@ use polymarket_bot::{
         job::BackfillRequest as IngestionBackfillRequest, repository::IngestionRepository,
     },
     models::{DataApiClosedPosition, ProcessExecutionConfig, TradingProcess, TradingProcessConfig},
-    risk::{RiskLimits, RiskState},
-    scanner::{scan_markets_for_signal1, ScannerConfig, ScannerCycleReport},
     store::Store,
     taxonomy::taxonomy_update_from_metadata,
     wallets::{score_closed_position_performance, score_mrs, MrsScoreInput},
@@ -53,7 +51,6 @@ use tokio::time::MissedTickBehavior;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
-const SCAN_CYCLE_TIMEOUT: Duration = Duration::from_secs(8);
 const BTC_PIPELINE_VERSION: &str = "btc_realtime_paper_pipeline_v11";
 const BTC_PROCESS_SCHEMA_VERSION: &str = "btc_realtime_paper_process_v1";
 const BTC_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(45);
@@ -1771,17 +1768,6 @@ impl BtcProcessManager {
 
 #[derive(Debug, Default, Clone)]
 struct RuntimeMetrics {
-    scans: u64,
-    markets_seen: u64,
-    markets_persisted: u64,
-    tokens_persisted: u64,
-    books_persisted: u64,
-    signals_inserted: u64,
-    positive_signals: u64,
-    orders_inserted: u64,
-    fills_inserted: u64,
-    positions_upserted: u64,
-    scan_errors: u64,
     started_at: chrono::DateTime<Utc>,
 }
 
@@ -1795,17 +1781,6 @@ impl RuntimeMetrics {
 
     fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
-            "scans": self.scans,
-            "markets_seen": self.markets_seen,
-            "markets_persisted": self.markets_persisted,
-            "tokens_persisted": self.tokens_persisted,
-            "books_persisted": self.books_persisted,
-            "signals_inserted": self.signals_inserted,
-            "positive_signals": self.positive_signals,
-            "orders_inserted": self.orders_inserted,
-            "fills_inserted": self.fills_inserted,
-            "positions_upserted": self.positions_upserted,
-            "scan_errors": self.scan_errors,
             "uptime_secs": (Utc::now() - self.started_at).num_seconds()
         })
     }
@@ -1839,14 +1814,6 @@ impl ExecutionVenues {
                 .ok_or_else(|| anyhow::anyhow!("live execution is not configured")),
         }
     }
-}
-
-#[derive(Debug, Default)]
-struct ScanRunReport {
-    markets_seen: usize,
-    markets_persisted: usize,
-    persist_errors: usize,
-    scanner: ScannerCycleReport,
 }
 
 #[async_trait]
@@ -3120,7 +3087,6 @@ async fn main() -> Result<()> {
     let config = AppConfig::from_env()?;
     info!(
         service = "polymarket-bot",
-        scan_enabled = config.scan_enabled,
         live_order_submit_enabled = config.live.order_submit_enabled,
         live_user_ws_enabled = config.live.user_ws_enabled,
         btc_realtime_enabled = config.btc.realtime_enabled,
@@ -3137,7 +3103,6 @@ async fn main() -> Result<()> {
             "service_started",
             serde_json::json!({
                 "execution_control": "trade_processes",
-                "scan_enabled": config.scan_enabled,
                 "live_order_submit_enabled": config.live.order_submit_enabled,
                 "live_user_ws_enabled": config.live.user_ws_enabled,
                 "btc_realtime_enabled": config.btc.realtime_enabled,
@@ -3175,18 +3140,6 @@ async fn main() -> Result<()> {
         paper: paper_venue.clone(),
         live: live_venue.clone(),
     };
-    let scanner_config = ScannerConfig {
-        target_size: config.risk.target_size,
-        taker_fee_rate: config.risk.taker_fee_rate,
-        bootstrap_threshold: config.risk.bootstrap_threshold,
-        max_quote_age: chrono::Duration::seconds(45),
-        min_event_markets: 2,
-    };
-    let risk_limits = RiskLimits {
-        daily_pnl_target_usd: config.risk.daily_pnl_target_usd,
-        ..RiskLimits::default()
-    };
-    let risk_state = RiskState::default();
     let btc_manager = if config.btc.realtime_enabled {
         let pool = PgPoolOptions::new()
             .max_connections(4)
@@ -3216,7 +3169,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let mut metrics = RuntimeMetrics::new();
+    let metrics = RuntimeMetrics::new();
     let shared_metrics = Arc::new(Mutex::new(metrics.clone()));
     if config.http.enabled {
         let ingestion = IngestionRepository::connect(&config.postgres)
@@ -3247,8 +3200,6 @@ async fn main() -> Result<()> {
             }
         });
     }
-    let mut scan_interval = tokio::time::interval(config.scan_interval);
-    scan_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut health_interval = tokio::time::interval(config.health_interval);
     health_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let shutdown = shutdown_signal();
@@ -3284,34 +3235,12 @@ async fn main() -> Result<()> {
                     Ok(report) => {
                         info!(
                             target: "metrics",
-                            scans = metrics.scans,
-                            markets_seen = metrics.markets_seen,
-                            markets_persisted = metrics.markets_persisted,
-                            tokens_persisted = metrics.tokens_persisted,
-                            books_persisted = metrics.books_persisted,
-                            signals_inserted = metrics.signals_inserted,
-                            positive_signals = metrics.positive_signals,
-                            orders_inserted = metrics.orders_inserted,
-                            fills_inserted = metrics.fills_inserted,
-                            positions_upserted = metrics.positions_upserted,
-                            scan_errors = metrics.scan_errors,
                             open_orders = report.open_orders,
                             balances_checked = report.balances_checked,
                             uptime_secs = (Utc::now() - metrics.started_at).num_seconds(),
                             "polymarket bot liveness ok"
                         );
                         store.record_daily_metric("runtime", serde_json::json!({
-                            "scans": metrics.scans,
-                            "markets_seen": metrics.markets_seen,
-                            "markets_persisted": metrics.markets_persisted,
-                            "tokens_persisted": metrics.tokens_persisted,
-                            "books_persisted": metrics.books_persisted,
-                            "signals_inserted": metrics.signals_inserted,
-                            "positive_signals": metrics.positive_signals,
-                            "orders_inserted": metrics.orders_inserted,
-                            "fills_inserted": metrics.fills_inserted,
-                            "positions_upserted": metrics.positions_upserted,
-                            "scan_errors": metrics.scan_errors,
                             "open_orders": report.open_orders
                         })).await.ok();
                         if let Ok(mut shared) = shared_metrics.lock() {
@@ -3324,120 +3253,10 @@ async fn main() -> Result<()> {
                 }
             }
 
-            _ = scan_interval.tick(), if config.scan_enabled => {
-                metrics.scans = metrics.scans.saturating_add(1);
-                let scan = tokio::time::timeout(
-                    SCAN_CYCLE_TIMEOUT,
-                    run_scan_once(
-                        &gamma,
-                        &clob,
-                        &store,
-                        venues.sim.as_ref(),
-                        &scanner_config,
-                        &risk_limits,
-                        &risk_state,
-                        config.max_markets_per_scan,
-                    ),
-                )
-                .await;
-                match scan {
-                    Ok(Ok(scan_run)) => {
-                        let scan_report = scan_run.scanner;
-                        metrics.markets_seen = metrics
-                            .markets_seen
-                            .saturating_add(scan_run.markets_seen as u64);
-                        metrics.markets_persisted = metrics
-                            .markets_persisted
-                            .saturating_add(scan_run.markets_persisted as u64);
-                        metrics.tokens_persisted = metrics
-                            .tokens_persisted
-                            .saturating_add(scan_report.tokens_persisted as u64);
-                        metrics.books_persisted = metrics
-                            .books_persisted
-                            .saturating_add(scan_report.books_persisted as u64);
-                        metrics.signals_inserted = metrics
-                            .signals_inserted
-                            .saturating_add(scan_report.signals_inserted as u64);
-                        metrics.positive_signals = metrics
-                            .positive_signals
-                            .saturating_add(scan_report.positive_signals as u64);
-                        metrics.orders_inserted = metrics
-                            .orders_inserted
-                            .saturating_add(scan_report.orders_inserted as u64);
-                        metrics.fills_inserted = metrics
-                            .fills_inserted
-                            .saturating_add(scan_report.fills_inserted as u64);
-                        metrics.positions_upserted = metrics
-                            .positions_upserted
-                            .saturating_add(scan_report.positions_upserted as u64);
-                        metrics.scan_errors = metrics
-                            .scan_errors
-                            .saturating_add((scan_report.errors + scan_run.persist_errors) as u64);
-                    }
-                    Ok(Err(error)) => {
-                        metrics.scan_errors = metrics.scan_errors.saturating_add(1);
-                        warn!(error = %error, "Gamma scan failed");
-                    }
-                    Err(_) => {
-                        metrics.scan_errors = metrics.scan_errors.saturating_add(1);
-                        warn!("market scan timed out");
-                    }
-                }
-            }
-
-            _ = tokio::time::sleep(Duration::from_secs(3600)), if !config.scan_enabled => {
-                info!("scan disabled; service idling");
-            }
         }
     }
 
     Ok(())
-}
-
-async fn run_scan_once(
-    gamma: &GammaClient,
-    clob: &ClobClient,
-    store: &Store,
-    venue: &dyn ExecutionVenue,
-    scanner_config: &ScannerConfig,
-    risk_limits: &RiskLimits,
-    risk_state: &RiskState,
-    max_markets_per_scan: usize,
-) -> Result<ScanRunReport> {
-    let markets = gamma.fetch_active_events(max_markets_per_scan).await?;
-    let mut report = ScanRunReport {
-        markets_seen: markets.len(),
-        ..ScanRunReport::default()
-    };
-
-    for market in &markets {
-        if market.closed || market.archived || !market.active {
-            continue;
-        }
-        if let Err(error) = store.insert_market(market).await {
-            report.persist_errors += 1;
-            warn!(
-                error = %error,
-                market_id = %market.market_id,
-                "failed to persist market"
-            );
-        } else {
-            report.markets_persisted += 1;
-        }
-    }
-
-    report.scanner = scan_markets_for_signal1(
-        &markets,
-        clob,
-        store,
-        venue,
-        scanner_config,
-        risk_limits,
-        risk_state,
-    )
-    .await;
-
-    Ok(report)
 }
 
 fn install_tls_crypto_provider() {

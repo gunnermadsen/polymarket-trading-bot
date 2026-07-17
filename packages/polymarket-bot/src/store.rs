@@ -15,12 +15,11 @@ use crate::{
     execution::OrderPlanReport,
     models::{
         ConversionRequest, ConversionResult, DataApiClosedPosition, FillRecord,
-        GammaMarketMetadata, Market, OrderRecord, OrderRequest, OrderState, OutcomeToken,
-        SignalCandidate, TradingProcess, TradingProcessConfig, WalletPerformance, WalletScore,
-        WalletScoreRefreshJob, WalletScoreRefreshStatus, WalletSegmentPerformance,
-        WalletTradeTaxonomyCandidate, WalletTradeTaxonomyUpdate, WhaleTrade,
+        GammaMarketMetadata, OrderRecord, OrderRequest, OrderState, TradingProcess,
+        TradingProcessConfig, WalletPerformance, WalletScore, WalletScoreRefreshJob,
+        WalletScoreRefreshStatus, WalletSegmentPerformance, WalletTradeTaxonomyCandidate,
+        WalletTradeTaxonomyUpdate, WhaleTrade,
     },
-    orderbook::LocalOrderBook,
     segments::{
         classify_gamma_taxonomy_segment, normalize_gamma_segment_key, score_wallet_segment,
         SegmentClassification, WalletSegmentPerformanceInput, GAMMA_SEGMENT_CLASSIFIER_VERSION,
@@ -162,68 +161,10 @@ pub struct TradingProcessResetReport {
     pub process_name: String,
     pub orders_deleted: u64,
     pub fills_deleted: u64,
-    pub signal_candidates_deleted: u64,
     pub process_events_deleted: u64,
     pub backfill_job_events_deleted: u64,
     pub backfill_jobs_deleted: u64,
     pub process_stopped: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct OrderbookSnapshot {
-    pub snapshot_id: Uuid,
-    pub timestamp_utc: DateTime<Utc>,
-    pub market_id: Option<String>,
-    pub token_id: String,
-    pub best_bid: Option<Decimal>,
-    pub best_ask: Option<Decimal>,
-    pub tick_size: Option<Decimal>,
-    pub stale_level_count: i32,
-    pub fresh_depth_bid: Option<Decimal>,
-    pub fresh_depth_ask: Option<Decimal>,
-    pub book: serde_json::Value,
-}
-
-impl OrderbookSnapshot {
-    pub fn from_local_book(
-        market_id: Option<String>,
-        token_id: impl Into<String>,
-        tick_size: Option<Decimal>,
-        book: &LocalOrderBook,
-    ) -> Result<Self> {
-        Ok(Self {
-            snapshot_id: Uuid::new_v4(),
-            timestamp_utc: Utc::now(),
-            market_id,
-            token_id: token_id.into(),
-            best_bid: book.best_bid(),
-            best_ask: book.best_ask(),
-            tick_size,
-            stale_level_count: 0,
-            fresh_depth_bid: None,
-            fresh_depth_ask: None,
-            book: serde_json::json!({
-                "best_bid": book.best_bid(),
-                "best_ask": book.best_ask(),
-                "mid": book.mid(),
-            }),
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PositionSnapshot {
-    pub position_id: Option<Uuid>,
-    pub market_id: String,
-    pub token_id: String,
-    pub underlying_key: String,
-    pub status: String,
-    pub size: Decimal,
-    pub cost_basis: Decimal,
-    pub worst_case_loss: Decimal,
-    pub opened_at: Option<DateTime<Utc>>,
-    pub closed_at: Option<DateTime<Utc>>,
-    pub raw_payload: serde_json::Value,
 }
 
 #[derive(Debug, Clone)]
@@ -260,40 +201,6 @@ impl ConversionRecord {
                 "result": result,
             }),
         })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FunnelEvent {
-    pub event_id: Uuid,
-    pub timestamp_utc: DateTime<Utc>,
-    pub signal_id: Option<Uuid>,
-    pub market_id: Option<String>,
-    pub stage: String,
-    pub status: String,
-    pub reason: Option<String>,
-    pub metadata: serde_json::Value,
-}
-
-impl FunnelEvent {
-    pub fn new(
-        signal_id: Option<Uuid>,
-        market_id: Option<String>,
-        stage: impl Into<String>,
-        status: impl Into<String>,
-        reason: Option<String>,
-        metadata: serde_json::Value,
-    ) -> Self {
-        Self {
-            event_id: Uuid::new_v4(),
-            timestamp_utc: Utc::now(),
-            signal_id,
-            market_id,
-            stage: stage.into(),
-            status: status.into(),
-            reason,
-            metadata,
-        }
     }
 }
 
@@ -614,11 +521,6 @@ impl Store {
               FROM polymarket.trading_processes
               WHERE process_id = $1
             ),
-            signals AS (
-              SELECT count(*)::bigint AS total, max(timestamp_utc) AS last_signal_at
-              FROM polymarket.signal_candidates
-              WHERE process_id = $1
-            ),
             orders AS (
               SELECT count(*)::bigint AS total,
                 count(*) FILTER (WHERE state = 'accepted')::bigint AS accepted,
@@ -651,10 +553,6 @@ impl Store {
             )
             SELECT jsonb_build_object(
               'process', to_jsonb(process),
-              'signals', jsonb_build_object(
-                'total', signals.total,
-                'last_signal_at', signals.last_signal_at
-              ),
               'orders', jsonb_build_object(
                 'total', orders.total,
                 'accepted', orders.accepted,
@@ -680,7 +578,6 @@ impl Store {
               END
             )
             FROM process
-            CROSS JOIN signals
             CROSS JOIN orders
             CROSS JOIN order_states
             CROSS JOIN fills
@@ -854,13 +751,6 @@ impl Store {
             .await
             .context("failed to delete reset orders")?
             .rows_affected();
-        let signal_candidates_deleted =
-            sqlx::query("DELETE FROM polymarket.signal_candidates WHERE process_id = $1")
-                .bind(process_id)
-                .execute(&mut *tx)
-                .await
-                .context("failed to delete reset signal candidates")?
-                .rows_affected();
         let process_events_deleted =
             sqlx::query("DELETE FROM polymarket.trading_process_events WHERE process_id = $1")
                 .bind(process_id)
@@ -885,102 +775,11 @@ impl Store {
             process_name,
             orders_deleted,
             fills_deleted,
-            signal_candidates_deleted,
             process_events_deleted,
             backfill_job_events_deleted,
             backfill_jobs_deleted,
             process_stopped: true,
         }))
-    }
-
-    pub async fn insert_market(&self, market: &Market) -> Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO polymarket.markets (
-              event_id, market_id, outcome_group_id, question, category, active, closed, archived,
-              neg_risk, neg_risk_augmented, rules, end_date, underlying_key,
-              resolution_score, raw_payload, updated_at
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,now())
-            ON CONFLICT (market_id) DO UPDATE SET
-              event_id = EXCLUDED.event_id,
-              outcome_group_id = EXCLUDED.outcome_group_id,
-              question = EXCLUDED.question,
-              category = EXCLUDED.category,
-              active = EXCLUDED.active,
-              closed = EXCLUDED.closed,
-              archived = EXCLUDED.archived,
-              neg_risk = EXCLUDED.neg_risk,
-              neg_risk_augmented = EXCLUDED.neg_risk_augmented,
-              rules = EXCLUDED.rules,
-              end_date = EXCLUDED.end_date,
-              underlying_key = EXCLUDED.underlying_key,
-              resolution_score = EXCLUDED.resolution_score,
-              raw_payload = EXCLUDED.raw_payload,
-              updated_at = now()
-            "#,
-        )
-        .bind(&market.event_id)
-        .bind(&market.market_id)
-        .bind(&market.outcome_group_id)
-        .bind(&market.question)
-        .bind(&market.category)
-        .bind(market.active)
-        .bind(market.closed)
-        .bind(market.archived)
-        .bind(market.neg_risk)
-        .bind(market.neg_risk_augmented)
-        .bind(&market.rules)
-        .bind(market.end_date)
-        .bind(&market.underlying_key)
-        .bind(market.resolution_score)
-        .bind(&market.raw)
-        .execute(&self.pool)
-        .await
-        .context("failed to upsert polymarket market")?;
-        for token in &market.outcome_tokens {
-            self.upsert_outcome_token(token).await?;
-        }
-        Ok(())
-    }
-
-    pub async fn insert_signal(&self, signal: &SignalCandidate) -> Result<()> {
-        self.insert_signal_with_worst_case_loss(signal, signal.worst_case_loss)
-            .await
-    }
-
-    pub async fn insert_signal_with_worst_case_loss(
-        &self,
-        signal: &SignalCandidate,
-        worst_case_loss: Option<Decimal>,
-    ) -> Result<()> {
-        let signal_type = serialized_name(&signal.signal_type)?;
-        let status = serialized_name(&signal.status)?;
-        sqlx::query(
-            r#"
-            INSERT INTO polymarket.signal_candidates (
-              signal_id, process_id, timestamp_utc, signal_type, market_id, expected_edge,
-              threshold, size, status, reject_reason, worst_case_loss, metadata
-            )
-            VALUES ($1,$2,now(),$3,$4,$5,$6,$7,$8,$9,$10,$11)
-            ON CONFLICT (signal_id, timestamp_utc) DO NOTHING
-            "#,
-        )
-        .bind(signal.signal_id)
-        .bind(signal.process_id)
-        .bind(signal_type)
-        .bind(&signal.market_id)
-        .bind(signal.expected_edge)
-        .bind(signal.threshold)
-        .bind(signal.size)
-        .bind(status)
-        .bind(&signal.reject_reason)
-        .bind(worst_case_loss)
-        .bind(&signal.metadata)
-        .execute(&self.pool)
-        .await
-        .context("failed to insert signal candidate")?;
-        Ok(())
     }
 
     pub async fn insert_order(&self, order: &OrderRecord) -> Result<()> {
@@ -1502,39 +1301,6 @@ impl Store {
         Ok(run_id)
     }
 
-    pub async fn upsert_outcome_token(&self, token: &OutcomeToken) -> Result<()> {
-        let side = serialized_name(&token.side)?;
-        sqlx::query(
-            r#"
-            INSERT INTO polymarket.outcome_tokens (
-              token_id, market_id, outcome, side, condition_id, tick_size, neg_risk, raw_payload, updated_at
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now())
-            ON CONFLICT (token_id) DO UPDATE SET
-              market_id = EXCLUDED.market_id,
-              outcome = EXCLUDED.outcome,
-              side = EXCLUDED.side,
-              condition_id = EXCLUDED.condition_id,
-              tick_size = EXCLUDED.tick_size,
-              neg_risk = EXCLUDED.neg_risk,
-              raw_payload = EXCLUDED.raw_payload,
-              updated_at = now()
-            "#,
-        )
-        .bind(&token.token_id)
-        .bind(&token.market_id)
-        .bind(&token.outcome)
-        .bind(side)
-        .bind(&token.condition_id)
-        .bind(token.tick_size)
-        .bind(token.neg_risk)
-        .bind(serde_json::to_value(token)?)
-        .execute(&self.pool)
-        .await
-        .context("failed to upsert outcome token")?;
-        Ok(())
-    }
-
     pub async fn fetch_market_end_date_for_entry(
         &self,
         market_id: &str,
@@ -1562,79 +1328,6 @@ impl Store {
         .await
         .context("failed to fetch market end date for entry safety")?;
         Ok(row)
-    }
-
-    pub async fn insert_orderbook_snapshot(&self, snapshot: &OrderbookSnapshot) -> Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO polymarket.orderbook_snapshots (
-              snapshot_id, timestamp_utc, market_id, token_id, best_bid, best_ask,
-              tick_size, stale_level_count, fresh_depth_bid, fresh_depth_ask, book
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-            ON CONFLICT (snapshot_id, timestamp_utc) DO UPDATE SET
-              market_id = EXCLUDED.market_id,
-              token_id = EXCLUDED.token_id,
-              best_bid = EXCLUDED.best_bid,
-              best_ask = EXCLUDED.best_ask,
-              tick_size = EXCLUDED.tick_size,
-              stale_level_count = EXCLUDED.stale_level_count,
-              fresh_depth_bid = EXCLUDED.fresh_depth_bid,
-              fresh_depth_ask = EXCLUDED.fresh_depth_ask,
-              book = EXCLUDED.book
-            "#,
-        )
-        .bind(snapshot.snapshot_id)
-        .bind(snapshot.timestamp_utc)
-        .bind(&snapshot.market_id)
-        .bind(&snapshot.token_id)
-        .bind(snapshot.best_bid)
-        .bind(snapshot.best_ask)
-        .bind(snapshot.tick_size)
-        .bind(snapshot.stale_level_count)
-        .bind(snapshot.fresh_depth_bid)
-        .bind(snapshot.fresh_depth_ask)
-        .bind(&snapshot.book)
-        .execute(&self.pool)
-        .await
-        .context("failed to upsert orderbook snapshot")?;
-        Ok(())
-    }
-
-    pub async fn upsert_position(&self, position: &PositionSnapshot) -> Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO polymarket.positions (
-              position_id, market_id, token_id, underlying_key, status, size,
-              cost_basis, worst_case_loss, opened_at, closed_at, raw_payload, updated_at
-            )
-            VALUES (COALESCE($1, gen_random_uuid()),$2,$3,$4,$5,$6,$7,$8,COALESCE($9, now()),$10,$11,now())
-            ON CONFLICT (market_id, token_id) DO UPDATE SET
-              underlying_key = EXCLUDED.underlying_key,
-              status = EXCLUDED.status,
-              size = EXCLUDED.size,
-              cost_basis = EXCLUDED.cost_basis,
-              worst_case_loss = EXCLUDED.worst_case_loss,
-              closed_at = EXCLUDED.closed_at,
-              raw_payload = EXCLUDED.raw_payload,
-              updated_at = now()
-            "#,
-        )
-        .bind(position.position_id)
-        .bind(&position.market_id)
-        .bind(&position.token_id)
-        .bind(&position.underlying_key)
-        .bind(&position.status)
-        .bind(position.size)
-        .bind(position.cost_basis)
-        .bind(position.worst_case_loss)
-        .bind(position.opened_at)
-        .bind(position.closed_at)
-        .bind(&position.raw_payload)
-        .execute(&self.pool)
-        .await
-        .context("failed to upsert position")?;
-        Ok(())
     }
 
     pub async fn insert_conversion_result(
@@ -1676,30 +1369,6 @@ impl Store {
         .execute(&self.pool)
         .await
         .context("failed to upsert conversion")?;
-        Ok(())
-    }
-
-    pub async fn insert_funnel_event(&self, event: &FunnelEvent) -> Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO polymarket.funnel_events (
-              event_id, timestamp_utc, signal_id, market_id, stage, status, reason, metadata
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-            ON CONFLICT (event_id, timestamp_utc) DO NOTHING
-            "#,
-        )
-        .bind(event.event_id)
-        .bind(event.timestamp_utc)
-        .bind(event.signal_id)
-        .bind(&event.market_id)
-        .bind(&event.stage)
-        .bind(&event.status)
-        .bind(&event.reason)
-        .bind(&event.metadata)
-        .execute(&self.pool)
-        .await
-        .context("failed to insert funnel event")?;
         Ok(())
     }
 

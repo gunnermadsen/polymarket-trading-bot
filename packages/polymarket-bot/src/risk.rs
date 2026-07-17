@@ -1,45 +1,4 @@
-use std::collections::{HashMap, VecDeque};
-
 use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
-
-use crate::edge::WorstCaseLoss;
-
-#[derive(Debug, Clone)]
-pub struct RiskLimits {
-    pub daily_pnl_target_usd: Decimal,
-    pub per_event_loss_cap_fraction: Decimal,
-    pub daily_loss_halt_multiple: Decimal,
-}
-
-impl Default for RiskLimits {
-    fn default() -> Self {
-        Self {
-            daily_pnl_target_usd: dec!(1000),
-            per_event_loss_cap_fraction: dec!(0.05),
-            daily_loss_halt_multiple: dec!(2),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct RiskState {
-    pub realized_pnl_today: Decimal,
-    pub open_loss_by_underlying: HashMap<String, Decimal>,
-    unavailable_depth_ratios: VecDeque<Decimal>,
-    pub fill_confidence_discount: Decimal,
-}
-
-impl Default for RiskState {
-    fn default() -> Self {
-        Self {
-            realized_pnl_today: Decimal::ZERO,
-            open_loss_by_underlying: HashMap::new(),
-            unavailable_depth_ratios: VecDeque::with_capacity(30),
-            fill_confidence_discount: dec!(0.80),
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RiskDecision {
@@ -129,96 +88,11 @@ pub fn normalize_underlying_key(
     format!("{}:{}", category, words.join("-"))
 }
 
-pub fn remaining_daily_loss_budget(limits: &RiskLimits, state: &RiskState) -> Decimal {
-    let daily_halt = limits.daily_pnl_target_usd * limits.daily_loss_halt_multiple;
-    (daily_halt + state.realized_pnl_today).max(Decimal::ZERO)
-}
-
-pub fn per_event_loss_cap(limits: &RiskLimits) -> Decimal {
-    limits.daily_pnl_target_usd * limits.per_event_loss_cap_fraction
-}
-
-pub fn evaluate_worst_case(
-    limits: &RiskLimits,
-    state: &RiskState,
-    underlying_key: &str,
-    loss: WorstCaseLoss,
-) -> RiskDecision {
-    let correlated_open = state
-        .open_loss_by_underlying
-        .get(underlying_key)
-        .copied()
-        .unwrap_or(Decimal::ZERO);
-    let per_event_cap = per_event_loss_cap(limits);
-    let budget = remaining_daily_loss_budget(limits, state);
-    let effective_cap = per_event_cap.min(budget) - correlated_open;
-    if effective_cap <= Decimal::ZERO {
-        return RiskDecision::Reject("correlated_or_daily_loss_budget_exhausted".to_string());
-    }
-    if loss.amount > effective_cap || loss.amount > loss.cap {
-        return RiskDecision::Reject("worst_case_loss_exceeds_cap".to_string());
-    }
-    RiskDecision::Allow
-}
-
-impl RiskState {
-    pub fn record_unavailable_depth_ratio(&mut self, ratio: Decimal) {
-        if self.unavailable_depth_ratios.len() >= 30 {
-            self.unavailable_depth_ratios.pop_front();
-        }
-        self.unavailable_depth_ratios
-            .push_back(ratio.max(Decimal::ZERO));
-
-        let last_20: Vec<Decimal> = self
-            .unavailable_depth_ratios
-            .iter()
-            .rev()
-            .take(20)
-            .copied()
-            .collect();
-        if last_20.len() == 20 {
-            let avg = last_20.iter().copied().sum::<Decimal>() / Decimal::from(20);
-            if avg > dec!(0.20) {
-                self.fill_confidence_discount = dec!(0.65);
-                return;
-            }
-        }
-
-        if self.unavailable_depth_ratios.len() >= 30 {
-            let avg = self
-                .unavailable_depth_ratios
-                .iter()
-                .copied()
-                .sum::<Decimal>()
-                / Decimal::from(self.unavailable_depth_ratios.len());
-            if avg < dec!(0.10) {
-                self.fill_confidence_discount = dec!(0.80);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use rust_decimal_macros::dec;
 
-    use crate::edge::WorstCaseLoss;
-
     use super::*;
-
-    #[test]
-    fn adaptive_fill_discount_tightens_and_restores() {
-        let mut state = RiskState::default();
-        for _ in 0..20 {
-            state.record_unavailable_depth_ratio(dec!(0.25));
-        }
-        assert_eq!(state.fill_confidence_discount, dec!(0.65));
-
-        for _ in 0..30 {
-            state.record_unavailable_depth_ratio(dec!(0.01));
-        }
-        assert_eq!(state.fill_confidence_discount, dec!(0.80));
-    }
 
     #[test]
     fn correlation_key_uses_manual_override_first() {
@@ -226,22 +100,6 @@ mod tests {
             normalize_underlying_key(Some("Election:US-2028"), Some("Politics"), "Will A win?"),
             "election:us-2028"
         );
-    }
-
-    #[test]
-    fn rejects_worst_case_above_cap() {
-        let limits = RiskLimits::default();
-        let state = RiskState::default();
-        let decision = evaluate_worst_case(
-            &limits,
-            &state,
-            "politics:test",
-            WorstCaseLoss {
-                amount: dec!(100),
-                cap: dec!(50),
-            },
-        );
-        assert!(matches!(decision, RiskDecision::Reject(_)));
     }
 
     #[test]

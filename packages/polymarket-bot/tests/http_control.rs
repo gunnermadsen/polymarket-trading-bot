@@ -610,7 +610,6 @@ impl ControlApi for FakeControlApi {
         Ok(http::TradingProcessStatusResponse {
             process_id,
             status: serde_json::json!({
-                "signals": {"total": 1},
                 "orders": {"total": 1},
                 "fills": {"total": 1},
             }),
@@ -659,7 +658,6 @@ impl ControlApi for FakeControlApi {
                 process_name: "paper-canary".to_string(),
                 orders_deleted: 2,
                 fills_deleted: 4,
-                signal_candidates_deleted: 1,
                 process_events_deleted: 1,
                 backfill_job_events_deleted: 0,
                 backfill_jobs_deleted: 0,
