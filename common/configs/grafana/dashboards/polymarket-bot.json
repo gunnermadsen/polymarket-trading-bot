@@ -2162,7 +2162,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COALESCE(SUM(\n         CASE WHEN o.token_id=m.official_winning_token_id THEN f.size ELSE 0::numeric END\n         -f.price*f.size-f.fee\n       ),0)::double precision AS \"Process Lifetime Net Realized PnL\"\nFROM polymarket.fills f\nJOIN polymarket.orders o\n  ON o.order_id=f.order_id AND o.process_id=f.process_id\nJOIN polymarket.trading_processes p ON p.process_id=f.process_id\nJOIN polymarket.btc_interval_markets m ON m.market_id=o.market_id\nWHERE p.process_scope='realtime_paper'\n  AND p.enabled IS TRUE\n  AND p.status IS DISTINCT FROM 'failed'\n  AND f.source='paper'\n  AND m.official_outcome IS NOT NULL\n  AND m.official_winning_token_id IS NOT NULL\n  AND m.official_resolution_received_at IS NOT NULL;",
+          "rawSql": "WITH process_pnl AS (\n  SELECT\n    p.process_id,\n    p.created_at,\n    COALESCE(\n      SUM(\n        CASE\n          WHEN m.market_id IS NULL THEN 0::numeric\n          ELSE\n            CASE WHEN o.token_id = m.official_winning_token_id THEN f.size ELSE 0::numeric END\n            - f.price * f.size\n            - f.fee\n        END\n      ),\n      0::numeric\n    ) AS net_realized_pnl\n  FROM polymarket.trading_processes p\n  LEFT JOIN polymarket.fills f\n    ON f.process_id = p.process_id\n   AND f.source = 'paper'\n  LEFT JOIN polymarket.orders o\n    ON o.order_id = f.order_id\n   AND o.process_id = f.process_id\n  LEFT JOIN polymarket.btc_interval_markets m\n    ON m.market_id = o.market_id\n   AND m.official_outcome IS NOT NULL\n   AND m.official_winning_token_id IS NOT NULL\n   AND m.official_resolution_received_at IS NOT NULL\n  WHERE p.process_scope = 'realtime_paper'\n    AND p.enabled IS TRUE\n    AND p.status IS DISTINCT FROM 'failed'\n  GROUP BY p.process_id, p.created_at\n)\nSELECT net_realized_pnl::double precision AS \"Best Active Process Lifetime Net Realized PnL\"\nFROM process_pnl\nORDER BY net_realized_pnl DESC, created_at DESC, process_id\nLIMIT 1;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -2183,9 +2183,9 @@
           }
         }
       ],
-      "title": "Process Lifetime Net Realized PnL",
+      "title": "Best Active Process Lifetime Net Realized PnL",
       "type": "stat",
-      "description": "Net realized PnL across enabled, non-failed realtime-paper processes from process-owned paper fills and official outcomes."
+      "description": "Highest lifetime net realized PnL from one enabled, non-failed realtime-paper process. Processes without resolved fills rank at zero; values use process-owned paper fills and official outcomes."
     },
     {
       "datasource": {
