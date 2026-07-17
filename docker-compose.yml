@@ -124,7 +124,6 @@ services:
       POLYMARKET_LIVE_USER_WS_ENABLED: "false"
       POLYMARKET_BTC_REALTIME_ENABLED: "true"
       POLYMARKET_BTC_PAPER_ENABLED: "true"
-      POLYMARKET_BTC_ML_SHADOW_ENABLED: "true"
       POLYMARKET_BTC_RTDS_WS_URL: "wss://ws-live-data.polymarket.com"
       POLYMARKET_BTC_BINANCE_WS_URL: "wss://stream.binance.com:9443/ws/btcusdt@aggTrade"
       POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"

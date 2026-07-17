@@ -1048,8 +1048,6 @@ impl BtcProcessManager {
                     strategy,
                     execution_enabled: true,
                     paper_stress_previews,
-                    ml_a_shadow_enabled: false,
-                    ml_b_shadow_enabled: false,
                 },
             )?);
             experiment
@@ -1196,8 +1194,6 @@ impl BtcProcessManager {
                     strategy: strategy.clone(),
                     execution_enabled: true,
                     paper_stress_previews: paper_stress_previews.clone(),
-                    ml_a_shadow_enabled: false,
-                    ml_b_shadow_enabled: false,
                 },
             )?);
             experiment
@@ -2666,7 +2662,6 @@ async fn main() -> Result<()> {
         live_user_ws_enabled = config.live.user_ws_enabled,
         btc_realtime_enabled = config.btc.realtime_enabled,
         btc_paper_enabled = config.btc.paper_enabled,
-        btc_ml_shadow_enabled = config.btc.ml_shadow_enabled,
         grafana_live_enabled = config.grafana_live.enabled,
         compiled_source_identity = COMPILED_SOURCE_IDENTITY,
         "starting Polymarket bot"
@@ -2683,7 +2678,6 @@ async fn main() -> Result<()> {
                 "live_user_ws_enabled": config.live.user_ws_enabled,
                 "btc_realtime_enabled": config.btc.realtime_enabled,
                 "btc_paper_enabled": config.btc.paper_enabled,
-                "btc_ml_shadow_enabled": config.btc.ml_shadow_enabled,
                 "grafana_live_enabled": config.grafana_live.enabled,
                 "compiled_source_identity": COMPILED_SOURCE_IDENTITY,
                 "kafka_required": false

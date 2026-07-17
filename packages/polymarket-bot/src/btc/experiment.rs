@@ -1,11 +1,4 @@
-use std::{
-    cmp::Ordering,
-    collections::HashSet,
-    sync::{
-        atomic::{AtomicU64, Ordering as AtomicOrdering},
-        Arc,
-    },
-};
+use std::{collections::HashSet, sync::Arc};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -14,19 +7,14 @@ use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::{
-    sync::{mpsc, Mutex, OnceCell},
-    task::JoinHandle,
-    time::{sleep, Duration as TokioDuration, Instant},
+    sync::{Mutex, OnceCell},
+    time::{Duration as TokioDuration, Instant},
 };
 use tracing::warn;
 use uuid::Uuid;
 
 use crate::{
     execution::{execute_order_plan, OrderPlan},
-    ml::{
-        LinearFeatureTransform, LinearLogitArtifact, MlFeature, MlFeatureVector, MlTask, PriorKind,
-        ShadowScorer,
-    },
     models::{OrderRequest, OrderSide, OrderState, OrderType},
     store::Store,
 };
@@ -45,40 +33,7 @@ use super::{
     },
 };
 
-const ML_A_SCHEMA: &str = "btc_5m_ml_a_shadow_v2";
-const ML_B_FILL_SCHEMA: &str = "btc_5m_ml_b_fill_shadow_v2";
-const ML_B_TOXICITY_SCHEMA: &str = "btc_5m_ml_b_toxicity_shadow_v2";
-const ML_A_FEATURES: &[&str] = &[
-    "chainlink_gap_bps",
-    "binance_return_1s",
-    "binance_return_5s",
-    "binance_return_30s",
-    "realized_volatility",
-    "binance_chainlink_basis_bps",
-    "seconds_to_close",
-    "up_best_ask",
-    "down_best_ask",
-    "up_imbalance",
-    "down_imbalance",
-];
-const ML_B_FEATURES: &[&str] = &[
-    "seconds_to_close",
-    "selected_best_ask",
-    "selected_spread",
-    "selected_ask_depth",
-    "selected_imbalance",
-    "selected_net_edge_per_share",
-];
-const ML_SHADOW_QUEUE_CAPACITY: usize = 256;
-const ML_SHADOW_PERSIST_ATTEMPTS: usize = 3;
-const ML_SHADOW_RETRY_DELAY: TokioDuration = TokioDuration::from_millis(25);
 const PAPER_CAPITAL_RECONCILE_INTERVAL: TokioDuration = TokioDuration::from_secs(5);
-
-#[derive(Debug, Clone)]
-struct MlShadowWork {
-    snapshot: BtcFeatureSnapshot,
-    decision: BtcDecision,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BtcPaperExperimentConfig {
@@ -93,8 +48,6 @@ pub struct BtcPaperExperimentConfig {
     pub strategy: BtcStrategyConfig,
     pub execution_enabled: bool,
     pub paper_stress_previews: Vec<PaperPreviewConfig>,
-    pub ml_a_shadow_enabled: bool,
-    pub ml_b_shadow_enabled: bool,
 }
 
 pub struct BtcPaperExperimentRunner {
@@ -103,64 +56,7 @@ pub struct BtcPaperExperimentRunner {
     paper_venue: PaperVenue,
     config: BtcPaperExperimentConfig,
     initialized: OnceCell<()>,
-    ml_scorers: Arc<Vec<(MlTask, LinearLogitArtifact, ShadowScorer)>>,
-    shadow_tx: Mutex<Option<mpsc::Sender<MlShadowWork>>>,
-    shadow_worker: Mutex<Option<JoinHandle<()>>>,
-    shadow_metrics: Arc<MlShadowRuntimeMetrics>,
     paper_capital_reconcile_started_at: Mutex<Option<Instant>>,
-}
-
-#[derive(Debug, Default)]
-struct MlShadowRuntimeMetrics {
-    enqueued: AtomicU64,
-    rejected_full: AtomicU64,
-    rejected_closed: AtomicU64,
-    completed: AtomicU64,
-    tasks_succeeded: AtomicU64,
-    tasks_failed: AtomicU64,
-    queue_depth: AtomicU64,
-    queue_high_water: AtomicU64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct MlShadowRuntimeStatus {
-    pub enqueued: u64,
-    pub rejected_full: u64,
-    pub rejected_closed: u64,
-    pub completed: u64,
-    pub tasks_succeeded: u64,
-    pub tasks_failed: u64,
-    pub queue_depth: u64,
-    pub queue_high_water: u64,
-}
-
-impl MlShadowRuntimeMetrics {
-    fn status(&self) -> MlShadowRuntimeStatus {
-        MlShadowRuntimeStatus {
-            enqueued: self.enqueued.load(AtomicOrdering::Relaxed),
-            rejected_full: self.rejected_full.load(AtomicOrdering::Relaxed),
-            rejected_closed: self.rejected_closed.load(AtomicOrdering::Relaxed),
-            completed: self.completed.load(AtomicOrdering::Relaxed),
-            tasks_succeeded: self.tasks_succeeded.load(AtomicOrdering::Relaxed),
-            tasks_failed: self.tasks_failed.load(AtomicOrdering::Relaxed),
-            queue_depth: self.queue_depth.load(AtomicOrdering::Relaxed),
-            queue_high_water: self.queue_high_water.load(AtomicOrdering::Relaxed),
-        }
-    }
-
-    fn reserve_queue_slot(&self) {
-        let depth = self.queue_depth.fetch_add(1, AtomicOrdering::Relaxed) + 1;
-        self.queue_high_water
-            .fetch_max(depth, AtomicOrdering::Relaxed);
-    }
-
-    fn record_dequeued(&self) {
-        let _ = self.queue_depth.fetch_update(
-            AtomicOrdering::Relaxed,
-            AtomicOrdering::Relaxed,
-            |depth| Some(depth.saturating_sub(1)),
-        );
-    }
 }
 
 impl BtcPaperExperimentRunner {
@@ -186,46 +82,22 @@ impl BtcPaperExperimentRunner {
                 );
             }
         }
-        let mut ml_scorers = Vec::new();
-        if config.ml_a_shadow_enabled {
-            let task = MlTask::SettlementProbabilityResidual;
-            let artifact = canary_artifact(task, ML_A_SCHEMA, ML_A_FEATURES)?;
-            ml_scorers.push((task, artifact.clone(), ShadowScorer::new(artifact)?));
-        }
-        if config.ml_b_shadow_enabled {
-            for task in [
-                MlTask::FokFillProbability,
-                MlTask::FokPostFillToxicityProbability,
-            ] {
-                let schema = match task {
-                    MlTask::FokFillProbability => ML_B_FILL_SCHEMA,
-                    MlTask::FokPostFillToxicityProbability => ML_B_TOXICITY_SCHEMA,
-                    MlTask::SettlementProbabilityResidual => unreachable!(),
-                };
-                let artifact = canary_artifact(task, schema, ML_B_FEATURES)?;
-                ml_scorers.push((task, artifact.clone(), ShadowScorer::new(artifact)?));
-            }
-        }
         Ok(Self {
             repository,
             store,
             paper_venue,
             config,
             initialized: OnceCell::new(),
-            ml_scorers: Arc::new(ml_scorers),
-            shadow_tx: Mutex::new(None),
-            shadow_worker: Mutex::new(None),
-            shadow_metrics: Arc::new(MlShadowRuntimeMetrics::default()),
             paper_capital_reconcile_started_at: Mutex::new(None),
         })
     }
 
-    /// Claims the immutable experiment identity and starts owned ML workers before feeds begin.
+    /// Claims the immutable experiment identity before feeds begin.
     pub async fn initialize(&self) -> Result<()> {
         self.initialize_with_existing_identity(false).await
     }
 
-    /// Recreates runtime-owned workers for an already-running immutable experiment.
+    /// Reattaches an already-running immutable experiment.
     pub async fn resume(&self) -> Result<()> {
         self.initialize_with_existing_identity(true).await
     }
@@ -272,78 +144,15 @@ impl BtcPaperExperimentRunner {
                         .await?;
                 }
                 self.force_refresh_settlement_and_reconcile().await?;
-                for (_, artifact, _) in self.ml_scorers.iter() {
-                    self.repository.ensure_ml_shadow_model(artifact).await?;
-                }
-                if !self.ml_scorers.is_empty() {
-                    let (tx, mut rx) = mpsc::channel::<MlShadowWork>(ML_SHADOW_QUEUE_CAPACITY);
-                    let repository = self.repository.clone();
-                    let scorers = self.ml_scorers.clone();
-                    let metrics = self.shadow_metrics.clone();
-                    let experiment_id = self.config.experiment_id;
-                    let worker = tokio::spawn(async move {
-                        while let Some(work) = rx.recv().await {
-                            metrics.record_dequeued();
-                            let (succeeded, failed) = persist_shadow_work(
-                                &repository,
-                                &scorers,
-                                &work.snapshot,
-                                &work.decision,
-                            )
-                            .await;
-                            metrics
-                                .tasks_succeeded
-                                .fetch_add(succeeded, AtomicOrdering::Relaxed);
-                            metrics
-                                .tasks_failed
-                                .fetch_add(failed, AtomicOrdering::Relaxed);
-                            metrics.completed.fetch_add(1, AtomicOrdering::Relaxed);
-                            if let Err(error) = repository
-                                .update_ml_shadow_runtime_summary(experiment_id, &metrics.status())
-                                .await
-                            {
-                                warn!(error = %error, "failed to persist BTC ML shadow runtime counters");
-                            }
-                        }
-                    });
-                    *self.shadow_tx.lock().await = Some(tx);
-                    *self.shadow_worker.lock().await = Some(worker);
-                }
-                self.persist_ml_shadow_status().await;
                 Ok::<(), anyhow::Error>(())
             })
             .await?;
         Ok(())
     }
 
-    pub fn ml_shadow_status(&self) -> MlShadowRuntimeStatus {
-        self.shadow_metrics.status()
-    }
-
-    /// Closes the producer and drains all accepted shadow work before returning.
     pub async fn shutdown(&self) -> Result<()> {
-        self.shadow_tx.lock().await.take();
-        if let Some(worker) = self.shadow_worker.lock().await.take() {
-            if let Err(error) = worker.await {
-                warn!(error = %error, "BTC ML shadow worker join failed");
-            }
-        }
-        self.persist_ml_shadow_status().await;
         self.force_refresh_settlement_and_reconcile().await?;
         Ok(())
-    }
-
-    async fn persist_ml_shadow_status(&self) {
-        if let Err(error) = self
-            .repository
-            .update_ml_shadow_runtime_summary(
-                self.config.experiment_id,
-                &self.shadow_metrics.status(),
-            )
-            .await
-        {
-            warn!(error = %error, "failed to persist final BTC ML shadow runtime counters");
-        }
     }
 
     pub fn shared_book_registry(&self) -> Arc<tokio::sync::RwLock<super::feeds::BookRegistry>> {
@@ -531,7 +340,6 @@ impl BtcPaperExperimentRunner {
             self.repository
                 .increment_experiment_counts(self.config.experiment_id, 1, 1, 0)
                 .await?;
-            self.enqueue_shadow(&snapshot, &decision).await;
             return Ok(());
         };
 
@@ -550,7 +358,6 @@ impl BtcPaperExperimentRunner {
             self.repository
                 .increment_experiment_counts(self.config.experiment_id, 1, 1, 0)
                 .await?;
-            self.enqueue_shadow(&snapshot, &decision).await;
             return Ok(());
         }
 
@@ -679,46 +486,7 @@ impl BtcPaperExperimentRunner {
         if filled {
             self.force_refresh_settlement_and_reconcile().await?;
         }
-        self.enqueue_shadow(&snapshot, &decision).await;
         Ok(())
-    }
-
-    async fn enqueue_shadow(&self, snapshot: &BtcFeatureSnapshot, decision: &BtcDecision) {
-        let Some(sender) = self.shadow_tx.lock().await.as_ref().cloned() else {
-            return;
-        };
-        self.shadow_metrics.reserve_queue_slot();
-        match sender.try_send(MlShadowWork {
-            snapshot: snapshot.clone(),
-            decision: decision.clone(),
-        }) {
-            Ok(()) => {
-                self.shadow_metrics
-                    .enqueued
-                    .fetch_add(1, AtomicOrdering::Relaxed);
-            }
-            Err(error) => {
-                self.shadow_metrics.record_dequeued();
-                match &error {
-                    mpsc::error::TrySendError::Full(_) => {
-                        self.shadow_metrics
-                            .rejected_full
-                            .fetch_add(1, AtomicOrdering::Relaxed);
-                    }
-                    mpsc::error::TrySendError::Closed(_) => {
-                        self.shadow_metrics
-                            .rejected_closed
-                            .fetch_add(1, AtomicOrdering::Relaxed);
-                    }
-                }
-                warn!(
-                    error = %error,
-                    snapshot_id = %snapshot.snapshot_id,
-                    "BTC ML shadow queue rejected observation"
-                );
-                self.persist_ml_shadow_status().await;
-            }
-        }
     }
 }
 
@@ -851,69 +619,6 @@ fn observation_clob_connection_id(
         .iter()
         .find(|book| book.token_id == market.down_token_id)?;
     (up.connection_id == down.connection_id).then_some(up.connection_id)
-}
-
-async fn persist_shadow_work(
-    repository: &BtcRepository,
-    ml_scorers: &[(MlTask, LinearLogitArtifact, ShadowScorer)],
-    snapshot: &BtcFeatureSnapshot,
-    decision: &BtcDecision,
-) -> (u64, u64) {
-    let mut succeeded = 0u64;
-    let mut failed = 0u64;
-    for (task, _artifact, scorer) in ml_scorers {
-        // ML-A is a residual around the deterministic fair-value prior. Outside the
-        // deterministic model's eligible window there is no prior to score, which is an
-        // expected abstention rather than an inference failure.
-        if *task == MlTask::SettlementProbabilityResidual && decision.fair_value.is_none() {
-            continue;
-        }
-        let result = async {
-            let vector = build_ml_vector(*task, snapshot, decision)?;
-            let scored_at = Utc::now();
-            let prediction = scorer.score(&vector, scored_at.timestamp_millis())?;
-            let lineage = serde_json::to_value(&snapshot.lineage)?;
-            let metadata = serde_json::json!({
-                "shadow_only": true,
-                "schema_canary": true,
-                "influenced_order_plan": false,
-            });
-            let mut last_error = None;
-            for attempt in 1..=ML_SHADOW_PERSIST_ATTEMPTS {
-                match repository
-                    .persist_ml_shadow_result(
-                        *task,
-                        &vector,
-                        &prediction,
-                        scored_at,
-                        lineage.clone(),
-                        metadata.clone(),
-                    )
-                    .await
-                {
-                    Ok(()) => return Ok::<(), anyhow::Error>(()),
-                    Err(error) => last_error = Some(error),
-                }
-                if attempt < ML_SHADOW_PERSIST_ATTEMPTS {
-                    sleep(ML_SHADOW_RETRY_DELAY * attempt as u32).await;
-                }
-            }
-            Err(last_error
-                .expect("ML shadow persistence retry loop always runs")
-                .context(format!(
-                    "ML shadow persistence failed after {ML_SHADOW_PERSIST_ATTEMPTS} attempts for {}",
-                    task.as_str()
-                )))
-        }
-        .await;
-        if let Err(error) = result {
-            failed = failed.saturating_add(1);
-            warn!(error = %error, task = task.as_str(), snapshot_id = %snapshot.snapshot_id, "BTC ML shadow task failed");
-        } else {
-            succeeded = succeeded.saturating_add(1);
-        }
-    }
-    (succeeded, failed)
 }
 
 #[async_trait]
@@ -1194,202 +899,6 @@ fn normalized_basis_bps(inputs: &BtcPointInTimeInputs) -> Option<Decimal> {
     Some(raw - neutral)
 }
 
-fn build_ml_vector(
-    task: MlTask,
-    snapshot: &BtcFeatureSnapshot,
-    decision: &BtcDecision,
-) -> Result<MlFeatureVector> {
-    let at = snapshot.observed_at.timestamp_millis();
-    let chainlink_event_at = timestamp_or_at(snapshot.lineage.chainlink_source_timestamp, at);
-    let chainlink_received_at = timestamp_or_at(snapshot.lineage.chainlink_received_at, at);
-    let binance_event_at = timestamp_or_at(
-        snapshot.lineage.binance_history.last_source_timestamp,
-        timestamp_or_at(snapshot.lineage.binance_source_timestamp, at),
-    );
-    let binance_received_at = timestamp_or_at(
-        snapshot.lineage.binance_history.max_received_at,
-        timestamp_or_at(snapshot.lineage.binance_received_at, at),
-    );
-    let chainlink_history_event_at = timestamp_or_at(
-        snapshot.lineage.chainlink_history.last_source_timestamp,
-        chainlink_event_at,
-    );
-    let chainlink_history_received_at = timestamp_or_at(
-        snapshot.lineage.chainlink_history.max_received_at,
-        chainlink_received_at,
-    );
-    let combined_reference_event_at = chainlink_history_event_at.max(binance_event_at);
-    let combined_reference_received_at = chainlink_history_received_at.max(binance_received_at);
-    let seconds_to_close =
-        (snapshot.window_end - snapshot.observed_at).num_milliseconds() as f64 / 1_000.0;
-    let (schema, values, prior) = match task {
-        MlTask::SettlementProbabilityResidual => {
-            let fair = decision
-                .fair_value
-                .as_ref()
-                .context("ML-A requires deterministic fair value")?;
-            (
-                ML_A_SCHEMA,
-                vec![
-                    feature_value(
-                        decimal_value(snapshot.chainlink_gap_bps),
-                        chainlink_event_at,
-                        chainlink_received_at,
-                    ),
-                    feature_value(
-                        decimal_value(snapshot.binance_return_1s),
-                        binance_event_at,
-                        binance_received_at,
-                    ),
-                    feature_value(
-                        decimal_value(snapshot.binance_return_5s),
-                        binance_event_at,
-                        binance_received_at,
-                    ),
-                    feature_value(
-                        decimal_value(snapshot.binance_return_30s),
-                        binance_event_at,
-                        binance_received_at,
-                    ),
-                    feature_value(
-                        decimal_value(snapshot.realized_volatility),
-                        binance_event_at,
-                        binance_received_at,
-                    ),
-                    feature_value(
-                        decimal_value(snapshot.binance_chainlink_basis_bps),
-                        combined_reference_event_at,
-                        combined_reference_received_at,
-                    ),
-                    feature_value(seconds_to_close, at, at),
-                    book_feature_value(
-                        decimal_value(snapshot.up_book.best_ask),
-                        &snapshot.up_book,
-                        at,
-                    ),
-                    book_feature_value(
-                        decimal_value(snapshot.down_book.best_ask),
-                        &snapshot.down_book,
-                        at,
-                    ),
-                    book_feature_value(
-                        decimal_value(snapshot.up_book.imbalance),
-                        &snapshot.up_book,
-                        at,
-                    ),
-                    book_feature_value(
-                        decimal_value(snapshot.down_book.imbalance),
-                        &snapshot.down_book,
-                        at,
-                    ),
-                ],
-                fair.up_probability
-                    .to_f64()
-                    .context("fair probability is not f64")?,
-            )
-        }
-        MlTask::FokFillProbability | MlTask::FokPostFillToxicityProbability => {
-            let edge = decision
-                .up_edge
-                .iter()
-                .chain(decision.down_edge.iter())
-                .max_by(|left, right| {
-                    left.net_edge
-                        .partial_cmp(&right.net_edge)
-                        .unwrap_or(Ordering::Equal)
-                });
-            let (book, edge_per_share) = match edge.map(|edge| edge.outcome) {
-                Some(BtcOutcome::Down) => (
-                    &snapshot.down_book,
-                    edge.map(|value| value.net_edge_per_share),
-                ),
-                _ => (
-                    &snapshot.up_book,
-                    edge.map(|value| value.net_edge_per_share),
-                ),
-            };
-            let spread = book.best_bid.zip(book.best_ask).map(|(bid, ask)| ask - bid);
-            (
-                match task {
-                    MlTask::FokFillProbability => ML_B_FILL_SCHEMA,
-                    MlTask::FokPostFillToxicityProbability => ML_B_TOXICITY_SCHEMA,
-                    MlTask::SettlementProbabilityResidual => unreachable!(),
-                },
-                vec![
-                    feature_value(seconds_to_close, at, at),
-                    book_feature_value(decimal_value(book.best_ask), book, at),
-                    book_feature_value(decimal_value(spread), book, at),
-                    book_feature_value(book.ask_depth.to_f64().unwrap_or_default(), book, at),
-                    book_feature_value(decimal_value(book.imbalance), book, at),
-                    feature_value(decimal_value(edge_per_share), at, at),
-                ],
-                0.5,
-            )
-        }
-    };
-    let names = if task == MlTask::SettlementProbabilityResidual {
-        ML_A_FEATURES
-    } else {
-        ML_B_FEATURES
-    };
-    let features = names
-        .iter()
-        .zip(values)
-        .map(|(name, (value, source_event_at, source_received_at))| {
-            MlFeature::new(*name, value, source_event_at, source_received_at)
-        })
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok(MlFeatureVector::new(
-        snapshot.snapshot_id.to_string(),
-        &snapshot.market_id,
-        at,
-        at,
-        schema,
-        prior,
-        features,
-    )?)
-}
-
-fn timestamp_or_at(value: Option<DateTime<Utc>>, at: i64) -> i64 {
-    value.map(|value| value.timestamp_millis()).unwrap_or(at)
-}
-
-fn feature_value(value: f64, source_event_at: i64, source_received_at: i64) -> (f64, i64, i64) {
-    (value, source_event_at, source_received_at)
-}
-
-fn book_feature_value(value: f64, book: &BtcOutcomeBookFeatures, at: i64) -> (f64, i64, i64) {
-    feature_value(
-        value,
-        timestamp_or_at(book.source_timestamp, at),
-        timestamp_or_at(book.received_at, at),
-    )
-}
-
-fn decimal_value(value: Option<Decimal>) -> f64 {
-    value.and_then(|value| value.to_f64()).unwrap_or_default()
-}
-
-fn canary_artifact(task: MlTask, schema: &str, names: &[&str]) -> Result<LinearLogitArtifact> {
-    let features = names
-        .iter()
-        .map(|name| LinearFeatureTransform::new(*name, 0.0, 1.0, 0.0))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok(LinearLogitArtifact::new(
-        format!("schema_canary_v2_{}", task.as_str()),
-        task,
-        PriorKind::ProvidedProbability,
-        schema,
-        Some(format!(
-            "{:x}",
-            Sha256::digest(b"schema_canary_no_training_data_v2")
-        )),
-        None,
-        0.0,
-        features,
-    )?)
-}
-
 fn sha256_json<T: Serialize>(value: &T) -> Result<String> {
     let bytes = serde_json::to_vec(value)?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
@@ -1575,41 +1084,5 @@ mod tests {
             observation_clob_connection_id(&market, &coherent),
             Some(second_epoch)
         );
-    }
-
-    #[test]
-    fn runtime_canary_artifacts_match_the_shared_v2_contract() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../experiments/btc-updown/fixtures/runtime_v2_contract.json"
-        ))
-        .unwrap();
-        for specification in fixture["artifacts"].as_array().unwrap() {
-            let task = match specification["task"].as_str().unwrap() {
-                "settlement_probability_residual" => MlTask::SettlementProbabilityResidual,
-                "fok_fill_probability" => MlTask::FokFillProbability,
-                "fok_post_fill_toxicity_probability" => MlTask::FokPostFillToxicityProbability,
-                task => panic!("unexpected contract task {task}"),
-            };
-            let (schema, features) = match task {
-                MlTask::SettlementProbabilityResidual => (ML_A_SCHEMA, ML_A_FEATURES),
-                MlTask::FokFillProbability => (ML_B_FILL_SCHEMA, ML_B_FEATURES),
-                MlTask::FokPostFillToxicityProbability => (ML_B_TOXICITY_SCHEMA, ML_B_FEATURES),
-            };
-            let artifact = canary_artifact(task, schema, features).unwrap();
-            assert_eq!(
-                artifact.model_version(),
-                specification["model_version"].as_str().unwrap()
-            );
-            assert_eq!(
-                artifact.feature_schema_sha256(),
-                specification["expected_feature_schema_sha256"]
-                    .as_str()
-                    .unwrap()
-            );
-            assert_eq!(
-                artifact.artifact_sha256(),
-                specification["expected_artifact_sha256"].as_str().unwrap()
-            );
-        }
     }
 }
