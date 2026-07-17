@@ -183,11 +183,1514 @@
           "color": {
             "mode": "thresholds"
           },
-          "decimals": 0,
-          "displayName": "Time Remaining",
           "mappings": [
             {
               "options": {
+                "0": {
+                  "color": "red",
+                  "index": 1,
+                  "text": "00:00"
+                },
+                "1": {
+                  "color": "red",
+                  "index": 2,
+                  "text": "00:01"
+                },
+                "2": {
+                  "color": "red",
+                  "index": 3,
+                  "text": "00:02"
+                },
+                "3": {
+                  "color": "red",
+                  "index": 4,
+                  "text": "00:03"
+                },
+                "4": {
+                  "color": "red",
+                  "index": 5,
+                  "text": "00:04"
+                },
+                "5": {
+                  "color": "red",
+                  "index": 6,
+                  "text": "00:05"
+                },
+                "6": {
+                  "color": "red",
+                  "index": 7,
+                  "text": "00:06"
+                },
+                "7": {
+                  "color": "red",
+                  "index": 8,
+                  "text": "00:07"
+                },
+                "8": {
+                  "color": "red",
+                  "index": 9,
+                  "text": "00:08"
+                },
+                "9": {
+                  "color": "red",
+                  "index": 10,
+                  "text": "00:09"
+                },
+                "10": {
+                  "color": "red",
+                  "index": 11,
+                  "text": "00:10"
+                },
+                "11": {
+                  "color": "red",
+                  "index": 12,
+                  "text": "00:11"
+                },
+                "12": {
+                  "color": "red",
+                  "index": 13,
+                  "text": "00:12"
+                },
+                "13": {
+                  "color": "red",
+                  "index": 14,
+                  "text": "00:13"
+                },
+                "14": {
+                  "color": "red",
+                  "index": 15,
+                  "text": "00:14"
+                },
+                "15": {
+                  "color": "red",
+                  "index": 16,
+                  "text": "00:15"
+                },
+                "16": {
+                  "color": "red",
+                  "index": 17,
+                  "text": "00:16"
+                },
+                "17": {
+                  "color": "red",
+                  "index": 18,
+                  "text": "00:17"
+                },
+                "18": {
+                  "color": "red",
+                  "index": 19,
+                  "text": "00:18"
+                },
+                "19": {
+                  "color": "red",
+                  "index": 20,
+                  "text": "00:19"
+                },
+                "20": {
+                  "color": "red",
+                  "index": 21,
+                  "text": "00:20"
+                },
+                "21": {
+                  "color": "red",
+                  "index": 22,
+                  "text": "00:21"
+                },
+                "22": {
+                  "color": "red",
+                  "index": 23,
+                  "text": "00:22"
+                },
+                "23": {
+                  "color": "red",
+                  "index": 24,
+                  "text": "00:23"
+                },
+                "24": {
+                  "color": "red",
+                  "index": 25,
+                  "text": "00:24"
+                },
+                "25": {
+                  "color": "red",
+                  "index": 26,
+                  "text": "00:25"
+                },
+                "26": {
+                  "color": "red",
+                  "index": 27,
+                  "text": "00:26"
+                },
+                "27": {
+                  "color": "red",
+                  "index": 28,
+                  "text": "00:27"
+                },
+                "28": {
+                  "color": "red",
+                  "index": 29,
+                  "text": "00:28"
+                },
+                "29": {
+                  "color": "red",
+                  "index": 30,
+                  "text": "00:29"
+                },
+                "30": {
+                  "color": "orange",
+                  "index": 31,
+                  "text": "00:30"
+                },
+                "31": {
+                  "color": "orange",
+                  "index": 32,
+                  "text": "00:31"
+                },
+                "32": {
+                  "color": "orange",
+                  "index": 33,
+                  "text": "00:32"
+                },
+                "33": {
+                  "color": "orange",
+                  "index": 34,
+                  "text": "00:33"
+                },
+                "34": {
+                  "color": "orange",
+                  "index": 35,
+                  "text": "00:34"
+                },
+                "35": {
+                  "color": "orange",
+                  "index": 36,
+                  "text": "00:35"
+                },
+                "36": {
+                  "color": "orange",
+                  "index": 37,
+                  "text": "00:36"
+                },
+                "37": {
+                  "color": "orange",
+                  "index": 38,
+                  "text": "00:37"
+                },
+                "38": {
+                  "color": "orange",
+                  "index": 39,
+                  "text": "00:38"
+                },
+                "39": {
+                  "color": "orange",
+                  "index": 40,
+                  "text": "00:39"
+                },
+                "40": {
+                  "color": "orange",
+                  "index": 41,
+                  "text": "00:40"
+                },
+                "41": {
+                  "color": "orange",
+                  "index": 42,
+                  "text": "00:41"
+                },
+                "42": {
+                  "color": "orange",
+                  "index": 43,
+                  "text": "00:42"
+                },
+                "43": {
+                  "color": "orange",
+                  "index": 44,
+                  "text": "00:43"
+                },
+                "44": {
+                  "color": "orange",
+                  "index": 45,
+                  "text": "00:44"
+                },
+                "45": {
+                  "color": "orange",
+                  "index": 46,
+                  "text": "00:45"
+                },
+                "46": {
+                  "color": "orange",
+                  "index": 47,
+                  "text": "00:46"
+                },
+                "47": {
+                  "color": "orange",
+                  "index": 48,
+                  "text": "00:47"
+                },
+                "48": {
+                  "color": "orange",
+                  "index": 49,
+                  "text": "00:48"
+                },
+                "49": {
+                  "color": "orange",
+                  "index": 50,
+                  "text": "00:49"
+                },
+                "50": {
+                  "color": "orange",
+                  "index": 51,
+                  "text": "00:50"
+                },
+                "51": {
+                  "color": "orange",
+                  "index": 52,
+                  "text": "00:51"
+                },
+                "52": {
+                  "color": "orange",
+                  "index": 53,
+                  "text": "00:52"
+                },
+                "53": {
+                  "color": "orange",
+                  "index": 54,
+                  "text": "00:53"
+                },
+                "54": {
+                  "color": "orange",
+                  "index": 55,
+                  "text": "00:54"
+                },
+                "55": {
+                  "color": "orange",
+                  "index": 56,
+                  "text": "00:55"
+                },
+                "56": {
+                  "color": "orange",
+                  "index": 57,
+                  "text": "00:56"
+                },
+                "57": {
+                  "color": "orange",
+                  "index": 58,
+                  "text": "00:57"
+                },
+                "58": {
+                  "color": "orange",
+                  "index": 59,
+                  "text": "00:58"
+                },
+                "59": {
+                  "color": "orange",
+                  "index": 60,
+                  "text": "00:59"
+                },
+                "60": {
+                  "color": "yellow",
+                  "index": 61,
+                  "text": "01:00"
+                },
+                "61": {
+                  "color": "yellow",
+                  "index": 62,
+                  "text": "01:01"
+                },
+                "62": {
+                  "color": "yellow",
+                  "index": 63,
+                  "text": "01:02"
+                },
+                "63": {
+                  "color": "yellow",
+                  "index": 64,
+                  "text": "01:03"
+                },
+                "64": {
+                  "color": "yellow",
+                  "index": 65,
+                  "text": "01:04"
+                },
+                "65": {
+                  "color": "yellow",
+                  "index": 66,
+                  "text": "01:05"
+                },
+                "66": {
+                  "color": "yellow",
+                  "index": 67,
+                  "text": "01:06"
+                },
+                "67": {
+                  "color": "yellow",
+                  "index": 68,
+                  "text": "01:07"
+                },
+                "68": {
+                  "color": "yellow",
+                  "index": 69,
+                  "text": "01:08"
+                },
+                "69": {
+                  "color": "yellow",
+                  "index": 70,
+                  "text": "01:09"
+                },
+                "70": {
+                  "color": "yellow",
+                  "index": 71,
+                  "text": "01:10"
+                },
+                "71": {
+                  "color": "yellow",
+                  "index": 72,
+                  "text": "01:11"
+                },
+                "72": {
+                  "color": "yellow",
+                  "index": 73,
+                  "text": "01:12"
+                },
+                "73": {
+                  "color": "yellow",
+                  "index": 74,
+                  "text": "01:13"
+                },
+                "74": {
+                  "color": "yellow",
+                  "index": 75,
+                  "text": "01:14"
+                },
+                "75": {
+                  "color": "yellow",
+                  "index": 76,
+                  "text": "01:15"
+                },
+                "76": {
+                  "color": "yellow",
+                  "index": 77,
+                  "text": "01:16"
+                },
+                "77": {
+                  "color": "yellow",
+                  "index": 78,
+                  "text": "01:17"
+                },
+                "78": {
+                  "color": "yellow",
+                  "index": 79,
+                  "text": "01:18"
+                },
+                "79": {
+                  "color": "yellow",
+                  "index": 80,
+                  "text": "01:19"
+                },
+                "80": {
+                  "color": "yellow",
+                  "index": 81,
+                  "text": "01:20"
+                },
+                "81": {
+                  "color": "yellow",
+                  "index": 82,
+                  "text": "01:21"
+                },
+                "82": {
+                  "color": "yellow",
+                  "index": 83,
+                  "text": "01:22"
+                },
+                "83": {
+                  "color": "yellow",
+                  "index": 84,
+                  "text": "01:23"
+                },
+                "84": {
+                  "color": "yellow",
+                  "index": 85,
+                  "text": "01:24"
+                },
+                "85": {
+                  "color": "yellow",
+                  "index": 86,
+                  "text": "01:25"
+                },
+                "86": {
+                  "color": "yellow",
+                  "index": 87,
+                  "text": "01:26"
+                },
+                "87": {
+                  "color": "yellow",
+                  "index": 88,
+                  "text": "01:27"
+                },
+                "88": {
+                  "color": "yellow",
+                  "index": 89,
+                  "text": "01:28"
+                },
+                "89": {
+                  "color": "yellow",
+                  "index": 90,
+                  "text": "01:29"
+                },
+                "90": {
+                  "color": "yellow",
+                  "index": 91,
+                  "text": "01:30"
+                },
+                "91": {
+                  "color": "yellow",
+                  "index": 92,
+                  "text": "01:31"
+                },
+                "92": {
+                  "color": "yellow",
+                  "index": 93,
+                  "text": "01:32"
+                },
+                "93": {
+                  "color": "yellow",
+                  "index": 94,
+                  "text": "01:33"
+                },
+                "94": {
+                  "color": "yellow",
+                  "index": 95,
+                  "text": "01:34"
+                },
+                "95": {
+                  "color": "yellow",
+                  "index": 96,
+                  "text": "01:35"
+                },
+                "96": {
+                  "color": "yellow",
+                  "index": 97,
+                  "text": "01:36"
+                },
+                "97": {
+                  "color": "yellow",
+                  "index": 98,
+                  "text": "01:37"
+                },
+                "98": {
+                  "color": "yellow",
+                  "index": 99,
+                  "text": "01:38"
+                },
+                "99": {
+                  "color": "yellow",
+                  "index": 100,
+                  "text": "01:39"
+                },
+                "100": {
+                  "color": "yellow",
+                  "index": 101,
+                  "text": "01:40"
+                },
+                "101": {
+                  "color": "yellow",
+                  "index": 102,
+                  "text": "01:41"
+                },
+                "102": {
+                  "color": "yellow",
+                  "index": 103,
+                  "text": "01:42"
+                },
+                "103": {
+                  "color": "yellow",
+                  "index": 104,
+                  "text": "01:43"
+                },
+                "104": {
+                  "color": "yellow",
+                  "index": 105,
+                  "text": "01:44"
+                },
+                "105": {
+                  "color": "yellow",
+                  "index": 106,
+                  "text": "01:45"
+                },
+                "106": {
+                  "color": "yellow",
+                  "index": 107,
+                  "text": "01:46"
+                },
+                "107": {
+                  "color": "yellow",
+                  "index": 108,
+                  "text": "01:47"
+                },
+                "108": {
+                  "color": "yellow",
+                  "index": 109,
+                  "text": "01:48"
+                },
+                "109": {
+                  "color": "yellow",
+                  "index": 110,
+                  "text": "01:49"
+                },
+                "110": {
+                  "color": "yellow",
+                  "index": 111,
+                  "text": "01:50"
+                },
+                "111": {
+                  "color": "yellow",
+                  "index": 112,
+                  "text": "01:51"
+                },
+                "112": {
+                  "color": "yellow",
+                  "index": 113,
+                  "text": "01:52"
+                },
+                "113": {
+                  "color": "yellow",
+                  "index": 114,
+                  "text": "01:53"
+                },
+                "114": {
+                  "color": "yellow",
+                  "index": 115,
+                  "text": "01:54"
+                },
+                "115": {
+                  "color": "yellow",
+                  "index": 116,
+                  "text": "01:55"
+                },
+                "116": {
+                  "color": "yellow",
+                  "index": 117,
+                  "text": "01:56"
+                },
+                "117": {
+                  "color": "yellow",
+                  "index": 118,
+                  "text": "01:57"
+                },
+                "118": {
+                  "color": "yellow",
+                  "index": 119,
+                  "text": "01:58"
+                },
+                "119": {
+                  "color": "yellow",
+                  "index": 120,
+                  "text": "01:59"
+                },
+                "120": {
+                  "color": "green",
+                  "index": 121,
+                  "text": "02:00"
+                },
+                "121": {
+                  "color": "green",
+                  "index": 122,
+                  "text": "02:01"
+                },
+                "122": {
+                  "color": "green",
+                  "index": 123,
+                  "text": "02:02"
+                },
+                "123": {
+                  "color": "green",
+                  "index": 124,
+                  "text": "02:03"
+                },
+                "124": {
+                  "color": "green",
+                  "index": 125,
+                  "text": "02:04"
+                },
+                "125": {
+                  "color": "green",
+                  "index": 126,
+                  "text": "02:05"
+                },
+                "126": {
+                  "color": "green",
+                  "index": 127,
+                  "text": "02:06"
+                },
+                "127": {
+                  "color": "green",
+                  "index": 128,
+                  "text": "02:07"
+                },
+                "128": {
+                  "color": "green",
+                  "index": 129,
+                  "text": "02:08"
+                },
+                "129": {
+                  "color": "green",
+                  "index": 130,
+                  "text": "02:09"
+                },
+                "130": {
+                  "color": "green",
+                  "index": 131,
+                  "text": "02:10"
+                },
+                "131": {
+                  "color": "green",
+                  "index": 132,
+                  "text": "02:11"
+                },
+                "132": {
+                  "color": "green",
+                  "index": 133,
+                  "text": "02:12"
+                },
+                "133": {
+                  "color": "green",
+                  "index": 134,
+                  "text": "02:13"
+                },
+                "134": {
+                  "color": "green",
+                  "index": 135,
+                  "text": "02:14"
+                },
+                "135": {
+                  "color": "green",
+                  "index": 136,
+                  "text": "02:15"
+                },
+                "136": {
+                  "color": "green",
+                  "index": 137,
+                  "text": "02:16"
+                },
+                "137": {
+                  "color": "green",
+                  "index": 138,
+                  "text": "02:17"
+                },
+                "138": {
+                  "color": "green",
+                  "index": 139,
+                  "text": "02:18"
+                },
+                "139": {
+                  "color": "green",
+                  "index": 140,
+                  "text": "02:19"
+                },
+                "140": {
+                  "color": "green",
+                  "index": 141,
+                  "text": "02:20"
+                },
+                "141": {
+                  "color": "green",
+                  "index": 142,
+                  "text": "02:21"
+                },
+                "142": {
+                  "color": "green",
+                  "index": 143,
+                  "text": "02:22"
+                },
+                "143": {
+                  "color": "green",
+                  "index": 144,
+                  "text": "02:23"
+                },
+                "144": {
+                  "color": "green",
+                  "index": 145,
+                  "text": "02:24"
+                },
+                "145": {
+                  "color": "green",
+                  "index": 146,
+                  "text": "02:25"
+                },
+                "146": {
+                  "color": "green",
+                  "index": 147,
+                  "text": "02:26"
+                },
+                "147": {
+                  "color": "green",
+                  "index": 148,
+                  "text": "02:27"
+                },
+                "148": {
+                  "color": "green",
+                  "index": 149,
+                  "text": "02:28"
+                },
+                "149": {
+                  "color": "green",
+                  "index": 150,
+                  "text": "02:29"
+                },
+                "150": {
+                  "color": "green",
+                  "index": 151,
+                  "text": "02:30"
+                },
+                "151": {
+                  "color": "green",
+                  "index": 152,
+                  "text": "02:31"
+                },
+                "152": {
+                  "color": "green",
+                  "index": 153,
+                  "text": "02:32"
+                },
+                "153": {
+                  "color": "green",
+                  "index": 154,
+                  "text": "02:33"
+                },
+                "154": {
+                  "color": "green",
+                  "index": 155,
+                  "text": "02:34"
+                },
+                "155": {
+                  "color": "green",
+                  "index": 156,
+                  "text": "02:35"
+                },
+                "156": {
+                  "color": "green",
+                  "index": 157,
+                  "text": "02:36"
+                },
+                "157": {
+                  "color": "green",
+                  "index": 158,
+                  "text": "02:37"
+                },
+                "158": {
+                  "color": "green",
+                  "index": 159,
+                  "text": "02:38"
+                },
+                "159": {
+                  "color": "green",
+                  "index": 160,
+                  "text": "02:39"
+                },
+                "160": {
+                  "color": "green",
+                  "index": 161,
+                  "text": "02:40"
+                },
+                "161": {
+                  "color": "green",
+                  "index": 162,
+                  "text": "02:41"
+                },
+                "162": {
+                  "color": "green",
+                  "index": 163,
+                  "text": "02:42"
+                },
+                "163": {
+                  "color": "green",
+                  "index": 164,
+                  "text": "02:43"
+                },
+                "164": {
+                  "color": "green",
+                  "index": 165,
+                  "text": "02:44"
+                },
+                "165": {
+                  "color": "green",
+                  "index": 166,
+                  "text": "02:45"
+                },
+                "166": {
+                  "color": "green",
+                  "index": 167,
+                  "text": "02:46"
+                },
+                "167": {
+                  "color": "green",
+                  "index": 168,
+                  "text": "02:47"
+                },
+                "168": {
+                  "color": "green",
+                  "index": 169,
+                  "text": "02:48"
+                },
+                "169": {
+                  "color": "green",
+                  "index": 170,
+                  "text": "02:49"
+                },
+                "170": {
+                  "color": "green",
+                  "index": 171,
+                  "text": "02:50"
+                },
+                "171": {
+                  "color": "green",
+                  "index": 172,
+                  "text": "02:51"
+                },
+                "172": {
+                  "color": "green",
+                  "index": 173,
+                  "text": "02:52"
+                },
+                "173": {
+                  "color": "green",
+                  "index": 174,
+                  "text": "02:53"
+                },
+                "174": {
+                  "color": "green",
+                  "index": 175,
+                  "text": "02:54"
+                },
+                "175": {
+                  "color": "green",
+                  "index": 176,
+                  "text": "02:55"
+                },
+                "176": {
+                  "color": "green",
+                  "index": 177,
+                  "text": "02:56"
+                },
+                "177": {
+                  "color": "green",
+                  "index": 178,
+                  "text": "02:57"
+                },
+                "178": {
+                  "color": "green",
+                  "index": 179,
+                  "text": "02:58"
+                },
+                "179": {
+                  "color": "green",
+                  "index": 180,
+                  "text": "02:59"
+                },
+                "180": {
+                  "color": "green",
+                  "index": 181,
+                  "text": "03:00"
+                },
+                "181": {
+                  "color": "green",
+                  "index": 182,
+                  "text": "03:01"
+                },
+                "182": {
+                  "color": "green",
+                  "index": 183,
+                  "text": "03:02"
+                },
+                "183": {
+                  "color": "green",
+                  "index": 184,
+                  "text": "03:03"
+                },
+                "184": {
+                  "color": "green",
+                  "index": 185,
+                  "text": "03:04"
+                },
+                "185": {
+                  "color": "green",
+                  "index": 186,
+                  "text": "03:05"
+                },
+                "186": {
+                  "color": "green",
+                  "index": 187,
+                  "text": "03:06"
+                },
+                "187": {
+                  "color": "green",
+                  "index": 188,
+                  "text": "03:07"
+                },
+                "188": {
+                  "color": "green",
+                  "index": 189,
+                  "text": "03:08"
+                },
+                "189": {
+                  "color": "green",
+                  "index": 190,
+                  "text": "03:09"
+                },
+                "190": {
+                  "color": "green",
+                  "index": 191,
+                  "text": "03:10"
+                },
+                "191": {
+                  "color": "green",
+                  "index": 192,
+                  "text": "03:11"
+                },
+                "192": {
+                  "color": "green",
+                  "index": 193,
+                  "text": "03:12"
+                },
+                "193": {
+                  "color": "green",
+                  "index": 194,
+                  "text": "03:13"
+                },
+                "194": {
+                  "color": "green",
+                  "index": 195,
+                  "text": "03:14"
+                },
+                "195": {
+                  "color": "green",
+                  "index": 196,
+                  "text": "03:15"
+                },
+                "196": {
+                  "color": "green",
+                  "index": 197,
+                  "text": "03:16"
+                },
+                "197": {
+                  "color": "green",
+                  "index": 198,
+                  "text": "03:17"
+                },
+                "198": {
+                  "color": "green",
+                  "index": 199,
+                  "text": "03:18"
+                },
+                "199": {
+                  "color": "green",
+                  "index": 200,
+                  "text": "03:19"
+                },
+                "200": {
+                  "color": "green",
+                  "index": 201,
+                  "text": "03:20"
+                },
+                "201": {
+                  "color": "green",
+                  "index": 202,
+                  "text": "03:21"
+                },
+                "202": {
+                  "color": "green",
+                  "index": 203,
+                  "text": "03:22"
+                },
+                "203": {
+                  "color": "green",
+                  "index": 204,
+                  "text": "03:23"
+                },
+                "204": {
+                  "color": "green",
+                  "index": 205,
+                  "text": "03:24"
+                },
+                "205": {
+                  "color": "green",
+                  "index": 206,
+                  "text": "03:25"
+                },
+                "206": {
+                  "color": "green",
+                  "index": 207,
+                  "text": "03:26"
+                },
+                "207": {
+                  "color": "green",
+                  "index": 208,
+                  "text": "03:27"
+                },
+                "208": {
+                  "color": "green",
+                  "index": 209,
+                  "text": "03:28"
+                },
+                "209": {
+                  "color": "green",
+                  "index": 210,
+                  "text": "03:29"
+                },
+                "210": {
+                  "color": "green",
+                  "index": 211,
+                  "text": "03:30"
+                },
+                "211": {
+                  "color": "green",
+                  "index": 212,
+                  "text": "03:31"
+                },
+                "212": {
+                  "color": "green",
+                  "index": 213,
+                  "text": "03:32"
+                },
+                "213": {
+                  "color": "green",
+                  "index": 214,
+                  "text": "03:33"
+                },
+                "214": {
+                  "color": "green",
+                  "index": 215,
+                  "text": "03:34"
+                },
+                "215": {
+                  "color": "green",
+                  "index": 216,
+                  "text": "03:35"
+                },
+                "216": {
+                  "color": "green",
+                  "index": 217,
+                  "text": "03:36"
+                },
+                "217": {
+                  "color": "green",
+                  "index": 218,
+                  "text": "03:37"
+                },
+                "218": {
+                  "color": "green",
+                  "index": 219,
+                  "text": "03:38"
+                },
+                "219": {
+                  "color": "green",
+                  "index": 220,
+                  "text": "03:39"
+                },
+                "220": {
+                  "color": "green",
+                  "index": 221,
+                  "text": "03:40"
+                },
+                "221": {
+                  "color": "green",
+                  "index": 222,
+                  "text": "03:41"
+                },
+                "222": {
+                  "color": "green",
+                  "index": 223,
+                  "text": "03:42"
+                },
+                "223": {
+                  "color": "green",
+                  "index": 224,
+                  "text": "03:43"
+                },
+                "224": {
+                  "color": "green",
+                  "index": 225,
+                  "text": "03:44"
+                },
+                "225": {
+                  "color": "green",
+                  "index": 226,
+                  "text": "03:45"
+                },
+                "226": {
+                  "color": "green",
+                  "index": 227,
+                  "text": "03:46"
+                },
+                "227": {
+                  "color": "green",
+                  "index": 228,
+                  "text": "03:47"
+                },
+                "228": {
+                  "color": "green",
+                  "index": 229,
+                  "text": "03:48"
+                },
+                "229": {
+                  "color": "green",
+                  "index": 230,
+                  "text": "03:49"
+                },
+                "230": {
+                  "color": "green",
+                  "index": 231,
+                  "text": "03:50"
+                },
+                "231": {
+                  "color": "green",
+                  "index": 232,
+                  "text": "03:51"
+                },
+                "232": {
+                  "color": "green",
+                  "index": 233,
+                  "text": "03:52"
+                },
+                "233": {
+                  "color": "green",
+                  "index": 234,
+                  "text": "03:53"
+                },
+                "234": {
+                  "color": "green",
+                  "index": 235,
+                  "text": "03:54"
+                },
+                "235": {
+                  "color": "green",
+                  "index": 236,
+                  "text": "03:55"
+                },
+                "236": {
+                  "color": "green",
+                  "index": 237,
+                  "text": "03:56"
+                },
+                "237": {
+                  "color": "green",
+                  "index": 238,
+                  "text": "03:57"
+                },
+                "238": {
+                  "color": "green",
+                  "index": 239,
+                  "text": "03:58"
+                },
+                "239": {
+                  "color": "green",
+                  "index": 240,
+                  "text": "03:59"
+                },
+                "240": {
+                  "color": "green",
+                  "index": 241,
+                  "text": "04:00"
+                },
+                "241": {
+                  "color": "green",
+                  "index": 242,
+                  "text": "04:01"
+                },
+                "242": {
+                  "color": "green",
+                  "index": 243,
+                  "text": "04:02"
+                },
+                "243": {
+                  "color": "green",
+                  "index": 244,
+                  "text": "04:03"
+                },
+                "244": {
+                  "color": "green",
+                  "index": 245,
+                  "text": "04:04"
+                },
+                "245": {
+                  "color": "green",
+                  "index": 246,
+                  "text": "04:05"
+                },
+                "246": {
+                  "color": "green",
+                  "index": 247,
+                  "text": "04:06"
+                },
+                "247": {
+                  "color": "green",
+                  "index": 248,
+                  "text": "04:07"
+                },
+                "248": {
+                  "color": "green",
+                  "index": 249,
+                  "text": "04:08"
+                },
+                "249": {
+                  "color": "green",
+                  "index": 250,
+                  "text": "04:09"
+                },
+                "250": {
+                  "color": "green",
+                  "index": 251,
+                  "text": "04:10"
+                },
+                "251": {
+                  "color": "green",
+                  "index": 252,
+                  "text": "04:11"
+                },
+                "252": {
+                  "color": "green",
+                  "index": 253,
+                  "text": "04:12"
+                },
+                "253": {
+                  "color": "green",
+                  "index": 254,
+                  "text": "04:13"
+                },
+                "254": {
+                  "color": "green",
+                  "index": 255,
+                  "text": "04:14"
+                },
+                "255": {
+                  "color": "green",
+                  "index": 256,
+                  "text": "04:15"
+                },
+                "256": {
+                  "color": "green",
+                  "index": 257,
+                  "text": "04:16"
+                },
+                "257": {
+                  "color": "green",
+                  "index": 258,
+                  "text": "04:17"
+                },
+                "258": {
+                  "color": "green",
+                  "index": 259,
+                  "text": "04:18"
+                },
+                "259": {
+                  "color": "green",
+                  "index": 260,
+                  "text": "04:19"
+                },
+                "260": {
+                  "color": "green",
+                  "index": 261,
+                  "text": "04:20"
+                },
+                "261": {
+                  "color": "green",
+                  "index": 262,
+                  "text": "04:21"
+                },
+                "262": {
+                  "color": "green",
+                  "index": 263,
+                  "text": "04:22"
+                },
+                "263": {
+                  "color": "green",
+                  "index": 264,
+                  "text": "04:23"
+                },
+                "264": {
+                  "color": "green",
+                  "index": 265,
+                  "text": "04:24"
+                },
+                "265": {
+                  "color": "green",
+                  "index": 266,
+                  "text": "04:25"
+                },
+                "266": {
+                  "color": "green",
+                  "index": 267,
+                  "text": "04:26"
+                },
+                "267": {
+                  "color": "green",
+                  "index": 268,
+                  "text": "04:27"
+                },
+                "268": {
+                  "color": "green",
+                  "index": 269,
+                  "text": "04:28"
+                },
+                "269": {
+                  "color": "green",
+                  "index": 270,
+                  "text": "04:29"
+                },
+                "270": {
+                  "color": "green",
+                  "index": 271,
+                  "text": "04:30"
+                },
+                "271": {
+                  "color": "green",
+                  "index": 272,
+                  "text": "04:31"
+                },
+                "272": {
+                  "color": "green",
+                  "index": 273,
+                  "text": "04:32"
+                },
+                "273": {
+                  "color": "green",
+                  "index": 274,
+                  "text": "04:33"
+                },
+                "274": {
+                  "color": "green",
+                  "index": 275,
+                  "text": "04:34"
+                },
+                "275": {
+                  "color": "green",
+                  "index": 276,
+                  "text": "04:35"
+                },
+                "276": {
+                  "color": "green",
+                  "index": 277,
+                  "text": "04:36"
+                },
+                "277": {
+                  "color": "green",
+                  "index": 278,
+                  "text": "04:37"
+                },
+                "278": {
+                  "color": "green",
+                  "index": 279,
+                  "text": "04:38"
+                },
+                "279": {
+                  "color": "green",
+                  "index": 280,
+                  "text": "04:39"
+                },
+                "280": {
+                  "color": "green",
+                  "index": 281,
+                  "text": "04:40"
+                },
+                "281": {
+                  "color": "green",
+                  "index": 282,
+                  "text": "04:41"
+                },
+                "282": {
+                  "color": "green",
+                  "index": 283,
+                  "text": "04:42"
+                },
+                "283": {
+                  "color": "green",
+                  "index": 284,
+                  "text": "04:43"
+                },
+                "284": {
+                  "color": "green",
+                  "index": 285,
+                  "text": "04:44"
+                },
+                "285": {
+                  "color": "green",
+                  "index": 286,
+                  "text": "04:45"
+                },
+                "286": {
+                  "color": "green",
+                  "index": 287,
+                  "text": "04:46"
+                },
+                "287": {
+                  "color": "green",
+                  "index": 288,
+                  "text": "04:47"
+                },
+                "288": {
+                  "color": "green",
+                  "index": 289,
+                  "text": "04:48"
+                },
+                "289": {
+                  "color": "green",
+                  "index": 290,
+                  "text": "04:49"
+                },
+                "290": {
+                  "color": "green",
+                  "index": 291,
+                  "text": "04:50"
+                },
+                "291": {
+                  "color": "green",
+                  "index": 292,
+                  "text": "04:51"
+                },
+                "292": {
+                  "color": "green",
+                  "index": 293,
+                  "text": "04:52"
+                },
+                "293": {
+                  "color": "green",
+                  "index": 294,
+                  "text": "04:53"
+                },
+                "294": {
+                  "color": "green",
+                  "index": 295,
+                  "text": "04:54"
+                },
+                "295": {
+                  "color": "green",
+                  "index": 296,
+                  "text": "04:55"
+                },
+                "296": {
+                  "color": "green",
+                  "index": 297,
+                  "text": "04:56"
+                },
+                "297": {
+                  "color": "green",
+                  "index": 298,
+                  "text": "04:57"
+                },
+                "298": {
+                  "color": "green",
+                  "index": 299,
+                  "text": "04:58"
+                },
+                "299": {
+                  "color": "green",
+                  "index": 300,
+                  "text": "04:59"
+                },
+                "300": {
+                  "color": "green",
+                  "index": 301,
+                  "text": "05:00"
+                },
                 "-1": {
                   "color": "text",
                   "index": 0,
@@ -243,7 +1746,7 @@
           "values": false
         },
         "showPercentChange": false,
-        "textMode": "value_and_name",
+        "textMode": "value",
         "wideLayout": true
       },
       "pluginVersion": "12.4.2",
@@ -918,6 +2421,463 @@
       "title": "Process Lifetime PnL and Runtime Stats",
       "type": "table",
       "description": "Durable process-level PnL and position counts derived from process-owned fills and official outcomes."
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "id": 15,
+      "panels": [],
+      "title": "BTC 5m Lead/Lag Entry Diagnostics",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "description": "Point-in-time Binance and Chainlink prices seen by the selected trading process, expressed as basis-point movement from the current five-minute Chainlink opening price. Filled entries are marked by direction and official outcome. Gaps are intentional: they separate five-minute markets and exclude non-ready, missing, stale, or paused observations.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": true,
+            "axisColorMode": "text",
+            "axisLabel": "Move from Chainlink 5m open",
+            "axisPlacement": "left",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 4,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "suffix: bps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Chainlink vs 5m open"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Binance vs 5m open"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Chainlink 5m open / resolution"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "gray",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    6,
+                    6
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": false,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^Entry /"
+            },
+            "properties": [
+              {
+                "id": "custom.drawStyle",
+                "value": "points"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              },
+              {
+                "id": "custom.pointSize",
+                "value": 8
+              },
+              {
+                "id": "custom.showPoints",
+                "value": "always"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^Entry WIN /"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^Entry LOSS /"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^Entry OPEN /"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "id": 16,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH settings AS MATERIALIZED (\n  SELECT CASE\n    WHEN $__timeTo()::timestamptz-$__timeFrom()::timestamptz<=interval '2 hours' THEN interval '1 second'\n    WHEN $__timeTo()::timestamptz-$__timeFrom()::timestamptz<=interval '12 hours' THEN interval '3 seconds'\n    WHEN $__timeTo()::timestamptz-$__timeFrom()::timestamptz<=interval '2 days' THEN interval '10 seconds'\n    WHEN $__timeTo()::timestamptz-$__timeFrom()::timestamptz<=interval '7 days' THEN interval '30 seconds'\n    WHEN $__timeTo()::timestamptz-$__timeFrom()::timestamptz<=interval '30 days' THEN interval '2 minutes'\n    ELSE interval '10 minutes'\n  END AS bucket_width\n), source AS MATERIALIZED (\n  SELECT s.snapshot_id,s.feature_as_of,s.window_start,s.market_id,\n         s.chainlink_gap_bps::double precision AS chainlink_move_bps,\n         (10000.0*(s.binance_price/s.chainlink_open_price-1))::double precision AS binance_move_bps\n  FROM polymarket.btc_feature_snapshots s\n  WHERE s.features->>'process_id'=${process_id:sqlstring}\n    AND s.feature_as_of BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n    AND s.readiness_status='ready'\n    AND s.chainlink_price>0 AND s.chainlink_open_price>0 AND s.binance_price>0\n), sampled AS MATERIALIZED (\n  SELECT date_bin(cfg.bucket_width,s.feature_as_of,s.window_start) AS time,s.market_id,\n         MIN(s.window_start) AS window_start,\n         last(s.chainlink_move_bps,s.feature_as_of) AS chainlink_move_bps,\n         last(s.binance_move_bps,s.feature_as_of) AS binance_move_bps\n  FROM source s CROSS JOIN settings cfg\n  GROUP BY 1,s.market_id\n), markets AS (\n  SELECT DISTINCT market_id,window_start FROM source\n), series AS (\n  SELECT time,'Chainlink vs 5m open'::text AS metric,chainlink_move_bps AS value FROM sampled\n  UNION ALL\n  SELECT time,'Binance vs 5m open',binance_move_bps FROM sampled\n  UNION ALL\n  SELECT time,'Chainlink 5m open / resolution',0::double precision FROM sampled\n  UNION ALL\n  SELECT window_start-interval '1 millisecond','Chainlink vs 5m open',NULL::double precision FROM markets\n  UNION ALL\n  SELECT window_start-interval '1 millisecond','Binance vs 5m open',NULL::double precision FROM markets\n), markers AS (\n  SELECT s.feature_as_of AS time,\n         CASE\n           WHEN m.official_winning_token_id IS NULL THEN 'Entry OPEN '\n           WHEN d.token_id=m.official_winning_token_id THEN 'Entry WIN '\n           ELSE 'Entry LOSS '\n         END||upper(d.outcome) AS metric,\n         s.chainlink_move_bps AS value\n  FROM source s\n  JOIN polymarket.btc_strategy_decisions d\n    ON d.snapshot_id=s.snapshot_id AND d.decision_at=s.feature_as_of\n   AND d.process_id=(${process_id:sqlstring})::uuid\n   AND d.decision_at BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n  JOIN polymarket.btc_interval_markets m ON m.market_id=s.market_id\n  WHERE d.action='buy' AND d.status='filled'\n)\nSELECT time,metric,value FROM series\nUNION ALL\nSELECT time,metric,value FROM markers\nORDER BY time,metric;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Binance–Chainlink Movement and Filled Entries",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "description": "Normalized basis is the current Binance/Chainlink basis minus its recent neutral median. Positive convergence speed means the absolute lead is shrinking without crossing; negative values mean it is expanding. Calculations use only prior observations, are partitioned by five-minute market, and never bridge missing data or process pauses.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": true,
+            "axisColorMode": "text",
+            "axisLabel": "Normalized Binance lead",
+            "axisPlacement": "left",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 6,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "gray",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "suffix: bps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Normalized Binance lead"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "purple",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Convergence speed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.axisCenteredZero",
+                "value": true
+              },
+              {
+                "id": "custom.axisLabel",
+                "value": "Convergence speed"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 18
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              },
+              {
+                "id": "unit",
+                "value": "suffix: bps/s"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "id": 17,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH settings AS MATERIALIZED (\n  SELECT CASE\n    WHEN $__timeTo()::timestamptz-$__timeFrom()::timestamptz<=interval '2 hours' THEN interval '1 second'\n    WHEN $__timeTo()::timestamptz-$__timeFrom()::timestamptz<=interval '12 hours' THEN interval '3 seconds'\n    WHEN $__timeTo()::timestamptz-$__timeFrom()::timestamptz<=interval '2 days' THEN interval '10 seconds'\n    WHEN $__timeTo()::timestamptz-$__timeFrom()::timestamptz<=interval '7 days' THEN interval '30 seconds'\n    WHEN $__timeTo()::timestamptz-$__timeFrom()::timestamptz<=interval '30 days' THEN interval '2 minutes'\n    ELSE interval '10 minutes'\n  END AS bucket_width\n), source AS MATERIALIZED (\n  SELECT s.feature_as_of,s.window_start,s.market_id,s.basis_bps::double precision AS basis_bps\n  FROM polymarket.btc_feature_snapshots s\n  WHERE s.features->>'process_id'=${process_id:sqlstring}\n    AND s.feature_as_of BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n    AND s.readiness_status='ready'\n    AND s.chainlink_price>0 AND s.chainlink_open_price>0 AND s.binance_price>0\n), sampled AS MATERIALIZED (\n  SELECT date_bin(cfg.bucket_width,s.feature_as_of,s.window_start) AS time,s.market_id,\n         MIN(s.window_start) AS window_start,\n         last(s.basis_bps,s.feature_as_of) AS basis_bps,\n         MAX(cfg.bucket_width) AS bucket_width\n  FROM source s CROSS JOIN settings cfg\n  GROUP BY 1,s.market_id\n), lagged AS (\n  SELECT *,\n         lag(time) OVER(PARTITION BY market_id ORDER BY time) AS previous_time,\n         lag(basis_bps) OVER(PARTITION BY market_id ORDER BY time) AS previous_basis\n  FROM sampled\n), metrics AS (\n  SELECT time,market_id,window_start,basis_bps,\n         CASE\n           WHEN previous_time IS NULL\n             OR time-previous_time>bucket_width*2\n             OR previous_basis IS NULL\n             OR sign(previous_basis)=0\n             OR sign(basis_bps)<>sign(previous_basis)\n           THEN NULL\n           ELSE (abs(previous_basis)-abs(basis_bps))\n                /NULLIF(EXTRACT(epoch FROM time-previous_time),0)\n         END AS convergence_speed\n  FROM lagged\n), markets AS (\n  SELECT DISTINCT market_id,window_start FROM source\n), series AS (\n  SELECT time,'Normalized Binance lead'::text AS metric,basis_bps AS value FROM metrics\n  UNION ALL\n  SELECT time,'Convergence speed',convergence_speed FROM metrics\n  UNION ALL\n  SELECT window_start-interval '1 millisecond','Normalized Binance lead',NULL::double precision FROM markets\n  UNION ALL\n  SELECT window_start-interval '1 millisecond','Convergence speed',NULL::double precision FROM markets\n)\nSELECT time,metric,value FROM series\nORDER BY time,CASE metric WHEN 'Normalized Binance lead' THEN 1 ELSE 2 END;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Normalized Lead and Convergence Speed",
+      "type": "timeseries"
     }
   ],
   "preload": false,
@@ -927,7 +2887,33 @@
     "polymarket-bot"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {
+          "selected": true,
+          "text": "BTC 5m Chainlink fair value paper concurrent [d665b88e]",
+          "value": "d665b88e-36b8-4910-8d8d-e93238ef993c"
+        },
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "postgres"
+        },
+        "definition": "SELECT p.name||' ['||left(p.process_id::text,8)||']' AS __text,p.process_id::text AS __value FROM polymarket.trading_processes p WHERE p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND EXISTS (SELECT 1 FROM polymarket.btc_strategy_decisions d WHERE d.process_id=p.process_id) ORDER BY p.created_at DESC",
+        "description": "Durable trading process identity. Stopped and disabled process history remains selectable.",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Trading process",
+        "multi": false,
+        "name": "process_id",
+        "options": [],
+        "query": "SELECT p.name||' ['||left(p.process_id::text,8)||']' AS __text,p.process_id::text AS __value FROM polymarket.trading_processes p WHERE p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND EXISTS (SELECT 1 FROM polymarket.btc_strategy_decisions d WHERE d.process_id=p.process_id) ORDER BY p.created_at DESC",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      }
+    ]
   },
   "time": {
     "from": "now-24h",
@@ -937,6 +2923,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 39,
+  "version": 40,
   "weekStart": ""
 }
