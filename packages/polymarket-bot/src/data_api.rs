@@ -5,23 +5,12 @@ use reqwest::{Client, Url};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
-use crate::models::{DataApiActivity, DataApiClosedPosition, DataApiPosition, DataApiValue};
+use crate::models::{DataApiActivity, DataApiPosition, DataApiValue};
 
 #[derive(Debug, Clone)]
 pub struct DataApiClient {
     http: Client,
     base_url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TradesQuery {
-    pub limit: usize,
-    pub offset: usize,
-    pub min_trade_usd: Decimal,
-    pub user: Option<String>,
-    pub market: Option<String>,
-    pub event_id: Option<i64>,
-    pub side: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -39,20 +28,6 @@ pub struct PositionsQuery {
     pub sort_by: Option<String>,
     pub sort_direction: Option<String>,
     pub title: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ClosedPositionsQuery {
-    pub user: String,
-    #[serde(default)]
-    pub markets: Vec<String>,
-    pub title: Option<String>,
-    #[serde(default)]
-    pub event_ids: Vec<i64>,
-    pub limit: Option<usize>,
-    pub offset: Option<usize>,
-    pub sort_by: Option<String>,
-    pub sort_direction: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -80,23 +55,6 @@ pub struct ValueQuery {
     pub markets: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApiTrade {
-    pub proxy_wallet: Option<String>,
-    pub asset: Option<String>,
-    pub condition_id: Option<String>,
-    pub size: Option<serde_json::Value>,
-    pub price: Option<serde_json::Value>,
-    pub timestamp: Option<serde_json::Value>,
-    pub title: Option<String>,
-    pub slug: Option<String>,
-    pub event_slug: Option<String>,
-    pub outcome: Option<String>,
-    pub side: Option<String>,
-    pub transaction_hash: Option<String>,
-}
-
 impl DataApiClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         let http = Client::builder()
@@ -120,52 +78,8 @@ impl DataApiClient {
         Self::new("https://data-api.polymarket.com")
     }
 
-    pub async fn fetch_trades(&self, query: &TradesQuery) -> Result<Vec<ApiTrade>> {
-        let mut url = Url::parse(&format!("{}/trades", self.base_url))
-            .context("invalid Polymarket Data API trades URL")?;
-        {
-            let mut pairs = url.query_pairs_mut();
-            pairs.append_pair("limit", &query.limit.to_string());
-            pairs.append_pair("offset", &query.offset.to_string());
-            pairs.append_pair("takerOnly", "true");
-            pairs.append_pair("filterType", "CASH");
-            pairs.append_pair("filterAmount", &query.min_trade_usd.to_string());
-            if let Some(user) = &query.user {
-                pairs.append_pair("user", user);
-            }
-            if let Some(market) = &query.market {
-                pairs.append_pair("market", market);
-            }
-            if let Some(event_id) = query.event_id {
-                pairs.append_pair("eventId", &event_id.to_string());
-            }
-            if let Some(side) = &query.side {
-                pairs.append_pair("side", side);
-            }
-        }
-
-        self.http
-            .get(url)
-            .send()
-            .await
-            .context("failed to request Polymarket trades")?
-            .error_for_status()
-            .context("Polymarket trades response was not successful")?
-            .json::<Vec<ApiTrade>>()
-            .await
-            .context("failed to decode Polymarket trades")
-    }
-
     pub async fn fetch_positions(&self, query: &PositionsQuery) -> Result<Vec<DataApiPosition>> {
         self.fetch_endpoint("positions", positions_params(query))
-            .await
-    }
-
-    pub async fn fetch_closed_positions(
-        &self,
-        query: &ClosedPositionsQuery,
-    ) -> Result<Vec<DataApiClosedPosition>> {
-        self.fetch_endpoint("closed-positions", closed_positions_params(query))
             .await
     }
 
@@ -199,15 +113,6 @@ impl DataApiClient {
 }
 
 impl PositionsQuery {
-    pub fn for_user(user: impl Into<String>) -> Self {
-        Self {
-            user: user.into(),
-            ..Self::default()
-        }
-    }
-}
-
-impl ClosedPositionsQuery {
     pub fn for_user(user: impl Into<String>) -> Self {
         Self {
             user: user.into(),
@@ -250,22 +155,6 @@ fn positions_params(query: &PositionsQuery) -> Vec<(String, String)> {
         query.sort_direction.as_deref(),
     );
     push_string(&mut params, "title", query.title.as_deref());
-    params
-}
-
-fn closed_positions_params(query: &ClosedPositionsQuery) -> Vec<(String, String)> {
-    let mut params = vec![("user".to_string(), query.user.clone())];
-    push_csv(&mut params, "market", &query.markets);
-    push_string(&mut params, "title", query.title.as_deref());
-    push_csv(&mut params, "eventId", &query.event_ids);
-    push_usize(&mut params, "limit", query.limit);
-    push_usize(&mut params, "offset", query.offset);
-    push_string(&mut params, "sortBy", query.sort_by.as_deref());
-    push_string(
-        &mut params,
-        "sortDirection",
-        query.sort_direction.as_deref(),
-    );
     params
 }
 

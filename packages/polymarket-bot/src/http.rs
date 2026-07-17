@@ -138,63 +138,6 @@ pub trait ControlApi: Send + Sync + 'static {
         ))
     }
 
-    async fn recompute_mrs_scores(
-        &self,
-        request: MrsRecomputeRequest,
-    ) -> Result<serde_json::Value, HttpError>;
-
-    async fn recompute_mrs_segment_scores(
-        &self,
-        request: MrsRecomputeRequest,
-    ) -> Result<serde_json::Value, HttpError>;
-
-    async fn enqueue_wallet_score_refresh(
-        &self,
-        _request: WalletScoreRefreshEnqueueRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "wallet score refresh enqueue is not wired",
-        ))
-    }
-
-    async fn process_wallet_score_refresh(
-        &self,
-        _request: WalletScoreRefreshProcessRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "wallet score refresh processing is not wired",
-        ))
-    }
-
-    async fn list_wallet_score_refresh_jobs(
-        &self,
-        _request: WalletScoreRefreshJobsRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "wallet score refresh job listing is not wired",
-        ))
-    }
-
-    async fn mrs_segment_summary(
-        &self,
-        request: WalletRowsRequest,
-    ) -> Result<serde_json::Value, HttpError>;
-
-    async fn gamma_taxonomy_status(&self) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "Gamma taxonomy status is not wired",
-        ))
-    }
-
-    async fn gamma_taxonomy_backfill(
-        &self,
-        _request: GammaTaxonomyBackfillRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "Gamma taxonomy backfill is not wired",
-        ))
-    }
-
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError>;
 
     async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics, HttpError>;
@@ -329,58 +272,6 @@ pub struct PlaceholderControlApi;
 impl ControlApi for PlaceholderControlApi {
     async fn metrics(&self) -> Result<MetricsResponse, HttpError> {
         Err(HttpError::not_implemented("metrics provider is not wired"))
-    }
-
-    async fn recompute_mrs_scores(
-        &self,
-        _request: MrsRecomputeRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented("MRS recompute is not wired"))
-    }
-
-    async fn recompute_mrs_segment_scores(
-        &self,
-        _request: MrsRecomputeRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "MRS segment recompute is not wired",
-        ))
-    }
-
-    async fn enqueue_wallet_score_refresh(
-        &self,
-        _request: WalletScoreRefreshEnqueueRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "wallet score refresh enqueue is not wired",
-        ))
-    }
-
-    async fn process_wallet_score_refresh(
-        &self,
-        _request: WalletScoreRefreshProcessRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "wallet score refresh processing is not wired",
-        ))
-    }
-
-    async fn list_wallet_score_refresh_jobs(
-        &self,
-        _request: WalletScoreRefreshJobsRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "wallet score refresh job listing is not wired",
-        ))
-    }
-
-    async fn mrs_segment_summary(
-        &self,
-        _request: WalletRowsRequest,
-    ) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "MRS segment summary is not wired",
-        ))
     }
 
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError> {
@@ -544,26 +435,6 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
             "/backfill/readiness/btc-five-minute-training",
             get(ingestion_training_readiness),
         )
-        .route("/wallets/mrs/recompute", post(recompute_mrs_scores))
-        .route(
-            "/wallets/scoring/refresh/enqueue",
-            post(enqueue_wallet_score_refresh),
-        )
-        .route(
-            "/wallets/scoring/refresh/process",
-            post(process_wallet_score_refresh),
-        )
-        .route(
-            "/wallets/scoring/refresh/jobs",
-            get(list_wallet_score_refresh_jobs),
-        )
-        .route("/wallets/mrs/segments", get(mrs_segment_summary))
-        .route(
-            "/wallets/mrs/segments/recompute",
-            post(recompute_mrs_segment_scores),
-        )
-        .route("/gamma/taxonomy/status", get(gamma_taxonomy_status))
-        .route("/gamma/taxonomy/backfill", post(gamma_taxonomy_backfill))
         .route("/live/status", get(live_status))
         .route("/live/diagnostics", get(live_identity_diagnostics))
         .route(
@@ -713,81 +584,6 @@ async fn ingestion_training_readiness(
     state
         .control
         .ingestion_training_readiness(request)
-        .await
-        .map(Json)
-}
-
-async fn recompute_mrs_scores(
-    State(state): State<HttpState>,
-    Json(request): Json<MrsRecomputeRequest>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state.control.recompute_mrs_scores(request).await.map(Json)
-}
-
-async fn recompute_mrs_segment_scores(
-    State(state): State<HttpState>,
-    Json(request): Json<MrsRecomputeRequest>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state
-        .control
-        .recompute_mrs_segment_scores(request)
-        .await
-        .map(Json)
-}
-
-async fn enqueue_wallet_score_refresh(
-    State(state): State<HttpState>,
-    Json(request): Json<WalletScoreRefreshEnqueueRequest>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state
-        .control
-        .enqueue_wallet_score_refresh(request)
-        .await
-        .map(Json)
-}
-
-async fn process_wallet_score_refresh(
-    State(state): State<HttpState>,
-    Json(request): Json<WalletScoreRefreshProcessRequest>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state
-        .control
-        .process_wallet_score_refresh(request)
-        .await
-        .map(Json)
-}
-
-async fn list_wallet_score_refresh_jobs(
-    State(state): State<HttpState>,
-    Query(request): Query<WalletScoreRefreshJobsRequest>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state
-        .control
-        .list_wallet_score_refresh_jobs(request)
-        .await
-        .map(Json)
-}
-
-async fn mrs_segment_summary(
-    State(state): State<HttpState>,
-    Query(request): Query<WalletRowsRequest>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state.control.mrs_segment_summary(request).await.map(Json)
-}
-
-async fn gamma_taxonomy_status(
-    State(state): State<HttpState>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state.control.gamma_taxonomy_status().await.map(Json)
-}
-
-async fn gamma_taxonomy_backfill(
-    State(state): State<HttpState>,
-    Json(request): Json<GammaTaxonomyBackfillRequest>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state
-        .control
-        .gamma_taxonomy_backfill(request)
         .await
         .map(Json)
 }
@@ -1028,67 +824,6 @@ pub struct MetricsResponse {
     pub counters: serde_json::Value,
     #[serde(default)]
     pub gauges: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WalletRowsRequest {
-    #[serde(default)]
-    pub process_id: Option<Uuid>,
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MrsRecomputeRequest {
-    pub lookback_days: Option<i64>,
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WalletScoreRefreshEnqueueRequest {
-    #[serde(default)]
-    pub wallets: Vec<String>,
-    #[serde(default)]
-    pub reason: Option<String>,
-    #[serde(default)]
-    pub score_version: Option<String>,
-    #[serde(default)]
-    pub segment_score_version: Option<String>,
-    #[serde(default)]
-    pub metadata: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WalletScoreRefreshProcessRequest {
-    #[serde(default)]
-    pub wallets: Vec<String>,
-    #[serde(default)]
-    pub use_queue: Option<bool>,
-    pub lookback_days: Option<i64>,
-    pub page_limit: Option<usize>,
-    pub max_pages: Option<usize>,
-    pub limit: Option<i64>,
-    #[serde(default)]
-    pub refresh_percentiles: bool,
-    #[serde(default)]
-    pub score_version: Option<String>,
-    #[serde(default)]
-    pub segment_score_version: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WalletScoreRefreshJobsRequest {
-    #[serde(default)]
-    pub status: Option<String>,
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GammaTaxonomyBackfillRequest {
-    pub limit: Option<i64>,
-    #[serde(default)]
-    pub dry_run: bool,
-    #[serde(default)]
-    pub fallback_keywords: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

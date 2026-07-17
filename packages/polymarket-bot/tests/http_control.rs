@@ -157,45 +157,6 @@ impl ControlApi for FakeControlApi {
         })
     }
 
-    async fn recompute_mrs_scores(
-        &self,
-        _request: http::MrsRecomputeRequest,
-    ) -> Result<Value, HttpError> {
-        Ok(serde_json::json!({
-            "score_version": "mrs_v1",
-            "updated_wallets": 1,
-            "top_scores": []
-        }))
-    }
-
-    async fn recompute_mrs_segment_scores(
-        &self,
-        _request: http::MrsRecomputeRequest,
-    ) -> Result<Value, HttpError> {
-        Ok(serde_json::json!({
-            "score_version": "mrs_segment_v1",
-            "updated_segments": 1,
-            "summary": {
-                "segments": [],
-                "top_wallets": []
-            }
-        }))
-    }
-
-    async fn mrs_segment_summary(
-        &self,
-        _request: http::WalletRowsRequest,
-    ) -> Result<Value, HttpError> {
-        Ok(serde_json::json!({
-            "score_version": "mrs_segment_v1",
-            "segments": [{
-                "segment_key": "crypto",
-                "wallets_scored": 1
-            }],
-            "top_wallets": []
-        }))
-    }
-
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError> {
         Ok(LiveVenueStatus {
             mode: "sim".to_string(),
@@ -1008,6 +969,35 @@ async fn retired_whale_copy_routes_are_not_found() {
         "/admin/trades/pnl/recent-exits",
         "/admin/copy-trade/expectancy-flow/cells",
         "/admin/copy-trade/expectancy-flow/wallet-cells",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header(AUTHORIZATION, "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn retired_wallet_analytics_routes_are_not_found() {
+    let app = http::router(Arc::new(FakeControlApi), "secret");
+    for uri in [
+        "/admin/wallets/mrs/recompute",
+        "/admin/wallets/scoring/refresh/enqueue",
+        "/admin/wallets/scoring/refresh/process",
+        "/admin/wallets/scoring/refresh/jobs",
+        "/admin/wallets/mrs/segments",
+        "/admin/wallets/mrs/segments/recompute",
+        "/admin/gamma/taxonomy/status",
+        "/admin/gamma/taxonomy/backfill",
     ] {
         let response = app
             .clone()
