@@ -44,68 +44,6 @@ pub enum TokenSide {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SignalCandidate {
-    pub signal_id: Uuid,
-    #[serde(default)]
-    pub process_id: Option<Uuid>,
-    pub signal_type: SignalType,
-    pub market_id: String,
-    pub expected_edge: Decimal,
-    pub threshold: Decimal,
-    pub size: Decimal,
-    pub status: SignalStatus,
-    pub reject_reason: Option<String>,
-    pub worst_case_loss: Option<Decimal>,
-    pub metadata: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OrderbookSnapshot {
-    pub snapshot_id: Uuid,
-    pub timestamp_utc: DateTime<Utc>,
-    pub market_id: String,
-    pub token_id: String,
-    pub best_bid: Option<Decimal>,
-    pub best_ask: Option<Decimal>,
-    pub tick_size: Decimal,
-    pub stale_level_count: i32,
-    pub fresh_depth_bid: Decimal,
-    pub fresh_depth_ask: Decimal,
-    pub book: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PositionRecord {
-    pub position_id: Uuid,
-    pub market_id: String,
-    pub token_id: String,
-    pub underlying_key: String,
-    pub status: String,
-    pub size: Decimal,
-    pub cost_basis: Decimal,
-    pub worst_case_loss: Decimal,
-    pub raw: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SignalType {
-    CheapBasket,
-    ExpensiveBasket,
-    Conversion,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SignalStatus {
-    Detected,
-    Rejected,
-    Submitted,
-    Filled,
-    Recovered,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderRequest {
     pub client_order_id: Uuid,
     #[serde(default)]

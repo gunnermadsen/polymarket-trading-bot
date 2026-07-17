@@ -1,3 +1,4 @@
+pub mod fees;
 pub mod live;
 pub mod sim;
 
