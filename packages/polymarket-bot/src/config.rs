@@ -1,4 +1,4 @@
-use std::{env, time::Duration};
+use std::{env, fmt, time::Duration};
 
 use anyhow::{bail, Result};
 use rust_decimal::Decimal;
@@ -23,6 +23,37 @@ pub struct AppConfig {
     pub risk: RiskConfig,
     pub http: HttpConfig,
     pub btc: BtcConfig,
+    pub grafana_live: GrafanaLiveConfig,
+}
+
+#[derive(Clone)]
+pub struct GrafanaLiveConfig {
+    pub enabled: bool,
+    pub push_url: String,
+    pub publish_interval: Duration,
+    pub bearer_token: Option<String>,
+    pub basic_auth_username: Option<String>,
+    pub basic_auth_password: Option<String>,
+}
+
+impl fmt::Debug for GrafanaLiveConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GrafanaLiveConfig")
+            .field("enabled", &self.enabled)
+            .field("push_url", &self.push_url)
+            .field("publish_interval", &self.publish_interval)
+            .field(
+                "bearer_token",
+                &self.bearer_token.as_ref().map(|_| "[redacted]"),
+            )
+            .field("basic_auth_username", &self.basic_auth_username)
+            .field(
+                "basic_auth_password",
+                &self.basic_auth_password.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -147,6 +178,49 @@ impl AppConfig {
         if btc.ml_shadow_enabled && !btc.realtime_enabled {
             bail!("POLYMARKET_BTC_ML_SHADOW_ENABLED requires POLYMARKET_BTC_REALTIME_ENABLED");
         }
+
+        let grafana_live = GrafanaLiveConfig {
+            enabled: parse_bool("POLYMARKET_GRAFANA_LIVE_ENABLED", false),
+            push_url: env_or(
+                "POLYMARKET_GRAFANA_LIVE_PUSH_URL",
+                "http://grafana:3000/api/live/push/polymarket",
+            ),
+            publish_interval: Duration::from_millis(parse_u64(
+                "POLYMARKET_GRAFANA_LIVE_PUBLISH_INTERVAL_MS",
+                1_000,
+            )),
+            bearer_token: first_non_empty_env(&["POLYMARKET_GRAFANA_LIVE_BEARER_TOKEN"]),
+            basic_auth_username: first_non_empty_env(&[
+                "POLYMARKET_GRAFANA_LIVE_USERNAME",
+                "GRAFANA_ADMIN_USER",
+            ]),
+            basic_auth_password: first_non_empty_env(&[
+                "POLYMARKET_GRAFANA_LIVE_PASSWORD",
+                "GRAFANA_ADMIN_PASSWORD",
+            ]),
+        };
+        if grafana_live.enabled {
+            if !btc.realtime_enabled {
+                bail!("POLYMARKET_GRAFANA_LIVE_ENABLED requires POLYMARKET_BTC_REALTIME_ENABLED");
+            }
+            if !grafana_live.push_url.starts_with("http://")
+                && !grafana_live.push_url.starts_with("https://")
+            {
+                bail!("POLYMARKET_GRAFANA_LIVE_PUSH_URL must be an HTTP(S) URL");
+            }
+            if grafana_live.publish_interval < Duration::from_millis(250)
+                || grafana_live.publish_interval > Duration::from_secs(5)
+            {
+                bail!("POLYMARKET_GRAFANA_LIVE_PUBLISH_INTERVAL_MS must be between 250 and 5000");
+            }
+            let basic_auth_complete = grafana_live.basic_auth_username.is_some()
+                && grafana_live.basic_auth_password.is_some();
+            if grafana_live.bearer_token.is_none() && !basic_auth_complete {
+                bail!(
+                    "Grafana Live requires POLYMARKET_GRAFANA_LIVE_BEARER_TOKEN or complete Grafana basic-auth credentials"
+                );
+            }
+        }
         if btc.realtime_enabled || btc.paper_enabled {
             let mut conflicting_flags = Vec::new();
             for (name, enabled) in [
@@ -206,6 +280,7 @@ impl AppConfig {
                 admin_token: env_or("POLYMARKET_HTTP_ADMIN_TOKEN", "dev-polymarket-admin"),
             },
             btc,
+            grafana_live,
         })
     }
 }

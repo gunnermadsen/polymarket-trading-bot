@@ -110,6 +110,7 @@ services:
     env_file:
       - *app-env-file
       - *postgres-env-file
+      - *grafana-env-file
     environment:
       RUST_LOG: "info"
       POSTGRES_HOST: "timescaledb-0"
@@ -133,6 +134,9 @@ services:
       POLYMARKET_HEALTH_INTERVAL_SECS: "30"
       POLYMARKET_HTTP_ENABLED: "true"
       POLYMARKET_HTTP_BIND: "0.0.0.0:8097"
+      POLYMARKET_GRAFANA_LIVE_ENABLED: "true"
+      POLYMARKET_GRAFANA_LIVE_PUSH_URL: "http://grafana:3000/api/live/push/polymarket"
+      POLYMARKET_GRAFANA_LIVE_PUBLISH_INTERVAL_MS: "1000"
     ports:
       - "127.0.0.1:${POLYMARKET_HTTP_HOST_PORT:-8098}:8097"
     depends_on:
@@ -204,6 +208,8 @@ services:
     environment:
       GF_USERS_DEFAULT_THEME: "dark"
       GF_DATE_FORMATS_DEFAULT_TIMEZONE: "browser"
+      GF_LIVE_MAX_CONNECTIONS: "100"
+      GF_LIVE_ALLOWED_ORIGINS: "http://localhost:3030,http://127.0.0.1:3030"
     ports:
       - "127.0.0.1:3030:3000"
     volumes:

@@ -8,6 +8,7 @@ pub mod data_api;
 pub mod events;
 pub mod execution;
 pub mod gamma;
+pub mod grafana_live;
 pub mod http;
 pub mod idempotency;
 pub mod ingestion;
