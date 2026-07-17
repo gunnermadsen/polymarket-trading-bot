@@ -119,11 +119,11 @@ impl CountdownSnapshot {
             .expect("a current UTC timestamp is representable in nanoseconds");
         let window_end_epoch_seconds = self.window_end.map(|value| value.timestamp()).unwrap_or(0);
         format!(
-            "{COUNTDOWN_MEASUREMENT},status={} seconds_remaining={}i,active_processes={}i,available={},market_id=\"{}\",event_slug=\"{}\",window_end_epoch_seconds={}i {}",
-            self.status.as_str(),
+            "{COUNTDOWN_MEASUREMENT} seconds_remaining={}i,active_processes={}i,available={},status=\"{}\",market_id=\"{}\",event_slug=\"{}\",window_end_epoch_seconds={}i {}",
             self.seconds_remaining,
             self.active_processes,
             self.status == CountdownStatus::Active,
+            self.status.as_str(),
             escape_influx_string(&self.market_id),
             escape_influx_string(&self.event_slug),
             window_end_epoch_seconds,
@@ -253,10 +253,12 @@ mod tests {
         let snapshot = CountdownSnapshot::resolve(now, 1, vec![market("one", now)]);
         let line = snapshot.influx_line();
 
-        assert!(line.starts_with("btc_market_countdown,status=active "));
+        assert!(line.starts_with("btc_market_countdown seconds_remaining=147i"));
+        assert_eq!(line.split_once(' ').unwrap().0, "btc_market_countdown");
         assert!(line.contains("seconds_remaining=147i"));
         assert!(line.contains("active_processes=1i"));
         assert!(line.contains("available=true"));
+        assert!(line.contains("status=\"active\""));
         assert!(line.contains("market_id=\"one\""));
     }
 }
