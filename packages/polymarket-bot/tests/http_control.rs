@@ -601,7 +601,7 @@ impl ControlApi for FakeControlApi {
                 }),
                 raw: serde_json::json!({
                     "pipeline_version": "btc_realtime_paper_pipeline_v11",
-                    "process_schema_version": "btc_realtime_paper_process_v1",
+                    "process_schema_version": "btc_realtime_paper_process_v2",
                     "preregistration_sha256": "b".repeat(64),
                 }),
                 ..TradingProcessConfig::default()

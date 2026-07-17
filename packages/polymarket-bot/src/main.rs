@@ -50,7 +50,8 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 const BTC_PIPELINE_VERSION: &str = "btc_realtime_paper_pipeline_v11";
-const BTC_PROCESS_SCHEMA_VERSION: &str = "btc_realtime_paper_process_v1";
+const BTC_PROCESS_SCHEMA_VERSION: &str = "btc_realtime_paper_process_v2";
+const LEGACY_BTC_PROCESS_SCHEMA_VERSION: &str = "btc_realtime_paper_process_v1";
 const BTC_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(45);
 const COMPILED_SOURCE_IDENTITY: &str = env!("POLYMARKET_COMPILED_SOURCE_ID");
 
@@ -204,7 +205,6 @@ struct BtcRealtimePaperControlConfig {
     strategy: serde_json::Value,
     runtime: BtcProcessRuntimeControl,
     paper: BtcProcessPaperControl,
-    ml_shadow: BtcProcessMlShadowControl,
 }
 
 impl Default for BtcRealtimePaperControlConfig {
@@ -216,9 +216,63 @@ impl Default for BtcRealtimePaperControlConfig {
             strategy: serde_json::json!({}),
             runtime: BtcProcessRuntimeControl::default(),
             paper: BtcProcessPaperControl::default(),
-            ml_shadow: BtcProcessMlShadowControl::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BtcDefinitionUse {
+    ExplicitStart,
+    DurableResume,
+}
+
+fn parse_btc_process_control(
+    mut value: serde_json::Value,
+    definition_use: BtcDefinitionUse,
+) -> Result<BtcRealtimePaperControlConfig, HttpError> {
+    let schema_version = value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| HttpError::bad_request("BTC process schema_version is required"))?;
+
+    if schema_version == LEGACY_BTC_PROCESS_SCHEMA_VERSION {
+        if definition_use != BtcDefinitionUse::DurableResume {
+            return Err(HttpError::bad_request(format!(
+                "BTC process schema_version {LEGACY_BTC_PROCESS_SCHEMA_VERSION} is resume-only; new and explicitly restarted processes must use {BTC_PROCESS_SCHEMA_VERSION}"
+            )));
+        }
+        let object = value.as_object_mut().ok_or_else(|| {
+            HttpError::bad_request("BTC process control configuration must be an object")
+        })?;
+        if let Some(retired) = object.remove("ml_shadow") {
+            let retired = retired.as_object().ok_or_else(|| {
+                HttpError::bad_request("legacy ml_shadow compatibility value must be an object")
+            })?;
+            if retired.keys().any(|key| key != "enabled")
+                || retired
+                    .get("enabled")
+                    .is_some_and(|enabled| !enabled.is_boolean())
+            {
+                return Err(HttpError::bad_request(
+                    "legacy ml_shadow compatibility value may contain only a boolean enabled field",
+                ));
+            }
+        }
+        object.insert(
+            "schema_version".to_string(),
+            serde_json::Value::String(BTC_PROCESS_SCHEMA_VERSION.to_string()),
+        );
+    } else if schema_version != BTC_PROCESS_SCHEMA_VERSION {
+        return Err(HttpError::bad_request(format!(
+            "BTC process schema_version must be {BTC_PROCESS_SCHEMA_VERSION}"
+        )));
+    }
+
+    serde_json::from_value(value).map_err(|error| {
+        HttpError::bad_request(format!(
+            "invalid process config.raw.btc_realtime_paper: {error}"
+        ))
+    })
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -278,18 +332,6 @@ struct BtcProcessPaperPreviewControl {
     visible_depth_haircut: rust_decimal::Decimal,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct BtcProcessMlShadowControl {
-    enabled: bool,
-}
-
-impl Default for BtcProcessMlShadowControl {
-    fn default() -> Self {
-        Self { enabled: false }
-    }
-}
-
 #[derive(Clone)]
 struct ResolvedBtcProcessDefinition {
     control: BtcRealtimePaperControlConfig,
@@ -297,7 +339,6 @@ struct ResolvedBtcProcessDefinition {
     runtime: BtcRuntimeConfig,
     paper_venue: PaperVenueConfig,
     paper_stress_previews: Vec<PaperPreviewConfig>,
-    ml_shadow_enabled: bool,
 }
 
 struct PreparedBtcStartDefinition {
@@ -308,7 +349,6 @@ struct PreparedBtcStartDefinition {
     runtime: BtcRuntimeConfig,
     paper_venue: PaperVenueConfig,
     paper_stress_previews: Vec<PaperPreviewConfig>,
-    ml_shadow_enabled: bool,
     frozen_process_config: TradingProcessConfig,
     config_hash: String,
 }
@@ -379,7 +419,6 @@ fn prepare_btc_start_definition(
         runtime,
         paper_venue,
         paper_stress_previews,
-        ml_shadow_enabled,
     } = resolved;
     let experiment_key = control.next_experiment_key;
     let preregistration_sha256 = control.preregistration_sha256;
@@ -401,11 +440,6 @@ fn prepare_btc_start_definition(
             "execution_enabled": true,
             "venue": &paper_venue,
             "stress_previews": &paper_stress_previews,
-        },
-        "ml_shadow": {
-            "ml_a_enabled": ml_shadow_enabled,
-            "ml_b_enabled": ml_shadow_enabled,
-            "execution_authority": false,
         }
     });
     let frozen_process_config = TradingProcessConfig {
@@ -433,7 +467,6 @@ fn prepare_btc_start_definition(
         runtime,
         paper_venue,
         paper_stress_previews,
-        ml_shadow_enabled,
         frozen_process_config,
         config_hash,
     })
@@ -442,11 +475,27 @@ fn prepare_btc_start_definition(
 fn resume_config_without_compiled_source_identity(
     mut config: serde_json::Value,
 ) -> serde_json::Value {
-    if let Some(build) = config
-        .pointer_mut("/raw/build")
+    if let Some(raw) = config
+        .get_mut("raw")
         .and_then(serde_json::Value::as_object_mut)
     {
-        build.remove("compiled_source_identity");
+        if let Some(build) = raw
+            .get_mut("build")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            build.remove("compiled_source_identity");
+        }
+        if raw
+            .get("process_schema_version")
+            .and_then(serde_json::Value::as_str)
+            == Some(LEGACY_BTC_PROCESS_SCHEMA_VERSION)
+        {
+            raw.insert(
+                "process_schema_version".to_string(),
+                serde_json::Value::String(BTC_PROCESS_SCHEMA_VERSION.to_string()),
+            );
+            raw.remove("ml_shadow");
+        }
     }
     config
 }
@@ -535,22 +584,22 @@ impl BtcProcessManager {
         &self,
         process: &TradingProcess,
     ) -> Result<ResolvedBtcProcessDefinition, HttpError> {
-        self.validate_definition(process, true)
+        self.validate_definition(process, BtcDefinitionUse::ExplicitStart)
     }
 
     fn validate_resume_definition(
         &self,
         process: &TradingProcess,
     ) -> Result<ResolvedBtcProcessDefinition, HttpError> {
-        self.validate_definition(process, false)
+        self.validate_definition(process, BtcDefinitionUse::DurableResume)
     }
 
     fn validate_definition(
         &self,
         process: &TradingProcess,
-        require_inactive: bool,
+        definition_use: BtcDefinitionUse,
     ) -> Result<ResolvedBtcProcessDefinition, HttpError> {
-        if require_inactive {
+        if definition_use == BtcDefinitionUse::ExplicitStart {
             validate_btc_start_eligibility(
                 process,
                 self.config.btc.realtime_enabled,
@@ -592,17 +641,7 @@ impl BtcProcessManager {
                     "process config.raw.btc_realtime_paper is required before start",
                 )
             })?;
-        let mut control: BtcRealtimePaperControlConfig = serde_json::from_value(control_value)
-            .map_err(|error| {
-                HttpError::bad_request(format!(
-                    "invalid process config.raw.btc_realtime_paper: {error}"
-                ))
-            })?;
-        if control.schema_version != BTC_PROCESS_SCHEMA_VERSION {
-            return Err(HttpError::bad_request(format!(
-                "BTC process schema_version must be {BTC_PROCESS_SCHEMA_VERSION}"
-            )));
-        }
+        let mut control = parse_btc_process_control(control_value, definition_use)?;
         control.next_experiment_key = control.next_experiment_key.trim().to_string();
         control.preregistration_sha256 = control.preregistration_sha256.trim().to_ascii_lowercase();
         if control.next_experiment_key.is_empty() {
@@ -753,19 +792,12 @@ impl BtcProcessManager {
             }
             paper_stress_previews.push(resolved);
         }
-        if control.ml_shadow.enabled && !self.config.btc.ml_shadow_enabled {
-            return Err(HttpError::bad_request(
-                "BTC ML shadow was requested but is disabled by the deployment capability gate",
-            ));
-        }
-        let ml_shadow_enabled = control.ml_shadow.enabled;
         Ok(ResolvedBtcProcessDefinition {
             control,
             strategy,
             runtime,
             paper_venue,
             paper_stress_previews,
-            ml_shadow_enabled,
         })
     }
 
@@ -879,7 +911,7 @@ impl BtcProcessManager {
              AND e.name = p.config #>> '{raw,btc_realtime_paper,next_experiment_key}'
             WHERE p.process_type = 'btc_5m'
               AND p.process_scope = 'realtime_paper'
-              AND p.config #>> '{raw,btc_realtime_paper,schema_version}' = $1
+              AND p.config #>> '{raw,btc_realtime_paper,schema_version}' IN ($1, $2)
               AND p.enabled
               AND p.status IN ('starting','running','stopping')
               AND p.stopped_at IS NULL
@@ -889,6 +921,7 @@ impl BtcProcessManager {
             "#,
         )
         .bind(BTC_PROCESS_SCHEMA_VERSION)
+        .bind(LEGACY_BTC_PROCESS_SCHEMA_VERSION)
         .fetch_all(&self.pool)
         .await
         .map_err(|error| HttpError::internal(error.to_string()))?;
@@ -946,7 +979,6 @@ impl BtcProcessManager {
             runtime: runtime_config,
             paper_venue: paper_venue_config,
             paper_stress_previews,
-            ml_shadow_enabled,
             frozen_process_config,
             config_hash: current_config_hash,
         } = self.prepare_resume_definition(&process)?;
@@ -1016,8 +1048,8 @@ impl BtcProcessManager {
                     strategy,
                     execution_enabled: true,
                     paper_stress_previews,
-                    ml_a_shadow_enabled: ml_shadow_enabled,
-                    ml_b_shadow_enabled: ml_shadow_enabled,
+                    ml_a_shadow_enabled: false,
+                    ml_b_shadow_enabled: false,
                 },
             )?);
             experiment
@@ -1092,7 +1124,6 @@ impl BtcProcessManager {
             runtime: runtime_config,
             paper_venue: paper_venue_config,
             paper_stress_previews,
-            ml_shadow_enabled,
             frozen_process_config,
             config_hash,
         } = self.prepare_start_definition(&process)?;
@@ -1165,8 +1196,8 @@ impl BtcProcessManager {
                     strategy: strategy.clone(),
                     execution_enabled: true,
                     paper_stress_previews: paper_stress_previews.clone(),
-                    ml_a_shadow_enabled: ml_shadow_enabled,
-                    ml_b_shadow_enabled: ml_shadow_enabled,
+                    ml_a_shadow_enabled: false,
+                    ml_b_shadow_enabled: false,
                 },
             )?);
             experiment
@@ -2910,7 +2941,6 @@ mod lifecycle_tests {
         assert_eq!(control.runtime.strategy_interval_ms, 1_000);
         assert_eq!(control.paper.arrival_latency_ms, 150);
         assert_eq!(control.paper.visible_depth_haircut, dec!(0.80));
-        assert!(!control.ml_shadow.enabled);
     }
 
     #[test]
@@ -2922,6 +2952,30 @@ mod lifecycle_tests {
             "unknown_setting": true,
         }));
         assert!(result.is_err());
+
+        let retired_ml =
+            serde_json::from_value::<BtcRealtimePaperControlConfig>(serde_json::json!({
+                "schema_version": BTC_PROCESS_SCHEMA_VERSION,
+                "next_experiment_key": "btc-5m-paper-20260713-c",
+                "preregistration_sha256": "a".repeat(64),
+                "ml_shadow": {"enabled": true},
+            }));
+        assert!(retired_ml.is_err());
+    }
+
+    #[test]
+    fn retired_v1_ml_field_is_accepted_only_for_durable_resume() {
+        let legacy = serde_json::json!({
+            "schema_version": LEGACY_BTC_PROCESS_SCHEMA_VERSION,
+            "next_experiment_key": "btc-5m-paper-20260713-c",
+            "preregistration_sha256": "a".repeat(64),
+            "ml_shadow": {"enabled": true},
+        });
+        assert!(
+            parse_btc_process_control(legacy.clone(), BtcDefinitionUse::ExplicitStart).is_err()
+        );
+        let resumed = parse_btc_process_control(legacy, BtcDefinitionUse::DurableResume).unwrap();
+        assert_eq!(resumed.schema_version, BTC_PROCESS_SCHEMA_VERSION);
     }
 
     #[test]
@@ -2960,7 +3014,6 @@ mod lifecycle_tests {
             },
             paper_venue: PaperVenueConfig::default(),
             paper_stress_previews: Vec::new(),
-            ml_shadow_enabled: false,
         };
 
         let first = prepare_btc_start_definition(resolved.clone()).unwrap();
@@ -2988,6 +3041,7 @@ mod lifecycle_tests {
             first.frozen_process_config.raw["process_schema_version"],
             BTC_PROCESS_SCHEMA_VERSION
         );
+        assert!(first.frozen_process_config.raw.get("ml_shadow").is_none());
         assert_eq!(
             first
                 .frozen_process_config
@@ -3028,6 +3082,12 @@ mod lifecycle_tests {
     fn btc_resume_preserves_frozen_parameters_across_service_rebuilds() {
         let durable = serde_json::json!({
             "raw": {
+                "process_schema_version": LEGACY_BTC_PROCESS_SCHEMA_VERSION,
+                "ml_shadow": {
+                    "ml_a_enabled": true,
+                    "ml_b_enabled": true,
+                    "execution_authority": false
+                },
                 "build": {
                     "package_version": "0.1.0",
                     "compiled_source_identity": "tree-sha256:old"
@@ -3037,6 +3097,7 @@ mod lifecycle_tests {
         });
         let rebuilt = serde_json::json!({
             "raw": {
+                "process_schema_version": BTC_PROCESS_SCHEMA_VERSION,
                 "build": {
                     "package_version": "0.1.0",
                     "compiled_source_identity": "tree-sha256:new"
@@ -3051,6 +3112,7 @@ mod lifecycle_tests {
 
         let changed_parameters = serde_json::json!({
             "raw": {
+                "process_schema_version": BTC_PROCESS_SCHEMA_VERSION,
                 "build": {
                     "package_version": "0.1.0",
                     "compiled_source_identity": "tree-sha256:new"
@@ -3062,5 +3124,47 @@ mod lifecycle_tests {
             resume_config_without_compiled_source_identity(durable),
             resume_config_without_compiled_source_identity(changed_parameters)
         );
+    }
+
+    #[test]
+    fn readme_btc_process_contract_matches_v2_parser() {
+        let readme = include_str!("../../../README.md");
+        let contract = readme
+            .split("<!-- btc-5m-process-v2:start -->")
+            .nth(1)
+            .and_then(|tail| tail.split("<!-- btc-5m-process-v2:end -->").next())
+            .expect("README must contain the BTC v2 process contract example")
+            .trim()
+            .strip_prefix("```json")
+            .and_then(|json| json.trim().strip_suffix("```"))
+            .expect("README BTC process contract must be a JSON code block");
+        let request: control_http::UpsertTradingProcessByKeyRequest =
+            serde_json::from_str(contract).unwrap();
+        let control = request
+            .config
+            .raw
+            .get("btc_realtime_paper")
+            .cloned()
+            .unwrap();
+        parse_btc_process_control(control, BtcDefinitionUse::ExplicitStart).unwrap();
+
+        let now = Utc::now();
+        let process = TradingProcess {
+            process_id: uuid::Uuid::nil(),
+            name: request.name,
+            process_type: request.process_type,
+            process_scope: request.process_scope,
+            process_key: Some("btc-5m-chainlink-paper".to_string()),
+            status: request.status,
+            enabled: request.enabled,
+            config: request.config,
+            metadata: request.metadata,
+            created_at: now,
+            updated_at: now,
+            started_at: None,
+            stopped_at: None,
+            last_error: None,
+        };
+        validate_btc_start_eligibility(&process, true, true).unwrap();
     }
 }

@@ -95,3 +95,105 @@ running. Each BTC paper start creates a distinct immutable experiment while the
 stable process key can be reused. Trading mode is selected by
 `trading_processes.config.execution.mode`; host configuration is limited to
 credentials, venue URLs, and hard risk caps.
+
+## BTC Five-Minute Chainlink Process Contract
+
+New BTC process definitions use `btc_realtime_paper_process_v2`. The stable
+identity is `process_type=btc_5m`, `process_scope=realtime_paper`, plus a unique
+`process_key`. The execution contract is paper-only, executes approved signals,
+and never permits live capital. Unknown fields inside
+`config.raw.btc_realtime_paper` are rejected. In particular, the retired
+`ml_shadow` setting is not part of this contract.
+
+Save the following request body as `btc-process-v2.json`. Replace the process
+name, `next_experiment_key`, and preregistration digest before creating a real
+process. The digest must be exactly 64 hexadecimal characters.
+
+<!-- btc-5m-process-v2:start -->
+```json
+{
+  "name": "BTC 5m Chainlink paper",
+  "process_type": "btc_5m",
+  "process_scope": "realtime_paper",
+  "enabled": false,
+  "status": "created",
+  "config": {
+    "execution": {
+      "mode": "paper",
+      "execute_signals": true,
+      "live_capital": false
+    },
+    "raw": {
+      "btc_realtime_paper": {
+        "schema_version": "btc_realtime_paper_process_v2",
+        "next_experiment_key": "btc-5m-chainlink-paper-example-v1",
+        "preregistration_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "strategy": {},
+        "runtime": {
+          "strategy_interval_ms": 1000,
+          "official_resolution_audit_grace_secs": 120,
+          "official_resolution_watch_retention_secs": 3600
+        },
+        "paper": {
+          "arrival_latency_ms": 150,
+          "visible_depth_haircut": "0.80",
+          "starting_collateral_usd": "1000",
+          "stress_previews": [
+            {
+              "scenario_key": "latency_300ms_depth_65pct",
+              "arrival_latency_ms": 300,
+              "visible_depth_haircut": "0.65"
+            },
+            {
+              "scenario_key": "latency_600ms_depth_50pct",
+              "arrival_latency_ms": 600,
+              "visible_depth_haircut": "0.50"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "metadata": {}
+}
+```
+<!-- btc-5m-process-v2:end -->
+
+Create the definition through the stable-key API, preview the immutable run,
+then start it explicitly:
+
+```bash
+PROCESS_KEY="btc-5m-chainlink-paper"
+PROCESS_ID="$({
+  curl -fsS -X PUT \
+    "http://127.0.0.1:${POLYMARKET_HTTP_HOST_PORT:-8098}/admin/trading-processes/by-key/${PROCESS_KEY}" \
+    -H "Authorization: Bearer ${POLYMARKET_HTTP_ADMIN_TOKEN}" \
+    -H "Content-Type: application/json" \
+    --data @btc-process-v2.json
+} | jq -r '.process.process_id')"
+
+curl -fsS \
+  "http://127.0.0.1:${POLYMARKET_HTTP_HOST_PORT:-8098}/admin/trading-processes/${PROCESS_ID}/start-preview" \
+  -H "Authorization: Bearer ${POLYMARKET_HTTP_ADMIN_TOKEN}"
+
+curl -fsS -X POST \
+  "http://127.0.0.1:${POLYMARKET_HTTP_HOST_PORT:-8098}/admin/trading-processes/${PROCESS_ID}/start" \
+  -H "Authorization: Bearer ${POLYMARKET_HTTP_ADMIN_TOKEN}"
+```
+
+Use the status and stop endpoints for lifecycle management:
+
+```bash
+curl -fsS \
+  "http://127.0.0.1:${POLYMARKET_HTTP_HOST_PORT:-8098}/admin/trading-processes/${PROCESS_ID}/status" \
+  -H "Authorization: Bearer ${POLYMARKET_HTTP_ADMIN_TOKEN}"
+
+curl -fsS -X POST \
+  "http://127.0.0.1:${POLYMARKET_HTTP_HOST_PORT:-8098}/admin/trading-processes/${PROCESS_ID}/stop" \
+  -H "Authorization: Bearer ${POLYMARKET_HTTP_ADMIN_TOKEN}"
+```
+
+An existing running v1 process may be reattached after a service restart, but
+v1 is resume-only. Once stopped, it must be updated to the v2 contract before
+another explicit start. Process type, scope, and stable key are immutable;
+name and configuration may be updated only while the process is stopped.
