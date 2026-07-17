@@ -31,34 +31,49 @@ export class RetirePolymarketReplayAndBacktests1784222637000 implements Migratio
       WHERE job_id IN (SELECT job_id FROM retired_replay_jobs);
     `);
 
-    await queryRunner.query(`
-      DELETE FROM polymarket.fills
-      WHERE process_id IN (SELECT process_id FROM retired_replay_processes);
-
-      DELETE FROM polymarket.orders
-      WHERE process_id IN (SELECT process_id FROM retired_replay_processes);
-
-      DELETE FROM polymarket.signal_candidates
-      WHERE process_id IN (SELECT process_id FROM retired_replay_processes);
-
-      DELETE FROM polymarket.copy_trade_signals
-      WHERE process_id IN (SELECT process_id FROM retired_replay_processes);
-
-      DELETE FROM polymarket.trade_positions
-      WHERE process_id IN (SELECT process_id FROM retired_replay_processes);
-
-      DELETE FROM polymarket.wallet_trade_performance
-      WHERE process_id IN (SELECT process_id FROM retired_replay_processes);
-
-      DELETE FROM polymarket.expectancy_flow_wallet_cells
-      WHERE process_id IN (SELECT process_id FROM retired_replay_processes);
-
-      DELETE FROM polymarket.expectancy_flow_cells
-      WHERE process_id IN (SELECT process_id FROM retired_replay_processes);
-
-      DELETE FROM polymarket.trading_processes
-      WHERE process_id IN (SELECT process_id FROM retired_replay_processes);
+    const retiredReplayProcesses: Array<{ process_id: string }> = await queryRunner.query(`
+      SELECT process_id::text AS process_id
+      FROM retired_replay_processes;
     `);
+
+    for (const { process_id: replayProcessId } of retiredReplayProcesses) {
+      await queryRunner.query(
+        `DELETE FROM polymarket.fills WHERE process_id = $1;`,
+        [replayProcessId],
+      );
+      await queryRunner.query(
+        `DELETE FROM polymarket.orders WHERE process_id = $1;`,
+        [replayProcessId],
+      );
+      await queryRunner.query(
+        `DELETE FROM polymarket.signal_candidates WHERE process_id = $1;`,
+        [replayProcessId],
+      );
+      await queryRunner.query(
+        `DELETE FROM polymarket.copy_trade_signals WHERE process_id = $1;`,
+        [replayProcessId],
+      );
+      await queryRunner.query(
+        `DELETE FROM polymarket.trade_positions WHERE process_id = $1;`,
+        [replayProcessId],
+      );
+      await queryRunner.query(
+        `DELETE FROM polymarket.wallet_trade_performance WHERE process_id = $1;`,
+        [replayProcessId],
+      );
+      await queryRunner.query(
+        `DELETE FROM polymarket.expectancy_flow_wallet_cells WHERE process_id = $1;`,
+        [replayProcessId],
+      );
+      await queryRunner.query(
+        `DELETE FROM polymarket.expectancy_flow_cells WHERE process_id = $1;`,
+        [replayProcessId],
+      );
+      await queryRunner.query(
+        `DELETE FROM polymarket.trading_processes WHERE process_id = $1;`,
+        [replayProcessId],
+      );
+    }
 
     await queryRunner.query(`
       UPDATE polymarket.trading_processes
