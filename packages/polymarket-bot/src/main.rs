@@ -12,7 +12,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 use polymarket_bot::{
     btc::{
-        BookRegistry, BtcEntryAdmissionConfig, BtcPaperExperimentConfig, BtcPaperExperimentRunner,
+        runtime_status_from_inputs, BookRegistry, BtcEntryAdmissionConfig,
+        BtcPaperExperimentConfig, BtcPaperExperimentRunner, BtcPlaybookRuntimeHandle,
         BtcRepository, BtcRuntime, BtcRuntimeConfig, BtcRuntimeHandle, BtcStrategyConfig,
         PaperPreviewConfig, PaperVenue as BtcPaperVenue, PaperVenueConfig,
         BTC_FEATURE_SCHEMA_VERSION, BTC_STRATEGY_VERSION,
@@ -194,6 +195,25 @@ struct BtcProcessManagerConfig {
     gamma_base_url: String,
     clob_rest_base_url: String,
     clob_ws_url: String,
+}
+
+fn shared_market_data_config_compatible(left: &BtcRuntimeConfig, right: &BtcRuntimeConfig) -> bool {
+    left.gamma_base_url == right.gamma_base_url
+        && left.clob_rest_base_url == right.clob_rest_base_url
+        && left.clob_ws_url == right.clob_ws_url
+        && left.rtds_ws_url == right.rtds_ws_url
+        && left.binance_ws_url == right.binance_ws_url
+        && left.discovery_interval == right.discovery_interval
+        && left.clob_heartbeat_interval == right.clob_heartbeat_interval
+        && left.rtds_heartbeat_interval == right.rtds_heartbeat_interval
+        && left.binance_heartbeat_interval == right.binance_heartbeat_interval
+        && left.reconnect_initial_delay == right.reconnect_initial_delay
+        && left.reconnect_max_delay == right.reconnect_max_delay
+        && left.checkpoint_interval == right.checkpoint_interval
+        && left.boundary_tick_max_delay == right.boundary_tick_max_delay
+        && left.official_resolution_audit_grace == right.official_resolution_audit_grace
+        && left.official_resolution_watch_retention == right.official_resolution_watch_retention
+        && left.writer_capacity == right.writer_capacity
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -516,11 +536,16 @@ fn resume_config_without_compiled_source_identity(
     config
 }
 
-struct ActiveBtcRun {
+struct ActiveBtcPlaybook {
     process_id: uuid::Uuid,
     experiment_id: uuid::Uuid,
     experiment_key: String,
     config_hash: String,
+    runtime: BtcPlaybookRuntimeHandle,
+}
+
+struct SharedBtcRuntime {
+    config: BtcRuntimeConfig,
     runtime: BtcRuntimeHandle,
 }
 
@@ -543,7 +568,8 @@ struct BtcProcessManager {
     config: BtcProcessManagerConfig,
     shutting_down: Arc<AtomicBool>,
     transition: Arc<tokio::sync::Mutex<()>>,
-    active: Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, ActiveBtcRun>>>,
+    active_playbooks: Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, ActiveBtcPlaybook>>>,
+    shared_runtime: Arc<tokio::sync::Mutex<Option<SharedBtcRuntime>>>,
     terminal_pending: Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, PendingBtcTerminal>>>,
 }
 
@@ -561,8 +587,103 @@ impl BtcProcessManager {
             config,
             shutting_down: Arc::new(AtomicBool::new(false)),
             transition: Arc::new(tokio::sync::Mutex::new(())),
-            active: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            active_playbooks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            shared_runtime: Arc::new(tokio::sync::Mutex::new(None)),
             terminal_pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    async fn ensure_shared_runtime(
+        &self,
+        config: &BtcRuntimeConfig,
+    ) -> Result<
+        (
+            Arc<tokio::sync::RwLock<polymarket_bot::btc::RealtimeState>>,
+            Arc<tokio::sync::RwLock<BookRegistry>>,
+        ),
+        HttpError,
+    > {
+        let active_playbooks = self.active_playbooks.lock().await.len();
+        let retired_runtime = {
+            let mut shared = self.shared_runtime.lock().await;
+            if let Some(existing) = shared.as_ref() {
+                let compatible = shared_market_data_config_compatible(&existing.config, config);
+                if compatible && existing.runtime.is_running() {
+                    return Ok((
+                        existing.runtime.shared_state(),
+                        existing.runtime.shared_book_registry(),
+                    ));
+                }
+                if active_playbooks > 0 {
+                    let message = if compatible {
+                        "BTC shared market-data runtime is not running"
+                    } else {
+                        "BTC playbook market-data runtime settings differ from the active shared runtime"
+                    };
+                    return Err(HttpError::conflict(message));
+                }
+            }
+            shared.take()
+        };
+        if let Some(retired) = retired_runtime {
+            match tokio::time::timeout(BTC_RUNTIME_SHUTDOWN_TIMEOUT, retired.runtime.shutdown())
+                .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => warn!(
+                    error = ?error,
+                    "retired BTC shared market-data runtime reported an integrity failure"
+                ),
+                Err(_) => warn!(
+                    timeout_secs = BTC_RUNTIME_SHUTDOWN_TIMEOUT.as_secs(),
+                    "timed out retiring BTC shared market-data runtime"
+                ),
+            }
+        }
+
+        let state = Arc::new(tokio::sync::RwLock::new(
+            polymarket_bot::btc::RealtimeState::default(),
+        ));
+        let books = Arc::new(tokio::sync::RwLock::new(BookRegistry::new(
+            uuid::Uuid::new_v4(),
+        )));
+        let runtime = BtcRuntime::new(config.clone(), self.repository.clone())
+            .with_shared_state(state.clone())
+            .with_shared_book_registry(books.clone())
+            .start()
+            .await
+            .map_err(|error| {
+                HttpError::internal(format!(
+                    "failed to start shared BTC market-data runtime: {error:#}"
+                ))
+            })?;
+        let mut shared = self.shared_runtime.lock().await;
+        debug_assert!(shared.is_none());
+        *shared = Some(SharedBtcRuntime {
+            config: config.clone(),
+            runtime,
+        });
+        Ok((state, books))
+    }
+
+    async fn shutdown_shared_runtime_if_idle(&self) {
+        if !self.active_playbooks.lock().await.is_empty() {
+            return;
+        }
+        let shared = { self.shared_runtime.lock().await.take() };
+        let Some(shared) = shared else {
+            return;
+        };
+        match tokio::time::timeout(BTC_RUNTIME_SHUTDOWN_TIMEOUT, shared.runtime.shutdown()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => warn!(
+                error = ?error,
+                "idle BTC shared market-data runtime reported an integrity failure during shutdown"
+            ),
+            Err(_) => warn!(
+                timeout_secs = BTC_RUNTIME_SHUTDOWN_TIMEOUT.as_secs(),
+                "timed out shutting down idle BTC shared market-data runtime"
+            ),
         }
     }
 
@@ -844,7 +965,7 @@ impl BtcProcessManager {
                 pending.experiment_key
             )));
         }
-        if let Some(active) = self.active.lock().await.get(&process_id) {
+        if let Some(active) = self.active_playbooks.lock().await.get(&process_id) {
             return Err(HttpError::conflict(format!(
                 "BTC process {} is already running experiment {}",
                 active.process_id, active.experiment_key
@@ -1053,10 +1174,11 @@ impl BtcProcessManager {
         )
         .await;
 
-        let startup_result: Result<BtcRuntimeHandle> = async {
-            let books = Arc::new(tokio::sync::RwLock::new(BookRegistry::new(
-                uuid::Uuid::new_v4(),
-            )));
+        let startup_result: Result<BtcPlaybookRuntimeHandle> = async {
+            let (state, books) = self
+                .ensure_shared_runtime(&runtime_config)
+                .await
+                .map_err(|error| anyhow::anyhow!("{error:?}"))?;
             let paper_venue = BtcPaperVenue::new(books.clone(), paper_venue_config)?;
             let experiment = Arc::new(BtcPaperExperimentRunner::new(
                 self.repository.clone(),
@@ -1078,11 +1200,7 @@ impl BtcProcessManager {
                 .resume()
                 .await
                 .context("failed to reattach immutable BTC experiment before feed resume")?;
-            BtcRuntime::new(runtime_config, self.repository.clone())
-                .with_shared_book_registry(books)
-                .with_strategy_runner(experiment)
-                .start()
-                .await
+            BtcPlaybookRuntimeHandle::start(runtime_config, experiment, state)
         }
         .await;
         let runtime = match startup_result {
@@ -1093,9 +1211,9 @@ impl BtcProcessManager {
                 )));
             }
         };
-        self.active.lock().await.insert(
+        self.active_playbooks.lock().await.insert(
             process_id,
-            ActiveBtcRun {
+            ActiveBtcPlaybook {
                 process_id,
                 experiment_id,
                 experiment_key: experiment_key.clone(),
@@ -1201,10 +1319,11 @@ impl BtcProcessManager {
         )
         .await;
 
-        let startup_result: Result<BtcRuntimeHandle> = async {
-            let books = Arc::new(tokio::sync::RwLock::new(BookRegistry::new(
-                uuid::Uuid::new_v4(),
-            )));
+        let startup_result: Result<BtcPlaybookRuntimeHandle> = async {
+            let (state, books) = self
+                .ensure_shared_runtime(&runtime_config)
+                .await
+                .map_err(|error| anyhow::anyhow!("{error:?}"))?;
             let paper_venue = BtcPaperVenue::new(books.clone(), paper_venue_config)?;
             let experiment = Arc::new(BtcPaperExperimentRunner::new(
                 self.repository.clone(),
@@ -1226,11 +1345,7 @@ impl BtcProcessManager {
                 .initialize()
                 .await
                 .context("failed to initialize immutable BTC experiment before feed startup")?;
-            BtcRuntime::new(runtime_config, self.repository.clone())
-                .with_shared_book_registry(books)
-                .with_strategy_runner(experiment)
-                .start()
-                .await
+            BtcPlaybookRuntimeHandle::start(runtime_config, experiment, state)
         }
         .await;
 
@@ -1268,9 +1383,9 @@ impl BtcProcessManager {
             }
         };
 
-        self.active.lock().await.insert(
+        self.active_playbooks.lock().await.insert(
             process_id,
-            ActiveBtcRun {
+            ActiveBtcPlaybook {
                 process_id,
                 experiment_id,
                 experiment_key: experiment_key.clone(),
@@ -1332,7 +1447,9 @@ impl BtcProcessManager {
             }),
         )
         .await;
-        match self.finalize_pending_locked(pending).await {
+        let result = self.finalize_pending_locked(pending).await;
+        self.shutdown_shared_runtime_if_idle().await;
+        match result {
             Ok(_) => HttpError::internal(reason),
             Err(persistence_error) => persistence_error,
         }
@@ -1374,9 +1491,6 @@ impl BtcProcessManager {
         reason: &str,
         runtime_failed: bool,
     ) -> Result<TradingProcess, HttpError> {
-        let mut active_guard = self.active.lock().await;
-        // Re-read after acquiring the lifecycle lock so concurrent, duplicate
-        // stops observe the terminal state produced by the first request.
         let process = self
             .store
             .get_trading_process(process_id)
@@ -1389,14 +1503,20 @@ impl BtcProcessManager {
             ));
         }
 
-        if let Some(pending) = self.terminal_pending.lock().await.get(&process_id).cloned() {
+        let pending = { self.terminal_pending.lock().await.get(&process_id).cloned() };
+        if let Some(pending) = pending {
             if expected_experiment_id.is_some_and(|expected| expected != pending.experiment_id) {
                 return Ok(process);
             }
-            drop(active_guard);
             return self.finalize_pending_locked(pending).await;
         }
-        let Some(active) = active_guard.get(&process_id) else {
+        let active_identity = self
+            .active_playbooks
+            .lock()
+            .await
+            .get(&process_id)
+            .map(|active| (active.experiment_id, active.experiment_key.clone()));
+        let Some((active_experiment_id, active_experiment_key)) = active_identity else {
             if process.enabled
                 || matches!(process.status.as_str(), "starting" | "running" | "stopping")
             {
@@ -1406,7 +1526,7 @@ impl BtcProcessManager {
             }
             return Ok(process);
         };
-        if expected_experiment_id.is_some_and(|expected| expected != active.experiment_id) {
+        if expected_experiment_id.is_some_and(|expected| expected != active_experiment_id) {
             return Ok(process);
         }
         self.store
@@ -1420,17 +1540,19 @@ impl BtcProcessManager {
             "btc_runtime_stopping",
             "BTC realtime-paper runtime stop accepted",
             serde_json::json!({
-                "experiment_id": active.experiment_id,
-                "experiment_key": active.experiment_key,
+                "experiment_id": active_experiment_id,
+                "experiment_key": active_experiment_key,
                 "reason": reason,
             }),
         )
         .await;
 
-        let active = active_guard
+        let active = self
+            .active_playbooks
+            .lock()
+            .await
             .remove(&process_id)
-            .expect("active BTC runtime exists while manager lock is held");
-        drop(active_guard);
+            .expect("active BTC playbook exists while lifecycle transition is held");
         let provisional_pending = PendingBtcTerminal {
             process_id: active.process_id,
             experiment_id: active.experiment_id,
@@ -1477,7 +1599,9 @@ impl BtcProcessManager {
             .lock()
             .await
             .insert(process_id, pending.clone());
-        self.finalize_pending_locked(pending).await
+        let result = self.finalize_pending_locked(pending).await;
+        self.shutdown_shared_runtime_if_idle().await;
+        result
     }
 
     async fn finalize_pending_locked(
@@ -1561,7 +1685,7 @@ impl BtcProcessManager {
             )));
         }
         let active_runs = self
-            .active
+            .active_playbooks
             .lock()
             .await
             .drain()
@@ -1606,6 +1730,21 @@ impl BtcProcessManager {
                 "BTC realtime-paper runtime suspended with durable resume intent"
             );
         }
+        let shared_runtime = { self.shared_runtime.lock().await.take() };
+        if let Some(shared) = shared_runtime {
+            let shutdown_result =
+                tokio::time::timeout(BTC_RUNTIME_SHUTDOWN_TIMEOUT, shared.runtime.shutdown()).await;
+            if let Some(shutdown_failure) = match shutdown_result {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(format!("shared_btc_runtime_shutdown_failed: {error:#}")),
+                Err(_) => Some(format!(
+                    "shared_btc_runtime_shutdown_timeout_after_{}s",
+                    BTC_RUNTIME_SHUTDOWN_TIMEOUT.as_secs()
+                )),
+            } {
+                failures.push(shutdown_failure);
+            }
+        }
         if failures.is_empty() {
             Ok(())
         } else {
@@ -1624,22 +1763,20 @@ impl BtcProcessManager {
         &self,
         observed_at: chrono::DateTime<Utc>,
     ) -> CountdownSnapshot {
-        let (active_processes, states) = {
-            let active = self.active.lock().await;
-            (
-                active.len(),
-                active
-                    .values()
-                    .map(|run| run.runtime.shared_state())
-                    .collect::<Vec<_>>(),
-            )
+        let active_processes = self.active_playbooks.lock().await.len();
+        let state = self
+            .shared_runtime
+            .lock()
+            .await
+            .as_ref()
+            .map(|shared| shared.runtime.shared_state());
+        let current_market = match state {
+            Some(state) => state.read().await.current_market.clone(),
+            None => None,
         };
-        let mut markets = Vec::with_capacity(states.len());
-        for state in states {
-            if let Some(market) = state.read().await.current_market.clone() {
-                markets.push(market);
-            }
-        }
+        let markets = current_market
+            .map(|market| vec![market; active_processes])
+            .unwrap_or_default();
         CountdownSnapshot::resolve(observed_at, active_processes, markets)
     }
 
@@ -1669,21 +1806,75 @@ impl BtcProcessManager {
                 );
             }
         }
-        let process_ids = self.active.lock().await.keys().copied().collect::<Vec<_>>();
+        let process_ids = self
+            .active_playbooks
+            .lock()
+            .await
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        let shared_status_inputs = self
+            .shared_runtime
+            .lock()
+            .await
+            .as_ref()
+            .map(|shared| shared.runtime.status_inputs());
+        let shared_status = match shared_status_inputs {
+            Some((state, metrics, config, running)) => {
+                Some(runtime_status_from_inputs(state, metrics, config, running).await)
+            }
+            None => None,
+        };
+        let shared_running = shared_status.as_ref().is_some_and(|status| status.running);
+        if !process_ids.is_empty() && !shared_running {
+            let failure_reason = format!(
+                "btc_shared_market_data_runtime_failed: {}",
+                shared_status
+                    .as_ref()
+                    .and_then(|status| status.metrics.last_error.as_deref())
+                    .unwrap_or("shared market-data runtime handle is unavailable")
+            );
+            for process_id in process_ids {
+                let experiment_id = self
+                    .active_playbooks
+                    .lock()
+                    .await
+                    .get(&process_id)
+                    .map(|active| active.experiment_id);
+                let Some(experiment_id) = experiment_id else {
+                    continue;
+                };
+                if let Err(stop_error) = self
+                    .stop_process_for_generation(
+                        process_id,
+                        Some(experiment_id),
+                        &failure_reason,
+                        true,
+                    )
+                    .await
+                {
+                    error!(
+                        error = ?stop_error,
+                        process_id = %process_id,
+                        experiment_id = %experiment_id,
+                        "failed to terminalize playbook after shared market-data failure"
+                    );
+                }
+            }
+            return;
+        }
         for process_id in process_ids {
-            let snapshot = {
-                let active_guard = self.active.lock().await;
+            let status_input = {
+                let active_guard = self.active_playbooks.lock().await;
                 let Some(active) = active_guard.get(&process_id) else {
                     continue;
                 };
-                let status = active.runtime.status().await;
-                (
-                    active.experiment_id,
-                    status.running,
-                    status.metrics.last_error,
-                )
+                (active.experiment_id, active.runtime.status_inputs())
             };
-            let (experiment_id, runtime_running, last_error) = snapshot;
+            let (experiment_id, (state, metrics, config, running)) = status_input;
+            let status = runtime_status_from_inputs(state, metrics, config, running).await;
+            let runtime_running = status.running;
+            let last_error = status.metrics.last_error;
             if runtime_running {
                 match self
                     .store
@@ -1732,35 +1923,73 @@ impl BtcProcessManager {
     }
 
     async fn runtime_status(&self) -> serde_json::Value {
-        let process_ids = self.active.lock().await.keys().copied().collect::<Vec<_>>();
+        let process_ids = self
+            .active_playbooks
+            .lock()
+            .await
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
         let mut processes = Vec::with_capacity(process_ids.len());
         for process_id in process_ids {
             processes.push(self.runtime_status_for_process(process_id).await);
         }
+        let shared_inputs = self
+            .shared_runtime
+            .lock()
+            .await
+            .as_ref()
+            .map(|shared| shared.runtime.status_inputs());
+        let shared_market_data = match shared_inputs {
+            Some((state, metrics, config, running)) => serde_json::to_value(
+                runtime_status_from_inputs(state, metrics, config, running).await,
+            )
+            .unwrap_or_else(|_| serde_json::json!({"running": false})),
+            None => serde_json::json!({
+                "enabled": self.config.btc.realtime_enabled,
+                "running": false,
+                "readiness": {"ready": false, "reasons": ["shared_market_data_inactive"]}
+            }),
+        };
         serde_json::json!({
             "capability_enabled": self.config.btc.realtime_enabled,
             "active": !processes.is_empty(),
             "active_process_count": processes.len(),
+            "shared_market_data": shared_market_data,
             "processes": processes,
         })
     }
 
     async fn runtime_status_for_process(&self, process_id: uuid::Uuid) -> serde_json::Value {
-        let active_guard = self.active.lock().await;
-        if let Some(active) = active_guard.get(&process_id) {
-            let runtime = active.runtime.status().await;
+        let active = self
+            .active_playbooks
+            .lock()
+            .await
+            .get(&process_id)
+            .map(|active| {
+                (
+                    active.process_id,
+                    active.experiment_id,
+                    active.experiment_key.clone(),
+                    active.config_hash.clone(),
+                    active.runtime.status_inputs(),
+                )
+            });
+        if let Some((process_id, experiment_id, experiment_key, config_hash, inputs)) = active {
+            let (state, metrics, config, running) = inputs;
+            let runtime = runtime_status_from_inputs(state, metrics, config, running).await;
             return serde_json::json!({
                 "capability_enabled": self.config.btc.realtime_enabled,
                 "active": true,
-                "process_id": active.process_id,
-                "experiment_id": active.experiment_id,
-                "experiment_key": active.experiment_key,
-                "config_hash": active.config_hash,
+                "process_id": process_id,
+                "experiment_id": experiment_id,
+                "experiment_key": experiment_key,
+                "config_hash": config_hash,
                 "runtime": runtime,
             });
         }
-        drop(active_guard);
-        if let Some(pending) = self.terminal_pending.lock().await.get(&process_id) {
+        let pending = self.terminal_pending.lock().await.get(&process_id).cloned();
+        if let Some(pending) = pending {
             return serde_json::json!({
                 "capability_enabled": self.config.btc.realtime_enabled,
                 "active": false,
@@ -1785,7 +2014,13 @@ impl BtcProcessManager {
     }
 
     async fn paper_experiment_status(&self) -> Result<serde_json::Value, HttpError> {
-        let process_ids = self.active.lock().await.keys().copied().collect::<Vec<_>>();
+        let process_ids = self
+            .active_playbooks
+            .lock()
+            .await
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
         let mut processes = Vec::with_capacity(process_ids.len());
         for process_id in process_ids {
             processes.push(self.paper_experiment_status_for_process(process_id).await?);
@@ -1802,10 +2037,21 @@ impl BtcProcessManager {
         &self,
         process_id: uuid::Uuid,
     ) -> Result<serde_json::Value, HttpError> {
-        let active = self.active.lock().await;
-        let Some(active) = active.get(&process_id) else {
-            drop(active);
-            if let Some(pending) = self.terminal_pending.lock().await.get(&process_id) {
+        let active = self
+            .active_playbooks
+            .lock()
+            .await
+            .get(&process_id)
+            .map(|active| {
+                (
+                    active.process_id,
+                    active.experiment_id,
+                    active.experiment_key.clone(),
+                )
+            });
+        let Some((active_process_id, experiment_id, experiment_key)) = active else {
+            let pending = self.terminal_pending.lock().await.get(&process_id).cloned();
+            if let Some(pending) = pending {
                 return Ok(serde_json::json!({
                     "configured": true,
                     "active": false,
@@ -1826,15 +2072,15 @@ impl BtcProcessManager {
         };
         let experiment = self
             .repository
-            .paper_experiment_status(active.experiment_id)
+            .paper_experiment_status(experiment_id)
             .await
             .map_err(|error| HttpError::internal(error.to_string()))?;
         Ok(serde_json::json!({
             "configured": true,
             "active": true,
-            "process_id": active.process_id,
-            "experiment_id": active.experiment_id,
-            "experiment_key": active.experiment_key,
+            "process_id": active_process_id,
+            "experiment_id": experiment_id,
+            "experiment_key": experiment_key,
             "experiment": experiment,
         }))
     }
@@ -2264,7 +2510,7 @@ impl ControlApi for RuntimeControl {
                 }
                 let runtime_active = match &self.btc_manager {
                     Some(manager) => manager
-                        .active
+                        .active_playbooks
                         .lock()
                         .await
                         .contains_key(&existing.process_id),
@@ -2453,7 +2699,11 @@ impl ControlApi for RuntimeControl {
         }
         if managed_now || managed_after {
             let runtime_active = match &self.btc_manager {
-                Some(manager) => manager.active.lock().await.contains_key(&process_id),
+                Some(manager) => manager
+                    .active_playbooks
+                    .lock()
+                    .await
+                    .contains_key(&process_id),
                 None => false,
             };
             let terminal_pending = match &self.btc_manager {
@@ -3034,29 +3284,17 @@ mod lifecycle_tests {
     }
 
     #[test]
-    fn btc_runtime_ownership_is_independent_per_process_id() {
-        let first_process_id = uuid::Uuid::new_v4();
-        let second_process_id = uuid::Uuid::new_v4();
-        let mut owned_runtimes = HashMap::new();
-        let mut pending_terminals = HashMap::new();
+    fn shared_market_data_accepts_playbook_only_runtime_differences() {
+        let shared = BtcRuntimeConfig::default();
+        let mut playbook = shared.clone();
+        playbook.strategy_interval = Duration::from_millis(500);
+        playbook.max_book_age = Duration::from_secs(3);
+        playbook.max_reference_age = Duration::from_secs(4);
 
-        owned_runtimes.insert(first_process_id, "first-runtime");
-        assert!(owned_runtimes.contains_key(&first_process_id));
-        assert!(!owned_runtimes.contains_key(&second_process_id));
+        assert!(shared_market_data_config_compatible(&shared, &playbook));
 
-        owned_runtimes.insert(second_process_id, "second-runtime");
-        pending_terminals.insert(first_process_id, "first-terminal");
-        assert_eq!(owned_runtimes.len(), 2);
-        assert!(pending_terminals.contains_key(&first_process_id));
-        assert!(!pending_terminals.contains_key(&second_process_id));
-
-        owned_runtimes.remove(&first_process_id);
-        pending_terminals.remove(&first_process_id);
-        assert_eq!(
-            owned_runtimes.get(&second_process_id),
-            Some(&"second-runtime")
-        );
-        assert!(pending_terminals.is_empty());
+        playbook.writer_capacity += 1;
+        assert!(!shared_market_data_config_compatible(&shared, &playbook));
     }
 
     #[test]

@@ -32,8 +32,8 @@ use super::{
         slug_for_window, ClobRestOfficialResolution,
     },
     repository::{
-        BtcMarketLabel, BtcOfficialResolutionWatch, BtcRepository, BtcRepositoryStatus,
-        FeedSession, PersistedOfficialResolution,
+        BtcMarketLabel, BtcOfficialResolutionWatch, BtcRepository, FeedSession,
+        PersistedOfficialResolution,
     },
     types::{
         BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, MarketFeedEventType, Readiness,
@@ -187,8 +187,14 @@ pub struct BtcRuntimeStatus {
     pub running: bool,
     pub readiness: Readiness,
     pub metrics: BtcRuntimeMetrics,
-    pub repository: Option<BtcRepositoryStatus>,
 }
+
+pub type BtcRuntimeStatusInputs = (
+    Arc<RwLock<RealtimeState>>,
+    Arc<RwLock<BtcRuntimeMetrics>>,
+    BtcRuntimeConfig,
+    Arc<AtomicBool>,
+);
 
 #[derive(Debug, Clone)]
 pub struct StrategyObservation {
@@ -219,8 +225,8 @@ impl BtcStrategyRunner for NoopStrategyRunner {
 pub struct BtcRuntime {
     config: BtcRuntimeConfig,
     repository: BtcRepository,
-    strategy: Arc<dyn BtcStrategyRunner>,
     books: Option<Arc<RwLock<BookRegistry>>>,
+    state: Option<Arc<RwLock<RealtimeState>>>,
 }
 
 impl BtcRuntime {
@@ -228,18 +234,18 @@ impl BtcRuntime {
         Self {
             config,
             repository,
-            strategy: Arc::new(NoopStrategyRunner),
             books: None,
+            state: None,
         }
     }
 
-    pub fn with_strategy_runner(mut self, strategy: Arc<dyn BtcStrategyRunner>) -> Self {
-        self.strategy = strategy;
+    /// Uses caller-owned shared state so every playbook observes one canonical feed runtime.
+    pub fn with_shared_state(mut self, state: Arc<RwLock<RealtimeState>>) -> Self {
+        self.state = Some(state);
         self
     }
 
-    /// Uses a caller-owned registry so the strategy's paper venue and the live feed runtime
-    /// observe the exact same arrival-time book state.
+    /// Uses a caller-owned registry so every paper venue reads the same arrival-time book state.
     pub fn with_shared_book_registry(mut self, books: Arc<RwLock<BookRegistry>>) -> Self {
         self.books = Some(books);
         self
@@ -249,7 +255,9 @@ impl BtcRuntime {
         self.config.validate()?;
         self.repository.healthcheck().await?;
 
-        let state = Arc::new(RwLock::new(RealtimeState::default()));
+        let state = self
+            .state
+            .unwrap_or_else(|| Arc::new(RwLock::new(RealtimeState::default())));
         let books = self
             .books
             .unwrap_or_else(|| Arc::new(RwLock::new(BookRegistry::new(Uuid::new_v4()))));
@@ -259,83 +267,71 @@ impl BtcRuntime {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (market_tx, market_rx) = watch::channel(Vec::<BtcIntervalMarket>::new());
         let (writer_tx, writer_rx) = mpsc::channel(self.config.writer_capacity);
-        let mut tasks = Vec::new();
-
-        tasks.push(spawn_runtime_task(
-            "writer",
-            run_writer(self.repository.clone(), writer_rx, metrics.clone()),
-            running.clone(),
-            metrics.clone(),
-        ));
-        tasks.push(spawn_runtime_task(
-            "discovery",
-            run_discovery(
-                self.config.clone(),
-                self.repository.clone(),
-                market_tx,
-                state.clone(),
-                boundaries.clone(),
+        let tasks = vec![
+            spawn_runtime_task(
+                "writer",
+                run_writer(self.repository.clone(), writer_rx, metrics.clone()),
+                running.clone(),
                 metrics.clone(),
-                shutdown_rx.clone(),
             ),
-            running.clone(),
-            metrics.clone(),
-        ));
-        tasks.push(spawn_runtime_task(
-            "clob",
-            run_clob_supervisor(
-                self.config.clone(),
-                self.repository.clone(),
-                market_rx,
-                writer_tx.clone(),
-                state.clone(),
-                books.clone(),
+            spawn_runtime_task(
+                "discovery",
+                run_discovery(
+                    self.config.clone(),
+                    self.repository.clone(),
+                    market_tx,
+                    state.clone(),
+                    boundaries.clone(),
+                    metrics.clone(),
+                    shutdown_rx.clone(),
+                ),
+                running.clone(),
                 metrics.clone(),
-                shutdown_rx.clone(),
             ),
-            running.clone(),
-            metrics.clone(),
-        ));
-        tasks.push(spawn_runtime_task(
-            "rtds",
-            run_rtds_supervisor(
-                self.config.clone(),
-                self.repository.clone(),
-                writer_tx.clone(),
-                state.clone(),
-                boundaries,
+            spawn_runtime_task(
+                "clob",
+                run_clob_supervisor(
+                    self.config.clone(),
+                    self.repository.clone(),
+                    market_rx,
+                    writer_tx.clone(),
+                    state.clone(),
+                    books.clone(),
+                    metrics.clone(),
+                    shutdown_rx.clone(),
+                ),
+                running.clone(),
                 metrics.clone(),
-                shutdown_rx.clone(),
             ),
-            running.clone(),
-            metrics.clone(),
-        ));
-        tasks.push(spawn_runtime_task(
-            "binance",
-            run_binance_supervisor(
-                self.config.clone(),
-                self.repository.clone(),
-                writer_tx.clone(),
-                state.clone(),
+            spawn_runtime_task(
+                "rtds",
+                run_rtds_supervisor(
+                    self.config.clone(),
+                    self.repository.clone(),
+                    writer_tx.clone(),
+                    state.clone(),
+                    boundaries,
+                    metrics.clone(),
+                    shutdown_rx.clone(),
+                ),
+                running.clone(),
                 metrics.clone(),
-                shutdown_rx.clone(),
             ),
-            running.clone(),
-            metrics.clone(),
-        ));
-        let strategy = self.strategy.clone();
-        tasks.push(spawn_runtime_task(
-            "strategy",
-            run_strategy_loop(
-                self.config.clone(),
-                strategy.clone(),
-                state.clone(),
+            spawn_runtime_task(
+                "binance",
+                run_binance_supervisor(
+                    self.config.clone(),
+                    self.repository.clone(),
+                    writer_tx.clone(),
+                    state.clone(),
+                    metrics.clone(),
+                    shutdown_rx.clone(),
+                ),
+                running.clone(),
                 metrics.clone(),
-                shutdown_rx,
             ),
-            running.clone(),
-            metrics.clone(),
-        ));
+        ];
+        drop(shutdown_rx);
         drop(writer_tx);
 
         Ok(BtcRuntimeHandle {
@@ -345,10 +341,8 @@ impl BtcRuntime {
             state,
             books,
             metrics,
-            repository: self.repository,
             config: self.config,
             running,
-            strategy,
         })
     }
 }
@@ -385,10 +379,8 @@ pub struct BtcRuntimeHandle {
     state: Arc<RwLock<RealtimeState>>,
     books: Arc<RwLock<BookRegistry>>,
     metrics: Arc<RwLock<BtcRuntimeMetrics>>,
-    repository: BtcRepository,
     config: BtcRuntimeConfig,
     running: Arc<AtomicBool>,
-    strategy: Arc<dyn BtcStrategyRunner>,
 }
 
 impl BtcRuntimeHandle {
@@ -398,6 +390,19 @@ impl BtcRuntimeHandle {
 
     pub fn shared_book_registry(&self) -> Arc<RwLock<BookRegistry>> {
         self.books.clone()
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+
+    pub fn status_inputs(&self) -> BtcRuntimeStatusInputs {
+        (
+            self.state.clone(),
+            self.metrics.clone(),
+            self.config.clone(),
+            self.running.clone(),
+        )
     }
 
     pub async fn status(&self) -> BtcRuntimeStatus {
@@ -412,7 +417,6 @@ impl BtcRuntimeHandle {
             running: self.running.load(Ordering::Relaxed),
             readiness,
             metrics: self.metrics.read().await.clone(),
-            repository: self.repository.status().await.ok(),
         }
     }
 
@@ -426,10 +430,6 @@ impl BtcRuntimeHandle {
             }
         }
         self.tasks.clear();
-        self.strategy
-            .shutdown()
-            .await
-            .context("BTC strategy shutdown/drain failed")?;
         if !join_failures.is_empty() {
             bail!("BTC runtime task join failed: {}", join_failures.join("; "));
         }
@@ -448,6 +448,120 @@ impl Drop for BtcRuntimeHandle {
         for task in &self.tasks {
             task.abort();
         }
+    }
+}
+
+pub struct BtcPlaybookRuntimeHandle {
+    shutdown: watch::Sender<bool>,
+    task: Option<JoinHandle<()>>,
+    state: Arc<RwLock<RealtimeState>>,
+    metrics: Arc<RwLock<BtcRuntimeMetrics>>,
+    config: BtcRuntimeConfig,
+    running: Arc<AtomicBool>,
+    strategy: Arc<dyn BtcStrategyRunner>,
+}
+
+impl BtcPlaybookRuntimeHandle {
+    pub fn start(
+        config: BtcRuntimeConfig,
+        strategy: Arc<dyn BtcStrategyRunner>,
+        state: Arc<RwLock<RealtimeState>>,
+    ) -> Result<Self> {
+        config.validate()?;
+        let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
+        let running = Arc::new(AtomicBool::new(true));
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let task = spawn_runtime_task(
+            "playbook",
+            run_strategy_loop(
+                config.clone(),
+                strategy.clone(),
+                state.clone(),
+                metrics.clone(),
+                shutdown_rx,
+            ),
+            running.clone(),
+            metrics.clone(),
+        );
+        Ok(Self {
+            shutdown,
+            task: Some(task),
+            state,
+            metrics,
+            config,
+            running,
+            strategy,
+        })
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+
+    pub fn status_inputs(&self) -> BtcRuntimeStatusInputs {
+        (
+            self.state.clone(),
+            self.metrics.clone(),
+            self.config.clone(),
+            self.running.clone(),
+        )
+    }
+
+    pub async fn status(&self) -> BtcRuntimeStatus {
+        runtime_status_from_inputs(
+            self.state.clone(),
+            self.metrics.clone(),
+            self.config.clone(),
+            self.running.clone(),
+        )
+        .await
+    }
+
+    pub async fn shutdown(mut self) -> Result<()> {
+        self.running.store(false, Ordering::Relaxed);
+        let _ = self.shutdown.send(true);
+        if let Some(task) = self.task.take() {
+            task.await.context("BTC playbook task join failed")?;
+        }
+        self.strategy
+            .shutdown()
+            .await
+            .context("BTC playbook shutdown/drain failed")?;
+        let final_metrics = self.metrics.read().await.clone();
+        if let Some(reason) = primary_runtime_failure(&final_metrics) {
+            bail!("BTC playbook primary-path integrity failed: {reason}");
+        }
+        Ok(())
+    }
+}
+
+impl Drop for BtcPlaybookRuntimeHandle {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        let _ = self.shutdown.send(true);
+        if let Some(task) = &self.task {
+            task.abort();
+        }
+    }
+}
+
+pub async fn runtime_status_from_inputs(
+    state: Arc<RwLock<RealtimeState>>,
+    metrics: Arc<RwLock<BtcRuntimeMetrics>>,
+    config: BtcRuntimeConfig,
+    running: Arc<AtomicBool>,
+) -> BtcRuntimeStatus {
+    let state = state.read().await.clone();
+    let readiness = state.readiness(
+        Utc::now(),
+        chrono_duration(config.max_book_age),
+        chrono_duration(config.max_reference_age),
+    );
+    BtcRuntimeStatus {
+        enabled: config.enabled,
+        running: running.load(Ordering::Relaxed),
+        readiness,
+        metrics: metrics.read().await.clone(),
     }
 }
 
@@ -2431,9 +2545,6 @@ mod tests {
             tokio::task::yield_now().await;
         }
 
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgres://postgres:postgres@localhost/polymarket")
-            .unwrap();
         let running = Arc::new(AtomicBool::new(true));
         let (shutdown, _) = watch::channel(false);
         let handle = BtcRuntimeHandle {
@@ -2443,10 +2554,8 @@ mod tests {
             state: Arc::new(RwLock::new(RealtimeState::default())),
             books: Arc::new(RwLock::new(BookRegistry::new(Uuid::new_v4()))),
             metrics: Arc::new(RwLock::new(BtcRuntimeMetrics::default())),
-            repository: BtcRepository::from_pool(pool),
             config: BtcRuntimeConfig::default(),
             running: running.clone(),
-            strategy: Arc::new(NoopStrategyRunner),
         };
 
         drop(handle);
@@ -2483,9 +2592,6 @@ mod tests {
             tokio::task::yield_now().await;
         }
 
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgres://postgres:postgres@localhost/polymarket")
-            .unwrap();
         let running = Arc::new(AtomicBool::new(true));
         let (shutdown, _) = watch::channel(false);
         let handle = BtcRuntimeHandle {
@@ -2495,10 +2601,8 @@ mod tests {
             state: Arc::new(RwLock::new(RealtimeState::default())),
             books: Arc::new(RwLock::new(BookRegistry::new(Uuid::new_v4()))),
             metrics: Arc::new(RwLock::new(BtcRuntimeMetrics::default())),
-            repository: BtcRepository::from_pool(pool),
             config: BtcRuntimeConfig::default(),
             running: running.clone(),
-            strategy: Arc::new(NoopStrategyRunner),
         };
 
         assert!(
@@ -2677,41 +2781,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn primary_strategy_error_terminates_the_runtime_task() {
-        let mut config = BtcRuntimeConfig::default();
-        config.enabled = true;
-        config.strategy_interval = StdDuration::from_millis(1);
-        let mut state = RealtimeState::default();
-        state.last_updated_at = Some(Utc::now());
+    async fn failing_playbook_does_not_stop_another_playbook_on_shared_state() {
+        let config = BtcRuntimeConfig {
+            enabled: true,
+            strategy_interval: StdDuration::from_millis(1),
+            ..BtcRuntimeConfig::default()
+        };
+        let state = RealtimeState {
+            last_updated_at: Some(Utc::now()),
+            ..RealtimeState::default()
+        };
         let state = Arc::new(RwLock::new(state));
-        let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
-        let running = Arc::new(AtomicBool::new(true));
-        let (_shutdown, shutdown_rx) = watch::channel(false);
+        let failing = BtcPlaybookRuntimeHandle::start(
+            config.clone(),
+            Arc::new(FailingStrategyRunner),
+            state.clone(),
+        )
+        .unwrap();
+        let healthy =
+            BtcPlaybookRuntimeHandle::start(config, Arc::new(NoopStrategyRunner), state.clone())
+                .unwrap();
 
-        let task = spawn_runtime_task(
-            "strategy",
-            run_strategy_loop(
-                config,
-                Arc::new(FailingStrategyRunner),
-                state,
-                metrics.clone(),
-                shutdown_rx,
-            ),
-            running.clone(),
-            metrics.clone(),
-        );
-        tokio::time::timeout(StdDuration::from_secs(1), task)
-            .await
-            .expect("failing strategy task must terminate")
-            .unwrap();
+        tokio::time::timeout(StdDuration::from_secs(1), async {
+            while failing.is_running() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("failing playbook must terminate");
 
-        assert!(!running.load(Ordering::Relaxed));
-        let status = metrics.read().await;
+        assert!(!failing.is_running());
+        assert!(healthy.is_running());
+        assert!(Arc::ptr_eq(&failing.state, &healthy.state));
+        let status = failing.metrics.read().await;
         assert_eq!(
             status.last_error.as_deref(),
             Some("primary strategy persistence failed")
         );
         assert_eq!(status.strategy_errors, 1);
+        drop(status);
+
+        assert!(failing.shutdown().await.is_err());
+        healthy.shutdown().await.unwrap();
     }
 
     #[tokio::test]

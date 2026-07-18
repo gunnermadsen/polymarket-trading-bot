@@ -287,20 +287,6 @@ struct CheckpointRow {
     integrity_status: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, sqlx::FromRow)]
-pub struct BtcRepositoryStatus {
-    pub valid_markets: i64,
-    pub active_markets: i64,
-    pub reference_ticks: i64,
-    pub feed_events: i64,
-    pub book_checkpoints: i64,
-    pub labels: i64,
-    pub open_feed_sessions: i64,
-    pub latest_chainlink_at: Option<DateTime<Utc>>,
-    pub latest_binance_at: Option<DateTime<Utc>>,
-    pub latest_book_at: Option<DateTime<Utc>>,
-}
-
 fn validate_official_resolution_subscription_ack(
     market_ids: &[String],
     subscribed_market_ids: &[String],
@@ -2492,32 +2478,6 @@ impl BtcRepository {
                 })?;
         }
         Ok(experiment_ids.len() as u64)
-    }
-
-    pub async fn status(&self) -> Result<BtcRepositoryStatus> {
-        sqlx::query_as::<_, BtcRepositoryStatus>(
-            r#"
-            SELECT
-              (SELECT count(*)::bigint FROM polymarket.btc_interval_markets
-                WHERE validation_status = 'valid') AS valid_markets,
-              (SELECT count(*)::bigint FROM polymarket.btc_interval_markets
-                WHERE validation_status = 'valid' AND active AND NOT closed) AS active_markets,
-              (SELECT count(*)::bigint FROM polymarket.reference_price_ticks) AS reference_ticks,
-              (SELECT count(*)::bigint FROM polymarket.market_feed_events) AS feed_events,
-              (SELECT count(*)::bigint FROM polymarket.orderbook_checkpoints) AS book_checkpoints,
-              (SELECT count(*)::bigint FROM polymarket.btc_market_labels) AS labels,
-              (SELECT count(*)::bigint FROM polymarket.feed_sessions
-                WHERE disconnected_at IS NULL) AS open_feed_sessions,
-              (SELECT max(source_timestamp) FROM polymarket.reference_price_ticks
-                WHERE source = 'rtds_chainlink') AS latest_chainlink_at,
-              (SELECT max(source_timestamp) FROM polymarket.reference_price_ticks
-                WHERE source = 'direct_binance') AS latest_binance_at,
-              (SELECT max(source_timestamp) FROM polymarket.orderbook_checkpoints) AS latest_book_at
-            "#,
-        )
-        .fetch_one(&self.pool)
-        .await
-        .context("failed to fetch BTC repository status")
     }
 }
 
