@@ -142,7 +142,6 @@ pub struct FillRecord {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FillSource {
-    Sim,
     Paper,
     Live,
 }
@@ -382,7 +381,7 @@ pub struct EffectiveProcessExecutionConfig {
 impl Default for EffectiveProcessExecutionConfig {
     fn default() -> Self {
         Self {
-            mode: "sim".to_string(),
+            mode: "unspecified".to_string(),
             execute_signals: false,
             live_capital: false,
             taker_fee_rate: dec!(0.03),
@@ -400,4 +399,22 @@ pub struct ProcessExecutionConfig {
     pub live_capital: bool,
     #[serde(default)]
     pub taker_fee_rate: Option<Decimal>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FillSource;
+
+    #[test]
+    fn retired_sim_fill_source_is_not_part_of_the_application_contract() {
+        assert!(serde_json::from_str::<FillSource>(r#""sim""#).is_err());
+        assert_eq!(
+            serde_json::from_str::<FillSource>(r#""paper""#).unwrap(),
+            FillSource::Paper
+        );
+        assert_eq!(
+            serde_json::from_str::<FillSource>(r#""live""#).unwrap(),
+            FillSource::Live
+        );
+    }
 }

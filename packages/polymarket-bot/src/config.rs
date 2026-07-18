@@ -4,13 +4,6 @@ use anyhow::{bail, Result};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecutionMode {
-    Sim,
-    Paper,
-    Live,
-}
-
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub live: LiveExecutionConfig,
@@ -20,7 +13,6 @@ pub struct AppConfig {
     pub data_api_base_url: String,
     pub health_interval: Duration,
     pub postgres: PostgresConfig,
-    pub risk: RiskConfig,
     pub http: HttpConfig,
     pub btc: BtcConfig,
     pub grafana_live: GrafanaLiveConfig,
@@ -73,12 +65,6 @@ pub struct PostgresConfig {
     pub password: String,
     pub ssl_mode: String,
     pub ssl_root_cert: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct RiskConfig {
-    pub taker_fee_rate: Decimal,
-    pub max_simultaneous_conversions: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -261,13 +247,6 @@ impl AppConfig {
                 password: required_env("POSTGRES_PASSWORD")?,
                 ssl_mode: env_or("POSTGRES_SSL_MODE", "disable"),
                 ssl_root_cert: first_non_empty_env(&["POSTGRES_SSL_CA_FILE", "PGSSLROOTCERT"]),
-            },
-            risk: RiskConfig {
-                taker_fee_rate: parse_decimal("POLYMARKET_TAKER_FEE_RATE", dec!(0.03)),
-                max_simultaneous_conversions: parse_usize(
-                    "POLYMARKET_MAX_SIMULTANEOUS_CONVERSIONS",
-                    3,
-                ),
             },
             http: HttpConfig {
                 enabled: parse_bool("POLYMARKET_HTTP_ENABLED", true),

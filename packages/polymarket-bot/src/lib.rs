@@ -2,7 +2,6 @@
 
 pub mod account_reconcile;
 pub mod btc;
-pub mod clob;
 pub mod config;
 pub mod data_api;
 pub mod events;

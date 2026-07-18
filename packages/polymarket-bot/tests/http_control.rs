@@ -21,7 +21,6 @@ use polymarket_bot::{
         BackfillRequest as IngestionBackfillRequest, IngesterKey, TrainingReadiness,
     },
     models::{ProcessExecutionConfig, TradingProcess, TradingProcessConfig},
-    store::TradingProcessResetReport,
 };
 use rust_decimal::Decimal;
 use serde_json::Value;
@@ -159,7 +158,7 @@ impl ControlApi for FakeControlApi {
 
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError> {
         Ok(LiveVenueStatus {
-            mode: "sim".to_string(),
+            mode: "live".to_string(),
             live_confirmed: false,
             order_submit_enabled: false,
             user_ws_enabled: false,
@@ -171,7 +170,7 @@ impl ControlApi for FakeControlApi {
             max_order_notional_usd: Decimal::ZERO,
             max_open_notional_usd: Decimal::ZERO,
             entries_enabled: false,
-            reason: Some("sim_mode".to_string()),
+            reason: Some("test_fixture_disabled".to_string()),
         })
     }
 
@@ -453,15 +452,7 @@ impl ControlApi for FakeControlApi {
                 Some("default-generic-process".to_string()),
                 "running",
                 true,
-                TradingProcessConfig {
-                    execution: Some(ProcessExecutionConfig {
-                        mode: Some("sim".to_string()),
-                        execute_signals: true,
-                        live_capital: false,
-                        taker_fee_rate: None,
-                    }),
-                    ..Default::default()
-                },
+                TradingProcessConfig::default(),
             )],
         })
     }
@@ -605,24 +596,6 @@ impl ControlApi for FakeControlApi {
                     "preregistration_sha256": "b".repeat(64),
                 }),
                 ..TradingProcessConfig::default()
-            },
-        })
-    }
-
-    async fn reset_trading_process_simulation(
-        &self,
-        process_id: Uuid,
-    ) -> Result<http::TradingProcessResetResponse, HttpError> {
-        Ok(http::TradingProcessResetResponse {
-            report: TradingProcessResetReport {
-                process_id,
-                process_name: "paper-canary".to_string(),
-                orders_deleted: 2,
-                fills_deleted: 4,
-                process_events_deleted: 1,
-                backfill_job_events_deleted: 0,
-                backfill_jobs_deleted: 0,
-                process_stopped: true,
             },
         })
     }
@@ -1042,6 +1015,26 @@ async fn retired_replay_and_backtest_routes_are_not_found() {
 }
 
 #[tokio::test]
+async fn retired_legacy_simulator_reset_route_is_not_found() {
+    let app = http::router(Arc::new(FakeControlApi), "secret");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(
+                    "/admin/trading-processes/00000000-0000-0000-0000-000000000000/reset-simulation",
+                )
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn authenticated_admin_can_read_live_status_and_halt() {
     let app = http::router(Arc::new(FakeControlApi), "secret");
     let status_response = app
@@ -1060,7 +1053,7 @@ async fn authenticated_admin_can_read_live_status_and_halt() {
         .await
         .unwrap();
     let status_json: Value = serde_json::from_slice(&status_body).unwrap();
-    assert_eq!(status_json["mode"], "sim");
+    assert_eq!(status_json["mode"], "live");
     assert_eq!(status_json["entries_enabled"], false);
 
     let reconcile_response = app
@@ -1272,11 +1265,11 @@ async fn authenticated_admin_can_manage_trading_processes() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/admin/trading-processes/by-key/prod-sim-generic-canary")
+                .uri("/admin/trading-processes/by-key/prod-generic-canary")
                 .header(AUTHORIZATION, "Bearer secret")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"name":"prod-sim-generic-canary","process_type":"generic","process_scope":"production","enabled":true,"status":"running","config":{"execution":{"mode":"sim","execute_signals":true,"live_capital":false}}}"#,
+                    r#"{"name":"prod-generic-canary","process_type":"generic","process_scope":"production","enabled":true,"status":"running","config":{}}"#,
                 ))
                 .unwrap(),
         )
@@ -1287,10 +1280,7 @@ async fn authenticated_admin_can_manage_trading_processes() {
         .await
         .unwrap();
     let upsert_json: Value = serde_json::from_slice(&upsert_body).unwrap();
-    assert_eq!(
-        upsert_json["process"]["process_key"],
-        "prod-sim-generic-canary"
-    );
+    assert_eq!(upsert_json["process"]["process_key"], "prod-generic-canary");
     assert_eq!(upsert_json["process"]["process_scope"], "production");
 
     let status_response = app
@@ -1367,29 +1357,6 @@ async fn authenticated_admin_can_manage_trading_processes() {
         .await
         .unwrap();
     assert_eq!(start_response.status(), StatusCode::OK);
-
-    let reset_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!(
-                    "/admin/trading-processes/{process_id}/reset-simulation"
-                ))
-                .header(AUTHORIZATION, "Bearer secret")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(reset_response.status(), StatusCode::OK);
-    let reset_body = to_bytes(reset_response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let reset_json: Value = serde_json::from_slice(&reset_body).unwrap();
-    assert_eq!(reset_json["report"]["process_id"], process_id);
-    assert_eq!(reset_json["report"]["orders_deleted"], 2);
-    assert_eq!(reset_json["report"]["process_stopped"], true);
 
     let stop_response = app
         .oneshot(
