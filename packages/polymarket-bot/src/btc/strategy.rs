@@ -390,6 +390,66 @@ pub struct BtcDecision {
     pub approved_intent: Option<ApprovedIntent>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BtcOutcomeScope {
+    Both,
+    Only(BtcOutcome),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct BtcStrategyEstimate {
+    fair_value: FairValueEstimate,
+    outcome_scope: BtcOutcomeScope,
+    executable_price_bounds: Option<(Decimal, Decimal)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BtcDecisionStrategy<'a> {
+    ChainlinkFairValue,
+    VolatilityContinuation(&'a BtcVolatilityContinuationConfig),
+}
+
+impl<'a> BtcDecisionStrategy<'a> {
+    fn resolve(config: &'a BtcStrategyConfig) -> Result<Self, BtcRejectReason> {
+        match config.strategy_version.as_str() {
+            BTC_STRATEGY_VERSION if config.volatility_continuation.is_none() => {
+                Ok(Self::ChainlinkFairValue)
+            }
+            BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION => config
+                .volatility_continuation
+                .as_ref()
+                .map(Self::VolatilityContinuation)
+                .ok_or(BtcRejectReason::InvalidConfiguration),
+            _ => Err(BtcRejectReason::InvalidConfiguration),
+        }
+    }
+
+    fn estimate(
+        self,
+        config: &BtcStrategyConfig,
+        snapshot: &BtcFeatureSnapshot,
+    ) -> Result<BtcStrategyEstimate, BtcRejectReason> {
+        match self {
+            Self::ChainlinkFairValue => Ok(BtcStrategyEstimate {
+                fair_value: estimate_chainlink_fair_value(config, snapshot)?,
+                outcome_scope: BtcOutcomeScope::Both,
+                executable_price_bounds: None,
+            }),
+            Self::VolatilityContinuation(continuation) => Ok(BtcStrategyEstimate {
+                fair_value: estimate_market_anchored_continuation(config, continuation, snapshot)?,
+                outcome_scope: BtcOutcomeScope::Only(continuation_signal_outcome(
+                    continuation,
+                    snapshot,
+                )?),
+                executable_price_bounds: Some((
+                    continuation.min_executable_price,
+                    continuation.max_executable_price,
+                )),
+            }),
+        }
+    }
+}
+
 pub struct DeterministicBtcStrategy;
 
 impl DeterministicBtcStrategy {
@@ -402,164 +462,176 @@ impl DeterministicBtcStrategy {
             return rejected(decision_id, snapshot, reason, None, None, None);
         }
 
-        let fair_value = match estimate_fair_value(config, snapshot) {
+        let strategy = match BtcDecisionStrategy::resolve(config) {
+            Ok(strategy) => strategy,
+            Err(reason) => return rejected(decision_id, snapshot, reason, None, None, None),
+        };
+        let estimate = match strategy.estimate(config, snapshot) {
             Ok(value) => value,
             Err(reason) => return rejected(decision_id, snapshot, reason, None, None, None),
         };
-        let fee_rate = if snapshot.fees_enabled {
-            snapshot.fee_rate.unwrap_or(Decimal::ZERO)
-        } else {
-            Decimal::ZERO
-        };
+        build_decision_from_estimate(config, snapshot, decision_id, estimate)
+    }
+}
 
-        if let Some(continuation) = config.volatility_continuation.as_ref() {
-            let outcome = match continuation_signal_outcome(continuation, snapshot) {
-                Ok(outcome) => outcome,
-                Err(reason) => {
-                    return rejected(decision_id, snapshot, reason, Some(fair_value), None, None)
-                }
-            };
-            let book = match outcome {
-                BtcOutcome::Up => &snapshot.up_book,
-                BtcOutcome::Down => &snapshot.down_book,
-            };
-            let executable_price = book.executable_ask_vwap.unwrap_or_default();
-            if executable_price < continuation.min_executable_price
-                || executable_price > continuation.max_executable_price
-            {
-                return rejected(
-                    decision_id,
-                    snapshot,
-                    BtcRejectReason::MarketPriorOutsideBounds,
-                    Some(fair_value),
-                    None,
-                    None,
-                );
+fn build_decision_from_estimate(
+    config: &BtcStrategyConfig,
+    snapshot: &BtcFeatureSnapshot,
+    decision_id: Uuid,
+    estimate: BtcStrategyEstimate,
+) -> BtcDecision {
+    let BtcStrategyEstimate {
+        fair_value,
+        outcome_scope,
+        executable_price_bounds,
+    } = estimate;
+    let fee_rate = if snapshot.fees_enabled {
+        snapshot.fee_rate.unwrap_or(Decimal::ZERO)
+    } else {
+        Decimal::ZERO
+    };
+
+    if let BtcOutcomeScope::Only(outcome) = outcome_scope {
+        let book = match outcome {
+            BtcOutcome::Up => &snapshot.up_book,
+            BtcOutcome::Down => &snapshot.down_book,
+        };
+        let executable_price = book.executable_ask_vwap.unwrap_or_default();
+        if executable_price_bounds.is_some_and(|(minimum, maximum)| {
+            executable_price < minimum || executable_price > maximum
+        }) {
+            return rejected(
+                decision_id,
+                snapshot,
+                BtcRejectReason::MarketPriorOutsideBounds,
+                Some(fair_value),
+                None,
+                None,
+            );
+        }
+        let conservative_probability = match outcome {
+            BtcOutcome::Up => fair_value.up_lower_bound,
+            BtcOutcome::Down => fair_value.down_lower_bound,
+        };
+        let selected = match quote_outcome_edge(
+            config,
+            book,
+            conservative_probability,
+            fee_rate,
+            snapshot.minimum_order_size,
+        ) {
+            Ok(edge) => edge,
+            Err(reason) => {
+                return rejected(decision_id, snapshot, reason, Some(fair_value), None, None)
             }
-            let conservative_probability = match outcome {
-                BtcOutcome::Up => fair_value.up_lower_bound,
-                BtcOutcome::Down => fair_value.down_lower_bound,
-            };
-            let selected = match quote_outcome_edge(
+        };
+        return match outcome {
+            BtcOutcome::Up => finish_selected_edge(
                 config,
-                book,
-                conservative_probability,
-                fee_rate,
-                snapshot.minimum_order_size,
-            ) {
-                Ok(edge) => edge,
-                Err(reason) => {
-                    return rejected(decision_id, snapshot, reason, Some(fair_value), None, None)
-                }
-            };
-            return match outcome {
-                BtcOutcome::Up => finish_selected_edge(
-                    config,
-                    snapshot,
-                    decision_id,
-                    fair_value,
-                    Some(selected.clone()),
-                    None,
-                    selected,
-                ),
-                BtcOutcome::Down => finish_selected_edge(
-                    config,
-                    snapshot,
-                    decision_id,
-                    fair_value,
-                    None,
-                    Some(selected.clone()),
-                    selected,
-                ),
-            };
-        }
-
-        let up_edge = quote_outcome_edge(
-            config,
-            &snapshot.up_book,
-            fair_value.up_lower_bound,
-            fee_rate,
-            snapshot.minimum_order_size,
-        );
-        let down_edge = quote_outcome_edge(
-            config,
-            &snapshot.down_book,
-            fair_value.down_lower_bound,
-            fee_rate,
-            snapshot.minimum_order_size,
-        );
-
-        let (up_edge, down_edge) = match (up_edge, down_edge) {
-            (Ok(up), Ok(down)) => (up, down),
-            (Err(up_reason), Err(down_reason)) => {
-                let reason = if up_reason == down_reason {
-                    up_reason
-                } else {
-                    preferred_execution_reject(up_reason, down_reason)
-                };
-                return rejected(decision_id, snapshot, reason, Some(fair_value), None, None);
-            }
-            (Err(_), Ok(down)) => {
-                return finish_selected_edge(
-                    config,
-                    snapshot,
-                    decision_id,
-                    fair_value,
-                    None,
-                    Some(down.clone()),
-                    down,
-                )
-            }
-            (Ok(up), Err(_)) => {
-                return finish_selected_edge(
-                    config,
-                    snapshot,
-                    decision_id,
-                    fair_value,
-                    Some(up.clone()),
-                    None,
-                    up,
-                )
-            }
-        };
-
-        if up_edge.net_edge == down_edge.net_edge {
-            return rejected(
-                decision_id,
                 snapshot,
-                BtcRejectReason::EqualEdge,
-                Some(fair_value),
-                Some(up_edge),
-                Some(down_edge),
-            );
-        }
-
-        let selected = if up_edge.net_edge > down_edge.net_edge {
-            up_edge.clone()
-        } else {
-            down_edge.clone()
-        };
-        if !edge_passes(config, &selected) {
-            return rejected(
                 decision_id,
+                fair_value,
+                Some(selected.clone()),
+                None,
+                selected,
+            ),
+            BtcOutcome::Down => finish_selected_edge(
+                config,
                 snapshot,
-                BtcRejectReason::EdgeBelowThreshold,
-                Some(fair_value),
-                Some(up_edge),
-                Some(down_edge),
-            );
-        }
+                decision_id,
+                fair_value,
+                None,
+                Some(selected.clone()),
+                selected,
+            ),
+        };
+    }
 
-        approved(
+    let up_edge = quote_outcome_edge(
+        config,
+        &snapshot.up_book,
+        fair_value.up_lower_bound,
+        fee_rate,
+        snapshot.minimum_order_size,
+    );
+    let down_edge = quote_outcome_edge(
+        config,
+        &snapshot.down_book,
+        fair_value.down_lower_bound,
+        fee_rate,
+        snapshot.minimum_order_size,
+    );
+
+    let (up_edge, down_edge) = match (up_edge, down_edge) {
+        (Ok(up), Ok(down)) => (up, down),
+        (Err(up_reason), Err(down_reason)) => {
+            let reason = if up_reason == down_reason {
+                up_reason
+            } else {
+                preferred_execution_reject(up_reason, down_reason)
+            };
+            return rejected(decision_id, snapshot, reason, Some(fair_value), None, None);
+        }
+        (Err(_), Ok(down)) => {
+            return finish_selected_edge(
+                config,
+                snapshot,
+                decision_id,
+                fair_value,
+                None,
+                Some(down.clone()),
+                down,
+            )
+        }
+        (Ok(up), Err(_)) => {
+            return finish_selected_edge(
+                config,
+                snapshot,
+                decision_id,
+                fair_value,
+                Some(up.clone()),
+                None,
+                up,
+            )
+        }
+    };
+
+    if up_edge.net_edge == down_edge.net_edge {
+        return rejected(
             decision_id,
-            config,
             snapshot,
-            fair_value,
+            BtcRejectReason::EqualEdge,
+            Some(fair_value),
             Some(up_edge),
             Some(down_edge),
-            selected,
-        )
+        );
     }
+
+    let selected = if up_edge.net_edge > down_edge.net_edge {
+        up_edge.clone()
+    } else {
+        down_edge.clone()
+    };
+    if !edge_passes(config, &selected) {
+        return rejected(
+            decision_id,
+            snapshot,
+            BtcRejectReason::EdgeBelowThreshold,
+            Some(fair_value),
+            Some(up_edge),
+            Some(down_edge),
+        );
+    }
+
+    approved(
+        decision_id,
+        config,
+        snapshot,
+        fair_value,
+        Some(up_edge),
+        Some(down_edge),
+        selected,
+    )
 }
 
 /// Polymarket's dynamic crypto taker fee: `contracts * rate * price * (1 - price)`.
@@ -578,10 +650,12 @@ pub fn estimate_fair_value(
     config: &BtcStrategyConfig,
     snapshot: &BtcFeatureSnapshot,
 ) -> Result<FairValueEstimate, BtcRejectReason> {
-    if let Some(continuation) = config.volatility_continuation.as_ref() {
-        return estimate_market_anchored_continuation(config, continuation, snapshot);
+    match BtcDecisionStrategy::resolve(config)? {
+        BtcDecisionStrategy::ChainlinkFairValue => estimate_chainlink_fair_value(config, snapshot),
+        BtcDecisionStrategy::VolatilityContinuation(continuation) => {
+            estimate_market_anchored_continuation(config, continuation, snapshot)
+        }
     }
-    estimate_chainlink_fair_value(config, snapshot)
 }
 
 fn estimate_chainlink_fair_value(
