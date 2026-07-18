@@ -142,18 +142,6 @@ pub struct AccountPositionSnapshot {
     pub raw_payload: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TradingProcessResetReport {
-    pub process_id: Uuid,
-    pub process_name: String,
-    pub orders_deleted: u64,
-    pub fills_deleted: u64,
-    pub process_events_deleted: u64,
-    pub backfill_job_events_deleted: u64,
-    pub backfill_jobs_deleted: u64,
-    pub process_stopped: bool,
-}
-
 #[derive(Debug, Clone)]
 pub struct ConversionRecord {
     pub timestamp_utc: DateTime<Utc>,
@@ -666,107 +654,6 @@ impl Store {
         .await
         .context("failed to stop trading process")?;
         row.map(trading_process_from_row).transpose()
-    }
-
-    pub async fn reset_trading_process_data(
-        &self,
-        process_id: Uuid,
-    ) -> Result<Option<TradingProcessResetReport>> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .context("failed to begin trading process reset transaction")?;
-        let process_name = sqlx::query_scalar::<_, String>(
-            r#"
-            UPDATE polymarket.trading_processes
-            SET status = 'stopped',
-                enabled = false,
-                stopped_at = now(),
-                updated_at = now()
-            WHERE process_id = $1
-            RETURNING name
-            "#,
-        )
-        .bind(process_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .context("failed to stop trading process for reset")?;
-        let Some(process_name) = process_name else {
-            tx.rollback()
-                .await
-                .context("failed to roll back missing process reset")?;
-            return Ok(None);
-        };
-
-        let backfill_job_events_deleted = sqlx::query(
-            r#"
-            DELETE FROM polymarket.backfill_job_events e
-            WHERE EXISTS (
-              SELECT 1
-              FROM polymarket.backfill_jobs j
-              WHERE j.job_id = e.job_id
-                AND j.request->>'process_id' = $1::text
-            )
-            "#,
-        )
-        .bind(process_id)
-        .execute(&mut *tx)
-        .await
-        .context("failed to delete reset backfill job events")?
-        .rows_affected();
-        let fills_deleted = sqlx::query(
-            r#"
-            DELETE FROM polymarket.fills f
-            WHERE f.process_id = $1
-               OR EXISTS (
-                 SELECT 1
-                 FROM polymarket.orders o
-                 WHERE o.process_id = $1
-                   AND o.order_id = f.order_id
-               )
-            "#,
-        )
-        .bind(process_id)
-        .execute(&mut *tx)
-        .await
-        .context("failed to delete reset fills")?
-        .rows_affected();
-        let orders_deleted = sqlx::query("DELETE FROM polymarket.orders WHERE process_id = $1")
-            .bind(process_id)
-            .execute(&mut *tx)
-            .await
-            .context("failed to delete reset orders")?
-            .rows_affected();
-        let process_events_deleted =
-            sqlx::query("DELETE FROM polymarket.trading_process_events WHERE process_id = $1")
-                .bind(process_id)
-                .execute(&mut *tx)
-                .await
-                .context("failed to delete reset process events")?
-                .rows_affected();
-        let backfill_jobs_deleted = sqlx::query(
-            "DELETE FROM polymarket.backfill_jobs WHERE request->>'process_id' = $1::text",
-        )
-        .bind(process_id)
-        .execute(&mut *tx)
-        .await
-        .context("failed to delete reset backfill jobs")?
-        .rows_affected();
-
-        tx.commit()
-            .await
-            .context("failed to commit trading process reset")?;
-        Ok(Some(TradingProcessResetReport {
-            process_id,
-            process_name,
-            orders_deleted,
-            fills_deleted,
-            process_events_deleted,
-            backfill_job_events_deleted,
-            backfill_jobs_deleted,
-            process_stopped: true,
-        }))
     }
 
     pub async fn insert_order(&self, order: &OrderRecord) -> Result<()> {
@@ -1385,22 +1272,6 @@ impl Store {
         .execute(&self.pool)
         .await
         .context("failed to insert service event")?;
-        Ok(())
-    }
-
-    pub async fn record_daily_metric(&self, metric: &str, value: serde_json::Value) -> Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO polymarket.daily_metrics (metric_date, metric_name, value, updated_at)
-            VALUES (CURRENT_DATE,$1,$2,now())
-            ON CONFLICT (metric_date, metric_name) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
-            "#,
-        )
-        .bind(metric)
-        .bind(value)
-        .execute(&self.pool)
-        .await
-        .context("failed to upsert daily metric")?;
         Ok(())
     }
 

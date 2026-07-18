@@ -17,14 +17,13 @@ use polymarket_bot::{
         PaperVenue as BtcPaperVenue, PaperVenueConfig, BTC_FEATURE_SCHEMA_VERSION,
         BTC_STRATEGY_VERSION, BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION,
     },
-    clob::ClobClient,
-    config::{AppConfig, BtcConfig, ExecutionMode},
+    config::{AppConfig, BtcConfig},
     data_api::DataApiClient,
     events::ServiceEvent,
     execution::{
-        live::LiveVenue, sim::SimVenue, ExecutionVenue, LiveIdentityDiagnostics,
-        LiveOrderDryRunDiagnostics, LiveOrderDryRunRequest, LivePoly1271FunderProbeRequest,
-        LivePoly1271FunderProbeResponse, LiveVenueStatus, LiveWalletAddressDiagnostics,
+        live::LiveVenue, ExecutionVenue, LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics,
+        LiveOrderDryRunRequest, LivePoly1271FunderProbeRequest, LivePoly1271FunderProbeResponse,
+        LiveVenueStatus, LiveWalletAddressDiagnostics,
     },
     grafana_live::{CountdownSnapshot, GrafanaLivePublisher},
     http as control_http,
@@ -32,8 +31,8 @@ use polymarket_bot::{
         ControlApi, HealthResponse, HealthStatus, HttpError, IngestionBackfillCancelResponse,
         IngestionBackfillEnqueueResponse, IngestionBackfillEventsResponse,
         IngestionBackfillJobResponse, IngestionBackfillJobsResponse, MetricsResponse,
-        TradingProcessResetResponse, TradingProcessResponse, TradingProcessStartPreviewResponse,
-        TradingProcessStatusResponse, TradingProcessesResponse,
+        TradingProcessResponse, TradingProcessStartPreviewResponse, TradingProcessStatusResponse,
+        TradingProcessesResponse,
     },
     ingestion::{
         job::BackfillRequest as IngestionBackfillRequest, repository::IngestionRepository,
@@ -1837,28 +1836,16 @@ impl RuntimeMetrics {
 struct RuntimeControl {
     store: Store,
     ingestion: IngestionRepository,
-    venues: ExecutionVenues,
+    live_venue: Option<Arc<dyn ExecutionVenue>>,
     metrics: Arc<Mutex<RuntimeMetrics>>,
     btc_manager: Option<BtcProcessManager>,
 }
 
-#[derive(Clone)]
-struct ExecutionVenues {
-    sim: Arc<dyn ExecutionVenue>,
-    paper: Arc<dyn ExecutionVenue>,
-    live: Option<Arc<dyn ExecutionVenue>>,
-}
-
-impl ExecutionVenues {
-    fn for_mode(&self, mode: ExecutionMode) -> Result<Arc<dyn ExecutionVenue>> {
-        match mode {
-            ExecutionMode::Sim => Ok(self.sim.clone()),
-            ExecutionMode::Paper => Ok(self.paper.clone()),
-            ExecutionMode::Live => self
-                .live
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("live execution is not configured")),
-        }
+impl RuntimeControl {
+    fn live_venue(&self) -> Result<Arc<dyn ExecutionVenue>, HttpError> {
+        self.live_venue
+            .clone()
+            .ok_or_else(|| HttpError::bad_request("live execution is not configured"))
     }
 }
 
@@ -2006,18 +1993,14 @@ impl ControlApi for RuntimeControl {
     }
 
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError> {
-        self.venues
-            .for_mode(ExecutionMode::Live)
-            .map_err(|error| HttpError::bad_request(error.to_string()))?
+        self.live_venue()?
             .live_status()
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
     }
 
     async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics, HttpError> {
-        self.venues
-            .for_mode(ExecutionMode::Live)
-            .map_err(|error| HttpError::bad_request(error.to_string()))?
+        self.live_venue()?
             .live_identity_diagnostics()
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
@@ -2027,9 +2010,7 @@ impl ControlApi for RuntimeControl {
         &self,
         candidate_addresses: Vec<String>,
     ) -> Result<LiveWalletAddressDiagnostics, HttpError> {
-        self.venues
-            .for_mode(ExecutionMode::Live)
-            .map_err(|error| HttpError::bad_request(error.to_string()))?
+        self.live_venue()?
             .live_wallet_address_diagnostics(candidate_addresses)
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
@@ -2039,9 +2020,7 @@ impl ControlApi for RuntimeControl {
         &self,
         request: LiveOrderDryRunRequest,
     ) -> Result<LiveOrderDryRunDiagnostics, HttpError> {
-        self.venues
-            .for_mode(ExecutionMode::Live)
-            .map_err(|error| HttpError::bad_request(error.to_string()))?
+        self.live_venue()?
             .live_order_dry_run(request)
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
@@ -2051,19 +2030,14 @@ impl ControlApi for RuntimeControl {
         &self,
         request: LivePoly1271FunderProbeRequest,
     ) -> Result<LivePoly1271FunderProbeResponse, HttpError> {
-        self.venues
-            .for_mode(ExecutionMode::Live)
-            .map_err(|error| HttpError::bad_request(error.to_string()))?
+        self.live_venue()?
             .live_poly1271_funder_probe(request)
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
     }
 
     async fn live_halt(&self) -> Result<serde_json::Value, HttpError> {
-        let live = self
-            .venues
-            .for_mode(ExecutionMode::Live)
-            .map_err(|error| HttpError::bad_request(error.to_string()))?;
+        let live = self.live_venue()?;
         let disable_result = live
             .set_live_entries_enabled(false, Some("manual_live_halt".to_string()))
             .await;
@@ -2093,9 +2067,7 @@ impl ControlApi for RuntimeControl {
 
     async fn live_reconcile(&self) -> Result<serde_json::Value, HttpError> {
         let report = self
-            .venues
-            .for_mode(ExecutionMode::Live)
-            .map_err(|error| HttpError::bad_request(error.to_string()))?
+            .live_venue()?
             .reconcile()
             .await
             .map_err(|error| HttpError::internal(error.to_string()))?;
@@ -2106,18 +2078,14 @@ impl ControlApi for RuntimeControl {
         &self,
         request: control_http::AccountReconcileRequest,
     ) -> Result<control_http::AccountReconcileReport, HttpError> {
-        self.venues
-            .for_mode(ExecutionMode::Live)
-            .map_err(|error| HttpError::bad_request(error.to_string()))?
+        self.live_venue()?
             .live_account_reconcile(request)
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
     }
 
     async fn live_set_entries_enabled(&self, enabled: bool) -> Result<LiveVenueStatus, HttpError> {
-        self.venues
-            .for_mode(ExecutionMode::Live)
-            .map_err(|error| HttpError::bad_request(error.to_string()))?
+        self.live_venue()?
             .set_live_entries_enabled(enabled, (!enabled).then(|| "manual_disable".to_string()))
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
@@ -2579,31 +2547,6 @@ impl ControlApi for RuntimeControl {
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
         Ok(TradingProcessResponse { process })
     }
-
-    async fn reset_trading_process_simulation(
-        &self,
-        process_id: uuid::Uuid,
-    ) -> Result<TradingProcessResetResponse, HttpError> {
-        let process = self
-            .store
-            .get_trading_process(process_id)
-            .await
-            .map_err(|error| HttpError::internal(error.to_string()))?
-            .ok_or_else(|| HttpError::not_found("trading process not found"))?;
-        let execution_mode = process.config.effective_execution().mode;
-        if execution_mode != "sim" {
-            return Err(HttpError::bad_request(
-                "only sim trading processes can be reset through this endpoint",
-            ));
-        }
-        let report = self
-            .store
-            .reset_trading_process_data(process_id)
-            .await
-            .map_err(|error| HttpError::internal(error.to_string()))?
-            .ok_or_else(|| HttpError::not_found("trading process not found"))?;
-        Ok(TradingProcessResetResponse { report })
-    }
 }
 
 async fn run_grafana_live_countdown(
@@ -2685,16 +2628,7 @@ async fn main() -> Result<()> {
         ))
         .await?;
 
-    let clob = ClobClient::new(config.clob_base_url.clone());
     let data_api = DataApiClient::new(config.data_api_base_url.clone());
-    let sim_venue: Arc<dyn ExecutionVenue> = Arc::new(SimVenue::with_clob(
-        clob.clone(),
-        config.risk.taker_fee_rate,
-    ));
-    let paper_venue: Arc<dyn ExecutionVenue> = Arc::new(SimVenue::paper_with_clob(
-        clob.clone(),
-        config.risk.taker_fee_rate,
-    ));
     let live_venue: Option<Arc<dyn ExecutionVenue>> = if config.live.live_auth_available() {
         Some(Arc::new(LiveVenue::new(
             config.live.clone(),
@@ -2704,11 +2638,6 @@ async fn main() -> Result<()> {
         )?))
     } else {
         None
-    };
-    let venues = ExecutionVenues {
-        sim: sim_venue.clone(),
-        paper: paper_venue.clone(),
-        live: live_venue.clone(),
     };
     let btc_manager = if config.btc.realtime_enabled {
         let pool = PgPoolOptions::new()
@@ -2763,7 +2692,7 @@ async fn main() -> Result<()> {
         let control: control_http::SharedControlApi = Arc::new(RuntimeControl {
             store: store.clone(),
             ingestion,
-            venues: venues.clone(),
+            live_venue: live_venue.clone(),
             metrics: shared_metrics.clone(),
             btc_manager: btc_manager.clone(),
         });
@@ -2811,29 +2740,16 @@ async fn main() -> Result<()> {
                 if let Some(manager) = &btc_manager {
                     manager.reconcile_failed_runtime().await;
                 }
-                let reconciliation = venues.sim.reconcile().await;
                 if let Err(error) = store.healthcheck().await {
                     error!(error = %error, "database healthcheck failed");
                 }
-                match reconciliation {
-                    Ok(report) => {
-                        info!(
-                            target: "metrics",
-                            open_orders = report.open_orders,
-                            balances_checked = report.balances_checked,
-                            uptime_secs = (Utc::now() - metrics.started_at).num_seconds(),
-                            "polymarket bot liveness ok"
-                        );
-                        store.record_daily_metric("runtime", serde_json::json!({
-                            "open_orders": report.open_orders
-                        })).await.ok();
-                        if let Ok(mut shared) = shared_metrics.lock() {
-                            *shared = metrics.clone();
-                        }
-                    }
-                    Err(error) => {
-                        warn!(error = %error, "venue reconciliation failed");
-                    }
+                info!(
+                    target: "metrics",
+                    uptime_secs = (Utc::now() - metrics.started_at).num_seconds(),
+                    "polymarket bot liveness ok"
+                );
+                if let Ok(mut shared) = shared_metrics.lock() {
+                    *shared = metrics.clone();
                 }
             }
 
