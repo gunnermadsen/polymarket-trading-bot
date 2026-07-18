@@ -1395,6 +1395,7 @@ fn preferred_execution_reject(left: BtcRejectReason, right: BtcRejectReason) -> 
 #[cfg(test)]
 mod tests {
     use chrono::{Duration, TimeZone};
+    use sha2::{Digest, Sha256};
 
     use super::*;
 
@@ -1501,6 +1502,35 @@ mod tests {
         snapshot.up_book = book(BtcOutcome::Up, "up", dec!(0.55), dec!(0.56));
         snapshot.down_book = book(BtcOutcome::Down, "down", dec!(0.44), dec!(0.45));
         snapshot
+    }
+
+    fn decision_sha256(decision: &BtcDecision) -> String {
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(decision).expect("decision must serialize"))
+        )
+    }
+
+    #[test]
+    fn chainlink_fair_value_decision_matches_golden_contract() {
+        let decision =
+            DeterministicBtcStrategy::evaluate(&BtcStrategyConfig::default(), &snapshot());
+
+        assert_eq!(
+            decision_sha256(&decision),
+            "60bd4559e35f10b8465cbe142085506ee860796411672be5baaeec98827f1c23"
+        );
+    }
+
+    #[test]
+    fn volatility_continuation_decision_matches_golden_contract() {
+        let decision =
+            DeterministicBtcStrategy::evaluate(&continuation_config(), &continuation_snapshot());
+
+        assert_eq!(
+            decision_sha256(&decision),
+            "8c41f5bbc71da61e54a1b3f5a9984ec5ce97c4387f16c01b1c9159c1c3fd5fd4"
+        );
     }
 
     #[test]
