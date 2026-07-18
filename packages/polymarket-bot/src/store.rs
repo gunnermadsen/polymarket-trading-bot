@@ -180,13 +180,17 @@ impl ConversionRecord {
 }
 
 impl Store {
+    pub fn from_pool(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
     pub async fn connect(config: &PostgresConfig) -> Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(5)
             .connect(&config.database_url())
             .await
             .context("failed to connect to Postgres")?;
-        Ok(Self { pool })
+        Ok(Self::from_pool(pool))
     }
 
     pub async fn create_trading_process(

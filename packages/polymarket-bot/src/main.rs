@@ -2887,7 +2887,12 @@ async fn main() -> Result<()> {
         "starting Polymarket bot"
     );
 
-    let store = Store::connect(&config.postgres).await?;
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect(&config.postgres.database_url())
+        .await
+        .context("failed to connect Polymarket application to Postgres")?;
+    let store = Store::from_pool(pool.clone());
     store.healthcheck().await?;
     store
         .insert_service_event(&ServiceEvent::new(
@@ -2917,15 +2922,10 @@ async fn main() -> Result<()> {
         None
     };
     let btc_manager = if config.btc.realtime_enabled {
-        let pool = PgPoolOptions::new()
-            .max_connections(4)
-            .connect(&config.postgres.database_url())
-            .await
-            .context("failed to connect BTC process manager to Postgres")?;
         let repository = BtcRepository::from_pool(pool.clone());
         Some(BtcProcessManager::new(
             store.clone(),
-            pool,
+            pool.clone(),
             repository,
             BtcProcessManagerConfig {
                 btc: config.btc.clone(),
@@ -2963,9 +2963,7 @@ async fn main() -> Result<()> {
     let metrics = RuntimeMetrics::new();
     let shared_metrics = Arc::new(Mutex::new(metrics.clone()));
     if config.http.enabled {
-        let ingestion = IngestionRepository::connect(&config.postgres)
-            .await
-            .context("failed to connect backfill ingestion repository")?;
+        let ingestion = IngestionRepository::from_pool(pool.clone());
         let control: control_http::SharedControlApi = Arc::new(RuntimeControl {
             store: store.clone(),
             ingestion,
