@@ -159,6 +159,35 @@ process. The digest must be exactly 64 hexadecimal characters.
 ```
 <!-- btc-5m-process-v2:end -->
 
+Entry admission is optional. When `entry_admission` is absent, BTC process
+behavior and its frozen process configuration are unchanged. When the following
+block is present beside `strategy`, `runtime`, and `paper`, it is enforced; there
+is no passive mode or environment-variable control:
+
+```json
+"entry_admission": {
+  "loss_regime_confidence_floor": {
+    "schema_version": "loss_regime_confidence_floor_v1",
+    "activation_consecutive_candidate_losses": 2,
+    "min_conservative_probability": "0.50",
+    "release_consecutive_candidate_wins": 1
+  }
+}
+```
+
+The loss-regime state is reconstructed from the process's immutable,
+configuration-scoped decision history. Each resolved market contributes the
+earliest strategy-approved buy candidate produced before its label became
+available, including candidates deferred by admission. The ordered state is
+rebuilt at the first admission evaluation in each new market, so delayed labels
+are incorporated without replaying growing history on every one-second
+opportunity. After the configured number of consecutive candidate losses,
+approved entries below the conservative probability floor are recorded as
+`admission_blocked` without creating an order. Entries at or above the floor
+continue through the existing paper execution path. The floor releases after
+the configured number of consecutive candidate wins. Admission evidence is
+stored with each evaluated buy decision.
+
 Create the definition through the stable-key API, preview the immutable run,
 then start it explicitly:
 
