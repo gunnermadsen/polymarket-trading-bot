@@ -2038,7 +2038,24 @@
           },
           "unit": "currencyUSD"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Open Entry Orders"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -2074,7 +2091,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH processes AS MATERIALIZED (\n  SELECT process_id\n  FROM polymarket.trading_processes\n  WHERE process_scope='realtime_paper'\n), open_entries AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.token_id,\n         SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,\n         SUM(f.fee)::numeric AS entry_fees\n  FROM processes p\n  JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f\n    ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source='paper'\n  JOIN polymarket.btc_interval_markets m ON m.market_id=o.market_id\n  WHERE m.official_resolution_received_at IS NULL\n  GROUP BY o.process_id,o.order_id,o.token_id\n), marked AS MATERIALIZED (\n  SELECT e.*,mark.best_bid,mark.source_timestamp AS mark_at\n  FROM open_entries e\n  LEFT JOIN LATERAL (\n    SELECT c.best_bid,c.source_timestamp\n    FROM polymarket.orderbook_checkpoints c\n    WHERE c.token_id=e.token_id\n      AND c.integrity_status='ok' AND c.best_bid IS NOT NULL\n      AND c.source_timestamp BETWEEN now()-interval '2 seconds' AND now()+interval '1 second'\n      AND c.received_at BETWEEN now()-interval '2 seconds' AND now()\n    ORDER BY c.source_timestamp DESC,c.received_at DESC,c.ingest_sequence DESC\n    LIMIT 1\n  ) mark ON true\n)\nSELECT COALESCE(SUM(filled_size*best_bid-entry_cost-entry_fees)\n         FILTER(WHERE best_bid IS NOT NULL),0)::double precision AS \"Fresh Unrealized PnL\",\n       COUNT(*) AS \"Open Positions\",COUNT(best_bid) AS \"Freshly Priced\",\n       COUNT(*)-COUNT(best_bid) AS \"Stale or Unpriced\"\nFROM marked;",
+          "rawSql": "WITH processes AS MATERIALIZED (\n  SELECT process_id\n  FROM polymarket.trading_processes\n  WHERE process_scope = 'realtime_paper'\n    AND enabled IS TRUE\n    AND status IS DISTINCT FROM 'failed'\n), open_entries AS MATERIALIZED (\n  SELECT\n    o.process_id,\n    o.order_id,\n    o.token_id,\n    SUM(f.size)::numeric AS filled_size,\n    SUM(f.price * f.size)::numeric AS entry_cost,\n    SUM(f.fee)::numeric AS entry_fees\n  FROM processes p\n  JOIN polymarket.orders o USING (process_id)\n  JOIN polymarket.fills f\n    ON f.order_id = o.order_id\n   AND f.process_id = o.process_id\n   AND f.source = 'paper'\n  JOIN polymarket.btc_interval_markets m ON m.market_id = o.market_id\n  WHERE m.window_start <= now()\n    AND m.window_end > now()\n    AND m.official_resolution_received_at IS NULL\n  GROUP BY o.process_id, o.order_id, o.token_id\n), marked AS MATERIALIZED (\n  SELECT e.*, mark.best_bid\n  FROM open_entries e\n  LEFT JOIN LATERAL (\n    SELECT c.best_bid\n    FROM polymarket.orderbook_checkpoints c\n    WHERE c.token_id = e.token_id\n      AND c.integrity_status = 'ok'\n      AND c.best_bid IS NOT NULL\n      AND c.source_timestamp BETWEEN now() - interval '2 seconds' AND now() + interval '1 second'\n      AND c.received_at BETWEEN now() - interval '2 seconds' AND now()\n    ORDER BY c.source_timestamp DESC, c.received_at DESC, c.ingest_sequence DESC\n    LIMIT 1\n  ) mark ON true\n)\nSELECT\n  COALESCE(\n    SUM(filled_size * best_bid - entry_cost - entry_fees)\n      FILTER (WHERE best_bid IS NOT NULL),\n    0\n  )::double precision AS \"Fresh Unrealized PnL\",\n  COUNT(*) AS \"Open Entry Orders\"\nFROM marked;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -2097,7 +2114,7 @@
       ],
       "title": "Current Fresh Unrealized PnL",
       "type": "stat",
-      "description": "Current unrealized PnL across process-owned open paper fills with a mark no older than two seconds. Stale positions are counted separately."
+      "description": "Current-market unrealized PnL across enabled, non-failed realtime-paper processes and their open paper entries. PnL uses marks no older than two seconds; the entry count is not a dollar amount."
     },
     {
       "datasource": {
