@@ -21,24 +21,24 @@ services:
     image: timescale/timescaledb:2.14.2-pg14
     container_name: timescaledb-0
     hostname: timescaledb-0
-    mem_limit: 2g
-    cpus: "0.65"
+    mem_limit: 4g
+    cpus: "1.50"
     logging: *default-logging
     env_file:
       - *postgres-env-file
     environment:
       POSTGRES_USER: "postgres"
       POSTGRES_DB: "polymarket"
-      TS_TUNE_MEMORY: "2GB"
-      TS_TUNE_NUM_CPUS: "1"
+      TS_TUNE_MEMORY: "4GB"
+      TS_TUNE_NUM_CPUS: "2"
       TS_TUNE_MAX_CONNS: "25"
       TS_TUNE_MAX_BG_WORKERS: "4"
     command:
       - postgres
       - -c
-      - shared_buffers=512MB
+      - shared_buffers=1GB
       - -c
-      - effective_cache_size=1536MB
+      - effective_cache_size=3GB
       - -c
       - maintenance_work_mem=256MB
       - -c
@@ -50,9 +50,9 @@ services:
       - -c
       - max_locks_per_transaction=128
       - -c
-      - max_parallel_workers=1
+      - max_parallel_workers=2
       - -c
-      - max_parallel_workers_per_gather=0
+      - max_parallel_workers_per_gather=1
       - -c
       - max_worker_processes=8
       - -c
@@ -196,8 +196,8 @@ services:
     image: grafana/grafana:${GRAFANA_VERSION:-12.4.2}
     container_name: grafana
     hostname: grafana
-    mem_limit: 256m
-    cpus: "0.20"
+    mem_limit: 512m
+    cpus: "0.50"
     logging: *default-logging
     entrypoint:
       - /usr/local/bin/grafana-provisioning-entrypoint.sh
