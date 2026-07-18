@@ -20,6 +20,10 @@ use crate::{
 };
 
 use super::{
+    admission::{
+        AdmissionDisposition, BtcEntryAdmissionConfig, LossRegimeConfidenceFloorEvaluation,
+        LossRegimeConfidenceFloorState, LossRegimeConfidenceFloorTransition,
+    },
     paper::{PaperPreviewConfig, PaperVenue, PAPER_DYNAMIC_FEE_RATE_METADATA_KEY},
     repository::{BtcPointInTimeInputs, BtcRepository},
     runtime::{BtcStrategyRunner, StrategyObservation},
@@ -46,8 +50,16 @@ pub struct BtcPaperExperimentConfig {
     /// evidence consumers must read this run-owned value instead.
     pub frozen_process_config: serde_json::Value,
     pub strategy: BtcStrategyConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_admission: Option<BtcEntryAdmissionConfig>,
     pub execution_enabled: bool,
     pub paper_stress_previews: Vec<PaperPreviewConfig>,
+}
+
+#[derive(Debug, Default)]
+struct LossRegimeAdmissionRuntime {
+    state: LossRegimeConfidenceFloorState,
+    evaluated_market_id: Option<String>,
 }
 
 pub struct BtcPaperExperimentRunner {
@@ -56,6 +68,7 @@ pub struct BtcPaperExperimentRunner {
     paper_venue: PaperVenue,
     config: BtcPaperExperimentConfig,
     initialized: OnceCell<()>,
+    loss_regime_admission: Mutex<Option<LossRegimeAdmissionRuntime>>,
     paper_capital_reconcile_started_at: Mutex<Option<Instant>>,
 }
 
@@ -72,6 +85,9 @@ impl BtcPaperExperimentRunner {
         if !config.frozen_process_config.is_object() {
             anyhow::bail!("BTC paper experiment frozen process config must be a JSON object");
         }
+        if let Some(entry_admission) = config.entry_admission.as_ref() {
+            entry_admission.validate()?;
+        }
         let mut preview_keys = HashSet::new();
         for preview in &config.paper_stress_previews {
             preview.validate()?;
@@ -86,6 +102,12 @@ impl BtcPaperExperimentRunner {
             repository,
             store,
             paper_venue,
+            loss_regime_admission: Mutex::new(
+                config
+                    .entry_admission
+                    .as_ref()
+                    .map(|_| LossRegimeAdmissionRuntime::default()),
+            ),
             config,
             initialized: OnceCell::new(),
             paper_capital_reconcile_started_at: Mutex::new(None),
@@ -143,11 +165,149 @@ impl BtcPaperExperimentRunner {
                         )
                         .await?;
                 }
+                self.initialize_entry_admission(resume).await?;
                 self.force_refresh_settlement_and_reconcile().await?;
                 Ok::<(), anyhow::Error>(())
             })
             .await?;
         Ok(())
+    }
+
+    async fn initialize_entry_admission(&self, resume: bool) -> Result<()> {
+        let Some(entry_admission) = self.config.entry_admission.as_ref() else {
+            return Ok(());
+        };
+        let floor = &entry_admission.loss_regime_confidence_floor;
+        let candidates = self
+            .repository
+            .load_resolved_loss_regime_candidates(
+                self.config.process_id,
+                &self.config.config_hash,
+                Utc::now(),
+            )
+            .await?;
+        let state = LossRegimeConfidenceFloorState::from_candidates(floor, &candidates);
+        let initialized_state = state.clone();
+        *self.loss_regime_admission.lock().await = Some(LossRegimeAdmissionRuntime {
+            state,
+            evaluated_market_id: None,
+        });
+        self.record_entry_admission_event(
+            "btc_entry_admission_initialized",
+            "loss-regime confidence-floor admission initialized",
+            serde_json::json!({
+                "resume": resume,
+                "config": entry_admission,
+                "entry_admission_config_hash": floor.config_hash()?,
+                "state": initialized_state,
+            }),
+        )
+        .await;
+        Ok(())
+    }
+
+    async fn evaluate_entry_admission(
+        &self,
+        decision: &BtcDecision,
+        as_of: DateTime<Utc>,
+    ) -> Result<Option<LossRegimeConfidenceFloorEvaluation>> {
+        let Some(entry_admission) = self.config.entry_admission.as_ref() else {
+            return Ok(None);
+        };
+        let floor = &entry_admission.loss_regime_confidence_floor;
+        let selected_probability = selected_conservative_probability(decision)
+            .context("approved BTC intent is missing its selected conservative probability")?;
+        let market_id = decision
+            .approved_intent
+            .as_ref()
+            .map(|intent| intent.market_id.as_str())
+            .context("approved BTC intent is missing its market identity")?;
+        {
+            let admission = self.loss_regime_admission.lock().await;
+            let runtime = admission
+                .as_ref()
+                .context("configured loss-regime admission state was not initialized")?;
+            if runtime.evaluated_market_id.as_deref() == Some(market_id) {
+                return Ok(Some(runtime.state.evaluate(floor, selected_probability)?));
+            }
+        }
+        let candidates = self
+            .repository
+            .load_resolved_loss_regime_candidates(
+                self.config.process_id,
+                &self.config.config_hash,
+                as_of,
+            )
+            .await?;
+        let mut rebuilt_state = LossRegimeConfidenceFloorState::default();
+        let mut last_transition = None;
+        for candidate in candidates {
+            if let Some(transition) = rebuilt_state.apply_candidate(floor, &candidate) {
+                last_transition = Some((transition, candidate, rebuilt_state.clone()));
+            }
+        }
+        let (evaluation, transition_event) = {
+            let mut admission = self.loss_regime_admission.lock().await;
+            let runtime = admission
+                .as_mut()
+                .context("configured loss-regime admission state was not initialized")?;
+            let active_changed = runtime.state.active != rebuilt_state.active;
+            runtime.state = rebuilt_state;
+            runtime.evaluated_market_id = Some(market_id.to_string());
+            (
+                runtime.state.evaluate(floor, selected_probability)?,
+                active_changed.then_some(last_transition).flatten(),
+            )
+        };
+        if let Some((transition, candidate, state)) = transition_event {
+            let (event_type, message) = match transition {
+                LossRegimeConfidenceFloorTransition::Activated => (
+                    "btc_loss_regime_confidence_floor_activated",
+                    "loss-regime confidence floor activated",
+                ),
+                LossRegimeConfidenceFloorTransition::Released => (
+                    "btc_loss_regime_confidence_floor_released",
+                    "loss-regime confidence floor released",
+                ),
+            };
+            self.record_entry_admission_event(
+                event_type,
+                message,
+                serde_json::json!({
+                    "entry_admission_config_hash": floor.config_hash()?,
+                    "candidate": candidate,
+                    "state": state,
+                }),
+            )
+            .await;
+        }
+        Ok(Some(evaluation))
+    }
+
+    async fn record_entry_admission_event(
+        &self,
+        event_type: &str,
+        message: &str,
+        metadata: serde_json::Value,
+    ) {
+        if let Err(error) = self
+            .store
+            .record_trading_process_event(
+                self.config.process_id,
+                "info",
+                event_type,
+                Some(message),
+                metadata,
+            )
+            .await
+        {
+            warn!(
+                error = %error,
+                process_id = %self.config.process_id,
+                event_type,
+                "failed to persist BTC entry-admission event"
+            );
+        }
     }
 
     pub async fn shutdown(&self) -> Result<()> {
@@ -334,6 +494,7 @@ impl BtcPaperExperimentRunner {
                     &self.config.strategy.strategy_version,
                     &decision,
                     None,
+                    None,
                     "rejected",
                 )
                 .await?;
@@ -352,7 +513,37 @@ impl BtcPaperExperimentRunner {
                     &self.config.strategy.strategy_version,
                     &decision,
                     None,
+                    None,
                     "shadow_only",
+                )
+                .await?;
+            self.repository
+                .increment_experiment_counts(self.config.experiment_id, 1, 1, 0)
+                .await?;
+            return Ok(());
+        }
+
+        let entry_admission = self
+            .evaluate_entry_admission(&decision, observed_at)
+            .await?;
+        let entry_admission_evidence = entry_admission
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()?;
+        if entry_admission
+            .as_ref()
+            .is_some_and(|evaluation| evaluation.disposition == AdmissionDisposition::Defer)
+        {
+            self.repository
+                .insert_strategy_decision(
+                    self.config.experiment_id,
+                    &self.config.config_hash,
+                    &snapshot.market_id,
+                    &self.config.strategy.strategy_version,
+                    &decision,
+                    entry_admission_evidence.as_ref(),
+                    None,
+                    "admission_blocked",
                 )
                 .await?;
             self.repository
@@ -398,6 +589,7 @@ impl BtcPaperExperimentRunner {
                 &snapshot.market_id,
                 &self.config.strategy.strategy_version,
                 &decision,
+                entry_admission_evidence.as_ref(),
                 Some(plan_id),
                 "approved",
             )
@@ -487,6 +679,20 @@ impl BtcPaperExperimentRunner {
             self.force_refresh_settlement_and_reconcile().await?;
         }
         Ok(())
+    }
+}
+
+fn selected_conservative_probability(decision: &BtcDecision) -> Option<Decimal> {
+    match decision.action {
+        BtcDecisionAction::BuyUp => decision
+            .up_edge
+            .as_ref()
+            .map(|edge| edge.conservative_probability),
+        BtcDecisionAction::BuyDown => decision
+            .down_edge
+            .as_ref()
+            .map(|edge| edge.conservative_probability),
+        BtcDecisionAction::NoTrade => None,
     }
 }
 

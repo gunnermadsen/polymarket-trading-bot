@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::config::PostgresConfig;
 
 use super::{
+    admission::LossRegimeCandidate,
     strategy::{BtcDecision, BtcDecisionAction, BtcFeatureSnapshot, FairValueEstimate},
     types::{
         BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, MarketFeedEvent, OrderbookCheckpoint,
@@ -257,6 +258,16 @@ struct StoredMarketLabelRow {
     source_close_timestamp: DateTime<Utc>,
     label_available_at: DateTime<Utc>,
     evidence: serde_json::Value,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct LossRegimeCandidateRow {
+    market_id: String,
+    decision_id: Uuid,
+    decision_outcome: String,
+    resolved_outcome: String,
+    decision_at: DateTime<Utc>,
+    label_available_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -1824,6 +1835,60 @@ impl BtcRepository {
         .context("failed to check existing BTC experiment entry")
     }
 
+    pub async fn load_resolved_loss_regime_candidates(
+        &self,
+        process_id: Uuid,
+        config_hash: &str,
+        as_of: DateTime<Utc>,
+    ) -> Result<Vec<LossRegimeCandidate>> {
+        let rows = sqlx::query_as::<_, LossRegimeCandidateRow>(
+            r#"
+            WITH canonical AS (
+              SELECT DISTINCT ON (d.market_id)
+                d.market_id,
+                d.decision_id,
+                d.outcome AS decision_outcome,
+                l.outcome AS resolved_outcome,
+                d.decision_at,
+                l.label_available_at
+              FROM polymarket.btc_strategy_decisions d
+              JOIN polymarket.btc_market_labels l
+                ON l.market_id = d.market_id
+              WHERE d.process_id = $1
+                AND d.config_hash = $2
+                AND d.action = 'buy'
+                AND d.outcome IS NOT NULL
+                AND d.decision_at < l.label_available_at
+                AND l.label_available_at <= $3
+              ORDER BY d.market_id, d.decision_at, d.decision_id
+            )
+            SELECT market_id, decision_id, decision_outcome, resolved_outcome,
+              decision_at, label_available_at
+            FROM canonical
+            ORDER BY label_available_at, decision_at, decision_id, market_id
+            "#,
+        )
+        .bind(process_id)
+        .bind(config_hash)
+        .bind(as_of)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to load resolved loss-regime candidates")?;
+
+        rows.into_iter()
+            .map(|row| {
+                Ok(LossRegimeCandidate {
+                    market_id: row.market_id,
+                    decision_id: row.decision_id,
+                    decision_outcome: parse_outcome_name(&row.decision_outcome)?,
+                    resolved_outcome: parse_outcome_name(&row.resolved_outcome)?,
+                    decision_at: row.decision_at,
+                    label_available_at: row.label_available_at,
+                })
+            })
+            .collect()
+    }
+
     pub async fn insert_feature_snapshot(
         &self,
         snapshot: &BtcFeatureSnapshot,
@@ -1921,6 +1986,7 @@ impl BtcRepository {
         market_id: &str,
         strategy_version: &str,
         decision: &BtcDecision,
+        entry_admission_evidence: Option<&serde_json::Value>,
         order_plan_id: Option<Uuid>,
         status: &str,
     ) -> Result<bool> {
@@ -1943,6 +2009,16 @@ impl BtcRepository {
                 (value.spread_reserve + value.slippage_reserve + value.latency_reserve) / value.size
             })
         });
+        let mut metadata = serde_json::to_value(decision)?;
+        if let Some(entry_admission_evidence) = entry_admission_evidence {
+            metadata
+                .as_object_mut()
+                .context("serialized BTC decision metadata must be an object")?
+                .insert(
+                    "entry_admission".to_string(),
+                    entry_admission_evidence.clone(),
+                );
+        }
         let inserted =
             sqlx::query(
                 r#"
@@ -1983,7 +2059,7 @@ impl BtcRepository {
             .bind(status)
             .bind(decision.reject_reason.map(|reason| reason.as_str()))
             .bind(order_plan_id)
-            .bind(serde_json::to_value(decision)?)
+            .bind(metadata)
             .execute(&self.pool)
             .await
             .context("failed to insert BTC strategy decision")?;
