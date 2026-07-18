@@ -12,10 +12,11 @@ use async_trait::async_trait;
 use chrono::Utc;
 use polymarket_bot::{
     btc::{
-        BookRegistry, BtcPaperExperimentConfig, BtcPaperExperimentRunner, BtcRepository,
-        BtcRuntime, BtcRuntimeConfig, BtcRuntimeHandle, BtcStrategyConfig, PaperPreviewConfig,
-        PaperVenue as BtcPaperVenue, PaperVenueConfig, BTC_FEATURE_SCHEMA_VERSION,
-        BTC_STRATEGY_VERSION, BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION,
+        BookRegistry, BtcEntryAdmissionConfig, BtcPaperExperimentConfig, BtcPaperExperimentRunner,
+        BtcRepository, BtcRuntime, BtcRuntimeConfig, BtcRuntimeHandle, BtcStrategyConfig,
+        PaperPreviewConfig, PaperVenue as BtcPaperVenue, PaperVenueConfig,
+        BTC_FEATURE_SCHEMA_VERSION, BTC_STRATEGY_VERSION,
+        BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION,
     },
     config::{AppConfig, BtcConfig},
     data_api::DataApiClient,
@@ -202,6 +203,7 @@ struct BtcRealtimePaperControlConfig {
     next_experiment_key: String,
     preregistration_sha256: String,
     strategy: serde_json::Value,
+    entry_admission: Option<BtcEntryAdmissionConfig>,
     runtime: BtcProcessRuntimeControl,
     paper: BtcProcessPaperControl,
 }
@@ -213,6 +215,7 @@ impl Default for BtcRealtimePaperControlConfig {
             next_experiment_key: String::new(),
             preregistration_sha256: String::new(),
             strategy: serde_json::json!({}),
+            entry_admission: None,
             runtime: BtcProcessRuntimeControl::default(),
             paper: BtcProcessPaperControl::default(),
         }
@@ -335,6 +338,7 @@ struct BtcProcessPaperPreviewControl {
 struct ResolvedBtcProcessDefinition {
     control: BtcRealtimePaperControlConfig,
     strategy: BtcStrategyConfig,
+    entry_admission: Option<BtcEntryAdmissionConfig>,
     runtime: BtcRuntimeConfig,
     paper_venue: PaperVenueConfig,
     paper_stress_previews: Vec<PaperPreviewConfig>,
@@ -345,6 +349,7 @@ struct PreparedBtcStartDefinition {
     experiment_key: String,
     preregistration_sha256: String,
     strategy: BtcStrategyConfig,
+    entry_admission: Option<BtcEntryAdmissionConfig>,
     runtime: BtcRuntimeConfig,
     paper_venue: PaperVenueConfig,
     paper_stress_previews: Vec<PaperPreviewConfig>,
@@ -415,6 +420,7 @@ fn prepare_btc_start_definition(
     let ResolvedBtcProcessDefinition {
         control,
         strategy,
+        entry_admission,
         runtime,
         paper_venue,
         paper_stress_previews,
@@ -425,7 +431,7 @@ fn prepare_btc_start_definition(
         &uuid::Uuid::NAMESPACE_URL,
         format!("polymarket-bot/btc-paper/{experiment_key}").as_bytes(),
     );
-    let frozen_raw = serde_json::json!({
+    let mut frozen_raw = serde_json::json!({
         "pipeline_version": BTC_PIPELINE_VERSION,
         "process_schema_version": BTC_PROCESS_SCHEMA_VERSION,
         "preregistration_sha256": &preregistration_sha256,
@@ -441,6 +447,16 @@ fn prepare_btc_start_definition(
             "stress_previews": &paper_stress_previews,
         }
     });
+    if let Some(entry_admission) = entry_admission.as_ref() {
+        frozen_raw
+            .as_object_mut()
+            .expect("BTC frozen process config is an object")
+            .insert(
+                "entry_admission".to_string(),
+                serde_json::to_value(entry_admission)
+                    .map_err(|error| HttpError::internal(error.to_string()))?,
+            );
+    }
     let frozen_process_config = TradingProcessConfig {
         execution: Some(ProcessExecutionConfig {
             mode: Some("paper".to_string()),
@@ -463,6 +479,7 @@ fn prepare_btc_start_definition(
         experiment_key,
         preregistration_sha256,
         strategy,
+        entry_admission,
         runtime,
         paper_venue,
         paper_stress_previews,
@@ -700,6 +717,11 @@ impl BtcProcessManager {
         strategy
             .validate()
             .map_err(|error| HttpError::bad_request(error.to_string()))?;
+        if let Some(entry_admission) = control.entry_admission.as_ref() {
+            entry_admission
+                .validate()
+                .map_err(|error| HttpError::bad_request(error.to_string()))?;
+        }
         if !matches!(
             strategy.strategy_version.as_str(),
             BTC_STRATEGY_VERSION | BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION
@@ -792,6 +814,7 @@ impl BtcProcessManager {
             paper_stress_previews.push(resolved);
         }
         Ok(ResolvedBtcProcessDefinition {
+            entry_admission: control.entry_admission.clone(),
             control,
             strategy,
             runtime,
@@ -975,6 +998,7 @@ impl BtcProcessManager {
             experiment_key,
             preregistration_sha256,
             strategy,
+            entry_admission,
             runtime: runtime_config,
             paper_venue: paper_venue_config,
             paper_stress_previews,
@@ -1045,6 +1069,7 @@ impl BtcProcessManager {
                     config_hash: config_hash.clone(),
                     frozen_process_config: frozen_process_config_value,
                     strategy,
+                    entry_admission,
                     execution_enabled: true,
                     paper_stress_previews,
                 },
@@ -1118,6 +1143,7 @@ impl BtcProcessManager {
             experiment_key,
             preregistration_sha256,
             strategy,
+            entry_admission,
             runtime: runtime_config,
             paper_venue: paper_venue_config,
             paper_stress_previews,
@@ -1191,6 +1217,7 @@ impl BtcProcessManager {
                     config_hash: config_hash.clone(),
                     frozen_process_config: frozen_process_config_value,
                     strategy: strategy.clone(),
+                    entry_admission: entry_admission.clone(),
                     execution_enabled: true,
                     paper_stress_previews: paper_stress_previews.clone(),
                 },
@@ -2851,6 +2878,7 @@ mod lifecycle_tests {
         assert_eq!(control.runtime.strategy_interval_ms, 1_000);
         assert_eq!(control.paper.arrival_latency_ms, 150);
         assert_eq!(control.paper.visible_depth_haircut, dec!(0.80));
+        assert!(control.entry_admission.is_none());
     }
 
     #[test]
@@ -2918,6 +2946,7 @@ mod lifecycle_tests {
                 ..BtcRealtimePaperControlConfig::default()
             },
             strategy: BtcStrategyConfig::default(),
+            entry_admission: None,
             runtime: BtcRuntimeConfig {
                 enabled: true,
                 ..BtcRuntimeConfig::default()
@@ -2952,6 +2981,11 @@ mod lifecycle_tests {
             BTC_PROCESS_SCHEMA_VERSION
         );
         assert!(first.frozen_process_config.raw.get("ml_shadow").is_none());
+        assert!(first
+            .frozen_process_config
+            .raw
+            .get("entry_admission")
+            .is_none());
         assert_eq!(
             first
                 .frozen_process_config
@@ -2959,6 +2993,43 @@ mod lifecycle_tests {
                 .as_ref()
                 .and_then(|execution| execution.mode.as_deref()),
             Some("paper")
+        );
+    }
+
+    #[test]
+    fn btc_start_preparation_freezes_configured_entry_admission() {
+        let entry_admission = BtcEntryAdmissionConfig {
+            loss_regime_confidence_floor: polymarket_bot::btc::LossRegimeConfidenceFloorConfig {
+                schema_version: polymarket_bot::btc::LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION
+                    .to_string(),
+                activation_consecutive_candidate_losses: 2,
+                min_conservative_probability: dec!(0.50),
+                release_consecutive_candidate_wins: 1,
+            },
+        };
+        let resolved = ResolvedBtcProcessDefinition {
+            control: BtcRealtimePaperControlConfig {
+                schema_version: BTC_PROCESS_SCHEMA_VERSION.to_string(),
+                next_experiment_key: "btc-5m-paper-admission-preview".to_string(),
+                preregistration_sha256: "c".repeat(64),
+                entry_admission: Some(entry_admission.clone()),
+                ..BtcRealtimePaperControlConfig::default()
+            },
+            strategy: BtcStrategyConfig::default(),
+            entry_admission: Some(entry_admission.clone()),
+            runtime: BtcRuntimeConfig {
+                enabled: true,
+                ..BtcRuntimeConfig::default()
+            },
+            paper_venue: PaperVenueConfig::default(),
+            paper_stress_previews: Vec::new(),
+        };
+
+        let prepared = prepare_btc_start_definition(resolved).unwrap();
+        assert_eq!(prepared.entry_admission, Some(entry_admission.clone()));
+        assert_eq!(
+            prepared.frozen_process_config.raw["entry_admission"],
+            serde_json::to_value(entry_admission).unwrap()
         );
     }
 

@@ -1,3 +1,4 @@
+pub mod admission;
 pub mod experiment;
 pub mod feeds;
 pub mod market;
@@ -7,6 +8,12 @@ pub mod runtime;
 pub mod strategy;
 pub mod types;
 
+pub use admission::{
+    AdmissionDisposition, BtcEntryAdmissionConfig, LossRegimeCandidate,
+    LossRegimeConfidenceFloorConfig, LossRegimeConfidenceFloorEvaluation,
+    LossRegimeConfidenceFloorState, LossRegimeConfidenceFloorTransition,
+    LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION,
+};
 pub use experiment::{BtcPaperExperimentConfig, BtcPaperExperimentRunner};
 pub use feeds::{
     parse_binance_agg_trade, parse_clob_messages, parse_rtds_reference_tick, BookRegistry,
