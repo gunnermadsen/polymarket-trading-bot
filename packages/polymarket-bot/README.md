@@ -1,21 +1,22 @@
 # polymarket-bot
 
-Rust microservice for Polymarket negative-risk arbitrage scanning, simulation, execution-state management, and Postgres/Timescale persistence.
+Rust microservice for Polymarket negative-risk arbitrage scanning, execution-state management, and Postgres/Timescale persistence.
 
 ## v1 scope
 
 - Direct Gamma/CLOB REST and CLOB WebSocket integration.
-- Shared execution pipeline for `sim` and `live`.
+- Dedicated BTC realtime-paper execution through `btc::paper::PaperVenue`.
+- Preserved authenticated Polymarket live-execution and reconciliation foundation.
 - Postgres persistence in the `polymarket` schema.
 - Kafka is intentionally not required. Future Kafka event publishing should be added behind a disabled adapter only after the service has proven stable.
 
 ## Trading Processes
 
-Trading mode is controlled by rows in `trade_processes`, not by a process-wide
-environment variable. A single bot runtime can execute `sim` and `live` processes
-in parallel. Live processes require CLOB credentials and wallet secrets to be
-present in the runtime environment, and host configuration only supplies venue
-URLs plus hard risk caps.
+Trading activity is controlled by rows in `trading_processes`, not by a
+process-wide environment variable. Managed BTC process definitions are
+paper-only and use the dedicated BTC paper venue. The legacy generic simulator
+is retired. Authenticated live-execution controls still require CLOB credentials
+and wallet secrets in the runtime environment.
 
 ## Build and test
 

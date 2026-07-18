@@ -168,7 +168,7 @@ jobs:
             exit 1
           fi
 
-      - name: Bootstrap trading processes
+      - name: Deploy and verify bot service
         if: github.event.inputs.terraform_action == 'apply'
         run: |
           set -euo pipefail
@@ -184,7 +184,6 @@ jobs:
           APP_SECRET_NAME="capitonic/polymarket-bot/production"
           AWS_REGION="mx-central-1"
           ADMIN_BASE_URL="http://127.0.0.1:8097"
-          BOOTSTRAP_SCRIPT="scripts/bootstrap-trading-processes.mjs"
           COMPOSE_FILE="docker-compose.production.yml"
           SECRET_PATH="/root/polymarket/secret.json"
 
@@ -237,95 +236,6 @@ jobs:
             echo "Bot health API did not become available." >&2
             exit 1
           fi
-
-          for attempt in $(seq 1 60); do
-            if curl -fsS \
-              -H "Authorization: Bearer $ADMIN_TOKEN" \
-              "$ADMIN_BASE_URL/admin/trading-processes?limit=100" >/tmp/polymarket-processes-before.json; then
-              break
-            fi
-            sleep 5
-          done
-
-          if [ ! -s /tmp/polymarket-processes-before.json ]; then
-            echo "Bot admin API did not become available." >&2
-            exit 1
-          fi
-
-          if [ ! -f "$BOOTSTRAP_SCRIPT" ]; then
-            echo "Missing $BOOTSTRAP_SCRIPT in $APP_DIRECTORY." >&2
-            exit 1
-          fi
-
-          TEMPLATE_SUMMARY="$(
-            jq -s -c '
-              {
-                total: length,
-                sim_enabled: (
-                  map(select(.enabled == true and ((.config.execution.mode // .config.raw.execution.mode // "") == "sim")))
-                  | length
-                ),
-                live_disabled: (
-                  map(select(.enabled == false and ((.config.execution.mode // .config.raw.execution.mode // "") == "live")))
-                  | length
-                )
-              }
-            ' infra/processes/*.json
-          )"
-
-          echo "$TEMPLATE_SUMMARY"
-          printf '%s' "$TEMPLATE_SUMMARY" \
-            | jq -e '.total == 2 and .sim_enabled == 1 and .live_disabled == 1' >/dev/null
-
-          export POLYMARKET_HTTP_BASE_URL="$ADMIN_BASE_URL"
-          export POLYMARKET_ADMIN_BASE_URL="$ADMIN_BASE_URL"
-          export POLYMARKET_ADMIN_API_BASE_URL="$ADMIN_BASE_URL"
-          export POLYMARKET_HTTP_ADMIN_TOKEN="$ADMIN_TOKEN"
-          export POLYMARKET_ADMIN_TOKEN="$ADMIN_TOKEN"
-          export POLYMARKET_BOOTSTRAP_EXPECTED_PROCESS_COUNT="2"
-          export POLYMARKET_BOOTSTRAP_PROCESS_COUNT="2"
-          export POLYMARKET_BOOTSTRAP_SIM_ENABLED="true"
-          export POLYMARKET_BOOTSTRAP_LIVE_ENABLED="false"
-
-          node "$BOOTSTRAP_SCRIPT" --base-url "$ADMIN_BASE_URL" --token "$ADMIN_TOKEN"
-
-          curl -fsS \
-            -H "Authorization: Bearer $ADMIN_TOKEN" \
-            "$ADMIN_BASE_URL/admin/trading-processes?limit=100" >/tmp/polymarket-processes-after.json
-
-          BOOTSTRAP_SUMMARY="$(
-            jq -c '
-              [
-                .processes[]
-                | select(.metadata.source == "infra/processes")
-              ] as $processes
-              | {
-                  total: ($processes | length),
-                  sim_enabled: (
-                    $processes
-                    | map(select(.enabled == true and ((.config.execution.mode // .config.raw.execution.mode // "") == "sim")))
-                    | length
-                  ),
-                  live_disabled: (
-                    $processes
-                    | map(select(.enabled == false and ((.config.execution.mode // .config.raw.execution.mode // "") == "live")))
-                    | length
-                  ),
-                  processes: (
-                    $processes
-                    | map({
-                        name,
-                        enabled,
-                        mode: (.config.execution.mode // .config.raw.execution.mode // null)
-                      })
-                  )
-                }
-            ' /tmp/polymarket-processes-after.json
-          )"
-
-          echo "$BOOTSTRAP_SUMMARY"
-          printf '%s' "$BOOTSTRAP_SUMMARY" \
-            | jq -e '.total == 2 and .sim_enabled == 1 and .live_disabled == 1' >/dev/null
           SCRIPT
 
           SSM_COMMAND="$(mktemp)"
@@ -343,7 +253,7 @@ jobs:
               --instance-ids "$INSTANCE_ID" \
               --document-name AWS-RunShellScript \
               --parameters "file://$PARAMS_JSON" \
-              --comment "Bootstrap Polymarket trading processes" \
+              --comment "Deploy and verify Polymarket bot service" \
               --timeout-seconds 1800 \
               --query 'Command.CommandId' \
               --output text
@@ -375,6 +285,6 @@ jobs:
             --output json
 
           if [ "$COMMAND_STATUS" != "Success" ]; then
-            echo "Trading process bootstrap failed with status $COMMAND_STATUS." >&2
+            echo "Bot deployment verification failed with status $COMMAND_STATUS." >&2
             exit 1
           fi
