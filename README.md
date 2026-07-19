@@ -180,10 +180,10 @@ is no passive mode or environment-variable control:
 ## Selectable BTC Decision Strategies
 
 `btc_realtime_paper_process_v3` requires an explicit
-`strategy.decision_strategy`. The selector chooses the probability estimator;
-the common decision engine still owns executable-price checks, fees, reserves,
-edge comparison, and intent construction. Entry-admission features run after
-that engine and remain independent downstream gates.
+`strategy.decision_strategy`. The selector chooses the probability estimator
+and its decision contract. The legacy selectors continue to use the common
+reserve-aware edge comparison and intent builder. Entry-admission features run
+after strategy evaluation and remain independent downstream gates.
 
 The supported selectors are:
 
@@ -193,6 +193,37 @@ The supported selectors are:
 - `market_anchored_fair_value`, the two-sided research estimator that starts
   from the normalized Polymarket midpoint and applies bounded external
   Chainlink/Binance evidence.
+- `market_anchored_directional_prediction`, a separately versioned research
+  strategy that reuses the immutable market-anchored probability profile but
+  turns a sufficiently strong estimate into an explicit Up or Down prediction.
+
+The directional-prediction strategy selects Up or Down using the greater
+central calibrated probability and requires its conservative probability to be
+at least the frozen `0.75` floor. A weaker estimate is recorded as no
+prediction. A qualifying prediction is recorded even when no intent can be
+built, so research can distinguish prediction quality from an economic or
+execution rejection. An intent requires the selected central probability to
+exceed the executable price plus the actual dynamic taker fee per share. This
+strategy does not apply the legacy reserve-based or minimum-edge admission
+thresholds; freshness, runtime readiness, price and depth checks, one entry per
+market, and simulated FOK arrival checks remain unchanged.
+For its approved decision rows, the canonical edge columns describe that direct
+approval contract (central probability, actual fee, and zero contractual
+reserve); the hypothetical legacy reserve breakdown remains available in the
+serialized decision metadata.
+
+A minimal directional selector is:
+
+```json
+"decision_strategy": {
+  "type": "market_anchored_directional_prediction",
+  "profile_id": "btc5m-market-anchored-research-20260718-v1",
+  "profile_sha256": "5f84df367641cd6f6144ef20f8e6044f4de43710f9caa16a7da7e9e8f888c99a",
+  "config": {
+    "min_conservative_probability": "0.75"
+  }
+}
+```
 
 The candidate profile is compiled into the binary and selected by both ID and
 content hash. A profile mismatch fails process validation. Its current
