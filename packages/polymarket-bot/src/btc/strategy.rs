@@ -7,9 +7,15 @@ use uuid::Uuid;
 
 use super::types::{BtcOutcome, FeedIntegrityStatus};
 
+mod market_anchored;
+
 pub const BTC_FEATURE_SCHEMA_VERSION: &str = "btc_5m_features_v2";
 pub const BTC_STRATEGY_VERSION: &str = "btc_5m_chainlink_fair_value_v1";
 pub const BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION: &str = "btc_5m_volatility_continuation_v1";
+pub const BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION: &str =
+    market_anchored::MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION;
+pub const BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID: &str = market_anchored::PROFILE_ID;
+pub const BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256: &str = market_anchored::PROFILE_SHA256;
 pub const BTC_FEATURE_LINEAGE_VERSION: &str = "btc_5m_feature_lineage_v2";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -44,6 +50,10 @@ pub enum BtcDecisionStrategyConfig {
     ChainlinkFairValue {},
     VolatilityContinuation {
         config: BtcVolatilityContinuationConfig,
+    },
+    MarketAnchoredFairValue {
+        profile_id: String,
+        profile_sha256: String,
     },
 }
 
@@ -250,6 +260,10 @@ pub struct FairValueEstimate {
     pub lead_adjustment: Decimal,
     pub terminal_volatility: Decimal,
     pub probability_uncertainty: Decimal,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub market_up_prior: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_logit_adjustment: Option<Decimal>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -419,6 +433,7 @@ struct BtcStrategyEstimate {
 enum ResolvedBtcDecisionStrategy<'a> {
     ChainlinkFairValue,
     VolatilityContinuation(&'a BtcVolatilityContinuationConfig),
+    MarketAnchoredFairValue(&'static market_anchored::MarketAnchoredProfile),
 }
 
 impl<'a> ResolvedBtcDecisionStrategy<'a> {
@@ -437,6 +452,20 @@ impl<'a> ResolvedBtcDecisionStrategy<'a> {
                     && config.volatility_continuation.is_none() =>
                 {
                     Ok(Self::VolatilityContinuation(continuation))
+                }
+                BtcDecisionStrategyConfig::MarketAnchoredFairValue {
+                    profile_id,
+                    profile_sha256,
+                } if config.strategy_version == BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION
+                    && config.volatility_continuation.is_none() =>
+                {
+                    market_anchored::resolve_profile(
+                        &market_anchored::MarketAnchoredProfileSelection::new(
+                            profile_id,
+                            profile_sha256,
+                        ),
+                    )
+                    .map(Self::MarketAnchoredFairValue)
                 }
                 _ => Err(BtcRejectReason::InvalidConfiguration),
             };
@@ -475,6 +504,11 @@ impl<'a> ResolvedBtcDecisionStrategy<'a> {
                     continuation.min_executable_price,
                     continuation.max_executable_price,
                 )),
+            }),
+            Self::MarketAnchoredFairValue(profile) => Ok(BtcStrategyEstimate {
+                fair_value: market_anchored::estimate(config, snapshot, profile)?.fair_value,
+                outcome_scope: BtcOutcomeScope::Both,
+                executable_price_bounds: None,
             }),
         }
     }
@@ -687,6 +721,9 @@ pub fn estimate_fair_value(
         ResolvedBtcDecisionStrategy::VolatilityContinuation(continuation) => {
             estimate_market_anchored_continuation(config, continuation, snapshot)
         }
+        ResolvedBtcDecisionStrategy::MarketAnchoredFairValue(profile) => {
+            Ok(market_anchored::estimate(config, snapshot, profile)?.fair_value)
+        }
     }
 }
 
@@ -787,6 +824,8 @@ fn estimate_chainlink_fair_value(
         lead_adjustment,
         terminal_volatility,
         probability_uncertainty: uncertainty,
+        market_up_prior: None,
+        signed_logit_adjustment: None,
     })
 }
 
@@ -923,6 +962,8 @@ fn estimate_market_anchored_continuation(
         lead_adjustment,
         terminal_volatility,
         probability_uncertainty: uncertainty,
+        market_up_prior: None,
+        signed_logit_adjustment: None,
     })
 }
 
@@ -968,6 +1009,9 @@ fn validate_config(config: &BtcStrategyConfig) -> Result<(), BtcRejectReason> {
                 && continuation.max_executable_price <= config.max_entry_price
                 && continuation.max_logit_adjustment > Decimal::ZERO
                 && continuation.max_logit_adjustment <= Decimal::ONE
+        }
+        Ok(ResolvedBtcDecisionStrategy::MarketAnchoredFairValue(profile)) => {
+            market_anchored::validate_strategy_config(config, profile).is_ok()
         }
         Err(_) => false,
     };
@@ -1602,6 +1646,17 @@ mod tests {
         }
     }
 
+    fn market_anchored_config() -> BtcStrategyConfig {
+        BtcStrategyConfig {
+            strategy_version: BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION.to_string(),
+            decision_strategy: Some(BtcDecisionStrategyConfig::MarketAnchoredFairValue {
+                profile_id: BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID.to_string(),
+                profile_sha256: BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256.to_string(),
+            }),
+            ..BtcStrategyConfig::default()
+        }
+    }
+
     fn continuation_snapshot() -> BtcFeatureSnapshot {
         let mut snapshot = snapshot();
         snapshot.up_book = book(BtcOutcome::Up, "up", dec!(0.55), dec!(0.56));
@@ -1861,6 +1916,61 @@ mod tests {
         };
 
         assert!(conflict.validate().is_err());
+    }
+
+    #[test]
+    fn market_anchored_selection_uses_common_engine_for_both_outcomes() {
+        let config = market_anchored_config();
+        config.validate().unwrap();
+        let mut snapshot = snapshot();
+        snapshot.chainlink_price = Some(dec!(102000));
+        snapshot.chainlink_gap_bps = Some(dec!(200));
+
+        let decision = DeterministicBtcStrategy::evaluate(&config, &snapshot);
+        let fair_value = decision
+            .fair_value
+            .as_ref()
+            .expect("candidate must emit a fair-value estimate");
+
+        assert!(fair_value.market_up_prior.is_some());
+        assert_eq!(fair_value.signed_logit_adjustment, Some(dec!(0.40)));
+        assert!(decision.up_edge.is_some());
+        assert!(decision.down_edge.is_some());
+        assert_eq!(decision.action, BtcDecisionAction::BuyUp);
+        assert_eq!(
+            decision
+                .approved_intent
+                .as_ref()
+                .map(|intent| intent.strategy_version.as_str()),
+            Some(BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION)
+        );
+    }
+
+    #[test]
+    fn market_anchored_decision_matches_golden_contract() {
+        let mut snapshot = snapshot();
+        snapshot.chainlink_price = Some(dec!(102000));
+        snapshot.chainlink_gap_bps = Some(dec!(200));
+        let decision = DeterministicBtcStrategy::evaluate(&market_anchored_config(), &snapshot);
+
+        assert_eq!(
+            decision_sha256(&decision),
+            "0598c0882f3d5d4873646722d5d9b784362bdfbe96fc548bdec3e069e6ee3134"
+        );
+    }
+
+    #[test]
+    fn market_anchored_profile_identity_and_floor_fail_closed() {
+        let mut wrong_hash = market_anchored_config();
+        wrong_hash.decision_strategy = Some(BtcDecisionStrategyConfig::MarketAnchoredFairValue {
+            profile_id: BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID.to_string(),
+            profile_sha256: "0".repeat(64),
+        });
+        assert!(wrong_hash.validate().is_err());
+
+        let mut wrong_floor = market_anchored_config();
+        wrong_floor.probability_floor = dec!(0.02);
+        assert!(wrong_floor.validate().is_err());
     }
 
     #[test]
