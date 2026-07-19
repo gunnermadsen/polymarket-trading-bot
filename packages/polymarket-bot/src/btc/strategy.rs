@@ -38,6 +38,15 @@ impl Default for BtcVolatilityContinuationConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BtcDecisionStrategyConfig {
+    ChainlinkFairValue {},
+    VolatilityContinuation {
+        config: BtcVolatilityContinuationConfig,
+    },
+}
+
 /// Immutable, process-owned parameters for the deterministic baseline.
 ///
 /// Runtime configuration should be hashed and frozen when an experiment starts. The strategy
@@ -47,6 +56,8 @@ impl Default for BtcVolatilityContinuationConfig {
 pub struct BtcStrategyConfig {
     pub strategy_version: String,
     pub feature_schema_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_strategy: Option<BtcDecisionStrategyConfig>,
     pub target_size: Decimal,
     pub min_seconds_after_open: i64,
     pub min_seconds_before_close: i64,
@@ -84,6 +95,7 @@ impl Default for BtcStrategyConfig {
         Self {
             strategy_version: BTC_STRATEGY_VERSION.to_string(),
             feature_schema_version: BTC_FEATURE_SCHEMA_VERSION.to_string(),
+            decision_strategy: None,
             target_size: dec!(5),
             min_seconds_after_open: 15,
             min_seconds_before_close: 20,
@@ -404,13 +416,31 @@ struct BtcStrategyEstimate {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum BtcDecisionStrategy<'a> {
+enum ResolvedBtcDecisionStrategy<'a> {
     ChainlinkFairValue,
     VolatilityContinuation(&'a BtcVolatilityContinuationConfig),
 }
 
-impl<'a> BtcDecisionStrategy<'a> {
+impl<'a> ResolvedBtcDecisionStrategy<'a> {
     fn resolve(config: &'a BtcStrategyConfig) -> Result<Self, BtcRejectReason> {
+        if let Some(selection) = config.decision_strategy.as_ref() {
+            return match selection {
+                BtcDecisionStrategyConfig::ChainlinkFairValue {}
+                    if config.strategy_version == BTC_STRATEGY_VERSION
+                        && config.volatility_continuation.is_none() =>
+                {
+                    Ok(Self::ChainlinkFairValue)
+                }
+                BtcDecisionStrategyConfig::VolatilityContinuation {
+                    config: continuation,
+                } if config.strategy_version == BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION
+                    && config.volatility_continuation.is_none() =>
+                {
+                    Ok(Self::VolatilityContinuation(continuation))
+                }
+                _ => Err(BtcRejectReason::InvalidConfiguration),
+            };
+        }
         match config.strategy_version.as_str() {
             BTC_STRATEGY_VERSION if config.volatility_continuation.is_none() => {
                 Ok(Self::ChainlinkFairValue)
@@ -462,7 +492,7 @@ impl DeterministicBtcStrategy {
             return rejected(decision_id, snapshot, reason, None, None, None);
         }
 
-        let strategy = match BtcDecisionStrategy::resolve(config) {
+        let strategy = match ResolvedBtcDecisionStrategy::resolve(config) {
             Ok(strategy) => strategy,
             Err(reason) => return rejected(decision_id, snapshot, reason, None, None, None),
         };
@@ -650,9 +680,11 @@ pub fn estimate_fair_value(
     config: &BtcStrategyConfig,
     snapshot: &BtcFeatureSnapshot,
 ) -> Result<FairValueEstimate, BtcRejectReason> {
-    match BtcDecisionStrategy::resolve(config)? {
-        BtcDecisionStrategy::ChainlinkFairValue => estimate_chainlink_fair_value(config, snapshot),
-        BtcDecisionStrategy::VolatilityContinuation(continuation) => {
+    match ResolvedBtcDecisionStrategy::resolve(config)? {
+        ResolvedBtcDecisionStrategy::ChainlinkFairValue => {
+            estimate_chainlink_fair_value(config, snapshot)
+        }
+        ResolvedBtcDecisionStrategy::VolatilityContinuation(continuation) => {
             estimate_market_anchored_continuation(config, continuation, snapshot)
         }
     }
@@ -920,27 +952,24 @@ fn continuation_signal_outcome(
 }
 
 fn validate_config(config: &BtcStrategyConfig) -> Result<(), BtcRejectReason> {
-    let strategy_contract_valid = match config.strategy_version.as_str() {
-        BTC_STRATEGY_VERSION => config.volatility_continuation.is_none(),
-        BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION => config
-            .volatility_continuation
-            .as_ref()
-            .is_some_and(|continuation| {
-                continuation.min_seconds_to_close > 0
-                    && continuation.max_seconds_to_close >= continuation.min_seconds_to_close
-                    && continuation.min_seconds_to_close >= config.min_seconds_before_close
-                    && continuation.max_seconds_to_close <= 300 - config.min_seconds_after_open
-                    && continuation.min_realized_volatility_per_sqrt_second > Decimal::ZERO
-                    && continuation.min_abs_chainlink_gap_bps > Decimal::ZERO
-                    && continuation.min_executable_price > Decimal::ZERO
-                    && continuation.max_executable_price < Decimal::ONE
-                    && continuation.min_executable_price < continuation.max_executable_price
-                    && continuation.min_executable_price >= config.min_entry_price
-                    && continuation.max_executable_price <= config.max_entry_price
-                    && continuation.max_logit_adjustment > Decimal::ZERO
-                    && continuation.max_logit_adjustment <= Decimal::ONE
-            }),
-        _ => false,
+    let strategy_contract_valid = match ResolvedBtcDecisionStrategy::resolve(config) {
+        Ok(ResolvedBtcDecisionStrategy::ChainlinkFairValue) => true,
+        Ok(ResolvedBtcDecisionStrategy::VolatilityContinuation(continuation)) => {
+            continuation.min_seconds_to_close > 0
+                && continuation.max_seconds_to_close >= continuation.min_seconds_to_close
+                && continuation.min_seconds_to_close >= config.min_seconds_before_close
+                && continuation.max_seconds_to_close <= 300 - config.min_seconds_after_open
+                && continuation.min_realized_volatility_per_sqrt_second > Decimal::ZERO
+                && continuation.min_abs_chainlink_gap_bps > Decimal::ZERO
+                && continuation.min_executable_price > Decimal::ZERO
+                && continuation.max_executable_price < Decimal::ONE
+                && continuation.min_executable_price < continuation.max_executable_price
+                && continuation.min_executable_price >= config.min_entry_price
+                && continuation.max_executable_price <= config.max_entry_price
+                && continuation.max_logit_adjustment > Decimal::ZERO
+                && continuation.max_logit_adjustment <= Decimal::ONE
+        }
+        Err(_) => false,
     };
     let valid = !config.strategy_version.trim().is_empty()
         && !config.feature_schema_version.trim().is_empty()
@@ -1007,7 +1036,9 @@ fn validate_snapshot(
     if snapshot.observed_at < earliest_entry || snapshot.observed_at >= latest_entry {
         return Err(BtcRejectReason::OutsideEntryWindow);
     }
-    if let Some(continuation) = config.volatility_continuation.as_ref() {
+    if let Ok(ResolvedBtcDecisionStrategy::VolatilityContinuation(continuation)) =
+        ResolvedBtcDecisionStrategy::resolve(config)
+    {
         let seconds_to_close = (snapshot.window_end - snapshot.observed_at).num_milliseconds();
         let min_ms = continuation.min_seconds_to_close * 1_000;
         let max_ms = continuation.max_seconds_to_close * 1_000;
@@ -1779,6 +1810,57 @@ mod tests {
     fn legacy_strategy_serialization_omits_continuation_contract() {
         let value = serde_json::to_value(BtcStrategyConfig::default()).unwrap();
         assert!(value.get("volatility_continuation").is_none());
+        assert!(value.get("decision_strategy").is_none());
+    }
+
+    #[test]
+    fn explicit_chainlink_selection_preserves_legacy_decision() {
+        let legacy = DeterministicBtcStrategy::evaluate(&BtcStrategyConfig::default(), &snapshot());
+        let explicit_config = BtcStrategyConfig {
+            decision_strategy: Some(BtcDecisionStrategyConfig::ChainlinkFairValue {}),
+            ..BtcStrategyConfig::default()
+        };
+        explicit_config.validate().unwrap();
+        let explicit = DeterministicBtcStrategy::evaluate(&explicit_config, &snapshot());
+
+        assert_eq!(explicit, legacy);
+        assert_eq!(
+            decision_sha256(&explicit),
+            "60bd4559e35f10b8465cbe142085506ee860796411672be5baaeec98827f1c23"
+        );
+    }
+
+    #[test]
+    fn explicit_continuation_selection_preserves_legacy_decision() {
+        let legacy =
+            DeterministicBtcStrategy::evaluate(&continuation_config(), &continuation_snapshot());
+        let explicit_config = BtcStrategyConfig {
+            strategy_version: BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION.to_string(),
+            decision_strategy: Some(BtcDecisionStrategyConfig::VolatilityContinuation {
+                config: BtcVolatilityContinuationConfig::default(),
+            }),
+            ..BtcStrategyConfig::default()
+        };
+        explicit_config.validate().unwrap();
+        let explicit =
+            DeterministicBtcStrategy::evaluate(&explicit_config, &continuation_snapshot());
+
+        assert_eq!(explicit, legacy);
+        assert_eq!(
+            decision_sha256(&explicit),
+            "8c41f5bbc71da61e54a1b3f5a9984ec5ce97c4387f16c01b1c9159c1c3fd5fd4"
+        );
+    }
+
+    #[test]
+    fn explicit_selection_rejects_conflicting_legacy_contract() {
+        let conflict = BtcStrategyConfig {
+            decision_strategy: Some(BtcDecisionStrategyConfig::ChainlinkFairValue {}),
+            volatility_continuation: Some(BtcVolatilityContinuationConfig::default()),
+            ..BtcStrategyConfig::default()
+        };
+
+        assert!(conflict.validate().is_err());
     }
 
     #[test]
