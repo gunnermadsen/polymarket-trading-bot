@@ -14,6 +14,8 @@ pub const BTC_STRATEGY_VERSION: &str = "btc_5m_chainlink_fair_value_v1";
 pub const BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION: &str = "btc_5m_volatility_continuation_v1";
 pub const BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION: &str =
     market_anchored::MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION;
+pub const BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION: &str =
+    "btc_5m_market_anchored_directional_prediction_research_v1";
 pub const BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID: &str = market_anchored::PROFILE_ID;
 pub const BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256: &str = market_anchored::PROFILE_SHA256;
 pub const BTC_FEATURE_LINEAGE_VERSION: &str = "btc_5m_feature_lineage_v2";
@@ -21,6 +23,22 @@ pub const BTC_CHAINLINK_FAIR_VALUE_STRATEGY_FAMILY: &str = "btc_5m_chainlink_fai
 pub const BTC_VOLATILITY_CONTINUATION_STRATEGY_FAMILY: &str = "btc_5m_volatility_continuation";
 pub const BTC_MARKET_ANCHORED_FAIR_VALUE_STRATEGY_FAMILY: &str =
     "btc_5m_market_anchored_fair_value";
+pub const BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_FAMILY: &str =
+    "btc_5m_market_anchored_directional_prediction";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BtcDirectionalPredictionConfig {
+    pub min_conservative_probability: Decimal,
+}
+
+impl Default for BtcDirectionalPredictionConfig {
+    fn default() -> Self {
+        Self {
+            min_conservative_probability: dec!(0.75),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +76,11 @@ pub enum BtcDecisionStrategyConfig {
     MarketAnchoredFairValue {
         profile_id: String,
         profile_sha256: String,
+    },
+    MarketAnchoredDirectionalPrediction {
+        profile_id: String,
+        profile_sha256: String,
+        config: BtcDirectionalPredictionConfig,
     },
 }
 
@@ -160,11 +183,19 @@ impl BtcStrategyConfig {
             ResolvedBtcDecisionStrategy::MarketAnchoredFairValue(_) => {
                 BTC_MARKET_ANCHORED_FAIR_VALUE_STRATEGY_FAMILY
             }
+            ResolvedBtcDecisionStrategy::MarketAnchoredDirectionalPrediction { .. } => {
+                BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_FAMILY
+            }
         };
         let (profile_id, profile_sha256) = match self.decision_strategy.as_ref() {
             Some(BtcDecisionStrategyConfig::MarketAnchoredFairValue {
                 profile_id,
                 profile_sha256,
+            })
+            | Some(BtcDecisionStrategyConfig::MarketAnchoredDirectionalPrediction {
+                profile_id,
+                profile_sha256,
+                ..
             }) => (Some(profile_id.as_str()), Some(profile_sha256.as_str())),
             _ => (None, None),
         };
@@ -386,6 +417,8 @@ pub enum BtcRejectReason {
     BelowMinimumOrderSize,
     EqualEdge,
     EdgeBelowThreshold,
+    PredictionConfidenceBelowThreshold,
+    PredictionDirectEdgeNonPositive,
     VolatilityRegimeBelowThreshold,
     ContinuationSignalUnconfirmed,
     MarketPriorOutsideBounds,
@@ -432,6 +465,8 @@ impl BtcRejectReason {
             Self::BelowMinimumOrderSize => "below_minimum_order_size",
             Self::EqualEdge => "equal_edge",
             Self::EdgeBelowThreshold => "edge_below_threshold",
+            Self::PredictionConfidenceBelowThreshold => "prediction_confidence_below_threshold",
+            Self::PredictionDirectEdgeNonPositive => "prediction_direct_edge_non_positive",
             Self::VolatilityRegimeBelowThreshold => "volatility_regime_below_threshold",
             Self::ContinuationSignalUnconfirmed => "continuation_signal_unconfirmed",
             Self::MarketPriorOutsideBounds => "market_prior_outside_bounds",
@@ -439,6 +474,29 @@ impl BtcRejectReason {
             Self::RuntimeNotReady => "runtime_not_ready",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum BtcStrategyPrediction {
+    NoPrediction {
+        reason: BtcRejectReason,
+        minimum_conservative_probability: Decimal,
+        up_probability: Decimal,
+        down_probability: Decimal,
+        up_conservative_probability: Decimal,
+        down_conservative_probability: Decimal,
+    },
+    DirectionalPrediction {
+        outcome: BtcOutcome,
+        probability: Decimal,
+        conservative_probability: Decimal,
+        minimum_conservative_probability: Decimal,
+        probability_uncertainty: Decimal,
+        executable_price: Option<Decimal>,
+        direct_taker_fee_per_share: Option<Decimal>,
+        direct_net_edge_per_share: Option<Decimal>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -453,6 +511,8 @@ pub struct BtcDecision {
     pub up_edge: Option<OutcomeEdge>,
     pub down_edge: Option<OutcomeEdge>,
     pub approved_intent: Option<ApprovedIntent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prediction: Option<BtcStrategyPrediction>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -473,6 +533,10 @@ enum ResolvedBtcDecisionStrategy<'a> {
     ChainlinkFairValue,
     VolatilityContinuation(&'a BtcVolatilityContinuationConfig),
     MarketAnchoredFairValue(&'static market_anchored::MarketAnchoredProfile),
+    MarketAnchoredDirectionalPrediction {
+        profile: &'static market_anchored::MarketAnchoredProfile,
+        config: &'a BtcDirectionalPredictionConfig,
+    },
 }
 
 impl<'a> ResolvedBtcDecisionStrategy<'a> {
@@ -505,6 +569,25 @@ impl<'a> ResolvedBtcDecisionStrategy<'a> {
                         ),
                     )
                     .map(Self::MarketAnchoredFairValue)
+                }
+                BtcDecisionStrategyConfig::MarketAnchoredDirectionalPrediction {
+                    profile_id,
+                    profile_sha256,
+                    config: prediction_config,
+                } if config.strategy_version
+                    == BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION
+                    && config.volatility_continuation.is_none() =>
+                {
+                    market_anchored::resolve_profile(
+                        &market_anchored::MarketAnchoredProfileSelection::new(
+                            profile_id,
+                            profile_sha256,
+                        ),
+                    )
+                    .map(|profile| Self::MarketAnchoredDirectionalPrediction {
+                        profile,
+                        config: prediction_config,
+                    })
                 }
                 _ => Err(BtcRejectReason::InvalidConfiguration),
             };
@@ -549,6 +632,11 @@ impl<'a> ResolvedBtcDecisionStrategy<'a> {
                 outcome_scope: BtcOutcomeScope::Both,
                 executable_price_bounds: None,
             }),
+            Self::MarketAnchoredDirectionalPrediction { profile, .. } => Ok(BtcStrategyEstimate {
+                fair_value: market_anchored::estimate(config, snapshot, profile)?.fair_value,
+                outcome_scope: BtcOutcomeScope::Both,
+                executable_price_bounds: None,
+            }),
         }
     }
 }
@@ -573,8 +661,158 @@ impl DeterministicBtcStrategy {
             Ok(value) => value,
             Err(reason) => return rejected(decision_id, snapshot, reason, None, None, None),
         };
-        build_decision_from_estimate(config, snapshot, decision_id, estimate)
+        match strategy {
+            ResolvedBtcDecisionStrategy::MarketAnchoredDirectionalPrediction {
+                config: prediction_config,
+                ..
+            } => build_directional_prediction_decision(
+                config,
+                prediction_config,
+                snapshot,
+                decision_id,
+                estimate.fair_value,
+            ),
+            _ => build_decision_from_estimate(config, snapshot, decision_id, estimate),
+        }
     }
+}
+
+fn build_directional_prediction_decision(
+    config: &BtcStrategyConfig,
+    prediction_config: &BtcDirectionalPredictionConfig,
+    snapshot: &BtcFeatureSnapshot,
+    decision_id: Uuid,
+    fair_value: FairValueEstimate,
+) -> BtcDecision {
+    let minimum = prediction_config.min_conservative_probability;
+    let (outcome, probability, conservative_probability, book) =
+        if fair_value.up_probability > fair_value.down_probability {
+            (
+                BtcOutcome::Up,
+                fair_value.up_probability,
+                fair_value.up_lower_bound,
+                &snapshot.up_book,
+            )
+        } else if fair_value.down_probability > fair_value.up_probability {
+            (
+                BtcOutcome::Down,
+                fair_value.down_probability,
+                fair_value.down_lower_bound,
+                &snapshot.down_book,
+            )
+        } else {
+            return rejected_with_prediction(
+                decision_id,
+                snapshot,
+                BtcRejectReason::PredictionConfidenceBelowThreshold,
+                Some(fair_value.clone()),
+                None,
+                None,
+                BtcStrategyPrediction::NoPrediction {
+                    reason: BtcRejectReason::PredictionConfidenceBelowThreshold,
+                    minimum_conservative_probability: minimum,
+                    up_probability: fair_value.up_probability,
+                    down_probability: fair_value.down_probability,
+                    up_conservative_probability: fair_value.up_lower_bound,
+                    down_conservative_probability: fair_value.down_lower_bound,
+                },
+            );
+        };
+
+    if conservative_probability < minimum {
+        return rejected_with_prediction(
+            decision_id,
+            snapshot,
+            BtcRejectReason::PredictionConfidenceBelowThreshold,
+            Some(fair_value.clone()),
+            None,
+            None,
+            BtcStrategyPrediction::NoPrediction {
+                reason: BtcRejectReason::PredictionConfidenceBelowThreshold,
+                minimum_conservative_probability: minimum,
+                up_probability: fair_value.up_probability,
+                down_probability: fair_value.down_probability,
+                up_conservative_probability: fair_value.up_lower_bound,
+                down_conservative_probability: fair_value.down_lower_bound,
+            },
+        );
+    }
+
+    let fee_rate = if snapshot.fees_enabled {
+        snapshot.fee_rate.unwrap_or(Decimal::ZERO)
+    } else {
+        Decimal::ZERO
+    };
+    let executable_price = book.executable_ask_vwap;
+    let direct_taker_fee_per_share = executable_price.map(|price| {
+        dynamic_crypto_taker_fee(config.target_size, fee_rate, price) / config.target_size
+    });
+    let direct_net_edge_per_share = executable_price
+        .zip(direct_taker_fee_per_share)
+        .map(|(price, fee)| probability - price - fee);
+    let prediction = BtcStrategyPrediction::DirectionalPrediction {
+        outcome,
+        probability,
+        conservative_probability,
+        minimum_conservative_probability: minimum,
+        probability_uncertainty: fair_value.probability_uncertainty,
+        executable_price,
+        direct_taker_fee_per_share,
+        direct_net_edge_per_share,
+    };
+
+    let selected = match quote_outcome_edge(
+        config,
+        book,
+        conservative_probability,
+        fee_rate,
+        snapshot.minimum_order_size,
+    ) {
+        Ok(edge) => edge,
+        Err(reason) => {
+            return rejected_with_prediction(
+                decision_id,
+                snapshot,
+                reason,
+                Some(fair_value),
+                None,
+                None,
+                prediction,
+            )
+        }
+    };
+    let direct_net_edge_per_share = direct_net_edge_per_share.unwrap_or(Decimal::MIN);
+    let (up_edge, down_edge) = match outcome {
+        BtcOutcome::Up => (Some(selected.clone()), None),
+        BtcOutcome::Down => (None, Some(selected.clone())),
+    };
+    if direct_net_edge_per_share <= Decimal::ZERO {
+        return rejected_with_prediction(
+            decision_id,
+            snapshot,
+            BtcRejectReason::PredictionDirectEdgeNonPositive,
+            Some(fair_value),
+            up_edge,
+            down_edge,
+            prediction,
+        );
+    }
+
+    let mut decision = approved(
+        decision_id,
+        config,
+        snapshot,
+        fair_value,
+        up_edge,
+        down_edge,
+        selected,
+    );
+    if let Some(intent) = decision.approved_intent.as_mut() {
+        intent.expected_net_edge_per_share = direct_net_edge_per_share;
+        intent.expected_net_edge = direct_net_edge_per_share * intent.size;
+    }
+    decision.prediction = Some(prediction);
+    decision
 }
 
 fn build_decision_from_estimate(
@@ -761,6 +999,9 @@ pub fn estimate_fair_value(
             estimate_market_anchored_continuation(config, continuation, snapshot)
         }
         ResolvedBtcDecisionStrategy::MarketAnchoredFairValue(profile) => {
+            Ok(market_anchored::estimate(config, snapshot, profile)?.fair_value)
+        }
+        ResolvedBtcDecisionStrategy::MarketAnchoredDirectionalPrediction { profile, .. } => {
             Ok(market_anchored::estimate(config, snapshot, profile)?.fair_value)
         }
     }
@@ -1051,6 +1292,13 @@ fn validate_config(config: &BtcStrategyConfig) -> Result<(), BtcRejectReason> {
         }
         Ok(ResolvedBtcDecisionStrategy::MarketAnchoredFairValue(profile)) => {
             market_anchored::validate_strategy_config(config, profile).is_ok()
+        }
+        Ok(ResolvedBtcDecisionStrategy::MarketAnchoredDirectionalPrediction {
+            profile,
+            config: prediction_config,
+        }) => {
+            market_anchored::validate_strategy_config(config, profile).is_ok()
+                && prediction_config == &BtcDirectionalPredictionConfig::default()
         }
         Err(_) => false,
     };
@@ -1473,6 +1721,7 @@ fn approved(
             strategy_version: config.strategy_version.clone(),
             feature_schema_version: config.feature_schema_version.clone(),
         }),
+        prediction: None,
     }
 }
 
@@ -1495,7 +1744,29 @@ fn rejected(
         up_edge,
         down_edge,
         approved_intent: None,
+        prediction: None,
     }
+}
+
+fn rejected_with_prediction(
+    decision_id: Uuid,
+    snapshot: &BtcFeatureSnapshot,
+    reason: BtcRejectReason,
+    fair_value: Option<FairValueEstimate>,
+    up_edge: Option<OutcomeEdge>,
+    down_edge: Option<OutcomeEdge>,
+    prediction: BtcStrategyPrediction,
+) -> BtcDecision {
+    let mut decision = rejected(
+        decision_id,
+        snapshot,
+        reason,
+        fair_value,
+        up_edge,
+        down_edge,
+    );
+    decision.prediction = Some(prediction);
+    decision
 }
 
 fn edge_passes(config: &BtcStrategyConfig, edge: &OutcomeEdge) -> bool {
@@ -1694,6 +1965,40 @@ mod tests {
             }),
             ..BtcStrategyConfig::default()
         }
+    }
+
+    fn directional_prediction_config() -> BtcStrategyConfig {
+        BtcStrategyConfig {
+            strategy_version: BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION
+                .to_string(),
+            decision_strategy: Some(
+                BtcDecisionStrategyConfig::MarketAnchoredDirectionalPrediction {
+                    profile_id: BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID.to_string(),
+                    profile_sha256: BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256.to_string(),
+                    config: BtcDirectionalPredictionConfig::default(),
+                },
+            ),
+            ..BtcStrategyConfig::default()
+        }
+    }
+
+    fn strong_directional_snapshot(outcome: BtcOutcome) -> BtcFeatureSnapshot {
+        let mut snapshot = snapshot();
+        match outcome {
+            BtcOutcome::Up => {
+                snapshot.chainlink_price = Some(dec!(102000));
+                snapshot.chainlink_gap_bps = Some(dec!(200));
+                snapshot.up_book = book(BtcOutcome::Up, "up", dec!(0.69), dec!(0.71));
+                snapshot.down_book = book(BtcOutcome::Down, "down", dec!(0.29), dec!(0.31));
+            }
+            BtcOutcome::Down => {
+                snapshot.chainlink_price = Some(dec!(98000));
+                snapshot.chainlink_gap_bps = Some(dec!(-200));
+                snapshot.up_book = book(BtcOutcome::Up, "up", dec!(0.29), dec!(0.31));
+                snapshot.down_book = book(BtcOutcome::Down, "down", dec!(0.69), dec!(0.71));
+            }
+        }
+        snapshot
     }
 
     fn continuation_snapshot() -> BtcFeatureSnapshot {
@@ -2029,6 +2334,199 @@ mod tests {
     }
 
     #[test]
+    fn directional_prediction_requires_conservative_directional_confidence() {
+        let mut snapshot = snapshot();
+        snapshot.chainlink_price = snapshot.chainlink_open_price;
+        snapshot.binance_price = snapshot.chainlink_open_price;
+        snapshot.chainlink_gap_bps = Some(Decimal::ZERO);
+        snapshot.binance_return_1s = Some(Decimal::ZERO);
+        snapshot.binance_return_5s = Some(Decimal::ZERO);
+        snapshot.binance_return_30s = Some(Decimal::ZERO);
+        snapshot.binance_chainlink_basis_bps = Some(Decimal::ZERO);
+        snapshot.up_book = book(BtcOutcome::Up, "up", dec!(0.59), dec!(0.61));
+        snapshot.down_book = book(BtcOutcome::Down, "down", dec!(0.39), dec!(0.41));
+
+        let decision =
+            DeterministicBtcStrategy::evaluate(&directional_prediction_config(), &snapshot);
+
+        assert_eq!(decision.action, BtcDecisionAction::NoTrade);
+        assert_eq!(
+            decision.reject_reason,
+            Some(BtcRejectReason::PredictionConfidenceBelowThreshold)
+        );
+        assert!(matches!(
+            decision.prediction,
+            Some(BtcStrategyPrediction::NoPrediction {
+                minimum_conservative_probability: value,
+                ..
+            }) if value == dec!(0.75)
+        ));
+        assert!(decision.approved_intent.is_none());
+    }
+
+    #[test]
+    fn directional_prediction_approves_strong_up_and_down_predictions() {
+        for outcome in [BtcOutcome::Up, BtcOutcome::Down] {
+            let snapshot = strong_directional_snapshot(outcome);
+            let decision =
+                DeterministicBtcStrategy::evaluate(&directional_prediction_config(), &snapshot);
+
+            assert_eq!(
+                decision
+                    .approved_intent
+                    .as_ref()
+                    .map(|intent| intent.outcome),
+                Some(outcome)
+            );
+            assert!(matches!(
+                decision.prediction,
+                Some(BtcStrategyPrediction::DirectionalPrediction {
+                    outcome: predicted,
+                    conservative_probability,
+                    direct_net_edge_per_share: Some(direct_edge),
+                    ..
+                }) if predicted == outcome
+                    && conservative_probability >= dec!(0.75)
+                    && direct_edge > Decimal::ZERO
+            ));
+        }
+    }
+
+    #[test]
+    fn directional_prediction_bypasses_legacy_reserve_edge_thresholds() {
+        let mut config = directional_prediction_config();
+        config.min_net_edge_per_share = dec!(10);
+        config.min_net_edge_usd = dec!(10);
+        config.latency_reserve_per_share = dec!(1);
+
+        let decision = DeterministicBtcStrategy::evaluate(
+            &config,
+            &strong_directional_snapshot(BtcOutcome::Up),
+        );
+
+        assert_eq!(decision.action, BtcDecisionAction::BuyUp);
+        assert!(decision
+            .up_edge
+            .as_ref()
+            .is_some_and(|edge| edge.net_edge < Decimal::ZERO));
+        assert!(decision
+            .approved_intent
+            .as_ref()
+            .is_some_and(|intent| intent.expected_net_edge > Decimal::ZERO));
+    }
+
+    #[test]
+    fn directional_prediction_follows_probability_not_opposite_legacy_edge() {
+        let config = directional_prediction_config();
+        let mut snapshot = snapshot();
+        snapshot.up_book = book(BtcOutcome::Up, "up", dec!(0.69), dec!(0.70));
+        snapshot.down_book = book(BtcOutcome::Down, "down", dec!(0.04), dec!(0.05));
+        let mut fair_value = estimate_fair_value(&config, &snapshot).unwrap();
+        fair_value.up_probability = dec!(0.82);
+        fair_value.down_probability = dec!(0.18);
+        fair_value.up_lower_bound = dec!(0.78);
+        fair_value.up_upper_bound = dec!(0.86);
+        fair_value.down_lower_bound = dec!(0.14);
+        fair_value.down_upper_bound = dec!(0.22);
+        fair_value.probability_uncertainty = dec!(0.04);
+        let fee_rate = snapshot.fee_rate.unwrap();
+        let opposite_edge = quote_outcome_edge(
+            &config,
+            &snapshot.down_book,
+            fair_value.down_lower_bound,
+            fee_rate,
+            snapshot.minimum_order_size,
+        )
+        .unwrap();
+
+        let decision = build_directional_prediction_decision(
+            &config,
+            &BtcDirectionalPredictionConfig::default(),
+            &snapshot,
+            deterministic_decision_id(&config, &snapshot),
+            fair_value,
+        );
+
+        assert_eq!(decision.action, BtcDecisionAction::BuyUp);
+        assert!(decision.down_edge.is_none());
+        assert!(decision
+            .up_edge
+            .as_ref()
+            .is_some_and(|selected| opposite_edge.net_edge > selected.net_edge));
+    }
+
+    #[test]
+    fn directional_prediction_does_not_trade_when_price_exceeds_direct_value() {
+        let mut snapshot = snapshot();
+        snapshot.chainlink_price = snapshot.chainlink_open_price;
+        snapshot.binance_price = snapshot.chainlink_open_price;
+        snapshot.chainlink_gap_bps = Some(Decimal::ZERO);
+        snapshot.binance_return_1s = Some(Decimal::ZERO);
+        snapshot.binance_return_5s = Some(Decimal::ZERO);
+        snapshot.binance_return_30s = Some(Decimal::ZERO);
+        snapshot.binance_chainlink_basis_bps = Some(Decimal::ZERO);
+        snapshot.up_book = book(BtcOutcome::Up, "up", dec!(0.79), dec!(0.81));
+        snapshot.down_book = book(BtcOutcome::Down, "down", dec!(0.19), dec!(0.21));
+
+        let decision =
+            DeterministicBtcStrategy::evaluate(&directional_prediction_config(), &snapshot);
+
+        assert_eq!(
+            decision.reject_reason,
+            Some(BtcRejectReason::PredictionDirectEdgeNonPositive)
+        );
+        assert!(matches!(
+            decision.prediction,
+            Some(BtcStrategyPrediction::DirectionalPrediction {
+                outcome: BtcOutcome::Up,
+                direct_net_edge_per_share: Some(value),
+                ..
+            }) if value < Decimal::ZERO
+        ));
+        assert!(decision.approved_intent.is_none());
+    }
+
+    #[test]
+    fn directional_prediction_retains_prediction_when_execution_is_unsafe() {
+        let mut snapshot = strong_directional_snapshot(BtcOutcome::Down);
+        snapshot.down_book.ask_depth = dec!(1);
+
+        let decision =
+            DeterministicBtcStrategy::evaluate(&directional_prediction_config(), &snapshot);
+
+        assert_eq!(
+            decision.reject_reason,
+            Some(BtcRejectReason::InsufficientDepth)
+        );
+        assert!(matches!(
+            decision.prediction,
+            Some(BtcStrategyPrediction::DirectionalPrediction {
+                outcome: BtcOutcome::Down,
+                ..
+            })
+        ));
+        assert!(decision.approved_intent.is_none());
+    }
+
+    #[test]
+    fn directional_prediction_configuration_is_frozen_for_research_v1() {
+        let config = directional_prediction_config();
+        config.validate().unwrap();
+
+        let mut changed = config;
+        changed.decision_strategy = Some(
+            BtcDecisionStrategyConfig::MarketAnchoredDirectionalPrediction {
+                profile_id: BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID.to_string(),
+                profile_sha256: BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256.to_string(),
+                config: BtcDirectionalPredictionConfig {
+                    min_conservative_probability: dec!(0.70),
+                },
+            },
+        );
+        assert!(changed.validate().is_err());
+    }
+
+    #[test]
     fn market_anchored_profile_identity_and_floor_fail_closed() {
         let mut wrong_hash = market_anchored_config();
         wrong_hash.decision_strategy = Some(BtcDecisionStrategyConfig::MarketAnchoredFairValue {
@@ -2078,6 +2576,25 @@ mod tests {
         );
         assert_eq!(
             market_anchored.profile_sha256,
+            Some(BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256)
+        );
+
+        let directional_config = directional_prediction_config();
+        let directional = directional_config.attribution().unwrap();
+        assert_eq!(
+            directional.family,
+            BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_FAMILY
+        );
+        assert_eq!(
+            directional.strategy_version,
+            BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION
+        );
+        assert_eq!(
+            directional.profile_id,
+            Some(BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID)
+        );
+        assert_eq!(
+            directional.profile_sha256,
             Some(BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256)
         );
     }
