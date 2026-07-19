@@ -16,8 +16,9 @@ use polymarket_bot::{
         BtcEntryAdmissionConfig, BtcPaperExperimentConfig, BtcPaperExperimentRunner,
         BtcPlaybookRuntimeHandle, BtcRepository, BtcRuntime, BtcRuntimeConfig, BtcRuntimeHandle,
         BtcStrategyConfig, PaperPreviewConfig, PaperVenue as BtcPaperVenue, PaperVenueConfig,
-        BTC_FEATURE_SCHEMA_VERSION, BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION,
-        BTC_STRATEGY_VERSION, BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION,
+        BTC_FEATURE_SCHEMA_VERSION, BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION,
+        BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION, BTC_STRATEGY_VERSION,
+        BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION,
     },
     config::{AppConfig, BtcConfig},
     data_api::DataApiClient,
@@ -370,6 +371,9 @@ fn resolve_btc_strategy(
             BtcDecisionStrategyConfig::MarketAnchoredFairValue { .. } => {
                 BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION
             }
+            BtcDecisionStrategyConfig::MarketAnchoredDirectionalPrediction { .. } => {
+                BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION
+            }
         };
         strategy_object.insert(
             "strategy_version".to_string(),
@@ -392,6 +396,7 @@ fn resolve_btc_strategy(
         BTC_STRATEGY_VERSION
             | BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION
             | BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION
+            | BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION
     ) || strategy.feature_schema_version != BTC_FEATURE_SCHEMA_VERSION
     {
         return Err(HttpError::bad_request(
@@ -3375,6 +3380,95 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn selectable_v3_resolves_and_freezes_directional_prediction_contract() {
+        let profile_id = polymarket_bot::btc::BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID;
+        let profile_sha256 = polymarket_bot::btc::BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256;
+        let directional_config = polymarket_bot::btc::BtcDirectionalPredictionConfig::default();
+        assert_eq!(directional_config.min_conservative_probability, dec!(0.75));
+
+        let directional_control = BtcRealtimePaperControlConfig {
+            schema_version: SELECTABLE_BTC_PROCESS_SCHEMA_VERSION.to_string(),
+            next_experiment_key: "btc-5m-directional-prediction-preview".to_string(),
+            preregistration_sha256: "e".repeat(64),
+            strategy: serde_json::json!({
+                "decision_strategy": {
+                    "type": "market_anchored_directional_prediction",
+                    "profile_id": profile_id,
+                    "profile_sha256": profile_sha256,
+                    "config": directional_config
+                },
+                "min_entry_price": "0.30"
+            }),
+            ..BtcRealtimePaperControlConfig::default()
+        };
+        let strategy = resolve_btc_strategy(&directional_control).unwrap();
+        assert_eq!(
+            strategy.strategy_version,
+            BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION
+        );
+        assert!(matches!(
+            strategy.decision_strategy.as_ref(),
+            Some(BtcDecisionStrategyConfig::MarketAnchoredDirectionalPrediction {
+                config: polymarket_bot::btc::BtcDirectionalPredictionConfig {
+                    min_conservative_probability: value
+                },
+                ..
+            }) if *value == dec!(0.75)
+        ));
+
+        let legacy_control = BtcRealtimePaperControlConfig {
+            strategy: serde_json::json!({
+                "decision_strategy": {
+                    "type": "market_anchored_fair_value",
+                    "profile_id": profile_id,
+                    "profile_sha256": profile_sha256
+                },
+                "min_entry_price": "0.30"
+            }),
+            ..directional_control.clone()
+        };
+        let legacy_strategy = resolve_btc_strategy(&legacy_control).unwrap();
+        let legacy_prepared = prepare_btc_start_definition(ResolvedBtcProcessDefinition {
+            control: legacy_control,
+            strategy: legacy_strategy,
+            entry_admission: None,
+            runtime: BtcRuntimeConfig {
+                enabled: true,
+                ..BtcRuntimeConfig::default()
+            },
+            paper_venue: PaperVenueConfig::default(),
+            paper_stress_previews: Vec::new(),
+        })
+        .unwrap();
+        let directional_prepared = prepare_btc_start_definition(ResolvedBtcProcessDefinition {
+            control: directional_control,
+            strategy,
+            entry_admission: None,
+            runtime: BtcRuntimeConfig {
+                enabled: true,
+                ..BtcRuntimeConfig::default()
+            },
+            paper_venue: PaperVenueConfig::default(),
+            paper_stress_previews: Vec::new(),
+        })
+        .unwrap();
+
+        assert_ne!(
+            directional_prepared.config_hash,
+            legacy_prepared.config_hash
+        );
+        assert_eq!(
+            directional_prepared.frozen_process_config.raw["strategy"]["decision_strategy"],
+            serde_json::json!({
+                "type": "market_anchored_directional_prediction",
+                "profile_id": profile_id,
+                "profile_sha256": profile_sha256,
+                "config": {"min_conservative_probability": "0.75"}
+            })
+        );
+    }
+
+    #[test]
     fn selectable_v3_rejects_unknown_market_anchored_profile() {
         let control = BtcRealtimePaperControlConfig {
             schema_version: SELECTABLE_BTC_PROCESS_SCHEMA_VERSION.to_string(),
@@ -3389,6 +3483,53 @@ mod lifecycle_tests {
         };
 
         assert!(resolve_btc_strategy(&control).is_err());
+    }
+
+    #[test]
+    fn selectable_v3_rejects_invalid_directional_prediction_contract() {
+        let profile_id = polymarket_bot::btc::BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID;
+        let profile_sha256 = polymarket_bot::btc::BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256;
+        for decision_strategy in [
+            serde_json::json!({
+                "type": "market_anchored_directional_prediction",
+                "profile_id": "unknown-market-profile",
+                "profile_sha256": profile_sha256,
+                "config": {"min_conservative_probability": "0.75"}
+            }),
+            serde_json::json!({
+                "type": "market_anchored_directional_prediction",
+                "profile_id": profile_id,
+                "profile_sha256": "0".repeat(64),
+                "config": {"min_conservative_probability": "0.75"}
+            }),
+            serde_json::json!({
+                "type": "market_anchored_directional_prediction",
+                "profile_id": profile_id,
+                "profile_sha256": profile_sha256,
+                "config": {"min_conservative_probability": "0.70"}
+            }),
+            serde_json::json!({
+                "type": "market_anchored_directional_prediction",
+                "profile_id": profile_id,
+                "profile_sha256": profile_sha256
+            }),
+            serde_json::json!({
+                "type": "market_anchored_directional_prediction",
+                "profile_id": profile_id,
+                "profile_sha256": profile_sha256,
+                "config": {
+                    "min_conservative_probability": "0.75",
+                    "unexpected": true
+                }
+            }),
+        ] {
+            let control = BtcRealtimePaperControlConfig {
+                schema_version: SELECTABLE_BTC_PROCESS_SCHEMA_VERSION.to_string(),
+                strategy: serde_json::json!({"decision_strategy": decision_strategy}),
+                ..BtcRealtimePaperControlConfig::default()
+            };
+            assert!(resolve_btc_strategy(&control).is_err());
+        }
     }
 
     #[test]

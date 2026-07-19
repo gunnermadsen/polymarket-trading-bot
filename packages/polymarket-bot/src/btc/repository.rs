@@ -14,7 +14,10 @@ use crate::config::PostgresConfig;
 
 use super::{
     admission::LossRegimeCandidate,
-    strategy::{BtcDecision, BtcDecisionAction, BtcFeatureSnapshot, FairValueEstimate},
+    strategy::{
+        BtcDecision, BtcDecisionAction, BtcFeatureSnapshot, BtcStrategyPrediction,
+        FairValueEstimate,
+    },
     types::{
         BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, MarketFeedEvent, OrderbookCheckpoint,
         OrderbookLevel, ReferencePriceSource, ReferencePriceTick,
@@ -24,6 +27,18 @@ use super::{
 #[derive(Debug, Clone)]
 pub struct BtcRepository {
     pool: PgPool,
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct BtcDecisionEdgeProjection<'a> {
+    token_id: Option<&'a str>,
+    fair_probability: Option<Decimal>,
+    executable_price: Option<Decimal>,
+    gross_edge_per_share: Option<Decimal>,
+    fee_per_share: Option<Decimal>,
+    reserve_per_share: Option<Decimal>,
+    net_edge_per_share: Option<Decimal>,
+    size: Decimal,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1976,25 +1991,12 @@ impl BtcRepository {
         order_plan_id: Option<Uuid>,
         status: &str,
     ) -> Result<bool> {
-        let edge = match decision.action {
-            BtcDecisionAction::BuyUp => decision.up_edge.as_ref(),
-            BtcDecisionAction::BuyDown => decision.down_edge.as_ref(),
-            BtcDecisionAction::NoTrade => None,
-        };
-        let fair_probability = edge.map(|value| value.conservative_probability);
+        let edge = decision_edge_projection(decision)?;
         let (action, outcome) = match decision.action {
             BtcDecisionAction::BuyUp => ("buy", Some("up")),
             BtcDecisionAction::BuyDown => ("buy", Some("down")),
             BtcDecisionAction::NoTrade => ("no_trade", None),
         };
-        let size = edge.map(|value| value.size).unwrap_or_default();
-        let fee_per_share = edge
-            .and_then(|value| (value.size > Decimal::ZERO).then(|| value.taker_fee / value.size));
-        let reserve_per_share = edge.and_then(|value| {
-            (value.size > Decimal::ZERO).then(|| {
-                (value.spread_reserve + value.slippage_reserve + value.latency_reserve) / value.size
-            })
-        });
         let mut metadata = serde_json::to_value(decision)?;
         if let Some(entry_admission_evidence) = entry_admission_evidence {
             metadata
@@ -2005,9 +2007,8 @@ impl BtcRepository {
                     entry_admission_evidence.clone(),
                 );
         }
-        let inserted =
-            sqlx::query(
-                r#"
+        let inserted = sqlx::query(
+            r#"
             INSERT INTO polymarket.btc_strategy_decisions (
               decision_id, decision_at, experiment_id, process_id, market_id, snapshot_id,
               strategy_version, config_hash, action, outcome, token_id, fair_probability,
@@ -2021,34 +2022,32 @@ impl BtcRepository {
             )
             ON CONFLICT (decision_id, decision_at) DO NOTHING
             "#,
-            )
-            .bind(decision.decision_id)
-            .bind(decision.evaluated_at)
-            .bind(experiment_id)
-            .bind(decision.process_id)
-            .bind(market_id)
-            .bind(decision.feature_snapshot_id)
-            .bind(strategy_version)
-            .bind(config_hash)
-            .bind(action)
-            .bind(outcome)
-            .bind(edge.map(|value| value.token_id.as_str()))
-            .bind(fair_probability)
-            .bind(edge.map(|value| value.executable_price))
-            .bind(edge.and_then(|value| {
-                (value.size > Decimal::ZERO).then(|| value.gross_edge / value.size)
-            }))
-            .bind(fee_per_share)
-            .bind(reserve_per_share)
-            .bind(edge.map(|value| value.net_edge_per_share))
-            .bind(size)
-            .bind(status)
-            .bind(decision.reject_reason.map(|reason| reason.as_str()))
-            .bind(order_plan_id)
-            .bind(metadata)
-            .execute(&self.pool)
-            .await
-            .context("failed to insert BTC strategy decision")?;
+        )
+        .bind(decision.decision_id)
+        .bind(decision.evaluated_at)
+        .bind(experiment_id)
+        .bind(decision.process_id)
+        .bind(market_id)
+        .bind(decision.feature_snapshot_id)
+        .bind(strategy_version)
+        .bind(config_hash)
+        .bind(action)
+        .bind(outcome)
+        .bind(edge.token_id)
+        .bind(edge.fair_probability)
+        .bind(edge.executable_price)
+        .bind(edge.gross_edge_per_share)
+        .bind(edge.fee_per_share)
+        .bind(edge.reserve_per_share)
+        .bind(edge.net_edge_per_share)
+        .bind(edge.size)
+        .bind(status)
+        .bind(decision.reject_reason.map(|reason| reason.as_str()))
+        .bind(order_plan_id)
+        .bind(metadata)
+        .execute(&self.pool)
+        .await
+        .context("failed to insert BTC strategy decision")?;
         Ok(inserted.rows_affected() == 1)
     }
 
@@ -2821,6 +2820,87 @@ fn checkpoint_from_row(row: CheckpointRow) -> Result<OrderbookCheckpoint> {
     })
 }
 
+fn decision_edge_projection(decision: &BtcDecision) -> Result<BtcDecisionEdgeProjection<'_>> {
+    let (expected_outcome, edge) = match decision.action {
+        BtcDecisionAction::BuyUp => (Some(BtcOutcome::Up), decision.up_edge.as_ref()),
+        BtcDecisionAction::BuyDown => (Some(BtcOutcome::Down), decision.down_edge.as_ref()),
+        BtcDecisionAction::NoTrade => (None, None),
+    };
+    let Some(edge) = edge else {
+        if expected_outcome.is_some() {
+            bail!("approved BTC decision is missing its selected outcome edge");
+        }
+        return Ok(BtcDecisionEdgeProjection::default());
+    };
+    if edge.size <= Decimal::ZERO || Some(edge.outcome) != expected_outcome {
+        bail!("approved BTC decision has inconsistent selected outcome edge");
+    }
+
+    match decision.prediction.as_ref() {
+        None => Ok(BtcDecisionEdgeProjection {
+            token_id: Some(edge.token_id.as_str()),
+            fair_probability: Some(edge.conservative_probability),
+            executable_price: Some(edge.executable_price),
+            gross_edge_per_share: Some(edge.gross_edge / edge.size),
+            fee_per_share: Some(edge.taker_fee / edge.size),
+            reserve_per_share: Some(
+                (edge.spread_reserve + edge.slippage_reserve + edge.latency_reserve) / edge.size,
+            ),
+            net_edge_per_share: Some(edge.net_edge_per_share),
+            size: edge.size,
+        }),
+        Some(BtcStrategyPrediction::NoPrediction { .. }) => {
+            bail!("approved BTC decision cannot carry a no-prediction result")
+        }
+        Some(BtcStrategyPrediction::DirectionalPrediction {
+            outcome,
+            probability,
+            conservative_probability,
+            minimum_conservative_probability,
+            executable_price,
+            direct_taker_fee_per_share,
+            direct_net_edge_per_share,
+            ..
+        }) => {
+            let intent = decision
+                .approved_intent
+                .as_ref()
+                .context("directional BTC decision is missing its approved intent")?;
+            let executable_price =
+                executable_price.context("directional BTC prediction is missing its price")?;
+            let fee_per_share = direct_taker_fee_per_share
+                .context("directional BTC prediction is missing its fee")?;
+            let net_edge_per_share = direct_net_edge_per_share
+                .context("directional BTC prediction is missing its direct edge")?;
+            let gross_edge_per_share = *probability - executable_price;
+            if *outcome != edge.outcome
+                || intent.outcome != edge.outcome
+                || intent.token_id != edge.token_id
+                || intent.size != edge.size
+                || executable_price != edge.executable_price
+                || fee_per_share < Decimal::ZERO
+                || *conservative_probability < *minimum_conservative_probability
+                || net_edge_per_share <= Decimal::ZERO
+                || gross_edge_per_share - fee_per_share != net_edge_per_share
+                || intent.expected_net_edge_per_share != net_edge_per_share
+                || intent.expected_net_edge != net_edge_per_share * edge.size
+            {
+                bail!("directional BTC decision has inconsistent prediction edge attribution");
+            }
+            Ok(BtcDecisionEdgeProjection {
+                token_id: Some(edge.token_id.as_str()),
+                fair_probability: Some(*probability),
+                executable_price: Some(executable_price),
+                gross_edge_per_share: Some(gross_edge_per_share),
+                fee_per_share: Some(fee_per_share),
+                reserve_per_share: Some(Decimal::ZERO),
+                net_edge_per_share: Some(net_edge_per_share),
+                size: edge.size,
+            })
+        }
+    }
+}
+
 fn sequence_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
@@ -2877,7 +2957,106 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+    use crate::btc::strategy::{ApprovedIntent, OutcomeEdge};
     use crate::btc::types::{FeedIntegrityStatus, MarketFeedEventType};
+
+    fn approved_decision(
+        outcome: BtcOutcome,
+        prediction: Option<BtcStrategyPrediction>,
+        intent_net_edge_per_share: Decimal,
+    ) -> BtcDecision {
+        let at = Utc::now();
+        let edge = OutcomeEdge {
+            outcome,
+            token_id: format!("{}-token", outcome_name(outcome)),
+            conservative_probability: dec!(0.78),
+            executable_price: dec!(0.72),
+            marketable_limit_price: dec!(0.73),
+            size: dec!(5),
+            gross_edge: dec!(0.30),
+            taker_fee: dec!(0.05),
+            spread_reserve: dec!(0.02),
+            slippage_reserve: dec!(0.01),
+            latency_reserve: dec!(0.01),
+            net_edge: dec!(0.21),
+            net_edge_per_share: dec!(0.042),
+        };
+        let intent = ApprovedIntent {
+            intent_id: Uuid::from_u128(10),
+            process_id: Uuid::from_u128(11),
+            feature_snapshot_id: Uuid::from_u128(12),
+            market_id: "market".to_string(),
+            window_start: at,
+            outcome,
+            token_id: edge.token_id.clone(),
+            limit_price: edge.marketable_limit_price,
+            size: edge.size,
+            expected_net_edge: intent_net_edge_per_share * edge.size,
+            expected_net_edge_per_share: intent_net_edge_per_share,
+            strategy_version: "strategy".to_string(),
+            feature_schema_version: "features".to_string(),
+        };
+        BtcDecision {
+            decision_id: Uuid::from_u128(13),
+            process_id: intent.process_id,
+            feature_snapshot_id: intent.feature_snapshot_id,
+            evaluated_at: at,
+            action: match outcome {
+                BtcOutcome::Up => BtcDecisionAction::BuyUp,
+                BtcOutcome::Down => BtcDecisionAction::BuyDown,
+            },
+            reject_reason: None,
+            fair_value: None,
+            up_edge: (outcome == BtcOutcome::Up).then(|| edge.clone()),
+            down_edge: (outcome == BtcOutcome::Down).then_some(edge),
+            approved_intent: Some(intent),
+            prediction,
+        }
+    }
+
+    #[test]
+    fn decision_edge_projection_preserves_legacy_reserve_contract() {
+        let decision = approved_decision(BtcOutcome::Up, None, dec!(0.042));
+
+        let projection = decision_edge_projection(&decision).unwrap();
+
+        assert_eq!(projection.fair_probability, Some(dec!(0.78)));
+        assert_eq!(projection.gross_edge_per_share, Some(dec!(0.06)));
+        assert_eq!(projection.fee_per_share, Some(dec!(0.01)));
+        assert_eq!(projection.reserve_per_share, Some(dec!(0.008)));
+        assert_eq!(projection.net_edge_per_share, Some(dec!(0.042)));
+    }
+
+    #[test]
+    fn decision_edge_projection_uses_directional_approval_contract_symmetrically() {
+        for outcome in [BtcOutcome::Up, BtcOutcome::Down] {
+            let prediction = BtcStrategyPrediction::DirectionalPrediction {
+                outcome,
+                probability: dec!(0.82),
+                conservative_probability: dec!(0.78),
+                minimum_conservative_probability: dec!(0.75),
+                probability_uncertainty: dec!(0.04),
+                executable_price: Some(dec!(0.72)),
+                direct_taker_fee_per_share: Some(dec!(0.01)),
+                direct_net_edge_per_share: Some(dec!(0.09)),
+            };
+            let decision = approved_decision(outcome, Some(prediction), dec!(0.09));
+
+            let projection = decision_edge_projection(&decision).unwrap();
+
+            assert_eq!(projection.fair_probability, Some(dec!(0.82)));
+            assert_eq!(projection.gross_edge_per_share, Some(dec!(0.10)));
+            assert_eq!(projection.fee_per_share, Some(dec!(0.01)));
+            assert_eq!(projection.reserve_per_share, Some(Decimal::ZERO));
+            assert_eq!(projection.net_edge_per_share, Some(dec!(0.09)));
+            assert_eq!(
+                projection.gross_edge_per_share.unwrap()
+                    - projection.fee_per_share.unwrap()
+                    - projection.reserve_per_share.unwrap(),
+                projection.net_edge_per_share.unwrap()
+            );
+        }
+    }
 
     #[test]
     fn resolution_subscription_ack_accepts_concurrent_terminal_transition() {
