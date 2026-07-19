@@ -2006,6 +2006,29 @@ mod tests {
     }
 
     #[test]
+    fn market_anchored_v1_remains_edge_gated() {
+        let mut snapshot = snapshot();
+        snapshot.chainlink_price = snapshot.chainlink_open_price;
+        snapshot.binance_price = snapshot.chainlink_open_price;
+        snapshot.chainlink_gap_bps = Some(Decimal::ZERO);
+        snapshot.binance_return_1s = Some(Decimal::ZERO);
+        snapshot.binance_return_5s = Some(Decimal::ZERO);
+        snapshot.binance_return_30s = Some(Decimal::ZERO);
+        snapshot.binance_chainlink_basis_bps = Some(Decimal::ZERO);
+        snapshot.up_book = book(BtcOutcome::Up, "up", dec!(0.59), dec!(0.61));
+        snapshot.down_book = book(BtcOutcome::Down, "down", dec!(0.39), dec!(0.41));
+
+        let decision = DeterministicBtcStrategy::evaluate(&market_anchored_config(), &snapshot);
+
+        assert_eq!(decision.action, BtcDecisionAction::NoTrade);
+        assert_eq!(
+            decision.reject_reason,
+            Some(BtcRejectReason::EdgeBelowThreshold)
+        );
+        assert!(decision.approved_intent.is_none());
+    }
+
+    #[test]
     fn market_anchored_profile_identity_and_floor_fail_closed() {
         let mut wrong_hash = market_anchored_config();
         wrong_hash.decision_strategy = Some(BtcDecisionStrategyConfig::MarketAnchoredFairValue {
