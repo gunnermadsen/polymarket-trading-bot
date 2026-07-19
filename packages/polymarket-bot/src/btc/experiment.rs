@@ -85,6 +85,10 @@ impl BtcPaperExperimentRunner {
         if !config.frozen_process_config.is_object() {
             anyhow::bail!("BTC paper experiment frozen process config must be a JSON object");
         }
+        config.strategy.validate()?;
+        if config.strategy.attribution().is_none() {
+            anyhow::bail!("BTC paper experiment strategy attribution is invalid");
+        }
         if let Some(entry_admission) = config.entry_admission.as_ref() {
             entry_admission.validate()?;
         }
@@ -556,6 +560,13 @@ impl BtcPaperExperimentRunner {
             &Uuid::NAMESPACE_URL,
             format!("btc-paper-plan:{}", intent.intent_id).as_bytes(),
         );
+        let order_metadata = btc_entry_order_metadata(
+            &self.config.strategy,
+            &intent,
+            decision.decision_id,
+            self.config.experiment_id,
+            snapshot.fee_rate.unwrap_or_default(),
+        )?;
         let request = OrderRequest {
             client_order_id: Uuid::new_v5(
                 &Uuid::NAMESPACE_URL,
@@ -569,18 +580,7 @@ impl BtcPaperExperimentRunner {
             price: intent.limit_price,
             size: intent.size,
             signal_id: None,
-            metadata: serde_json::json!({
-                "execution_intent": "entry",
-                "strategy": "btc_5m_chainlink_fair_value",
-                "strategy_version": intent.strategy_version,
-                "feature_schema_version": intent.feature_schema_version,
-                "feature_snapshot_id": intent.feature_snapshot_id,
-                "decision_id": decision.decision_id,
-                "experiment_id": self.config.experiment_id,
-                "outcome": intent.outcome,
-                "expected_net_edge": intent.expected_net_edge,
-                PAPER_DYNAMIC_FEE_RATE_METADATA_KEY: snapshot.fee_rate.unwrap_or_default(),
-            }),
+            metadata: order_metadata,
         };
         self.repository
             .insert_strategy_decision(
@@ -680,6 +680,40 @@ impl BtcPaperExperimentRunner {
         }
         Ok(())
     }
+}
+
+fn btc_entry_order_metadata(
+    strategy: &BtcStrategyConfig,
+    intent: &super::strategy::ApprovedIntent,
+    decision_id: Uuid,
+    experiment_id: Uuid,
+    fee_rate: Decimal,
+) -> Result<serde_json::Value> {
+    let attribution = strategy
+        .attribution()
+        .context("BTC paper experiment strategy attribution became invalid")?;
+    let mut metadata = serde_json::json!({
+        "execution_intent": "entry",
+        "strategy": attribution.family,
+        "strategy_version": intent.strategy_version,
+        "feature_schema_version": intent.feature_schema_version,
+        "feature_snapshot_id": intent.feature_snapshot_id,
+        "decision_id": decision_id,
+        "experiment_id": experiment_id,
+        "outcome": intent.outcome,
+        "expected_net_edge": intent.expected_net_edge,
+        PAPER_DYNAMIC_FEE_RATE_METADATA_KEY: fee_rate,
+    });
+    if let (Some(profile_id), Some(profile_sha256)) =
+        (attribution.profile_id, attribution.profile_sha256)
+    {
+        let metadata = metadata
+            .as_object_mut()
+            .context("BTC order strategy metadata must be an object")?;
+        metadata.insert("profile_id".to_string(), profile_id.into());
+        metadata.insert("profile_sha256".to_string(), profile_sha256.into());
+    }
+    Ok(metadata)
 }
 
 fn selected_conservative_probability(decision: &BtcDecision) -> Option<Decimal> {
@@ -1116,9 +1150,102 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use crate::btc::{
-        strategy::ApprovedIntent,
+        strategy::{
+            ApprovedIntent, BtcDecisionStrategyConfig, BtcStrategyConfig,
+            BtcVolatilityContinuationConfig, BTC_CHAINLINK_FAIR_VALUE_STRATEGY_FAMILY,
+            BTC_FEATURE_SCHEMA_VERSION, BTC_MARKET_ANCHORED_FAIR_VALUE_STRATEGY_FAMILY,
+            BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID, BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256,
+            BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION,
+            BTC_VOLATILITY_CONTINUATION_STRATEGY_FAMILY,
+            BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION,
+        },
         types::{BookReadiness, Readiness},
     };
+
+    fn metadata_intent(strategy_version: &str) -> ApprovedIntent {
+        ApprovedIntent {
+            intent_id: Uuid::from_u128(201),
+            process_id: Uuid::from_u128(202),
+            feature_snapshot_id: Uuid::from_u128(203),
+            market_id: "market".to_string(),
+            window_start: Utc::now(),
+            outcome: BtcOutcome::Up,
+            token_id: "up".to_string(),
+            limit_price: dec!(0.50),
+            size: dec!(5),
+            expected_net_edge: dec!(0.10),
+            expected_net_edge_per_share: dec!(0.02),
+            strategy_version: strategy_version.to_string(),
+            feature_schema_version: BTC_FEATURE_SCHEMA_VERSION.to_string(),
+        }
+    }
+
+    #[test]
+    fn order_metadata_attributes_each_strategy_and_only_candidate_profile() {
+        let chainlink_config = BtcStrategyConfig::default();
+        let chainlink = btc_entry_order_metadata(
+            &chainlink_config,
+            &metadata_intent(&chainlink_config.strategy_version),
+            Uuid::from_u128(204),
+            Uuid::from_u128(205),
+            dec!(0.03),
+        )
+        .unwrap();
+        assert_eq!(
+            chainlink["strategy"],
+            BTC_CHAINLINK_FAIR_VALUE_STRATEGY_FAMILY
+        );
+        assert!(chainlink.get("profile_id").is_none());
+        assert!(chainlink.get("profile_sha256").is_none());
+
+        let continuation_config = BtcStrategyConfig {
+            strategy_version: BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION.to_string(),
+            volatility_continuation: Some(BtcVolatilityContinuationConfig::default()),
+            ..BtcStrategyConfig::default()
+        };
+        let continuation = btc_entry_order_metadata(
+            &continuation_config,
+            &metadata_intent(&continuation_config.strategy_version),
+            Uuid::from_u128(204),
+            Uuid::from_u128(205),
+            dec!(0.03),
+        )
+        .unwrap();
+        assert_eq!(
+            continuation["strategy"],
+            BTC_VOLATILITY_CONTINUATION_STRATEGY_FAMILY
+        );
+        assert!(continuation.get("profile_id").is_none());
+
+        let candidate_config = BtcStrategyConfig {
+            strategy_version: BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION.to_string(),
+            decision_strategy: Some(BtcDecisionStrategyConfig::MarketAnchoredFairValue {
+                profile_id: BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID.to_string(),
+                profile_sha256: BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256.to_string(),
+            }),
+            ..BtcStrategyConfig::default()
+        };
+        let candidate = btc_entry_order_metadata(
+            &candidate_config,
+            &metadata_intent(&candidate_config.strategy_version),
+            Uuid::from_u128(204),
+            Uuid::from_u128(205),
+            dec!(0.03),
+        )
+        .unwrap();
+        assert_eq!(
+            candidate["strategy"],
+            BTC_MARKET_ANCHORED_FAIR_VALUE_STRATEGY_FAMILY
+        );
+        assert_eq!(
+            candidate["profile_id"],
+            BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID
+        );
+        assert_eq!(
+            candidate["profile_sha256"],
+            BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256
+        );
+    }
 
     #[test]
     fn paper_capital_reconciliation_is_due_at_five_second_boundaries() {

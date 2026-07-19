@@ -98,8 +98,10 @@ credentials, venue URLs, and hard risk caps.
 
 ## BTC Five-Minute Chainlink Process Contract
 
-New BTC process definitions use `btc_realtime_paper_process_v2`. The stable
-identity is `process_type=btc_5m`, `process_scope=realtime_paper`, plus a unique
+Legacy Chainlink definitions and existing durable processes use
+`btc_realtime_paper_process_v2`; new definitions that need explicit strategy
+selection use the v3 contract below. The stable identity is
+`process_type=btc_5m`, `process_scope=realtime_paper`, plus a unique
 `process_key`. The execution contract is paper-only, executes approved signals,
 and never permits live capital. Unknown fields inside
 `config.raw.btc_realtime_paper` are rejected. In particular, the retired
@@ -174,6 +176,92 @@ is no passive mode or environment-variable control:
   }
 }
 ```
+
+## Selectable BTC Decision Strategies
+
+`btc_realtime_paper_process_v3` requires an explicit
+`strategy.decision_strategy`. The selector chooses the probability estimator;
+the common decision engine still owns executable-price checks, fees, reserves,
+edge comparison, and intent construction. Entry-admission features run after
+that engine and remain independent downstream gates.
+
+The supported selectors are:
+
+- `chainlink_fair_value`, the existing two-sided Chainlink estimator.
+- `volatility_continuation`, the existing one-sided continuation strategy with
+  its configuration nested under the selector's `config` field.
+- `market_anchored_fair_value`, the two-sided research estimator that starts
+  from the normalized Polymarket midpoint and applies bounded external
+  Chainlink/Binance evidence.
+
+The candidate profile is compiled into the binary and selected by both ID and
+content hash. A profile mismatch fails process validation. Its current
+`research_only` profile uses identity calibration and does not claim a trained
+or production-calibrated model: the available retrospective evidence covers
+only about 4.3 days and roughly 694 independently resolved markets. The initial
+live use is therefore paper research.
+
+<!-- btc-5m-process-v3:start -->
+```json
+{
+  "name": "BTC 5m Market Anchored Fair Value paper min entry 0.30 research",
+  "process_type": "btc_5m",
+  "process_scope": "realtime_paper",
+  "enabled": false,
+  "status": "created",
+  "config": {
+    "execution": {
+      "mode": "paper",
+      "execute_signals": true,
+      "live_capital": false
+    },
+    "raw": {
+      "btc_realtime_paper": {
+        "schema_version": "btc_realtime_paper_process_v3",
+        "next_experiment_key": "btc-5m-market-anchored-research-example-v1",
+        "preregistration_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "strategy": {
+          "decision_strategy": {
+            "type": "market_anchored_fair_value",
+            "profile_id": "btc5m-market-anchored-research-20260718-v1",
+            "profile_sha256": "5f84df367641cd6f6144ef20f8e6044f4de43710f9caa16a7da7e9e8f888c99a"
+          },
+          "min_entry_price": "0.30"
+        },
+        "runtime": {
+          "strategy_interval_ms": 1000,
+          "official_resolution_audit_grace_secs": 120,
+          "official_resolution_watch_retention_secs": 3600
+        },
+        "paper": {
+          "arrival_latency_ms": 150,
+          "visible_depth_haircut": "0.80",
+          "starting_collateral_usd": "1000",
+          "stress_previews": [
+            {
+              "scenario_key": "latency_300ms_depth_65pct",
+              "arrival_latency_ms": 300,
+              "visible_depth_haircut": "0.65"
+            },
+            {
+              "scenario_key": "latency_600ms_depth_50pct",
+              "arrival_latency_ms": 600,
+              "visible_depth_haircut": "0.50"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "metadata": {}
+}
+```
+<!-- btc-5m-process-v3:end -->
+
+For an explicit Chainlink v3 process, replace the candidate selector with
+`{"type":"chainlink_fair_value"}`. Existing v2 definitions intentionally stay
+on the legacy inference contract so durable experiments resume without a
+selector or config-hash change.
 
 The loss-regime state is reconstructed from the process's immutable,
 configuration-scoped decision history. Each resolved market contributes the

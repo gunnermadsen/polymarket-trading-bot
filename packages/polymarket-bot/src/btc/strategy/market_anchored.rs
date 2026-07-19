@@ -539,8 +539,10 @@ mod tests {
 
         let selection = MarketAnchoredProfileSelection::new(PROFILE_ID, PROFILE_SHA256);
         let profile = resolve_profile(&selection).unwrap();
-        let mut changed_weights = BtcStrategyConfig::default();
-        changed_weights.momentum_5s_weight = dec!(0.11);
+        let changed_weights = BtcStrategyConfig {
+            momentum_5s_weight: dec!(0.11),
+            ..BtcStrategyConfig::default()
+        };
         assert_eq!(
             validate_strategy_config(&changed_weights, profile),
             Err(BtcRejectReason::InvalidConfiguration)

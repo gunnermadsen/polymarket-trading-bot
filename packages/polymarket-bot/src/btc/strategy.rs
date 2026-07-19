@@ -17,6 +17,10 @@ pub const BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION: &str =
 pub const BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID: &str = market_anchored::PROFILE_ID;
 pub const BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256: &str = market_anchored::PROFILE_SHA256;
 pub const BTC_FEATURE_LINEAGE_VERSION: &str = "btc_5m_feature_lineage_v2";
+pub const BTC_CHAINLINK_FAIR_VALUE_STRATEGY_FAMILY: &str = "btc_5m_chainlink_fair_value";
+pub const BTC_VOLATILITY_CONTINUATION_STRATEGY_FAMILY: &str = "btc_5m_volatility_continuation";
+pub const BTC_MARKET_ANCHORED_FAIR_VALUE_STRATEGY_FAMILY: &str =
+    "btc_5m_market_anchored_fair_value";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -144,6 +148,41 @@ impl BtcStrategyConfig {
         validate_config(self)
             .map_err(|_| anyhow::anyhow!("invalid BTC deterministic strategy configuration"))
     }
+
+    pub fn attribution(&self) -> Option<BtcStrategyAttribution<'_>> {
+        let family = match ResolvedBtcDecisionStrategy::resolve(self).ok()? {
+            ResolvedBtcDecisionStrategy::ChainlinkFairValue => {
+                BTC_CHAINLINK_FAIR_VALUE_STRATEGY_FAMILY
+            }
+            ResolvedBtcDecisionStrategy::VolatilityContinuation(_) => {
+                BTC_VOLATILITY_CONTINUATION_STRATEGY_FAMILY
+            }
+            ResolvedBtcDecisionStrategy::MarketAnchoredFairValue(_) => {
+                BTC_MARKET_ANCHORED_FAIR_VALUE_STRATEGY_FAMILY
+            }
+        };
+        let (profile_id, profile_sha256) = match self.decision_strategy.as_ref() {
+            Some(BtcDecisionStrategyConfig::MarketAnchoredFairValue {
+                profile_id,
+                profile_sha256,
+            }) => (Some(profile_id.as_str()), Some(profile_sha256.as_str())),
+            _ => (None, None),
+        };
+        Some(BtcStrategyAttribution {
+            family,
+            strategy_version: &self.strategy_version,
+            profile_id,
+            profile_sha256,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BtcStrategyAttribution<'a> {
+    pub family: &'static str,
+    pub strategy_version: &'a str,
+    pub profile_id: Option<&'a str>,
+    pub profile_sha256: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1939,6 +1978,13 @@ mod tests {
         assert_eq!(decision.action, BtcDecisionAction::BuyUp);
         assert_eq!(
             decision
+                .up_edge
+                .as_ref()
+                .map(|edge| edge.conservative_probability),
+            Some(fair_value.up_lower_bound)
+        );
+        assert_eq!(
+            decision
                 .approved_intent
                 .as_ref()
                 .map(|intent| intent.strategy_version.as_str()),
@@ -1971,6 +2017,46 @@ mod tests {
         let mut wrong_floor = market_anchored_config();
         wrong_floor.probability_floor = dec!(0.02);
         assert!(wrong_floor.validate().is_err());
+    }
+
+    #[test]
+    fn strategy_attribution_is_dynamic_and_profile_aware() {
+        let chainlink_config = BtcStrategyConfig::default();
+        let chainlink = chainlink_config.attribution().unwrap();
+        assert_eq!(chainlink.family, BTC_CHAINLINK_FAIR_VALUE_STRATEGY_FAMILY);
+        assert_eq!(chainlink.strategy_version, BTC_STRATEGY_VERSION);
+        assert_eq!(chainlink.profile_id, None);
+
+        let continuation_config = continuation_config();
+        let continuation = continuation_config.attribution().unwrap();
+        assert_eq!(
+            continuation.family,
+            BTC_VOLATILITY_CONTINUATION_STRATEGY_FAMILY
+        );
+        assert_eq!(
+            continuation.strategy_version,
+            BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION
+        );
+        assert_eq!(continuation.profile_id, None);
+
+        let market_anchored_config = market_anchored_config();
+        let market_anchored = market_anchored_config.attribution().unwrap();
+        assert_eq!(
+            market_anchored.family,
+            BTC_MARKET_ANCHORED_FAIR_VALUE_STRATEGY_FAMILY
+        );
+        assert_eq!(
+            market_anchored.strategy_version,
+            BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION
+        );
+        assert_eq!(
+            market_anchored.profile_id,
+            Some(BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID)
+        );
+        assert_eq!(
+            market_anchored.profile_sha256,
+            Some(BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256)
+        );
     }
 
     #[test]

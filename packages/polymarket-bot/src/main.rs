@@ -3720,4 +3720,63 @@ mod lifecycle_tests {
         };
         validate_btc_start_eligibility(&process, true, true).unwrap();
     }
+
+    #[test]
+    fn readme_selectable_btc_process_contract_matches_v3_resolver() {
+        let readme = include_str!("../../../README.md");
+        let contract = readme
+            .split("<!-- btc-5m-process-v3:start -->")
+            .nth(1)
+            .and_then(|tail| tail.split("<!-- btc-5m-process-v3:end -->").next())
+            .expect("README must contain the BTC v3 process contract example")
+            .trim()
+            .strip_prefix("```json")
+            .and_then(|json| json.trim().strip_suffix("```"))
+            .expect("README BTC v3 process contract must be a JSON code block");
+        let request: control_http::UpsertTradingProcessByKeyRequest =
+            serde_json::from_str(contract).unwrap();
+        let control = parse_btc_process_control(
+            request
+                .config
+                .raw
+                .get("btc_realtime_paper")
+                .cloned()
+                .unwrap(),
+            BtcDefinitionUse::ExplicitStart,
+        )
+        .unwrap();
+        let strategy = resolve_btc_strategy(&control).unwrap();
+
+        assert_eq!(
+            control.schema_version,
+            SELECTABLE_BTC_PROCESS_SCHEMA_VERSION
+        );
+        assert_eq!(
+            strategy.strategy_version,
+            BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION
+        );
+        assert_eq!(
+            strategy.attribution().unwrap().profile_sha256,
+            Some(polymarket_bot::btc::BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256)
+        );
+
+        let now = Utc::now();
+        let process = TradingProcess {
+            process_id: uuid::Uuid::nil(),
+            name: request.name,
+            process_type: request.process_type,
+            process_scope: request.process_scope,
+            process_key: Some("btc-5m-market-anchored-research".to_string()),
+            status: request.status,
+            enabled: request.enabled,
+            config: request.config,
+            metadata: request.metadata,
+            created_at: now,
+            updated_at: now,
+            started_at: None,
+            stopped_at: None,
+            last_error: None,
+        };
+        validate_btc_start_eligibility(&process, true, true).unwrap();
+    }
 }
