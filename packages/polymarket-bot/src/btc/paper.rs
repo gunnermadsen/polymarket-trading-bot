@@ -388,16 +388,16 @@ impl PaperVenue {
                 &checkpoint,
             );
         }
-        // Local receipt time is the causality boundary. Exchange clocks can legitimately lead the
-        // bot clock by a few milliseconds; source timestamps remain recorded for independent
-        // feed-quality/skew gates but must not make already-received data appear to be from the
-        // future.
-        if checkpoint.received_at > arrival_at {
+        // Local receipt time is the causality boundary. Exchange source time independently guards
+        // against delayed market data while retaining the existing clock-lead behavior.
+        if checkpoint.received_at > arrival_at
+            || checkpoint.source_timestamp - arrival_at > max_book_age
+        {
             return paper_reject_with_checkpoint(base, "future_arrival_orderbook", &checkpoint);
         }
         let source_age = arrival_at - checkpoint.source_timestamp;
         let receive_age = arrival_at - checkpoint.received_at;
-        if receive_age > max_book_age {
+        if source_age > max_book_age || receive_age > max_book_age {
             return paper_reject_with_checkpoint(base, "stale_arrival_orderbook", &checkpoint);
         }
 
@@ -1268,6 +1268,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_source_with_fresh_receipt_fails_closed_without_accounting_mutation() {
+        let now = Utc::now();
+        let registry = registry_with_book_times(
+            now - ChronoDuration::seconds(5),
+            now - ChronoDuration::milliseconds(10),
+            vec![OrderbookLevel {
+                price: dec!(0.40),
+                size: dec!(10),
+            }],
+        );
+        let venue = PaperVenue::new(
+            registry,
+            PaperVenueConfig {
+                arrival_latency: Duration::ZERO,
+                visible_depth_haircut: Decimal::ONE,
+                max_book_age: chrono::Duration::seconds(2),
+                starting_collateral_usd: dec!(100),
+            },
+        )
+        .unwrap();
+        let before = venue.status().await;
+
+        let order = venue
+            .submit_order(request(dec!(3), dec!(0.40)))
+            .await
+            .unwrap();
+        let after = venue.status().await;
+
+        assert_eq!(order.state, OrderState::Rejected);
+        assert_eq!(
+            order.request.metadata["reject_reason"],
+            serde_json::json!("stale_arrival_orderbook")
+        );
+        assert_eq!(after.fill_count, before.fill_count);
+        assert_eq!(
+            after.available_collateral_usd,
+            before.available_collateral_usd
+        );
+        assert_eq!(after.entry_debits_usd, before.entry_debits_usd);
+    }
+
+    #[tokio::test]
     async fn locally_received_book_allows_exchange_clock_lead() {
         let received_at = Utc::now() - ChronoDuration::milliseconds(10);
         let registry = registry_with_book_times(
@@ -1288,6 +1330,41 @@ mod tests {
                 .as_i64()
                 .is_some_and(|age| age < 0)
         );
+    }
+
+    #[tokio::test]
+    async fn source_timestamp_beyond_clock_lead_fails_closed() {
+        let now = Utc::now();
+        let registry = registry_with_book_times(
+            now + ChronoDuration::seconds(5),
+            now - ChronoDuration::milliseconds(10),
+            vec![OrderbookLevel {
+                price: dec!(0.40),
+                size: dec!(10),
+            }],
+        );
+        let venue = PaperVenue::new(
+            registry,
+            PaperVenueConfig {
+                arrival_latency: Duration::ZERO,
+                visible_depth_haircut: Decimal::ONE,
+                max_book_age: chrono::Duration::seconds(2),
+                starting_collateral_usd: dec!(100),
+            },
+        )
+        .unwrap();
+
+        let order = venue
+            .submit_order(request(dec!(3), dec!(0.40)))
+            .await
+            .unwrap();
+
+        assert_eq!(order.state, OrderState::Rejected);
+        assert_eq!(
+            order.request.metadata["reject_reason"],
+            serde_json::json!("future_arrival_orderbook")
+        );
+        assert_eq!(venue.status().await.fill_count, 0);
     }
 
     #[tokio::test]
