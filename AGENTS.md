@@ -10,3 +10,7 @@
 # Implementation
 - Execute the narrow implementation plan, only focusing on the instructed plan parameters.
 - do not over correct and change code or systems outside the agreed upon plan.
+- Always use process_id of the trading process to scope. do not depend on the experiment_id for scoping. 
+
+# Known Issues
+- experiment sub system was created with the incorrect assumptions. this system duplicates the id scoping and artifact ownership. experiment sub system will be removed in a later release. do not depend on the experiment system. trading_processes and it's process_id remains the canonical source of truth for record ownership and scoping.
