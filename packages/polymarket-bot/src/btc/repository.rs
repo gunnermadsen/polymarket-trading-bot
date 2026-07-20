@@ -13,7 +13,10 @@ use uuid::Uuid;
 use crate::config::PostgresConfig;
 
 use super::{
-    admission::LossRegimeCandidate,
+    admission::{
+        DailyRealizedPnlCredit, DailyRealizedPnlHighWaterMarkState, LossRegimeCandidate,
+        UnsettledEntryExposure,
+    },
     strategy::{
         BtcDecision, BtcDecisionAction, BtcFeatureSnapshot, BtcStrategyPrediction,
         FairValueEstimate,
@@ -284,6 +287,136 @@ struct LossRegimeCandidateRow {
     decision_at: DateTime<Utc>,
     label_available_at: DateTime<Utc>,
 }
+
+#[derive(Debug, Clone, FromRow)]
+struct DailyHighWaterMarkEvidenceRow {
+    evidence_kind: String,
+    settlement_id: Option<Uuid>,
+    order_id: String,
+    occurred_at: DateTime<Utc>,
+    amount_usd: Decimal,
+    fill_ids: Vec<Uuid>,
+}
+
+const DAILY_HIGH_WATER_MARK_EVIDENCE_SQL: &str = r#"
+WITH causal_credited_rows AS (
+  SELECT
+    l.process_id,
+    l.order_id,
+    l.settlement_id,
+    l.credited_at,
+    l.filled_size,
+    l.entry_notional,
+    l.entry_fees,
+    l.payout,
+    l.net_pnl
+  FROM polymarket.btc_paper_settlement_ledger l
+  WHERE l.process_id = $1
+    AND l.credit_status = 'credited'
+    AND l.credited_at IS NOT NULL
+    AND l.credited_at <= $2
+), conflicting_credited_orders AS (
+  SELECT
+    process_id,
+    order_id,
+    min(credited_at) AS first_credited_at,
+    count(DISTINCT (
+      filled_size,
+      entry_notional,
+      entry_fees,
+      payout,
+      net_pnl
+    ))::numeric AS distinct_economics_count
+  FROM causal_credited_rows
+  GROUP BY process_id, order_id
+  HAVING count(DISTINCT (
+    filled_size,
+    entry_notional,
+    entry_fees,
+    payout,
+    net_pnl
+  )) > 1
+), canonical_credited_orders AS (
+  SELECT DISTINCT ON (l.process_id, l.order_id)
+    l.process_id,
+    l.order_id,
+    l.settlement_id,
+    l.credited_at,
+    l.net_pnl
+  FROM causal_credited_rows l
+  ORDER BY l.process_id, l.order_id, l.credited_at, l.settlement_id
+), daily_credits AS (
+  SELECT process_id, order_id, settlement_id, credited_at, net_pnl
+  FROM canonical_credited_orders
+  WHERE credited_at >= $3
+    AND credited_at < $4
+), process_entry_orders AS (
+  SELECT DISTINCT o.process_id, o.order_id
+  FROM polymarket.orders o
+  WHERE o.process_id = $1
+    AND o.created_at <= $2
+    AND o.raw_payload #>> '{request,metadata,execution_intent}' = 'entry'
+), process_paper_fills AS (
+  SELECT
+    o.process_id,
+    o.order_id,
+    max(f.timestamp_utc) AS last_filled_at,
+    sum(f.price * f.size + f.fee)::numeric AS entry_debit_usd,
+    array_agg(f.fill_id ORDER BY f.timestamp_utc, f.fill_id) AS fill_ids
+  FROM process_entry_orders o
+  JOIN polymarket.fills f
+    ON f.process_id = o.process_id
+   AND f.order_id = o.order_id
+  WHERE f.source = 'paper'
+    AND f.timestamp_utc <= $2
+  GROUP BY o.process_id, o.order_id
+), unsettled_orders AS (
+  SELECT f.process_id, f.order_id, f.last_filled_at, f.entry_debit_usd, f.fill_ids
+  FROM process_paper_fills f
+  LEFT JOIN canonical_credited_orders c
+    ON c.process_id = f.process_id
+   AND c.order_id = f.order_id
+  WHERE c.order_id IS NULL
+)
+SELECT
+  'credited'::text AS evidence_kind,
+  settlement_id,
+  order_id,
+  credited_at AS occurred_at,
+  net_pnl::numeric AS amount_usd,
+  ARRAY[]::uuid[] AS fill_ids
+FROM daily_credits
+UNION ALL
+SELECT
+  'unsettled'::text AS evidence_kind,
+  NULL::uuid AS settlement_id,
+  order_id,
+  last_filled_at AS occurred_at,
+  entry_debit_usd AS amount_usd,
+  fill_ids
+FROM unsettled_orders
+UNION ALL
+SELECT
+  'conflicting_credit'::text AS evidence_kind,
+  NULL::uuid AS settlement_id,
+  order_id,
+  first_credited_at AS occurred_at,
+  distinct_economics_count AS amount_usd,
+  ARRAY[]::uuid[] AS fill_ids
+FROM conflicting_credited_orders
+ORDER BY evidence_kind, occurred_at, order_id, settlement_id
+"#;
+
+const PROCESS_HAS_ENTRY_SQL: &str = r#"
+SELECT EXISTS (
+  SELECT 1
+  FROM polymarket.btc_strategy_decisions
+  WHERE process_id = $1
+    AND market_id = $2
+    AND action = 'buy'
+    AND status IN ('approved','submitted','filled')
+)
+"#;
 
 #[derive(Debug, Clone, FromRow)]
 struct CheckpointRow {
@@ -1816,24 +1949,13 @@ impl BtcRepository {
         Ok(())
     }
 
-    pub async fn experiment_has_entry(&self, experiment_id: Uuid, market_id: &str) -> Result<bool> {
-        sqlx::query_scalar::<_, bool>(
-            r#"
-            SELECT EXISTS (
-              SELECT 1
-              FROM polymarket.btc_strategy_decisions
-              WHERE experiment_id = $1
-                AND market_id = $2
-                AND action = 'buy'
-                AND status IN ('approved','submitted','filled')
-            )
-            "#,
-        )
-        .bind(experiment_id)
-        .bind(market_id)
-        .fetch_one(&self.pool)
-        .await
-        .context("failed to check existing BTC experiment entry")
+    pub async fn process_has_entry(&self, process_id: Uuid, market_id: &str) -> Result<bool> {
+        sqlx::query_scalar::<_, bool>(PROCESS_HAS_ENTRY_SQL)
+            .bind(process_id)
+            .bind(market_id)
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to check existing BTC process entry")
     }
 
     pub async fn load_resolved_loss_regime_candidates(
@@ -1888,6 +2010,33 @@ impl BtcRepository {
                 })
             })
             .collect()
+    }
+
+    /// Reconstructs the causal UTC-day realized-PnL watermark and every still-unsettled paper
+    /// entry for one stable trading process. This state is deliberately process-owned: it carries
+    /// across immutable experiment runs and must never be filtered by experiment identity.
+    pub async fn load_daily_realized_pnl_high_water_mark_state(
+        &self,
+        process_id: Uuid,
+        as_of: DateTime<Utc>,
+    ) -> Result<DailyRealizedPnlHighWaterMarkState> {
+        let period_start_utc = as_of
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .context("failed to derive UTC high-water-mark query period")?
+            .and_utc();
+        let period_end_utc = period_start_utc + Duration::days(1);
+        let rows =
+            sqlx::query_as::<_, DailyHighWaterMarkEvidenceRow>(DAILY_HIGH_WATER_MARK_EVIDENCE_SQL)
+                .bind(process_id)
+                .bind(as_of)
+                .bind(period_start_utc)
+                .bind(period_end_utc)
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to load process-owned daily high-water-mark evidence")?;
+
+        daily_high_water_mark_state_from_rows(process_id, as_of, rows)
     }
 
     pub async fn insert_feature_snapshot(
@@ -2952,8 +3101,58 @@ fn bool_json_field(value: &serde_json::Value, keys: &[&str]) -> Option<bool> {
         .find_map(|key| value.get(*key).and_then(serde_json::Value::as_bool))
 }
 
+fn daily_high_water_mark_state_from_rows(
+    process_id: Uuid,
+    as_of: DateTime<Utc>,
+    rows: Vec<DailyHighWaterMarkEvidenceRow>,
+) -> Result<DailyRealizedPnlHighWaterMarkState> {
+    let mut credits = Vec::new();
+    let mut unsettled_exposures = Vec::new();
+    for row in rows {
+        match row.evidence_kind.as_str() {
+            "credited" => {
+                let settlement_id = row
+                    .settlement_id
+                    .context("credited high-water-mark evidence is missing settlement id")?;
+                if !row.fill_ids.is_empty() {
+                    bail!("credited high-water-mark evidence unexpectedly contains fill ids");
+                }
+                credits.push(DailyRealizedPnlCredit {
+                    settlement_id,
+                    order_id: row.order_id,
+                    credited_at: row.occurred_at,
+                    net_pnl_usd: row.amount_usd,
+                });
+            }
+            "unsettled" => {
+                if row.settlement_id.is_some() {
+                    bail!("unsettled high-water-mark evidence unexpectedly has settlement id");
+                }
+                unsettled_exposures.push(UnsettledEntryExposure {
+                    order_id: row.order_id,
+                    fill_ids: row.fill_ids,
+                    entry_debit_usd: row.amount_usd,
+                });
+            }
+            "conflicting_credit" => bail!(
+                "process-owned high-water-mark evidence has {} conflicting credited economics for order {}",
+                row.amount_usd,
+                row.order_id
+            ),
+            kind => bail!("unsupported high-water-mark evidence kind {kind}"),
+        }
+    }
+    DailyRealizedPnlHighWaterMarkState::from_evidence(
+        process_id,
+        as_of,
+        credits,
+        unsettled_exposures,
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
     use rust_decimal_macros::dec;
 
     use super::*;
@@ -3012,6 +3211,115 @@ mod tests {
             approved_intent: Some(intent),
             prediction,
         }
+    }
+
+    #[test]
+    fn high_water_mark_query_is_process_owned_and_canonicalizes_orders() {
+        let normalized = DAILY_HIGH_WATER_MARK_EVIDENCE_SQL.to_ascii_lowercase();
+        assert!(!normalized.contains("experiment_id"));
+        assert!(normalized.contains("distinct on (l.process_id, l.order_id)"));
+        assert!(normalized.contains("conflicting_credited_orders"));
+        assert!(normalized.contains("count(distinct ("));
+        assert!(normalized.contains("filled_size,"));
+        assert!(normalized.contains("entry_notional,"));
+        assert!(normalized.contains("entry_fees,"));
+        assert!(normalized.contains("payout,"));
+        assert!(normalized.contains("net_pnl"));
+        assert!(normalized.contains("'conflicting_credit'::text"));
+        assert!(normalized.contains("l.process_id = $1"));
+        assert!(normalized.contains("o.process_id = $1"));
+        assert!(normalized.contains("f.process_id = o.process_id"));
+        assert!(normalized.contains("c.process_id = f.process_id"));
+        assert!(normalized.contains("l.credited_at <= $2"));
+        assert!(normalized.contains("f.timestamp_utc <= $2"));
+    }
+
+    #[test]
+    fn existing_entry_guard_is_process_owned() {
+        let normalized = PROCESS_HAS_ENTRY_SQL.to_ascii_lowercase();
+        assert!(normalized.contains("where process_id = $1"));
+        assert!(!normalized.contains("experiment_id"));
+    }
+
+    #[test]
+    fn high_water_mark_rows_decode_into_credited_and_unsettled_evidence() {
+        let as_of = Utc
+            .with_ymd_and_hms(2026, 7, 20, 12, 0, 0)
+            .single()
+            .unwrap();
+        let state = daily_high_water_mark_state_from_rows(
+            Uuid::from_u128(100),
+            as_of,
+            vec![
+                DailyHighWaterMarkEvidenceRow {
+                    evidence_kind: "unsettled".to_string(),
+                    settlement_id: None,
+                    order_id: "open-order".to_string(),
+                    occurred_at: as_of - Duration::minutes(1),
+                    amount_usd: dec!(2.25),
+                    fill_ids: vec![Uuid::from_u128(4), Uuid::from_u128(5)],
+                },
+                DailyHighWaterMarkEvidenceRow {
+                    evidence_kind: "credited".to_string(),
+                    settlement_id: Some(Uuid::from_u128(1)),
+                    order_id: "closed-order".to_string(),
+                    occurred_at: as_of - Duration::minutes(2),
+                    amount_usd: dec!(6),
+                    fill_ids: Vec::new(),
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(state.process_id, Uuid::from_u128(100));
+        assert_eq!(state.daily_realized_pnl_usd, dec!(6));
+        assert_eq!(state.high_water_mark_usd, dec!(6));
+        assert_eq!(state.unsettled_order_count, 1);
+        assert_eq!(state.unsettled_entry_debit_usd, dec!(2.25));
+    }
+
+    #[test]
+    fn high_water_mark_rows_fail_closed_on_malformed_classification() {
+        let as_of = Utc
+            .with_ymd_and_hms(2026, 7, 20, 12, 0, 0)
+            .single()
+            .unwrap();
+        let malformed = DailyHighWaterMarkEvidenceRow {
+            evidence_kind: "unsettled".to_string(),
+            settlement_id: Some(Uuid::from_u128(1)),
+            order_id: "open-order".to_string(),
+            occurred_at: as_of,
+            amount_usd: dec!(1),
+            fill_ids: vec![Uuid::from_u128(2)],
+        };
+        assert!(daily_high_water_mark_state_from_rows(
+            Uuid::from_u128(100),
+            as_of,
+            vec![malformed],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn high_water_mark_rows_fail_closed_on_conflicting_credited_economics() {
+        let as_of = Utc
+            .with_ymd_and_hms(2026, 7, 20, 12, 0, 0)
+            .single()
+            .unwrap();
+        let conflict = DailyHighWaterMarkEvidenceRow {
+            evidence_kind: "conflicting_credit".to_string(),
+            settlement_id: None,
+            order_id: "duplicated-order".to_string(),
+            occurred_at: as_of - Duration::minutes(1),
+            amount_usd: dec!(2),
+            fill_ids: Vec::new(),
+        };
+
+        let error =
+            daily_high_water_mark_state_from_rows(Uuid::from_u128(100), as_of, vec![conflict])
+                .unwrap_err();
+        assert!(error.to_string().contains("conflicting credited economics"));
+        assert!(error.to_string().contains("duplicated-order"));
     }
 
     #[test]

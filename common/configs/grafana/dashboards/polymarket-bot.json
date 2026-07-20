@@ -2023,6 +2023,7 @@
           },
           "decimals": 2,
           "mappings": [],
+          "noValue": "No fresh mark",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -2042,7 +2043,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Open Entry Orders"
+              "options": "Best Process Current Market Entry Orders"
             },
             "properties": [
               {
@@ -2072,7 +2073,7 @@
         "percentChangeColorMode": "standard",
         "reduceOptions": {
           "calcs": [
-            "lastNotNull"
+            "last"
           ],
           "fields": "",
           "values": false
@@ -2091,7 +2092,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH processes AS MATERIALIZED (\n  SELECT process_id\n  FROM polymarket.trading_processes\n  WHERE process_scope = 'realtime_paper'\n    AND enabled IS TRUE\n    AND status IS DISTINCT FROM 'failed'\n), open_entries AS MATERIALIZED (\n  SELECT\n    o.process_id,\n    o.order_id,\n    o.token_id,\n    SUM(f.size)::numeric AS filled_size,\n    SUM(f.price * f.size)::numeric AS entry_cost,\n    SUM(f.fee)::numeric AS entry_fees\n  FROM processes p\n  JOIN polymarket.orders o USING (process_id)\n  JOIN polymarket.fills f\n    ON f.order_id = o.order_id\n   AND f.process_id = o.process_id\n   AND f.source = 'paper'\n  JOIN polymarket.btc_interval_markets m ON m.market_id = o.market_id\n  WHERE m.window_start <= now()\n    AND m.window_end > now()\n    AND m.official_resolution_received_at IS NULL\n  GROUP BY o.process_id, o.order_id, o.token_id\n), marked AS MATERIALIZED (\n  SELECT e.*, mark.best_bid\n  FROM open_entries e\n  LEFT JOIN LATERAL (\n    SELECT c.best_bid\n    FROM polymarket.orderbook_checkpoints c\n    WHERE c.token_id = e.token_id\n      AND c.integrity_status = 'ok'\n      AND c.best_bid IS NOT NULL\n      AND c.source_timestamp BETWEEN now() - interval '2 seconds' AND now() + interval '1 second'\n      AND c.received_at BETWEEN now() - interval '2 seconds' AND now()\n    ORDER BY c.source_timestamp DESC, c.received_at DESC, c.ingest_sequence DESC\n    LIMIT 1\n  ) mark ON true\n)\nSELECT\n  COALESCE(\n    SUM(filled_size * best_bid - entry_cost - entry_fees)\n      FILTER (WHERE best_bid IS NOT NULL),\n    0\n  )::double precision AS \"Fresh Unrealized PnL\",\n  COUNT(*) AS \"Open Entry Orders\"\nFROM marked;",
+          "rawSql": "WITH clock AS MATERIALIZED (\n  SELECT now() AS at\n), processes AS MATERIALIZED (\n  SELECT process_id\n  FROM (\n    SELECT\n      p.process_id,\n      p.created_at,\n      COALESCE(\n        SUM(\n          CASE\n            WHEN m.market_id IS NULL THEN 0::numeric\n            ELSE\n              CASE WHEN o.token_id = m.official_winning_token_id THEN f.size ELSE 0::numeric END\n              - f.price * f.size\n              - f.fee\n          END\n        ),\n        0::numeric\n      ) AS net_realized_pnl\n    FROM polymarket.trading_processes p\n    LEFT JOIN polymarket.fills f\n      ON f.process_id = p.process_id\n     AND f.source = 'paper'\n    LEFT JOIN polymarket.orders o\n      ON o.order_id = f.order_id\n     AND o.process_id = f.process_id\n    LEFT JOIN polymarket.btc_interval_markets m\n      ON m.market_id = o.market_id\n     AND m.official_outcome IS NOT NULL\n     AND m.official_winning_token_id IS NOT NULL\n     AND m.official_resolution_received_at IS NOT NULL\n    WHERE p.process_scope = 'realtime_paper'\n      AND p.enabled IS TRUE\n      AND p.status IS DISTINCT FROM 'failed'\n    GROUP BY p.process_id, p.created_at\n  ) process_pnl\n  ORDER BY net_realized_pnl DESC, created_at DESC, process_id\n  LIMIT 1\n), current_entries AS MATERIALIZED (\n  SELECT\n    o.process_id,\n    o.order_id,\n    o.token_id,\n    SUM(f.size)::numeric AS filled_size,\n    SUM(f.price * f.size)::numeric AS entry_cost,\n    SUM(f.fee)::numeric AS entry_fees\n  FROM processes p\n  JOIN polymarket.orders o USING (process_id)\n  JOIN polymarket.fills f\n    ON f.order_id = o.order_id\n   AND f.process_id = o.process_id\n   AND f.source = 'paper'\n  JOIN polymarket.btc_interval_markets m ON m.market_id = o.market_id\n  CROSS JOIN clock c\n  WHERE m.window_start <= c.at\n    AND m.window_end > c.at\n    AND m.official_resolution_received_at IS NULL\n  GROUP BY o.process_id, o.order_id, o.token_id\n), marked AS MATERIALIZED (\n  SELECT e.*, mark.best_bid\n  FROM current_entries e\n  CROSS JOIN clock c\n  LEFT JOIN LATERAL (\n    SELECT checkpoint.best_bid\n    FROM polymarket.orderbook_checkpoints checkpoint\n    WHERE checkpoint.token_id = e.token_id\n      AND checkpoint.integrity_status = 'ok'\n      AND checkpoint.best_bid IS NOT NULL\n      AND checkpoint.source_timestamp BETWEEN c.at - interval '2 seconds' AND c.at + interval '1 second'\n      AND checkpoint.received_at BETWEEN c.at - interval '2 seconds' AND c.at\n    ORDER BY checkpoint.source_timestamp DESC, checkpoint.received_at DESC, checkpoint.ingest_sequence DESC\n    LIMIT 1\n  ) mark ON true\n)\nSELECT\n  CASE\n    WHEN COUNT(*) = 0 THEN 0::numeric\n    WHEN COUNT(best_bid) = 0 THEN NULL::numeric\n    ELSE SUM(filled_size * best_bid - entry_cost - entry_fees)\n      FILTER (WHERE best_bid IS NOT NULL)\n  END::double precision AS \"Best Active Process Current Fresh Unrealized PnL\",\n  COUNT(*) AS \"Best Process Current Market Entry Orders\"\nFROM marked;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -2112,9 +2113,9 @@
           }
         }
       ],
-      "title": "Current Fresh Unrealized PnL",
+      "title": "Best Active Process Current Fresh Unrealized PnL",
       "type": "stat",
-      "description": "Current-market unrealized PnL across enabled, non-failed realtime-paper processes and their open paper entries. PnL uses marks no older than two seconds; the entry count is not a dollar amount."
+      "description": "Fresh unrealized PnL for the same enabled, non-failed realtime-paper process selected by Best Active Process Lifetime Net Realized PnL. It uses only that process's current scheduled-market entries. When entries exist but no bid is fresh within two seconds, PnL displays No fresh mark instead of $0."
     },
     {
       "datasource": {
@@ -2240,7 +2241,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "last_updated"
+              "options": "Last Updated"
             },
             "properties": [
               {
@@ -2256,7 +2257,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "unrealized_pnl"
+              "options": "Current Fresh Unrealized PnL"
             },
             "properties": [
               {
@@ -2270,13 +2271,17 @@
               {
                 "id": "custom.width",
                 "value": 181
+              },
+              {
+                "id": "noValue",
+                "value": "No fresh mark"
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "realized_pnl"
+              "options": "Lifetime Net Realized PnL"
             },
             "properties": [
               {
@@ -2296,7 +2301,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "roi"
+              "options": "ROI"
             },
             "properties": [
               {
@@ -2311,20 +2316,36 @@
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "open_positions"
+              "id": "byRegexp",
+              "options": "/^(Current Market Entries|Freshly Priced Current Entries|Unpriced Current Entries|Awaiting Official Settlement)$/"
             },
             "properties": [
               {
                 "id": "custom.width",
-                "value": 135
+                "value": 156
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Oldest Pending Settlement Age"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.width",
+                "value": 190
               }
             ]
           },
           {
             "matcher": {
               "id": "byRegexp",
-              "options": "/^(gross_realized_pnl|realized_fees|total_pnl)$/"
+              "options": "/^(Gross Realized PnL|Realized Fees|Total PnL)$/"
             },
             "properties": [
               {
@@ -2343,8 +2364,20 @@
           },
           {
             "matcher": {
+              "id": "byName",
+              "options": "Total PnL"
+            },
+            "properties": [
+              {
+                "id": "noValue",
+                "value": "Incomplete valuation"
+              }
+            ]
+          },
+          {
+            "matcher": {
               "id": "byRegexp",
-              "options": "/^(last_heartbeat|latest_mark_at)$/"
+              "options": "/^(Last Heartbeat|Latest Fresh Mark)$/"
             },
             "properties": [
               {
@@ -2360,7 +2393,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "heartbeat_age_seconds"
+              "options": "Heartbeat Age"
             },
             "properties": [
               {
@@ -2376,7 +2409,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "process_name"
+              "options": "Process"
             },
             "properties": [
               {
@@ -2400,7 +2433,7 @@
         "sortBy": [
           {
             "desc": true,
-            "displayName": "last_updated"
+            "displayName": "Last Updated"
           }
         ]
       },
@@ -2414,7 +2447,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH processes AS MATERIALIZED (\n  SELECT process_id,name,status,enabled,config,created_at,updated_at,heartbeat_at,stopped_at\n  FROM polymarket.trading_processes\n  WHERE process_scope='realtime_paper'\n), filled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.token_id,o.market_id,\n         MAX(f.timestamp_utc) AS filled_at,\n         SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,\n         SUM(f.fee)::numeric AS entry_fees\n  FROM polymarket.orders o\n  JOIN processes p USING(process_id)\n  JOIN polymarket.fills f\n    ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source='paper'\n  GROUP BY o.process_id,o.order_id,o.token_id,o.market_id\n), fill_stats AS MATERIALIZED (\n  SELECT process_id,COUNT(*) AS filled_orders,\n         SUM(entry_cost)::numeric AS entry_notional,\n         SUM(entry_fees)::numeric AS entry_fees,\n         MAX(filled_at) AS last_fill_at\n  FROM filled_orders GROUP BY process_id\n), resolved_stats AS MATERIALIZED (\n  SELECT f.process_id,COUNT(*) AS resolved_positions,\n         SUM(CASE WHEN f.token_id=m.official_winning_token_id THEN f.filled_size ELSE 0::numeric END\n             -f.entry_cost)::numeric AS gross_realized_pnl,\n         SUM(f.entry_fees)::numeric AS realized_fees,\n         SUM(CASE WHEN f.token_id=m.official_winning_token_id THEN f.filled_size ELSE 0::numeric END\n             -f.entry_cost-f.entry_fees)::numeric AS realized_pnl,\n         MAX(m.official_resolution_received_at) AS last_resolution_at\n  FROM filled_orders f\n  JOIN polymarket.btc_interval_markets m USING(market_id)\n  WHERE m.official_outcome IS NOT NULL\n    AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n  GROUP BY f.process_id\n), open_entries AS MATERIALIZED (\n  SELECT f.* FROM filled_orders f\n  JOIN polymarket.btc_interval_markets m USING(market_id)\n  WHERE m.official_resolution_received_at IS NULL\n), marked AS MATERIALIZED (\n  SELECT e.*,mark.best_bid,mark.source_timestamp AS mark_at\n  FROM open_entries e\n  LEFT JOIN LATERAL (\n    SELECT c.best_bid,c.source_timestamp\n    FROM polymarket.orderbook_checkpoints c\n    WHERE c.token_id=e.token_id\n      AND c.integrity_status='ok' AND c.best_bid IS NOT NULL\n      AND c.source_timestamp BETWEEN now()-interval '2 seconds' AND now()+interval '1 second'\n      AND c.received_at BETWEEN now()-interval '2 seconds' AND now()\n    ORDER BY c.source_timestamp DESC,c.received_at DESC,c.ingest_sequence DESC\n    LIMIT 1\n  ) mark ON true\n), open_pnl AS MATERIALIZED (\n  SELECT process_id,COUNT(*) AS open_positions,COUNT(best_bid) AS freshly_priced,\n         COUNT(*)-COUNT(best_bid) AS stale_or_unpriced,\n         COALESCE(SUM(filled_size*best_bid-entry_cost-entry_fees)\n           FILTER(WHERE best_bid IS NOT NULL),0)::numeric AS unrealized_pnl,\n         MAX(mark_at) AS latest_mark_at\n  FROM marked GROUP BY process_id\n), metrics AS (\n  SELECT p.*,COALESCE(f.filled_orders,0) AS filled_orders,\n         COALESCE(r.resolved_positions,0) AS resolved_positions,\n         COALESCE(x.open_positions,0) AS open_positions,\n         COALESCE(x.freshly_priced,0) AS freshly_priced,\n         COALESCE(x.stale_or_unpriced,0) AS stale_or_unpriced,\n         COALESCE(r.gross_realized_pnl,0)::numeric AS gross_realized_pnl,\n         COALESCE(r.realized_fees,0)::numeric AS realized_fees,\n         COALESCE(r.realized_pnl,0)::numeric AS realized_pnl,\n         COALESCE(x.unrealized_pnl,0)::numeric AS unrealized_pnl,\n         x.latest_mark_at,\n         GREATEST(p.updated_at,COALESCE(f.last_fill_at,p.updated_at),\n           COALESCE(r.last_resolution_at,p.updated_at),COALESCE(x.latest_mark_at,p.updated_at)) AS last_updated,\n         CASE WHEN p.config#>>'{raw,btc_realtime_paper,paper,starting_collateral_usd}'~'^[0-9]+([.][0-9]+)?$'\n              THEN (p.config#>>'{raw,btc_realtime_paper,paper,starting_collateral_usd}')::numeric END AS starting_collateral\n  FROM processes p\n  LEFT JOIN fill_stats f USING(process_id)\n  LEFT JOIN resolved_stats r USING(process_id)\n  LEFT JOIN open_pnl x USING(process_id)\n)\nSELECT name AS process_name,left(process_id::text,8) AS process_id,status,enabled,\n       heartbeat_at AS last_heartbeat,\n       EXTRACT(epoch FROM now()-COALESCE(heartbeat_at,updated_at))::bigint AS heartbeat_age_seconds,\n       last_updated,filled_orders,resolved_positions,open_positions,freshly_priced,stale_or_unpriced,\n       gross_realized_pnl::double precision,realized_fees::double precision,\n       realized_pnl::double precision,unrealized_pnl::double precision,\n       (realized_pnl+unrealized_pnl)::double precision AS total_pnl,\n       CASE WHEN starting_collateral>0\n            THEN ((realized_pnl+unrealized_pnl)/starting_collateral)::double precision END AS roi\nFROM metrics\nWHERE filled_orders>0 OR enabled OR status IN ('starting','running','stopping')\nORDER BY last_updated DESC,name;",
+          "rawSql": "WITH clock AS MATERIALIZED (\n  SELECT now() AS at\n), processes AS MATERIALIZED (\n  SELECT process_id,name,status,enabled,config,created_at,updated_at,heartbeat_at,stopped_at\n  FROM polymarket.trading_processes\n  WHERE process_scope='realtime_paper'\n), filled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.token_id,o.market_id,\n         MAX(f.timestamp_utc) AS filled_at,\n         SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,\n         SUM(f.fee)::numeric AS entry_fees\n  FROM polymarket.orders o\n  JOIN processes p USING(process_id)\n  JOIN polymarket.fills f\n    ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source='paper'\n  GROUP BY o.process_id,o.order_id,o.token_id,o.market_id\n), fill_stats AS MATERIALIZED (\n  SELECT process_id,COUNT(*) AS filled_orders,\n         SUM(entry_cost)::numeric AS entry_notional,\n         SUM(entry_fees)::numeric AS entry_fees,\n         MAX(filled_at) AS last_fill_at\n  FROM filled_orders GROUP BY process_id\n), resolved_stats AS MATERIALIZED (\n  SELECT f.process_id,COUNT(*) AS resolved_positions,\n         SUM(CASE WHEN f.token_id=m.official_winning_token_id THEN f.filled_size ELSE 0::numeric END\n             -f.entry_cost)::numeric AS gross_realized_pnl,\n         SUM(f.entry_fees)::numeric AS realized_fees,\n         SUM(CASE WHEN f.token_id=m.official_winning_token_id THEN f.filled_size ELSE 0::numeric END\n             -f.entry_cost-f.entry_fees)::numeric AS realized_pnl,\n         MAX(m.official_resolution_received_at) AS last_resolution_at\n  FROM filled_orders f\n  JOIN polymarket.btc_interval_markets m USING(market_id)\n  WHERE m.official_outcome IS NOT NULL\n    AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n  GROUP BY f.process_id\n), unresolved_entries AS MATERIALIZED (\n  SELECT f.*,m.window_start,m.window_end\n  FROM filled_orders f\n  JOIN polymarket.btc_interval_markets m USING(market_id)\n  WHERE m.official_resolution_received_at IS NULL\n), current_entries AS MATERIALIZED (\n  SELECT u.*\n  FROM unresolved_entries u\n  CROSS JOIN clock c\n  WHERE u.window_start<=c.at\n    AND u.window_end>c.at\n), pending_settlements AS MATERIALIZED (\n  SELECT u.process_id,\n         COUNT(*) AS awaiting_official_settlement,\n         MIN(u.window_end) AS oldest_pending_settlement_at\n  FROM unresolved_entries u\n  CROSS JOIN clock c\n  WHERE u.window_end<=c.at\n  GROUP BY u.process_id\n), marked_current AS MATERIALIZED (\n  SELECT e.*,mark.best_bid,mark.source_timestamp AS mark_at\n  FROM current_entries e\n  CROSS JOIN clock c\n  LEFT JOIN LATERAL (\n    SELECT checkpoint.best_bid,checkpoint.source_timestamp\n    FROM polymarket.orderbook_checkpoints checkpoint\n    WHERE checkpoint.token_id=e.token_id\n      AND checkpoint.integrity_status='ok'\n      AND checkpoint.best_bid IS NOT NULL\n      AND checkpoint.source_timestamp BETWEEN c.at-interval '2 seconds' AND c.at+interval '1 second'\n      AND checkpoint.received_at BETWEEN c.at-interval '2 seconds' AND c.at\n    ORDER BY checkpoint.source_timestamp DESC,checkpoint.received_at DESC,checkpoint.ingest_sequence DESC\n    LIMIT 1\n  ) mark ON true\n), current_pnl AS MATERIALIZED (\n  SELECT process_id,\n         COUNT(*) AS current_market_entries,\n         COUNT(best_bid) AS current_freshly_priced,\n         COUNT(*)-COUNT(best_bid) AS current_unpriced_entries,\n         CASE WHEN COUNT(*)=0 THEN 0::numeric\n              WHEN COUNT(best_bid)=0 THEN NULL::numeric\n              ELSE SUM(filled_size*best_bid-entry_cost-entry_fees)\n                FILTER(WHERE best_bid IS NOT NULL) END::numeric AS current_fresh_unrealized_pnl,\n         MAX(mark_at) AS latest_mark_at\n  FROM marked_current\n  GROUP BY process_id\n), metrics AS (\n  SELECT p.*,COALESCE(f.filled_orders,0) AS filled_orders,\n         COALESCE(r.resolved_positions,0) AS resolved_positions,\n         COALESCE(x.current_market_entries,0) AS current_market_entries,\n         COALESCE(x.current_freshly_priced,0) AS current_freshly_priced,\n         COALESCE(x.current_unpriced_entries,0) AS current_unpriced_entries,\n         COALESCE(s.awaiting_official_settlement,0) AS awaiting_official_settlement,\n         CASE WHEN s.oldest_pending_settlement_at IS NULL THEN NULL\n              ELSE EXTRACT(epoch FROM c.at-s.oldest_pending_settlement_at)::bigint END\n           AS oldest_pending_settlement_age_seconds,\n         COALESCE(r.gross_realized_pnl,0)::numeric AS gross_realized_pnl,\n         COALESCE(r.realized_fees,0)::numeric AS realized_fees,\n         COALESCE(r.realized_pnl,0)::numeric AS realized_pnl,\n         CASE WHEN COALESCE(x.current_market_entries,0)=0 THEN 0::numeric\n              ELSE x.current_fresh_unrealized_pnl END::numeric AS current_fresh_unrealized_pnl,\n         x.latest_mark_at,\n         GREATEST(p.updated_at,COALESCE(f.last_fill_at,p.updated_at),\n           COALESCE(r.last_resolution_at,p.updated_at),COALESCE(x.latest_mark_at,p.updated_at)) AS last_updated,\n         CASE WHEN p.config#>>'{raw,btc_realtime_paper,paper,starting_collateral_usd}'~'^[0-9]+([.][0-9]+)?$'\n              THEN (p.config#>>'{raw,btc_realtime_paper,paper,starting_collateral_usd}')::numeric END AS starting_collateral\n  FROM processes p\n  CROSS JOIN clock c\n  LEFT JOIN fill_stats f USING(process_id)\n  LEFT JOIN resolved_stats r USING(process_id)\n  LEFT JOIN current_pnl x USING(process_id)\n  LEFT JOIN pending_settlements s USING(process_id)\n), presentation AS (\n  SELECT *,\n         CASE WHEN awaiting_official_settlement>0 OR current_unpriced_entries>0 THEN NULL::numeric\n              ELSE realized_pnl+COALESCE(current_fresh_unrealized_pnl,0)::numeric END AS total_pnl\n  FROM metrics\n)\nSELECT name AS \"Process\",\n       left(process_id::text,8) AS \"Process ID\",\n       status AS \"Status\",\n       current_market_entries AS \"Current Market Entries\",\n       awaiting_official_settlement AS \"Awaiting Official Settlement\",\n       current_fresh_unrealized_pnl::double precision AS \"Current Fresh Unrealized PnL\",\n       total_pnl::double precision AS \"Total PnL\",\n       oldest_pending_settlement_age_seconds AS \"Oldest Pending Settlement Age\",\n       current_freshly_priced AS \"Freshly Priced Current Entries\",\n       current_unpriced_entries AS \"Unpriced Current Entries\",\n       realized_pnl::double precision AS \"Lifetime Net Realized PnL\",\n       gross_realized_pnl::double precision AS \"Gross Realized PnL\",\n       realized_fees::double precision AS \"Realized Fees\",\n       CASE WHEN starting_collateral>0 AND total_pnl IS NOT NULL\n            THEN (total_pnl/starting_collateral)::double precision END AS \"ROI\",\n       enabled AS \"Enabled\",\n       heartbeat_at AS \"Last Heartbeat\",\n       EXTRACT(epoch FROM now()-COALESCE(heartbeat_at,updated_at))::bigint AS \"Heartbeat Age\",\n       last_updated AS \"Last Updated\",\n       filled_orders AS \"Filled Orders\",\n       resolved_positions AS \"Resolved Positions\"\nFROM presentation\nWHERE filled_orders>0 OR enabled OR status IN ('starting','running','stopping')\nORDER BY last_updated DESC,name;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -2435,9 +2468,9 @@
           }
         }
       ],
-      "title": "Process Lifetime PnL and Runtime Stats",
+      "title": "Process Lifetime PnL, Runtime, and Settlement Status",
       "type": "table",
-      "description": "Durable process-level PnL and position counts derived from process-owned fills and official outcomes."
+      "description": "Durable process-level PnL, runtime, and settlement status from process-owned fills and official outcomes. Current-market entries and entries awaiting official settlement are intentionally separate; only current-market entries contribute to fresh unrealized PnL. Total PnL is unavailable while an entry is unpriced or awaits official settlement."
     },
     {
       "collapsed": false,

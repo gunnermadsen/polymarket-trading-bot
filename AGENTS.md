@@ -6,6 +6,18 @@
 
 # Source Control
 - Commit changes, grouped by feature domain.
+- New features must be committed to a new branch, based from the latest commit on development branch.
+
+# Database
+- all database mutations or changes must be executed through database migrations.
+- all diagnostic database queries to read the database must be optimized for performance to prevent database crashes.
+- use the db-migrate microservice job to apply migrations
+- apply migrations by creating new migration files inside packages/db-migrate/src/migrations
+- then recreate the container:
+
+```bash
+docker compose up -d --force-recreate --no-deps db-migrate
+```
 
 # Implementation
 - Execute the narrow implementation plan, only focusing on the instructed plan parameters.

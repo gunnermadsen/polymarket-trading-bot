@@ -9,10 +9,12 @@ pub mod strategy;
 pub mod types;
 
 pub use admission::{
-    AdmissionDisposition, BtcEntryAdmissionConfig, LossRegimeCandidate,
-    LossRegimeConfidenceFloorConfig, LossRegimeConfidenceFloorEvaluation,
-    LossRegimeConfidenceFloorState, LossRegimeConfidenceFloorTransition,
-    LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION,
+    AdmissionDisposition, BtcEntryAdmissionConfig, DailyRealizedPnlCredit,
+    DailyRealizedPnlHighWaterMarkConfig, DailyRealizedPnlHighWaterMarkEvaluation,
+    DailyRealizedPnlHighWaterMarkState, LossRegimeCandidate, LossRegimeConfidenceFloorConfig,
+    LossRegimeConfidenceFloorEvaluation, LossRegimeConfidenceFloorState,
+    LossRegimeConfidenceFloorTransition, ProposedEntryExposure, UnsettledEntryExposure,
+    DAILY_REALIZED_PNL_HIGH_WATER_MARK_SCHEMA_VERSION, LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION,
 };
 pub use experiment::{BtcPaperExperimentConfig, BtcPaperExperimentRunner};
 pub use feeds::{

@@ -21,8 +21,9 @@ use crate::{
 
 use super::{
     admission::{
-        AdmissionDisposition, BtcEntryAdmissionConfig, LossRegimeConfidenceFloorEvaluation,
-        LossRegimeConfidenceFloorState, LossRegimeConfidenceFloorTransition,
+        AdmissionDisposition, BtcEntryAdmissionConfig, DailyRealizedPnlHighWaterMarkEvaluation,
+        LossRegimeConfidenceFloorEvaluation, LossRegimeConfidenceFloorState,
+        LossRegimeConfidenceFloorTransition, ProposedEntryExposure,
     },
     paper::{PaperPreviewConfig, PaperVenue, PAPER_DYNAMIC_FEE_RATE_METADATA_KEY},
     repository::{BtcPointInTimeInputs, BtcRepository},
@@ -30,7 +31,8 @@ use super::{
     strategy::{
         BtcDecision, BtcDecisionAction, BtcFeatureLineage, BtcFeatureSnapshot,
         BtcInputWindowLineage, BtcOutcomeBookFeatures, BtcRejectReason, BtcStrategyConfig,
-        BtcStrategyPrediction, DeterministicBtcStrategy, BTC_FEATURE_LINEAGE_VERSION,
+        BtcStrategyPrediction, DeterministicBtcStrategy,
+        BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION, BTC_FEATURE_LINEAGE_VERSION,
         BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_FAMILY,
     },
     types::{
@@ -63,6 +65,11 @@ struct LossRegimeAdmissionRuntime {
     evaluated_market_id: Option<String>,
 }
 
+struct EntryAdmissionEvaluation {
+    disposition: AdmissionDisposition,
+    evidence: serde_json::Value,
+}
+
 pub struct BtcPaperExperimentRunner {
     repository: BtcRepository,
     store: Store,
@@ -70,6 +77,7 @@ pub struct BtcPaperExperimentRunner {
     config: BtcPaperExperimentConfig,
     initialized: OnceCell<()>,
     loss_regime_admission: Mutex<Option<LossRegimeAdmissionRuntime>>,
+    high_water_mark_entry_submission: Mutex<()>,
     paper_capital_reconcile_started_at: Mutex<Option<Instant>>,
 }
 
@@ -113,6 +121,7 @@ impl BtcPaperExperimentRunner {
                     .as_ref()
                     .map(|_| LossRegimeAdmissionRuntime::default()),
             ),
+            high_water_mark_entry_submission: Mutex::new(()),
             config,
             initialized: OnceCell::new(),
             paper_capital_reconcile_started_at: Mutex::new(None),
@@ -211,7 +220,7 @@ impl BtcPaperExperimentRunner {
         Ok(())
     }
 
-    async fn evaluate_entry_admission(
+    async fn evaluate_loss_regime_admission(
         &self,
         decision: &BtcDecision,
         as_of: DateTime<Utc>,
@@ -287,6 +296,42 @@ impl BtcPaperExperimentRunner {
             .await;
         }
         Ok(Some(evaluation))
+    }
+
+    async fn evaluate_entry_admission(
+        &self,
+        decision: &BtcDecision,
+        as_of: DateTime<Utc>,
+        fee_rate: Decimal,
+    ) -> Result<Option<EntryAdmissionEvaluation>> {
+        let Some(entry_admission) = self.config.entry_admission.as_ref() else {
+            return Ok(None);
+        };
+        let loss_regime = self
+            .evaluate_loss_regime_admission(decision, as_of)
+            .await?
+            .context("configured loss-regime admission did not produce an evaluation")?;
+        let high_water_mark = match entry_admission.daily_realized_pnl_high_water_mark.as_ref() {
+            Some(config) => {
+                let intent = decision
+                    .approved_intent
+                    .as_ref()
+                    .context("approved BTC intent is missing for high-water-mark admission")?;
+                let proposed =
+                    ProposedEntryExposure::new(intent.size, intent.limit_price, fee_rate)?;
+                let state = self
+                    .repository
+                    .load_daily_realized_pnl_high_water_mark_state(self.config.process_id, as_of)
+                    .await?;
+                Some(state.evaluate(config, &proposed)?)
+            }
+            None => None,
+        };
+        Ok(Some(combine_entry_admission_evaluations(
+            self.config.process_id,
+            loss_regime,
+            high_water_mark,
+        )?))
     }
 
     async fn record_entry_admission_event(
@@ -428,6 +473,17 @@ impl BtcPaperExperimentRunner {
 
     async fn observe(&self, observation: StrategyObservation) -> Result<()> {
         self.initialize().await?;
+        let high_water_mark_configured = self
+            .config
+            .entry_admission
+            .as_ref()
+            .and_then(|admission| admission.daily_realized_pnl_high_water_mark.as_ref())
+            .is_some();
+        let _high_water_mark_entry_guard = if high_water_mark_configured {
+            Some(self.high_water_mark_entry_submission.lock().await)
+        } else {
+            None
+        };
         self.refresh_settlement_and_reconcile_if_due().await?;
 
         let Some(market) = observation.state.current_market.as_ref() else {
@@ -450,13 +506,14 @@ impl BtcPaperExperimentRunner {
             observed_at,
             &inputs,
             self.config.strategy.target_size,
+            &self.config.strategy.feature_schema_version,
         );
         let mut decision = DeterministicBtcStrategy::evaluate(&self.config.strategy, &snapshot);
         enforce_runtime_readiness(&mut decision, &observation.readiness);
         if decision.approved_intent.is_some()
             && self
                 .repository
-                .experiment_has_entry(self.config.experiment_id, &snapshot.market_id)
+                .process_has_entry(self.config.process_id, &snapshot.market_id)
                 .await?
         {
             decision.action = BtcDecisionAction::NoTrade;
@@ -529,12 +586,15 @@ impl BtcPaperExperimentRunner {
         }
 
         let entry_admission = self
-            .evaluate_entry_admission(&decision, observed_at)
+            .evaluate_entry_admission(
+                &decision,
+                observed_at,
+                snapshot.fee_rate.unwrap_or_default(),
+            )
             .await?;
         let entry_admission_evidence = entry_admission
             .as_ref()
-            .map(serde_json::to_value)
-            .transpose()?;
+            .map(|evaluation| &evaluation.evidence);
         if entry_admission
             .as_ref()
             .is_some_and(|evaluation| evaluation.disposition == AdmissionDisposition::Defer)
@@ -546,7 +606,7 @@ impl BtcPaperExperimentRunner {
                     &snapshot.market_id,
                     &self.config.strategy.strategy_version,
                     &decision,
-                    entry_admission_evidence.as_ref(),
+                    entry_admission_evidence,
                     None,
                     "admission_blocked",
                 )
@@ -591,7 +651,7 @@ impl BtcPaperExperimentRunner {
                 &snapshot.market_id,
                 &self.config.strategy.strategy_version,
                 &decision,
-                entry_admission_evidence.as_ref(),
+                entry_admission_evidence,
                 Some(plan_id),
                 "approved",
             )
@@ -684,6 +744,47 @@ impl BtcPaperExperimentRunner {
     }
 }
 
+fn combine_entry_admission_evaluations(
+    process_id: Uuid,
+    loss_regime: LossRegimeConfidenceFloorEvaluation,
+    high_water_mark: Option<DailyRealizedPnlHighWaterMarkEvaluation>,
+) -> Result<EntryAdmissionEvaluation> {
+    let loss_deferred = loss_regime.disposition == AdmissionDisposition::Defer;
+    let high_water_mark_deferred = high_water_mark
+        .as_ref()
+        .is_some_and(|evaluation| evaluation.disposition == AdmissionDisposition::Defer);
+    let disposition = if loss_deferred || high_water_mark_deferred {
+        AdmissionDisposition::Defer
+    } else {
+        AdmissionDisposition::Allow
+    };
+
+    let evidence = match high_water_mark {
+        None => serde_json::to_value(loss_regime)?,
+        Some(high_water_mark) => {
+            let mut blocking_policies = Vec::new();
+            if loss_deferred {
+                blocking_policies.push("loss_regime_confidence_floor");
+            }
+            if high_water_mark_deferred {
+                blocking_policies.push("daily_realized_pnl_high_water_mark");
+            }
+            serde_json::json!({
+                "evidence_version": "btc_entry_admission_v2",
+                "process_id": process_id,
+                "disposition": disposition,
+                "blocking_policies": blocking_policies,
+                "loss_regime_confidence_floor": loss_regime,
+                "daily_realized_pnl_high_water_mark": high_water_mark,
+            })
+        }
+    };
+    Ok(EntryAdmissionEvaluation {
+        disposition,
+        evidence,
+    })
+}
+
 fn btc_entry_order_metadata(
     strategy: &BtcStrategyConfig,
     intent: &super::strategy::ApprovedIntent,
@@ -702,6 +803,7 @@ fn btc_entry_order_metadata(
         "feature_schema_version": intent.feature_schema_version,
         "feature_snapshot_id": intent.feature_snapshot_id,
         "decision_id": decision_id,
+        "process_id": intent.process_id,
         "experiment_id": experiment_id,
         "outcome": intent.outcome,
         "expected_net_edge": intent.expected_net_edge,
@@ -895,6 +997,7 @@ fn build_snapshot(
     observed_at: DateTime<Utc>,
     inputs: &BtcPointInTimeInputs,
     target_size: Decimal,
+    feature_schema_version: &str,
 ) -> BtcFeatureSnapshot {
     let chainlink_open = inputs.chainlink_open.as_ref();
     let chainlink = inputs.chainlink_current.as_ref();
@@ -912,6 +1015,10 @@ fn build_snapshot(
     let chainlink_gap_bps = chainlink_open.zip(chainlink).and_then(|(open, current)| {
         ratio_return(current.price, open.price).map(|value| value * Decimal::from(10_000))
     });
+    let chainlink_return_5s = (feature_schema_version
+        == BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION)
+        .then(|| return_over(&inputs.chainlink_history, observed_at, 5))
+        .flatten();
     let latest_binance = binance.map(|tick| tick.price);
     let binance_return_1s = return_over(&inputs.binance_history, observed_at, 1);
     let binance_return_5s = return_over(&inputs.binance_history, observed_at, 5);
@@ -944,7 +1051,7 @@ fn build_snapshot(
         snapshot_id,
         process_id,
         observed_at,
-        feature_schema_version: super::strategy::BTC_FEATURE_SCHEMA_VERSION.to_string(),
+        feature_schema_version: feature_schema_version.to_string(),
         market_id: market.market_id.clone(),
         event_slug: market.event_slug.clone(),
         window_start: market.window_start,
@@ -959,6 +1066,7 @@ fn build_snapshot(
         chainlink_price: chainlink.map(|tick| tick.price),
         binance_price: latest_binance,
         chainlink_gap_bps,
+        chainlink_return_5s,
         binance_return_1s,
         binance_return_5s,
         binance_return_30s,
@@ -1164,13 +1272,26 @@ fn sha256_json<T: Serialize>(value: &T) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use rust_decimal_macros::dec;
 
     use crate::btc::{
+        admission::{
+            DailyRealizedPnlCredit, DailyRealizedPnlHighWaterMarkConfig,
+            DailyRealizedPnlHighWaterMarkState, LossRegimeConfidenceFloorConfig,
+            LossRegimeConfidenceFloorState, ProposedEntryExposure, UnsettledEntryExposure,
+            DAILY_REALIZED_PNL_HIGH_WATER_MARK_SCHEMA_VERSION,
+            LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION,
+        },
         strategy::{
             ApprovedIntent, BtcDecisionStrategyConfig, BtcDirectionalPredictionConfig,
             BtcStrategyConfig, BtcVolatilityContinuationConfig,
-            BTC_CHAINLINK_FAIR_VALUE_STRATEGY_FAMILY, BTC_FEATURE_SCHEMA_VERSION,
+            BTC_CHAINLINK_FAIR_VALUE_STRATEGY_FAMILY,
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION,
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_ID,
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_SHA256,
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_FAMILY,
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION, BTC_FEATURE_SCHEMA_VERSION,
             BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION,
             BTC_MARKET_ANCHORED_FAIR_VALUE_STRATEGY_FAMILY,
             BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID, BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256,
@@ -1273,6 +1394,48 @@ mod tests {
     }
 
     #[test]
+    fn order_metadata_attributes_chainlink_persistence_profile() {
+        let config = BtcStrategyConfig {
+            strategy_version: BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION.to_string(),
+            feature_schema_version: BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION
+                .to_string(),
+            decision_strategy: Some(
+                BtcDecisionStrategyConfig::ChainlinkPersistenceCalibratedFairValue {
+                    profile_id: BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_ID.to_string(),
+                    profile_sha256: BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_SHA256.to_string(),
+                },
+            ),
+            ..BtcStrategyConfig::default()
+        };
+        let metadata = btc_entry_order_metadata(
+            &config,
+            &metadata_intent(&config.strategy_version),
+            None,
+            Uuid::from_u128(204),
+            Uuid::from_u128(205),
+            dec!(0.03),
+        )
+        .unwrap();
+
+        assert_eq!(
+            metadata["strategy"],
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_FAMILY
+        );
+        assert_eq!(
+            metadata["strategy_version"],
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION
+        );
+        assert_eq!(
+            metadata["profile_id"],
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_ID
+        );
+        assert_eq!(
+            metadata["profile_sha256"],
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_SHA256
+        );
+    }
+
+    #[test]
     fn order_metadata_includes_directional_prediction_evidence() {
         let config = BtcStrategyConfig {
             strategy_version: BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION
@@ -1350,6 +1513,84 @@ mod tests {
     }
 
     #[test]
+    fn absent_high_water_mark_preserves_legacy_admission_evidence_shape() {
+        let floor = LossRegimeConfidenceFloorConfig {
+            schema_version: LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION.to_string(),
+            activation_consecutive_candidate_losses: 2,
+            min_conservative_probability: dec!(0.50),
+            release_consecutive_candidate_wins: 1,
+        };
+        let loss = LossRegimeConfidenceFloorState::default()
+            .evaluate(&floor, dec!(0.60))
+            .unwrap();
+        let expected = serde_json::to_value(&loss).unwrap();
+        let combined =
+            combine_entry_admission_evaluations(Uuid::from_u128(300), loss, None).unwrap();
+
+        assert_eq!(combined.disposition, AdmissionDisposition::Allow);
+        assert_eq!(combined.evidence, expected);
+    }
+
+    #[test]
+    fn high_water_mark_defer_wins_and_keeps_both_policy_evaluations() {
+        let floor = LossRegimeConfidenceFloorConfig {
+            schema_version: LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION.to_string(),
+            activation_consecutive_candidate_losses: 2,
+            min_conservative_probability: dec!(0.50),
+            release_consecutive_candidate_wins: 1,
+        };
+        let loss = LossRegimeConfidenceFloorState::default()
+            .evaluate(&floor, dec!(0.60))
+            .unwrap();
+        let process_id = Uuid::from_u128(301);
+        let as_of = Utc.with_ymd_and_hms(2026, 7, 20, 12, 0, 0).unwrap();
+        let state = DailyRealizedPnlHighWaterMarkState::from_evidence(
+            process_id,
+            as_of,
+            vec![DailyRealizedPnlCredit {
+                settlement_id: Uuid::from_u128(302),
+                order_id: "credited-order".to_string(),
+                credited_at: as_of - chrono::Duration::minutes(1),
+                net_pnl_usd: dec!(6),
+            }],
+            vec![UnsettledEntryExposure {
+                order_id: "unsettled-order".to_string(),
+                fill_ids: vec![Uuid::from_u128(303)],
+                entry_debit_usd: dec!(1),
+            }],
+        )
+        .unwrap();
+        let proposed = ProposedEntryExposure::new(dec!(5), dec!(1), Decimal::ZERO).unwrap();
+        let high_water_mark = state
+            .evaluate(
+                &DailyRealizedPnlHighWaterMarkConfig {
+                    schema_version: DAILY_REALIZED_PNL_HIGH_WATER_MARK_SCHEMA_VERSION.to_string(),
+                    activation_realized_pnl_usd: dec!(5),
+                    max_drawdown_from_high_water_mark_usd: dec!(5),
+                },
+                &proposed,
+            )
+            .unwrap();
+        let combined =
+            combine_entry_admission_evaluations(process_id, loss, Some(high_water_mark)).unwrap();
+
+        assert_eq!(combined.disposition, AdmissionDisposition::Defer);
+        assert_eq!(combined.evidence["process_id"], process_id.to_string());
+        assert_eq!(
+            combined.evidence["blocking_policies"],
+            serde_json::json!(["daily_realized_pnl_high_water_mark"])
+        );
+        assert!(combined
+            .evidence
+            .get("loss_regime_confidence_floor")
+            .is_some());
+        assert!(combined
+            .evidence
+            .get("daily_realized_pnl_high_water_mark")
+            .is_some());
+    }
+
+    #[test]
     fn realized_volatility_is_positive_for_moving_prices() {
         let start = Utc::now();
         let ticks = [dec!(100), dec!(101), dec!(99)]
@@ -1371,6 +1612,117 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(realized_volatility(&ticks).unwrap() > Decimal::ZERO);
+    }
+
+    #[test]
+    fn persistence_feature_is_additive_and_v3_only() {
+        let window_start = Utc.with_ymd_and_hms(2026, 7, 20, 12, 0, 0).unwrap();
+        let observed_at = window_start + chrono::Duration::seconds(180);
+        let tick = |index: u128,
+                    source: super::super::types::ReferencePriceSource,
+                    price: Decimal,
+                    at: DateTime<Utc>| ReferencePriceTick {
+            tick_id: Uuid::from_u128(index),
+            dedup_key: index.to_string(),
+            source,
+            symbol: "btcusd".to_string(),
+            price,
+            source_timestamp: at,
+            envelope_timestamp: None,
+            received_at: at,
+            connection_id: Uuid::from_u128(400),
+            ingest_sequence: index as u64,
+            source_event_id: None,
+            raw_payload: serde_json::json!({}),
+        };
+        let chainlink_open = tick(
+            401,
+            super::super::types::ReferencePriceSource::RtdsChainlink,
+            dec!(100),
+            window_start,
+        );
+        let chainlink_prior = tick(
+            402,
+            super::super::types::ReferencePriceSource::RtdsChainlink,
+            dec!(100),
+            observed_at - chrono::Duration::seconds(6),
+        );
+        let chainlink_current = tick(
+            403,
+            super::super::types::ReferencePriceSource::RtdsChainlink,
+            dec!(101),
+            observed_at,
+        );
+        let binance_prior = tick(
+            404,
+            super::super::types::ReferencePriceSource::DirectBinance,
+            dec!(100),
+            observed_at - chrono::Duration::seconds(31),
+        );
+        let binance_current = tick(
+            405,
+            super::super::types::ReferencePriceSource::DirectBinance,
+            dec!(101),
+            observed_at,
+        );
+        let inputs = BtcPointInTimeInputs {
+            chainlink_open: Some(chainlink_open),
+            chainlink_current: Some(chainlink_current.clone()),
+            chainlink_history: vec![chainlink_prior, chainlink_current],
+            binance_history: vec![binance_prior, binance_current],
+            up_book: None,
+            down_book: None,
+            fee_rate: None,
+            fee_observed_at: None,
+        };
+        let market = BtcIntervalMarket {
+            event_id: "event".to_string(),
+            event_slug: "btc-updown-5m-1784548800".to_string(),
+            series_slug: "btc-up-or-down-5m".to_string(),
+            market_id: "market".to_string(),
+            condition_id: "condition".to_string(),
+            window_start,
+            window_end: window_start + chrono::Duration::seconds(300),
+            up_token_id: "up".to_string(),
+            down_token_id: "down".to_string(),
+            tick_size: dec!(0.01),
+            minimum_order_size: Some(dec!(1)),
+            resolution_source: "chainlink".to_string(),
+            active: true,
+            closed: false,
+            accepting_orders: true,
+            fees_enabled: true,
+            fee_schedule: serde_json::json!({}),
+            raw_payload: serde_json::json!({}),
+        };
+
+        let v2 = build_snapshot(
+            Uuid::from_u128(406),
+            &market,
+            observed_at,
+            &inputs,
+            dec!(5),
+            super::super::strategy::BTC_FEATURE_SCHEMA_VERSION,
+        );
+        assert_eq!(v2.chainlink_return_5s, None);
+        assert!(serde_json::to_value(&v2)
+            .unwrap()
+            .get("chainlink_return_5s")
+            .is_none());
+
+        let v3 = build_snapshot(
+            Uuid::from_u128(407),
+            &market,
+            observed_at,
+            &inputs,
+            dec!(5),
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION,
+        );
+        assert_eq!(v3.chainlink_return_5s, Some(dec!(0.01)));
+        assert_eq!(
+            v3.feature_schema_version,
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION
+        );
     }
 
     #[test]
