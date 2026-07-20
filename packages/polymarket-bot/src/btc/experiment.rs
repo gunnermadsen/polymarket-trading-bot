@@ -1,6 +1,6 @@
 use std::{collections::HashSet, sync::Arc};
 
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rust_decimal::{prelude::ToPrimitive, Decimal};
@@ -30,7 +30,8 @@ use super::{
     strategy::{
         BtcDecision, BtcDecisionAction, BtcFeatureLineage, BtcFeatureSnapshot,
         BtcInputWindowLineage, BtcOutcomeBookFeatures, BtcRejectReason, BtcStrategyConfig,
-        DeterministicBtcStrategy, BTC_FEATURE_LINEAGE_VERSION,
+        BtcStrategyPrediction, DeterministicBtcStrategy, BTC_FEATURE_LINEAGE_VERSION,
+        BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_FAMILY,
     },
     types::{
         BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, OrderbookCheckpoint, ReferencePriceTick,
@@ -84,6 +85,10 @@ impl BtcPaperExperimentRunner {
         }
         if !config.frozen_process_config.is_object() {
             anyhow::bail!("BTC paper experiment frozen process config must be a JSON object");
+        }
+        config.strategy.validate()?;
+        if config.strategy.attribution().is_none() {
+            anyhow::bail!("BTC paper experiment strategy attribution is invalid");
         }
         if let Some(entry_admission) = config.entry_admission.as_ref() {
             entry_admission.validate()?;
@@ -556,6 +561,14 @@ impl BtcPaperExperimentRunner {
             &Uuid::NAMESPACE_URL,
             format!("btc-paper-plan:{}", intent.intent_id).as_bytes(),
         );
+        let order_metadata = btc_entry_order_metadata(
+            &self.config.strategy,
+            &intent,
+            decision.prediction.as_ref(),
+            decision.decision_id,
+            self.config.experiment_id,
+            snapshot.fee_rate.unwrap_or_default(),
+        )?;
         let request = OrderRequest {
             client_order_id: Uuid::new_v5(
                 &Uuid::NAMESPACE_URL,
@@ -569,18 +582,7 @@ impl BtcPaperExperimentRunner {
             price: intent.limit_price,
             size: intent.size,
             signal_id: None,
-            metadata: serde_json::json!({
-                "execution_intent": "entry",
-                "strategy": "btc_5m_chainlink_fair_value",
-                "strategy_version": intent.strategy_version,
-                "feature_schema_version": intent.feature_schema_version,
-                "feature_snapshot_id": intent.feature_snapshot_id,
-                "decision_id": decision.decision_id,
-                "experiment_id": self.config.experiment_id,
-                "outcome": intent.outcome,
-                "expected_net_edge": intent.expected_net_edge,
-                PAPER_DYNAMIC_FEE_RATE_METADATA_KEY: snapshot.fee_rate.unwrap_or_default(),
-            }),
+            metadata: order_metadata,
         };
         self.repository
             .insert_strategy_decision(
@@ -680,6 +682,55 @@ impl BtcPaperExperimentRunner {
         }
         Ok(())
     }
+}
+
+fn btc_entry_order_metadata(
+    strategy: &BtcStrategyConfig,
+    intent: &super::strategy::ApprovedIntent,
+    prediction: Option<&BtcStrategyPrediction>,
+    decision_id: Uuid,
+    experiment_id: Uuid,
+    fee_rate: Decimal,
+) -> Result<serde_json::Value> {
+    let attribution = strategy
+        .attribution()
+        .context("BTC paper experiment strategy attribution became invalid")?;
+    let mut metadata = serde_json::json!({
+        "execution_intent": "entry",
+        "strategy": attribution.family,
+        "strategy_version": intent.strategy_version,
+        "feature_schema_version": intent.feature_schema_version,
+        "feature_snapshot_id": intent.feature_snapshot_id,
+        "decision_id": decision_id,
+        "experiment_id": experiment_id,
+        "outcome": intent.outcome,
+        "expected_net_edge": intent.expected_net_edge,
+        PAPER_DYNAMIC_FEE_RATE_METADATA_KEY: fee_rate,
+    });
+    if let (Some(profile_id), Some(profile_sha256)) =
+        (attribution.profile_id, attribution.profile_sha256)
+    {
+        let metadata = metadata
+            .as_object_mut()
+            .context("BTC order strategy metadata must be an object")?;
+        metadata.insert("profile_id".to_string(), profile_id.into());
+        metadata.insert("profile_sha256".to_string(), profile_sha256.into());
+    }
+    if let Some(prediction) = prediction {
+        let BtcStrategyPrediction::DirectionalPrediction { outcome, .. } = prediction else {
+            anyhow::bail!("BTC entry order cannot carry a no-prediction result");
+        };
+        ensure!(
+            attribution.family == BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_FAMILY
+                && *outcome == intent.outcome,
+            "BTC directional prediction attribution does not match its entry intent"
+        );
+        let metadata = metadata
+            .as_object_mut()
+            .context("BTC order strategy metadata must be an object")?;
+        metadata.insert("prediction".to_string(), serde_json::to_value(prediction)?);
+    }
+    Ok(metadata)
 }
 
 fn selected_conservative_probability(decision: &BtcDecision) -> Option<Decimal> {
@@ -1116,9 +1167,173 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use crate::btc::{
-        strategy::ApprovedIntent,
+        strategy::{
+            ApprovedIntent, BtcDecisionStrategyConfig, BtcDirectionalPredictionConfig,
+            BtcStrategyConfig, BtcVolatilityContinuationConfig,
+            BTC_CHAINLINK_FAIR_VALUE_STRATEGY_FAMILY, BTC_FEATURE_SCHEMA_VERSION,
+            BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION,
+            BTC_MARKET_ANCHORED_FAIR_VALUE_STRATEGY_FAMILY,
+            BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID, BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256,
+            BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION,
+            BTC_VOLATILITY_CONTINUATION_STRATEGY_FAMILY,
+            BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION,
+        },
         types::{BookReadiness, Readiness},
     };
+
+    fn metadata_intent(strategy_version: &str) -> ApprovedIntent {
+        ApprovedIntent {
+            intent_id: Uuid::from_u128(201),
+            process_id: Uuid::from_u128(202),
+            feature_snapshot_id: Uuid::from_u128(203),
+            market_id: "market".to_string(),
+            window_start: Utc::now(),
+            outcome: BtcOutcome::Up,
+            token_id: "up".to_string(),
+            limit_price: dec!(0.50),
+            size: dec!(5),
+            expected_net_edge: dec!(0.10),
+            expected_net_edge_per_share: dec!(0.02),
+            strategy_version: strategy_version.to_string(),
+            feature_schema_version: BTC_FEATURE_SCHEMA_VERSION.to_string(),
+        }
+    }
+
+    #[test]
+    fn order_metadata_attributes_each_strategy_and_only_candidate_profile() {
+        let chainlink_config = BtcStrategyConfig::default();
+        let chainlink = btc_entry_order_metadata(
+            &chainlink_config,
+            &metadata_intent(&chainlink_config.strategy_version),
+            None,
+            Uuid::from_u128(204),
+            Uuid::from_u128(205),
+            dec!(0.03),
+        )
+        .unwrap();
+        assert_eq!(
+            chainlink["strategy"],
+            BTC_CHAINLINK_FAIR_VALUE_STRATEGY_FAMILY
+        );
+        assert!(chainlink.get("profile_id").is_none());
+        assert!(chainlink.get("profile_sha256").is_none());
+        assert!(chainlink.get("prediction").is_none());
+
+        let continuation_config = BtcStrategyConfig {
+            strategy_version: BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION.to_string(),
+            volatility_continuation: Some(BtcVolatilityContinuationConfig::default()),
+            ..BtcStrategyConfig::default()
+        };
+        let continuation = btc_entry_order_metadata(
+            &continuation_config,
+            &metadata_intent(&continuation_config.strategy_version),
+            None,
+            Uuid::from_u128(204),
+            Uuid::from_u128(205),
+            dec!(0.03),
+        )
+        .unwrap();
+        assert_eq!(
+            continuation["strategy"],
+            BTC_VOLATILITY_CONTINUATION_STRATEGY_FAMILY
+        );
+        assert!(continuation.get("profile_id").is_none());
+        assert!(continuation.get("prediction").is_none());
+
+        let candidate_config = BtcStrategyConfig {
+            strategy_version: BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION.to_string(),
+            decision_strategy: Some(BtcDecisionStrategyConfig::MarketAnchoredFairValue {
+                profile_id: BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID.to_string(),
+                profile_sha256: BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256.to_string(),
+            }),
+            ..BtcStrategyConfig::default()
+        };
+        let candidate = btc_entry_order_metadata(
+            &candidate_config,
+            &metadata_intent(&candidate_config.strategy_version),
+            None,
+            Uuid::from_u128(204),
+            Uuid::from_u128(205),
+            dec!(0.03),
+        )
+        .unwrap();
+        assert_eq!(
+            candidate["strategy"],
+            BTC_MARKET_ANCHORED_FAIR_VALUE_STRATEGY_FAMILY
+        );
+        assert_eq!(
+            candidate["profile_id"],
+            BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID
+        );
+        assert_eq!(
+            candidate["profile_sha256"],
+            BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256
+        );
+        assert!(candidate.get("prediction").is_none());
+    }
+
+    #[test]
+    fn order_metadata_includes_directional_prediction_evidence() {
+        let config = BtcStrategyConfig {
+            strategy_version: BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION
+                .to_string(),
+            decision_strategy: Some(
+                BtcDecisionStrategyConfig::MarketAnchoredDirectionalPrediction {
+                    profile_id: BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID.to_string(),
+                    profile_sha256: BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256.to_string(),
+                    config: BtcDirectionalPredictionConfig::default(),
+                },
+            ),
+            ..BtcStrategyConfig::default()
+        };
+        let prediction = BtcStrategyPrediction::DirectionalPrediction {
+            outcome: BtcOutcome::Up,
+            probability: dec!(0.82),
+            conservative_probability: dec!(0.78),
+            minimum_conservative_probability: dec!(0.75),
+            probability_uncertainty: dec!(0.04),
+            executable_price: Some(dec!(0.72)),
+            direct_taker_fee_per_share: Some(dec!(0.01)),
+            direct_net_edge_per_share: Some(dec!(0.09)),
+        };
+
+        let metadata = btc_entry_order_metadata(
+            &config,
+            &metadata_intent(&config.strategy_version),
+            Some(&prediction),
+            Uuid::from_u128(204),
+            Uuid::from_u128(205),
+            dec!(0.03),
+        )
+        .unwrap();
+
+        assert_eq!(
+            metadata["prediction"],
+            serde_json::json!({
+                "status": "directional_prediction",
+                "outcome": "up",
+                "probability": "0.82",
+                "conservative_probability": "0.78",
+                "minimum_conservative_probability": "0.75",
+                "probability_uncertainty": "0.04",
+                "executable_price": "0.72",
+                "direct_taker_fee_per_share": "0.01",
+                "direct_net_edge_per_share": "0.09",
+            })
+        );
+        assert_eq!(
+            metadata["strategy"],
+            BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_FAMILY
+        );
+        assert_eq!(
+            metadata["strategy_version"],
+            BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION
+        );
+        assert_eq!(
+            metadata["profile_id"],
+            BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID
+        );
+    }
 
     #[test]
     fn paper_capital_reconciliation_is_due_at_five_second_boundaries() {
@@ -1205,6 +1420,16 @@ mod tests {
     #[test]
     fn runtime_not_ready_revokes_an_otherwise_approved_intent() {
         let now = Utc::now();
+        let prediction = BtcStrategyPrediction::DirectionalPrediction {
+            outcome: BtcOutcome::Up,
+            probability: dec!(0.82),
+            conservative_probability: dec!(0.78),
+            minimum_conservative_probability: dec!(0.75),
+            probability_uncertainty: dec!(0.04),
+            executable_price: Some(dec!(0.72)),
+            direct_taker_fee_per_share: Some(dec!(0.01)),
+            direct_net_edge_per_share: Some(dec!(0.09)),
+        };
         let mut decision = BtcDecision {
             decision_id: Uuid::new_v4(),
             process_id: Uuid::new_v4(),
@@ -1231,6 +1456,7 @@ mod tests {
                 feature_schema_version: super::super::strategy::BTC_FEATURE_SCHEMA_VERSION
                     .to_string(),
             }),
+            prediction: Some(prediction.clone()),
         };
         enforce_runtime_readiness(&mut decision, &Readiness::default());
         assert_eq!(decision.action, BtcDecisionAction::NoTrade);
@@ -1239,6 +1465,7 @@ mod tests {
             Some(BtcRejectReason::RuntimeNotReady)
         );
         assert!(decision.approved_intent.is_none());
+        assert_eq!(decision.prediction, Some(prediction));
     }
 
     #[test]
