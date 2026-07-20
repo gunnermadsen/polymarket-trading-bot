@@ -2447,6 +2447,131 @@
         "x": 0,
         "y": 21
       },
+      "id": 18,
+      "panels": [],
+      "title": "Process Decision Accuracy",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "description": "One bar per filled, officially resolved paper entry for the selected process. Right/green means UP; left/red means DOWN. Bar length is the stored forecast probability. A ✓ label means the official outcome matched the prediction; ✕ means it did not. This uses the durable process ID and official market outcome only—never an experiment.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "axisCenteredZero": true,
+            "axisColorMode": "text",
+            "axisLabel": "DOWN ← confidence → UP",
+            "axisPlacement": "bottom",
+            "fillOpacity": 100,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 1,
+          "mappings": [],
+          "max": 1,
+          "min": -1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 16,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "id": 19,
+      "options": {
+        "barRadius": 0,
+        "barWidth": 0.9,
+        "fullHighlight": false,
+        "groupWidth": 0.7,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "orientation": "horizontal",
+        "showValue": "always",
+        "stacking": "none",
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        },
+        "xTickLabelRotation": 0
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH resolved_decisions AS MATERIALIZED (\n  SELECT\n    d.decision_at,\n    d.decision_id,\n    d.outcome AS forecast_outcome,\n    d.fair_probability,\n    m.official_outcome\n  FROM polymarket.btc_strategy_decisions d\n  JOIN polymarket.btc_interval_markets m\n    ON m.market_id=d.market_id\n  WHERE d.process_id=(${process_id:sqlstring})::uuid\n    AND d.execution_mode='paper'\n    AND d.action='buy'\n    AND d.status='filled'\n    AND d.outcome IN ('up','down')\n    AND d.fair_probability BETWEEN 0 AND 1\n    AND d.decision_at BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n    AND m.official_outcome IN ('up','down')\n    AND m.official_resolution_received_at IS NOT NULL\n  ORDER BY d.decision_at DESC\n  LIMIT 20\n)\nSELECT\n  CASE WHEN forecast_outcome=official_outcome THEN '✅ ' ELSE '❌ ' END\n    ||to_char(decision_at AT TIME ZONE 'UTC','MM-DD HH24:MI')||' UTC '\n    ||upper(forecast_outcome)||' '\n    ||to_char(fair_probability*100,'FM990.0')||'% → '\n    ||upper(official_outcome) AS \"Decision\",\n  (CASE WHEN forecast_outcome='up' THEN fair_probability ELSE -fair_probability END)::double precision\n    AS \"Forecast confidence\"\nFROM resolved_decisions\nORDER BY decision_at DESC;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 20
+          }
+        }
+      ],
+      "title": "Resolved Entry Forecasts vs Official Outcome",
+      "type": "barchart"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 38
+      },
       "id": 15,
       "panels": [],
       "title": "BTC 5m Lead/Lag Entry Diagnostics",
@@ -2669,7 +2794,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 22
+        "y": 39
       },
       "id": 16,
       "options": {
@@ -2846,7 +2971,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 34
+        "y": 51
       },
       "id": 17,
       "options": {
@@ -2908,8 +3033,8 @@
       {
         "current": {
           "selected": true,
-          "text": "BTC 5m Chainlink fair value paper concurrent [d665b88e]",
-          "value": "d665b88e-36b8-4910-8d8d-e93238ef993c"
+          "text": "BTC 5m Market Anchored Directional Prediction paper min entry 0.30 research [78645745]",
+          "value": "78645745-bb84-4cc5-a3a5-8dbb84400a20"
         },
         "datasource": {
           "type": "grafana-postgresql-datasource",
