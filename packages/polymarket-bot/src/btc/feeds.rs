@@ -967,6 +967,13 @@ impl RealtimeState {
                 }
                 Some(book)
                     if book
+                        .source_timestamp
+                        .is_some_and(|timestamp| now - timestamp > max_book_age) =>
+                {
+                    reasons.push(format!("stale_book:{token_id}"))
+                }
+                Some(book)
+                    if book
                         .received_at
                         .map_or(true, |timestamp| now - timestamp > max_book_age) =>
                 {
@@ -1987,6 +1994,16 @@ mod tests {
                 .readiness(now, Duration::seconds(2), Duration::seconds(2))
                 .ready
         );
+
+        let up_book = state.books.get_mut("up").unwrap();
+        up_book.source_timestamp = Some(now - Duration::milliseconds(2_500));
+        up_book.received_at = Some(now - Duration::milliseconds(1));
+        let stale_source = state.readiness(now, Duration::seconds(2), Duration::seconds(2));
+        assert!(!stale_source.ready);
+        assert!(stale_source
+            .reasons
+            .iter()
+            .any(|reason| reason == "stale_book:up"));
     }
 
     #[test]
