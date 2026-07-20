@@ -332,6 +332,22 @@ pub(super) fn estimate(
         confirmation_deficiency_score: Some(confirmation_deficiency),
         evidence_reliability: Some(evidence_reliability),
         uncalibrated_up_probability: Some(uncalibrated_up_probability),
+        path_recent_log_return_30s: None,
+        path_prior_log_gap_30s: None,
+        path_mature_gap_support: None,
+        path_fresh_aligned_impulse: None,
+        path_fresh_impulse_concentration: None,
+        path_efficiency_score: None,
+        path_choppiness_score: None,
+        path_volatility_expansion_score: None,
+        projected_terminal_gap: None,
+        open_crossing_score: None,
+        pre_path_up_probability: None,
+        path_probability_delta: None,
+        path_uncertainty_increment: None,
+        estimator_id: None,
+        estimator_profile_id: None,
+        estimator_profile_sha256: None,
     })
 }
 

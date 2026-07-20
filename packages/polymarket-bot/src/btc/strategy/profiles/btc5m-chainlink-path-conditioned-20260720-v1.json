@@ -1,0 +1,83 @@
+{
+  "profile_id": "btc5m-chainlink-path-conditioned-20260720-v1",
+  "status": "research_only",
+  "feature_schema_version": "btc_5m_features_v4",
+  "estimator": "chainlink_path_conditioned_fair_value_v1",
+  "parameter_source": "fixed_research_heuristic_path_conditioning_hypothesis_20260720",
+  "probability_floor": "0.01",
+  "evidence_input_clip": "3.0",
+  "external_evidence_parameters": {
+    "volatility_floor_per_sqrt_second": "0.00005",
+    "basis_lead_weight": "0.25",
+    "momentum_1s_weight": "0.05",
+    "momentum_5s_weight": "0.10",
+    "momentum_30s_weight": "0.10",
+    "max_lead_sigma_fraction": "0.25"
+  },
+  "reliability_parameters": {
+    "intercept": "1.25",
+    "confirmation_sufficiency_strength": "1.00",
+    "confirmed_strength_weight": "1.00",
+    "unconfirmed_strength_penalty": "1.50",
+    "fading_penalty": "1.00",
+    "opposition_penalty": "1.25",
+    "volatility_reference_per_sqrt_second": "0.00012",
+    "volatility_excess_penalty": "0.30",
+    "late_window_reference_seconds": "120",
+    "late_window_penalty": "0.15"
+  },
+  "recent_evidence_parameters": {
+    "persistence_weight": "0.10",
+    "confirmation_weight": "0.15",
+    "confirmed_conflict_weight": "0.05",
+    "confirmation_deficiency_weight": "0.10",
+    "max_abs_z_adjustment": "0.25"
+  },
+  "path_parameters": {
+    "recent_path_lookback_seconds": 30,
+    "short_reversal_lookback_seconds": 15,
+    "max_anchor_lag_ms": 5000,
+    "minimum_path_tick_count": 2,
+    "volatility_scaled_gap_floor_sigma_fraction": "0.10",
+    "mature_gap_weight": "1.00",
+    "fresh_aligned_impulse_weight": "0.35",
+    "opposing_impulse_weight": "1.25",
+    "minimum_path_gap_scale": "0.65",
+    "fresh_impulse_reliability_penalty": "0.75",
+    "choppiness_reliability_penalty": "0.50",
+    "volatility_expansion_reliability_penalty": "0.25",
+    "max_volatility_expansion": "3.0",
+    "max_abs_crossing_score": "3.0"
+  },
+  "calibration": "fixed_logit_shrink_research_v1",
+  "calibration_parameters": {
+    "intercept": "0",
+    "slope": "0.85",
+    "max_abs_logit": "5.0"
+  },
+  "uncertainty_policy": "existing_btc_v1_plus_reliability_and_path_uncertainty_research_heuristic",
+  "uncertainty_parameters": {
+    "base_probability_uncertainty": "0.015",
+    "basis_uncertainty_weight": "1",
+    "feed_age_uncertainty_per_second": "0.002",
+    "max_baseline_probability_uncertainty": "0.10",
+    "reliability_uncertainty_weight": "0.04",
+    "volatility_excess_uncertainty_weight": "0.01",
+    "late_window_uncertainty_weight": "0.01",
+    "max_pre_path_probability_uncertainty": "0.15",
+    "fresh_impulse_uncertainty_weight": "0.03",
+    "choppiness_uncertainty_weight": "0.02",
+    "volatility_expansion_uncertainty_weight": "0.01",
+    "max_total_probability_uncertainty": "0.18"
+  },
+  "research_evidence": {
+    "base_profile_id": "btc5m-chainlink-persistence-calibrated-20260720-v1",
+    "base_profile_sha256": "238e7ed1b3676a3da61be3b3c8f9d48d7d05cad92e158b921846b9bfe495c1a3",
+    "source_process_id": "39183e9d-6af4-4671-b985-e6d1284ba28d",
+    "analysis_cutoff": "2026-07-19T22:55:00Z",
+    "target_failure_mode": "overconfident_fresh_impulse_and_late_reversal_predictions",
+    "parameter_claim": "fixed_research_heuristic_not_fitted",
+    "validation_requirement": "prospective_process_id_scoped_ab",
+    "calibration_claim": "none_forward_validation_required"
+  }
+}
