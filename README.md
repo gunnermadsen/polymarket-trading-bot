@@ -188,6 +188,10 @@ after strategy evaluation and remain independent downstream gates.
 The supported selectors are:
 
 - `chainlink_fair_value`, the existing two-sided Chainlink estimator.
+- `chainlink_persistence_calibrated_fair_value`, an additive, profile-pinned
+  research estimator that preserves the Chainlink fair-value edge contract and
+  adjusts probability and uncertainty using recent Chainlink persistence and
+  same-direction Binance confirmation.
 - `volatility_continuation`, the existing one-sided continuation strategy with
   its configuration nested under the selector's `config` field.
 - `market_anchored_fair_value`, the two-sided research estimator that starts
@@ -231,6 +235,14 @@ content hash. A profile mismatch fails process validation. Its current
 or production-calibrated model: the available retrospective evidence covers
 only about 4.3 days and roughly 694 independently resolved markets. The initial
 live use is therefore paper research.
+
+The Chainlink persistence candidate is likewise compiled and selected by both
+profile ID and content hash. Its `research_only` profile is a fixed heuristic,
+not a fitted calibration claim. It preserves the existing Chainlink estimator's
+inputs, uncertainty safeguards, reserve-aware edge comparison, and intent
+builder, while adding a five-second Chainlink return to the v3 feature schema.
+Existing Chainlink, volatility, and market-anchored selectors retain their
+compiled identities and behavior.
 
 <!-- btc-5m-process-v3:start -->
 ```json
@@ -306,6 +318,56 @@ approved entries below the conservative probability floor are recorded as
 continue through the existing paper execution path. The floor releases after
 the configured number of consecutive candidate wins. Admission evidence is
 stored with each evaluated buy decision.
+
+The optional `daily_realized_pnl_high_water_mark_v1` admission policy protects
+a configurable portion of positive paper PnL without changing probability
+estimation. Its state is owned and scoped canonically by `process_id`; an
+experiment ID is not used to select, partition, or link policy evidence. For
+each UTC day, the policy reconstructs credited realized PnL and its running
+high-water mark from existing settlement records. It also reserves the full
+entry debit of unresolved paper fills. Once the running peak reaches the
+activation amount, the protected floor is `peak - max_drawdown`. A proposed
+entry is allowed only when current realized PnL minus unresolved entry debit
+minus the proposed limit notional and dynamic fee remains at or above that
+floor. Equality is allowed. At a new UTC day the state begins a new daily
+period, and before activation the policy does not impose a floor.
+
+The HWM policy composes with the existing loss-regime confidence floor inside
+the existing entry-admission path. Both policies are evaluated and persisted in
+decision evidence; a defer from either policy prevents the entry. No new
+service, worker, table, or migration is introduced.
+
+```json
+"entry_admission": {
+  "loss_regime_confidence_floor": {
+    "schema_version": "loss_regime_confidence_floor_v1",
+    "activation_consecutive_candidate_losses": 2,
+    "min_conservative_probability": "0.50",
+    "release_consecutive_candidate_wins": 1
+  },
+  "daily_realized_pnl_high_water_mark": {
+    "schema_version": "daily_realized_pnl_high_water_mark_v1",
+    "activation_realized_pnl_usd": "5",
+    "max_drawdown_from_high_water_mark_usd": "5"
+  }
+}
+```
+
+Two paper-only A/B definitions are provided in `infra/processes`. Both retain
+the control process's min-entry `0.30` strategy, execution, runtime, paper
+venue, stress-preview, and loss-regime-floor settings. They differ only by the
+HWM block and stable process identity:
+
+- `btc-5m-chainlink-persistence-calibrated-paper-min-entry-030-floor.json`
+  selects the persistence-calibrated strategy without HWM.
+- `btc-5m-chainlink-persistence-calibrated-paper-min-entry-030-floor-hwm-v1e2.json`
+  selects the same strategy with HWM v1 second-edition activation `$5` and
+  maximum drawdown `$5`.
+
+The existing process `8958246a-3d62-4c75-ab73-019971e0cc00` remains the
+unchanged control. The two candidate definitions are additive and are created
+inactive; use the standard stable-key upsert, start-preview, and explicit start
+endpoints to run them.
 
 Create the definition through the stable-key API, preview the immutable run,
 then start it explicitly:
