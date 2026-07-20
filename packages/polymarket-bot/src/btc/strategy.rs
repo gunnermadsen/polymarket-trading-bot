@@ -13,6 +13,7 @@ mod market_anchored;
 pub const BTC_FEATURE_SCHEMA_VERSION: &str = "btc_5m_features_v2";
 pub const BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION: &str =
     chainlink_persistence_calibrated::FEATURE_SCHEMA_VERSION;
+pub const BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION: &str = "btc_5m_features_v4";
 pub const BTC_STRATEGY_VERSION: &str = "btc_5m_chainlink_fair_value_v1";
 pub const BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION: &str =
     chainlink_persistence_calibrated::STRATEGY_VERSION;
@@ -28,6 +29,8 @@ pub const BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_ID: &str =
 pub const BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_SHA256: &str =
     chainlink_persistence_calibrated::PROFILE_SHA256;
 pub const BTC_FEATURE_LINEAGE_VERSION: &str = "btc_5m_feature_lineage_v2";
+pub const BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_LINEAGE_VERSION: &str =
+    "btc_5m_feature_lineage_v3";
 pub const BTC_CHAINLINK_FAIR_VALUE_STRATEGY_FAMILY: &str = "btc_5m_chainlink_fair_value";
 pub const BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_FAMILY: &str =
     "btc_5m_chainlink_persistence_calibrated_fair_value";
@@ -262,6 +265,26 @@ pub struct BtcFeatureLineage {
     pub chainlink_open_received_at: Option<DateTime<Utc>>,
     pub chainlink_source_timestamp: Option<DateTime<Utc>>,
     pub chainlink_received_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_15s_tick_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_15s_source_timestamp: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_15s_received_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_15s_ingest_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_15s_effective_lookback_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_30s_tick_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_30s_source_timestamp: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_30s_received_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_30s_ingest_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_30s_effective_lookback_ms: Option<i64>,
     pub binance_source_timestamp: Option<DateTime<Utc>>,
     pub binance_received_at: Option<DateTime<Utc>>,
     pub chainlink_ingest_sequence: Option<u64>,
@@ -321,6 +344,20 @@ pub struct BtcFeatureSnapshot {
     pub chainlink_gap_bps: Option<Decimal>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chainlink_return_5s: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_return_15s: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_return_30s: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_path_efficiency_30s: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_path_tick_count_30s: Option<usize>,
+    /// Chainlink realized log-return volatility measured per square-root second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_realized_volatility_5s: Option<Decimal>,
+    /// Chainlink realized log-return volatility measured per square-root second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_realized_volatility_30s: Option<Decimal>,
     pub binance_return_1s: Option<Decimal>,
     pub binance_return_5s: Option<Decimal>,
     pub binance_return_30s: Option<Decimal>,
@@ -1966,6 +2003,12 @@ mod tests {
             binance_price: Some(dec!(100090)),
             chainlink_gap_bps: Some(dec!(8)),
             chainlink_return_5s: None,
+            chainlink_return_15s: None,
+            chainlink_return_30s: None,
+            chainlink_path_efficiency_30s: None,
+            chainlink_path_tick_count_30s: None,
+            chainlink_realized_volatility_5s: None,
+            chainlink_realized_volatility_30s: None,
             binance_return_1s: Some(dec!(0.00005)),
             binance_return_5s: Some(dec!(0.00010)),
             binance_return_30s: Some(dec!(0.00020)),
@@ -1992,6 +2035,16 @@ mod tests {
                 chainlink_open_received_at: Some(window_start),
                 chainlink_source_timestamp: Some(source_at),
                 chainlink_received_at: Some(source_at),
+                chainlink_anchor_15s_tick_id: None,
+                chainlink_anchor_15s_source_timestamp: None,
+                chainlink_anchor_15s_received_at: None,
+                chainlink_anchor_15s_ingest_sequence: None,
+                chainlink_anchor_15s_effective_lookback_ms: None,
+                chainlink_anchor_30s_tick_id: None,
+                chainlink_anchor_30s_source_timestamp: None,
+                chainlink_anchor_30s_received_at: None,
+                chainlink_anchor_30s_ingest_sequence: None,
+                chainlink_anchor_30s_effective_lookback_ms: None,
                 binance_source_timestamp: Some(source_at),
                 binance_received_at: Some(source_at),
                 chainlink_ingest_sequence: Some(10),
