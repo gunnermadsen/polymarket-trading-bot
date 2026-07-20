@@ -64,11 +64,14 @@ Open `http://127.0.0.1:3030` in a browser.
 Log in with `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` from `.env.grafana`.
 The provisioned dashboard refreshes every 30 seconds. The BTC five-minute
 countdown uses a provisioned Grafana Live channel and updates every second,
-independently of that global refresh. Use the Trading process selector at the
-top of the dashboard to control every process-specific P&L, forecast, and
-lead/lag panel. The selector uses the durable trading-process ID and keeps
-stopped and disabled process history available. Process health remains a
-fleet-wide view, and the market countdown is process-independent. Recreate
+independently of that global refresh. The Trading process selector at the top
+of the dashboard controls every forecast and lead/lag panel, and supplies the
+process used by PnL panels when PnL scope is Selected process. The neighboring
+PnL scope selector controls only the first PnL section; All processes renders
+per-process chart series and table rows while aggregating the PnL stats.
+Forecast and lead/lag panels remain scoped to the Trading process selection.
+Stopped and disabled process history remains available. Process health remains
+a fleet-wide view, and the market countdown is process-independent. Recreate
 Grafana after changing the provisioned JSON:
 
 ```bash
