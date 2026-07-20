@@ -30,7 +30,8 @@ use super::{
     strategy::{
         BtcDecision, BtcDecisionAction, BtcFeatureLineage, BtcFeatureSnapshot,
         BtcInputWindowLineage, BtcOutcomeBookFeatures, BtcRejectReason, BtcStrategyConfig,
-        BtcStrategyPrediction, DeterministicBtcStrategy, BTC_FEATURE_LINEAGE_VERSION,
+        BtcStrategyPrediction, DeterministicBtcStrategy,
+        BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION, BTC_FEATURE_LINEAGE_VERSION,
         BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_FAMILY,
     },
     types::{
@@ -450,6 +451,7 @@ impl BtcPaperExperimentRunner {
             observed_at,
             &inputs,
             self.config.strategy.target_size,
+            &self.config.strategy.feature_schema_version,
         );
         let mut decision = DeterministicBtcStrategy::evaluate(&self.config.strategy, &snapshot);
         enforce_runtime_readiness(&mut decision, &observation.readiness);
@@ -895,6 +897,7 @@ fn build_snapshot(
     observed_at: DateTime<Utc>,
     inputs: &BtcPointInTimeInputs,
     target_size: Decimal,
+    feature_schema_version: &str,
 ) -> BtcFeatureSnapshot {
     let chainlink_open = inputs.chainlink_open.as_ref();
     let chainlink = inputs.chainlink_current.as_ref();
@@ -912,6 +915,10 @@ fn build_snapshot(
     let chainlink_gap_bps = chainlink_open.zip(chainlink).and_then(|(open, current)| {
         ratio_return(current.price, open.price).map(|value| value * Decimal::from(10_000))
     });
+    let chainlink_return_5s = (feature_schema_version
+        == BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION)
+        .then(|| return_over(&inputs.chainlink_history, observed_at, 5))
+        .flatten();
     let latest_binance = binance.map(|tick| tick.price);
     let binance_return_1s = return_over(&inputs.binance_history, observed_at, 1);
     let binance_return_5s = return_over(&inputs.binance_history, observed_at, 5);
@@ -944,7 +951,7 @@ fn build_snapshot(
         snapshot_id,
         process_id,
         observed_at,
-        feature_schema_version: super::strategy::BTC_FEATURE_SCHEMA_VERSION.to_string(),
+        feature_schema_version: feature_schema_version.to_string(),
         market_id: market.market_id.clone(),
         event_slug: market.event_slug.clone(),
         window_start: market.window_start,
@@ -959,6 +966,7 @@ fn build_snapshot(
         chainlink_price: chainlink.map(|tick| tick.price),
         binance_price: latest_binance,
         chainlink_gap_bps,
+        chainlink_return_5s,
         binance_return_1s,
         binance_return_5s,
         binance_return_30s,
@@ -1164,13 +1172,19 @@ fn sha256_json<T: Serialize>(value: &T) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use rust_decimal_macros::dec;
 
     use crate::btc::{
         strategy::{
             ApprovedIntent, BtcDecisionStrategyConfig, BtcDirectionalPredictionConfig,
             BtcStrategyConfig, BtcVolatilityContinuationConfig,
-            BTC_CHAINLINK_FAIR_VALUE_STRATEGY_FAMILY, BTC_FEATURE_SCHEMA_VERSION,
+            BTC_CHAINLINK_FAIR_VALUE_STRATEGY_FAMILY,
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION,
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_ID,
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_SHA256,
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_FAMILY,
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION, BTC_FEATURE_SCHEMA_VERSION,
             BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION,
             BTC_MARKET_ANCHORED_FAIR_VALUE_STRATEGY_FAMILY,
             BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID, BTC_MARKET_ANCHORED_RESEARCH_PROFILE_SHA256,
@@ -1273,6 +1287,48 @@ mod tests {
     }
 
     #[test]
+    fn order_metadata_attributes_chainlink_persistence_profile() {
+        let config = BtcStrategyConfig {
+            strategy_version: BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION.to_string(),
+            feature_schema_version: BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION
+                .to_string(),
+            decision_strategy: Some(
+                BtcDecisionStrategyConfig::ChainlinkPersistenceCalibratedFairValue {
+                    profile_id: BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_ID.to_string(),
+                    profile_sha256: BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_SHA256.to_string(),
+                },
+            ),
+            ..BtcStrategyConfig::default()
+        };
+        let metadata = btc_entry_order_metadata(
+            &config,
+            &metadata_intent(&config.strategy_version),
+            None,
+            Uuid::from_u128(204),
+            Uuid::from_u128(205),
+            dec!(0.03),
+        )
+        .unwrap();
+
+        assert_eq!(
+            metadata["strategy"],
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_FAMILY
+        );
+        assert_eq!(
+            metadata["strategy_version"],
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION
+        );
+        assert_eq!(
+            metadata["profile_id"],
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_ID
+        );
+        assert_eq!(
+            metadata["profile_sha256"],
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_SHA256
+        );
+    }
+
+    #[test]
     fn order_metadata_includes_directional_prediction_evidence() {
         let config = BtcStrategyConfig {
             strategy_version: BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION
@@ -1371,6 +1427,117 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(realized_volatility(&ticks).unwrap() > Decimal::ZERO);
+    }
+
+    #[test]
+    fn persistence_feature_is_additive_and_v3_only() {
+        let window_start = Utc.with_ymd_and_hms(2026, 7, 20, 12, 0, 0).unwrap();
+        let observed_at = window_start + chrono::Duration::seconds(180);
+        let tick = |index: u128,
+                    source: super::super::types::ReferencePriceSource,
+                    price: Decimal,
+                    at: DateTime<Utc>| ReferencePriceTick {
+            tick_id: Uuid::from_u128(index),
+            dedup_key: index.to_string(),
+            source,
+            symbol: "btcusd".to_string(),
+            price,
+            source_timestamp: at,
+            envelope_timestamp: None,
+            received_at: at,
+            connection_id: Uuid::from_u128(400),
+            ingest_sequence: index as u64,
+            source_event_id: None,
+            raw_payload: serde_json::json!({}),
+        };
+        let chainlink_open = tick(
+            401,
+            super::super::types::ReferencePriceSource::RtdsChainlink,
+            dec!(100),
+            window_start,
+        );
+        let chainlink_prior = tick(
+            402,
+            super::super::types::ReferencePriceSource::RtdsChainlink,
+            dec!(100),
+            observed_at - chrono::Duration::seconds(6),
+        );
+        let chainlink_current = tick(
+            403,
+            super::super::types::ReferencePriceSource::RtdsChainlink,
+            dec!(101),
+            observed_at,
+        );
+        let binance_prior = tick(
+            404,
+            super::super::types::ReferencePriceSource::DirectBinance,
+            dec!(100),
+            observed_at - chrono::Duration::seconds(31),
+        );
+        let binance_current = tick(
+            405,
+            super::super::types::ReferencePriceSource::DirectBinance,
+            dec!(101),
+            observed_at,
+        );
+        let inputs = BtcPointInTimeInputs {
+            chainlink_open: Some(chainlink_open),
+            chainlink_current: Some(chainlink_current.clone()),
+            chainlink_history: vec![chainlink_prior, chainlink_current],
+            binance_history: vec![binance_prior, binance_current],
+            up_book: None,
+            down_book: None,
+            fee_rate: None,
+            fee_observed_at: None,
+        };
+        let market = BtcIntervalMarket {
+            event_id: "event".to_string(),
+            event_slug: "btc-updown-5m-1784548800".to_string(),
+            series_slug: "btc-up-or-down-5m".to_string(),
+            market_id: "market".to_string(),
+            condition_id: "condition".to_string(),
+            window_start,
+            window_end: window_start + chrono::Duration::seconds(300),
+            up_token_id: "up".to_string(),
+            down_token_id: "down".to_string(),
+            tick_size: dec!(0.01),
+            minimum_order_size: Some(dec!(1)),
+            resolution_source: "chainlink".to_string(),
+            active: true,
+            closed: false,
+            accepting_orders: true,
+            fees_enabled: true,
+            fee_schedule: serde_json::json!({}),
+            raw_payload: serde_json::json!({}),
+        };
+
+        let v2 = build_snapshot(
+            Uuid::from_u128(406),
+            &market,
+            observed_at,
+            &inputs,
+            dec!(5),
+            super::super::strategy::BTC_FEATURE_SCHEMA_VERSION,
+        );
+        assert_eq!(v2.chainlink_return_5s, None);
+        assert!(serde_json::to_value(&v2)
+            .unwrap()
+            .get("chainlink_return_5s")
+            .is_none());
+
+        let v3 = build_snapshot(
+            Uuid::from_u128(407),
+            &market,
+            observed_at,
+            &inputs,
+            dec!(5),
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION,
+        );
+        assert_eq!(v3.chainlink_return_5s, Some(dec!(0.01)));
+        assert_eq!(
+            v3.feature_schema_version,
+            BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION
+        );
     }
 
     #[test]

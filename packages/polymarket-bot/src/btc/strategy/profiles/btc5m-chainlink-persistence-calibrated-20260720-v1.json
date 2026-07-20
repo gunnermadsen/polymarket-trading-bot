@@ -1,0 +1,67 @@
+{
+  "profile_id": "btc5m-chainlink-persistence-calibrated-20260720-v1",
+  "status": "research_only",
+  "feature_schema_version": "btc_5m_features_v3",
+  "estimator": "chainlink_persistence_calibrated_fair_value_v1",
+  "parameter_source": "fixed_research_heuristic_informed_by_confirmed_vs_unconfirmed_analysis_20260719",
+  "probability_floor": "0.01",
+  "evidence_input_clip": "3.0",
+  "external_evidence_parameters": {
+    "volatility_floor_per_sqrt_second": "0.00005",
+    "basis_lead_weight": "0.25",
+    "momentum_1s_weight": "0.05",
+    "momentum_5s_weight": "0.10",
+    "momentum_30s_weight": "0.10",
+    "max_lead_sigma_fraction": "0.25"
+  },
+  "reliability_parameters": {
+    "intercept": "1.25",
+    "confirmation_sufficiency_strength": "1.00",
+    "confirmed_strength_weight": "1.00",
+    "unconfirmed_strength_penalty": "1.50",
+    "fading_penalty": "1.00",
+    "opposition_penalty": "1.25",
+    "volatility_reference_per_sqrt_second": "0.00012",
+    "volatility_excess_penalty": "0.30",
+    "late_window_reference_seconds": "120",
+    "late_window_penalty": "0.15"
+  },
+  "recent_evidence_parameters": {
+    "persistence_weight": "0.10",
+    "confirmation_weight": "0.15",
+    "confirmed_conflict_weight": "0.05",
+    "confirmation_deficiency_weight": "0.10",
+    "max_abs_z_adjustment": "0.25"
+  },
+  "calibration": "fixed_logit_shrink_research_v1",
+  "calibration_parameters": {
+    "intercept": "0",
+    "slope": "0.85",
+    "max_abs_logit": "5.0"
+  },
+  "uncertainty_policy": "existing_btc_v1_plus_reliability_research_heuristic",
+  "uncertainty_parameters": {
+    "base_probability_uncertainty": "0.015",
+    "basis_uncertainty_weight": "1",
+    "feed_age_uncertainty_per_second": "0.002",
+    "max_baseline_probability_uncertainty": "0.10",
+    "reliability_uncertainty_weight": "0.04",
+    "volatility_excess_uncertainty_weight": "0.01",
+    "late_window_uncertainty_weight": "0.01",
+    "max_total_probability_uncertainty": "0.15"
+  },
+  "research_evidence": {
+    "analysis_cutoff": "2026-07-19T22:55:00Z",
+    "confirmed_state": "chainlink_gap_strengthening_and_binance_same_direction",
+    "unconfirmed_state": "chainlink_gap_strengthening_without_binance_same_direction",
+    "pooled_confirmed_wins": 54,
+    "pooled_confirmed_candidates": 79,
+    "pooled_unconfirmed_wins": 32,
+    "pooled_unconfirmed_candidates": 70,
+    "pooled_accuracy_delta_percentage_points": "22.64",
+    "exact_zero_confirmation_wins": 11,
+    "exact_zero_confirmation_candidates": 42,
+    "exact_zero_confirmation_realized_pnl_usd": "-35.27",
+    "calibration_claim": "none_fixed_research_heuristic"
+  }
+}
