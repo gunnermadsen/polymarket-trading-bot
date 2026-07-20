@@ -21,8 +21,9 @@ use crate::{
 
 use super::{
     admission::{
-        AdmissionDisposition, BtcEntryAdmissionConfig, LossRegimeConfidenceFloorEvaluation,
-        LossRegimeConfidenceFloorState, LossRegimeConfidenceFloorTransition,
+        AdmissionDisposition, BtcEntryAdmissionConfig, DailyRealizedPnlHighWaterMarkEvaluation,
+        LossRegimeConfidenceFloorEvaluation, LossRegimeConfidenceFloorState,
+        LossRegimeConfidenceFloorTransition, ProposedEntryExposure,
     },
     paper::{PaperPreviewConfig, PaperVenue, PAPER_DYNAMIC_FEE_RATE_METADATA_KEY},
     repository::{BtcPointInTimeInputs, BtcRepository},
@@ -64,6 +65,11 @@ struct LossRegimeAdmissionRuntime {
     evaluated_market_id: Option<String>,
 }
 
+struct EntryAdmissionEvaluation {
+    disposition: AdmissionDisposition,
+    evidence: serde_json::Value,
+}
+
 pub struct BtcPaperExperimentRunner {
     repository: BtcRepository,
     store: Store,
@@ -71,6 +77,7 @@ pub struct BtcPaperExperimentRunner {
     config: BtcPaperExperimentConfig,
     initialized: OnceCell<()>,
     loss_regime_admission: Mutex<Option<LossRegimeAdmissionRuntime>>,
+    high_water_mark_entry_submission: Mutex<()>,
     paper_capital_reconcile_started_at: Mutex<Option<Instant>>,
 }
 
@@ -114,6 +121,7 @@ impl BtcPaperExperimentRunner {
                     .as_ref()
                     .map(|_| LossRegimeAdmissionRuntime::default()),
             ),
+            high_water_mark_entry_submission: Mutex::new(()),
             config,
             initialized: OnceCell::new(),
             paper_capital_reconcile_started_at: Mutex::new(None),
@@ -212,7 +220,7 @@ impl BtcPaperExperimentRunner {
         Ok(())
     }
 
-    async fn evaluate_entry_admission(
+    async fn evaluate_loss_regime_admission(
         &self,
         decision: &BtcDecision,
         as_of: DateTime<Utc>,
@@ -288,6 +296,42 @@ impl BtcPaperExperimentRunner {
             .await;
         }
         Ok(Some(evaluation))
+    }
+
+    async fn evaluate_entry_admission(
+        &self,
+        decision: &BtcDecision,
+        as_of: DateTime<Utc>,
+        fee_rate: Decimal,
+    ) -> Result<Option<EntryAdmissionEvaluation>> {
+        let Some(entry_admission) = self.config.entry_admission.as_ref() else {
+            return Ok(None);
+        };
+        let loss_regime = self
+            .evaluate_loss_regime_admission(decision, as_of)
+            .await?
+            .context("configured loss-regime admission did not produce an evaluation")?;
+        let high_water_mark = match entry_admission.daily_realized_pnl_high_water_mark.as_ref() {
+            Some(config) => {
+                let intent = decision
+                    .approved_intent
+                    .as_ref()
+                    .context("approved BTC intent is missing for high-water-mark admission")?;
+                let proposed =
+                    ProposedEntryExposure::new(intent.size, intent.limit_price, fee_rate)?;
+                let state = self
+                    .repository
+                    .load_daily_realized_pnl_high_water_mark_state(self.config.process_id, as_of)
+                    .await?;
+                Some(state.evaluate(config, &proposed)?)
+            }
+            None => None,
+        };
+        Ok(Some(combine_entry_admission_evaluations(
+            self.config.process_id,
+            loss_regime,
+            high_water_mark,
+        )?))
     }
 
     async fn record_entry_admission_event(
@@ -429,6 +473,17 @@ impl BtcPaperExperimentRunner {
 
     async fn observe(&self, observation: StrategyObservation) -> Result<()> {
         self.initialize().await?;
+        let high_water_mark_configured = self
+            .config
+            .entry_admission
+            .as_ref()
+            .and_then(|admission| admission.daily_realized_pnl_high_water_mark.as_ref())
+            .is_some();
+        let _high_water_mark_entry_guard = if high_water_mark_configured {
+            Some(self.high_water_mark_entry_submission.lock().await)
+        } else {
+            None
+        };
         self.refresh_settlement_and_reconcile_if_due().await?;
 
         let Some(market) = observation.state.current_market.as_ref() else {
@@ -458,7 +513,7 @@ impl BtcPaperExperimentRunner {
         if decision.approved_intent.is_some()
             && self
                 .repository
-                .experiment_has_entry(self.config.experiment_id, &snapshot.market_id)
+                .process_has_entry(self.config.process_id, &snapshot.market_id)
                 .await?
         {
             decision.action = BtcDecisionAction::NoTrade;
@@ -531,12 +586,15 @@ impl BtcPaperExperimentRunner {
         }
 
         let entry_admission = self
-            .evaluate_entry_admission(&decision, observed_at)
+            .evaluate_entry_admission(
+                &decision,
+                observed_at,
+                snapshot.fee_rate.unwrap_or_default(),
+            )
             .await?;
         let entry_admission_evidence = entry_admission
             .as_ref()
-            .map(serde_json::to_value)
-            .transpose()?;
+            .map(|evaluation| &evaluation.evidence);
         if entry_admission
             .as_ref()
             .is_some_and(|evaluation| evaluation.disposition == AdmissionDisposition::Defer)
@@ -548,7 +606,7 @@ impl BtcPaperExperimentRunner {
                     &snapshot.market_id,
                     &self.config.strategy.strategy_version,
                     &decision,
-                    entry_admission_evidence.as_ref(),
+                    entry_admission_evidence,
                     None,
                     "admission_blocked",
                 )
@@ -593,7 +651,7 @@ impl BtcPaperExperimentRunner {
                 &snapshot.market_id,
                 &self.config.strategy.strategy_version,
                 &decision,
-                entry_admission_evidence.as_ref(),
+                entry_admission_evidence,
                 Some(plan_id),
                 "approved",
             )
@@ -686,6 +744,47 @@ impl BtcPaperExperimentRunner {
     }
 }
 
+fn combine_entry_admission_evaluations(
+    process_id: Uuid,
+    loss_regime: LossRegimeConfidenceFloorEvaluation,
+    high_water_mark: Option<DailyRealizedPnlHighWaterMarkEvaluation>,
+) -> Result<EntryAdmissionEvaluation> {
+    let loss_deferred = loss_regime.disposition == AdmissionDisposition::Defer;
+    let high_water_mark_deferred = high_water_mark
+        .as_ref()
+        .is_some_and(|evaluation| evaluation.disposition == AdmissionDisposition::Defer);
+    let disposition = if loss_deferred || high_water_mark_deferred {
+        AdmissionDisposition::Defer
+    } else {
+        AdmissionDisposition::Allow
+    };
+
+    let evidence = match high_water_mark {
+        None => serde_json::to_value(loss_regime)?,
+        Some(high_water_mark) => {
+            let mut blocking_policies = Vec::new();
+            if loss_deferred {
+                blocking_policies.push("loss_regime_confidence_floor");
+            }
+            if high_water_mark_deferred {
+                blocking_policies.push("daily_realized_pnl_high_water_mark");
+            }
+            serde_json::json!({
+                "evidence_version": "btc_entry_admission_v2",
+                "process_id": process_id,
+                "disposition": disposition,
+                "blocking_policies": blocking_policies,
+                "loss_regime_confidence_floor": loss_regime,
+                "daily_realized_pnl_high_water_mark": high_water_mark,
+            })
+        }
+    };
+    Ok(EntryAdmissionEvaluation {
+        disposition,
+        evidence,
+    })
+}
+
 fn btc_entry_order_metadata(
     strategy: &BtcStrategyConfig,
     intent: &super::strategy::ApprovedIntent,
@@ -704,6 +803,7 @@ fn btc_entry_order_metadata(
         "feature_schema_version": intent.feature_schema_version,
         "feature_snapshot_id": intent.feature_snapshot_id,
         "decision_id": decision_id,
+        "process_id": intent.process_id,
         "experiment_id": experiment_id,
         "outcome": intent.outcome,
         "expected_net_edge": intent.expected_net_edge,
@@ -1176,6 +1276,13 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use crate::btc::{
+        admission::{
+            DailyRealizedPnlCredit, DailyRealizedPnlHighWaterMarkConfig,
+            DailyRealizedPnlHighWaterMarkState, LossRegimeConfidenceFloorConfig,
+            LossRegimeConfidenceFloorState, ProposedEntryExposure, UnsettledEntryExposure,
+            DAILY_REALIZED_PNL_HIGH_WATER_MARK_SCHEMA_VERSION,
+            LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION,
+        },
         strategy::{
             ApprovedIntent, BtcDecisionStrategyConfig, BtcDirectionalPredictionConfig,
             BtcStrategyConfig, BtcVolatilityContinuationConfig,
@@ -1403,6 +1510,84 @@ mod tests {
             Some(started_at),
             started_at + TokioDuration::from_secs(5)
         ));
+    }
+
+    #[test]
+    fn absent_high_water_mark_preserves_legacy_admission_evidence_shape() {
+        let floor = LossRegimeConfidenceFloorConfig {
+            schema_version: LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION.to_string(),
+            activation_consecutive_candidate_losses: 2,
+            min_conservative_probability: dec!(0.50),
+            release_consecutive_candidate_wins: 1,
+        };
+        let loss = LossRegimeConfidenceFloorState::default()
+            .evaluate(&floor, dec!(0.60))
+            .unwrap();
+        let expected = serde_json::to_value(&loss).unwrap();
+        let combined =
+            combine_entry_admission_evaluations(Uuid::from_u128(300), loss, None).unwrap();
+
+        assert_eq!(combined.disposition, AdmissionDisposition::Allow);
+        assert_eq!(combined.evidence, expected);
+    }
+
+    #[test]
+    fn high_water_mark_defer_wins_and_keeps_both_policy_evaluations() {
+        let floor = LossRegimeConfidenceFloorConfig {
+            schema_version: LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION.to_string(),
+            activation_consecutive_candidate_losses: 2,
+            min_conservative_probability: dec!(0.50),
+            release_consecutive_candidate_wins: 1,
+        };
+        let loss = LossRegimeConfidenceFloorState::default()
+            .evaluate(&floor, dec!(0.60))
+            .unwrap();
+        let process_id = Uuid::from_u128(301);
+        let as_of = Utc.with_ymd_and_hms(2026, 7, 20, 12, 0, 0).unwrap();
+        let state = DailyRealizedPnlHighWaterMarkState::from_evidence(
+            process_id,
+            as_of,
+            vec![DailyRealizedPnlCredit {
+                settlement_id: Uuid::from_u128(302),
+                order_id: "credited-order".to_string(),
+                credited_at: as_of - chrono::Duration::minutes(1),
+                net_pnl_usd: dec!(6),
+            }],
+            vec![UnsettledEntryExposure {
+                order_id: "unsettled-order".to_string(),
+                fill_ids: vec![Uuid::from_u128(303)],
+                entry_debit_usd: dec!(1),
+            }],
+        )
+        .unwrap();
+        let proposed = ProposedEntryExposure::new(dec!(5), dec!(1), Decimal::ZERO).unwrap();
+        let high_water_mark = state
+            .evaluate(
+                &DailyRealizedPnlHighWaterMarkConfig {
+                    schema_version: DAILY_REALIZED_PNL_HIGH_WATER_MARK_SCHEMA_VERSION.to_string(),
+                    activation_realized_pnl_usd: dec!(5),
+                    max_drawdown_from_high_water_mark_usd: dec!(5),
+                },
+                &proposed,
+            )
+            .unwrap();
+        let combined =
+            combine_entry_admission_evaluations(process_id, loss, Some(high_water_mark)).unwrap();
+
+        assert_eq!(combined.disposition, AdmissionDisposition::Defer);
+        assert_eq!(combined.evidence["process_id"], process_id.to_string());
+        assert_eq!(
+            combined.evidence["blocking_policies"],
+            serde_json::json!(["daily_realized_pnl_high_water_mark"])
+        );
+        assert!(combined
+            .evidence
+            .get("loss_regime_confidence_floor")
+            .is_some());
+        assert!(combined
+            .evidence
+            .get("daily_realized_pnl_high_water_mark")
+            .is_some());
     }
 
     #[test]
