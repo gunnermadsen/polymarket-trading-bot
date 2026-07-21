@@ -1709,9 +1709,26 @@ impl BtcRepository {
         market: &BtcIntervalMarket,
         as_of: DateTime<Utc>,
         max_chainlink_open_delay: chrono::Duration,
+        max_reference_age: chrono::Duration,
+        max_book_age: chrono::Duration,
         clob_connection_id: Option<Uuid>,
     ) -> Result<BtcPointInTimeInputs> {
-        let latest_valid_open = market.window_start + max_chainlink_open_delay;
+        if max_chainlink_open_delay <= Duration::zero()
+            || max_reference_age <= Duration::zero()
+            || max_book_age <= Duration::zero()
+        {
+            bail!("point-in-time input freshness bounds must be positive");
+        }
+        let reference_fresh_since = as_of
+            .checked_sub_signed(max_reference_age)
+            .context("point-in-time reference freshness bound is outside the timestamp range")?;
+        let book_fresh_since = as_of
+            .checked_sub_signed(max_book_age)
+            .context("point-in-time book freshness bound is outside the timestamp range")?;
+        let latest_valid_open = market
+            .window_start
+            .checked_add_signed(max_chainlink_open_delay)
+            .context("Chainlink opening window exceeds the supported timestamp range")?;
         let chainlink_open = sqlx::query_as::<_, ReferenceTickRow>(
             r#"
             SELECT tick_id, source_timestamp, received_at, source, symbol, price,
@@ -1719,10 +1736,12 @@ impl BtcRepository {
               dedup_key, raw_payload
             FROM polymarket.reference_price_ticks
             WHERE source = 'rtds_chainlink'
+              AND symbol = 'BTCUSD'
+              AND integrity_status = 'ok'
               AND source_timestamp >= $1
               AND source_timestamp <= $2
               AND received_at <= $3
-            ORDER BY source_timestamp ASC, received_at ASC, ingest_sequence ASC
+            ORDER BY source_timestamp ASC, received_at ASC, ingest_sequence ASC, tick_id ASC
             LIMIT 1
             "#,
         )
@@ -1741,29 +1760,36 @@ impl BtcRepository {
               dedup_key, raw_payload
             FROM polymarket.reference_price_ticks
             WHERE source = 'rtds_chainlink'
-              AND source_timestamp <= $1
-              AND received_at <= $1
-            ORDER BY source_timestamp DESC, received_at DESC, ingest_sequence DESC
+              AND symbol = 'BTCUSD'
+              AND integrity_status = 'ok'
+              AND source_timestamp >= $1
+              AND source_timestamp <= $2
+              AND received_at >= $1
+              AND received_at <= $2
+            ORDER BY source_timestamp DESC, received_at DESC, ingest_sequence DESC, tick_id DESC
             LIMIT 1
             "#,
         )
+        .bind(reference_fresh_since)
         .bind(as_of)
         .fetch_optional(&self.pool)
         .await
         .context("failed to load point-in-time BTC Chainlink tick")?
         .map(reference_tick_from_row)
         .transpose()?;
-        let chainlink_history = sqlx::query_as::<_, ReferenceTickRow>(
+        let mut chainlink_history = sqlx::query_as::<_, ReferenceTickRow>(
             r#"
             SELECT tick_id, source_timestamp, received_at, source, symbol, price,
               envelope_timestamp, connection_id, ingest_sequence, source_event_id,
               dedup_key, raw_payload
             FROM polymarket.reference_price_ticks
             WHERE source = 'rtds_chainlink'
+              AND symbol = 'BTCUSD'
+              AND integrity_status = 'ok'
               AND source_timestamp >= $1
               AND source_timestamp <= $2
               AND received_at <= $2
-            ORDER BY source_timestamp ASC, received_at ASC, ingest_sequence ASC
+            ORDER BY source_timestamp DESC, received_at DESC, ingest_sequence DESC, tick_id DESC
             LIMIT 2000
             "#,
         )
@@ -1775,17 +1801,21 @@ impl BtcRepository {
         .into_iter()
         .map(reference_tick_from_row)
         .collect::<Result<Vec<_>>>()?;
-        let binance_history = sqlx::query_as::<_, ReferenceTickRow>(
+        chainlink_history.reverse();
+        truncate_history_at_current(&mut chainlink_history, chainlink_current.as_ref());
+        let mut binance_history = sqlx::query_as::<_, ReferenceTickRow>(
             r#"
             SELECT tick_id, source_timestamp, received_at, source, symbol, price,
               envelope_timestamp, connection_id, ingest_sequence, source_event_id,
               dedup_key, raw_payload
             FROM polymarket.reference_price_ticks
             WHERE source = 'direct_binance'
+              AND symbol = 'BTCUSD'
+              AND integrity_status = 'ok'
               AND source_timestamp >= $1
               AND source_timestamp <= $2
               AND received_at <= $2
-            ORDER BY source_timestamp ASC, received_at ASC, ingest_sequence ASC
+            ORDER BY source_timestamp DESC, received_at DESC, ingest_sequence DESC, tick_id DESC
             LIMIT 20000
             "#,
         )
@@ -1797,10 +1827,21 @@ impl BtcRepository {
         .into_iter()
         .map(reference_tick_from_row)
         .collect::<Result<Vec<_>>>()?;
+        binance_history.reverse();
         let (up_book, down_book) = match clob_connection_id {
             Some(connection_id) => tokio::try_join!(
-                self.load_checkpoint_as_of(&market.up_token_id, connection_id, as_of),
-                self.load_checkpoint_as_of(&market.down_token_id, connection_id, as_of),
+                self.load_checkpoint_as_of(
+                    &market.up_token_id,
+                    connection_id,
+                    book_fresh_since,
+                    as_of,
+                ),
+                self.load_checkpoint_as_of(
+                    &market.down_token_id,
+                    connection_id,
+                    book_fresh_since,
+                    as_of,
+                ),
             )?,
             None => (None, None),
         };
@@ -1809,9 +1850,11 @@ impl BtcRepository {
             SELECT fee_rate, last_refreshed_at
             FROM polymarket.btc_interval_markets
             WHERE market_id = $1
+              AND last_refreshed_at <= $2
             "#,
         )
         .bind(&market.market_id)
+        .bind(as_of)
         .fetch_optional(&self.pool)
         .await
         .context("failed to load BTC market fee schedule")?;
@@ -1832,6 +1875,7 @@ impl BtcRepository {
         &self,
         token_id: &str,
         connection_id: Uuid,
+        fresh_since: DateTime<Utc>,
         as_of: DateTime<Utc>,
     ) -> Result<Option<OrderbookCheckpoint>> {
         sqlx::query_as::<_, CheckpointRow>(
@@ -1841,14 +1885,19 @@ impl BtcRepository {
               book, source_hash, integrity_status
             FROM polymarket.orderbook_checkpoints
             WHERE token_id = $1
-              AND source_timestamp <= $2
-              AND received_at <= $2
-              AND connection_id = $3
-            ORDER BY source_timestamp DESC, received_at DESC, ingest_sequence DESC
+              AND source_timestamp >= $2
+              AND source_timestamp <= $3
+              AND received_at >= $2
+              AND received_at <= $3
+              AND connection_id = $4
+              AND integrity_status = 'ok'
+            ORDER BY source_timestamp DESC, received_at DESC, ingest_sequence DESC,
+              checkpoint_id DESC
             LIMIT 1
             "#,
         )
         .bind(token_id)
+        .bind(fresh_since)
         .bind(as_of)
         .bind(connection_id)
         .fetch_optional(&self.pool)
@@ -2994,6 +3043,24 @@ fn same_immutable_market_label(left: &BtcMarketLabel, right: &BtcMarketLabel) ->
         && left.source_close_timestamp == right.source_close_timestamp
 }
 
+fn truncate_history_at_current(
+    history: &mut Vec<ReferencePriceTick>,
+    current: Option<&ReferencePriceTick>,
+) {
+    let Some(current) = current else {
+        history.clear();
+        return;
+    };
+    let Some(current_index) = history
+        .iter()
+        .rposition(|tick| tick.tick_id == current.tick_id)
+    else {
+        history.clear();
+        return;
+    };
+    history.truncate(current_index + 1);
+}
+
 fn reference_tick_from_row(row: ReferenceTickRow) -> Result<ReferencePriceTick> {
     let source = match row.source.as_str() {
         "direct_binance" => ReferencePriceSource::DirectBinance,
@@ -3470,6 +3537,45 @@ mod tests {
         },
         strategy::{ApprovedIntent, OutcomeEdge},
     };
+
+    fn history_tick(id: u128, at: DateTime<Utc>) -> ReferencePriceTick {
+        ReferencePriceTick {
+            tick_id: Uuid::from_u128(id),
+            dedup_key: id.to_string(),
+            source: ReferencePriceSource::RtdsChainlink,
+            symbol: "BTCUSD".to_string(),
+            price: dec!(70_000),
+            source_timestamp: at + Duration::milliseconds(id as i64),
+            envelope_timestamp: None,
+            received_at: at + Duration::milliseconds(id as i64),
+            connection_id: Uuid::from_u128(100),
+            ingest_sequence: id as u64,
+            source_event_id: None,
+            raw_payload: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn history_endpoint_is_truncated_to_the_fresh_canonical_tick() {
+        let at = Utc.with_ymd_and_hms(2026, 7, 21, 12, 0, 0).unwrap();
+        let mut history = vec![
+            history_tick(1, at),
+            history_tick(2, at),
+            history_tick(3, at),
+        ];
+        let current = history[1].clone();
+
+        truncate_history_at_current(&mut history, Some(&current));
+
+        assert_eq!(history.len(), 2);
+        assert_eq!(
+            history.last().map(|tick| tick.tick_id),
+            Some(current.tick_id)
+        );
+
+        truncate_history_at_current(&mut history, Some(&history_tick(99, at)));
+        assert!(history.is_empty());
+    }
 
     fn approved_decision(
         outcome: BtcOutcome,

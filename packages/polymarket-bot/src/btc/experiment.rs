@@ -31,6 +31,7 @@ use super::{
         ShadowPredictiveRegimeEvaluation, ShadowPredictiveRegimeState,
         ShadowPredictiveRegimeTransition,
     },
+    execution_guard::BtcReferenceExecutionGuard,
     paper::{PaperPreviewConfig, PaperVenue, PAPER_DYNAMIC_FEE_RATE_METADATA_KEY},
     repository::{BtcPointInTimeInputs, BtcRepository},
     runtime::{BtcStrategyRunner, StrategyObservation},
@@ -976,7 +977,10 @@ impl BtcPaperExperimentRunner {
         let Some(market) = observation.state.current_market.as_ref() else {
             return Ok(());
         };
-        let observed_at = Utc::now();
+        // Keep durable point-in-time inputs on the same immutable observation boundary used by
+        // runtime readiness. Initialization, reconciliation and admission must not move the
+        // feature timestamp forward while feeds continue advancing.
+        let observed_at = observation.readiness.checked_at;
         self.schedule_shadow_predictive_regime_refresh(&market.market_id, observed_at);
         let clob_connection_id = observation_clob_connection_id(market, &observation.readiness);
         let inputs = self
@@ -985,6 +989,8 @@ impl BtcPaperExperimentRunner {
                 market,
                 observed_at,
                 chrono::Duration::milliseconds(self.config.strategy.max_chainlink_open_delay_ms),
+                chrono::Duration::milliseconds(self.config.strategy.max_reference_age_ms),
+                chrono::Duration::milliseconds(self.config.strategy.max_book_age_ms),
                 clob_connection_id,
             )
             .await?;
@@ -1109,19 +1115,21 @@ impl BtcPaperExperimentRunner {
             &Uuid::NAMESPACE_URL,
             format!("btc-paper-plan:{}", intent.intent_id).as_bytes(),
         );
+        let fee_rate = snapshot.fee_rate.unwrap_or_default();
         let order_metadata = btc_entry_order_metadata(
             &self.config.strategy,
             &intent,
             decision.prediction.as_ref(),
             decision.decision_id,
             self.config.experiment_id,
-            snapshot.fee_rate.unwrap_or_default(),
+            fee_rate,
         )?;
-        let request = OrderRequest {
-            client_order_id: Uuid::new_v5(
-                &Uuid::NAMESPACE_URL,
-                format!("btc-paper-order:{}", intent.intent_id).as_bytes(),
-            ),
+        let client_order_id = Uuid::new_v5(
+            &Uuid::NAMESPACE_URL,
+            format!("btc-paper-order:{}", intent.intent_id).as_bytes(),
+        );
+        let mut request = OrderRequest {
+            client_order_id,
             process_id: Some(self.config.process_id),
             market_id: intent.market_id.clone(),
             token_id: intent.token_id.clone(),
@@ -1132,6 +1140,16 @@ impl BtcPaperExperimentRunner {
             signal_id: None,
             metadata: order_metadata,
         };
+        let reference_execution_guard = BtcReferenceExecutionGuard::from_snapshot(
+            &snapshot,
+            &decision,
+            &intent,
+            &request,
+            &feature_hash,
+            fee_rate,
+            self.config.strategy.max_reference_age_ms,
+        )?;
+        reference_execution_guard.insert_into_metadata(&mut request.metadata)?;
         self.repository
             .insert_strategy_decision(
                 self.config.experiment_id,

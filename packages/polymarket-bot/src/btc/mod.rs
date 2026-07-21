@@ -1,4 +1,5 @@
 pub mod admission;
+pub mod execution_guard;
 pub mod experiment;
 pub mod feeds;
 pub mod market;
@@ -19,6 +20,10 @@ pub use admission::{
     DAILY_REALIZED_PNL_HIGH_WATER_MARK_SCHEMA_VERSION, LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION,
     SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE,
     SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION,
+};
+pub use execution_guard::{
+    BtcReferenceExecutionAssessment, BtcReferenceExecutionGuard, BtcReferenceExecutionRejectReason,
+    BTC_REFERENCE_EXECUTION_GUARD_METADATA_KEY, BTC_REFERENCE_EXECUTION_GUARD_VERSION,
 };
 pub use experiment::{BtcPaperExperimentConfig, BtcPaperExperimentRunner};
 pub use feeds::{
