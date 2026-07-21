@@ -13,8 +13,12 @@ pub use admission::{
     DailyRealizedPnlHighWaterMarkConfig, DailyRealizedPnlHighWaterMarkEvaluation,
     DailyRealizedPnlHighWaterMarkState, LossRegimeCandidate, LossRegimeConfidenceFloorConfig,
     LossRegimeConfidenceFloorEvaluation, LossRegimeConfidenceFloorState,
-    LossRegimeConfidenceFloorTransition, ProposedEntryExposure, UnsettledEntryExposure,
+    LossRegimeConfidenceFloorTransition, ProposedEntryExposure, ShadowPredictiveRegimeCandidate,
+    ShadowPredictiveRegimeCircuitBreakerConfig, ShadowPredictiveRegimeEvaluation,
+    ShadowPredictiveRegimeState, ShadowPredictiveRegimeTransition, UnsettledEntryExposure,
     DAILY_REALIZED_PNL_HIGH_WATER_MARK_SCHEMA_VERSION, LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION,
+    SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE,
+    SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION,
 };
 pub use experiment::{BtcPaperExperimentConfig, BtcPaperExperimentRunner};
 pub use feeds::{

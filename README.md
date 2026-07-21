@@ -406,6 +406,27 @@ score, log loss, calibration, directional accuracy, fresh-impulse errors,
 maximum drawdown, and peak-to-close daily giveback. Treat fills separately from
 forecast metrics because the shared loss floor can alter entry selection.
 
+The predictive-regime circuit-breaker forward test adds one independent shadow
+definition:
+
+- `btc-5m-chainlink-path-conditioned-paper-min-entry-030-floor-shadow-regime-circuit-breaker-v1.json`
+  keeps the path-conditioned selector and immutable profile, execution settings,
+  strategy parameters, paper venue, and loss-regime floor identical to process
+  `a99b5b46-c33f-48e4-bcfd-da41b992c30c`.
+
+The treatment's only behavioral addition is
+`entry_admission.shadow_predictive_regime_circuit_breaker`. Its explicit
+`mode: "shadow"` is observational: it evaluates the last 20 resolved markets,
+requires all 20 before classification, and records degradation, recovery, and
+counterfactual `would_defer` evidence while continuing to allow entry. It does
+not change the estimator probability, uncertainty, side, order size, edge
+contract, or actual admission decision, and it does not enable HWM. The frozen
+degradation thresholds are Brier score `0.23` and overconfidence gap `0.12`,
+with two confirming markets; recovery uses Brier score `0.21`, overconfidence
+gap `0.05`, and two confirming markets. Compare this arm to its control by the
+two canonical `process_id` values. Forward shadow evidence is required before
+considering any separately authorized enforcement behavior.
+
 Files under `infra/processes` are operational request templates, not runtime
 configuration watched or read directly by the Rust application. Submitting a
 template through the stable-key API (or bootstrap script) creates or updates a
