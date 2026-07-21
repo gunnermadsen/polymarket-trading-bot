@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    fmt::{self, Write},
     future::Future,
     panic::AssertUnwindSafe,
     sync::{
@@ -17,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     sync::{mpsc, watch, RwLock},
     task::JoinHandle,
-    time::{interval, sleep, Instant, MissedTickBehavior},
+    time::{interval, interval_at, sleep, timeout, Instant, MissedTickBehavior},
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
@@ -44,6 +45,17 @@ use super::{
 const BOUNDARY_LABEL_VERSION: &str = "chainlink_first_tick_at_or_after_boundary_v1";
 const CRITICAL_WRITE_ATTEMPTS: usize = 3;
 const CRITICAL_WRITE_INITIAL_BACKOFF: StdDuration = StdDuration::from_millis(25);
+const RTDS_HEARTBEAT_MESSAGE: &str = "ping";
+const REFERENCE_CONNECT_TIMEOUT: StdDuration = StdDuration::from_secs(5);
+const REFERENCE_SEND_TIMEOUT: StdDuration = StdDuration::from_secs(5);
+// Chainlink updates can have legitimate multi-second gaps; this bound avoids
+// reconnect churn while still detecting an unavailable required source quickly.
+const RTDS_REQUIRED_DATA_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+const BINANCE_REQUIRED_DATA_TIMEOUT: StdDuration = StdDuration::from_secs(5);
+const REFERENCE_PONG_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+const REFERENCE_READ_IDLE_TIMEOUT: StdDuration = StdDuration::from_secs(40);
+const REFERENCE_STABLE_RESET_AFTER: StdDuration = StdDuration::from_secs(30);
+const REFERENCE_RETRY_JITTER_PERCENT: u64 = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BtcRuntimeConfig {
@@ -156,6 +168,82 @@ impl BtcRuntimeConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceDisconnectReason {
+    Shutdown,
+    ConnectTimeout,
+    ConnectFailed,
+    SubscriptionSendTimeout,
+    SubscriptionSendFailed,
+    HeartbeatSendTimeout,
+    HeartbeatSendFailed,
+    HeartbeatAckTimeout,
+    RequiredDataIdleTimeout,
+    ReadIdleTimeout,
+    WebsocketEof,
+    RemoteClose,
+    TransportReadFailed,
+    CriticalBoundaryIntegrity,
+    CriticalBoundaryPersistence,
+    CriticalWriterQueue,
+    UnknownDisconnect,
+}
+
+impl ReferenceDisconnectReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Shutdown => "shutdown",
+            Self::ConnectTimeout => "connect_timeout",
+            Self::ConnectFailed => "connect_failed",
+            Self::SubscriptionSendTimeout => "subscription_send_timeout",
+            Self::SubscriptionSendFailed => "subscription_send_failed",
+            Self::HeartbeatSendTimeout => "heartbeat_send_timeout",
+            Self::HeartbeatSendFailed => "heartbeat_send_failed",
+            Self::HeartbeatAckTimeout => "heartbeat_ack_timeout",
+            Self::RequiredDataIdleTimeout => "required_data_idle_timeout",
+            Self::ReadIdleTimeout => "read_idle_timeout",
+            Self::WebsocketEof => "websocket_eof",
+            Self::RemoteClose => "remote_close",
+            Self::TransportReadFailed => "transport_read_failed",
+            Self::CriticalBoundaryIntegrity => "critical_boundary_integrity",
+            Self::CriticalBoundaryPersistence => "critical_boundary_persistence",
+            Self::CriticalWriterQueue => "critical_writer_queue",
+            Self::UnknownDisconnect => "unknown_disconnect",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReferenceTransportMetrics {
+    pub connections_established: u64,
+    pub healthy_connections: u64,
+    pub connection_failures: u64,
+    pub subscription_failures: u64,
+    pub transport_disconnects: u64,
+    pub watchdog_disconnects: u64,
+    pub required_data_timeouts: u64,
+    pub pong_timeouts: u64,
+    pub read_timeouts: u64,
+    pub immediate_recoveries_scheduled: u64,
+    pub backoff_scheduled_milliseconds: u64,
+    pub recovery_unavailable_milliseconds: u64,
+    pub consecutive_failures: u32,
+    pub connected_connection_epoch: Option<i32>,
+    pub connected_connection_id: Option<Uuid>,
+    pub active_connection_epoch: Option<i32>,
+    pub active_connection_id: Option<Uuid>,
+    pub last_connected_at: Option<DateTime<Utc>>,
+    pub last_healthy_at: Option<DateTime<Utc>>,
+    pub last_required_tick_at: Option<DateTime<Utc>>,
+    pub last_disconnect_at: Option<DateTime<Utc>>,
+    pub recovery_unavailable_since: Option<DateTime<Utc>>,
+    pub last_disconnect_reason: Option<ReferenceDisconnectReason>,
+    pub heartbeat_probes: u64,
+    pub heartbeat_acknowledgements: u64,
+    pub required_ticks_received: u64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BtcRuntimeMetrics {
     pub markets_discovered: u64,
@@ -193,6 +281,11 @@ pub struct BtcRuntimeMetrics {
     pub clob_recovery_unavailable_since: Option<DateTime<Utc>>,
     pub clob_last_disconnect_reason: Option<String>,
     pub clob_active_subscribed_assets: u64,
+    pub rtds_transport: ReferenceTransportMetrics,
+    pub binance_transport: ReferenceTransportMetrics,
+    pub rtds_chainlink_ticks_received: u64,
+    pub rtds_binance_ticks_received: u64,
+    pub binance_ticks_received: u64,
     pub strategy_callbacks: u64,
     pub resolution_watches_active: u64,
     pub resolution_watches_rehydrated: u64,
@@ -265,6 +358,231 @@ impl ClobSubscriptionDelta {
 enum ClobSubscriptionOperation {
     Subscribe,
     Unsubscribe,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReferenceFeedKind {
+    Rtds,
+    Binance,
+}
+
+impl ReferenceFeedKind {
+    fn feed_name(self) -> &'static str {
+        match self {
+            Self::Rtds => "polymarket_rtds",
+            Self::Binance => "binance_agg_trade",
+        }
+    }
+
+    fn required_data_timeout(self) -> StdDuration {
+        match self {
+            Self::Rtds => RTDS_REQUIRED_DATA_TIMEOUT,
+            Self::Binance => BINANCE_REQUIRED_DATA_TIMEOUT,
+        }
+    }
+
+    fn retry_salt(self) -> u64 {
+        match self {
+            Self::Rtds => 0x5254_4453,
+            Self::Binance => 0x4249_4e41,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReferenceWatchdogTimeout {
+    RequiredData,
+    HeartbeatAck,
+    ReadIdle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReferenceDisconnectCause {
+    ConnectFailure,
+    SubscriptionFailure,
+    WatchdogTimeout(ReferenceWatchdogTimeout),
+    TransportFailure,
+    Shutdown,
+    CriticalPersistence,
+}
+
+impl ReferenceDisconnectCause {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ConnectFailure => "connect_failure",
+            Self::SubscriptionFailure => "subscription_failure",
+            Self::WatchdogTimeout(_) => "watchdog_timeout",
+            Self::TransportFailure => "transport_failure",
+            Self::Shutdown => "shutdown",
+            Self::CriticalPersistence => "critical_persistence",
+        }
+    }
+}
+
+impl ReferenceDisconnectReason {
+    fn cause(self) -> ReferenceDisconnectCause {
+        match self {
+            Self::Shutdown => ReferenceDisconnectCause::Shutdown,
+            Self::ConnectTimeout | Self::ConnectFailed => ReferenceDisconnectCause::ConnectFailure,
+            Self::SubscriptionSendTimeout | Self::SubscriptionSendFailed => {
+                ReferenceDisconnectCause::SubscriptionFailure
+            }
+            Self::HeartbeatAckTimeout => {
+                ReferenceDisconnectCause::WatchdogTimeout(ReferenceWatchdogTimeout::HeartbeatAck)
+            }
+            Self::RequiredDataIdleTimeout => {
+                ReferenceDisconnectCause::WatchdogTimeout(ReferenceWatchdogTimeout::RequiredData)
+            }
+            Self::ReadIdleTimeout => {
+                ReferenceDisconnectCause::WatchdogTimeout(ReferenceWatchdogTimeout::ReadIdle)
+            }
+            Self::CriticalBoundaryIntegrity
+            | Self::CriticalBoundaryPersistence
+            | Self::CriticalWriterQueue => ReferenceDisconnectCause::CriticalPersistence,
+            Self::HeartbeatSendTimeout
+            | Self::HeartbeatSendFailed
+            | Self::WebsocketEof
+            | Self::RemoteClose
+            | Self::TransportReadFailed
+            | Self::UnknownDisconnect => ReferenceDisconnectCause::TransportFailure,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReferencePongExpectation {
+    Binary([u8; 8]),
+}
+
+#[derive(Debug)]
+struct ReferenceFeedWatchdog {
+    required_data_deadline: Instant,
+    read_idle_deadline: Instant,
+    pong_deadline: Option<Instant>,
+    stable_deadline: Option<Instant>,
+    expected_pong: Option<ReferencePongExpectation>,
+    stable: bool,
+}
+
+impl ReferenceFeedWatchdog {
+    fn new(now: Instant, kind: ReferenceFeedKind) -> Self {
+        Self {
+            required_data_deadline: now + kind.required_data_timeout(),
+            read_idle_deadline: now + REFERENCE_READ_IDLE_TIMEOUT,
+            pong_deadline: None,
+            stable_deadline: None,
+            expected_pong: None,
+            stable: false,
+        }
+    }
+
+    fn on_frame(&mut self, now: Instant) {
+        self.read_idle_deadline = now + REFERENCE_READ_IDLE_TIMEOUT;
+    }
+
+    fn on_required_tick(&mut self, now: Instant, kind: ReferenceFeedKind) {
+        self.required_data_deadline = now + kind.required_data_timeout();
+        if self.stable_deadline.is_none() && !self.stable {
+            self.stable_deadline = Some(now + REFERENCE_STABLE_RESET_AFTER);
+        }
+    }
+
+    fn arm_binary_pong(&mut self, now: Instant, payload: [u8; 8]) {
+        self.expected_pong = Some(ReferencePongExpectation::Binary(payload));
+        self.pong_deadline = Some(now + REFERENCE_PONG_TIMEOUT);
+    }
+
+    fn acknowledge_binary_pong(&mut self, payload: &[u8]) -> bool {
+        let acknowledged = matches!(
+            self.expected_pong,
+            Some(ReferencePongExpectation::Binary(expected)) if expected.as_slice() == payload
+        );
+        if acknowledged {
+            self.expected_pong = None;
+            self.pong_deadline = None;
+        }
+        acknowledged
+    }
+
+    fn awaiting_pong(&self) -> bool {
+        self.expected_pong.is_some()
+    }
+
+    fn mark_stable(&mut self) -> bool {
+        if self.stable || self.stable_deadline.is_none() {
+            return false;
+        }
+        self.stable = true;
+        self.stable_deadline = None;
+        true
+    }
+}
+
+#[derive(Debug, Default)]
+struct ReferenceSessionStats {
+    healthy_epoch: bool,
+    stable_epoch: bool,
+    required_ticks: u64,
+    heartbeat_probes: u64,
+    heartbeat_acknowledgements: u64,
+    last_required_tick_at: Option<DateTime<Utc>>,
+    last_frame_at: Option<DateTime<Utc>>,
+    last_pong_at: Option<DateTime<Utc>>,
+    time_to_first_required_tick_milliseconds: Option<u64>,
+    remote_close_code: Option<u16>,
+}
+
+#[derive(Debug, Default)]
+struct ReferenceRetryState {
+    consecutive_failures: u32,
+}
+
+impl ReferenceRetryState {
+    fn record_failure(&mut self) -> u32 {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.consecutive_failures
+    }
+
+    fn reset(&mut self) {
+        self.consecutive_failures = 0;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReferenceRetryAction {
+    Stop,
+    ImmediateRecovery,
+    Backoff(StdDuration),
+}
+
+#[derive(Debug)]
+struct ReferenceRecoveryWindow {
+    since: Option<DateTime<Utc>>,
+    started_at: Option<Instant>,
+}
+
+impl ReferenceRecoveryWindow {
+    fn open(since: DateTime<Utc>, started_at: Instant) -> Self {
+        Self {
+            since: Some(since),
+            started_at: Some(started_at),
+        }
+    }
+
+    fn open_if_closed(&mut self, since: DateTime<Utc>, started_at: Instant) {
+        if self.started_at.is_none() {
+            self.since = Some(since);
+            self.started_at = Some(started_at);
+        }
+    }
+
+    fn close(&mut self, ended_at: Instant) -> u64 {
+        self.since = None;
+        self.started_at
+            .take()
+            .map(|started_at| duration_milliseconds(ended_at.duration_since(started_at)))
+            .unwrap_or(0)
+    }
 }
 
 pub type BtcRuntimeStatusInputs = (
@@ -2123,6 +2441,385 @@ fn log_clob_disconnect(
     }
 }
 
+fn reference_transport_metrics_mut(
+    metrics: &mut BtcRuntimeMetrics,
+    kind: ReferenceFeedKind,
+) -> &mut ReferenceTransportMetrics {
+    match kind {
+        ReferenceFeedKind::Rtds => &mut metrics.rtds_transport,
+        ReferenceFeedKind::Binance => &mut metrics.binance_transport,
+    }
+}
+
+fn reference_reconnect_delay(
+    config: &BtcRuntimeConfig,
+    consecutive_failures: u32,
+    connection_epoch: i32,
+    connection_id: Uuid,
+    kind: ReferenceFeedKind,
+) -> StdDuration {
+    let base = reconnect_backoff(config, consecutive_failures);
+    let base_milliseconds = duration_milliseconds(base);
+    let spread = base_milliseconds.saturating_mul(REFERENCE_RETRY_JITTER_PERCENT) / 100;
+    if spread == 0 {
+        return base;
+    }
+    let width = spread.saturating_mul(2).saturating_add(1);
+    let epoch = u64::try_from(connection_epoch).unwrap_or_default();
+    let connection_bits = connection_id.as_u128();
+    let connection_seed = (connection_bits as u64) ^ ((connection_bits >> 64) as u64);
+    let mut seed = kind.retry_salt()
+        ^ connection_seed
+        ^ epoch.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+        ^ u64::from(consecutive_failures).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    seed ^= seed >> 30;
+    seed = seed.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    seed ^= seed >> 27;
+    let jittered = base_milliseconds
+        .saturating_sub(spread)
+        .saturating_add(seed % width);
+    StdDuration::from_millis(jittered).min(config.reconnect_max_delay)
+}
+
+fn reference_retry_action(
+    config: &BtcRuntimeConfig,
+    stable_epoch: bool,
+    stop: bool,
+    retry_state: &mut ReferenceRetryState,
+    connection_epoch: i32,
+    connection_id: Uuid,
+    kind: ReferenceFeedKind,
+) -> ReferenceRetryAction {
+    if stop {
+        ReferenceRetryAction::Stop
+    } else if stable_epoch {
+        ReferenceRetryAction::ImmediateRecovery
+    } else {
+        let failures = retry_state.record_failure();
+        ReferenceRetryAction::Backoff(reference_reconnect_delay(
+            config,
+            failures,
+            connection_epoch,
+            connection_id,
+            kind,
+        ))
+    }
+}
+
+fn reference_tick_is_fresh(
+    tick: &ReferencePriceTick,
+    checked_at: DateTime<Utc>,
+    max_age: Duration,
+) -> bool {
+    [tick.source_timestamp, tick.received_at]
+        .into_iter()
+        .all(|timestamp| timestamp - checked_at <= max_age && checked_at - timestamp <= max_age)
+}
+
+fn reference_tick_progresses(
+    current: Option<&ReferencePriceTick>,
+    tick: &ReferencePriceTick,
+    kind: ReferenceFeedKind,
+) -> bool {
+    let required_source = match kind {
+        ReferenceFeedKind::Rtds => ReferencePriceSource::RtdsChainlink,
+        ReferenceFeedKind::Binance => ReferencePriceSource::DirectBinance,
+    };
+    tick.source == required_source && reference_tick_version_advances(current, tick)
+}
+
+fn reference_tick_version_advances(
+    current: Option<&ReferencePriceTick>,
+    tick: &ReferencePriceTick,
+) -> bool {
+    let direct_binance_event_id = match tick.source {
+        ReferencePriceSource::DirectBinance => {
+            let Some(event_id) = tick
+                .source_event_id
+                .as_deref()
+                .and_then(|value| value.parse::<u64>().ok())
+            else {
+                return false;
+            };
+            Some(event_id)
+        }
+        ReferencePriceSource::RtdsChainlink | ReferencePriceSource::RtdsBinance => None,
+    };
+    let Some(current) = current else {
+        return true;
+    };
+    if tick.source != current.source {
+        return false;
+    }
+    match tick.source {
+        ReferencePriceSource::RtdsChainlink | ReferencePriceSource::RtdsBinance => {
+            tick.source_timestamp > current.source_timestamp
+        }
+        ReferencePriceSource::DirectBinance => {
+            let Some(current_event_id) = current
+                .source_event_id
+                .as_deref()
+                .and_then(|value| value.parse::<u64>().ok())
+            else {
+                return false;
+            };
+            let Some(next_event_id) = direct_binance_event_id else {
+                return false;
+            };
+            tick.source_timestamp >= current.source_timestamp && next_event_id > current_event_id
+        }
+    }
+}
+
+fn update_reference_state_and_check_progress(
+    state: &mut RealtimeState,
+    tick: ReferencePriceTick,
+    kind: ReferenceFeedKind,
+    checked_at: DateTime<Utc>,
+    max_age: Duration,
+) -> bool {
+    if !reference_tick_is_fresh(&tick, checked_at, max_age) {
+        return false;
+    }
+    let current = state.reference_prices.get(&tick.source);
+    if !reference_tick_version_advances(current, &tick) {
+        return false;
+    }
+    let required_progress = reference_tick_progresses(current, &tick, kind);
+    state.update_reference_price(tick) && required_progress
+}
+
+struct BoundedReferenceDetail {
+    value: String,
+    remaining_bytes: usize,
+}
+
+impl BoundedReferenceDetail {
+    fn new(capacity: usize) -> Self {
+        Self {
+            value: String::with_capacity(capacity),
+            remaining_bytes: capacity,
+        }
+    }
+}
+
+impl Write for BoundedReferenceDetail {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        if self.remaining_bytes == 0 {
+            return Err(fmt::Error);
+        }
+        let mut accepted_bytes = value.len().min(self.remaining_bytes);
+        while accepted_bytes > 0 && !value.is_char_boundary(accepted_bytes) {
+            accepted_bytes -= 1;
+        }
+        self.value.push_str(&value[..accepted_bytes]);
+        self.remaining_bytes -= accepted_bytes;
+        if accepted_bytes < value.len() {
+            Err(fmt::Error)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn bounded_reference_detail(detail: impl fmt::Display) -> String {
+    let mut bounded = BoundedReferenceDetail::new(256);
+    let _ = write!(&mut bounded, "{detail}");
+    bounded.value
+}
+
+fn reference_session_metadata(
+    disconnect_reason: ReferenceDisconnectReason,
+    disconnect_detail: Option<&str>,
+    retry_action: ReferenceRetryAction,
+    consecutive_failures: u32,
+    connected_duration: Option<StdDuration>,
+    stats: &ReferenceSessionStats,
+) -> serde_json::Value {
+    let (next_action, retry_delay) = match retry_action {
+        ReferenceRetryAction::Stop => ("stop", None),
+        ReferenceRetryAction::ImmediateRecovery => ("immediate_recovery", None),
+        ReferenceRetryAction::Backoff(delay) => ("backoff", Some(delay)),
+    };
+    serde_json::json!({
+        "disconnect_reason": disconnect_reason,
+        "disconnect_detail": disconnect_detail,
+        "disconnect_cause": disconnect_reason.cause().as_str(),
+        "healthy_epoch": stats.healthy_epoch,
+        "stable_epoch": stats.stable_epoch,
+        "consecutive_failures": consecutive_failures,
+        "retry_delay_ms": retry_delay.map(duration_milliseconds),
+        "next_action": next_action,
+        "connected_duration_ms": connected_duration.map(duration_milliseconds),
+        "time_to_first_required_tick_ms": stats.time_to_first_required_tick_milliseconds,
+        "required_tick_count": stats.required_ticks,
+        "heartbeat_probes": stats.heartbeat_probes,
+        "heartbeat_acknowledgements": stats.heartbeat_acknowledgements,
+        "last_required_tick_at": stats.last_required_tick_at,
+        "last_frame_at": stats.last_frame_at,
+        "last_pong_at": stats.last_pong_at,
+        "remote_close_code": stats.remote_close_code,
+    })
+}
+
+fn record_reference_connected(
+    metrics: &mut BtcRuntimeMetrics,
+    kind: ReferenceFeedKind,
+    connection_id: Uuid,
+    connection_epoch: i32,
+    connected_at: DateTime<Utc>,
+    consecutive_failures: u32,
+) {
+    let transport = reference_transport_metrics_mut(metrics, kind);
+    transport.connections_established = transport.connections_established.saturating_add(1);
+    transport.connected_connection_epoch = Some(connection_epoch);
+    transport.connected_connection_id = Some(connection_id);
+    transport.last_connected_at = Some(connected_at);
+    transport.consecutive_failures = consecutive_failures;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_reference_required_tick(
+    metrics: &mut BtcRuntimeMetrics,
+    kind: ReferenceFeedKind,
+    connection_id: Uuid,
+    connection_epoch: i32,
+    required_at: DateTime<Utc>,
+    first_healthy_transition: bool,
+    unavailable_milliseconds: u64,
+) {
+    let transport = reference_transport_metrics_mut(metrics, kind);
+    transport.required_ticks_received = transport.required_ticks_received.saturating_add(1);
+    transport.last_required_tick_at = Some(required_at);
+    if first_healthy_transition {
+        transport.healthy_connections = transport.healthy_connections.saturating_add(1);
+        transport.active_connection_epoch = Some(connection_epoch);
+        transport.active_connection_id = Some(connection_id);
+        transport.last_healthy_at = Some(required_at);
+        transport.recovery_unavailable_milliseconds = transport
+            .recovery_unavailable_milliseconds
+            .saturating_add(unavailable_milliseconds);
+        transport.recovery_unavailable_since = None;
+    }
+}
+
+fn record_reference_stable(metrics: &mut BtcRuntimeMetrics, kind: ReferenceFeedKind) {
+    reference_transport_metrics_mut(metrics, kind).consecutive_failures = 0;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_reference_disconnected(
+    metrics: &mut BtcRuntimeMetrics,
+    kind: ReferenceFeedKind,
+    reason: ReferenceDisconnectReason,
+    retry_action: ReferenceRetryAction,
+    disconnected_at: DateTime<Utc>,
+    unavailable_since: Option<DateTime<Utc>>,
+    consecutive_failures: u32,
+) {
+    let transport = reference_transport_metrics_mut(metrics, kind);
+    transport.connected_connection_epoch = None;
+    transport.connected_connection_id = None;
+    transport.active_connection_epoch = None;
+    transport.active_connection_id = None;
+    transport.last_disconnect_at = Some(disconnected_at);
+    transport.last_disconnect_reason = Some(reason);
+    transport.recovery_unavailable_since = unavailable_since;
+    transport.consecutive_failures = consecutive_failures;
+    match reason.cause() {
+        ReferenceDisconnectCause::ConnectFailure => {
+            transport.connection_failures = transport.connection_failures.saturating_add(1);
+        }
+        ReferenceDisconnectCause::SubscriptionFailure => {
+            transport.subscription_failures = transport.subscription_failures.saturating_add(1);
+        }
+        ReferenceDisconnectCause::WatchdogTimeout(timeout) => {
+            transport.watchdog_disconnects = transport.watchdog_disconnects.saturating_add(1);
+            match timeout {
+                ReferenceWatchdogTimeout::RequiredData => {
+                    transport.required_data_timeouts =
+                        transport.required_data_timeouts.saturating_add(1);
+                }
+                ReferenceWatchdogTimeout::HeartbeatAck => {
+                    transport.pong_timeouts = transport.pong_timeouts.saturating_add(1);
+                }
+                ReferenceWatchdogTimeout::ReadIdle => {
+                    transport.read_timeouts = transport.read_timeouts.saturating_add(1);
+                }
+            }
+        }
+        ReferenceDisconnectCause::TransportFailure => {
+            transport.transport_disconnects = transport.transport_disconnects.saturating_add(1);
+        }
+        ReferenceDisconnectCause::Shutdown | ReferenceDisconnectCause::CriticalPersistence => {}
+    }
+    match retry_action {
+        ReferenceRetryAction::ImmediateRecovery => {
+            transport.immediate_recoveries_scheduled =
+                transport.immediate_recoveries_scheduled.saturating_add(1);
+        }
+        ReferenceRetryAction::Backoff(delay) => {
+            transport.backoff_scheduled_milliseconds = transport
+                .backoff_scheduled_milliseconds
+                .saturating_add(duration_milliseconds(delay));
+        }
+        ReferenceRetryAction::Stop => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn log_reference_disconnect(
+    kind: ReferenceFeedKind,
+    connection_id: Uuid,
+    connection_epoch: i32,
+    reason: ReferenceDisconnectReason,
+    retry_action: ReferenceRetryAction,
+    consecutive_failures: u32,
+    connected_duration: Option<StdDuration>,
+    detail: Option<&str>,
+) {
+    let retry_delay_milliseconds = match retry_action {
+        ReferenceRetryAction::Backoff(delay) => duration_milliseconds(delay),
+        ReferenceRetryAction::Stop | ReferenceRetryAction::ImmediateRecovery => 0,
+    };
+    let immediate_recovery = matches!(retry_action, ReferenceRetryAction::ImmediateRecovery);
+    let connected_duration_milliseconds = connected_duration.map(duration_milliseconds);
+    match reason.cause() {
+        ReferenceDisconnectCause::Shutdown => tracing::info!(
+            feed = kind.feed_name(),
+            %connection_id,
+            connection_epoch,
+            reason = reason.as_str(),
+            immediate_recovery,
+            failure_streak = consecutive_failures,
+            retry_delay_ms = retry_delay_milliseconds,
+            connected_duration_ms = connected_duration_milliseconds,
+            "reference websocket disconnected"
+        ),
+        ReferenceDisconnectCause::CriticalPersistence => tracing::error!(
+            feed = kind.feed_name(),
+            %connection_id,
+            connection_epoch,
+            reason = reason.as_str(),
+            detail = detail.unwrap_or("none"),
+            connected_duration_ms = connected_duration_milliseconds,
+            "reference websocket stopped after critical persistence failure"
+        ),
+        _ => tracing::warn!(
+            feed = kind.feed_name(),
+            %connection_id,
+            connection_epoch,
+            reason = reason.as_str(),
+            detail = detail.unwrap_or("none"),
+            immediate_recovery,
+            failure_streak = consecutive_failures,
+            retry_delay_ms = retry_delay_milliseconds,
+            connected_duration_ms = connected_duration_milliseconds,
+            "reference websocket disconnected"
+        ),
+    }
+}
+
 async fn run_rtds_supervisor(
     config: BtcRuntimeConfig,
     repository: BtcRepository,
@@ -2135,7 +2832,15 @@ async fn run_rtds_supervisor(
     if !config.enabled {
         return;
     }
+    let kind = ReferenceFeedKind::Rtds;
     let mut reconnect_ordinal = 0i32;
+    let mut retry_state = ReferenceRetryState::default();
+    let mut recovery_window = ReferenceRecoveryWindow::open(Utc::now(), Instant::now());
+    metrics
+        .write()
+        .await
+        .rtds_transport
+        .recovery_unavailable_since = recovery_window.since;
     loop {
         if *shutdown.borrow() {
             break;
@@ -2150,140 +2855,467 @@ async fn run_rtds_supervisor(
             reconnect_ordinal,
             Utc::now(),
         );
-        let (mut socket, _) = match connect_async(&config.rtds_ws_url).await {
-            Ok(value) => value,
-            Err(error) => {
-                session.disconnected_at = Some(Utc::now());
-                session.disconnect_reason = Some(error.to_string());
+        let attempt_started = Instant::now();
+        let connect_result = tokio::select! {
+            biased;
+            _ = shutdown.changed() => None,
+            result = timeout(
+                REFERENCE_CONNECT_TIMEOUT,
+                connect_async(&config.rtds_ws_url),
+            ) => Some(result),
+        };
+        let Some(connect_result) = connect_result else {
+            break;
+        };
+        let (mut socket, _) = match connect_result {
+            Ok(Ok(value)) => value,
+            result => {
+                let (reason, detail) = match result {
+                    Ok(Err(error)) => (
+                        ReferenceDisconnectReason::ConnectFailed,
+                        Some(bounded_reference_detail(error)),
+                    ),
+                    Err(_) => (ReferenceDisconnectReason::ConnectTimeout, None),
+                    Ok(Ok(_)) => unreachable!(),
+                };
+                let disconnected_at = Utc::now();
+                let retry_action = reference_retry_action(
+                    &config,
+                    false,
+                    false,
+                    &mut retry_state,
+                    reconnect_ordinal,
+                    connection_id,
+                    kind,
+                );
+                session.disconnected_at = Some(disconnected_at);
+                session.disconnect_reason = Some(reason.as_str().to_string());
+                session.metadata = reference_session_metadata(
+                    reason,
+                    detail.as_deref(),
+                    retry_action,
+                    retry_state.consecutive_failures,
+                    None,
+                    &ReferenceSessionStats::default(),
+                );
                 if !start_feed_session_or_fail(&repository, &session, &metrics).await
                     || !finish_feed_session_or_fail(&repository, &session, &metrics).await
                 {
                     return;
                 }
-                record_error(&metrics, error.into()).await;
-                if !reconnect_delay(&config, reconnect_ordinal, &mut shutdown).await {
+                {
+                    let mut runtime_metrics = metrics.write().await;
+                    runtime_metrics.reconnects = runtime_metrics.reconnects.saturating_add(1);
+                    record_reference_disconnected(
+                        &mut runtime_metrics,
+                        kind,
+                        reason,
+                        retry_action,
+                        disconnected_at,
+                        recovery_window.since,
+                        retry_state.consecutive_failures,
+                    );
+                }
+                log_reference_disconnect(
+                    kind,
+                    connection_id,
+                    reconnect_ordinal,
+                    reason,
+                    retry_action,
+                    retry_state.consecutive_failures,
+                    None,
+                    detail.as_deref(),
+                );
+                let error_message = detail
+                    .as_deref()
+                    .map(|detail| format!("{}: {detail}", reason.as_str()))
+                    .unwrap_or_else(|| reason.as_str().to_string());
+                record_error(&metrics, anyhow::anyhow!(error_message)).await;
+                let ReferenceRetryAction::Backoff(delay) = retry_action else {
+                    unreachable!("connect failure must schedule bounded backoff");
+                };
+                if !wait_reconnect_backoff(delay, &mut shutdown).await {
                     break;
                 }
                 continue;
             }
         };
-        session.connected_at = Some(Utc::now());
+        let connected_at = Utc::now();
+        let connected_instant = Instant::now();
+        session.connected_at = Some(connected_at);
         if !start_feed_session_or_fail(&repository, &session, &metrics).await {
             return;
         }
+        {
+            let mut runtime_metrics = metrics.write().await;
+            record_reference_connected(
+                &mut runtime_metrics,
+                kind,
+                connection_id,
+                reconnect_ordinal,
+                connected_at,
+                retry_state.consecutive_failures,
+            );
+        }
+        tracing::info!(
+            feed = kind.feed_name(),
+            %connection_id,
+            connection_epoch = reconnect_ordinal,
+            failure_streak = retry_state.consecutive_failures,
+            connect_latency_ms = duration_milliseconds(connected_instant.duration_since(attempt_started)),
+            "reference websocket connected"
+        );
         let mut fatal_persistence_error = None;
-        if let Err(error) = socket.send(Message::Text(rtds_subscription().into())).await {
-            session.disconnect_reason = Some(error.to_string());
-        } else {
-            let mut heartbeat = interval(config.rtds_heartbeat_interval);
-            heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
-            'connection: loop {
-                tokio::select! {
-                    _ = shutdown.changed() => {
-                        session.disconnect_reason = Some("shutdown".to_string());
-                        break;
+        let disconnect_reason: ReferenceDisconnectReason;
+        let mut disconnect_detail = None;
+        let mut stats = ReferenceSessionStats::default();
+        let subscription_result = tokio::select! {
+            biased;
+            _ = shutdown.changed() => None,
+            result = timeout(
+                REFERENCE_SEND_TIMEOUT,
+                socket.send(Message::Text(rtds_subscription().into())),
+            ) => Some(result),
+        };
+        match subscription_result {
+            None => disconnect_reason = ReferenceDisconnectReason::Shutdown,
+            Some(Err(_)) => {
+                disconnect_reason = ReferenceDisconnectReason::SubscriptionSendTimeout;
+            }
+            Some(Ok(Err(error))) => {
+                disconnect_reason = ReferenceDisconnectReason::SubscriptionSendFailed;
+                disconnect_detail = Some(bounded_reference_detail(error));
+            }
+            Some(Ok(Ok(()))) => {
+                let watchdog_started = Instant::now();
+                let mut watchdog = ReferenceFeedWatchdog::new(watchdog_started, kind);
+                let mut heartbeat = interval_at(
+                    watchdog_started + config.rtds_heartbeat_interval,
+                    config.rtds_heartbeat_interval,
+                );
+                heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+                let required_data_sleep = sleep(kind.required_data_timeout());
+                let read_idle_sleep = sleep(REFERENCE_READ_IDLE_TIMEOUT);
+                let stable_sleep = sleep(REFERENCE_STABLE_RESET_AFTER);
+                tokio::pin!(required_data_sleep, read_idle_sleep, stable_sleep);
+                'connection: loop {
+                    required_data_sleep
+                        .as_mut()
+                        .reset(watchdog.required_data_deadline);
+                    read_idle_sleep.as_mut().reset(watchdog.read_idle_deadline);
+                    if let Some(deadline) = watchdog.stable_deadline {
+                        stable_sleep.as_mut().reset(deadline);
                     }
-                    _ = heartbeat.tick() => {
-                        if let Err(error) = socket.send(Message::Text("PING".into())).await {
-                            session.disconnect_reason = Some(error.to_string());
+                    tokio::select! {
+                        biased;
+                        _ = shutdown.changed() => {
+                            disconnect_reason = ReferenceDisconnectReason::Shutdown;
                             break;
                         }
-                    }
-                    message = socket.next() => {
-                        let Some(message) = message else {
-                            session.disconnect_reason = Some("websocket_eof".to_string());
+                        _ = &mut required_data_sleep => {
+                            disconnect_reason = ReferenceDisconnectReason::RequiredDataIdleTimeout;
                             break;
-                        };
-                        match message {
-                            Ok(Message::Text(text))
-                                if !text.trim().eq_ignore_ascii_case("PONG")
-                                    && !text.trim().is_empty() =>
-                            {
-                                let received_at = Utc::now();
-                                sequence = sequence.saturating_add(1);
-                                session.messages_received = session.messages_received.saturating_add(1);
-                                let parsed = serde_json::from_str::<serde_json::Value>(&text)
-                                    .context("failed to decode RTDS JSON")
-                                    .and_then(|value| {
-                                        if !is_rtds_reference_update(&value) {
-                                            return Ok(None);
-                                        }
-                                        parse_rtds_reference_tick(
-                                            &value, connection_id, sequence, received_at
-                                        )
-                                        .map(Some)
-                                    });
-                                match parsed {
-                                    Ok(Some(tick)) => {
-                                        state.write().await.update_reference_price(tick.clone());
-                                        {
-                                            let mut runtime_metrics = metrics.write().await;
-                                            runtime_metrics.reference_ticks_received =
-                                                runtime_metrics.reference_ticks_received.saturating_add(1);
-                                        }
-                                        if tick.source == ReferencePriceSource::RtdsChainlink {
-                                            let max_delay =
-                                                chrono_duration(config.boundary_tick_max_delay);
-                                            let observed = boundaries
-                                                .write()
-                                                .await
-                                                .observe_chainlink(&tick, max_delay);
-                                            if let Err(error) = observed {
-                                                session.disconnect_reason =
-                                                    Some(format!("critical_boundary_integrity:{error}"));
-                                                fatal_persistence_error = Some(error);
-                                                break 'connection;
-                                            }
-                                            if let Err(error) = flush_pending_boundaries(
-                                                &repository,
-                                                &boundaries,
-                                                &metrics,
-                                                max_delay,
-                                            )
-                                            .await
-                                            {
-                                                session.disconnect_reason =
-                                                    Some(format!("critical_boundary_persistence:{error}"));
-                                                fatal_persistence_error = Some(error);
-                                                break 'connection;
-                                            }
-                                        }
-                                        if enqueue(&writer, PersistItem::ReferenceTick(tick), &metrics).await {
-                                            session.messages_persisted =
-                                                session.messages_persisted.saturating_add(1);
-                                        } else {
-                                            session.dropped_messages =
-                                                session.dropped_messages.saturating_add(1);
-                                            return;
-                                        }
-                                    }
-                                    Ok(None) => {}
-                                    Err(error) => {
-                                        session.decode_errors = session.decode_errors.saturating_add(1);
-                                        {
-                                            let mut runtime_metrics = metrics.write().await;
-                                            runtime_metrics.decode_errors =
-                                                runtime_metrics.decode_errors.saturating_add(1);
-                                        }
-                                        record_error(&metrics, error).await;
-                                    }
+                        }
+                        _ = &mut read_idle_sleep => {
+                            disconnect_reason = ReferenceDisconnectReason::ReadIdleTimeout;
+                            break;
+                        }
+                        _ = &mut stable_sleep, if watchdog.stable_deadline.is_some() => {
+                            if watchdog.mark_stable() {
+                                stats.stable_epoch = true;
+                                retry_state.reset();
+                                let mut runtime_metrics = metrics.write().await;
+                                record_reference_stable(&mut runtime_metrics, kind);
+                                drop(runtime_metrics);
+                                tracing::info!(
+                                    feed = kind.feed_name(),
+                                    %connection_id,
+                                    connection_epoch = reconnect_ordinal,
+                                    "reference websocket reached stable data health"
+                                );
+                            }
+                        }
+                        _ = heartbeat.tick() => {
+                            let send_result = tokio::select! {
+                                biased;
+                                _ = shutdown.changed() => None,
+                                result = timeout(
+                                    REFERENCE_SEND_TIMEOUT,
+                                    socket.send(Message::Text(RTDS_HEARTBEAT_MESSAGE.into())),
+                                ) => Some(result),
+                            };
+                            match send_result {
+                                None => {
+                                    disconnect_reason = ReferenceDisconnectReason::Shutdown;
+                                    break;
+                                }
+                                Some(Err(_)) => {
+                                    disconnect_reason = ReferenceDisconnectReason::HeartbeatSendTimeout;
+                                    break;
+                                }
+                                Some(Ok(Err(error))) => {
+                                    disconnect_reason = ReferenceDisconnectReason::HeartbeatSendFailed;
+                                    disconnect_detail = Some(bounded_reference_detail(error));
+                                    break;
+                                }
+                                Some(Ok(Ok(()))) => {
+                                    stats.heartbeat_probes = stats.heartbeat_probes.saturating_add(1);
+                                    let mut runtime_metrics = metrics.write().await;
+                                    let transport = reference_transport_metrics_mut(
+                                        &mut runtime_metrics,
+                                        kind,
+                                    );
+                                    transport.heartbeat_probes =
+                                        transport.heartbeat_probes.saturating_add(1);
                                 }
                             }
-                            Ok(Message::Close(frame)) => {
-                                session.disconnect_reason = Some(format!("remote_close:{frame:?}"));
+                        }
+                        message = socket.next() => {
+                            let Some(message) = message else {
+                                disconnect_reason = ReferenceDisconnectReason::WebsocketEof;
                                 break;
-                            }
-                            Ok(_) => {}
-                            Err(error) => {
-                                session.disconnect_reason = Some(error.to_string());
-                                break;
+                            };
+                            match message {
+                                Ok(message) => {
+                                    let received_at = Utc::now();
+                                    let received_instant = Instant::now();
+                                    watchdog.on_frame(received_instant);
+                                    stats.last_frame_at = Some(received_at);
+                                    let rtds_pong = matches!(&message, Message::Pong(_))
+                                        || matches!(
+                                            &message,
+                                            Message::Text(text)
+                                                if text.trim().eq_ignore_ascii_case("pong")
+                                        );
+                                    if rtds_pong {
+                                        stats.heartbeat_acknowledgements = stats
+                                            .heartbeat_acknowledgements
+                                            .saturating_add(1);
+                                        stats.last_pong_at = Some(received_at);
+                                        let mut runtime_metrics = metrics.write().await;
+                                        let transport = reference_transport_metrics_mut(
+                                            &mut runtime_metrics,
+                                            kind,
+                                        );
+                                        transport.heartbeat_acknowledgements = transport
+                                            .heartbeat_acknowledgements
+                                            .saturating_add(1);
+                                        continue;
+                                    }
+                                    match message {
+                                        Message::Text(text) if text.trim().is_empty() => {}
+                                        Message::Text(text) => {
+                                            sequence = sequence.saturating_add(1);
+                                            session.messages_received = session.messages_received.saturating_add(1);
+                                            let parsed = serde_json::from_str::<serde_json::Value>(&text)
+                                                .context("failed to decode RTDS JSON")
+                                                .and_then(|value| {
+                                                    if !is_rtds_reference_update(&value) {
+                                                        return Ok(None);
+                                                    }
+                                                    parse_rtds_reference_tick(
+                                                        &value, connection_id, sequence, received_at
+                                                    )
+                                                    .map(Some)
+                                                });
+                                            match parsed {
+                                                Ok(Some(tick)) => {
+                                                    let health_progress = {
+                                                        let mut realtime = state.write().await;
+                                                        update_reference_state_and_check_progress(
+                                                            &mut realtime,
+                                                            tick.clone(),
+                                                            kind,
+                                                            received_at,
+                                                            chrono_duration(config.max_reference_age),
+                                                        )
+                                                    };
+                                                    let first_healthy_transition =
+                                                        health_progress && !stats.healthy_epoch;
+                                                    let unavailable_milliseconds = if first_healthy_transition {
+                                                        recovery_window.close(received_instant)
+                                                    } else {
+                                                        0
+                                                    };
+                                                    {
+                                                        let mut runtime_metrics = metrics.write().await;
+                                                        runtime_metrics.reference_ticks_received = runtime_metrics
+                                                            .reference_ticks_received
+                                                            .saturating_add(1);
+                                                        match tick.source {
+                                                            ReferencePriceSource::RtdsChainlink => {
+                                                                runtime_metrics.rtds_chainlink_ticks_received =
+                                                                    runtime_metrics.rtds_chainlink_ticks_received
+                                                                        .saturating_add(1);
+                                                            }
+                                                            ReferencePriceSource::RtdsBinance => {
+                                                                runtime_metrics.rtds_binance_ticks_received =
+                                                                    runtime_metrics.rtds_binance_ticks_received
+                                                                        .saturating_add(1);
+                                                            }
+                                                            ReferencePriceSource::DirectBinance => {}
+                                                        }
+                                                        if health_progress {
+                                                            record_reference_required_tick(
+                                                                &mut runtime_metrics,
+                                                                kind,
+                                                                connection_id,
+                                                                reconnect_ordinal,
+                                                                received_at,
+                                                                first_healthy_transition,
+                                                                unavailable_milliseconds,
+                                                            );
+                                                        }
+                                                    }
+                                                    if health_progress {
+                                                        watchdog.on_required_tick(received_instant, kind);
+                                                        stats.required_ticks = stats.required_ticks.saturating_add(1);
+                                                        stats.last_required_tick_at = Some(received_at);
+                                                        if first_healthy_transition {
+                                                            stats.healthy_epoch = true;
+                                                            stats.time_to_first_required_tick_milliseconds = Some(
+                                                                duration_milliseconds(
+                                                                    received_instant.duration_since(connected_instant),
+                                                                ),
+                                                            );
+                                                            tracing::info!(
+                                                                feed = kind.feed_name(),
+                                                                %connection_id,
+                                                                connection_epoch = reconnect_ordinal,
+                                                                unavailable_duration_ms = unavailable_milliseconds,
+                                                                "reference websocket began delivering required data"
+                                                            );
+                                                        }
+                                                    }
+                                                    if tick.source == ReferencePriceSource::RtdsChainlink {
+                                                        let max_delay =
+                                                            chrono_duration(config.boundary_tick_max_delay);
+                                                        let observed = boundaries
+                                                            .write()
+                                                            .await
+                                                            .observe_chainlink(&tick, max_delay);
+                                                        if let Err(error) = observed {
+                                                            disconnect_reason = ReferenceDisconnectReason::CriticalBoundaryIntegrity;
+                                                            disconnect_detail = Some(bounded_reference_detail(&error));
+                                                            fatal_persistence_error = Some(error);
+                                                            break 'connection;
+                                                        }
+                                                        if let Err(error) = flush_pending_boundaries(
+                                                            &repository,
+                                                            &boundaries,
+                                                            &metrics,
+                                                            max_delay,
+                                                        )
+                                                        .await
+                                                        {
+                                                            disconnect_reason = ReferenceDisconnectReason::CriticalBoundaryPersistence;
+                                                            disconnect_detail = Some(bounded_reference_detail(&error));
+                                                            fatal_persistence_error = Some(error);
+                                                            break 'connection;
+                                                        }
+                                                    }
+                                                    if enqueue(&writer, PersistItem::ReferenceTick(tick), &metrics).await {
+                                                        session.messages_persisted =
+                                                            session.messages_persisted.saturating_add(1);
+                                                    } else {
+                                                        session.dropped_messages =
+                                                            session.dropped_messages.saturating_add(1);
+                                                        disconnect_reason = ReferenceDisconnectReason::CriticalWriterQueue;
+                                                        fatal_persistence_error = Some(anyhow::anyhow!(
+                                                            "RTDS reference persistence queue rejected item"
+                                                        ));
+                                                        break 'connection;
+                                                    }
+                                                }
+                                                Ok(None) => {}
+                                                Err(error) => {
+                                                    session.decode_errors = session.decode_errors.saturating_add(1);
+                                                    {
+                                                        let mut runtime_metrics = metrics.write().await;
+                                                        runtime_metrics.decode_errors =
+                                                            runtime_metrics.decode_errors.saturating_add(1);
+                                                    }
+                                                    record_error(&metrics, error).await;
+                                                }
+                                            }
+                                        }
+                                        Message::Close(frame) => {
+                                            if let Some(frame) = frame {
+                                                stats.remote_close_code = Some(u16::from(frame.code));
+                                                if !frame.reason.is_empty() {
+                                                    disconnect_detail =
+                                                        Some(bounded_reference_detail(frame.reason));
+                                                }
+                                            }
+                                            disconnect_reason = ReferenceDisconnectReason::RemoteClose;
+                                            break;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                Err(error) => {
+                                    disconnect_reason = ReferenceDisconnectReason::TransportReadFailed;
+                                    disconnect_detail = Some(bounded_reference_detail(error));
+                                    break;
+                                }
                             }
                         }
                     }
                 }
             }
         }
-        session.disconnected_at = Some(Utc::now());
+        let disconnected_at = Utc::now();
+        let disconnected_instant = Instant::now();
+        recovery_window.open_if_closed(disconnected_at, disconnected_instant);
+        let stop = matches!(
+            disconnect_reason.cause(),
+            ReferenceDisconnectCause::Shutdown | ReferenceDisconnectCause::CriticalPersistence
+        );
+        let retry_action = reference_retry_action(
+            &config,
+            stats.stable_epoch,
+            stop,
+            &mut retry_state,
+            reconnect_ordinal,
+            connection_id,
+            kind,
+        );
+        let connected_duration = Some(disconnected_instant.duration_since(connected_instant));
+        session.disconnected_at = Some(disconnected_at);
+        session.disconnect_reason = Some(disconnect_reason.as_str().to_string());
+        session.metadata = reference_session_metadata(
+            disconnect_reason,
+            disconnect_detail.as_deref(),
+            retry_action,
+            retry_state.consecutive_failures,
+            connected_duration,
+            &stats,
+        );
+        {
+            let mut runtime_metrics = metrics.write().await;
+            if retry_action != ReferenceRetryAction::Stop {
+                runtime_metrics.reconnects = runtime_metrics.reconnects.saturating_add(1);
+            }
+            record_reference_disconnected(
+                &mut runtime_metrics,
+                kind,
+                disconnect_reason,
+                retry_action,
+                disconnected_at,
+                recovery_window.since,
+                retry_state.consecutive_failures,
+            );
+        }
+        log_reference_disconnect(
+            kind,
+            connection_id,
+            reconnect_ordinal,
+            disconnect_reason,
+            retry_action,
+            retry_state.consecutive_failures,
+            connected_duration,
+            disconnect_detail.as_deref(),
+        );
         if !finish_feed_session_or_fail(&repository, &session, &metrics).await {
             return;
         }
@@ -2291,12 +3323,14 @@ async fn run_rtds_supervisor(
             record_critical_persistence_error(&metrics, error).await;
             return;
         }
-        {
-            let mut runtime_metrics = metrics.write().await;
-            runtime_metrics.reconnects = runtime_metrics.reconnects.saturating_add(1);
-        }
-        if !reconnect_delay(&config, reconnect_ordinal, &mut shutdown).await {
-            break;
+        match retry_action {
+            ReferenceRetryAction::Stop => return,
+            ReferenceRetryAction::ImmediateRecovery => continue,
+            ReferenceRetryAction::Backoff(delay) => {
+                if !wait_reconnect_backoff(delay, &mut shutdown).await {
+                    break;
+                }
+            }
         }
     }
 }
@@ -2312,7 +3346,15 @@ async fn run_binance_supervisor(
     if !config.enabled {
         return;
     }
+    let kind = ReferenceFeedKind::Binance;
     let mut reconnect_ordinal = 0i32;
+    let mut retry_state = ReferenceRetryState::default();
+    let mut recovery_window = ReferenceRecoveryWindow::open(Utc::now(), Instant::now());
+    metrics
+        .write()
+        .await
+        .binance_transport
+        .recovery_unavailable_since = recovery_window.since;
     loop {
         if *shutdown.borrow() {
             break;
@@ -2327,107 +3369,449 @@ async fn run_binance_supervisor(
             reconnect_ordinal,
             Utc::now(),
         );
-        let (mut socket, _) = match connect_async(&config.binance_ws_url).await {
-            Ok(value) => value,
-            Err(error) => {
-                session.disconnected_at = Some(Utc::now());
-                session.disconnect_reason = Some(error.to_string());
+        let attempt_started = Instant::now();
+        let connect_result = tokio::select! {
+            biased;
+            _ = shutdown.changed() => None,
+            result = timeout(
+                REFERENCE_CONNECT_TIMEOUT,
+                connect_async(&config.binance_ws_url),
+            ) => Some(result),
+        };
+        let Some(connect_result) = connect_result else {
+            break;
+        };
+        let (mut socket, _) = match connect_result {
+            Ok(Ok(value)) => value,
+            result => {
+                let (reason, detail) = match result {
+                    Ok(Err(error)) => (
+                        ReferenceDisconnectReason::ConnectFailed,
+                        Some(bounded_reference_detail(error)),
+                    ),
+                    Err(_) => (ReferenceDisconnectReason::ConnectTimeout, None),
+                    Ok(Ok(_)) => unreachable!(),
+                };
+                let disconnected_at = Utc::now();
+                let retry_action = reference_retry_action(
+                    &config,
+                    false,
+                    false,
+                    &mut retry_state,
+                    reconnect_ordinal,
+                    connection_id,
+                    kind,
+                );
+                session.disconnected_at = Some(disconnected_at);
+                session.disconnect_reason = Some(reason.as_str().to_string());
+                session.metadata = reference_session_metadata(
+                    reason,
+                    detail.as_deref(),
+                    retry_action,
+                    retry_state.consecutive_failures,
+                    None,
+                    &ReferenceSessionStats::default(),
+                );
                 if !start_feed_session_or_fail(&repository, &session, &metrics).await
                     || !finish_feed_session_or_fail(&repository, &session, &metrics).await
                 {
                     return;
                 }
-                record_error(&metrics, error.into()).await;
-                if !reconnect_delay(&config, reconnect_ordinal, &mut shutdown).await {
+                {
+                    let mut runtime_metrics = metrics.write().await;
+                    runtime_metrics.reconnects = runtime_metrics.reconnects.saturating_add(1);
+                    record_reference_disconnected(
+                        &mut runtime_metrics,
+                        kind,
+                        reason,
+                        retry_action,
+                        disconnected_at,
+                        recovery_window.since,
+                        retry_state.consecutive_failures,
+                    );
+                }
+                log_reference_disconnect(
+                    kind,
+                    connection_id,
+                    reconnect_ordinal,
+                    reason,
+                    retry_action,
+                    retry_state.consecutive_failures,
+                    None,
+                    detail.as_deref(),
+                );
+                let error_message = detail
+                    .as_deref()
+                    .map(|detail| format!("{}: {detail}", reason.as_str()))
+                    .unwrap_or_else(|| reason.as_str().to_string());
+                record_error(&metrics, anyhow::anyhow!(error_message)).await;
+                let ReferenceRetryAction::Backoff(delay) = retry_action else {
+                    unreachable!("connect failure must schedule bounded backoff");
+                };
+                if !wait_reconnect_backoff(delay, &mut shutdown).await {
                     break;
                 }
                 continue;
             }
         };
-        session.connected_at = Some(Utc::now());
+        let connected_at = Utc::now();
+        let connected_instant = Instant::now();
+        session.connected_at = Some(connected_at);
         if !start_feed_session_or_fail(&repository, &session, &metrics).await {
             return;
         }
-        let mut heartbeat = interval(config.binance_heartbeat_interval);
+        {
+            let mut runtime_metrics = metrics.write().await;
+            record_reference_connected(
+                &mut runtime_metrics,
+                kind,
+                connection_id,
+                reconnect_ordinal,
+                connected_at,
+                retry_state.consecutive_failures,
+            );
+        }
+        tracing::info!(
+            feed = kind.feed_name(),
+            %connection_id,
+            connection_epoch = reconnect_ordinal,
+            failure_streak = retry_state.consecutive_failures,
+            connect_latency_ms = duration_milliseconds(connected_instant.duration_since(attempt_started)),
+            "reference websocket connected"
+        );
+        let mut fatal_persistence_error = None;
+        let disconnect_reason: ReferenceDisconnectReason;
+        let mut disconnect_detail = None;
+        let mut stats = ReferenceSessionStats::default();
+        let watchdog_started = Instant::now();
+        let mut watchdog = ReferenceFeedWatchdog::new(watchdog_started, kind);
+        let mut heartbeat = interval_at(
+            watchdog_started + config.binance_heartbeat_interval,
+            config.binance_heartbeat_interval,
+        );
         heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        loop {
+        let required_data_sleep = sleep(kind.required_data_timeout());
+        let read_idle_sleep = sleep(REFERENCE_READ_IDLE_TIMEOUT);
+        let pong_sleep = sleep(REFERENCE_PONG_TIMEOUT);
+        let stable_sleep = sleep(REFERENCE_STABLE_RESET_AFTER);
+        tokio::pin!(
+            required_data_sleep,
+            read_idle_sleep,
+            pong_sleep,
+            stable_sleep
+        );
+        let mut heartbeat_sequence = 0u64;
+        'connection: loop {
+            required_data_sleep
+                .as_mut()
+                .reset(watchdog.required_data_deadline);
+            read_idle_sleep.as_mut().reset(watchdog.read_idle_deadline);
+            if let Some(deadline) = watchdog.pong_deadline {
+                pong_sleep.as_mut().reset(deadline);
+            }
+            if let Some(deadline) = watchdog.stable_deadline {
+                stable_sleep.as_mut().reset(deadline);
+            }
             tokio::select! {
+                biased;
                 _ = shutdown.changed() => {
-                    session.disconnect_reason = Some("shutdown".to_string());
+                    disconnect_reason = ReferenceDisconnectReason::Shutdown;
                     break;
                 }
+                _ = &mut required_data_sleep => {
+                    disconnect_reason = ReferenceDisconnectReason::RequiredDataIdleTimeout;
+                    break;
+                }
+                _ = &mut pong_sleep, if watchdog.pong_deadline.is_some() => {
+                    disconnect_reason = ReferenceDisconnectReason::HeartbeatAckTimeout;
+                    break;
+                }
+                _ = &mut read_idle_sleep => {
+                    disconnect_reason = ReferenceDisconnectReason::ReadIdleTimeout;
+                    break;
+                }
+                _ = &mut stable_sleep, if watchdog.stable_deadline.is_some() => {
+                    if watchdog.mark_stable() {
+                        stats.stable_epoch = true;
+                        retry_state.reset();
+                        let mut runtime_metrics = metrics.write().await;
+                        record_reference_stable(&mut runtime_metrics, kind);
+                        drop(runtime_metrics);
+                        tracing::info!(
+                            feed = kind.feed_name(),
+                            %connection_id,
+                            connection_epoch = reconnect_ordinal,
+                            "reference websocket reached stable data health"
+                        );
+                    }
+                }
                 _ = heartbeat.tick() => {
-                    if let Err(error) = socket.send(Message::Ping(Vec::new().into())).await {
-                        session.disconnect_reason = Some(error.to_string());
-                        break;
+                    if watchdog.awaiting_pong() {
+                        continue;
+                    }
+                    heartbeat_sequence = heartbeat_sequence.saturating_add(1);
+                    let payload = heartbeat_sequence.to_be_bytes();
+                    let send_result = tokio::select! {
+                        biased;
+                        _ = shutdown.changed() => None,
+                        result = timeout(
+                            REFERENCE_SEND_TIMEOUT,
+                            socket.send(Message::Ping(payload.to_vec().into())),
+                        ) => Some(result),
+                    };
+                    match send_result {
+                        None => {
+                            disconnect_reason = ReferenceDisconnectReason::Shutdown;
+                            break;
+                        }
+                        Some(Err(_)) => {
+                            disconnect_reason = ReferenceDisconnectReason::HeartbeatSendTimeout;
+                            break;
+                        }
+                        Some(Ok(Err(error))) => {
+                            disconnect_reason = ReferenceDisconnectReason::HeartbeatSendFailed;
+                            disconnect_detail = Some(bounded_reference_detail(error));
+                            break;
+                        }
+                        Some(Ok(Ok(()))) => {
+                            let sent_at = Instant::now();
+                            watchdog.arm_binary_pong(sent_at, payload);
+                            stats.heartbeat_probes = stats.heartbeat_probes.saturating_add(1);
+                            let mut runtime_metrics = metrics.write().await;
+                            let transport = reference_transport_metrics_mut(
+                                &mut runtime_metrics,
+                                kind,
+                            );
+                            transport.heartbeat_probes =
+                                transport.heartbeat_probes.saturating_add(1);
+                        }
                     }
                 }
                 message = socket.next() => {
                     let Some(message) = message else {
-                        session.disconnect_reason = Some("websocket_eof".to_string());
+                        disconnect_reason = ReferenceDisconnectReason::WebsocketEof;
                         break;
                     };
                     match message {
-                        Ok(Message::Text(text)) => {
+                        Ok(message) => {
                             let received_at = Utc::now();
-                            sequence = sequence.saturating_add(1);
-                            session.messages_received = session.messages_received.saturating_add(1);
-                            let parsed = serde_json::from_str::<serde_json::Value>(&text)
-                                .context("failed to decode Binance aggregate trade JSON")
-                                .and_then(|value| parse_binance_agg_trade(
-                                    &value, connection_id, sequence, received_at
-                                ));
-                            match parsed {
-                                Ok(tick) => {
-                                    state.write().await.update_reference_price(tick.clone());
-                                    {
-                                        let mut runtime_metrics = metrics.write().await;
-                                        runtime_metrics.reference_ticks_received =
-                                            runtime_metrics.reference_ticks_received.saturating_add(1);
-                                    }
-                                    if enqueue(&writer, PersistItem::ReferenceTick(tick), &metrics).await {
-                                        session.messages_persisted =
-                                            session.messages_persisted.saturating_add(1);
-                                    } else {
-                                        session.dropped_messages =
-                                            session.dropped_messages.saturating_add(1);
-                                        return;
+                            let received_instant = Instant::now();
+                            watchdog.on_frame(received_instant);
+                            stats.last_frame_at = Some(received_at);
+                            match message {
+                                Message::Text(text) => {
+                                    sequence = sequence.saturating_add(1);
+                                    session.messages_received =
+                                        session.messages_received.saturating_add(1);
+                                    let parsed = serde_json::from_str::<serde_json::Value>(&text)
+                                        .context("failed to decode Binance aggregate trade JSON")
+                                        .and_then(|value| parse_binance_agg_trade(
+                                            &value,
+                                            connection_id,
+                                            sequence,
+                                            received_at,
+                                        ));
+                                    match parsed {
+                                        Ok(tick) => {
+                                            let health_progress = {
+                                                let mut realtime = state.write().await;
+                                                update_reference_state_and_check_progress(
+                                                    &mut realtime,
+                                                    tick.clone(),
+                                                    kind,
+                                                    received_at,
+                                                    chrono_duration(config.max_reference_age),
+                                                )
+                                            };
+                                            let first_healthy_transition =
+                                                health_progress && !stats.healthy_epoch;
+                                            let unavailable_milliseconds =
+                                                if first_healthy_transition {
+                                                    recovery_window.close(received_instant)
+                                                } else {
+                                                    0
+                                                };
+                                            {
+                                                let mut runtime_metrics = metrics.write().await;
+                                                runtime_metrics.reference_ticks_received =
+                                                    runtime_metrics
+                                                        .reference_ticks_received
+                                                        .saturating_add(1);
+                                                runtime_metrics.binance_ticks_received =
+                                                    runtime_metrics
+                                                        .binance_ticks_received
+                                                        .saturating_add(1);
+                                                if health_progress {
+                                                    record_reference_required_tick(
+                                                        &mut runtime_metrics,
+                                                        kind,
+                                                        connection_id,
+                                                        reconnect_ordinal,
+                                                        received_at,
+                                                        first_healthy_transition,
+                                                        unavailable_milliseconds,
+                                                    );
+                                                }
+                                            }
+                                            if health_progress {
+                                                watchdog.on_required_tick(received_instant, kind);
+                                                stats.required_ticks =
+                                                    stats.required_ticks.saturating_add(1);
+                                                stats.last_required_tick_at = Some(received_at);
+                                                if first_healthy_transition {
+                                                    stats.healthy_epoch = true;
+                                                    stats.time_to_first_required_tick_milliseconds =
+                                                        Some(duration_milliseconds(
+                                                            received_instant
+                                                                .duration_since(connected_instant),
+                                                        ));
+                                                    tracing::info!(
+                                                        feed = kind.feed_name(),
+                                                        %connection_id,
+                                                        connection_epoch = reconnect_ordinal,
+                                                        unavailable_duration_ms = unavailable_milliseconds,
+                                                        "reference websocket began delivering required data"
+                                                    );
+                                                }
+                                            }
+                                            if enqueue(
+                                                &writer,
+                                                PersistItem::ReferenceTick(tick),
+                                                &metrics,
+                                            )
+                                            .await
+                                            {
+                                                session.messages_persisted =
+                                                    session.messages_persisted.saturating_add(1);
+                                            } else {
+                                                session.dropped_messages =
+                                                    session.dropped_messages.saturating_add(1);
+                                                disconnect_reason =
+                                                    ReferenceDisconnectReason::CriticalWriterQueue;
+                                                fatal_persistence_error = Some(anyhow::anyhow!(
+                                                    "Binance reference persistence queue rejected item"
+                                                ));
+                                                break 'connection;
+                                            }
+                                        }
+                                        Err(error) => {
+                                            session.decode_errors =
+                                                session.decode_errors.saturating_add(1);
+                                            {
+                                                let mut runtime_metrics = metrics.write().await;
+                                                runtime_metrics.decode_errors =
+                                                    runtime_metrics.decode_errors.saturating_add(1);
+                                            }
+                                            record_error(&metrics, error).await;
+                                        }
                                     }
                                 }
-                                Err(error) => {
-                                    session.decode_errors = session.decode_errors.saturating_add(1);
-                                    {
+                                Message::Pong(payload) => {
+                                    if watchdog.acknowledge_binary_pong(payload.as_ref()) {
+                                        stats.heartbeat_acknowledgements = stats
+                                            .heartbeat_acknowledgements
+                                            .saturating_add(1);
+                                        stats.last_pong_at = Some(received_at);
                                         let mut runtime_metrics = metrics.write().await;
-                                        runtime_metrics.decode_errors =
-                                            runtime_metrics.decode_errors.saturating_add(1);
+                                        let transport = reference_transport_metrics_mut(
+                                            &mut runtime_metrics,
+                                            kind,
+                                        );
+                                        transport.heartbeat_acknowledgements = transport
+                                            .heartbeat_acknowledgements
+                                            .saturating_add(1);
                                     }
-                                    record_error(&metrics, error).await;
                                 }
+                                Message::Close(frame) => {
+                                    if let Some(frame) = frame {
+                                        stats.remote_close_code = Some(u16::from(frame.code));
+                                        if !frame.reason.is_empty() {
+                                            disconnect_detail =
+                                                Some(bounded_reference_detail(frame.reason));
+                                        }
+                                    }
+                                    disconnect_reason = ReferenceDisconnectReason::RemoteClose;
+                                    break;
+                                }
+                                _ => {}
                             }
                         }
-                        Ok(Message::Close(frame)) => {
-                            session.disconnect_reason = Some(format!("remote_close:{frame:?}"));
-                            break;
-                        }
-                        Ok(_) => {}
                         Err(error) => {
-                            session.disconnect_reason = Some(error.to_string());
+                            disconnect_reason = ReferenceDisconnectReason::TransportReadFailed;
+                            disconnect_detail = Some(bounded_reference_detail(error));
                             break;
                         }
                     }
                 }
             }
         }
-        session.disconnected_at = Some(Utc::now());
+        let disconnected_at = Utc::now();
+        let disconnected_instant = Instant::now();
+        recovery_window.open_if_closed(disconnected_at, disconnected_instant);
+        let stop = matches!(
+            disconnect_reason.cause(),
+            ReferenceDisconnectCause::Shutdown | ReferenceDisconnectCause::CriticalPersistence
+        );
+        let retry_action = reference_retry_action(
+            &config,
+            stats.stable_epoch,
+            stop,
+            &mut retry_state,
+            reconnect_ordinal,
+            connection_id,
+            kind,
+        );
+        let connected_duration = Some(disconnected_instant.duration_since(connected_instant));
+        session.disconnected_at = Some(disconnected_at);
+        session.disconnect_reason = Some(disconnect_reason.as_str().to_string());
+        session.metadata = reference_session_metadata(
+            disconnect_reason,
+            disconnect_detail.as_deref(),
+            retry_action,
+            retry_state.consecutive_failures,
+            connected_duration,
+            &stats,
+        );
+        {
+            let mut runtime_metrics = metrics.write().await;
+            if retry_action != ReferenceRetryAction::Stop {
+                runtime_metrics.reconnects = runtime_metrics.reconnects.saturating_add(1);
+            }
+            record_reference_disconnected(
+                &mut runtime_metrics,
+                kind,
+                disconnect_reason,
+                retry_action,
+                disconnected_at,
+                recovery_window.since,
+                retry_state.consecutive_failures,
+            );
+        }
+        log_reference_disconnect(
+            kind,
+            connection_id,
+            reconnect_ordinal,
+            disconnect_reason,
+            retry_action,
+            retry_state.consecutive_failures,
+            connected_duration,
+            disconnect_detail.as_deref(),
+        );
         if !finish_feed_session_or_fail(&repository, &session, &metrics).await {
             return;
         }
-        {
-            let mut runtime_metrics = metrics.write().await;
-            runtime_metrics.reconnects = runtime_metrics.reconnects.saturating_add(1);
+        if let Some(error) = fatal_persistence_error {
+            record_critical_persistence_error(&metrics, error).await;
+            return;
         }
-        if !reconnect_delay(&config, reconnect_ordinal, &mut shutdown).await {
-            break;
+        match retry_action {
+            ReferenceRetryAction::Stop => return,
+            ReferenceRetryAction::ImmediateRecovery => continue,
+            ReferenceRetryAction::Backoff(delay) => {
+                if !wait_reconnect_backoff(delay, &mut shutdown).await {
+                    break;
+                }
+            }
         }
     }
 }
@@ -3222,15 +4606,6 @@ fn new_session(
     }
 }
 
-async fn reconnect_delay(
-    config: &BtcRuntimeConfig,
-    reconnect_ordinal: i32,
-    shutdown: &mut watch::Receiver<bool>,
-) -> bool {
-    let failures = u32::try_from(reconnect_ordinal).unwrap_or(u32::MAX);
-    wait_reconnect_backoff(reconnect_backoff(config, failures), shutdown).await
-}
-
 fn reconnect_backoff(config: &BtcRuntimeConfig, consecutive_failures: u32) -> StdDuration {
     let exponent = consecutive_failures.saturating_sub(1).min(10);
     let multiplier = 2u32.saturating_pow(exponent);
@@ -3241,6 +4616,9 @@ fn reconnect_backoff(config: &BtcRuntimeConfig, consecutive_failures: u32) -> St
 }
 
 async fn wait_reconnect_backoff(delay: StdDuration, shutdown: &mut watch::Receiver<bool>) -> bool {
+    if *shutdown.borrow() {
+        return false;
+    }
     tokio::select! {
         _ = shutdown.changed() => false,
         _ = sleep(delay) => true,
@@ -3470,6 +4848,35 @@ mod tests {
             connection_id: Uuid::new_v4(),
             ingest_sequence: 1,
             source_event_id: None,
+            raw_payload: serde_json::json!({}),
+        }
+    }
+
+    fn reference_test_tick(
+        source: ReferencePriceSource,
+        source_timestamp: DateTime<Utc>,
+        received_at: DateTime<Utc>,
+        source_event_id: Option<&str>,
+        ingest_sequence: u64,
+    ) -> ReferencePriceTick {
+        ReferencePriceTick {
+            tick_id: Uuid::from_u128(u128::from(ingest_sequence).saturating_add(1)),
+            dedup_key: format!("reference-test-{ingest_sequence}"),
+            source,
+            symbol: match source {
+                ReferencePriceSource::RtdsChainlink => "BTCUSD",
+                ReferencePriceSource::RtdsBinance | ReferencePriceSource::DirectBinance => {
+                    "BTCUSDT"
+                }
+            }
+            .to_string(),
+            price: dec!(67_000),
+            source_timestamp,
+            envelope_timestamp: Some(source_timestamp),
+            received_at,
+            connection_id: Uuid::from_u128(0xfeed),
+            ingest_sequence,
+            source_event_id: source_event_id.map(str::to_string),
             raw_payload: serde_json::json!({}),
         }
     }
@@ -3742,6 +5149,64 @@ mod tests {
             serde_json::json!(updated_at)
         );
         assert!(value["metrics"].get("clob_planned_reconnects").is_none());
+    }
+
+    #[tokio::test]
+    async fn runtime_status_exposes_reference_transport_metrics_by_feed() {
+        let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics {
+            rtds_transport: ReferenceTransportMetrics {
+                connections_established: 11,
+                required_ticks_received: 13,
+                last_disconnect_reason: Some(ReferenceDisconnectReason::RequiredDataIdleTimeout),
+                ..ReferenceTransportMetrics::default()
+            },
+            binance_transport: ReferenceTransportMetrics {
+                connections_established: 17,
+                required_ticks_received: 19,
+                last_disconnect_reason: Some(ReferenceDisconnectReason::HeartbeatAckTimeout),
+                ..ReferenceTransportMetrics::default()
+            },
+            rtds_chainlink_ticks_received: 23,
+            rtds_binance_ticks_received: 29,
+            binance_ticks_received: 31,
+            ..BtcRuntimeMetrics::default()
+        }));
+        let status = runtime_status_from_inputs(
+            Arc::new(RwLock::new(RealtimeState::default())),
+            metrics,
+            BtcRuntimeConfig::default(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await;
+        let value = serde_json::to_value(status).unwrap();
+
+        assert_eq!(
+            value["metrics"]["rtds_transport"]["connections_established"],
+            11
+        );
+        assert_eq!(
+            value["metrics"]["rtds_transport"]["required_ticks_received"],
+            13
+        );
+        assert_eq!(
+            value["metrics"]["rtds_transport"]["last_disconnect_reason"],
+            "required_data_idle_timeout"
+        );
+        assert_eq!(
+            value["metrics"]["binance_transport"]["connections_established"],
+            17
+        );
+        assert_eq!(
+            value["metrics"]["binance_transport"]["required_ticks_received"],
+            19
+        );
+        assert_eq!(
+            value["metrics"]["binance_transport"]["last_disconnect_reason"],
+            "heartbeat_ack_timeout"
+        );
+        assert_eq!(value["metrics"]["rtds_chainlink_ticks_received"], 23);
+        assert_eq!(value["metrics"]["rtds_binance_ticks_received"], 29);
+        assert_eq!(value["metrics"]["binance_ticks_received"], 31);
     }
 
     #[tokio::test]
@@ -4221,6 +5686,618 @@ mod tests {
             "type": "update",
             "payload": {}
         })));
+    }
+
+    #[test]
+    fn reference_progress_requires_strict_chainlink_source_time() {
+        let current_at = Utc.timestamp_opt(1_783_902_701, 0).unwrap();
+        let current = reference_test_tick(
+            ReferencePriceSource::RtdsChainlink,
+            current_at,
+            current_at + Duration::milliseconds(10),
+            None,
+            1,
+        );
+        let advancing = reference_test_tick(
+            ReferencePriceSource::RtdsChainlink,
+            current_at + Duration::milliseconds(1),
+            current_at + Duration::milliseconds(11),
+            None,
+            2,
+        );
+        let equal = reference_test_tick(
+            ReferencePriceSource::RtdsChainlink,
+            current_at,
+            current_at + Duration::milliseconds(12),
+            None,
+            3,
+        );
+        let regressing = reference_test_tick(
+            ReferencePriceSource::RtdsChainlink,
+            current_at - Duration::milliseconds(1),
+            current_at + Duration::milliseconds(13),
+            None,
+            4,
+        );
+        let rtds_binance = reference_test_tick(
+            ReferencePriceSource::RtdsBinance,
+            current_at + Duration::milliseconds(2),
+            current_at + Duration::milliseconds(14),
+            None,
+            5,
+        );
+
+        assert!(reference_tick_version_advances(None, &current));
+        assert!(reference_tick_progresses(
+            None,
+            &current,
+            ReferenceFeedKind::Rtds
+        ));
+        assert!(reference_tick_version_advances(Some(&current), &advancing));
+        assert!(reference_tick_progresses(
+            Some(&current),
+            &advancing,
+            ReferenceFeedKind::Rtds
+        ));
+        assert!(!reference_tick_version_advances(Some(&current), &equal));
+        assert!(!reference_tick_progresses(
+            Some(&current),
+            &equal,
+            ReferenceFeedKind::Rtds
+        ));
+        assert!(!reference_tick_version_advances(
+            Some(&current),
+            &regressing
+        ));
+        assert!(!reference_tick_progresses(
+            Some(&current),
+            &regressing,
+            ReferenceFeedKind::Rtds
+        ));
+        assert!(reference_tick_version_advances(None, &rtds_binance));
+        assert!(!reference_tick_progresses(
+            None,
+            &rtds_binance,
+            ReferenceFeedKind::Rtds
+        ));
+    }
+
+    #[test]
+    fn binance_progress_requires_increasing_trade_id_and_non_regressing_time() {
+        let current_at = Utc.timestamp_opt(1_783_902_701, 0).unwrap();
+        let current = reference_test_tick(
+            ReferencePriceSource::DirectBinance,
+            current_at,
+            current_at + Duration::milliseconds(10),
+            Some("100"),
+            1,
+        );
+        let same_time_next_id = reference_test_tick(
+            ReferencePriceSource::DirectBinance,
+            current_at,
+            current_at + Duration::milliseconds(11),
+            Some("101"),
+            2,
+        );
+        let later_next_id = reference_test_tick(
+            ReferencePriceSource::DirectBinance,
+            current_at + Duration::milliseconds(1),
+            current_at + Duration::milliseconds(12),
+            Some("102"),
+            3,
+        );
+        let replay = reference_test_tick(
+            ReferencePriceSource::DirectBinance,
+            current_at + Duration::milliseconds(1),
+            current_at + Duration::milliseconds(13),
+            Some("100"),
+            4,
+        );
+        let regressing_id = reference_test_tick(
+            ReferencePriceSource::DirectBinance,
+            current_at + Duration::milliseconds(1),
+            current_at + Duration::milliseconds(14),
+            Some("99"),
+            5,
+        );
+        let regressing_time = reference_test_tick(
+            ReferencePriceSource::DirectBinance,
+            current_at - Duration::milliseconds(1),
+            current_at + Duration::milliseconds(15),
+            Some("101"),
+            6,
+        );
+        let unparseable = reference_test_tick(
+            ReferencePriceSource::DirectBinance,
+            current_at + Duration::milliseconds(1),
+            current_at + Duration::milliseconds(16),
+            Some("not-a-trade-id"),
+            7,
+        );
+        let mut unparseable_current = current.clone();
+        unparseable_current.source_event_id = None;
+
+        assert!(!reference_tick_version_advances(None, &unparseable));
+        assert!(!reference_tick_progresses(
+            None,
+            &unparseable,
+            ReferenceFeedKind::Binance
+        ));
+
+        assert!(reference_tick_version_advances(
+            Some(&current),
+            &same_time_next_id
+        ));
+        assert!(reference_tick_progresses(
+            Some(&current),
+            &same_time_next_id,
+            ReferenceFeedKind::Binance
+        ));
+        assert!(reference_tick_version_advances(
+            Some(&current),
+            &later_next_id
+        ));
+        assert!(reference_tick_progresses(
+            Some(&current),
+            &later_next_id,
+            ReferenceFeedKind::Binance
+        ));
+        for rejected in [&replay, &regressing_id, &regressing_time, &unparseable] {
+            assert!(!reference_tick_version_advances(Some(&current), rejected));
+            assert!(!reference_tick_progresses(
+                Some(&current),
+                rejected,
+                ReferenceFeedKind::Binance
+            ));
+        }
+        assert!(!reference_tick_version_advances(
+            Some(&unparseable_current),
+            &same_time_next_id
+        ));
+        assert!(!reference_tick_progresses(
+            Some(&unparseable_current),
+            &same_time_next_id,
+            ReferenceFeedKind::Binance
+        ));
+
+        let mut state = RealtimeState::default();
+        assert!(!update_reference_state_and_check_progress(
+            &mut state,
+            unparseable,
+            ReferenceFeedKind::Binance,
+            current_at + Duration::milliseconds(20),
+            Duration::seconds(2),
+        ));
+        assert!(state.reference_prices.is_empty());
+        assert!(update_reference_state_and_check_progress(
+            &mut state,
+            current.clone(),
+            ReferenceFeedKind::Binance,
+            current_at + Duration::milliseconds(20),
+            Duration::seconds(2),
+        ));
+        assert_eq!(
+            state
+                .reference_prices
+                .get(&ReferencePriceSource::DirectBinance),
+            Some(&current)
+        );
+    }
+
+    #[test]
+    fn out_of_window_reference_ticks_cannot_mutate_authoritative_state() {
+        let checked_at = Utc.timestamp_opt(1_783_902_701, 0).unwrap();
+        let max_age = Duration::seconds(2);
+        let authoritative = reference_test_tick(
+            ReferencePriceSource::RtdsChainlink,
+            checked_at - Duration::milliseconds(100),
+            checked_at - Duration::milliseconds(50),
+            None,
+            1,
+        );
+        let mut baseline = RealtimeState::default();
+        assert!(baseline.update_reference_price(authoritative));
+
+        let rejected_ticks = [
+            reference_test_tick(
+                ReferencePriceSource::RtdsChainlink,
+                checked_at - max_age - Duration::milliseconds(1),
+                checked_at,
+                None,
+                2,
+            ),
+            reference_test_tick(
+                ReferencePriceSource::RtdsChainlink,
+                checked_at + Duration::milliseconds(1),
+                checked_at - max_age - Duration::milliseconds(1),
+                None,
+                3,
+            ),
+            reference_test_tick(
+                ReferencePriceSource::RtdsChainlink,
+                checked_at + max_age + Duration::milliseconds(1),
+                checked_at,
+                None,
+                4,
+            ),
+            reference_test_tick(
+                ReferencePriceSource::RtdsChainlink,
+                checked_at + Duration::milliseconds(1),
+                checked_at + max_age + Duration::milliseconds(1),
+                None,
+                5,
+            ),
+        ];
+
+        for rejected in rejected_ticks {
+            let mut state = baseline.clone();
+            assert!(!update_reference_state_and_check_progress(
+                &mut state,
+                rejected,
+                ReferenceFeedKind::Rtds,
+                checked_at,
+                max_age,
+            ));
+            assert_eq!(state, baseline);
+        }
+    }
+
+    #[test]
+    fn reference_state_rejects_replays_but_retains_non_required_rtds_data() {
+        let checked_at = Utc.timestamp_opt(1_783_902_701, 0).unwrap();
+        let max_age = Duration::seconds(2);
+        let chainlink = reference_test_tick(
+            ReferencePriceSource::RtdsChainlink,
+            checked_at - Duration::milliseconds(100),
+            checked_at - Duration::milliseconds(90),
+            None,
+            1,
+        );
+        let direct_binance = reference_test_tick(
+            ReferencePriceSource::DirectBinance,
+            checked_at - Duration::milliseconds(100),
+            checked_at - Duration::milliseconds(80),
+            Some("100"),
+            2,
+        );
+        let mut state = RealtimeState::default();
+        assert!(state.update_reference_price(chainlink.clone()));
+        assert!(state.update_reference_price(direct_binance.clone()));
+        let authoritative = state.clone();
+
+        let equal_chainlink_replay = reference_test_tick(
+            ReferencePriceSource::RtdsChainlink,
+            chainlink.source_timestamp,
+            checked_at - Duration::milliseconds(10),
+            None,
+            3,
+        );
+        assert!(!update_reference_state_and_check_progress(
+            &mut state,
+            equal_chainlink_replay,
+            ReferenceFeedKind::Rtds,
+            checked_at,
+            max_age,
+        ));
+        assert_eq!(state, authoritative);
+
+        let binance_id_replay = reference_test_tick(
+            ReferencePriceSource::DirectBinance,
+            direct_binance.source_timestamp + Duration::milliseconds(1),
+            checked_at - Duration::milliseconds(5),
+            Some("100"),
+            4,
+        );
+        assert!(!update_reference_state_and_check_progress(
+            &mut state,
+            binance_id_replay,
+            ReferenceFeedKind::Binance,
+            checked_at,
+            max_age,
+        ));
+        assert_eq!(state, authoritative);
+
+        let rtds_binance = reference_test_tick(
+            ReferencePriceSource::RtdsBinance,
+            checked_at - Duration::milliseconds(4),
+            checked_at - Duration::milliseconds(3),
+            None,
+            5,
+        );
+        assert!(!update_reference_state_and_check_progress(
+            &mut state,
+            rtds_binance.clone(),
+            ReferenceFeedKind::Rtds,
+            checked_at,
+            max_age,
+        ));
+        assert_eq!(
+            state
+                .reference_prices
+                .get(&ReferencePriceSource::RtdsBinance),
+            Some(&rtds_binance)
+        );
+        assert_eq!(
+            state
+                .reference_prices
+                .get(&ReferencePriceSource::RtdsChainlink),
+            authoritative
+                .reference_prices
+                .get(&ReferencePriceSource::RtdsChainlink)
+        );
+        assert_eq!(
+            state
+                .reference_prices
+                .get(&ReferencePriceSource::DirectBinance),
+            authoritative
+                .reference_prices
+                .get(&ReferencePriceSource::DirectBinance)
+        );
+    }
+
+    #[test]
+    fn reference_watchdog_maintains_independent_deadlines_and_exact_pong_identity() {
+        let started_at = Instant::now();
+        let mut watchdog = ReferenceFeedWatchdog::new(started_at, ReferenceFeedKind::Rtds);
+        assert_eq!(
+            watchdog.required_data_deadline,
+            started_at + RTDS_REQUIRED_DATA_TIMEOUT
+        );
+        assert_eq!(
+            watchdog.read_idle_deadline,
+            started_at + REFERENCE_READ_IDLE_TIMEOUT
+        );
+        assert!(watchdog.pong_deadline.is_none());
+        assert!(watchdog.stable_deadline.is_none());
+
+        let frame_at = started_at + StdDuration::from_secs(2);
+        watchdog.on_frame(frame_at);
+        assert_eq!(
+            watchdog.read_idle_deadline,
+            frame_at + REFERENCE_READ_IDLE_TIMEOUT
+        );
+        assert_eq!(
+            watchdog.required_data_deadline,
+            started_at + RTDS_REQUIRED_DATA_TIMEOUT
+        );
+
+        let data_at = started_at + StdDuration::from_secs(3);
+        watchdog.on_required_tick(data_at, ReferenceFeedKind::Rtds);
+        assert_eq!(
+            watchdog.required_data_deadline,
+            data_at + RTDS_REQUIRED_DATA_TIMEOUT
+        );
+        assert_eq!(
+            watchdog.stable_deadline,
+            Some(data_at + REFERENCE_STABLE_RESET_AFTER)
+        );
+        let stable_deadline = watchdog.stable_deadline;
+        watchdog.on_required_tick(data_at + StdDuration::from_secs(1), ReferenceFeedKind::Rtds);
+        assert_eq!(watchdog.stable_deadline, stable_deadline);
+
+        let probe_at = started_at + StdDuration::from_secs(5);
+        assert_eq!(RTDS_HEARTBEAT_MESSAGE, "ping");
+        // RTDS requires a text keepalive but does not guarantee a correlated
+        // acknowledgement. Required-data and read-idle deadlines detect loss.
+        assert!(!watchdog.awaiting_pong());
+
+        let expected = [1, 2, 3, 4, 5, 6, 7, 8];
+        watchdog.arm_binary_pong(probe_at, expected);
+        assert_eq!(
+            watchdog.pong_deadline,
+            Some(probe_at + REFERENCE_PONG_TIMEOUT)
+        );
+        assert!(watchdog.awaiting_pong());
+        assert!(!watchdog.acknowledge_binary_pong(&expected[..7]));
+        assert!(!watchdog.acknowledge_binary_pong(&[1, 2, 3, 4, 5, 6, 7, 9]));
+        assert!(watchdog.awaiting_pong());
+        assert!(watchdog.acknowledge_binary_pong(&expected));
+        assert!(!watchdog.awaiting_pong());
+        assert!(watchdog.pong_deadline.is_none());
+
+        assert!(watchdog.mark_stable());
+        assert!(watchdog.stable);
+        assert!(watchdog.stable_deadline.is_none());
+        assert!(!watchdog.mark_stable());
+    }
+
+    #[test]
+    fn reference_retry_state_resets_and_classifies_recovery_without_extra_failures() {
+        let config = BtcRuntimeConfig::default();
+        let connection_id = Uuid::from_u128(1);
+        let mut retry_state = ReferenceRetryState::default();
+        let expected_delay =
+            reference_reconnect_delay(&config, 1, 7, connection_id, ReferenceFeedKind::Rtds);
+
+        assert_eq!(
+            reference_retry_action(
+                &config,
+                false,
+                false,
+                &mut retry_state,
+                7,
+                connection_id,
+                ReferenceFeedKind::Rtds,
+            ),
+            ReferenceRetryAction::Backoff(expected_delay)
+        );
+        assert_eq!(retry_state.consecutive_failures, 1);
+
+        retry_state.reset();
+        assert_eq!(retry_state.consecutive_failures, 0);
+        assert_eq!(
+            reference_retry_action(
+                &config,
+                true,
+                false,
+                &mut retry_state,
+                8,
+                connection_id,
+                ReferenceFeedKind::Rtds,
+            ),
+            ReferenceRetryAction::ImmediateRecovery
+        );
+        assert_eq!(retry_state.consecutive_failures, 0);
+        assert_eq!(
+            reference_retry_action(
+                &config,
+                true,
+                true,
+                &mut retry_state,
+                8,
+                connection_id,
+                ReferenceFeedKind::Rtds,
+            ),
+            ReferenceRetryAction::Stop
+        );
+        assert_eq!(retry_state.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn reference_retry_jitter_is_bounded_deterministic_and_connection_specific() {
+        let config = BtcRuntimeConfig {
+            reconnect_max_delay: StdDuration::from_secs(60),
+            ..BtcRuntimeConfig::default()
+        };
+        let failures = 4;
+        let connection_a = Uuid::from_u128(1);
+        let connection_b = Uuid::from_u128(2);
+        let first = reference_reconnect_delay(
+            &config,
+            failures,
+            9,
+            connection_a,
+            ReferenceFeedKind::Binance,
+        );
+        let repeated = reference_reconnect_delay(
+            &config,
+            failures,
+            9,
+            connection_a,
+            ReferenceFeedKind::Binance,
+        );
+        let other_connection = reference_reconnect_delay(
+            &config,
+            failures,
+            9,
+            connection_b,
+            ReferenceFeedKind::Binance,
+        );
+        let base_milliseconds = duration_milliseconds(reconnect_backoff(&config, failures));
+        let spread = base_milliseconds * REFERENCE_RETRY_JITTER_PERCENT / 100;
+        let delay_milliseconds = duration_milliseconds(first);
+
+        assert_eq!(first, repeated);
+        assert!(delay_milliseconds >= base_milliseconds - spread);
+        assert!(delay_milliseconds <= base_milliseconds + spread);
+        assert_ne!(first, other_connection);
+    }
+
+    #[test]
+    fn reference_disconnect_reason_serialization_is_stable() {
+        let cases = [
+            (ReferenceDisconnectReason::Shutdown, "shutdown"),
+            (ReferenceDisconnectReason::ConnectTimeout, "connect_timeout"),
+            (ReferenceDisconnectReason::ConnectFailed, "connect_failed"),
+            (
+                ReferenceDisconnectReason::SubscriptionSendTimeout,
+                "subscription_send_timeout",
+            ),
+            (
+                ReferenceDisconnectReason::SubscriptionSendFailed,
+                "subscription_send_failed",
+            ),
+            (
+                ReferenceDisconnectReason::HeartbeatSendTimeout,
+                "heartbeat_send_timeout",
+            ),
+            (
+                ReferenceDisconnectReason::HeartbeatSendFailed,
+                "heartbeat_send_failed",
+            ),
+            (
+                ReferenceDisconnectReason::HeartbeatAckTimeout,
+                "heartbeat_ack_timeout",
+            ),
+            (
+                ReferenceDisconnectReason::RequiredDataIdleTimeout,
+                "required_data_idle_timeout",
+            ),
+            (
+                ReferenceDisconnectReason::ReadIdleTimeout,
+                "read_idle_timeout",
+            ),
+            (ReferenceDisconnectReason::WebsocketEof, "websocket_eof"),
+            (ReferenceDisconnectReason::RemoteClose, "remote_close"),
+            (
+                ReferenceDisconnectReason::TransportReadFailed,
+                "transport_read_failed",
+            ),
+            (
+                ReferenceDisconnectReason::CriticalBoundaryIntegrity,
+                "critical_boundary_integrity",
+            ),
+            (
+                ReferenceDisconnectReason::CriticalBoundaryPersistence,
+                "critical_boundary_persistence",
+            ),
+            (
+                ReferenceDisconnectReason::CriticalWriterQueue,
+                "critical_writer_queue",
+            ),
+            (
+                ReferenceDisconnectReason::UnknownDisconnect,
+                "unknown_disconnect",
+            ),
+        ];
+
+        for (reason, expected) in cases {
+            assert_eq!(reason.as_str(), expected);
+            assert_eq!(serde_json::to_value(reason).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn reference_detail_and_session_metadata_remain_bounded() {
+        let bounded_unicode = bounded_reference_detail("é".repeat(200));
+        assert_eq!(bounded_unicode.len(), 256);
+        assert_eq!(bounded_unicode.chars().count(), 128);
+        let split_boundary = bounded_reference_detail(format!("{}é", "x".repeat(255)));
+        assert_eq!(split_boundary.len(), 255);
+        assert!(split_boundary.is_char_boundary(split_boundary.len()));
+
+        let observed_at = Utc.timestamp_opt(1_783_902_701, 0).unwrap();
+        let stats = ReferenceSessionStats {
+            healthy_epoch: true,
+            stable_epoch: true,
+            required_ticks: 7,
+            heartbeat_probes: 3,
+            heartbeat_acknowledgements: 2,
+            last_required_tick_at: Some(observed_at),
+            last_frame_at: Some(observed_at),
+            last_pong_at: Some(observed_at),
+            time_to_first_required_tick_milliseconds: Some(12),
+            remote_close_code: Some(1001),
+        };
+        let metadata = reference_session_metadata(
+            ReferenceDisconnectReason::RemoteClose,
+            Some(&bounded_unicode),
+            ReferenceRetryAction::Backoff(StdDuration::from_millis(1_250)),
+            4,
+            Some(StdDuration::from_secs(45)),
+            &stats,
+        );
+        let fields = metadata.as_object().unwrap();
+
+        assert_eq!(fields.len(), 17);
+        assert!(fields
+            .values()
+            .all(|value| !value.is_array() && !value.is_object()));
+        assert_eq!(metadata["disconnect_reason"], "remote_close");
+        assert_eq!(metadata["disconnect_cause"], "transport_failure");
+        assert_eq!(metadata["disconnect_detail"], bounded_unicode);
+        assert_eq!(metadata["retry_delay_ms"], 1_250);
+        assert_eq!(metadata["next_action"], "backoff");
     }
 
     #[test]

@@ -253,7 +253,10 @@ pub fn parse_binance_agg_trade(
     let price = required_decimal(object, &["p"])?;
     let source_timestamp = timestamp_field(object, &["T"])?;
     let envelope_timestamp = Some(timestamp_field(object, &["E"])?);
-    let source_event_id = Some(required_string(object, &["a"])?);
+    let source_event_id = required_string(object, &["a"])?
+        .parse::<u64>()
+        .context("Binance aggregate trade has invalid aggregate trade ID")?
+        .to_string();
     reference_tick(
         ReferencePriceSource::DirectBinance,
         "BTCUSD",
@@ -263,7 +266,7 @@ pub fn parse_binance_agg_trade(
         received_at,
         connection_id,
         ingest_sequence,
-        source_event_id,
+        Some(source_event_id),
         value.clone(),
     )
 }
@@ -1071,7 +1074,7 @@ impl RealtimeState {
             .collect();
     }
 
-    pub fn update_reference_price(&mut self, tick: ReferencePriceTick) {
+    pub fn update_reference_price(&mut self, tick: ReferencePriceTick) -> bool {
         let replace = self
             .reference_prices
             .get(&tick.source)
@@ -1081,6 +1084,7 @@ impl RealtimeState {
             self.last_updated_at = Some(tick.received_at);
             self.reference_prices.insert(tick.source, tick);
         }
+        replace
     }
 
     pub fn apply_resolution(&mut self, winning_token_id: &str) -> bool {
@@ -1381,6 +1385,27 @@ mod tests {
         market
     }
 
+    fn state_reference_tick(
+        price: Decimal,
+        source_timestamp: DateTime<Utc>,
+        received_at: DateTime<Utc>,
+        ingest_sequence: u64,
+    ) -> ReferencePriceTick {
+        reference_tick(
+            ReferencePriceSource::DirectBinance,
+            "BTCUSDT",
+            price,
+            source_timestamp,
+            None,
+            received_at,
+            Uuid::nil(),
+            ingest_sequence,
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn parses_full_book_and_batched_price_changes() {
         let book = serde_json::json!({
@@ -1590,6 +1615,92 @@ mod tests {
     }
 
     #[test]
+    fn advancing_reference_tick_replaces_authoritative_source_state() {
+        let mut state = RealtimeState::default();
+        let first_source_at = ts(1_783_902_701_100);
+        let first_received_at = ts(1_783_902_701_200);
+        assert!(state.update_reference_price(state_reference_tick(
+            dec!(67234.5),
+            first_source_at,
+            first_received_at,
+            1,
+        )));
+
+        let next_source_at = ts(1_783_902_701_300);
+        let next_received_at = ts(1_783_902_701_400);
+        assert!(state.update_reference_price(state_reference_tick(
+            dec!(67235.1),
+            next_source_at,
+            next_received_at,
+            2,
+        )));
+
+        let authoritative = state
+            .reference_prices
+            .get(&ReferencePriceSource::DirectBinance)
+            .unwrap();
+        assert_eq!(authoritative.source_timestamp, next_source_at);
+        assert_eq!(authoritative.price, dec!(67235.1));
+        assert_eq!(state.last_updated_at, Some(next_received_at));
+    }
+
+    #[test]
+    fn equal_timestamp_reference_tick_preserves_existing_replacement_policy() {
+        let mut state = RealtimeState::default();
+        let source_at = ts(1_783_902_701_100);
+        assert!(state.update_reference_price(state_reference_tick(
+            dec!(67234.5),
+            source_at,
+            ts(1_783_902_701_200),
+            1,
+        )));
+
+        let replacement_received_at = ts(1_783_902_701_300);
+        assert!(state.update_reference_price(state_reference_tick(
+            dec!(67235.1),
+            source_at,
+            replacement_received_at,
+            2,
+        )));
+
+        let authoritative = state
+            .reference_prices
+            .get(&ReferencePriceSource::DirectBinance)
+            .unwrap();
+        assert_eq!(authoritative.source_timestamp, source_at);
+        assert_eq!(authoritative.price, dec!(67235.1));
+        assert_eq!(state.last_updated_at, Some(replacement_received_at));
+    }
+
+    #[test]
+    fn stale_reference_tick_does_not_replace_authoritative_source_state() {
+        let mut state = RealtimeState::default();
+        let authoritative_source_at = ts(1_783_902_701_300);
+        let authoritative_received_at = ts(1_783_902_701_400);
+        assert!(state.update_reference_price(state_reference_tick(
+            dec!(67235.1),
+            authoritative_source_at,
+            authoritative_received_at,
+            2,
+        )));
+
+        assert!(!state.update_reference_price(state_reference_tick(
+            dec!(67234.5),
+            ts(1_783_902_701_100),
+            ts(1_783_902_701_500),
+            1,
+        )));
+
+        let authoritative = state
+            .reference_prices
+            .get(&ReferencePriceSource::DirectBinance)
+            .unwrap();
+        assert_eq!(authoritative.source_timestamp, authoritative_source_at);
+        assert_eq!(authoritative.price, dec!(67235.1));
+        assert_eq!(state.last_updated_at, Some(authoritative_received_at));
+    }
+
+    #[test]
     fn reference_price_rounding_matches_postgres_numeric_midpoints() {
         let tick = reference_tick(
             ReferencePriceSource::RtdsChainlink,
@@ -1621,6 +1732,15 @@ mod tests {
         assert_eq!(first.price, dec!(67236.12345678));
         assert_eq!(first.dedup_key, second.dedup_key);
         assert_eq!(first.tick_id, second.tick_id);
+
+        let malformed = serde_json::json!({
+            "e": "aggTrade", "E": 1783902701250_i64, "s": "BTCUSDT", "a": "invalid",
+            "p": "67236.12345678", "q": "0.5", "T": 1783902701200_i64, "m": false
+        });
+        assert!(
+            parse_binance_agg_trade(&malformed, Uuid::new_v4(), 100, ts(1_783_902_702_100),)
+                .is_err()
+        );
     }
 
     #[test]
