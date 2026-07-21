@@ -437,6 +437,17 @@ SELECT EXISTS (
 )
 "#;
 
+const INSERT_ORDERBOOK_CHECKPOINT_PAIR_SQL: &str = r#"
+INSERT INTO polymarket.orderbook_checkpoints (
+  checkpoint_id, source_timestamp, received_at, connection_id, ingest_sequence,
+  market_id, token_id, best_bid, best_ask, spread, tick_size, depth_bid, depth_ask,
+  book, source_hash, bootstrap_source, integrity_status
+)
+VALUES
+  ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17),
+  ($18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)
+"#;
+
 // One look-ahead row lets replay distinguish an exact 10,000-candidate history from truncation.
 const MAX_SHADOW_PREDICTIVE_REGIME_HISTORY_CANDIDATES: u32 = 10_001;
 
@@ -1076,6 +1087,86 @@ impl BtcRepository {
         .await
         .context("failed to insert BTC orderbook checkpoint")?;
         Ok(result.rows_affected() == 1)
+    }
+
+    /// Durably records both outcome books from one ready CLOB connection before publication.
+    /// Validation happens before execution, and PostgreSQL applies the fixed two-row insert as
+    /// one atomic statement, so a failure cannot commit only one outcome checkpoint.
+    pub async fn insert_orderbook_checkpoint_pair(
+        &self,
+        checkpoints: &[OrderbookCheckpoint],
+        bootstrap_source: &str,
+        publication_boundary: DateTime<Utc>,
+    ) -> Result<()> {
+        let (first, second) =
+            validate_orderbook_checkpoint_pair(checkpoints, publication_boundary)?;
+        let first_depth_bid: Decimal = first.bids.iter().map(|level| level.size).sum();
+        let first_depth_ask: Decimal = first.asks.iter().map(|level| level.size).sum();
+        let first_spread = first
+            .best_bid
+            .zip(first.best_ask)
+            .map(|(bid, ask)| ask - bid);
+        let first_book = serde_json::json!({
+            "bids": &first.bids,
+            "asks": &first.asks,
+        });
+        let second_depth_bid: Decimal = second.bids.iter().map(|level| level.size).sum();
+        let second_depth_ask: Decimal = second.asks.iter().map(|level| level.size).sum();
+        let second_spread = second
+            .best_bid
+            .zip(second.best_ask)
+            .map(|(bid, ask)| ask - bid);
+        let second_book = serde_json::json!({
+            "bids": &second.bids,
+            "asks": &second.asks,
+        });
+        let integrity_status = serde_name(&FeedIntegrityStatus::Ok)?;
+
+        let result = sqlx::query(INSERT_ORDERBOOK_CHECKPOINT_PAIR_SQL)
+            .bind(first.checkpoint_id)
+            .bind(first.source_timestamp)
+            .bind(first.received_at)
+            .bind(first.connection_id)
+            .bind(sequence_i64(first.ingest_sequence))
+            .bind(&first.market_id)
+            .bind(&first.token_id)
+            .bind(first.best_bid)
+            .bind(first.best_ask)
+            .bind(first_spread)
+            .bind(first.tick_size)
+            .bind(first_depth_bid)
+            .bind(first_depth_ask)
+            .bind(first_book)
+            .bind(&first.source_hash)
+            .bind(bootstrap_source)
+            .bind(&integrity_status)
+            .bind(second.checkpoint_id)
+            .bind(second.source_timestamp)
+            .bind(second.received_at)
+            .bind(second.connection_id)
+            .bind(sequence_i64(second.ingest_sequence))
+            .bind(&second.market_id)
+            .bind(&second.token_id)
+            .bind(second.best_bid)
+            .bind(second.best_ask)
+            .bind(second_spread)
+            .bind(second.tick_size)
+            .bind(second_depth_bid)
+            .bind(second_depth_ask)
+            .bind(second_book)
+            .bind(&second.source_hash)
+            .bind(bootstrap_source)
+            .bind(&integrity_status)
+            .execute(&self.pool)
+            .await
+            .context("failed to insert BTC orderbook checkpoint pair")?;
+        if result.rows_affected() != 2 {
+            bail!(
+                "BTC orderbook checkpoint-pair insert affected {} rows",
+                result.rows_affected()
+            );
+        }
+        Ok(())
     }
 
     pub async fn start_feed_session(&self, session: &FeedSession) -> Result<()> {
@@ -3288,6 +3379,43 @@ fn sequence_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
+fn validate_orderbook_checkpoint_pair(
+    checkpoints: &[OrderbookCheckpoint],
+    publication_boundary: DateTime<Utc>,
+) -> Result<(&OrderbookCheckpoint, &OrderbookCheckpoint)> {
+    if checkpoints.len() != 2 {
+        bail!(
+            "BTC orderbook checkpoint pair requires exactly two checkpoints, received {}",
+            checkpoints.len()
+        );
+    }
+    let first = &checkpoints[0];
+    let second = &checkpoints[1];
+    if first.connection_id != second.connection_id {
+        bail!("BTC orderbook checkpoint pair spans multiple CLOB connections");
+    }
+    if first.market_id != second.market_id {
+        bail!("BTC orderbook checkpoint pair spans multiple markets");
+    }
+    if first.token_id == second.token_id {
+        bail!("BTC orderbook checkpoint pair must contain distinct outcome tokens");
+    }
+    if first.integrity_status != FeedIntegrityStatus::Ok
+        || second.integrity_status != FeedIntegrityStatus::Ok
+    {
+        bail!("BTC orderbook checkpoint pair contains a non-healthy book");
+    }
+    for checkpoint in [first, second] {
+        if checkpoint.source_timestamp > publication_boundary {
+            bail!("BTC orderbook checkpoint source timestamp exceeds the publication boundary");
+        }
+        if checkpoint.received_at > publication_boundary {
+            bail!("BTC orderbook checkpoint receipt timestamp exceeds the publication boundary");
+        }
+    }
+    Ok((first, second))
+}
+
 fn empty_to_none(value: &str) -> Option<&str> {
     (!value.trim().is_empty()).then_some(value)
 }
@@ -3553,6 +3681,126 @@ mod tests {
             source_event_id: None,
             raw_payload: serde_json::json!({}),
         }
+    }
+
+    fn healthy_checkpoint(
+        id: u128,
+        market_id: &str,
+        token_id: &str,
+        connection_id: Uuid,
+        at: DateTime<Utc>,
+    ) -> OrderbookCheckpoint {
+        OrderbookCheckpoint {
+            checkpoint_id: Uuid::from_u128(id),
+            market_id: market_id.to_string(),
+            token_id: token_id.to_string(),
+            source_timestamp: at,
+            received_at: at + Duration::milliseconds(10),
+            connection_id,
+            ingest_sequence: id as u64,
+            source_hash: Some(format!("hash-{id}")),
+            tick_size: dec!(0.01),
+            best_bid: Some(dec!(0.49)),
+            best_ask: Some(dec!(0.51)),
+            bids: vec![OrderbookLevel {
+                price: dec!(0.49),
+                size: dec!(10),
+            }],
+            asks: vec![OrderbookLevel {
+                price: dec!(0.51),
+                size: dec!(12),
+            }],
+            integrity_status: FeedIntegrityStatus::Ok,
+        }
+    }
+
+    fn healthy_checkpoint_pair(at: DateTime<Utc>) -> Vec<OrderbookCheckpoint> {
+        let connection_id = Uuid::from_u128(700);
+        vec![
+            healthy_checkpoint(701, "market", "up", connection_id, at),
+            healthy_checkpoint(702, "market", "down", connection_id, at),
+        ]
+    }
+
+    #[test]
+    fn checkpoint_pair_validation_accepts_one_healthy_epoch_and_market() {
+        let at = Utc.with_ymd_and_hms(2026, 7, 21, 12, 0, 0).unwrap();
+        let checkpoints = healthy_checkpoint_pair(at);
+
+        let (first, second) =
+            validate_orderbook_checkpoint_pair(&checkpoints, at + Duration::milliseconds(10))
+                .unwrap();
+
+        assert_eq!(first.token_id, "up");
+        assert_eq!(second.token_id, "down");
+    }
+
+    #[test]
+    fn checkpoint_pair_validation_requires_exactly_two_books() {
+        let at = Utc.with_ymd_and_hms(2026, 7, 21, 12, 0, 0).unwrap();
+        let checkpoints = healthy_checkpoint_pair(at);
+
+        assert!(
+            validate_orderbook_checkpoint_pair(&checkpoints[..1], at + Duration::seconds(1))
+                .is_err()
+        );
+        let mut three = checkpoints;
+        three.push(healthy_checkpoint(
+            703,
+            "market",
+            "third",
+            Uuid::from_u128(700),
+            at,
+        ));
+        assert!(validate_orderbook_checkpoint_pair(&three, at + Duration::seconds(1)).is_err());
+    }
+
+    #[test]
+    fn checkpoint_pair_validation_rejects_mixed_identity_or_unhealthy_books() {
+        let at = Utc.with_ymd_and_hms(2026, 7, 21, 12, 0, 0).unwrap();
+        let boundary = at + Duration::seconds(1);
+
+        let mut mixed_connections = healthy_checkpoint_pair(at);
+        mixed_connections[1].connection_id = Uuid::from_u128(999);
+        assert!(validate_orderbook_checkpoint_pair(&mixed_connections, boundary).is_err());
+
+        let mut mixed_markets = healthy_checkpoint_pair(at);
+        mixed_markets[1].market_id = "other-market".to_string();
+        assert!(validate_orderbook_checkpoint_pair(&mixed_markets, boundary).is_err());
+
+        let mut duplicate_tokens = healthy_checkpoint_pair(at);
+        duplicate_tokens[1].token_id = duplicate_tokens[0].token_id.clone();
+        assert!(validate_orderbook_checkpoint_pair(&duplicate_tokens, boundary).is_err());
+
+        let mut unhealthy = healthy_checkpoint_pair(at);
+        unhealthy[1].integrity_status = FeedIntegrityStatus::Stale;
+        assert!(validate_orderbook_checkpoint_pair(&unhealthy, boundary).is_err());
+    }
+
+    #[test]
+    fn checkpoint_pair_validation_rejects_data_newer_than_publication() {
+        let at = Utc.with_ymd_and_hms(2026, 7, 21, 12, 0, 0).unwrap();
+        let boundary = at + Duration::seconds(1);
+
+        let mut future_source = healthy_checkpoint_pair(at);
+        future_source[0].source_timestamp = boundary + Duration::milliseconds(1);
+        assert!(validate_orderbook_checkpoint_pair(&future_source, boundary).is_err());
+
+        let mut future_receipt = healthy_checkpoint_pair(at);
+        future_receipt[1].received_at = boundary + Duration::milliseconds(1);
+        assert!(validate_orderbook_checkpoint_pair(&future_receipt, boundary).is_err());
+    }
+
+    #[test]
+    fn checkpoint_pair_insert_is_one_fixed_two_row_statement() {
+        let normalized = INSERT_ORDERBOOK_CHECKPOINT_PAIR_SQL
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+
+        assert!(normalized.contains("values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17), ($18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)"));
+        assert!(!normalized.contains("on conflict"));
     }
 
     #[test]
