@@ -172,7 +172,7 @@ pub struct BtcRuntimeMetrics {
     pub dropped_messages: u64,
     pub reconnects: u64,
     pub clob_connections_established: u64,
-    pub clob_planned_reconnects: u64,
+    pub clob_subscription_updates: u64,
     pub clob_transport_disconnects: u64,
     pub clob_connection_failures: u64,
     pub clob_subscription_failures: u64,
@@ -188,9 +188,11 @@ pub struct BtcRuntimeMetrics {
     pub clob_active_connection_id: Option<Uuid>,
     pub clob_last_connected_at: Option<DateTime<Utc>>,
     pub clob_last_healthy_at: Option<DateTime<Utc>>,
+    pub clob_last_subscription_update_at: Option<DateTime<Utc>>,
     pub clob_last_disconnect_at: Option<DateTime<Utc>>,
     pub clob_recovery_unavailable_since: Option<DateTime<Utc>>,
     pub clob_last_disconnect_reason: Option<String>,
+    pub clob_active_subscribed_assets: u64,
     pub strategy_callbacks: u64,
     pub resolution_watches_active: u64,
     pub resolution_watches_rehydrated: u64,
@@ -237,6 +239,32 @@ impl ClobRecoveryWindow {
             .map(|started_at| duration_milliseconds(ended_at.duration_since(started_at)))
             .unwrap_or(0)
     }
+}
+
+#[derive(Debug, Default)]
+struct ClobSubscriptionStats {
+    updates: u64,
+    active_assets: usize,
+    last_updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+struct ClobSubscriptionDelta {
+    added_assets: Vec<String>,
+    removed_assets: Vec<String>,
+    added_markets: Vec<BtcIntervalMarket>,
+}
+
+impl ClobSubscriptionDelta {
+    fn is_empty(&self) -> bool {
+        self.added_assets.is_empty() && self.removed_assets.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClobSubscriptionOperation {
+    Subscribe,
+    Unsubscribe,
 }
 
 pub type BtcRuntimeStatusInputs = (
@@ -1118,6 +1146,7 @@ async fn run_clob_supervisor(
                     ClobDisconnectCause::ConnectFailure,
                     ClobRetryAction::Backoff(delay),
                     consecutive_failures,
+                    &ClobSubscriptionStats::default(),
                 );
                 if !start_feed_session_or_fail(&repository, &session, &metrics).await
                     || !finish_feed_session_or_fail(&repository, &session, &metrics).await
@@ -1132,14 +1161,13 @@ async fn run_clob_supervisor(
                     runtime_metrics.clob_backoff_scheduled_milliseconds = runtime_metrics
                         .clob_backoff_scheduled_milliseconds
                         .saturating_add(delay_milliseconds);
-                    runtime_metrics.clob_consecutive_failures = consecutive_failures;
-                    runtime_metrics.clob_connected_connection_epoch = None;
-                    runtime_metrics.clob_connected_connection_id = None;
-                    runtime_metrics.clob_active_connection_epoch = None;
-                    runtime_metrics.clob_active_connection_id = None;
-                    runtime_metrics.clob_last_disconnect_at = Some(disconnected_at);
-                    runtime_metrics.clob_last_disconnect_reason = Some(reason.clone());
-                    runtime_metrics.clob_recovery_unavailable_since = recovery_window.since;
+                    clear_clob_connection_metrics(
+                        &mut runtime_metrics,
+                        disconnected_at,
+                        &reason,
+                        recovery_window.since,
+                        consecutive_failures,
+                    );
                 }
                 tracing::warn!(
                     feed = "polymarket_clob_market",
@@ -1182,25 +1210,36 @@ async fn run_clob_supervisor(
             connect_latency_ms = duration_milliseconds(connected_instant.duration_since(attempt_started_at)),
             "CLOB websocket connected"
         );
-        let mut immediate_reconnect = false;
         let mut terminate_supervisor = false;
         let mut fatal_persistence_error = None;
         let mut subscription_failed = false;
         let mut healthy_epoch = false;
+        let mut books_usable = false;
         // The durable watch ledger, not the three-window Gamma cache, owns this subscription set.
         // That keeps delayed outcomes subscribed across multiple rollovers and process restarts.
-        let active_markets = markets.borrow().iter().cloned().collect::<Vec<_>>();
+        let mut active_markets = markets.borrow().iter().cloned().collect::<Vec<_>>();
+        let mut subscription_stats = ClobSubscriptionStats::default();
         let mut registry = BookRegistry::new(connection_id);
-        for market in &active_markets {
-            registry.register_market(market);
+        let registration_succeeded = match register_clob_markets(&mut registry, &active_markets) {
+            Ok(()) => true,
+            Err(error) => {
+                session.disconnect_reason = Some(format!("invalid_subscription_identity:{error}"));
+                subscription_failed = true;
+                record_error(&metrics, error).await;
+                false
+            }
+        };
+        if registration_succeeded {
+            *shared_books.write().await = registry.clone();
+            {
+                let mut shared = state.write().await;
+                shared.update_books(&registry);
+                shared.last_updated_at = Some(Utc::now());
+            }
         }
-        *shared_books.write().await = registry.clone();
-        {
-            let mut shared = state.write().await;
-            shared.update_books(&registry);
-            shared.last_updated_at = Some(Utc::now());
-        }
-        if let Err(error) = socket
+        if !registration_succeeded {
+            // The connection is closed below. No subscription is sent for an invalid identity set.
+        } else if let Err(error) = socket
             .send(Message::Text(clob_subscription(&active_markets).into()))
             .await
         {
@@ -1213,6 +1252,9 @@ async fn run_clob_supervisor(
             session.disconnect_reason = Some(format!("critical_subscription_ack:{error}"));
             fatal_persistence_error = Some(error);
         } else {
+            subscription_stats.active_assets = registry.len();
+            metrics.write().await.clob_active_subscribed_assets =
+                u64::try_from(subscription_stats.active_assets).unwrap_or(u64::MAX);
             let mut heartbeat = interval(config.clob_heartbeat_interval);
             let mut checkpoints = interval(config.checkpoint_interval);
             heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -1225,16 +1267,153 @@ async fn run_clob_supervisor(
                     }
                     changed = markets.changed() => {
                         match market_watch_disposition(&changed) {
-                            MarketWatchDisposition::Reconnect => {
-                                immediate_reconnect = true;
-                                session.disconnect_reason = Some("market_watch_changed".to_string());
+                            MarketWatchDisposition::UpdateSubscriptions => {
+                                let desired_markets = markets.borrow().clone();
+                                if let Err(error) = registry.validate_market_set(&desired_markets) {
+                                    subscription_failed = true;
+                                    session.disconnect_reason = Some(format!(
+                                        "invalid_subscription_transition:{error}"
+                                    ));
+                                    record_error(&metrics, error).await;
+                                    break 'connection;
+                                }
+                                let delta = clob_subscription_delta(
+                                    &active_markets,
+                                    &desired_markets,
+                                );
+                                if let Err(error) = register_clob_markets(
+                                    &mut registry,
+                                    &delta.added_markets,
+                                ) {
+                                    subscription_failed = true;
+                                    session.disconnect_reason = Some(format!(
+                                        "subscription_registration_failed:{error}"
+                                    ));
+                                    record_error(&metrics, error).await;
+                                    break 'connection;
+                                }
+                                if !delta.added_assets.is_empty() {
+                                    if let Err(error) = socket
+                                        .send(Message::Text(
+                                            clob_subscription_operation(
+                                                &delta.added_assets,
+                                                ClobSubscriptionOperation::Subscribe,
+                                            )
+                                            .into(),
+                                        ))
+                                        .await
+                                    {
+                                        subscription_failed = true;
+                                        session.disconnect_reason = Some(format!(
+                                            "dynamic_subscribe_failed:{error}"
+                                        ));
+                                        break 'connection;
+                                    }
+                                }
+                                if !delta.added_markets.is_empty() {
+                                    if let Err(error) = acknowledge_clob_subscriptions(
+                                        &repository,
+                                        &delta.added_markets,
+                                        connection_id,
+                                        Utc::now(),
+                                    )
+                                    .await
+                                    {
+                                        session.disconnect_reason = Some(format!(
+                                            "critical_subscription_ack:{error}"
+                                        ));
+                                        fatal_persistence_error = Some(error);
+                                        break 'connection;
+                                    }
+                                }
+                                if !delta.removed_assets.is_empty() {
+                                    if let Err(error) = socket
+                                        .send(Message::Text(
+                                            clob_subscription_operation(
+                                                &delta.removed_assets,
+                                                ClobSubscriptionOperation::Unsubscribe,
+                                            )
+                                            .into(),
+                                        ))
+                                        .await
+                                    {
+                                        subscription_failed = true;
+                                        session.disconnect_reason = Some(format!(
+                                            "dynamic_unsubscribe_failed:{error}"
+                                        ));
+                                        break 'connection;
+                                    }
+                                }
+                                if let Err(error) = registry.retain_markets(&desired_markets) {
+                                    subscription_failed = true;
+                                    session.disconnect_reason = Some(format!(
+                                        "subscription_retention_failed:{error}"
+                                    ));
+                                    record_error(&metrics, error).await;
+                                    break 'connection;
+                                }
+
+                                active_markets = desired_markets;
+                                let updated_at = Utc::now();
+                                let update_instant = Instant::now();
+                                if !delta.is_empty() {
+                                    subscription_stats.updates =
+                                        subscription_stats.updates.saturating_add(1);
+                                    subscription_stats.active_assets = registry.len();
+                                    subscription_stats.last_updated_at = Some(updated_at);
+                                }
+                                *shared_books.write().await = registry.clone();
+                                {
+                                    let mut shared = state.write().await;
+                                    shared.update_books(&registry);
+                                    shared.last_updated_at = Some(updated_at);
+                                }
+                                if !delta.is_empty() {
+                                    {
+                                        let mut runtime_metrics = metrics.write().await;
+                                        runtime_metrics.clob_subscription_updates = runtime_metrics
+                                            .clob_subscription_updates
+                                            .saturating_add(1);
+                                        runtime_metrics.clob_active_subscribed_assets = u64::try_from(
+                                            subscription_stats.active_assets,
+                                        )
+                                        .unwrap_or(u64::MAX);
+                                        runtime_metrics.clob_last_subscription_update_at =
+                                            Some(updated_at);
+                                    }
+                                    tracing::info!(
+                                        feed = "polymarket_clob_market",
+                                        %connection_id,
+                                        connection_epoch = reconnect_ordinal,
+                                        added_assets = delta.added_assets.len(),
+                                        removed_assets = delta.removed_assets.len(),
+                                        active_assets = subscription_stats.active_assets,
+                                        "CLOB websocket subscriptions updated in place"
+                                    );
+                                }
+
+                                update_clob_usability(
+                                    &registry,
+                                    &active_markets,
+                                    updated_at,
+                                    update_instant,
+                                    chrono_duration(config.max_book_age),
+                                    &mut books_usable,
+                                    &mut healthy_epoch,
+                                    &metrics,
+                                    connection_id,
+                                    reconnect_ordinal,
+                                    &mut consecutive_failures,
+                                    &mut recovery_window,
+                                )
+                                .await;
                             }
                             MarketWatchDisposition::Terminate => {
                                 terminate_supervisor = true;
                                 session.disconnect_reason = Some("market_watch_closed".to_string());
+                                break 'connection;
                             }
                         }
-                        break;
                     }
                     _ = heartbeat.tick() => {
                         if let Err(error) = socket.send(Message::Text("PING".into())).await {
@@ -1243,9 +1422,25 @@ async fn run_clob_supervisor(
                         }
                     }
                     _ = checkpoints.tick() => {
+                        let checked_at = Utc::now();
+                        update_clob_usability(
+                            &registry,
+                            &active_markets,
+                            checked_at,
+                            Instant::now(),
+                            chrono_duration(config.max_book_age),
+                            &mut books_usable,
+                            &mut healthy_epoch,
+                            &metrics,
+                            connection_id,
+                            reconnect_ordinal,
+                            &mut consecutive_failures,
+                            &mut recovery_window,
+                        )
+                        .await;
                         let checkpoint_markets = active_markets.clone();
                         for market in &checkpoint_markets {
-                            if !market.is_trade_window(Utc::now()) {
+                            if !market.is_trade_window(checked_at) {
                                 continue;
                             }
                             for token_id in [&market.up_token_id, &market.down_token_id] {
@@ -1255,7 +1450,15 @@ async fn run_clob_supervisor(
                                         runtime_metrics.checkpoints_queued =
                                             runtime_metrics.checkpoints_queued.saturating_add(1);
                                     } else {
-                                        return;
+                                        session.dropped_messages =
+                                            session.dropped_messages.saturating_add(1);
+                                        session.disconnect_reason = Some(
+                                            "critical_checkpoint_queue_closed".to_string(),
+                                        );
+                                        fatal_persistence_error = Some(anyhow::anyhow!(
+                                            "CLOB checkpoint persistence queue closed"
+                                        ));
+                                        break 'connection;
                                     }
                                 }
                             }
@@ -1335,7 +1538,13 @@ async fn run_clob_supervisor(
                                                 } else {
                                                     session.dropped_messages =
                                                         session.dropped_messages.saturating_add(1);
-                                                    return;
+                                                    session.disconnect_reason = Some(
+                                                        "critical_feed_event_queue_closed".to_string(),
+                                                    );
+                                                    fatal_persistence_error = Some(anyhow::anyhow!(
+                                                        "CLOB feed event persistence queue closed"
+                                                    ));
+                                                    break 'connection;
                                                 }
                                             }
                                         }
@@ -1357,26 +1566,21 @@ async fn run_clob_supervisor(
                                         record_error(&metrics, error).await;
                                     }
                                 }
-                                if !healthy_epoch
-                                    && clob_epoch_ready(
-                                        &registry,
-                                        &active_markets,
-                                        received_at,
-                                        chrono_duration(config.max_book_age),
-                                    )
-                                {
-                                    healthy_epoch = true;
-                                    record_clob_epoch_healthy(
-                                        &metrics,
-                                        connection_id,
-                                        reconnect_ordinal,
-                                        received_at,
-                                        Instant::now(),
-                                        &mut consecutive_failures,
-                                        &mut recovery_window,
-                                    )
-                                    .await;
-                                }
+                                update_clob_usability(
+                                    &registry,
+                                    &active_markets,
+                                    Utc::now(),
+                                    Instant::now(),
+                                    chrono_duration(config.max_book_age),
+                                    &mut books_usable,
+                                    &mut healthy_epoch,
+                                    &metrics,
+                                    connection_id,
+                                    reconnect_ordinal,
+                                    &mut consecutive_failures,
+                                    &mut recovery_window,
+                                )
+                                .await;
                             }
                             Ok(Message::Binary(bytes)) => {
                                 let received_at = Utc::now();
@@ -1413,7 +1617,19 @@ async fn run_clob_supervisor(
                                                     )
                                                     .await
                                                     {
-                                                        return;
+                                                        session.dropped_messages = session
+                                                            .dropped_messages
+                                                            .saturating_add(1);
+                                                        session.disconnect_reason = Some(
+                                                            "critical_feed_event_queue_closed"
+                                                                .to_string(),
+                                                        );
+                                                        fatal_persistence_error = Some(
+                                                            anyhow::anyhow!(
+                                                                "CLOB feed event persistence queue closed"
+                                                            ),
+                                                        );
+                                                        break 'connection;
                                                     }
                                                 }
                                             }
@@ -1446,26 +1662,21 @@ async fn run_clob_supervisor(
                                         record_error(&metrics, error).await;
                                     }
                                 }
-                                if !healthy_epoch
-                                    && clob_epoch_ready(
-                                        &registry,
-                                        &active_markets,
-                                        received_at,
-                                        chrono_duration(config.max_book_age),
-                                    )
-                                {
-                                    healthy_epoch = true;
-                                    record_clob_epoch_healthy(
-                                        &metrics,
-                                        connection_id,
-                                        reconnect_ordinal,
-                                        received_at,
-                                        Instant::now(),
-                                        &mut consecutive_failures,
-                                        &mut recovery_window,
-                                    )
-                                    .await;
-                                }
+                                update_clob_usability(
+                                    &registry,
+                                    &active_markets,
+                                    Utc::now(),
+                                    Instant::now(),
+                                    chrono_duration(config.max_book_age),
+                                    &mut books_usable,
+                                    &mut healthy_epoch,
+                                    &metrics,
+                                    connection_id,
+                                    reconnect_ordinal,
+                                    &mut consecutive_failures,
+                                    &mut recovery_window,
+                                )
+                                .await;
                             }
                             Ok(Message::Close(frame)) => {
                                 session.disconnect_reason = Some(format!("remote_close:{frame:?}"));
@@ -1492,7 +1703,6 @@ async fn run_clob_supervisor(
         let disconnect_cause = clob_disconnect_cause(
             healthy_epoch,
             subscription_failed,
-            immediate_reconnect,
             terminate_supervisor,
             *shutdown.borrow() || reason == "shutdown",
             fatal_persistence_error.is_some(),
@@ -1500,7 +1710,6 @@ async fn run_clob_supervisor(
         let retry_action = clob_retry_action(
             &config,
             healthy_epoch,
-            disconnect_cause == ClobDisconnectCause::SubscriptionUpdate,
             matches!(
                 disconnect_cause,
                 ClobDisconnectCause::Shutdown
@@ -1512,36 +1721,30 @@ async fn run_clob_supervisor(
         let immediate_recovery = matches!(retry_action, ClobRetryAction::ImmediateRecovery);
         let retry_delay = match retry_action {
             ClobRetryAction::Backoff(delay) => Some(delay),
-            ClobRetryAction::Stop
-            | ClobRetryAction::SubscriptionUpdate
-            | ClobRetryAction::ImmediateRecovery => None,
+            ClobRetryAction::Stop | ClobRetryAction::ImmediateRecovery => None,
         };
         session.metadata = clob_session_metadata(
             healthy_epoch,
             disconnect_cause,
             retry_action,
             consecutive_failures,
+            &subscription_stats,
         );
         quarantine_clob_books_on_disconnect(&mut registry, &state, &shared_books, disconnected_at)
             .await;
         {
             let mut runtime_metrics = metrics.write().await;
-            runtime_metrics.clob_connected_connection_epoch = None;
-            runtime_metrics.clob_connected_connection_id = None;
-            runtime_metrics.clob_active_connection_epoch = None;
-            runtime_metrics.clob_active_connection_id = None;
-            runtime_metrics.clob_last_disconnect_at = Some(disconnected_at);
-            runtime_metrics.clob_last_disconnect_reason = Some(reason.clone());
-            runtime_metrics.clob_recovery_unavailable_since = recovery_window.since;
-            runtime_metrics.clob_consecutive_failures = consecutive_failures;
+            clear_clob_connection_metrics(
+                &mut runtime_metrics,
+                disconnected_at,
+                &reason,
+                recovery_window.since,
+                consecutive_failures,
+            );
             if retry_action != ClobRetryAction::Stop {
                 runtime_metrics.reconnects = runtime_metrics.reconnects.saturating_add(1);
             }
             match disconnect_cause {
-                ClobDisconnectCause::SubscriptionUpdate => {
-                    runtime_metrics.clob_planned_reconnects =
-                        runtime_metrics.clob_planned_reconnects.saturating_add(1);
-                }
                 ClobDisconnectCause::TransportFailure => {
                     runtime_metrics.clob_transport_disconnects =
                         runtime_metrics.clob_transport_disconnects.saturating_add(1);
@@ -1589,7 +1792,7 @@ async fn run_clob_supervisor(
         }
         match retry_action {
             ClobRetryAction::Stop => return,
-            ClobRetryAction::SubscriptionUpdate | ClobRetryAction::ImmediateRecovery => continue,
+            ClobRetryAction::ImmediateRecovery => continue,
             ClobRetryAction::Backoff(delay) => {
                 if !wait_reconnect_backoff(delay, &mut shutdown).await {
                     break;
@@ -1601,14 +1804,13 @@ async fn run_clob_supervisor(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MarketWatchDisposition {
-    Reconnect,
+    UpdateSubscriptions,
     Terminate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClobRetryAction {
     Stop,
-    SubscriptionUpdate,
     ImmediateRecovery,
     Backoff(StdDuration),
 }
@@ -1619,7 +1821,6 @@ enum ClobDisconnectCause {
     SubscriptionFailure,
     BootstrapFailure,
     TransportFailure,
-    SubscriptionUpdate,
     Shutdown,
     MarketWatchClosed,
     CriticalPersistence,
@@ -1632,7 +1833,6 @@ impl ClobDisconnectCause {
             Self::SubscriptionFailure => "subscription_failure",
             Self::BootstrapFailure => "bootstrap_failure",
             Self::TransportFailure => "transport_failure",
-            Self::SubscriptionUpdate => "subscription_update",
             Self::Shutdown => "shutdown",
             Self::MarketWatchClosed => "market_watch_closed",
             Self::CriticalPersistence => "critical_persistence",
@@ -1643,7 +1843,6 @@ impl ClobDisconnectCause {
 fn clob_disconnect_cause(
     healthy_epoch: bool,
     subscription_failed: bool,
-    subscription_update: bool,
     market_watch_closed: bool,
     shutting_down: bool,
     fatal_persistence_error: bool,
@@ -1654,8 +1853,6 @@ fn clob_disconnect_cause(
         ClobDisconnectCause::Shutdown
     } else if market_watch_closed {
         ClobDisconnectCause::MarketWatchClosed
-    } else if subscription_update {
-        ClobDisconnectCause::SubscriptionUpdate
     } else if subscription_failed {
         ClobDisconnectCause::SubscriptionFailure
     } else if healthy_epoch {
@@ -1668,14 +1865,11 @@ fn clob_disconnect_cause(
 fn clob_retry_action(
     config: &BtcRuntimeConfig,
     healthy_epoch: bool,
-    subscription_update: bool,
     stop: bool,
     consecutive_failures: &mut u32,
 ) -> ClobRetryAction {
     if stop {
         ClobRetryAction::Stop
-    } else if subscription_update {
-        ClobRetryAction::SubscriptionUpdate
     } else if healthy_epoch {
         ClobRetryAction::ImmediateRecovery
     } else {
@@ -1688,7 +1882,7 @@ fn market_watch_disposition(
     changed: &Result<(), watch::error::RecvError>,
 ) -> MarketWatchDisposition {
     if changed.is_ok() {
-        MarketWatchDisposition::Reconnect
+        MarketWatchDisposition::UpdateSubscriptions
     } else {
         MarketWatchDisposition::Terminate
     }
@@ -1715,10 +1909,27 @@ fn clob_epoch_ready(
     now: DateTime<Utc>,
     max_age: Duration,
 ) -> bool {
-    markets
-        .iter()
-        .filter(|market| market.is_trade_window(now))
-        .any(|market| registry.market_books_ready(market, now, max_age))
+    unique_current_clob_market(markets, now)
+        .is_some_and(|market| registry.market_books_ready(market, now, max_age))
+}
+
+fn unique_current_clob_market(
+    markets: &[BtcIntervalMarket],
+    now: DateTime<Utc>,
+) -> Option<&BtcIntervalMarket> {
+    let mut current = None;
+    for market in markets.iter().filter(|market| market.is_trade_window(now)) {
+        match current {
+            None => current = Some(market),
+            Some(existing)
+                if existing.market_id == market.market_id
+                    && existing.condition_id == market.condition_id
+                    && existing.up_token_id == market.up_token_id
+                    && existing.down_token_id == market.down_token_id => {}
+            Some(_) => return None,
+        }
+    }
+    current
 }
 
 async fn record_clob_epoch_healthy(
@@ -1727,6 +1938,7 @@ async fn record_clob_epoch_healthy(
     connection_epoch: i32,
     ready_at: DateTime<Utc>,
     ready_instant: Instant,
+    first_healthy_transition: bool,
     consecutive_failures: &mut u32,
     recovery_window: &mut ClobRecoveryWindow,
 ) {
@@ -1734,8 +1946,10 @@ async fn record_clob_epoch_healthy(
     let unavailable_milliseconds = recovery_window.close(ready_instant);
     {
         let mut runtime_metrics = metrics.write().await;
-        runtime_metrics.clob_healthy_connections =
-            runtime_metrics.clob_healthy_connections.saturating_add(1);
+        if first_healthy_transition {
+            runtime_metrics.clob_healthy_connections =
+                runtime_metrics.clob_healthy_connections.saturating_add(1);
+        }
         runtime_metrics.clob_recovery_unavailable_milliseconds = runtime_metrics
             .clob_recovery_unavailable_milliseconds
             .saturating_add(unavailable_milliseconds);
@@ -1754,15 +1968,83 @@ async fn record_clob_epoch_healthy(
     );
 }
 
+async fn record_clob_epoch_unavailable(
+    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
+    unavailable_at: DateTime<Utc>,
+    unavailable_instant: Instant,
+    recovery_window: &mut ClobRecoveryWindow,
+) {
+    recovery_window.open_if_closed(unavailable_at, unavailable_instant);
+    let mut runtime_metrics = metrics.write().await;
+    runtime_metrics.clob_active_connection_epoch = None;
+    runtime_metrics.clob_active_connection_id = None;
+    runtime_metrics.clob_recovery_unavailable_since = recovery_window.since;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn update_clob_usability(
+    registry: &BookRegistry,
+    active_markets: &[BtcIntervalMarket],
+    checked_at: DateTime<Utc>,
+    checked_instant: Instant,
+    max_book_age: Duration,
+    books_usable: &mut bool,
+    healthy_epoch: &mut bool,
+    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
+    connection_id: Uuid,
+    connection_epoch: i32,
+    consecutive_failures: &mut u32,
+    recovery_window: &mut ClobRecoveryWindow,
+) {
+    let ready_now = clob_epoch_ready(registry, active_markets, checked_at, max_book_age);
+    if ready_now && !*books_usable {
+        let first_healthy_transition = !*healthy_epoch;
+        *books_usable = true;
+        *healthy_epoch = true;
+        record_clob_epoch_healthy(
+            metrics,
+            connection_id,
+            connection_epoch,
+            checked_at,
+            checked_instant,
+            first_healthy_transition,
+            consecutive_failures,
+            recovery_window,
+        )
+        .await;
+    } else if !ready_now && *books_usable {
+        *books_usable = false;
+        record_clob_epoch_unavailable(metrics, checked_at, checked_instant, recovery_window).await;
+    }
+}
+
+fn clear_clob_connection_metrics(
+    metrics: &mut BtcRuntimeMetrics,
+    disconnected_at: DateTime<Utc>,
+    reason: &str,
+    recovery_unavailable_since: Option<DateTime<Utc>>,
+    consecutive_failures: u32,
+) {
+    metrics.clob_connected_connection_epoch = None;
+    metrics.clob_connected_connection_id = None;
+    metrics.clob_active_connection_epoch = None;
+    metrics.clob_active_connection_id = None;
+    metrics.clob_active_subscribed_assets = 0;
+    metrics.clob_last_disconnect_at = Some(disconnected_at);
+    metrics.clob_last_disconnect_reason = Some(reason.to_string());
+    metrics.clob_recovery_unavailable_since = recovery_unavailable_since;
+    metrics.clob_consecutive_failures = consecutive_failures;
+}
+
 fn clob_session_metadata(
     healthy_epoch: bool,
     disconnect_cause: ClobDisconnectCause,
     retry_action: ClobRetryAction,
     consecutive_failures: u32,
+    subscription_stats: &ClobSubscriptionStats,
 ) -> serde_json::Value {
     let (next_action, retry_delay) = match retry_action {
         ClobRetryAction::Stop => ("stop", None),
-        ClobRetryAction::SubscriptionUpdate => ("subscription_reconnect", None),
         ClobRetryAction::ImmediateRecovery => ("immediate_recovery", None),
         ClobRetryAction::Backoff(delay) => ("backoff", Some(delay)),
     };
@@ -1772,6 +2054,9 @@ fn clob_session_metadata(
         "consecutive_failures": consecutive_failures,
         "retry_delay_ms": retry_delay.map(duration_milliseconds),
         "next_action": next_action,
+        "subscription_updates": subscription_stats.updates,
+        "active_subscribed_assets": subscription_stats.active_assets,
+        "last_subscription_update_at": subscription_stats.last_updated_at,
     })
 }
 
@@ -1788,16 +2073,12 @@ fn log_clob_disconnect(
 ) {
     let retry_delay_milliseconds = match retry_action {
         ClobRetryAction::Backoff(delay) => duration_milliseconds(delay),
-        ClobRetryAction::Stop
-        | ClobRetryAction::SubscriptionUpdate
-        | ClobRetryAction::ImmediateRecovery => 0,
+        ClobRetryAction::Stop | ClobRetryAction::ImmediateRecovery => 0,
     };
     let immediate_recovery = matches!(retry_action, ClobRetryAction::ImmediateRecovery);
     let connected_duration_milliseconds = duration_milliseconds(connected_duration);
     match disconnect_cause {
-        ClobDisconnectCause::SubscriptionUpdate
-        | ClobDisconnectCause::Shutdown
-        | ClobDisconnectCause::MarketWatchClosed => tracing::info!(
+        ClobDisconnectCause::Shutdown | ClobDisconnectCause::MarketWatchClosed => tracing::info!(
             feed = "polymarket_clob_market",
             %connection_id,
             connection_epoch,
@@ -2768,16 +3049,80 @@ fn boundary_label(
 }
 
 fn clob_subscription(markets: &[BtcIntervalMarket]) -> String {
-    let assets: Vec<_> = markets
-        .iter()
-        .flat_map(|market| [&market.up_token_id, &market.down_token_id])
-        .collect();
     serde_json::json!({
-        "assets_ids": assets,
+        "assets_ids": clob_asset_ids(markets),
         "type": "market",
         "custom_feature_enabled": true
     })
     .to_string()
+}
+
+fn clob_asset_ids(markets: &[BtcIntervalMarket]) -> Vec<String> {
+    let mut assets = markets
+        .iter()
+        .flat_map(|market| [&market.up_token_id, &market.down_token_id])
+        .cloned()
+        .collect::<Vec<_>>();
+    assets.sort_unstable();
+    assets.dedup();
+    assets
+}
+
+fn clob_subscription_delta(
+    active: &[BtcIntervalMarket],
+    desired: &[BtcIntervalMarket],
+) -> ClobSubscriptionDelta {
+    let active_assets = clob_asset_ids(active);
+    let desired_assets = clob_asset_ids(desired);
+    let added_assets = desired_assets
+        .iter()
+        .filter(|asset| active_assets.binary_search(asset).is_err())
+        .cloned()
+        .collect::<Vec<_>>();
+    let removed_assets = active_assets
+        .iter()
+        .filter(|asset| desired_assets.binary_search(asset).is_err())
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut seen_market_ids = HashSet::with_capacity(desired.len());
+    let added_markets = desired
+        .iter()
+        .filter(|market| {
+            (added_assets.binary_search(&market.up_token_id).is_ok()
+                || added_assets.binary_search(&market.down_token_id).is_ok())
+                && seen_market_ids.insert(market.market_id.as_str())
+        })
+        .cloned()
+        .collect();
+    ClobSubscriptionDelta {
+        added_assets,
+        removed_assets,
+        added_markets,
+    }
+}
+
+fn clob_subscription_operation(assets: &[String], operation: ClobSubscriptionOperation) -> String {
+    match operation {
+        ClobSubscriptionOperation::Subscribe => serde_json::json!({
+            "assets_ids": assets,
+            "operation": "subscribe",
+            "custom_feature_enabled": true
+        }),
+        ClobSubscriptionOperation::Unsubscribe => serde_json::json!({
+            "assets_ids": assets,
+            "operation": "unsubscribe"
+        }),
+    }
+    .to_string()
+}
+
+fn register_clob_markets(registry: &mut BookRegistry, markets: &[BtcIntervalMarket]) -> Result<()> {
+    for market in markets {
+        registry
+            .try_register_market(market)
+            .with_context(|| format!("invalid CLOB market identity {}", market.market_id))?;
+    }
+    Ok(())
 }
 
 async fn acknowledge_clob_subscriptions(
@@ -2786,10 +3131,12 @@ async fn acknowledge_clob_subscriptions(
     connection_id: Uuid,
     subscribed_at: DateTime<Utc>,
 ) -> Result<()> {
-    let market_ids = markets
+    let mut market_ids = markets
         .iter()
         .map(|market| market.market_id.clone())
         .collect::<Vec<_>>();
+    market_ids.sort_unstable();
+    market_ids.dedup();
     repository
         .mark_official_resolution_watches_subscribed(&market_ids, connection_id, subscribed_at)
         .await?;
@@ -2802,6 +3149,7 @@ fn same_market_subscriptions(left: &[BtcIntervalMarket], right: &[BtcIntervalMar
         .map(|market| {
             (
                 &market.market_id,
+                &market.condition_id,
                 &market.up_token_id,
                 &market.down_token_id,
                 market.window_start,
@@ -2813,6 +3161,7 @@ fn same_market_subscriptions(left: &[BtcIntervalMarket], right: &[BtcIntervalMar
         .map(|market| {
             (
                 &market.market_id,
+                &market.condition_id,
                 &market.up_token_id,
                 &market.down_token_id,
                 market.window_start,
@@ -3125,6 +3474,33 @@ mod tests {
         }
     }
 
+    fn ready_book_registry(market: &BtcIntervalMarket, source_at: DateTime<Utc>) -> BookRegistry {
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(market);
+        for token_id in [&market.up_token_id, &market.down_token_id] {
+            let events = registry.apply(
+                ClobMessage::Book {
+                    market_id: market.condition_id.clone(),
+                    token_id: token_id.clone(),
+                    bids: vec![OrderbookLevel {
+                        price: dec!(0.48),
+                        size: dec!(10),
+                    }],
+                    asks: vec![OrderbookLevel {
+                        price: dec!(0.52),
+                        size: dec!(10),
+                    }],
+                    source_timestamp: source_at,
+                    source_hash: Some(format!("hash-{token_id}")),
+                    raw_payload: serde_json::json!({}),
+                },
+                source_at + Duration::milliseconds(1),
+            );
+            assert!(events.iter().all(|event| event.applied));
+        }
+        registry
+    }
+
     #[tokio::test]
     async fn clob_disconnect_quarantines_old_books_before_reconnect() {
         let market = market();
@@ -3343,7 +3719,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn closed_market_watch_terminates_instead_of_reconnecting() {
+    async fn runtime_status_exposes_canonical_subscription_metrics() {
+        let updated_at = Utc.timestamp_opt(1_783_902_650, 0).unwrap();
+        let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics {
+            clob_subscription_updates: 3,
+            clob_active_subscribed_assets: 8,
+            clob_last_subscription_update_at: Some(updated_at),
+            ..BtcRuntimeMetrics::default()
+        }));
+        let status = runtime_status_from_inputs(
+            Arc::new(RwLock::new(RealtimeState::default())),
+            metrics,
+            BtcRuntimeConfig::default(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await;
+        let value = serde_json::to_value(status).unwrap();
+        assert_eq!(value["metrics"]["clob_subscription_updates"], 3);
+        assert_eq!(value["metrics"]["clob_active_subscribed_assets"], 8);
+        assert_eq!(
+            value["metrics"]["clob_last_subscription_update_at"],
+            serde_json::json!(updated_at)
+        );
+        assert!(value["metrics"].get("clob_planned_reconnects").is_none());
+    }
+
+    #[tokio::test]
+    async fn closed_market_watch_terminates_while_changes_update_in_place() {
         let (sender, mut receiver) = watch::channel(Vec::<BtcIntervalMarket>::new());
         drop(sender);
         let changed = receiver.changed().await;
@@ -3357,7 +3759,7 @@ mod tests {
         let changed = receiver.changed().await;
         assert_eq!(
             market_watch_disposition(&changed),
-            MarketWatchDisposition::Reconnect
+            MarketWatchDisposition::UpdateSubscriptions
         );
     }
 
@@ -3386,38 +3788,64 @@ mod tests {
     }
 
     #[test]
-    fn clob_retry_classification_preserves_planned_updates_and_recovers_immediately() {
+    fn disconnect_cleanup_clears_active_subscription_state_only() {
+        let disconnected_at = Utc.timestamp_opt(1_783_902_660, 0).unwrap();
+        let updated_at = disconnected_at - Duration::seconds(10);
+        let mut metrics = BtcRuntimeMetrics {
+            clob_subscription_updates: 3,
+            clob_last_subscription_update_at: Some(updated_at),
+            clob_active_subscribed_assets: 8,
+            clob_connected_connection_epoch: Some(7),
+            clob_connected_connection_id: Some(Uuid::new_v4()),
+            clob_active_connection_epoch: Some(7),
+            clob_active_connection_id: Some(Uuid::new_v4()),
+            ..BtcRuntimeMetrics::default()
+        };
+
+        clear_clob_connection_metrics(
+            &mut metrics,
+            disconnected_at,
+            "transport_reset",
+            Some(disconnected_at),
+            2,
+        );
+
+        assert_eq!(metrics.clob_active_subscribed_assets, 0);
+        assert!(metrics.clob_connected_connection_id.is_none());
+        assert!(metrics.clob_active_connection_id.is_none());
+        assert_eq!(metrics.clob_subscription_updates, 3);
+        assert_eq!(metrics.clob_last_subscription_update_at, Some(updated_at));
+        assert_eq!(metrics.clob_consecutive_failures, 2);
+    }
+
+    #[test]
+    fn clob_retry_classification_recovers_healthy_connections_immediately() {
         let config = BtcRuntimeConfig::default();
         let mut failures = 4;
         assert_eq!(
-            clob_retry_action(&config, false, true, false, &mut failures),
-            ClobRetryAction::SubscriptionUpdate
-        );
-        assert_eq!(failures, 4);
-        assert_eq!(
-            clob_retry_action(&config, true, false, false, &mut failures),
+            clob_retry_action(&config, true, false, &mut failures),
             ClobRetryAction::ImmediateRecovery
         );
         assert_eq!(failures, 4);
         assert_eq!(
-            clob_retry_action(&config, false, false, false, &mut failures),
+            clob_retry_action(&config, false, false, &mut failures),
             ClobRetryAction::Backoff(StdDuration::from_secs(16))
         );
         assert_eq!(failures, 5);
         assert_eq!(
-            clob_disconnect_cause(false, false, true, false, true, false),
+            clob_disconnect_cause(false, false, false, true, false),
             ClobDisconnectCause::Shutdown
         );
         assert_eq!(
-            clob_disconnect_cause(false, true, false, false, false, false),
+            clob_disconnect_cause(false, true, false, false, false),
             ClobDisconnectCause::SubscriptionFailure
         );
         assert_eq!(
-            clob_disconnect_cause(true, false, false, false, false, false),
+            clob_disconnect_cause(true, false, false, false, false),
             ClobDisconnectCause::TransportFailure
         );
         assert_eq!(
-            clob_retry_action(&config, false, false, true, &mut failures),
+            clob_retry_action(&config, false, true, &mut failures),
             ClobRetryAction::Stop
         );
         assert_eq!(failures, 5);
@@ -3439,6 +3867,7 @@ mod tests {
             9,
             ready_at,
             ready_instant,
+            true,
             &mut failures,
             &mut recovery_window,
         )
@@ -3446,23 +3875,46 @@ mod tests {
 
         assert_eq!(failures, 0);
         assert!(recovery_window.since.is_none());
-        let metrics = metrics.read().await;
-        assert_eq!(metrics.clob_healthy_connections, 1);
-        assert_eq!(metrics.clob_recovery_unavailable_milliseconds, 750);
-        assert_eq!(metrics.clob_consecutive_failures, 0);
-        assert_eq!(metrics.clob_active_connection_epoch, Some(9));
-        assert!(metrics.clob_active_connection_id.is_some());
-        assert!(metrics.clob_recovery_unavailable_since.is_none());
-        drop(metrics);
+        let healthy_metrics = metrics.read().await;
+        assert_eq!(healthy_metrics.clob_healthy_connections, 1);
+        assert_eq!(healthy_metrics.clob_recovery_unavailable_milliseconds, 750);
+        assert_eq!(healthy_metrics.clob_consecutive_failures, 0);
+        assert_eq!(healthy_metrics.clob_active_connection_epoch, Some(9));
+        assert!(healthy_metrics.clob_active_connection_id.is_some());
+        assert!(healthy_metrics.clob_recovery_unavailable_since.is_none());
+        drop(healthy_metrics);
+
+        let unavailable_at = ready_at + Duration::seconds(1);
+        let unavailable_instant = ready_instant + StdDuration::from_millis(250);
+        record_clob_epoch_unavailable(
+            &metrics,
+            unavailable_at,
+            unavailable_instant,
+            &mut recovery_window,
+        )
+        .await;
+        assert!(metrics.read().await.clob_active_connection_id.is_none());
+        record_clob_epoch_healthy(
+            &metrics,
+            Uuid::new_v4(),
+            9,
+            unavailable_at + Duration::milliseconds(250),
+            unavailable_instant + StdDuration::from_millis(250),
+            false,
+            &mut failures,
+            &mut recovery_window,
+        )
+        .await;
+        let recovered_metrics = metrics.read().await;
+        assert_eq!(recovered_metrics.clob_healthy_connections, 1);
+        assert_eq!(
+            recovered_metrics.clob_recovery_unavailable_milliseconds,
+            1_000
+        );
+        drop(recovered_metrics);
 
         assert_eq!(
-            clob_retry_action(
-                &BtcRuntimeConfig::default(),
-                true,
-                false,
-                false,
-                &mut failures,
-            ),
+            clob_retry_action(&BtcRuntimeConfig::default(), true, false, &mut failures,),
             ClobRetryAction::ImmediateRecovery
         );
         failures = failures.saturating_add(1);
@@ -3471,6 +3923,117 @@ mod tests {
             reconnect_backoff(&BtcRuntimeConfig::default(), failures),
             StdDuration::from_secs(1)
         );
+    }
+
+    #[tokio::test]
+    async fn decode_quarantine_revokes_active_clob_usability() {
+        let market = market();
+        let ready_at = market.window_start + Duration::minutes(2);
+        let mut registry = ready_book_registry(&market, ready_at - Duration::milliseconds(10));
+        let connection_id = registry.connection_id();
+        let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
+        let started = Instant::now();
+        let mut recovery_window =
+            ClobRecoveryWindow::open(ready_at - Duration::milliseconds(10), started);
+        let mut books_usable = false;
+        let mut healthy_epoch = false;
+        let mut failures = 3;
+
+        update_clob_usability(
+            &registry,
+            std::slice::from_ref(&market),
+            ready_at,
+            started + StdDuration::from_millis(10),
+            Duration::seconds(2),
+            &mut books_usable,
+            &mut healthy_epoch,
+            &metrics,
+            connection_id,
+            4,
+            &mut failures,
+            &mut recovery_window,
+        )
+        .await;
+        assert!(books_usable);
+        assert!(healthy_epoch);
+
+        registry.quarantine(FeedIntegrityStatus::DecodeError);
+        let quarantined_at = ready_at + Duration::milliseconds(20);
+        update_clob_usability(
+            &registry,
+            std::slice::from_ref(&market),
+            quarantined_at,
+            started + StdDuration::from_millis(30),
+            Duration::seconds(2),
+            &mut books_usable,
+            &mut healthy_epoch,
+            &metrics,
+            connection_id,
+            4,
+            &mut failures,
+            &mut recovery_window,
+        )
+        .await;
+
+        assert!(!books_usable);
+        assert!(healthy_epoch);
+        let status = metrics.read().await;
+        assert!(status.clob_active_connection_id.is_none());
+        assert_eq!(status.clob_recovery_unavailable_since, Some(quarantined_at));
+    }
+
+    #[tokio::test]
+    async fn clock_aging_revokes_active_clob_usability_without_new_frames() {
+        let market = market();
+        let ready_at = market.window_start + Duration::minutes(2);
+        let registry = ready_book_registry(&market, ready_at - Duration::milliseconds(10));
+        let connection_id = registry.connection_id();
+        let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
+        let started = Instant::now();
+        let mut recovery_window =
+            ClobRecoveryWindow::open(ready_at - Duration::milliseconds(10), started);
+        let mut books_usable = false;
+        let mut healthy_epoch = false;
+        let mut failures = 2;
+
+        update_clob_usability(
+            &registry,
+            std::slice::from_ref(&market),
+            ready_at,
+            started + StdDuration::from_millis(10),
+            Duration::seconds(2),
+            &mut books_usable,
+            &mut healthy_epoch,
+            &metrics,
+            connection_id,
+            8,
+            &mut failures,
+            &mut recovery_window,
+        )
+        .await;
+        assert!(books_usable);
+
+        let stale_at = ready_at + Duration::milliseconds(2_001);
+        update_clob_usability(
+            &registry,
+            std::slice::from_ref(&market),
+            stale_at,
+            started + StdDuration::from_millis(2_011),
+            Duration::seconds(2),
+            &mut books_usable,
+            &mut healthy_epoch,
+            &metrics,
+            connection_id,
+            8,
+            &mut failures,
+            &mut recovery_window,
+        )
+        .await;
+
+        assert!(!books_usable);
+        let status = metrics.read().await;
+        assert!(status.clob_active_connection_epoch.is_none());
+        assert_eq!(status.clob_recovery_unavailable_since, Some(stale_at));
     }
 
     #[tokio::test]
@@ -3523,10 +4086,113 @@ mod tests {
     #[test]
     fn subscriptions_are_narrow_and_include_both_outcomes() {
         let market = market();
-        let clob: serde_json::Value = serde_json::from_str(&clob_subscription(&[market])).unwrap();
-        assert_eq!(clob["assets_ids"], serde_json::json!(["up", "down"]));
+        let clob: serde_json::Value =
+            serde_json::from_str(&clob_subscription(&[market.clone(), market])).unwrap();
+        assert_eq!(clob["assets_ids"], serde_json::json!(["down", "up"]));
         let rtds: serde_json::Value = serde_json::from_str(&rtds_subscription()).unwrap();
         assert_eq!(rtds["subscriptions"][0]["filters"], "btcusdt");
+    }
+
+    #[test]
+    fn dynamic_subscription_payloads_match_provider_contract() {
+        let assets = vec!["down".to_string(), "up".to_string()];
+        let subscribe: serde_json::Value = serde_json::from_str(&clob_subscription_operation(
+            &assets,
+            ClobSubscriptionOperation::Subscribe,
+        ))
+        .unwrap();
+        assert_eq!(
+            subscribe,
+            serde_json::json!({
+                "assets_ids": ["down", "up"],
+                "operation": "subscribe",
+                "custom_feature_enabled": true
+            })
+        );
+
+        let unsubscribe: serde_json::Value = serde_json::from_str(&clob_subscription_operation(
+            &assets,
+            ClobSubscriptionOperation::Unsubscribe,
+        ))
+        .unwrap();
+        assert_eq!(
+            unsubscribe,
+            serde_json::json!({
+                "assets_ids": ["down", "up"],
+                "operation": "unsubscribe"
+            })
+        );
+    }
+
+    #[test]
+    fn subscription_delta_is_deterministic_and_deduplicated() {
+        let retained = market();
+        let mut added = retained.clone();
+        added.market_id = "market-next".to_string();
+        added.condition_id = "condition-next".to_string();
+        added.up_token_id = "next-up".to_string();
+        added.down_token_id = "next-down".to_string();
+        added.window_start += Duration::minutes(5);
+        added.window_end += Duration::minutes(5);
+
+        let delta = clob_subscription_delta(
+            std::slice::from_ref(&retained),
+            &[added.clone(), retained.clone(), added.clone()],
+        );
+        assert_eq!(delta.added_assets, ["next-down", "next-up"]);
+        assert!(delta.removed_assets.is_empty());
+        assert_eq!(delta.added_markets.len(), 1);
+        assert_eq!(delta.added_markets[0].market_id, added.market_id);
+
+        let removal = clob_subscription_delta(&[retained, added.clone()], &[added]);
+        assert!(removal.added_assets.is_empty());
+        assert_eq!(removal.removed_assets, ["down", "up"]);
+        assert!(removal.added_markets.is_empty());
+    }
+
+    #[test]
+    fn ambiguous_current_market_set_fails_closed() {
+        let current = market();
+        let checked_at = current.window_start + Duration::minutes(1);
+        assert_eq!(
+            unique_current_clob_market(std::slice::from_ref(&current), checked_at)
+                .map(|market| market.market_id.as_str()),
+            Some("market")
+        );
+        assert!(
+            unique_current_clob_market(&[current.clone(), current.clone()], checked_at).is_some()
+        );
+
+        let mut conflicting = current.clone();
+        conflicting.market_id = "other-market".to_string();
+        conflicting.condition_id = "other-condition".to_string();
+        conflicting.up_token_id = "other-up".to_string();
+        conflicting.down_token_id = "other-down".to_string();
+        assert!(unique_current_clob_market(&[current, conflicting], checked_at).is_none());
+    }
+
+    #[test]
+    fn clob_session_metadata_keeps_only_bounded_subscription_summary() {
+        let updated_at = Utc.timestamp_opt(1_783_902_650, 0).unwrap();
+        let stats = ClobSubscriptionStats {
+            updates: 7,
+            active_assets: 12,
+            last_updated_at: Some(updated_at),
+        };
+        let metadata = clob_session_metadata(
+            true,
+            ClobDisconnectCause::TransportFailure,
+            ClobRetryAction::ImmediateRecovery,
+            0,
+            &stats,
+        );
+        assert_eq!(metadata["subscription_updates"], 7);
+        assert_eq!(metadata["active_subscribed_assets"], 12);
+        assert_eq!(
+            metadata["last_subscription_update_at"],
+            serde_json::json!(updated_at)
+        );
+        assert!(metadata.get("subscription_history").is_none());
     }
 
     #[test]
@@ -3535,7 +4201,12 @@ mod tests {
         let mut refreshed = left.clone();
         refreshed.raw_payload = serde_json::json!({"volume": 1000});
         refreshed.accepting_orders = false;
-        assert!(same_market_subscriptions(&[left], &[refreshed]));
+        assert!(same_market_subscriptions(
+            std::slice::from_ref(&left),
+            std::slice::from_ref(&refreshed),
+        ));
+        refreshed.condition_id = "changed-condition".to_string();
+        assert!(!same_market_subscriptions(&[left], &[refreshed]));
     }
 
     #[test]

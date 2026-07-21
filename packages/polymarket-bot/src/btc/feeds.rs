@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     str::FromStr,
 };
 
@@ -324,6 +324,7 @@ struct FeedBook {
     market_id: String,
     wire_market_id: String,
     token_id: String,
+    outcome: BtcOutcome,
     tick_size: Decimal,
     bids: BTreeMap<Decimal, Decimal>,
     asks: BTreeMap<Decimal, Decimal>,
@@ -340,12 +341,14 @@ impl FeedBook {
         market_id: String,
         wire_market_id: String,
         token_id: String,
+        outcome: BtcOutcome,
         tick_size: Decimal,
     ) -> Self {
         Self {
             market_id,
             wire_market_id,
             token_id,
+            outcome,
             tick_size,
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
@@ -475,6 +478,100 @@ impl FeedBook {
     }
 }
 
+fn market_identifiers(market: &BtcIntervalMarket) -> [&str; 2] {
+    [&market.market_id, &market.condition_id]
+}
+
+fn book_market_identifiers(book: &FeedBook) -> [&str; 2] {
+    [&book.market_id, &book.wire_market_id]
+}
+
+fn validate_market_identity(market: &BtcIntervalMarket) -> Result<()> {
+    if market.up_token_id == market.down_token_id {
+        bail!(
+            "orderbook market {} assigns both outcomes to token {}",
+            market.market_id,
+            market.up_token_id
+        );
+    }
+    Ok(())
+}
+
+fn validate_desired_markets(markets: &[BtcIntervalMarket]) -> Result<()> {
+    for (index, market) in markets.iter().enumerate() {
+        validate_market_identity(market)?;
+        for other in markets.iter().skip(index + 1) {
+            validate_market_identity(other)?;
+            let same_identity = market.market_id == other.market_id
+                && market.condition_id == other.condition_id
+                && market.up_token_id == other.up_token_id
+                && market.down_token_id == other.down_token_id;
+            if same_identity {
+                continue;
+            }
+            let token_collision = [&market.up_token_id, &market.down_token_id]
+                .into_iter()
+                .any(|token_id| token_id == &other.up_token_id || token_id == &other.down_token_id);
+            if token_collision {
+                bail!(
+                    "orderbook desired markets {} and {} reuse a token identity",
+                    market.market_id,
+                    other.market_id
+                );
+            }
+            let identifier_collision = market_identifiers(market)
+                .into_iter()
+                .any(|identifier| market_identifiers(other).contains(&identifier));
+            if identifier_collision {
+                bail!(
+                    "orderbook desired markets {} and {} reuse a market identity",
+                    market.market_id,
+                    other.market_id
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_market_against_books<'a>(
+    market: &BtcIntervalMarket,
+    books: impl Iterator<Item = &'a FeedBook>,
+) -> Result<()> {
+    validate_market_identity(market)?;
+    for book in books {
+        let expected_outcome = if book.token_id == market.up_token_id {
+            Some(BtcOutcome::Up)
+        } else if book.token_id == market.down_token_id {
+            Some(BtcOutcome::Down)
+        } else {
+            None
+        };
+        let token_claimed = expected_outcome.is_some();
+        let identifier_claimed = book_market_identifiers(book)
+            .into_iter()
+            .any(|existing| market_identifiers(market).contains(&existing));
+        let same_market =
+            book.market_id == market.market_id && book.wire_market_id == market.condition_id;
+        let expected_token = same_market && expected_outcome == Some(book.outcome);
+        if token_claimed && !same_market {
+            bail!(
+                "orderbook token {} is already owned by market {}",
+                book.token_id,
+                book.market_id
+            );
+        }
+        if identifier_claimed && !expected_token {
+            bail!(
+                "orderbook market identity {} conflicts with registered token {}",
+                market.market_id,
+                book.token_id
+            );
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct BookRegistry {
     connection_id: Uuid,
@@ -496,17 +593,83 @@ impl BookRegistry {
     }
 
     pub fn register_market(&mut self, market: &BtcIntervalMarket) {
-        for token_id in [&market.up_token_id, &market.down_token_id] {
+        self.try_register_market(market)
+            .unwrap_or_else(|error| panic!("invalid orderbook market registration: {error}"));
+    }
+
+    /// Adds a market without replacing an existing live book. Market and token identifiers are
+    /// immutable registry ownership boundaries; conflicting reuse fails before any state changes.
+    pub fn try_register_market(&mut self, market: &BtcIntervalMarket) -> Result<bool> {
+        self.validate_market_registration(market)?;
+        let mut added = false;
+        for (token_id, outcome) in [
+            (&market.up_token_id, BtcOutcome::Up),
+            (&market.down_token_id, BtcOutcome::Down),
+        ] {
+            if self.books.contains_key(token_id) {
+                continue;
+            }
             self.books.insert(
                 token_id.clone(),
                 FeedBook::new(
                     market.market_id.clone(),
                     market.condition_id.clone(),
                     token_id.clone(),
+                    outcome,
                     market.tick_size,
                 ),
             );
+            added = true;
         }
+        Ok(added)
+    }
+
+    /// Removes books outside the desired market set while preserving every retained book and the
+    /// connection epoch. The desired identity set is validated before the registry is mutated.
+    pub fn retain_markets(&mut self, desired: &[BtcIntervalMarket]) -> Result<usize> {
+        self.validate_market_set(desired)?;
+        let desired_tokens = desired
+            .iter()
+            .flat_map(|market| [&market.up_token_id, &market.down_token_id])
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let previous_len = self.books.len();
+        self.books
+            .retain(|token_id, _| desired_tokens.contains(token_id.as_str()));
+        Ok(previous_len.saturating_sub(self.books.len()))
+    }
+
+    /// Validates a complete desired registry membership without mutating book state. Existing
+    /// books are checked only when their token remains desired; retired books may therefore be
+    /// removed before a replacement identity is registered.
+    pub fn validate_market_set(&self, desired: &[BtcIntervalMarket]) -> Result<()> {
+        validate_desired_markets(desired)?;
+        let retained_tokens = desired
+            .iter()
+            .flat_map(|market| [&market.up_token_id, &market.down_token_id])
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        for market in desired {
+            validate_market_against_books(
+                market,
+                self.books
+                    .values()
+                    .filter(|book| retained_tokens.contains(book.token_id.as_str())),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn len(&self) -> usize {
+        self.books.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.books.is_empty()
+    }
+
+    fn validate_market_registration(&self, market: &BtcIntervalMarket) -> Result<()> {
+        validate_market_against_books(market, self.books.values())
     }
 
     /// A reconnect starts a new integrity epoch. Existing levels must never receive deltas from the
@@ -1207,6 +1370,17 @@ mod tests {
         }
     }
 
+    fn numbered_market(index: u32) -> BtcIntervalMarket {
+        let mut market = market();
+        market.event_id = format!("event-{index}");
+        market.event_slug = format!("btc-updown-5m-{index}");
+        market.market_id = format!("market-{index}");
+        market.condition_id = format!("condition-{index}");
+        market.up_token_id = format!("up-{index}");
+        market.down_token_id = format!("down-{index}");
+        market
+    }
+
     #[test]
     fn parses_full_book_and_batched_price_changes() {
         let book = serde_json::json!({
@@ -1521,6 +1695,281 @@ mod tests {
             },
             ts(millis + 5),
         );
+    }
+
+    fn seed_market_book(
+        registry: &mut BookRegistry,
+        market: &BtcIntervalMarket,
+        token_id: &str,
+        millis: i64,
+    ) {
+        let events = registry.apply(
+            ClobMessage::Book {
+                market_id: market.market_id.clone(),
+                token_id: token_id.to_string(),
+                bids: vec![OrderbookLevel {
+                    price: dec!(0.48),
+                    size: dec!(10),
+                }],
+                asks: vec![OrderbookLevel {
+                    price: dec!(0.52),
+                    size: dec!(10),
+                }],
+                source_timestamp: ts(millis),
+                source_hash: Some(format!("hash-{token_id}")),
+                raw_payload: serde_json::json!({}),
+            },
+            ts(millis + 5),
+        );
+        assert!(events.iter().all(|event| event.applied));
+    }
+
+    fn assert_same_book_state(before: &OrderbookCheckpoint, after: &OrderbookCheckpoint) {
+        assert_eq!(after.market_id, before.market_id);
+        assert_eq!(after.token_id, before.token_id);
+        assert_eq!(after.source_timestamp, before.source_timestamp);
+        assert_eq!(after.received_at, before.received_at);
+        assert_eq!(after.connection_id, before.connection_id);
+        assert_eq!(after.ingest_sequence, before.ingest_sequence);
+        assert_eq!(after.source_hash, before.source_hash);
+        assert_eq!(after.tick_size, before.tick_size);
+        assert_eq!(after.best_bid, before.best_bid);
+        assert_eq!(after.best_ask, before.best_ask);
+        assert_eq!(after.bids, before.bids);
+        assert_eq!(after.asks, before.asks);
+        assert_eq!(after.integrity_status, before.integrity_status);
+    }
+
+    #[test]
+    fn market_registration_is_idempotent_and_rejects_identity_collisions() {
+        let market = market();
+        let connection_id = Uuid::new_v4();
+        let mut registry = BookRegistry::new(connection_id);
+        assert!(registry.try_register_market(&market).unwrap());
+        seed_market_book(
+            &mut registry,
+            &market,
+            &market.up_token_id,
+            1_783_902_701_000,
+        );
+        seed_market_book(
+            &mut registry,
+            &market,
+            &market.down_token_id,
+            1_783_902_701_000,
+        );
+        let before = registry.checkpoint(&market.up_token_id).unwrap();
+        let next_sequence = registry.next_sequence;
+
+        let mut refreshed = market.clone();
+        refreshed.tick_size = dec!(0.001);
+        refreshed.raw_payload = serde_json::json!({"refreshed": true});
+        registry.register_market(&refreshed);
+        assert!(!registry.try_register_market(&refreshed).unwrap());
+        assert_eq!(registry.connection_id(), connection_id);
+        assert_eq!(registry.len(), 2);
+        assert_eq!(registry.next_sequence, next_sequence);
+        assert_same_book_state(&before, &registry.checkpoint(&market.up_token_id).unwrap());
+
+        let mut token_collision = numbered_market(1);
+        token_collision.up_token_id = market.up_token_id.clone();
+        assert!(registry.try_register_market(&token_collision).is_err());
+
+        let mut market_collision = market.clone();
+        market_collision.up_token_id = "replacement-up".to_string();
+        market_collision.down_token_id = "replacement-down".to_string();
+        assert!(registry.try_register_market(&market_collision).is_err());
+
+        let mut reversed_outcomes = market.clone();
+        reversed_outcomes.up_token_id = market.down_token_id.clone();
+        reversed_outcomes.down_token_id = market.up_token_id.clone();
+        assert!(registry.try_register_market(&reversed_outcomes).is_err());
+        assert!(registry
+            .retain_markets(&[market.clone(), token_collision])
+            .is_err());
+        assert_eq!(registry.len(), 2);
+        assert_same_book_state(&before, &registry.checkpoint(&market.up_token_id).unwrap());
+    }
+
+    #[test]
+    fn market_set_validation_is_non_mutating_and_scopes_conflicts_to_retained_books() {
+        let market = market();
+        let connection_id = Uuid::new_v4();
+        let mut registry = BookRegistry::new(connection_id);
+        assert!(registry.try_register_market(&market).unwrap());
+        seed_market_book(
+            &mut registry,
+            &market,
+            &market.up_token_id,
+            1_783_902_701_000,
+        );
+        let before = registry.checkpoint(&market.up_token_id).unwrap();
+
+        let mut replacement = market.clone();
+        replacement.up_token_id = "replacement-up".to_string();
+        replacement.down_token_id = "replacement-down".to_string();
+        registry
+            .validate_market_set(std::slice::from_ref(&replacement))
+            .unwrap();
+        assert_eq!(registry.connection_id(), connection_id);
+        assert_eq!(registry.len(), 2);
+        assert_same_book_state(&before, &registry.checkpoint(&market.up_token_id).unwrap());
+
+        let mut retained_token_collision = numbered_market(2);
+        retained_token_collision.up_token_id = market.up_token_id.clone();
+        assert!(registry
+            .validate_market_set(std::slice::from_ref(&retained_token_collision))
+            .is_err());
+        assert_eq!(registry.len(), 2);
+        assert_same_book_state(&before, &registry.checkpoint(&market.up_token_id).unwrap());
+
+        assert_eq!(
+            registry
+                .retain_markets(std::slice::from_ref(&replacement))
+                .unwrap(),
+            2
+        );
+        assert!(registry.is_empty());
+        assert!(registry.try_register_market(&replacement).unwrap());
+        assert_eq!(registry.connection_id(), connection_id);
+        assert_eq!(registry.len(), 2);
+        assert!(registry
+            .book_readiness()
+            .iter()
+            .all(|book| !book.bootstrapped
+                && book.integrity_status == FeedIntegrityStatus::PreSnapshot));
+    }
+
+    #[test]
+    fn desired_market_retention_preserves_active_state_and_isolates_removed_frames() {
+        let removed_market = market();
+        let active_market = numbered_market(1);
+        let connection_id = Uuid::new_v4();
+        let mut registry = BookRegistry::new(connection_id);
+        assert!(registry.try_register_market(&removed_market).unwrap());
+        seed_market_book(
+            &mut registry,
+            &removed_market,
+            &removed_market.up_token_id,
+            1_783_902_701_000,
+        );
+        seed_market_book(
+            &mut registry,
+            &removed_market,
+            &removed_market.down_token_id,
+            1_783_902_701_000,
+        );
+
+        assert!(registry.try_register_market(&active_market).unwrap());
+        let added = registry
+            .book_readiness()
+            .into_iter()
+            .filter(|book| book.market_id == active_market.market_id)
+            .collect::<Vec<_>>();
+        assert_eq!(added.len(), 2);
+        assert!(added.iter().all(|book| {
+            !book.bootstrapped && book.integrity_status == FeedIntegrityStatus::PreSnapshot
+        }));
+        seed_market_book(
+            &mut registry,
+            &active_market,
+            &active_market.up_token_id,
+            1_783_902_701_100,
+        );
+        seed_market_book(
+            &mut registry,
+            &active_market,
+            &active_market.down_token_id,
+            1_783_902_701_100,
+        );
+        let active_before = registry.checkpoint(&active_market.up_token_id).unwrap();
+
+        assert_eq!(
+            registry
+                .retain_markets(std::slice::from_ref(&active_market))
+                .unwrap(),
+            2
+        );
+        assert_eq!(registry.connection_id(), connection_id);
+        assert_eq!(registry.len(), 2);
+        assert!(registry.checkpoint(&removed_market.up_token_id).is_none());
+
+        let removed = registry.apply(
+            ClobMessage::Book {
+                market_id: removed_market.market_id.clone(),
+                token_id: removed_market.up_token_id.clone(),
+                bids: vec![OrderbookLevel {
+                    price: dec!(0.70),
+                    size: dec!(100),
+                }],
+                asks: vec![OrderbookLevel {
+                    price: dec!(0.71),
+                    size: dec!(100),
+                }],
+                source_timestamp: ts(1_783_902_701_200),
+                source_hash: Some("retired-frame".to_string()),
+                raw_payload: serde_json::json!({}),
+            },
+            ts(1_783_902_701_205),
+        );
+        assert_eq!(
+            removed[0].integrity_status,
+            FeedIntegrityStatus::UnknownToken
+        );
+        assert!(!removed[0].applied);
+
+        let mismatched = registry.apply(
+            ClobMessage::PriceChange {
+                market_id: removed_market.market_id,
+                changes: vec![PriceChange {
+                    token_id: active_market.up_token_id.clone(),
+                    side: BookUpdateSide::Bid,
+                    price: dec!(0.60),
+                    size: dec!(50),
+                    source_hash: Some("spoofed-retired-frame".to_string()),
+                    best_bid: Some(dec!(0.60)),
+                    best_ask: Some(dec!(0.61)),
+                }],
+                source_timestamp: ts(1_783_902_701_210),
+                raw_payload: serde_json::json!({}),
+            },
+            ts(1_783_902_701_215),
+        );
+        assert_eq!(
+            mismatched[0].integrity_status,
+            FeedIntegrityStatus::MarketMismatch
+        );
+        assert!(!mismatched[0].applied);
+        assert_same_book_state(
+            &active_before,
+            &registry.checkpoint(&active_market.up_token_id).unwrap(),
+        );
+    }
+
+    #[test]
+    fn desired_market_retention_keeps_registry_memory_bounded() {
+        let connection_id = Uuid::new_v4();
+        let mut registry = BookRegistry::new(connection_id);
+        let mut desired = Vec::new();
+
+        for index in 1..=64 {
+            let market = numbered_market(index);
+            assert!(registry.try_register_market(&market).unwrap());
+            desired.push(market);
+            if desired.len() > 3 {
+                desired.remove(0);
+            }
+            registry.retain_markets(&desired).unwrap();
+            assert_eq!(registry.connection_id(), connection_id);
+            assert_eq!(registry.len(), desired.len() * 2);
+            assert!(registry.len() <= 6);
+            for market in &desired {
+                assert!(registry.book_readiness().iter().any(|book| {
+                    book.token_id == market.up_token_id
+                        && book.integrity_status == FeedIntegrityStatus::PreSnapshot
+                }));
+            }
+        }
     }
 
     #[test]
