@@ -3870,6 +3870,7 @@ mod lifecycle_tests {
                 release_consecutive_candidate_wins: 1,
             },
             daily_realized_pnl_high_water_mark: None,
+            shadow_predictive_regime_circuit_breaker: None,
         };
         let resolved = ResolvedBtcProcessDefinition {
             control: BtcRealtimePaperControlConfig {
@@ -3916,6 +3917,7 @@ mod lifecycle_tests {
                     max_drawdown_from_high_water_mark_usd: dec!(5),
                 },
             ),
+            shadow_predictive_regime_circuit_breaker: None,
         };
         let resolved = ResolvedBtcProcessDefinition {
             control: BtcRealtimePaperControlConfig {
@@ -3944,6 +3946,66 @@ mod lifecycle_tests {
             prepared.frozen_process_config.raw["entry_admission"]
                 ["daily_realized_pnl_high_water_mark"]["schema_version"],
             polymarket_bot::btc::DAILY_REALIZED_PNL_HIGH_WATER_MARK_SCHEMA_VERSION
+        );
+        assert_eq!(
+            prepared.frozen_process_config.raw["entry_admission"],
+            serde_json::to_value(entry_admission).unwrap()
+        );
+    }
+
+    #[test]
+    fn btc_start_preparation_freezes_process_scoped_shadow_circuit_breaker() {
+        let entry_admission = BtcEntryAdmissionConfig {
+            loss_regime_confidence_floor: polymarket_bot::btc::LossRegimeConfidenceFloorConfig {
+                schema_version: polymarket_bot::btc::LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION
+                    .to_string(),
+                activation_consecutive_candidate_losses: 2,
+                min_conservative_probability: dec!(0.50),
+                release_consecutive_candidate_wins: 1,
+            },
+            daily_realized_pnl_high_water_mark: None,
+            shadow_predictive_regime_circuit_breaker: Some(
+                polymarket_bot::btc::ShadowPredictiveRegimeCircuitBreakerConfig {
+                    schema_version:
+                        polymarket_bot::btc::SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION
+                            .to_string(),
+                    mode: polymarket_bot::btc::SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE
+                        .to_string(),
+                    rolling_resolved_market_window: 20,
+                    minimum_resolved_markets: 20,
+                    degradation_brier_score_threshold: dec!(0.23),
+                    degradation_overconfidence_gap_threshold: dec!(0.12),
+                    degradation_confirmation_markets: 2,
+                    recovery_brier_score_threshold: dec!(0.21),
+                    recovery_overconfidence_gap_threshold: dec!(0.05),
+                    recovery_confirmation_markets: 2,
+                },
+            ),
+        };
+        let resolved = ResolvedBtcProcessDefinition {
+            control: BtcRealtimePaperControlConfig {
+                schema_version: SELECTABLE_BTC_PROCESS_SCHEMA_VERSION.to_string(),
+                next_experiment_key: "btc-5m-paper-shadow-breaker-preview".to_string(),
+                preregistration_sha256: "f".repeat(64),
+                entry_admission: Some(entry_admission.clone()),
+                ..BtcRealtimePaperControlConfig::default()
+            },
+            strategy: BtcStrategyConfig::default(),
+            entry_admission: Some(entry_admission.clone()),
+            runtime: BtcRuntimeConfig {
+                enabled: true,
+                ..BtcRuntimeConfig::default()
+            },
+            paper_venue: PaperVenueConfig::default(),
+            paper_stress_previews: Vec::new(),
+        };
+
+        let prepared = prepare_btc_start_definition(resolved).unwrap();
+        assert_eq!(prepared.entry_admission, Some(entry_admission.clone()));
+        assert_eq!(
+            prepared.frozen_process_config.raw["entry_admission"]
+                ["shadow_predictive_regime_circuit_breaker"]["mode"],
+            "shadow"
         );
         assert_eq!(
             prepared.frozen_process_config.raw["entry_admission"],

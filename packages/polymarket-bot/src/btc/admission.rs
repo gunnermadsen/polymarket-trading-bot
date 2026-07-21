@@ -12,6 +12,9 @@ use super::types::BtcOutcome;
 pub const LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION: &str = "loss_regime_confidence_floor_v1";
 pub const DAILY_REALIZED_PNL_HIGH_WATER_MARK_SCHEMA_VERSION: &str =
     "daily_realized_pnl_high_water_mark_v1";
+pub const SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION: &str =
+    "shadow_predictive_regime_circuit_breaker_v1";
+pub const SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE: &str = "shadow";
 
 pub const HIGH_WATER_MARK_NOT_ARMED_REASON: &str = "high_water_mark_not_armed";
 pub const WITHIN_HIGH_WATER_MARK_RISK_BUDGET_REASON: &str = "within_high_water_mark_risk_budget";
@@ -24,6 +27,9 @@ pub struct BtcEntryAdmissionConfig {
     pub loss_regime_confidence_floor: LossRegimeConfidenceFloorConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daily_realized_pnl_high_water_mark: Option<DailyRealizedPnlHighWaterMarkConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow_predictive_regime_circuit_breaker:
+        Option<ShadowPredictiveRegimeCircuitBreakerConfig>,
 }
 
 impl BtcEntryAdmissionConfig {
@@ -32,7 +38,92 @@ impl BtcEntryAdmissionConfig {
         if let Some(config) = self.daily_realized_pnl_high_water_mark.as_ref() {
             config.validate()?;
         }
+        if let Some(config) = self.shadow_predictive_regime_circuit_breaker.as_ref() {
+            config.validate()?;
+        }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShadowPredictiveRegimeCircuitBreakerConfig {
+    pub schema_version: String,
+    pub mode: String,
+    pub rolling_resolved_market_window: u32,
+    pub minimum_resolved_markets: u32,
+    pub degradation_brier_score_threshold: Decimal,
+    pub degradation_overconfidence_gap_threshold: Decimal,
+    pub degradation_confirmation_markets: u32,
+    pub recovery_brier_score_threshold: Decimal,
+    pub recovery_overconfidence_gap_threshold: Decimal,
+    pub recovery_confirmation_markets: u32,
+}
+
+impl ShadowPredictiveRegimeCircuitBreakerConfig {
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION {
+            bail!(
+                "shadow predictive-regime circuit-breaker schema_version must be {}",
+                SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION
+            );
+        }
+        if self.mode != SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE {
+            bail!("shadow predictive-regime circuit-breaker mode must be shadow");
+        }
+        if !(20..=10_000).contains(&self.rolling_resolved_market_window) {
+            bail!("rolling_resolved_market_window must be between 20 and 10000");
+        }
+        if self.minimum_resolved_markets < 20
+            || self.minimum_resolved_markets > self.rolling_resolved_market_window
+        {
+            bail!(
+                "minimum_resolved_markets must be at least 20 and cannot exceed rolling_resolved_market_window"
+            );
+        }
+        if !(1..=100).contains(&self.degradation_confirmation_markets) {
+            bail!("degradation_confirmation_markets must be between 1 and 100");
+        }
+        if !(1..=100).contains(&self.recovery_confirmation_markets) {
+            bail!("recovery_confirmation_markets must be between 1 and 100");
+        }
+        for (name, value) in [
+            (
+                "degradation_brier_score_threshold",
+                self.degradation_brier_score_threshold,
+            ),
+            (
+                "degradation_overconfidence_gap_threshold",
+                self.degradation_overconfidence_gap_threshold,
+            ),
+            (
+                "recovery_brier_score_threshold",
+                self.recovery_brier_score_threshold,
+            ),
+            (
+                "recovery_overconfidence_gap_threshold",
+                self.recovery_overconfidence_gap_threshold,
+            ),
+        ] {
+            if !(Decimal::ZERO..=Decimal::ONE).contains(&value) {
+                bail!("{name} must be between 0 and 1");
+            }
+        }
+        if self.recovery_brier_score_threshold >= self.degradation_brier_score_threshold {
+            bail!("recovery_brier_score_threshold must be below degradation_brier_score_threshold");
+        }
+        if self.recovery_overconfidence_gap_threshold
+            >= self.degradation_overconfidence_gap_threshold
+        {
+            bail!(
+                "recovery_overconfidence_gap_threshold must be below degradation_overconfidence_gap_threshold"
+            );
+        }
+        Ok(())
+    }
+
+    pub fn config_hash(&self) -> Result<String> {
+        Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(self)?)))
     }
 }
 
@@ -489,6 +580,494 @@ impl LossRegimeConfidenceFloorState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShadowPredictiveRegimeCandidate {
+    pub market_id: String,
+    pub decision_id: Uuid,
+    pub decision_outcome: BtcOutcome,
+    pub resolved_outcome: BtcOutcome,
+    pub selected_point_probability: Decimal,
+    pub decision_at: DateTime<Utc>,
+    pub label_available_at: DateTime<Utc>,
+}
+
+impl ShadowPredictiveRegimeCandidate {
+    pub fn won(&self) -> bool {
+        self.decision_outcome == self.resolved_outcome
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.market_id.trim().is_empty() {
+            bail!("shadow predictive-regime candidate market_id cannot be empty");
+        }
+        if self.decision_id.is_nil() {
+            bail!("shadow predictive-regime candidate decision_id cannot be nil");
+        }
+        if !(Decimal::ZERO..=Decimal::ONE).contains(&self.selected_point_probability) {
+            bail!("selected_point_probability must be between 0 and 1");
+        }
+        if self.decision_at >= self.label_available_at {
+            bail!("shadow predictive-regime candidate label must follow its decision");
+        }
+        Ok(())
+    }
+
+    pub fn evidence_sha256(&self, process_id: Uuid) -> Result<String> {
+        if process_id.is_nil() {
+            bail!("shadow predictive-regime evidence process_id cannot be nil");
+        }
+        self.validate()?;
+        #[derive(Serialize)]
+        struct CandidateEvidence<'a> {
+            process_id: Uuid,
+            candidate: &'a ShadowPredictiveRegimeCandidate,
+        }
+        Ok(format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&CandidateEvidence {
+                process_id,
+                candidate: self,
+            })?)
+        ))
+    }
+
+    fn brier_score(&self) -> Decimal {
+        let observed = if self.won() {
+            Decimal::ONE
+        } else {
+            Decimal::ZERO
+        };
+        let error = self.selected_point_probability - observed;
+        error * error
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShadowPredictiveRegimeTransition {
+    DegradationConfirmed,
+    RecoveryConfirmed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShadowPredictiveRegimeState {
+    pub process_id: Uuid,
+    pub config_hash: String,
+    pub degraded: bool,
+    pub consecutive_degradation_markets: u32,
+    pub consecutive_recovery_markets: u32,
+    pub resolved_markets_observed: u64,
+    pub rolling_candidates: Vec<ShadowPredictiveRegimeCandidate>,
+    pub state_as_of_market_id: Option<String>,
+    pub state_as_of_decision_id: Option<Uuid>,
+    pub state_as_of_decision_at: Option<DateTime<Utc>>,
+    pub state_as_of_label_available_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ShadowPredictiveRegimeMetrics {
+    resolved_market_count: u32,
+    wins: u32,
+    mean_selected_point_probability: Decimal,
+    empirical_accuracy: Decimal,
+    brier_score: Decimal,
+    calibration_gap: Decimal,
+    one_sided_overconfidence_gap: Decimal,
+}
+
+impl ShadowPredictiveRegimeState {
+    pub fn new(
+        process_id: Uuid,
+        config: &ShadowPredictiveRegimeCircuitBreakerConfig,
+    ) -> Result<Self> {
+        config.validate()?;
+        if process_id.is_nil() {
+            bail!("shadow predictive-regime state process_id cannot be nil");
+        }
+        Ok(Self {
+            process_id,
+            config_hash: config.config_hash()?,
+            degraded: false,
+            consecutive_degradation_markets: 0,
+            consecutive_recovery_markets: 0,
+            resolved_markets_observed: 0,
+            rolling_candidates: Vec::new(),
+            state_as_of_market_id: None,
+            state_as_of_decision_id: None,
+            state_as_of_decision_at: None,
+            state_as_of_label_available_at: None,
+        })
+    }
+
+    pub fn from_candidates(
+        process_id: Uuid,
+        config: &ShadowPredictiveRegimeCircuitBreakerConfig,
+        candidates: &[ShadowPredictiveRegimeCandidate],
+    ) -> Result<Self> {
+        let mut state = Self::new(process_id, config)?;
+        for candidate in candidates {
+            state.apply_candidate(config, candidate)?;
+        }
+        Ok(state)
+    }
+
+    pub fn resume_from_state(
+        config: &ShadowPredictiveRegimeCircuitBreakerConfig,
+        mut state: Self,
+        candidates: &[ShadowPredictiveRegimeCandidate],
+    ) -> Result<Self> {
+        state.validate(config)?;
+        for candidate in candidates {
+            state.apply_candidate(config, candidate)?;
+        }
+        Ok(state)
+    }
+
+    pub fn candidate_is_newer(
+        &self,
+        config: &ShadowPredictiveRegimeCircuitBreakerConfig,
+        candidate: &ShadowPredictiveRegimeCandidate,
+    ) -> Result<bool> {
+        self.validate(config)?;
+        candidate.validate()?;
+        Ok(self
+            .rolling_candidates
+            .last()
+            .is_none_or(|last| candidate_ordering_key(candidate) > candidate_ordering_key(last)))
+    }
+
+    pub fn validate(&self, config: &ShadowPredictiveRegimeCircuitBreakerConfig) -> Result<()> {
+        config.validate()?;
+        if self.process_id.is_nil() {
+            bail!("shadow predictive-regime state process_id cannot be nil");
+        }
+        if self.config_hash != config.config_hash()? {
+            bail!("shadow predictive-regime state config hash does not match configuration");
+        }
+        let rolling_window = usize::try_from(config.rolling_resolved_market_window)
+            .context("rolling_resolved_market_window does not fit in memory")?;
+        if self.rolling_candidates.len() > rolling_window {
+            bail!("shadow predictive-regime state exceeds its rolling window");
+        }
+        if self.resolved_markets_observed
+            < u64::try_from(self.rolling_candidates.len()).unwrap_or(u64::MAX)
+        {
+            bail!("shadow predictive-regime state observation count is inconsistent");
+        }
+        if self.consecutive_degradation_markets > config.degradation_confirmation_markets
+            || self.consecutive_recovery_markets > config.recovery_confirmation_markets
+            || (self.consecutive_degradation_markets > 0 && self.consecutive_recovery_markets > 0)
+        {
+            bail!("shadow predictive-regime confirmation counters are inconsistent");
+        }
+
+        let state_cursor = (
+            self.state_as_of_market_id.as_deref(),
+            self.state_as_of_decision_id,
+            self.state_as_of_decision_at,
+            self.state_as_of_label_available_at,
+        );
+        if self.resolved_markets_observed == 0 {
+            if !self.rolling_candidates.is_empty()
+                || state_cursor != (None, None, None, None)
+                || self.degraded
+                || self.consecutive_degradation_markets != 0
+                || self.consecutive_recovery_markets != 0
+            {
+                bail!("empty shadow predictive-regime state is inconsistent");
+            }
+            return Ok(());
+        }
+        if self.rolling_candidates.is_empty() {
+            bail!("observed shadow predictive-regime state must retain rolling evidence");
+        }
+
+        let mut market_ids = HashSet::new();
+        let mut decision_ids = HashSet::new();
+        let mut previous: Option<&ShadowPredictiveRegimeCandidate> = None;
+        for candidate in &self.rolling_candidates {
+            candidate.validate()?;
+            if !market_ids.insert(candidate.market_id.as_str()) {
+                bail!("shadow predictive-regime state contains a duplicate market");
+            }
+            if !decision_ids.insert(candidate.decision_id) {
+                bail!("shadow predictive-regime state contains a duplicate decision");
+            }
+            if let Some(previous) = previous {
+                if candidate_ordering_key(candidate) <= candidate_ordering_key(previous) {
+                    bail!("shadow predictive-regime candidates are not in causal order");
+                }
+            }
+            previous = Some(candidate);
+        }
+
+        let last = self
+            .rolling_candidates
+            .last()
+            .context("observed shadow predictive-regime state has no final candidate")?;
+        if self.state_as_of_market_id.as_deref() != Some(last.market_id.as_str())
+            || self.state_as_of_decision_id != Some(last.decision_id)
+            || self.state_as_of_decision_at != Some(last.decision_at)
+            || self.state_as_of_label_available_at != Some(last.label_available_at)
+        {
+            bail!("shadow predictive-regime state cursor does not match rolling evidence");
+        }
+        Ok(())
+    }
+
+    pub fn apply_candidate(
+        &mut self,
+        config: &ShadowPredictiveRegimeCircuitBreakerConfig,
+        candidate: &ShadowPredictiveRegimeCandidate,
+    ) -> Result<Option<ShadowPredictiveRegimeTransition>> {
+        self.validate(config)?;
+        candidate.validate()?;
+        if let Some(last) = self.rolling_candidates.last() {
+            if candidate_ordering_key(candidate) <= candidate_ordering_key(last) {
+                bail!("shadow predictive-regime candidate is duplicate or out of causal order");
+            }
+        }
+
+        self.resolved_markets_observed = self
+            .resolved_markets_observed
+            .checked_add(1)
+            .context("shadow predictive-regime observation count overflowed")?;
+        self.rolling_candidates.push(candidate.clone());
+        let rolling_window = usize::try_from(config.rolling_resolved_market_window)
+            .context("rolling_resolved_market_window does not fit in memory")?;
+        if self.rolling_candidates.len() > rolling_window {
+            self.rolling_candidates.remove(0);
+        }
+        self.state_as_of_market_id = Some(candidate.market_id.clone());
+        self.state_as_of_decision_id = Some(candidate.decision_id);
+        self.state_as_of_decision_at = Some(candidate.decision_at);
+        self.state_as_of_label_available_at = Some(candidate.label_available_at);
+
+        let Some(metrics) = self.current_metrics(config) else {
+            self.consecutive_degradation_markets = 0;
+            self.consecutive_recovery_markets = 0;
+            return Ok(None);
+        };
+        let degradation_condition_met = metrics.brier_score
+            >= config.degradation_brier_score_threshold
+            && metrics.one_sided_overconfidence_gap
+                >= config.degradation_overconfidence_gap_threshold;
+        let recovery_condition_met = metrics.brier_score <= config.recovery_brier_score_threshold
+            && metrics.one_sided_overconfidence_gap <= config.recovery_overconfidence_gap_threshold;
+
+        if self.degraded {
+            self.consecutive_degradation_markets = 0;
+            if recovery_condition_met {
+                self.consecutive_recovery_markets =
+                    self.consecutive_recovery_markets.saturating_add(1);
+                if self.consecutive_recovery_markets >= config.recovery_confirmation_markets {
+                    self.degraded = false;
+                    return Ok(Some(ShadowPredictiveRegimeTransition::RecoveryConfirmed));
+                }
+            } else {
+                self.consecutive_recovery_markets = 0;
+            }
+            return Ok(None);
+        }
+
+        self.consecutive_recovery_markets = 0;
+        if degradation_condition_met {
+            self.consecutive_degradation_markets =
+                self.consecutive_degradation_markets.saturating_add(1);
+            if self.consecutive_degradation_markets >= config.degradation_confirmation_markets {
+                self.degraded = true;
+                return Ok(Some(ShadowPredictiveRegimeTransition::DegradationConfirmed));
+            }
+        } else {
+            self.consecutive_degradation_markets = 0;
+        }
+        Ok(None)
+    }
+
+    pub fn evaluate(
+        &self,
+        config: &ShadowPredictiveRegimeCircuitBreakerConfig,
+        as_of: DateTime<Utc>,
+    ) -> Result<ShadowPredictiveRegimeEvaluation> {
+        self.validate(config)?;
+        if self
+            .state_as_of_label_available_at
+            .is_some_and(|label_available_at| as_of < label_available_at)
+        {
+            bail!("shadow predictive-regime evaluation cannot precede its resolved evidence");
+        }
+
+        let metrics = self.current_metrics(config);
+        let degradation_condition_met = metrics.is_some_and(|metrics| {
+            metrics.brier_score >= config.degradation_brier_score_threshold
+                && metrics.one_sided_overconfidence_gap
+                    >= config.degradation_overconfidence_gap_threshold
+        });
+        let recovery_condition_met = metrics.is_some_and(|metrics| {
+            metrics.brier_score <= config.recovery_brier_score_threshold
+                && metrics.one_sided_overconfidence_gap
+                    <= config.recovery_overconfidence_gap_threshold
+        });
+        let reason = if metrics.is_none() {
+            "shadow_predictive_regime_warming_up"
+        } else if self.degraded && self.consecutive_recovery_markets > 0 {
+            "shadow_predictive_regime_degraded_recovery_pending"
+        } else if self.degraded {
+            "shadow_predictive_regime_degraded"
+        } else if self.consecutive_degradation_markets > 0 {
+            "shadow_predictive_regime_degradation_pending"
+        } else {
+            "shadow_predictive_regime_healthy"
+        };
+        let state_evidence_sha256 = self.evidence_sha256(config)?;
+
+        #[derive(Serialize)]
+        struct EvaluationEvidence<'a> {
+            schema_version: &'a str,
+            config_hash: &'a str,
+            mode: &'a str,
+            process_id: Uuid,
+            as_of: DateTime<Utc>,
+            state_evidence_sha256: &'a str,
+            degraded: bool,
+            would_defer: bool,
+            degradation_condition_met: bool,
+            recovery_condition_met: bool,
+            reason: &'a str,
+        }
+        let config_hash = config.config_hash()?;
+        let evaluation_evidence_sha256 = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&EvaluationEvidence {
+                schema_version: &config.schema_version,
+                config_hash: &config_hash,
+                mode: &config.mode,
+                process_id: self.process_id,
+                as_of,
+                state_evidence_sha256: &state_evidence_sha256,
+                degraded: self.degraded,
+                would_defer: self.degraded,
+                degradation_condition_met,
+                recovery_condition_met,
+                reason,
+            })?)
+        );
+
+        Ok(ShadowPredictiveRegimeEvaluation {
+            schema_version: config.schema_version.clone(),
+            config_hash,
+            mode: config.mode.clone(),
+            process_id: self.process_id,
+            as_of,
+            shadow_only: true,
+            sample_ready: metrics.is_some(),
+            rolling_resolved_market_count: metrics.map(|metrics| metrics.resolved_market_count),
+            resolved_markets_observed: self.resolved_markets_observed,
+            rolling_wins: metrics.map(|metrics| metrics.wins),
+            mean_selected_point_probability: metrics
+                .map(|metrics| metrics.mean_selected_point_probability),
+            empirical_accuracy: metrics.map(|metrics| metrics.empirical_accuracy),
+            brier_score: metrics.map(|metrics| metrics.brier_score),
+            calibration_gap: metrics.map(|metrics| metrics.calibration_gap),
+            one_sided_overconfidence_gap: metrics
+                .map(|metrics| metrics.one_sided_overconfidence_gap),
+            degradation_condition_met,
+            recovery_condition_met,
+            degraded: self.degraded,
+            consecutive_degradation_markets: self.consecutive_degradation_markets,
+            consecutive_recovery_markets: self.consecutive_recovery_markets,
+            would_defer: self.degraded,
+            disposition: AdmissionDisposition::Allow,
+            reason: reason.to_string(),
+            state_as_of_market_id: self.state_as_of_market_id.clone(),
+            state_as_of_decision_id: self.state_as_of_decision_id,
+            state_as_of_label_available_at: self.state_as_of_label_available_at,
+            state_evidence_sha256,
+            evaluation_evidence_sha256,
+            state: self.clone(),
+            state_checkpoint_eligible: false,
+            telemetry_error: None,
+            refresh_pending: false,
+        })
+    }
+
+    pub fn evidence_sha256(
+        &self,
+        config: &ShadowPredictiveRegimeCircuitBreakerConfig,
+    ) -> Result<String> {
+        self.validate(config)?;
+        #[derive(Serialize)]
+        struct StateEvidence<'a> {
+            schema_version: &'a str,
+            config_hash: String,
+            state: &'a ShadowPredictiveRegimeState,
+        }
+        Ok(format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&StateEvidence {
+                schema_version: &config.schema_version,
+                config_hash: config.config_hash()?,
+                state: self,
+            })?)
+        ))
+    }
+
+    fn current_metrics(
+        &self,
+        config: &ShadowPredictiveRegimeCircuitBreakerConfig,
+    ) -> Option<ShadowPredictiveRegimeMetrics> {
+        let count = u32::try_from(self.rolling_candidates.len()).ok()?;
+        if count < config.minimum_resolved_markets {
+            return None;
+        }
+        let denominator = Decimal::from(count);
+        let wins = u32::try_from(
+            self.rolling_candidates
+                .iter()
+                .filter(|candidate| candidate.won())
+                .count(),
+        )
+        .ok()?;
+        let mean_selected_point_probability = self
+            .rolling_candidates
+            .iter()
+            .map(|candidate| candidate.selected_point_probability)
+            .sum::<Decimal>()
+            / denominator;
+        let empirical_accuracy = Decimal::from(wins) / denominator;
+        let brier_score = self
+            .rolling_candidates
+            .iter()
+            .map(ShadowPredictiveRegimeCandidate::brier_score)
+            .sum::<Decimal>()
+            / denominator;
+        let calibration_gap = mean_selected_point_probability - empirical_accuracy;
+        let one_sided_overconfidence_gap = calibration_gap.max(Decimal::ZERO);
+        Some(ShadowPredictiveRegimeMetrics {
+            resolved_market_count: count,
+            wins,
+            mean_selected_point_probability,
+            empirical_accuracy,
+            brier_score,
+            calibration_gap,
+            one_sided_overconfidence_gap,
+        })
+    }
+}
+
+fn candidate_ordering_key(
+    candidate: &ShadowPredictiveRegimeCandidate,
+) -> (DateTime<Utc>, DateTime<Utc>, Uuid, &str) {
+    (
+        candidate.label_available_at,
+        candidate.decision_at,
+        candidate.decision_id,
+        candidate.market_id.as_str(),
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AdmissionDisposition {
@@ -510,6 +1089,48 @@ pub struct LossRegimeConfidenceFloorEvaluation {
     pub reason: String,
     pub state_as_of_market_id: Option<String>,
     pub state_as_of_label_available_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShadowPredictiveRegimeEvaluation {
+    pub schema_version: String,
+    pub config_hash: String,
+    pub mode: String,
+    pub process_id: Uuid,
+    pub as_of: DateTime<Utc>,
+    pub shadow_only: bool,
+    pub sample_ready: bool,
+    pub rolling_resolved_market_count: Option<u32>,
+    pub resolved_markets_observed: u64,
+    pub rolling_wins: Option<u32>,
+    pub mean_selected_point_probability: Option<Decimal>,
+    pub empirical_accuracy: Option<Decimal>,
+    pub brier_score: Option<Decimal>,
+    /// Signed mean forecast probability minus empirical accuracy. Positive values are
+    /// overconfidence; negative values are underconfidence.
+    pub calibration_gap: Option<Decimal>,
+    pub one_sided_overconfidence_gap: Option<Decimal>,
+    pub degradation_condition_met: bool,
+    pub recovery_condition_met: bool,
+    pub degraded: bool,
+    pub consecutive_degradation_markets: u32,
+    pub consecutive_recovery_markets: u32,
+    pub would_defer: bool,
+    pub disposition: AdmissionDisposition,
+    pub reason: String,
+    pub state_as_of_market_id: Option<String>,
+    pub state_as_of_decision_id: Option<Uuid>,
+    pub state_as_of_label_available_at: Option<DateTime<Utc>>,
+    pub state_evidence_sha256: String,
+    pub evaluation_evidence_sha256: String,
+    pub state: ShadowPredictiveRegimeState,
+    /// True only after runtime hydration has verified this snapshot as a durable replay checkpoint.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub state_checkpoint_eligible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry_error: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub refresh_pending: bool,
 }
 
 #[cfg(test)]
@@ -541,6 +1162,43 @@ mod tests {
             },
             decision_at: at - Duration::minutes(4),
             label_available_at: at,
+        }
+    }
+
+    fn shadow_config() -> ShadowPredictiveRegimeCircuitBreakerConfig {
+        ShadowPredictiveRegimeCircuitBreakerConfig {
+            schema_version: SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION.to_string(),
+            mode: SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE.to_string(),
+            rolling_resolved_market_window: 20,
+            minimum_resolved_markets: 20,
+            degradation_brier_score_threshold: dec!(0.23),
+            degradation_overconfidence_gap_threshold: dec!(0.12),
+            degradation_confirmation_markets: 2,
+            recovery_brier_score_threshold: dec!(0.21),
+            recovery_overconfidence_gap_threshold: dec!(0.05),
+            recovery_confirmation_markets: 2,
+        }
+    }
+
+    fn shadow_candidate(
+        index: i64,
+        selected_point_probability: Decimal,
+        won: bool,
+    ) -> ShadowPredictiveRegimeCandidate {
+        let label_available_at = Utc.with_ymd_and_hms(2026, 7, 20, 0, 0, 0).single().unwrap()
+            + Duration::minutes(index * 5);
+        ShadowPredictiveRegimeCandidate {
+            market_id: format!("shadow-market-{index}"),
+            decision_id: Uuid::from_u128(u128::try_from(index + 1).unwrap()),
+            decision_outcome: BtcOutcome::Up,
+            resolved_outcome: if won {
+                BtcOutcome::Up
+            } else {
+                BtcOutcome::Down
+            },
+            selected_point_probability,
+            decision_at: label_available_at - Duration::minutes(4),
+            label_available_at,
         }
     }
 
@@ -704,6 +1362,7 @@ mod tests {
         let entry_admission = BtcEntryAdmissionConfig {
             loss_regime_confidence_floor: config(),
             daily_realized_pnl_high_water_mark: None,
+            shadow_predictive_regime_circuit_breaker: None,
         };
         let serialized = serde_json::to_value(&entry_admission).unwrap();
         assert!(serialized
@@ -868,5 +1527,249 @@ mod tests {
             Vec::new(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn shadow_config_is_explicit_strict_and_hysteretic() {
+        let config = shadow_config();
+        assert!(config.validate().is_ok());
+
+        let mut invalid = config.clone();
+        invalid.mode = "enforced".to_string();
+        assert!(invalid.validate().is_err());
+
+        let mut invalid = config.clone();
+        invalid.rolling_resolved_market_window = 19;
+        assert!(invalid.validate().is_err());
+
+        let mut invalid = config.clone();
+        invalid.minimum_resolved_markets = 19;
+        assert!(invalid.validate().is_err());
+
+        let mut invalid = config.clone();
+        invalid.recovery_brier_score_threshold = invalid.degradation_brier_score_threshold;
+        assert!(invalid.validate().is_err());
+
+        let mut invalid = config.clone();
+        invalid.recovery_overconfidence_gap_threshold =
+            invalid.degradation_overconfidence_gap_threshold;
+        assert!(invalid.validate().is_err());
+
+        let unknown = serde_json::json!({
+            "schema_version": SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION,
+            "mode": "shadow",
+            "rolling_resolved_market_window": 20,
+            "minimum_resolved_markets": 20,
+            "degradation_brier_score_threshold": "0.23",
+            "degradation_overconfidence_gap_threshold": "0.12",
+            "degradation_confirmation_markets": 2,
+            "recovery_brier_score_threshold": "0.21",
+            "recovery_overconfidence_gap_threshold": "0.05",
+            "recovery_confirmation_markets": 2,
+            "enforce": false
+        });
+        assert!(
+            serde_json::from_value::<ShadowPredictiveRegimeCircuitBreakerConfig>(unknown).is_err()
+        );
+    }
+
+    #[test]
+    fn absent_shadow_config_preserves_entry_admission_serialization() {
+        let entry_admission = BtcEntryAdmissionConfig {
+            loss_regime_confidence_floor: config(),
+            daily_realized_pnl_high_water_mark: None,
+            shadow_predictive_regime_circuit_breaker: None,
+        };
+        let serialized = serde_json::to_value(entry_admission).unwrap();
+        assert!(serialized
+            .get("shadow_predictive_regime_circuit_breaker")
+            .is_none());
+        assert_eq!(serialized.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn shadow_degradation_requires_brier_and_overconfidence_for_two_updates() {
+        let config = shadow_config();
+        let process_id = Uuid::from_u128(700);
+        let mut state = ShadowPredictiveRegimeState::new(process_id, &config).unwrap();
+
+        for index in 0..19 {
+            assert_eq!(
+                state
+                    .apply_candidate(&config, &shadow_candidate(index, dec!(0.90), false))
+                    .unwrap(),
+                None
+            );
+        }
+        assert_eq!(state.consecutive_degradation_markets, 0);
+        assert!(!state.degraded);
+
+        assert_eq!(
+            state
+                .apply_candidate(&config, &shadow_candidate(19, dec!(0.90), false))
+                .unwrap(),
+            None
+        );
+        assert_eq!(state.consecutive_degradation_markets, 1);
+        assert!(!state.degraded);
+
+        assert_eq!(
+            state
+                .apply_candidate(&config, &shadow_candidate(20, dec!(0.90), false))
+                .unwrap(),
+            Some(ShadowPredictiveRegimeTransition::DegradationConfirmed)
+        );
+        let evaluation = state
+            .evaluate(
+                &config,
+                shadow_candidate(20, dec!(0.90), false).label_available_at,
+            )
+            .unwrap();
+        assert!(evaluation.degradation_condition_met);
+        assert!(evaluation.degraded);
+        assert!(evaluation.would_defer);
+        assert_eq!(evaluation.disposition, AdmissionDisposition::Allow);
+        assert_eq!(evaluation.process_id, process_id);
+        assert_eq!(evaluation.rolling_resolved_market_count, Some(20));
+        assert_eq!(evaluation.brier_score, Some(dec!(0.81)));
+        assert_eq!(evaluation.calibration_gap, Some(dec!(0.90)));
+        assert_eq!(evaluation.one_sided_overconfidence_gap, Some(dec!(0.90)));
+        assert_eq!(state.rolling_candidates.len(), 20);
+        assert_eq!(state.resolved_markets_observed, 21);
+
+        let serialized = serde_json::to_value(&evaluation).unwrap();
+        assert!(serialized.get("experiment_id").is_none());
+        assert_eq!(serialized["state"]["process_id"], process_id.to_string());
+    }
+
+    #[test]
+    fn shadow_brier_without_one_sided_overconfidence_does_not_degrade() {
+        let config = shadow_config();
+        let mut state = ShadowPredictiveRegimeState::new(Uuid::from_u128(701), &config).unwrap();
+        for index in 0..22 {
+            state
+                .apply_candidate(
+                    &config,
+                    &shadow_candidate(index, dec!(0.50), index % 2 == 0),
+                )
+                .unwrap();
+        }
+        let evaluation = state
+            .evaluate(
+                &config,
+                shadow_candidate(21, dec!(0.50), false).label_available_at,
+            )
+            .unwrap();
+        assert_eq!(evaluation.brier_score, Some(dec!(0.25)));
+        assert_eq!(evaluation.calibration_gap, Some(Decimal::ZERO));
+        assert_eq!(evaluation.one_sided_overconfidence_gap, Some(Decimal::ZERO));
+        assert!(!evaluation.degradation_condition_met);
+        assert!(!evaluation.degraded);
+        assert!(!evaluation.would_defer);
+        assert_eq!(evaluation.disposition, AdmissionDisposition::Allow);
+    }
+
+    #[test]
+    fn shadow_recovery_requires_two_updates_and_neutral_zone_preserves_degradation() {
+        let config = shadow_config();
+        let mut state = ShadowPredictiveRegimeState::new(Uuid::from_u128(702), &config).unwrap();
+        for index in 0..21 {
+            state
+                .apply_candidate(&config, &shadow_candidate(index, dec!(0.90), false))
+                .unwrap();
+        }
+        assert!(state.degraded);
+
+        for index in 21..39 {
+            assert_eq!(
+                state
+                    .apply_candidate(&config, &shadow_candidate(index, dec!(0.99), true))
+                    .unwrap(),
+                None
+            );
+        }
+        let neutral = state
+            .evaluate(
+                &config,
+                shadow_candidate(38, dec!(0.99), true).label_available_at,
+            )
+            .unwrap();
+        assert!(!neutral.degradation_condition_met);
+        assert!(!neutral.recovery_condition_met);
+        assert!(neutral.degraded);
+        assert_eq!(neutral.disposition, AdmissionDisposition::Allow);
+
+        assert_eq!(
+            state
+                .apply_candidate(&config, &shadow_candidate(39, dec!(0.99), true))
+                .unwrap(),
+            None
+        );
+        let pending = state
+            .evaluate(
+                &config,
+                shadow_candidate(39, dec!(0.99), true).label_available_at,
+            )
+            .unwrap();
+        assert!(pending.recovery_condition_met);
+        assert_eq!(pending.consecutive_recovery_markets, 1);
+        assert!(pending.degraded);
+        assert_eq!(pending.disposition, AdmissionDisposition::Allow);
+
+        assert_eq!(
+            state
+                .apply_candidate(&config, &shadow_candidate(40, dec!(0.99), true))
+                .unwrap(),
+            Some(ShadowPredictiveRegimeTransition::RecoveryConfirmed)
+        );
+        let recovered = state
+            .evaluate(
+                &config,
+                shadow_candidate(40, dec!(0.99), true).label_available_at,
+            )
+            .unwrap();
+        assert!(!recovered.degraded);
+        assert!(!recovered.would_defer);
+        assert_eq!(recovered.disposition, AdmissionDisposition::Allow);
+    }
+
+    #[test]
+    fn shadow_state_resume_is_process_owned_config_bound_and_causal() {
+        let config = shadow_config();
+        let process_id = Uuid::from_u128(703);
+        let candidates = (0..20)
+            .map(|index| shadow_candidate(index, dec!(0.90), false))
+            .collect::<Vec<_>>();
+        let state =
+            ShadowPredictiveRegimeState::from_candidates(process_id, &config, &candidates).unwrap();
+        let serialized = serde_json::to_vec(&state).unwrap();
+        let restored: ShadowPredictiveRegimeState = serde_json::from_slice(&serialized).unwrap();
+        assert!(!restored
+            .candidate_is_newer(&config, &candidates[19])
+            .unwrap());
+        assert!(restored
+            .candidate_is_newer(&config, &shadow_candidate(20, dec!(0.90), false))
+            .unwrap());
+        let resumed = ShadowPredictiveRegimeState::resume_from_state(
+            &config,
+            restored,
+            &[shadow_candidate(20, dec!(0.90), false)],
+        )
+        .unwrap();
+        assert!(resumed.degraded);
+        assert_eq!(resumed.process_id, process_id);
+
+        assert!(ShadowPredictiveRegimeState::resume_from_state(
+            &config,
+            resumed.clone(),
+            &[shadow_candidate(20, dec!(0.90), false)]
+        )
+        .is_err());
+
+        let mut altered_config = config.clone();
+        altered_config.degradation_brier_score_threshold = dec!(0.24);
+        assert!(
+            ShadowPredictiveRegimeState::resume_from_state(&altered_config, resumed, &[]).is_err()
+        );
     }
 }

@@ -1,4 +1,7 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex as StdMutex},
+};
 
 use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
@@ -24,6 +27,9 @@ use super::{
         AdmissionDisposition, BtcEntryAdmissionConfig, DailyRealizedPnlHighWaterMarkEvaluation,
         LossRegimeConfidenceFloorEvaluation, LossRegimeConfidenceFloorState,
         LossRegimeConfidenceFloorTransition, ProposedEntryExposure,
+        ShadowPredictiveRegimeCandidate, ShadowPredictiveRegimeCircuitBreakerConfig,
+        ShadowPredictiveRegimeEvaluation, ShadowPredictiveRegimeState,
+        ShadowPredictiveRegimeTransition,
     },
     paper::{PaperPreviewConfig, PaperVenue, PAPER_DYNAMIC_FEE_RATE_METADATA_KEY},
     repository::{BtcPointInTimeInputs, BtcRepository},
@@ -43,6 +49,9 @@ use super::{
 };
 
 const PAPER_CAPITAL_RECONCILE_INTERVAL: TokioDuration = TokioDuration::from_secs(5);
+const SHADOW_PREDICTIVE_REGIME_MAX_REPLAY_CANDIDATES: u32 = 10_000;
+const SHADOW_PREDICTIVE_REGIME_REPLAY_FETCH_CANDIDATES: u32 =
+    SHADOW_PREDICTIVE_REGIME_MAX_REPLAY_CANDIDATES + 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BtcPaperExperimentConfig {
@@ -67,6 +76,50 @@ struct LossRegimeAdmissionRuntime {
     evaluated_market_id: Option<String>,
 }
 
+struct ShadowPredictiveRegimeAdmissionRuntime {
+    state: ShadowPredictiveRegimeState,
+    state_hydrated: bool,
+    evaluated_market_id: Option<String>,
+    attempted_market_id: Option<String>,
+    refresh_in_progress: bool,
+    telemetry_error: Option<String>,
+}
+
+#[derive(Default)]
+struct ShadowPredictiveRegimeRefreshTasks {
+    stopping: bool,
+    handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+type ShadowPredictiveRegimeTransitionEvidence = (
+    ShadowPredictiveRegimeTransition,
+    ShadowPredictiveRegimeCandidate,
+    ShadowPredictiveRegimeState,
+);
+
+fn shadow_predictive_regime_refresh_pending(
+    runtime: &ShadowPredictiveRegimeAdmissionRuntime,
+    market_id: &str,
+) -> bool {
+    runtime.refresh_in_progress
+        || !runtime.state_hydrated
+        || runtime.evaluated_market_id.as_deref() != Some(market_id)
+}
+
+fn unavailable_shadow_predictive_regime_evaluation(
+    process_id: Uuid,
+    config: &ShadowPredictiveRegimeCircuitBreakerConfig,
+    as_of: DateTime<Utc>,
+    telemetry_error: String,
+) -> Result<ShadowPredictiveRegimeEvaluation> {
+    let mut evaluation =
+        ShadowPredictiveRegimeState::new(process_id, config)?.evaluate(config, as_of)?;
+    evaluation.state_checkpoint_eligible = false;
+    evaluation.refresh_pending = true;
+    evaluation.telemetry_error = Some(telemetry_error);
+    Ok(evaluation)
+}
+
 struct EntryAdmissionEvaluation {
     disposition: AdmissionDisposition,
     evidence: serde_json::Value,
@@ -79,6 +132,9 @@ pub struct BtcPaperExperimentRunner {
     config: BtcPaperExperimentConfig,
     initialized: OnceCell<()>,
     loss_regime_admission: Mutex<Option<LossRegimeAdmissionRuntime>>,
+    shadow_predictive_regime_admission:
+        Arc<StdMutex<Option<ShadowPredictiveRegimeAdmissionRuntime>>>,
+    shadow_predictive_regime_refresh_tasks: StdMutex<ShadowPredictiveRegimeRefreshTasks>,
     high_water_mark_entry_submission: Mutex<()>,
     paper_capital_reconcile_started_at: Mutex<Option<Instant>>,
 }
@@ -113,6 +169,25 @@ impl BtcPaperExperimentRunner {
                 );
             }
         }
+        let shadow_predictive_regime_admission = config
+            .entry_admission
+            .as_ref()
+            .and_then(|entry_admission| {
+                entry_admission
+                    .shadow_predictive_regime_circuit_breaker
+                    .as_ref()
+            })
+            .map(|shadow| {
+                Ok::<_, anyhow::Error>(ShadowPredictiveRegimeAdmissionRuntime {
+                    state: ShadowPredictiveRegimeState::new(config.process_id, shadow)?,
+                    state_hydrated: false,
+                    evaluated_market_id: None,
+                    attempted_market_id: None,
+                    refresh_in_progress: false,
+                    telemetry_error: None,
+                })
+            })
+            .transpose()?;
         Ok(Self {
             repository,
             store,
@@ -122,6 +197,12 @@ impl BtcPaperExperimentRunner {
                     .entry_admission
                     .as_ref()
                     .map(|_| LossRegimeAdmissionRuntime::default()),
+            ),
+            shadow_predictive_regime_admission: Arc::new(StdMutex::new(
+                shadow_predictive_regime_admission,
+            )),
+            shadow_predictive_regime_refresh_tasks: StdMutex::new(
+                ShadowPredictiveRegimeRefreshTasks::default(),
             ),
             high_water_mark_entry_submission: Mutex::new(()),
             config,
@@ -193,13 +274,14 @@ impl BtcPaperExperimentRunner {
         let Some(entry_admission) = self.config.entry_admission.as_ref() else {
             return Ok(());
         };
+        let as_of = Utc::now();
         let floor = &entry_admission.loss_regime_confidence_floor;
         let candidates = self
             .repository
             .load_resolved_loss_regime_candidates(
                 self.config.process_id,
                 &self.config.config_hash,
-                Utc::now(),
+                as_of,
             )
             .await?;
         let state = LossRegimeConfidenceFloorState::from_candidates(floor, &candidates);
@@ -208,17 +290,47 @@ impl BtcPaperExperimentRunner {
             state,
             evaluated_market_id: None,
         });
-        self.record_entry_admission_event(
-            "btc_entry_admission_initialized",
-            "loss-regime confidence-floor admission initialized",
-            serde_json::json!({
-                "resume": resume,
-                "config": entry_admission,
-                "entry_admission_config_hash": floor.config_hash()?,
-                "state": initialized_state,
-            }),
-        )
-        .await;
+        let shadow_initialized_state = if entry_admission
+            .shadow_predictive_regime_circuit_breaker
+            .is_some()
+        {
+            self.shadow_predictive_regime_admission
+                .lock()
+                .ok()
+                .and_then(|admission| admission.as_ref().map(|runtime| runtime.state.clone()))
+        } else {
+            None
+        };
+        if entry_admission
+            .shadow_predictive_regime_circuit_breaker
+            .is_none()
+        {
+            self.record_entry_admission_event(
+                "btc_entry_admission_initialized",
+                "loss-regime confidence-floor admission initialized",
+                serde_json::json!({
+                    "resume": resume,
+                    "config": entry_admission,
+                    "entry_admission_config_hash": floor.config_hash()?,
+                    "state": initialized_state,
+                }),
+            )
+            .await;
+        } else {
+            self.record_entry_admission_event(
+                "btc_entry_admission_initialized",
+                "BTC entry admission initialized with non-blocking shadow predictive-regime hydration pending",
+                serde_json::json!({
+                    "resume": resume,
+                    "config": entry_admission,
+                    "entry_admission_config_hash": floor.config_hash()?,
+                    "state": initialized_state,
+                    "shadow_predictive_regime_state": shadow_initialized_state,
+                    "shadow_predictive_regime_hydration_pending": true,
+                }),
+            )
+            .await;
+        }
         Ok(())
     }
 
@@ -300,6 +412,291 @@ impl BtcPaperExperimentRunner {
         Ok(Some(evaluation))
     }
 
+    fn cached_shadow_predictive_regime_evaluation(
+        &self,
+        market_id: &str,
+        as_of: DateTime<Utc>,
+    ) -> Option<ShadowPredictiveRegimeEvaluation> {
+        let config = self
+            .config
+            .entry_admission
+            .as_ref()
+            .and_then(|entry_admission| {
+                entry_admission
+                    .shadow_predictive_regime_circuit_breaker
+                    .as_ref()
+            })?;
+        let admission = match self.shadow_predictive_regime_admission.try_lock() {
+            Ok(admission) => admission,
+            Err(error) => {
+                let telemetry_error =
+                    format!("shadow predictive-regime cache lock was unavailable: {error}");
+                warn!(
+                    error = %telemetry_error,
+                    process_id = %self.config.process_id,
+                    "shadow predictive-regime cache lock failed open"
+                );
+                return unavailable_shadow_predictive_regime_evaluation(
+                    self.config.process_id,
+                    config,
+                    as_of,
+                    telemetry_error,
+                )
+                .map_err(|fallback_error| {
+                    warn!(
+                        error = %fallback_error,
+                        process_id = %self.config.process_id,
+                        "shadow predictive-regime fallback evaluation failed open"
+                    );
+                })
+                .ok();
+            }
+        };
+        let Some(runtime) = admission.as_ref() else {
+            let telemetry_error =
+                "shadow predictive-regime cache runtime was unavailable".to_string();
+            warn!(
+                process_id = %self.config.process_id,
+                "shadow predictive-regime cache was unavailable and failed open"
+            );
+            return unavailable_shadow_predictive_regime_evaluation(
+                self.config.process_id,
+                config,
+                as_of,
+                telemetry_error,
+            )
+            .map_err(|fallback_error| {
+                warn!(
+                    error = %fallback_error,
+                    process_id = %self.config.process_id,
+                    "shadow predictive-regime fallback evaluation failed open"
+                );
+            })
+            .ok();
+        };
+        match runtime.state.evaluate(config, as_of) {
+            Ok(mut evaluation) => {
+                evaluation.state_checkpoint_eligible = runtime.state_hydrated;
+                evaluation.telemetry_error = runtime.telemetry_error.clone();
+                evaluation.refresh_pending =
+                    shadow_predictive_regime_refresh_pending(runtime, market_id);
+                Some(evaluation)
+            }
+            Err(error) => {
+                let telemetry_error = format!(
+                    "shadow predictive-regime cached state could not be evaluated: {error}"
+                );
+                warn!(
+                    error = %telemetry_error,
+                    process_id = %self.config.process_id,
+                    "shadow predictive-regime cached evaluation failed open"
+                );
+                unavailable_shadow_predictive_regime_evaluation(
+                    self.config.process_id,
+                    config,
+                    as_of,
+                    telemetry_error,
+                )
+                .map_err(|fallback_error| {
+                    warn!(
+                        error = %fallback_error,
+                        process_id = %self.config.process_id,
+                        "shadow predictive-regime fallback evaluation failed open"
+                    );
+                })
+                .ok()
+            }
+        }
+    }
+
+    fn schedule_shadow_predictive_regime_refresh(&self, market_id: &str, as_of: DateTime<Utc>) {
+        let Some(config) = self
+            .config
+            .entry_admission
+            .as_ref()
+            .and_then(|entry_admission| {
+                entry_admission
+                    .shadow_predictive_regime_circuit_breaker
+                    .clone()
+            })
+        else {
+            return;
+        };
+        let mut refresh_tasks = match self.shadow_predictive_regime_refresh_tasks.lock() {
+            Ok(refresh_tasks) => refresh_tasks,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    process_id = %self.config.process_id,
+                    "shadow predictive-regime task tracker failed open"
+                );
+                return;
+            }
+        };
+        if refresh_tasks.stopping {
+            return;
+        }
+        refresh_tasks.handles.retain(|handle| !handle.is_finished());
+        let breaker_config_hash = match config.config_hash() {
+            Ok(config_hash) => config_hash,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    process_id = %self.config.process_id,
+                    "shadow predictive-regime config hash failed open"
+                );
+                return;
+            }
+        };
+        let base_state = {
+            let mut admission = match self.shadow_predictive_regime_admission.try_lock() {
+                Ok(admission) => admission,
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        process_id = %self.config.process_id,
+                        "shadow predictive-regime refresh lock failed open"
+                    );
+                    return;
+                }
+            };
+            let Some(runtime) = admission.as_mut() else {
+                warn!(
+                    process_id = %self.config.process_id,
+                    "shadow predictive-regime refresh state was unavailable"
+                );
+                return;
+            };
+            if runtime.refresh_in_progress
+                || runtime.attempted_market_id.as_deref() == Some(market_id)
+            {
+                return;
+            }
+            runtime.refresh_in_progress = true;
+            runtime.attempted_market_id = Some(market_id.to_string());
+            runtime.state_hydrated.then(|| runtime.state.clone())
+        };
+
+        let repository = self.repository.clone();
+        let store = self.store.clone();
+        let runtime = self.shadow_predictive_regime_admission.clone();
+        let process_id = self.config.process_id;
+        let market_id = market_id.to_string();
+        let handle = tokio::spawn(async move {
+            let refreshed = load_shadow_predictive_regime_state(
+                &repository,
+                process_id,
+                &config,
+                as_of,
+                base_state,
+            )
+            .await
+            .and_then(|(state, transitions)| {
+                let evaluation = state.evaluate(&config, as_of)?;
+                Ok((state, evaluation, transitions))
+            });
+
+            let events = match refreshed {
+                Ok((state, evaluation, transitions)) => {
+                    let mut admission = match runtime.lock() {
+                        Ok(admission) => admission,
+                        Err(error) => {
+                            warn!(
+                                error = %error,
+                                process_id = %process_id,
+                                "shadow predictive-regime refresh result lock failed open"
+                            );
+                            return;
+                        }
+                    };
+                    let Some(runtime) = admission.as_mut() else {
+                        warn!(
+                            process_id = %process_id,
+                            "shadow predictive-regime refresh result had no runtime state"
+                        );
+                        return;
+                    };
+                    runtime.state = state;
+                    runtime.state_hydrated = true;
+                    runtime.evaluated_market_id = Some(market_id.clone());
+                    runtime.refresh_in_progress = false;
+                    runtime.telemetry_error = None;
+                    drop(admission);
+                    transitions
+                        .into_iter()
+                        .map(|(transition, candidate, transition_state)| {
+                            let (event_type, message) = match transition {
+                                ShadowPredictiveRegimeTransition::DegradationConfirmed => (
+                                    "btc_shadow_predictive_regime_degradation_confirmed",
+                                    "shadow predictive-regime degradation confirmed",
+                                ),
+                                ShadowPredictiveRegimeTransition::RecoveryConfirmed => (
+                                    "btc_shadow_predictive_regime_recovery_confirmed",
+                                    "shadow predictive-regime recovery confirmed",
+                                ),
+                            };
+                            (
+                                event_type,
+                                message,
+                                serde_json::json!({
+                                    "shadow_predictive_regime_config_hash": breaker_config_hash,
+                                    "candidate": candidate,
+                                    "transition_state": transition_state,
+                                    "refresh_evaluation": &evaluation,
+                                }),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                }
+                Err(error) => {
+                    let error = error.to_string();
+                    warn!(
+                        error = %error,
+                        process_id = %process_id,
+                        market_id,
+                        "shadow predictive-regime refresh failed without changing admission"
+                    );
+                    if let Ok(mut admission) = runtime.lock() {
+                        if let Some(runtime) = admission.as_mut() {
+                            runtime.refresh_in_progress = false;
+                            runtime.telemetry_error = Some(error.clone());
+                        }
+                    }
+                    vec![(
+                        "btc_shadow_predictive_regime_telemetry_error",
+                        "shadow predictive-regime telemetry failed without changing admission",
+                        serde_json::json!({
+                            "shadow_predictive_regime_config_hash": breaker_config_hash,
+                            "market_id": market_id,
+                            "error": error,
+                        }),
+                    )]
+                }
+            };
+
+            for (event_type, message, metadata) in events {
+                if let Err(error) = store
+                    .record_trading_process_event(
+                        process_id,
+                        "info",
+                        event_type,
+                        Some(message),
+                        metadata,
+                    )
+                    .await
+                {
+                    warn!(
+                        error = %error,
+                        process_id = %process_id,
+                        event_type,
+                        "failed to persist shadow predictive-regime event"
+                    );
+                }
+            }
+        });
+        refresh_tasks.handles.push(handle);
+    }
+
     async fn evaluate_entry_admission(
         &self,
         decision: &BtcDecision,
@@ -329,10 +726,14 @@ impl BtcPaperExperimentRunner {
             }
             None => None,
         };
+        let shadow_predictive_regime = decision.approved_intent.as_ref().and_then(|intent| {
+            self.cached_shadow_predictive_regime_evaluation(&intent.market_id, as_of)
+        });
         Ok(Some(combine_entry_admission_evaluations(
             self.config.process_id,
             loss_regime,
             high_water_mark,
+            shadow_predictive_regime,
         )?))
     }
 
@@ -363,6 +764,32 @@ impl BtcPaperExperimentRunner {
     }
 
     pub async fn shutdown(&self) -> Result<()> {
+        let refresh_handles = {
+            let mut refresh_tasks = self
+                .shadow_predictive_regime_refresh_tasks
+                .lock()
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "shadow predictive-regime task tracker was poisoned during shutdown: {error}"
+                    )
+                })?;
+            refresh_tasks.stopping = true;
+            std::mem::take(&mut refresh_tasks.handles)
+        };
+        for handle in &refresh_handles {
+            handle.abort();
+        }
+        for handle in refresh_handles {
+            if let Err(error) = handle.await {
+                if !error.is_cancelled() {
+                    warn!(
+                        error = %error,
+                        process_id = %self.config.process_id,
+                        "shadow predictive-regime refresh task failed during shutdown"
+                    );
+                }
+            }
+        }
         self.force_refresh_settlement_and_reconcile().await?;
         Ok(())
     }
@@ -492,6 +919,7 @@ impl BtcPaperExperimentRunner {
             return Ok(());
         };
         let observed_at = Utc::now();
+        self.schedule_shadow_predictive_regime_refresh(&market.market_id, observed_at);
         let clob_connection_id = observation_clob_connection_id(market, &observation.readiness);
         let inputs = self
             .repository
@@ -746,10 +1174,72 @@ impl BtcPaperExperimentRunner {
     }
 }
 
+async fn load_shadow_predictive_regime_state(
+    repository: &BtcRepository,
+    process_id: Uuid,
+    config: &ShadowPredictiveRegimeCircuitBreakerConfig,
+    as_of: DateTime<Utc>,
+    base_state: Option<ShadowPredictiveRegimeState>,
+) -> Result<(
+    ShadowPredictiveRegimeState,
+    Vec<ShadowPredictiveRegimeTransitionEvidence>,
+)> {
+    let breaker_config_hash = config.config_hash()?;
+    let mut state = match base_state {
+        Some(state) => {
+            state.validate(config)?;
+            state
+        }
+        None => match repository
+            .load_latest_shadow_predictive_regime_state(
+                process_id,
+                Some(&breaker_config_hash),
+                as_of,
+            )
+            .await?
+        {
+            Some(state) => {
+                state.validate(config)?;
+                state
+            }
+            None => ShadowPredictiveRegimeState::new(process_id, config)?,
+        },
+    };
+    let candidates = repository
+        .load_shadow_predictive_regime_candidates(
+            process_id,
+            None,
+            as_of,
+            SHADOW_PREDICTIVE_REGIME_REPLAY_FETCH_CANDIDATES,
+        )
+        .await?;
+    if candidates.len()
+        > usize::try_from(SHADOW_PREDICTIVE_REGIME_MAX_REPLAY_CANDIDATES).unwrap_or(usize::MAX)
+    {
+        if let Some(first) = candidates.first() {
+            if state.candidate_is_newer(config, first)? {
+                anyhow::bail!(
+                    "shadow predictive-regime replay reached its bounded history cap before the persisted state cursor"
+                );
+            }
+        }
+    }
+    let mut transitions = Vec::new();
+    for candidate in candidates {
+        if state.candidate_is_newer(config, &candidate)? {
+            if let Some(transition) = state.apply_candidate(config, &candidate)? {
+                transitions.push((transition, candidate, state.clone()));
+            }
+        }
+    }
+    Ok((state, transitions))
+}
+
 fn combine_entry_admission_evaluations(
     process_id: Uuid,
     loss_regime: LossRegimeConfidenceFloorEvaluation,
     high_water_mark: Option<DailyRealizedPnlHighWaterMarkEvaluation>,
+    shadow_predictive_regime: Option<ShadowPredictiveRegimeEvaluation>,
 ) -> Result<EntryAdmissionEvaluation> {
     let loss_deferred = loss_regime.disposition == AdmissionDisposition::Defer;
     let high_water_mark_deferred = high_water_mark
@@ -761,9 +1251,9 @@ fn combine_entry_admission_evaluations(
         AdmissionDisposition::Allow
     };
 
-    let evidence = match high_water_mark {
-        None => serde_json::to_value(loss_regime)?,
-        Some(high_water_mark) => {
+    let evidence = match (high_water_mark, shadow_predictive_regime) {
+        (None, None) => serde_json::to_value(loss_regime)?,
+        (Some(high_water_mark), None) => {
             let mut blocking_policies = Vec::new();
             if loss_deferred {
                 blocking_policies.push("loss_regime_confidence_floor");
@@ -778,6 +1268,30 @@ fn combine_entry_admission_evaluations(
                 "blocking_policies": blocking_policies,
                 "loss_regime_confidence_floor": loss_regime,
                 "daily_realized_pnl_high_water_mark": high_water_mark,
+            })
+        }
+        (high_water_mark, Some(shadow_predictive_regime)) => {
+            let mut blocking_policies = Vec::new();
+            if loss_deferred {
+                blocking_policies.push("loss_regime_confidence_floor");
+            }
+            if high_water_mark_deferred {
+                blocking_policies.push("daily_realized_pnl_high_water_mark");
+            }
+            let shadow_would_block_policies = if shadow_predictive_regime.would_defer {
+                vec!["shadow_predictive_regime_circuit_breaker"]
+            } else {
+                Vec::new()
+            };
+            serde_json::json!({
+                "evidence_version": "btc_entry_admission_v3",
+                "process_id": process_id,
+                "disposition": disposition,
+                "blocking_policies": blocking_policies,
+                "shadow_would_block_policies": shadow_would_block_policies,
+                "loss_regime_confidence_floor": loss_regime,
+                "daily_realized_pnl_high_water_mark": high_water_mark,
+                "shadow_predictive_regime_circuit_breaker": shadow_predictive_regime,
             })
         }
     };
@@ -1464,9 +1978,12 @@ mod tests {
         admission::{
             DailyRealizedPnlCredit, DailyRealizedPnlHighWaterMarkConfig,
             DailyRealizedPnlHighWaterMarkState, LossRegimeConfidenceFloorConfig,
-            LossRegimeConfidenceFloorState, ProposedEntryExposure, UnsettledEntryExposure,
-            DAILY_REALIZED_PNL_HIGH_WATER_MARK_SCHEMA_VERSION,
+            LossRegimeConfidenceFloorState, ProposedEntryExposure, ShadowPredictiveRegimeCandidate,
+            ShadowPredictiveRegimeCircuitBreakerConfig, ShadowPredictiveRegimeState,
+            UnsettledEntryExposure, DAILY_REALIZED_PNL_HIGH_WATER_MARK_SCHEMA_VERSION,
             LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION,
+            SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE,
+            SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION,
         },
         strategy::{
             ApprovedIntent, BtcDecisionStrategyConfig, BtcDirectionalPredictionConfig,
@@ -1710,7 +2227,7 @@ mod tests {
             .unwrap();
         let expected = serde_json::to_value(&loss).unwrap();
         let combined =
-            combine_entry_admission_evaluations(Uuid::from_u128(300), loss, None).unwrap();
+            combine_entry_admission_evaluations(Uuid::from_u128(300), loss, None, None).unwrap();
 
         assert_eq!(combined.disposition, AdmissionDisposition::Allow);
         assert_eq!(combined.evidence, expected);
@@ -1757,7 +2274,8 @@ mod tests {
             )
             .unwrap();
         let combined =
-            combine_entry_admission_evaluations(process_id, loss, Some(high_water_mark)).unwrap();
+            combine_entry_admission_evaluations(process_id, loss, Some(high_water_mark), None)
+                .unwrap();
 
         assert_eq!(combined.disposition, AdmissionDisposition::Defer);
         assert_eq!(combined.evidence["process_id"], process_id.to_string());
@@ -1773,6 +2291,148 @@ mod tests {
             .evidence
             .get("daily_realized_pnl_high_water_mark")
             .is_some());
+    }
+
+    #[test]
+    fn shadow_would_defer_is_evidence_only_and_never_changes_admission() {
+        let floor = LossRegimeConfidenceFloorConfig {
+            schema_version: LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION.to_string(),
+            activation_consecutive_candidate_losses: 2,
+            min_conservative_probability: dec!(0.50),
+            release_consecutive_candidate_wins: 1,
+        };
+        let loss = LossRegimeConfidenceFloorState::default()
+            .evaluate(&floor, dec!(0.60))
+            .unwrap();
+        let shadow_config = ShadowPredictiveRegimeCircuitBreakerConfig {
+            schema_version: SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION.to_string(),
+            mode: SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE.to_string(),
+            rolling_resolved_market_window: 20,
+            minimum_resolved_markets: 20,
+            degradation_brier_score_threshold: dec!(0.23),
+            degradation_overconfidence_gap_threshold: dec!(0.12),
+            degradation_confirmation_markets: 2,
+            recovery_brier_score_threshold: dec!(0.21),
+            recovery_overconfidence_gap_threshold: dec!(0.05),
+            recovery_confirmation_markets: 2,
+        };
+        let process_id = Uuid::from_u128(304);
+        let start = Utc.with_ymd_and_hms(2026, 7, 20, 0, 0, 0).unwrap();
+        let candidates = (0..21)
+            .map(|index| {
+                let label_available_at = start + chrono::Duration::minutes(index * 5);
+                ShadowPredictiveRegimeCandidate {
+                    market_id: format!("market-{index}"),
+                    decision_id: Uuid::from_u128(u128::try_from(index + 1).unwrap()),
+                    decision_outcome: BtcOutcome::Up,
+                    resolved_outcome: BtcOutcome::Down,
+                    selected_point_probability: dec!(0.90),
+                    decision_at: label_available_at - chrono::Duration::minutes(4),
+                    label_available_at,
+                }
+            })
+            .collect::<Vec<_>>();
+        let state =
+            ShadowPredictiveRegimeState::from_candidates(process_id, &shadow_config, &candidates)
+                .unwrap();
+        let shadow = state
+            .evaluate(
+                &shadow_config,
+                candidates.last().unwrap().label_available_at,
+            )
+            .unwrap();
+        assert!(shadow.would_defer);
+        assert_eq!(shadow.disposition, AdmissionDisposition::Allow);
+
+        let combined =
+            combine_entry_admission_evaluations(process_id, loss, None, Some(shadow)).unwrap();
+
+        assert_eq!(combined.disposition, AdmissionDisposition::Allow);
+        assert_eq!(
+            combined.evidence["evidence_version"],
+            "btc_entry_admission_v3"
+        );
+        assert_eq!(
+            combined.evidence["blocking_policies"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            combined.evidence["shadow_would_block_policies"],
+            serde_json::json!(["shadow_predictive_regime_circuit_breaker"])
+        );
+        assert_eq!(
+            combined.evidence["shadow_predictive_regime_circuit_breaker"]["disposition"],
+            "allow"
+        );
+    }
+
+    #[test]
+    fn shadow_refresh_pending_tracks_hydration_and_market_identity() {
+        let config = ShadowPredictiveRegimeCircuitBreakerConfig {
+            schema_version: SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION.to_string(),
+            mode: SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE.to_string(),
+            rolling_resolved_market_window: 20,
+            minimum_resolved_markets: 20,
+            degradation_brier_score_threshold: dec!(0.23),
+            degradation_overconfidence_gap_threshold: dec!(0.12),
+            degradation_confirmation_markets: 2,
+            recovery_brier_score_threshold: dec!(0.21),
+            recovery_overconfidence_gap_threshold: dec!(0.05),
+            recovery_confirmation_markets: 2,
+        };
+        let mut runtime = ShadowPredictiveRegimeAdmissionRuntime {
+            state: ShadowPredictiveRegimeState::new(Uuid::from_u128(305), &config).unwrap(),
+            state_hydrated: false,
+            evaluated_market_id: None,
+            attempted_market_id: None,
+            refresh_in_progress: false,
+            telemetry_error: None,
+        };
+
+        assert!(shadow_predictive_regime_refresh_pending(
+            &runtime, "market-a"
+        ));
+        runtime.state_hydrated = true;
+        runtime.evaluated_market_id = Some("market-a".to_string());
+        assert!(!shadow_predictive_regime_refresh_pending(
+            &runtime, "market-a"
+        ));
+        assert!(shadow_predictive_regime_refresh_pending(
+            &runtime, "market-b"
+        ));
+        runtime.refresh_in_progress = true;
+        assert!(shadow_predictive_regime_refresh_pending(
+            &runtime, "market-a"
+        ));
+    }
+
+    #[test]
+    fn unavailable_shadow_cache_remains_visible_and_fail_open() {
+        let config = ShadowPredictiveRegimeCircuitBreakerConfig {
+            schema_version: SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION.to_string(),
+            mode: SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE.to_string(),
+            rolling_resolved_market_window: 20,
+            minimum_resolved_markets: 20,
+            degradation_brier_score_threshold: dec!(0.23),
+            degradation_overconfidence_gap_threshold: dec!(0.12),
+            degradation_confirmation_markets: 2,
+            recovery_brier_score_threshold: dec!(0.21),
+            recovery_overconfidence_gap_threshold: dec!(0.05),
+            recovery_confirmation_markets: 2,
+        };
+        let evaluation = unavailable_shadow_predictive_regime_evaluation(
+            Uuid::from_u128(306),
+            &config,
+            Utc.with_ymd_and_hms(2026, 7, 20, 12, 0, 0).unwrap(),
+            "cache busy".to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(evaluation.disposition, AdmissionDisposition::Allow);
+        assert!(!evaluation.would_defer);
+        assert!(evaluation.refresh_pending);
+        assert!(!evaluation.state_checkpoint_eligible);
+        assert_eq!(evaluation.telemetry_error.as_deref(), Some("cache busy"));
     }
 
     #[test]
