@@ -131,6 +131,8 @@ pub struct PaperSettlementCreditResult {
 pub struct PaperVenue {
     registry: Arc<RwLock<BookRegistry>>,
     config: PaperVenueConfig,
+    /// Process-owned strategy cap applied to raw displayed ask depth at arrival.
+    max_depth_participation: Decimal,
     state: Arc<Mutex<PaperState>>,
     /// Serializes arrival simulation so concurrent retries cannot both fill the same client id.
     submit_guard: Arc<Mutex<()>>,
@@ -161,13 +163,28 @@ struct PaperLevelFill {
     size: Decimal,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct AskDepthAtLimit {
+    displayed_size: Decimal,
+    executable_size: Decimal,
+    executable_notional: Decimal,
+}
+
 impl PaperVenue {
-    pub fn new(registry: Arc<RwLock<BookRegistry>>, config: PaperVenueConfig) -> Result<Self> {
+    pub fn new(
+        registry: Arc<RwLock<BookRegistry>>,
+        config: PaperVenueConfig,
+        max_depth_participation: Decimal,
+    ) -> Result<Self> {
         config.validate()?;
+        if max_depth_participation <= Decimal::ZERO || max_depth_participation > Decimal::ONE {
+            bail!("paper max_depth_participation must be in (0, 1]");
+        }
         let starting_collateral_usd = config.starting_collateral_usd;
         Ok(Self {
             registry,
             config,
+            max_depth_participation,
             state: Arc::new(Mutex::new(PaperState {
                 collateral_usd: starting_collateral_usd,
                 ..PaperState::default()
@@ -341,6 +358,7 @@ impl PaperVenue {
                 "configured_latency_ms": arrival_latency.as_millis(),
                 "observed_submit_to_arrival_ms": (arrival_at - submitted_at).num_milliseconds(),
                 "visible_depth_haircut": visible_depth_haircut,
+                "max_depth_participation": self.max_depth_participation,
                 "max_book_age_ms": max_book_age.num_milliseconds(),
                 "collateral_enforced": enforce_collateral,
                 "non_mutating_preview": !enforce_collateral,
@@ -401,8 +419,50 @@ impl PaperVenue {
             return paper_reject_with_checkpoint(base, "stale_arrival_orderbook", &checkpoint);
         }
 
-        let (available_size, available_notional) =
-            available_ask_depth(&checkpoint.asks, request.price, visible_depth_haircut);
+        let Some(depth) =
+            available_ask_depth(&checkpoint.asks, request.price, visible_depth_haircut)
+        else {
+            return paper_reject_with_checkpoint(
+                base,
+                "invalid_arrival_orderbook_depth",
+                &checkpoint,
+            );
+        };
+        let Some(max_participating_size) = depth
+            .displayed_size
+            .checked_mul(self.max_depth_participation)
+        else {
+            return paper_reject_with_checkpoint(
+                base,
+                "invalid_arrival_orderbook_depth",
+                &checkpoint,
+            );
+        };
+        let requested_depth_participation_at_limit = (depth.displayed_size > Decimal::ZERO)
+            .then(|| request.size.checked_div(depth.displayed_size))
+            .flatten();
+        let base = merge_json(
+            base,
+            serde_json::json!({
+                "paper_execution": {
+                    "displayed_size_at_limit": depth.displayed_size,
+                    "max_participating_size_at_limit": max_participating_size,
+                    "requested_depth_participation_at_limit": requested_depth_participation_at_limit,
+                }
+            }),
+        );
+        if depth.executable_size >= request.size && request.size > max_participating_size {
+            return paper_reject_with_details(
+                base,
+                "arrival_depth_participation_exceeded",
+                &checkpoint,
+                depth.executable_size,
+                depth.executable_notional,
+                fee_rate,
+                &[],
+            );
+        }
+
         let mut remaining = request.size;
         let mut walked = Vec::new();
         for level in &checkpoint.asks {
@@ -428,8 +488,8 @@ impl PaperVenue {
                 base,
                 "insufficient_arrival_depth",
                 &checkpoint,
-                available_size,
-                available_notional,
+                depth.executable_size,
+                depth.executable_notional,
                 fee_rate,
                 &walked,
             );
@@ -471,8 +531,8 @@ impl PaperVenue {
                 base,
                 "insufficient_paper_collateral",
                 &checkpoint,
-                available_size,
-                available_notional,
+                depth.executable_size,
+                depth.executable_notional,
                 fee_rate,
                 &walked,
             );
@@ -490,11 +550,12 @@ impl PaperVenue {
                         "arrival_checkpoint": checkpoint,
                         "arrival_source_age_ms": source_age.num_milliseconds(),
                         "arrival_receive_age_ms": receive_age.num_milliseconds(),
-                        "available_size_at_limit": available_size,
-                        "available_notional_at_limit": available_notional,
+                        "available_size_at_limit": depth.executable_size,
+                        "available_notional_at_limit": depth.executable_notional,
                         "dynamic_fee_rate": fee_rate,
                         "walked_levels": walked,
                         "filled_size": filled_size,
+                        "filled_depth_participation_at_limit": requested_depth_participation_at_limit,
                         "filled_notional": filled_notional,
                         "average_fill_price": average_price,
                         "total_fee": total_fee
@@ -839,12 +900,17 @@ fn available_ask_depth(
     asks: &[OrderbookLevel],
     limit_price: Decimal,
     haircut: Decimal,
-) -> (Decimal, Decimal) {
+) -> Option<AskDepthAtLimit> {
     asks.iter()
         .filter(|level| level.price <= limit_price && level.size > Decimal::ZERO)
-        .fold((Decimal::ZERO, Decimal::ZERO), |(size, notional), level| {
-            let executable = level.size * haircut;
-            (size + executable, notional + executable * level.price)
+        .try_fold(AskDepthAtLimit::default(), |depth, level| {
+            let executable_size = level.size.checked_mul(haircut)?;
+            let executable_notional = executable_size.checked_mul(level.price)?;
+            Some(AskDepthAtLimit {
+                displayed_size: depth.displayed_size.checked_add(level.size)?,
+                executable_size: depth.executable_size.checked_add(executable_size)?,
+                executable_notional: depth.executable_notional.checked_add(executable_notional)?,
+            })
         })
 }
 
@@ -1026,6 +1092,14 @@ mod tests {
     }
 
     fn venue(registry: Arc<RwLock<BookRegistry>>, haircut: Decimal) -> PaperVenue {
+        venue_with_participation_cap(registry, haircut, Decimal::ONE)
+    }
+
+    fn venue_with_participation_cap(
+        registry: Arc<RwLock<BookRegistry>>,
+        haircut: Decimal,
+        max_depth_participation: Decimal,
+    ) -> PaperVenue {
         PaperVenue::new(
             registry,
             PaperVenueConfig {
@@ -1034,6 +1108,7 @@ mod tests {
                 max_book_age: chrono::Duration::hours(24),
                 starting_collateral_usd: dec!(100),
             },
+            max_depth_participation,
         )
         .unwrap()
     }
@@ -1149,6 +1224,190 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn arrival_participation_excludes_depth_above_limit_and_rejects_atomically() {
+        let venue = venue_with_participation_cap(
+            registry_with_book(
+                Utc::now(),
+                vec![
+                    OrderbookLevel {
+                        price: dec!(0.40),
+                        size: dec!(10),
+                    },
+                    OrderbookLevel {
+                        price: dec!(0.41),
+                        size: dec!(100),
+                    },
+                ],
+            ),
+            Decimal::ONE,
+            dec!(0.25),
+        );
+        let before = venue.status().await;
+
+        let order = venue
+            .submit_order(request(dec!(3), dec!(0.40)))
+            .await
+            .unwrap();
+        let after = venue.status().await;
+
+        assert_eq!(order.state, OrderState::Rejected);
+        assert_eq!(
+            order.request.metadata["reject_reason"],
+            serde_json::json!("arrival_depth_participation_exceeded")
+        );
+        assert_eq!(
+            decimal_from_json(
+                &order.request.metadata["paper_execution"]["displayed_size_at_limit"]
+            ),
+            Some(dec!(10))
+        );
+        assert_eq!(
+            decimal_from_json(
+                &order.request.metadata["paper_execution"]["available_size_at_limit"]
+            ),
+            Some(dec!(10))
+        );
+        assert_eq!(
+            decimal_from_json(
+                &order.request.metadata["paper_execution"]["max_participating_size_at_limit"]
+            ),
+            Some(dec!(2.5))
+        );
+        assert_eq!(
+            decimal_from_json(
+                &order.request.metadata["paper_execution"]
+                    ["requested_depth_participation_at_limit"]
+            ),
+            Some(dec!(0.3))
+        );
+        assert!(order.request.metadata["paper_execution"]
+            .get("filled_depth_participation_at_limit")
+            .is_none());
+        assert!(venue
+            .fills_for_order(&order.order_id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(after.fill_count, before.fill_count);
+        assert_eq!(
+            after.available_collateral_usd,
+            before.available_collateral_usd
+        );
+        assert_eq!(after.entry_debits_usd, before.entry_debits_usd);
+    }
+
+    #[tokio::test]
+    async fn arrival_participation_accepts_exact_cap_without_double_applying_haircut() {
+        let venue = venue_with_participation_cap(
+            registry_with_book(
+                Utc::now(),
+                vec![OrderbookLevel {
+                    price: dec!(0.40),
+                    size: dec!(20),
+                }],
+            ),
+            dec!(0.50),
+            dec!(0.25),
+        );
+
+        let order = venue
+            .submit_order(request(dec!(5), dec!(0.40)))
+            .await
+            .unwrap();
+
+        assert_eq!(order.state, OrderState::Filled);
+        assert_eq!(
+            decimal_from_json(
+                &order.request.metadata["paper_execution"]["displayed_size_at_limit"]
+            ),
+            Some(dec!(20))
+        );
+        assert_eq!(
+            decimal_from_json(
+                &order.request.metadata["paper_execution"]["available_size_at_limit"]
+            ),
+            Some(dec!(10))
+        );
+        assert_eq!(
+            decimal_from_json(
+                &order.request.metadata["paper_execution"]["max_participating_size_at_limit"]
+            ),
+            Some(dec!(5))
+        );
+        assert_eq!(
+            decimal_from_json(
+                &order.request.metadata["paper_execution"]
+                    ["requested_depth_participation_at_limit"]
+            ),
+            Some(dec!(0.25))
+        );
+        assert_eq!(
+            decimal_from_json(
+                &order.request.metadata["paper_execution"]["filled_depth_participation_at_limit"]
+            ),
+            Some(dec!(0.25))
+        );
+        assert_eq!(
+            venue
+                .fills_for_order(&order.order_id)
+                .await
+                .unwrap()
+                .iter()
+                .map(|fill| fill.size)
+                .sum::<Decimal>(),
+            dec!(5)
+        );
+    }
+
+    #[tokio::test]
+    async fn preview_uses_process_participation_cap_without_mutating_primary_state() {
+        let venue = venue_with_participation_cap(
+            registry_with_book(
+                Utc::now(),
+                vec![OrderbookLevel {
+                    price: dec!(0.40),
+                    size: dec!(10),
+                }],
+            ),
+            Decimal::ONE,
+            dec!(0.25),
+        );
+        let before = venue.status().await;
+
+        let result = venue
+            .preview_order(
+                &request(dec!(3), dec!(0.40)),
+                &PaperPreviewConfig {
+                    scenario_key: "participation_cap".to_string(),
+                    arrival_latency: Duration::ZERO,
+                    visible_depth_haircut: Decimal::ONE,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.state, OrderState::Rejected);
+        assert_eq!(
+            result.reject_reason.as_deref(),
+            Some("arrival_depth_participation_exceeded")
+        );
+        assert_eq!(venue.status().await, before);
+    }
+
+    #[test]
+    fn venue_validates_process_depth_participation_cap() {
+        let registry = registry_with_book(Utc::now(), Vec::new());
+        let config = PaperVenueConfig::default();
+        for cap in [Decimal::ZERO, dec!(-0.01), dec!(1.01)] {
+            let error = PaperVenue::new(registry.clone(), config.clone(), cap).unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("max_depth_participation must be in (0, 1]"));
+        }
+        assert!(PaperVenue::new(registry, config, Decimal::ONE).is_ok());
+    }
+
+    #[tokio::test]
     async fn retry_is_idempotent_and_fill_ids_are_deterministic() {
         let venue = venue(
             registry_with_book(
@@ -1196,6 +1455,7 @@ mod tests {
                 max_book_age: chrono::Duration::hours(24),
                 starting_collateral_usd: dec!(1),
             },
+            Decimal::ONE,
         )
         .unwrap();
         let order = venue
@@ -1254,6 +1514,7 @@ mod tests {
                 max_book_age: chrono::Duration::seconds(2),
                 starting_collateral_usd: dec!(100),
             },
+            Decimal::ONE,
         )
         .unwrap();
         let order = venue
@@ -1286,6 +1547,7 @@ mod tests {
                 max_book_age: chrono::Duration::seconds(2),
                 starting_collateral_usd: dec!(100),
             },
+            Decimal::ONE,
         )
         .unwrap();
         let before = venue.status().await;
@@ -1351,6 +1613,7 @@ mod tests {
                 max_book_age: chrono::Duration::seconds(2),
                 starting_collateral_usd: dec!(100),
             },
+            Decimal::ONE,
         )
         .unwrap();
 

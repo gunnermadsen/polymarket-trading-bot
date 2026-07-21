@@ -1312,7 +1312,11 @@ impl BtcProcessManager {
                 .ensure_shared_runtime(&runtime_config)
                 .await
                 .map_err(|error| anyhow::anyhow!("{error:?}"))?;
-            let paper_venue = BtcPaperVenue::new(books.clone(), paper_venue_config)?;
+            let paper_venue = BtcPaperVenue::new(
+                books.clone(),
+                paper_venue_config,
+                strategy.max_depth_participation,
+            )?;
             let experiment = Arc::new(BtcPaperExperimentRunner::new(
                 self.repository.clone(),
                 self.store.clone(),
@@ -1457,7 +1461,11 @@ impl BtcProcessManager {
                 .ensure_shared_runtime(&runtime_config)
                 .await
                 .map_err(|error| anyhow::anyhow!("{error:?}"))?;
-            let paper_venue = BtcPaperVenue::new(books.clone(), paper_venue_config)?;
+            let paper_venue = BtcPaperVenue::new(
+                books.clone(),
+                paper_venue_config,
+                strategy.max_depth_participation,
+            )?;
             let experiment = Arc::new(BtcPaperExperimentRunner::new(
                 self.repository.clone(),
                 self.store.clone(),
