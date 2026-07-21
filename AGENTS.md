@@ -1,3 +1,6 @@
+## Golden Rules
+- All Rust features and systems are implemented and optimized for latency, memory usage efficiency, CPU performance, zero downtime, and database resource usage, ensuring a performant and resiliant system.
+
 ## Code
 - rebuild image and rebuild rust package after each code change.
 - do not rebuild polymarket-bot or rust-related packages on grafana dashboard changes or database configuration changes.
