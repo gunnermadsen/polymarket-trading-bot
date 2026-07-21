@@ -52,6 +52,8 @@ const PAPER_CAPITAL_RECONCILE_INTERVAL: TokioDuration = TokioDuration::from_secs
 const SHADOW_PREDICTIVE_REGIME_MAX_REPLAY_CANDIDATES: u32 = 10_000;
 const SHADOW_PREDICTIVE_REGIME_REPLAY_FETCH_CANDIDATES: u32 =
     SHADOW_PREDICTIVE_REGIME_MAX_REPLAY_CANDIDATES + 1;
+const SHADOW_PREDICTIVE_REGIME_TRANSITION_EVENT_NAMESPACE: Uuid =
+    Uuid::from_u128(0x8f0d_73b4_4e62_5b31_9a77_21cf_09d8_6a42);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BtcPaperExperimentConfig {
@@ -118,6 +120,20 @@ fn unavailable_shadow_predictive_regime_evaluation(
     evaluation.refresh_pending = true;
     evaluation.telemetry_error = Some(telemetry_error);
     Ok(evaluation)
+}
+
+fn shadow_predictive_regime_transition_event_id(
+    process_id: Uuid,
+    breaker_config_hash: &str,
+    event_type: &str,
+    state_evidence_sha256: &str,
+) -> Uuid {
+    let identity =
+        format!("{process_id}:{breaker_config_hash}:{event_type}:{state_evidence_sha256}");
+    Uuid::new_v5(
+        &SHADOW_PREDICTIVE_REGIME_TRANSITION_EVENT_NAMESPACE,
+        identity.as_bytes(),
+    )
 }
 
 struct EntryAdmissionEvaluation {
@@ -624,7 +640,7 @@ impl BtcPaperExperimentRunner {
                     drop(admission);
                     transitions
                         .into_iter()
-                        .map(|(transition, candidate, transition_state)| {
+                        .filter_map(|(transition, candidate, transition_state)| {
                             let (event_type, message) = match transition {
                                 ShadowPredictiveRegimeTransition::DegradationConfirmed => (
                                     "btc_shadow_predictive_regime_degradation_confirmed",
@@ -635,16 +651,40 @@ impl BtcPaperExperimentRunner {
                                     "shadow predictive-regime recovery confirmed",
                                 ),
                             };
-                            (
+                            let state_evidence_sha256 = match transition_state
+                                .evidence_sha256(&config)
+                            {
+                                Ok(state_evidence_sha256) => state_evidence_sha256,
+                                Err(error) => {
+                                    warn!(
+                                        error = %error,
+                                        process_id = %process_id,
+                                        event_type,
+                                        "shadow predictive-regime transition identity failed open"
+                                    );
+                                    return None;
+                                }
+                            };
+                            let event_id = shadow_predictive_regime_transition_event_id(
+                                process_id,
+                                &breaker_config_hash,
+                                event_type,
+                                &state_evidence_sha256,
+                            );
+                            let transition_timestamp_utc = candidate.label_available_at;
+                            Some((
+                                Some((event_id, transition_timestamp_utc)),
                                 event_type,
                                 message,
                                 serde_json::json!({
+                                    "transition_event_id": event_id,
                                     "shadow_predictive_regime_config_hash": breaker_config_hash,
+                                    "transition_state_evidence_sha256": state_evidence_sha256,
                                     "candidate": candidate,
                                     "transition_state": transition_state,
                                     "refresh_evaluation": &evaluation,
                                 }),
-                            )
+                            ))
                         })
                         .collect::<Vec<_>>()
                 }
@@ -658,11 +698,13 @@ impl BtcPaperExperimentRunner {
                     );
                     if let Ok(mut admission) = runtime.lock() {
                         if let Some(runtime) = admission.as_mut() {
+                            runtime.state_hydrated = false;
                             runtime.refresh_in_progress = false;
                             runtime.telemetry_error = Some(error.clone());
                         }
                     }
                     vec![(
+                        None,
                         "btc_shadow_predictive_regime_telemetry_error",
                         "shadow predictive-regime telemetry failed without changing admission",
                         serde_json::json!({
@@ -674,17 +716,33 @@ impl BtcPaperExperimentRunner {
                 }
             };
 
-            for (event_type, message, metadata) in events {
-                if let Err(error) = store
-                    .record_trading_process_event(
-                        process_id,
-                        "info",
-                        event_type,
-                        Some(message),
-                        metadata,
-                    )
-                    .await
-                {
+            for (event_identity, event_type, message, metadata) in events {
+                let persisted = match event_identity {
+                    Some((event_id, timestamp_utc)) => store
+                        .record_trading_process_event_idempotent(
+                            event_id,
+                            timestamp_utc,
+                            process_id,
+                            "info",
+                            event_type,
+                            Some(message),
+                            metadata,
+                        )
+                        .await
+                        .map(|_| ()),
+                    None => {
+                        store
+                            .record_trading_process_event(
+                                process_id,
+                                "info",
+                                event_type,
+                                Some(message),
+                                metadata,
+                            )
+                            .await
+                    }
+                };
+                if let Err(error) = persisted {
                     warn!(
                         error = %error,
                         process_id = %process_id,
@@ -1185,7 +1243,7 @@ async fn load_shadow_predictive_regime_state(
     Vec<ShadowPredictiveRegimeTransitionEvidence>,
 )> {
     let breaker_config_hash = config.config_hash()?;
-    let mut state = match base_state {
+    let prior_state = match base_state {
         Some(state) => {
             state.validate(config)?;
             state
@@ -1213,26 +1271,88 @@ async fn load_shadow_predictive_regime_state(
             SHADOW_PREDICTIVE_REGIME_REPLAY_FETCH_CANDIDATES,
         )
         .await?;
+    reconcile_shadow_predictive_regime_state(process_id, config, Some(prior_state), &candidates)
+}
+
+fn reconcile_shadow_predictive_regime_state(
+    process_id: Uuid,
+    config: &ShadowPredictiveRegimeCircuitBreakerConfig,
+    prior_state: Option<ShadowPredictiveRegimeState>,
+    candidates: &[ShadowPredictiveRegimeCandidate],
+) -> Result<(
+    ShadowPredictiveRegimeState,
+    Vec<ShadowPredictiveRegimeTransitionEvidence>,
+)> {
     if candidates.len()
         > usize::try_from(SHADOW_PREDICTIVE_REGIME_MAX_REPLAY_CANDIDATES).unwrap_or(usize::MAX)
     {
-        if let Some(first) = candidates.first() {
-            if state.candidate_is_newer(config, first)? {
-                anyhow::bail!(
-                    "shadow predictive-regime replay reached its bounded history cap before the persisted state cursor"
-                );
-            }
+        anyhow::bail!(
+            "shadow predictive-regime canonical replay exceeded its bounded {}-candidate history; complete history is required to reconcile late causal evidence",
+            SHADOW_PREDICTIVE_REGIME_MAX_REPLAY_CANDIDATES
+        );
+    }
+
+    if let Some(state) = prior_state.as_ref() {
+        state.validate(config)?;
+        if state.process_id != process_id {
+            anyhow::bail!(
+                "shadow predictive-regime prior state process_id does not match the requested process"
+            );
         }
     }
-    let mut transitions = Vec::new();
+
+    let mut rebuilt_state = ShadowPredictiveRegimeState::new(process_id, config)?;
+    let mut replay_transitions = Vec::new();
     for candidate in candidates {
-        if state.candidate_is_newer(config, &candidate)? {
-            if let Some(transition) = state.apply_candidate(config, &candidate)? {
-                transitions.push((transition, candidate, state.clone()));
-            }
+        if let Some(transition) = rebuilt_state.apply_candidate(config, candidate)? {
+            replay_transitions.push((transition, candidate.clone(), rebuilt_state.clone()));
         }
     }
-    Ok((state, transitions))
+
+    let Some(prior_state) = prior_state else {
+        return Ok((rebuilt_state, replay_transitions));
+    };
+    let prior_count = usize::try_from(prior_state.resolved_markets_observed)
+        .context("shadow predictive-regime prior observation count does not fit in memory")?;
+    let retained_count = prior_state.rolling_candidates.len();
+    let prior_is_canonical_prefix = retained_count <= prior_count
+        && prior_count <= candidates.len()
+        && prior_state.rolling_candidates.as_slice()
+            == &candidates[prior_count - retained_count..prior_count];
+
+    if prior_is_canonical_prefix {
+        let mut resumed_state = prior_state.clone();
+        let mut incremental_transitions = Vec::new();
+        for candidate in &candidates[prior_count..] {
+            if let Some(transition) = resumed_state.apply_candidate(config, candidate)? {
+                incremental_transitions.push((
+                    transition,
+                    candidate.clone(),
+                    resumed_state.clone(),
+                ));
+            }
+        }
+        if resumed_state == rebuilt_state {
+            return Ok((rebuilt_state, incremental_transitions));
+        }
+    }
+
+    if prior_state.degraded == rebuilt_state.degraded {
+        return Ok((rebuilt_state, Vec::new()));
+    }
+    let expected_transition = if rebuilt_state.degraded {
+        ShadowPredictiveRegimeTransition::DegradationConfirmed
+    } else {
+        ShadowPredictiveRegimeTransition::RecoveryConfirmed
+    };
+    let corrective_transition = replay_transitions
+        .into_iter()
+        .rev()
+        .find(|(transition, _, _)| *transition == expected_transition)
+        .context(
+            "shadow predictive-regime canonical replay changed terminal state without a matching transition",
+        )?;
+    Ok((rebuilt_state, vec![corrective_transition]))
 }
 
 fn combine_entry_admission_evaluations(
@@ -2364,6 +2484,174 @@ mod tests {
             combined.evidence["shadow_predictive_regime_circuit_breaker"]["disposition"],
             "allow"
         );
+    }
+
+    #[test]
+    fn shadow_canonical_replay_incorporates_late_candidate_before_saved_cursor() {
+        let config = ShadowPredictiveRegimeCircuitBreakerConfig {
+            schema_version: SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION.to_string(),
+            mode: SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE.to_string(),
+            rolling_resolved_market_window: 20,
+            minimum_resolved_markets: 20,
+            degradation_brier_score_threshold: dec!(0.23),
+            degradation_overconfidence_gap_threshold: dec!(0.12),
+            degradation_confirmation_markets: 2,
+            recovery_brier_score_threshold: dec!(0.21),
+            recovery_overconfidence_gap_threshold: dec!(0.05),
+            recovery_confirmation_markets: 2,
+        };
+        let process_id = Uuid::from_u128(307);
+        let start = Utc.with_ymd_and_hms(2026, 7, 20, 0, 0, 0).unwrap();
+        let candidate = |index: i64| {
+            let label_available_at = start + chrono::Duration::minutes(index * 5);
+            ShadowPredictiveRegimeCandidate {
+                market_id: format!("replay-market-{index}"),
+                decision_id: Uuid::from_u128(u128::try_from(index + 1).unwrap()),
+                decision_outcome: BtcOutcome::Up,
+                resolved_outcome: BtcOutcome::Down,
+                selected_point_probability: dec!(0.50),
+                decision_at: label_available_at - chrono::Duration::minutes(4),
+                label_available_at,
+            }
+        };
+        let original = (0..20).map(candidate).collect::<Vec<_>>();
+        let prior_state =
+            ShadowPredictiveRegimeState::from_candidates(process_id, &config, &original).unwrap();
+        assert!(!prior_state.degraded);
+        assert_eq!(prior_state.consecutive_degradation_markets, 1);
+
+        let late_label_available_at = start + chrono::Duration::minutes(92);
+        let late_candidate = ShadowPredictiveRegimeCandidate {
+            market_id: "replay-market-late".to_string(),
+            decision_id: Uuid::from_u128(10_000),
+            decision_outcome: BtcOutcome::Up,
+            resolved_outcome: BtcOutcome::Down,
+            selected_point_probability: dec!(0.50),
+            decision_at: late_label_available_at - chrono::Duration::minutes(4),
+            label_available_at: late_label_available_at,
+        };
+        let mut corrected_history = original[..19].to_vec();
+        corrected_history.push(late_candidate.clone());
+        corrected_history.push(original[19].clone());
+
+        let expected =
+            ShadowPredictiveRegimeState::from_candidates(process_id, &config, &corrected_history)
+                .unwrap();
+        let (reconciled, transitions) = reconcile_shadow_predictive_regime_state(
+            process_id,
+            &config,
+            Some(prior_state),
+            &corrected_history,
+        )
+        .unwrap();
+
+        assert_eq!(reconciled, expected);
+        assert_eq!(reconciled.resolved_markets_observed, 21);
+        assert!(reconciled.degraded);
+        assert!(reconciled
+            .rolling_candidates
+            .iter()
+            .any(|candidate| candidate.decision_id == late_candidate.decision_id));
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(
+            transitions[0].0,
+            ShadowPredictiveRegimeTransition::DegradationConfirmed
+        );
+
+        let transition_event_type = "btc_shadow_predictive_regime_degradation_confirmed";
+        let transition_state_hash = transitions[0].2.evidence_sha256(&config).unwrap();
+        let transition_event_id = shadow_predictive_regime_transition_event_id(
+            process_id,
+            &config.config_hash().unwrap(),
+            transition_event_type,
+            &transition_state_hash,
+        );
+        let empty_restart_state = ShadowPredictiveRegimeState::new(process_id, &config).unwrap();
+        let (_, restart_transitions) = reconcile_shadow_predictive_regime_state(
+            process_id,
+            &config,
+            Some(empty_restart_state),
+            &corrected_history,
+        )
+        .unwrap();
+        assert_eq!(restart_transitions.len(), 1);
+        let restart_state_hash = restart_transitions[0].2.evidence_sha256(&config).unwrap();
+        assert_eq!(
+            shadow_predictive_regime_transition_event_id(
+                process_id,
+                &config.config_hash().unwrap(),
+                transition_event_type,
+                &restart_state_hash,
+            ),
+            transition_event_id
+        );
+
+        let (repeated, repeated_transitions) = reconcile_shadow_predictive_regime_state(
+            process_id,
+            &config,
+            Some(reconciled.clone()),
+            &corrected_history,
+        )
+        .unwrap();
+        assert_eq!(repeated, reconciled);
+        assert!(repeated_transitions.is_empty());
+    }
+
+    #[test]
+    fn shadow_canonical_replay_fails_when_complete_history_exceeds_bound() {
+        let config = ShadowPredictiveRegimeCircuitBreakerConfig {
+            schema_version: SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION.to_string(),
+            mode: SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE.to_string(),
+            rolling_resolved_market_window: 20,
+            minimum_resolved_markets: 20,
+            degradation_brier_score_threshold: dec!(0.23),
+            degradation_overconfidence_gap_threshold: dec!(0.12),
+            degradation_confirmation_markets: 2,
+            recovery_brier_score_threshold: dec!(0.21),
+            recovery_overconfidence_gap_threshold: dec!(0.05),
+            recovery_confirmation_markets: 2,
+        };
+        let process_id = Uuid::from_u128(308);
+        let start = Utc.with_ymd_and_hms(2026, 7, 20, 0, 0, 0).unwrap();
+        let mut candidates = (0..SHADOW_PREDICTIVE_REGIME_MAX_REPLAY_CANDIDATES)
+            .map(|index| {
+                let index = i64::from(index);
+                let label_available_at = start + chrono::Duration::minutes(index * 5);
+                ShadowPredictiveRegimeCandidate {
+                    market_id: format!("bounded-replay-market-{index}"),
+                    decision_id: Uuid::from_u128(u128::try_from(index + 1).unwrap()),
+                    decision_outcome: BtcOutcome::Up,
+                    resolved_outcome: BtcOutcome::Down,
+                    selected_point_probability: dec!(0.50),
+                    decision_at: label_available_at - chrono::Duration::minutes(4),
+                    label_available_at,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let (at_bound, _) =
+            reconcile_shadow_predictive_regime_state(process_id, &config, None, &candidates)
+                .unwrap();
+        assert_eq!(
+            at_bound.resolved_markets_observed,
+            u64::from(SHADOW_PREDICTIVE_REGIME_MAX_REPLAY_CANDIDATES)
+        );
+
+        let index = i64::from(SHADOW_PREDICTIVE_REGIME_MAX_REPLAY_CANDIDATES);
+        let label_available_at = start + chrono::Duration::minutes(index * 5);
+        candidates.push(ShadowPredictiveRegimeCandidate {
+            market_id: format!("bounded-replay-market-{index}"),
+            decision_id: Uuid::from_u128(u128::try_from(index + 1).unwrap()),
+            decision_outcome: BtcOutcome::Up,
+            resolved_outcome: BtcOutcome::Down,
+            selected_point_probability: dec!(0.50),
+            decision_at: label_available_at - chrono::Duration::minutes(4),
+            label_available_at,
+        });
+        let error =
+            reconcile_shadow_predictive_regime_state(process_id, &config, None, &candidates)
+                .unwrap_err();
+        assert!(error.to_string().contains("complete history is required"));
     }
 
     #[test]

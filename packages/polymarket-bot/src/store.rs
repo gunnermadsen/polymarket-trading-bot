@@ -30,6 +30,14 @@ WHERE process_id = $1
   AND status IN ('starting', 'running', 'stopping')
 "#;
 
+const RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL: &str = r#"
+INSERT INTO polymarket.trading_process_events (
+  event_id, process_id, timestamp_utc, level, event_type, message, metadata, created_at
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+ON CONFLICT (event_id, timestamp_utc) DO NOTHING
+"#;
+
 #[derive(Debug, FromRow)]
 struct OrderDbRow {
     order_id: String,
@@ -352,6 +360,30 @@ impl Store {
         .await
         .context("failed to record trading process event")?;
         Ok(())
+    }
+
+    pub async fn record_trading_process_event_idempotent(
+        &self,
+        event_id: Uuid,
+        timestamp_utc: DateTime<Utc>,
+        process_id: Uuid,
+        level: &str,
+        event_type: &str,
+        message: Option<&str>,
+        metadata: serde_json::Value,
+    ) -> Result<bool> {
+        let result = sqlx::query(RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL)
+            .bind(event_id)
+            .bind(process_id)
+            .bind(timestamp_utc)
+            .bind(level)
+            .bind(event_type)
+            .bind(message)
+            .bind(metadata)
+            .execute(&self.pool)
+            .await
+            .context("failed to record idempotent trading process event")?;
+        Ok(result.rows_affected() == 1)
     }
 
     pub async fn upsert_trading_process_by_key(
@@ -1329,7 +1361,9 @@ fn order_from_db_row(row: OrderDbRow) -> Result<OrderRecord> {
 
 #[cfg(test)]
 mod tests {
-    use crate::store::HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL;
+    use crate::store::{
+        HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL, RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL,
+    };
 
     #[test]
     fn manager_heartbeat_cannot_revive_inactive_processes() {
@@ -1338,5 +1372,13 @@ mod tests {
             .contains("status IN ('starting', 'running', 'stopping')"));
         assert!(!HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL.contains("SET status"));
         assert!(!HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL.contains("SET enabled"));
+    }
+
+    #[test]
+    fn idempotent_process_events_use_the_table_composite_primary_key() {
+        assert!(RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL
+            .contains("ON CONFLICT (event_id, timestamp_utc) DO NOTHING"));
+        assert!(RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL
+            .contains("VALUES ($1, $2, $3, $4, $5, $6, $7, now())"));
     }
 }
