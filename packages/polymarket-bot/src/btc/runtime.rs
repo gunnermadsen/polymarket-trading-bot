@@ -16,11 +16,12 @@ use chrono::{DateTime, Duration, Utc};
 use futures_util::{stream, FutureExt, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::{
+    net::TcpStream,
     sync::{mpsc, watch, RwLock},
     task::JoinHandle,
-    time::{interval, interval_at, sleep, timeout, Instant, MissedTickBehavior},
+    time::{interval, interval_at, sleep, sleep_until, timeout, Instant, MissedTickBehavior},
 };
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
 
 use super::{
@@ -37,8 +38,8 @@ use super::{
         PersistedOfficialResolution,
     },
     types::{
-        BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, MarketFeedEventType, Readiness,
-        RealtimeState, ReferencePriceSource, ReferencePriceTick,
+        BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, MarketFeedEventType,
+        OrderbookCheckpoint, Readiness, RealtimeState, ReferencePriceSource, ReferencePriceTick,
     },
 };
 
@@ -46,6 +47,11 @@ const BOUNDARY_LABEL_VERSION: &str = "chainlink_first_tick_at_or_after_boundary_
 const CRITICAL_WRITE_ATTEMPTS: usize = 3;
 const CRITICAL_WRITE_INITIAL_BACKOFF: StdDuration = StdDuration::from_millis(25);
 const RTDS_HEARTBEAT_MESSAGE: &str = "ping";
+const CLOB_CONNECT_TIMEOUT: StdDuration = StdDuration::from_secs(5);
+const CLOB_SEND_TIMEOUT: StdDuration = StdDuration::from_secs(5);
+const CLOB_BOOTSTRAP_TIMEOUT: StdDuration = StdDuration::from_secs(5);
+const CLOB_PONG_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+const CLOB_READ_IDLE_TIMEOUT: StdDuration = StdDuration::from_secs(40);
 const REFERENCE_CONNECT_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const REFERENCE_SEND_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 // Chainlink updates can have legitimate multi-second gaps; this bound avoids
@@ -56,6 +62,8 @@ const REFERENCE_PONG_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 const REFERENCE_READ_IDLE_TIMEOUT: StdDuration = StdDuration::from_secs(40);
 const REFERENCE_STABLE_RESET_AFTER: StdDuration = StdDuration::from_secs(30);
 const REFERENCE_RETRY_JITTER_PERCENT: u64 = 20;
+
+type ClobSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BtcRuntimeConfig {
@@ -358,6 +366,347 @@ impl ClobSubscriptionDelta {
 enum ClobSubscriptionOperation {
     Subscribe,
     Unsubscribe,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ClobMarketIdentity {
+    market_id: String,
+    condition_id: String,
+    up_token_id: String,
+    down_token_id: String,
+}
+
+impl From<&BtcIntervalMarket> for ClobMarketIdentity {
+    fn from(market: &BtcIntervalMarket) -> Self {
+        Self {
+            market_id: market.market_id.clone(),
+            condition_id: market.condition_id.clone(),
+            up_token_id: market.up_token_id.clone(),
+            down_token_id: market.down_token_id.clone(),
+        }
+    }
+}
+
+impl ClobMarketIdentity {
+    fn matches(&self, market: &BtcIntervalMarket) -> bool {
+        self.market_id == market.market_id
+            && self.condition_id == market.condition_id
+            && self.up_token_id == market.up_token_id
+            && self.down_token_id == market.down_token_id
+    }
+}
+
+#[derive(Debug)]
+struct ClobFeedWatchdog {
+    bootstrap_market: Option<ClobMarketIdentity>,
+    bootstrap_deadline: Option<Instant>,
+    read_idle_deadline: Instant,
+    pong_deadline: Option<Instant>,
+    awaiting_text_pong: bool,
+}
+
+impl ClobFeedWatchdog {
+    fn new(
+        now: Instant,
+        registry: &BookRegistry,
+        markets: &[BtcIntervalMarket],
+        checked_at: DateTime<Utc>,
+        max_book_age: Duration,
+    ) -> Self {
+        let mut watchdog = Self {
+            bootstrap_market: None,
+            bootstrap_deadline: None,
+            read_idle_deadline: now + CLOB_READ_IDLE_TIMEOUT,
+            pong_deadline: None,
+            awaiting_text_pong: false,
+        };
+        watchdog.refresh_bootstrap(now, registry, markets, checked_at, max_book_age);
+        watchdog
+    }
+
+    fn on_frame(&mut self, now: Instant) {
+        self.read_idle_deadline = now + CLOB_READ_IDLE_TIMEOUT;
+    }
+
+    fn arm_text_pong(&mut self, now: Instant) {
+        self.awaiting_text_pong = true;
+        self.pong_deadline = Some(now + CLOB_PONG_TIMEOUT);
+    }
+
+    fn acknowledge_text_pong(&mut self, text: &str) -> bool {
+        if self.awaiting_text_pong && text == "PONG" {
+            self.awaiting_text_pong = false;
+            self.pong_deadline = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn refresh_bootstrap(
+        &mut self,
+        now: Instant,
+        registry: &BookRegistry,
+        markets: &[BtcIntervalMarket],
+        checked_at: DateTime<Utc>,
+        max_book_age: Duration,
+    ) {
+        let Some(current_market) = unique_current_clob_market(markets, checked_at) else {
+            self.bootstrap_market = None;
+            self.bootstrap_deadline = None;
+            return;
+        };
+        let identity_changed = self
+            .bootstrap_market
+            .as_ref()
+            .is_none_or(|identity| !identity.matches(current_market));
+        if identity_changed {
+            self.bootstrap_market = Some(ClobMarketIdentity::from(current_market));
+        }
+        if registry.market_books_ready(current_market, checked_at, max_book_age) {
+            self.bootstrap_deadline = None;
+        } else if identity_changed {
+            self.bootstrap_deadline = Some(now + CLOB_BOOTSTRAP_TIMEOUT);
+        }
+    }
+}
+
+#[derive(Debug)]
+enum ClobSendFailure {
+    Shutdown,
+    Timeout,
+    Transport(String),
+}
+
+async fn send_clob_text(
+    socket: &mut ClobSocket,
+    payload: String,
+    shutdown: &mut watch::Receiver<bool>,
+) -> std::result::Result<(), ClobSendFailure> {
+    if *shutdown.borrow() {
+        return Err(ClobSendFailure::Shutdown);
+    }
+    tokio::select! {
+        biased;
+        _ = shutdown.changed() => Err(ClobSendFailure::Shutdown),
+        result = timeout(CLOB_SEND_TIMEOUT, socket.send(Message::Text(payload.into()))) => {
+            match result {
+                Err(_) => Err(ClobSendFailure::Timeout),
+                Ok(Err(error)) => Err(ClobSendFailure::Transport(error.to_string())),
+                Ok(Ok(())) => Ok(()),
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ClobEpoch {
+    connection_id: Uuid,
+    connection_epoch: i32,
+    socket: ClobSocket,
+    registry: BookRegistry,
+    markets: Vec<BtcIntervalMarket>,
+    session: FeedSession,
+    subscription_stats: ClobSubscriptionStats,
+    connected_instant: Instant,
+    watchdog: ClobFeedWatchdog,
+    healthy_epoch: bool,
+    books_usable: bool,
+    pending_resolutions: HashMap<String, BufferedClobResolution>,
+}
+
+#[derive(Debug)]
+struct BufferedClobResolution {
+    message: ClobMessage,
+    received_at: DateTime<Utc>,
+}
+
+impl ClobEpoch {
+    fn refresh_private_health(
+        &mut self,
+        checked_at: DateTime<Utc>,
+        checked_instant: Instant,
+        max_book_age: Duration,
+    ) {
+        let was_usable = self.books_usable;
+        self.watchdog.refresh_bootstrap(
+            checked_instant,
+            &self.registry,
+            &self.markets,
+            checked_at,
+            max_book_age,
+        );
+        let books_usable =
+            clob_epoch_ready(&self.registry, &self.markets, checked_at, max_book_age);
+        if was_usable
+            && !books_usable
+            && self.watchdog.bootstrap_market.is_some()
+            && self.watchdog.bootstrap_deadline.is_none()
+        {
+            self.watchdog.bootstrap_deadline = Some(checked_instant + CLOB_BOOTSTRAP_TIMEOUT);
+        }
+        self.books_usable = books_usable;
+        self.healthy_epoch |= self.books_usable;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClobConnectFailureKind {
+    Connect,
+    Subscription,
+    Identity,
+    Shutdown,
+}
+
+#[derive(Debug)]
+enum ClobConnectOutcome {
+    Connected {
+        epoch: ClobEpoch,
+        connect_latency: StdDuration,
+    },
+    Failed {
+        session: FeedSession,
+        reason: String,
+        kind: ClobConnectFailureKind,
+    },
+}
+
+async fn connect_clob_epoch(
+    config: BtcRuntimeConfig,
+    desired_markets: Vec<BtcIntervalMarket>,
+    connection_epoch: i32,
+    mut shutdown: watch::Receiver<bool>,
+) -> ClobConnectOutcome {
+    let connection_id = Uuid::new_v4();
+    let attempt_started_at = Instant::now();
+    let mut session = new_session(
+        connection_id,
+        "polymarket_clob_market",
+        &config.clob_ws_url,
+        connection_epoch,
+        Utc::now(),
+    );
+    let mut registry = BookRegistry::new(connection_id);
+    if let Err(error) = register_clob_markets(&mut registry, &desired_markets) {
+        session.disconnected_at = Some(Utc::now());
+        session.disconnect_reason = Some(format!("invalid_subscription_identity:{error}"));
+        return ClobConnectOutcome::Failed {
+            session,
+            reason: format!("invalid_subscription_identity:{error}"),
+            kind: ClobConnectFailureKind::Identity,
+        };
+    }
+    if *shutdown.borrow() {
+        session.disconnected_at = Some(Utc::now());
+        session.disconnect_reason = Some("shutdown".to_string());
+        return ClobConnectOutcome::Failed {
+            session,
+            reason: "shutdown".to_string(),
+            kind: ClobConnectFailureKind::Shutdown,
+        };
+    }
+    let connect_result = tokio::select! {
+        biased;
+        _ = shutdown.changed() => None,
+        result = timeout(CLOB_CONNECT_TIMEOUT, connect_async(&config.clob_ws_url)) => Some(result),
+    };
+    let (mut socket, _) = match connect_result {
+        None => {
+            session.disconnected_at = Some(Utc::now());
+            session.disconnect_reason = Some("shutdown".to_string());
+            return ClobConnectOutcome::Failed {
+                session,
+                reason: "shutdown".to_string(),
+                kind: ClobConnectFailureKind::Shutdown,
+            };
+        }
+        Some(Err(_)) => {
+            session.disconnected_at = Some(Utc::now());
+            session.disconnect_reason = Some("connect_timeout".to_string());
+            return ClobConnectOutcome::Failed {
+                session,
+                reason: "connect_timeout".to_string(),
+                kind: ClobConnectFailureKind::Connect,
+            };
+        }
+        Some(Ok(Err(error))) => {
+            let reason = format!("connect_failed:{error}");
+            session.disconnected_at = Some(Utc::now());
+            session.disconnect_reason = Some(reason.clone());
+            return ClobConnectOutcome::Failed {
+                session,
+                reason,
+                kind: ClobConnectFailureKind::Connect,
+            };
+        }
+        Some(Ok(Ok(value))) => value,
+    };
+    let connected_at = Utc::now();
+    let connected_instant = Instant::now();
+    session.connected_at = Some(connected_at);
+    match send_clob_text(
+        &mut socket,
+        clob_subscription(&desired_markets),
+        &mut shutdown,
+    )
+    .await
+    {
+        Ok(()) => {}
+        Err(ClobSendFailure::Shutdown) => {
+            session.disconnected_at = Some(Utc::now());
+            session.disconnect_reason = Some("shutdown".to_string());
+            return ClobConnectOutcome::Failed {
+                session,
+                reason: "shutdown".to_string(),
+                kind: ClobConnectFailureKind::Shutdown,
+            };
+        }
+        Err(ClobSendFailure::Timeout) => {
+            session.disconnected_at = Some(Utc::now());
+            session.disconnect_reason = Some("subscription_send_timeout".to_string());
+            return ClobConnectOutcome::Failed {
+                session,
+                reason: "subscription_send_timeout".to_string(),
+                kind: ClobConnectFailureKind::Subscription,
+            };
+        }
+        Err(ClobSendFailure::Transport(error)) => {
+            let reason = format!("subscription_send_failed:{error}");
+            session.disconnected_at = Some(Utc::now());
+            session.disconnect_reason = Some(reason.clone());
+            return ClobConnectOutcome::Failed {
+                session,
+                reason,
+                kind: ClobConnectFailureKind::Subscription,
+            };
+        }
+    }
+    let watchdog_started = Instant::now();
+    let watchdog = ClobFeedWatchdog::new(
+        watchdog_started,
+        &registry,
+        &desired_markets,
+        Utc::now(),
+        chrono_duration(config.max_book_age),
+    );
+    let pending_resolution_capacity = desired_markets.len();
+    ClobConnectOutcome::Connected {
+        epoch: ClobEpoch {
+            connection_id,
+            connection_epoch,
+            socket,
+            registry,
+            markets: desired_markets,
+            session,
+            subscription_stats: ClobSubscriptionStats::default(),
+            connected_instant,
+            watchdog,
+            healthy_epoch: false,
+            books_usable: false,
+            pending_resolutions: HashMap::with_capacity(pending_resolution_capacity),
+        },
+        connect_latency: attempt_started_at.elapsed(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1406,6 +1755,694 @@ async fn discover_markets(
     Ok(markets)
 }
 
+#[derive(Debug)]
+enum ClobEpochUpdateError {
+    Shutdown,
+    Recoverable(String),
+    Critical(anyhow::Error),
+}
+
+async fn update_clob_epoch_subscriptions(
+    epoch: &mut ClobEpoch,
+    desired_markets: &[BtcIntervalMarket],
+    repository: Option<&BtcRepository>,
+    shutdown: &mut watch::Receiver<bool>,
+    max_book_age: Duration,
+) -> std::result::Result<ClobSubscriptionDelta, ClobEpochUpdateError> {
+    epoch
+        .registry
+        .validate_market_set(desired_markets)
+        .map_err(|error| {
+            ClobEpochUpdateError::Recoverable(format!("invalid_subscription_transition:{error}"))
+        })?;
+    let delta = clob_subscription_delta(&epoch.markets, desired_markets);
+    register_clob_markets(&mut epoch.registry, &delta.added_markets).map_err(|error| {
+        ClobEpochUpdateError::Recoverable(format!("subscription_registration_failed:{error}"))
+    })?;
+    if !delta.added_assets.is_empty() {
+        let payload =
+            clob_subscription_operation(&delta.added_assets, ClobSubscriptionOperation::Subscribe);
+        match send_clob_text(&mut epoch.socket, payload, shutdown).await {
+            Ok(()) => {}
+            Err(ClobSendFailure::Shutdown) => return Err(ClobEpochUpdateError::Shutdown),
+            Err(ClobSendFailure::Timeout) => {
+                return Err(ClobEpochUpdateError::Recoverable(
+                    "dynamic_subscribe_timeout".to_string(),
+                ));
+            }
+            Err(ClobSendFailure::Transport(error)) => {
+                return Err(ClobEpochUpdateError::Recoverable(format!(
+                    "dynamic_subscribe_failed:{error}"
+                )));
+            }
+        }
+    }
+    if let Some(repository) = repository {
+        if !delta.added_markets.is_empty() {
+            acknowledge_clob_subscriptions(
+                repository,
+                &delta.added_markets,
+                epoch.connection_id,
+                Utc::now(),
+            )
+            .await
+            .map_err(ClobEpochUpdateError::Critical)?;
+        }
+    }
+    if !delta.removed_assets.is_empty() {
+        let payload = clob_subscription_operation(
+            &delta.removed_assets,
+            ClobSubscriptionOperation::Unsubscribe,
+        );
+        match send_clob_text(&mut epoch.socket, payload, shutdown).await {
+            Ok(()) => {}
+            Err(ClobSendFailure::Shutdown) => return Err(ClobEpochUpdateError::Shutdown),
+            Err(ClobSendFailure::Timeout) => {
+                return Err(ClobEpochUpdateError::Recoverable(
+                    "dynamic_unsubscribe_timeout".to_string(),
+                ));
+            }
+            Err(ClobSendFailure::Transport(error)) => {
+                return Err(ClobEpochUpdateError::Recoverable(format!(
+                    "dynamic_unsubscribe_failed:{error}"
+                )));
+            }
+        }
+    }
+    epoch
+        .registry
+        .retain_markets(desired_markets)
+        .map_err(|error| {
+            ClobEpochUpdateError::Recoverable(format!("subscription_retention_failed:{error}"))
+        })?;
+    epoch.pending_resolutions.retain(|market_id, _| {
+        desired_markets
+            .iter()
+            .any(|market| market.market_id == *market_id)
+    });
+    epoch.markets = desired_markets.to_vec();
+    let updated_at = Utc::now();
+    if !delta.is_empty() {
+        epoch.subscription_stats.updates = epoch.subscription_stats.updates.saturating_add(1);
+        epoch.subscription_stats.active_assets = epoch.registry.len();
+        epoch.subscription_stats.last_updated_at = Some(updated_at);
+    }
+    epoch.refresh_private_health(updated_at, Instant::now(), max_book_age);
+    Ok(delta)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClobFrameAction {
+    Continue,
+    Disconnect,
+}
+
+async fn apply_active_clob_frame(
+    epoch: &mut ClobEpoch,
+    message: Message,
+    repository: &BtcRepository,
+    writer: &mpsc::Sender<PersistItem>,
+    state: &Arc<RwLock<RealtimeState>>,
+    shared_books: &Arc<RwLock<BookRegistry>>,
+    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
+) -> Result<ClobFrameAction> {
+    epoch.watchdog.on_frame(Instant::now());
+    let received_at = Utc::now();
+    let parsed = match message {
+        Message::Text(text) => {
+            let pong_like = text.trim().eq_ignore_ascii_case("PONG");
+            if epoch.watchdog.acknowledge_text_pong(text.as_str())
+                || pong_like
+                || text.trim().is_empty()
+            {
+                return Ok(ClobFrameAction::Continue);
+            }
+            serde_json::from_str::<serde_json::Value>(&text)
+                .context("failed to decode CLOB websocket JSON")
+                .and_then(|value| parse_clob_messages(&value))
+        }
+        Message::Binary(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
+            .context("failed to decode binary CLOB websocket JSON")
+            .and_then(|value| parse_clob_messages(&value)),
+        Message::Close(frame) => {
+            epoch.session.disconnect_reason = Some(format!("remote_close:{frame:?}"));
+            return Ok(ClobFrameAction::Disconnect);
+        }
+        _ => return Ok(ClobFrameAction::Continue),
+    };
+    epoch.session.messages_received = epoch.session.messages_received.saturating_add(1);
+    {
+        let mut runtime_metrics = metrics.write().await;
+        runtime_metrics.clob_messages_received =
+            runtime_metrics.clob_messages_received.saturating_add(1);
+    }
+    let messages = match parsed {
+        Ok(messages) => messages,
+        Err(error) => {
+            epoch.registry.quarantine(FeedIntegrityStatus::DecodeError);
+            epoch.session.decode_errors = epoch.session.decode_errors.saturating_add(1);
+            {
+                let mut published_books = shared_books.write().await;
+                let mut shared = state.write().await;
+                *published_books = epoch.registry.clone();
+                shared.update_books(&epoch.registry);
+                shared.last_updated_at = Some(received_at);
+            }
+            {
+                let mut runtime_metrics = metrics.write().await;
+                runtime_metrics.decode_errors = runtime_metrics.decode_errors.saturating_add(1);
+            }
+            record_error(metrics, error).await;
+            return Ok(ClobFrameAction::Continue);
+        }
+    };
+    let mut events = Vec::new();
+    let mut resolutions = Vec::new();
+    for message in messages {
+        let resolution = persist_official_resolution(repository, &message, received_at, metrics)
+            .await
+            .context("critical CLOB official-resolution persistence failed")?;
+        if let Some(resolution) = resolution {
+            resolutions.push(resolution);
+        }
+        events.extend(epoch.registry.apply(message, received_at));
+    }
+    let applied_count = events.iter().filter(|event| event.applied).count();
+    let integrity_gap_count = events.len().saturating_sub(applied_count);
+    epoch.session.integrity_gaps = epoch
+        .session
+        .integrity_gaps
+        .saturating_add(i64::try_from(integrity_gap_count).unwrap_or(i64::MAX));
+    {
+        let mut runtime_metrics = metrics.write().await;
+        runtime_metrics.feed_events_applied = runtime_metrics
+            .feed_events_applied
+            .saturating_add(u64::try_from(applied_count).unwrap_or(u64::MAX));
+        runtime_metrics.integrity_gaps = runtime_metrics
+            .integrity_gaps
+            .saturating_add(u64::try_from(integrity_gap_count).unwrap_or(u64::MAX));
+    }
+    let frame_changed = !events.is_empty() || !resolutions.is_empty();
+    for event in events {
+        if !should_persist_feed_event(&event) {
+            continue;
+        }
+        if enqueue(writer, PersistItem::FeedEvent(event), metrics).await {
+            epoch.session.messages_persisted = epoch.session.messages_persisted.saturating_add(1);
+        } else {
+            epoch.session.dropped_messages = epoch.session.dropped_messages.saturating_add(1);
+            bail!("CLOB feed event persistence queue closed");
+        }
+    }
+    if frame_changed {
+        let mut published_books = shared_books.write().await;
+        let mut shared = state.write().await;
+        *published_books = epoch.registry.clone();
+        shared.update_books(&epoch.registry);
+        shared.last_updated_at = Some(received_at);
+        for resolution in resolutions {
+            shared.apply_market_resolution(&resolution.market_id, &resolution.winning_token_id);
+        }
+    }
+    Ok(ClobFrameAction::Continue)
+}
+
+fn apply_private_clob_frame(epoch: &mut ClobEpoch, message: Message) -> ClobFrameAction {
+    epoch.watchdog.on_frame(Instant::now());
+    let received_at = Utc::now();
+    let parsed = match message {
+        Message::Text(text) => {
+            let pong_like = text.trim().eq_ignore_ascii_case("PONG");
+            if epoch.watchdog.acknowledge_text_pong(text.as_str())
+                || pong_like
+                || text.trim().is_empty()
+            {
+                return ClobFrameAction::Continue;
+            }
+            serde_json::from_str::<serde_json::Value>(&text)
+                .context("failed to decode successor CLOB websocket JSON")
+                .and_then(|value| parse_clob_messages(&value))
+        }
+        Message::Binary(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
+            .context("failed to decode successor binary CLOB websocket JSON")
+            .and_then(|value| parse_clob_messages(&value)),
+        Message::Close(frame) => {
+            epoch.session.disconnect_reason = Some(format!("remote_close:{frame:?}"));
+            return ClobFrameAction::Disconnect;
+        }
+        _ => return ClobFrameAction::Continue,
+    };
+    epoch.session.messages_received = epoch.session.messages_received.saturating_add(1);
+    match parsed {
+        Ok(messages) => {
+            let mut integrity_gap = false;
+            for message in messages {
+                let resolution_market_id = if let ClobMessage::MarketResolved {
+                    market_id,
+                    winning_token_id,
+                    ..
+                } = &message
+                {
+                    epoch
+                        .markets
+                        .iter()
+                        .find(|market| {
+                            (market.market_id == *market_id || market.condition_id == *market_id)
+                                && (market.up_token_id == *winning_token_id
+                                    || market.down_token_id == *winning_token_id)
+                        })
+                        .map(|market| market.market_id.clone())
+                } else {
+                    None
+                };
+                if let Some(market_id) = resolution_market_id {
+                    match epoch.pending_resolutions.entry(market_id) {
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert(BufferedClobResolution {
+                                message,
+                                received_at,
+                            });
+                        }
+                        std::collections::hash_map::Entry::Occupied(entry) => {
+                            if !same_clob_resolution_outcome(&entry.get().message, &message) {
+                                epoch.session.integrity_gaps =
+                                    epoch.session.integrity_gaps.saturating_add(1);
+                                epoch.session.disconnect_reason =
+                                    Some("successor_resolution_conflict".to_string());
+                                return ClobFrameAction::Disconnect;
+                            }
+                        }
+                    }
+                    continue;
+                }
+                for event in epoch.registry.apply(message, received_at) {
+                    if !event.applied {
+                        integrity_gap = true;
+                        epoch.session.integrity_gaps =
+                            epoch.session.integrity_gaps.saturating_add(1);
+                    }
+                }
+            }
+            if integrity_gap {
+                epoch.session.disconnect_reason = Some("successor_integrity_gap".to_string());
+                return ClobFrameAction::Disconnect;
+            }
+        }
+        Err(error) => {
+            epoch.registry.quarantine(FeedIntegrityStatus::DecodeError);
+            epoch.session.decode_errors = epoch.session.decode_errors.saturating_add(1);
+            epoch.session.disconnect_reason = Some("successor_decode_error".to_string());
+            tracing::warn!(
+                feed = "polymarket_clob_market",
+                connection_id = %epoch.connection_id,
+                connection_epoch = epoch.connection_epoch,
+                reason = %error,
+                "private CLOB successor frame failed to decode"
+            );
+            return ClobFrameAction::Disconnect;
+        }
+    }
+    ClobFrameAction::Continue
+}
+
+fn same_clob_resolution_outcome(left: &ClobMessage, right: &ClobMessage) -> bool {
+    match (left, right) {
+        (
+            ClobMessage::MarketResolved {
+                winning_token_id: left_token,
+                winning_outcome: left_outcome,
+                ..
+            },
+            ClobMessage::MarketResolved {
+                winning_token_id: right_token,
+                winning_outcome: right_outcome,
+                ..
+            },
+        ) => left_token == right_token && left_outcome == right_outcome,
+        _ => false,
+    }
+}
+
+async fn complete_clob_epoch(
+    repository: &BtcRepository,
+    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
+    epoch: &mut ClobEpoch,
+    reason: String,
+    cause: ClobDisconnectCause,
+    retry_action: ClobRetryAction,
+    consecutive_failures: u32,
+) -> bool {
+    let disconnected_at = Utc::now();
+    epoch.session.disconnected_at = Some(disconnected_at);
+    epoch.session.disconnect_reason = Some(reason.clone());
+    epoch.session.metadata = clob_session_metadata(
+        epoch.healthy_epoch,
+        cause,
+        retry_action,
+        consecutive_failures,
+        &epoch.subscription_stats,
+    );
+    log_clob_disconnect(
+        epoch.connection_id,
+        epoch.connection_epoch,
+        Instant::now().duration_since(epoch.connected_instant),
+        epoch.healthy_epoch,
+        cause,
+        retry_action,
+        consecutive_failures,
+        &reason,
+    );
+    finish_feed_session_or_fail(repository, &epoch.session, metrics).await
+}
+
+fn clob_disconnect_metrics(
+    metrics: &mut BtcRuntimeMetrics,
+    cause: ClobDisconnectCause,
+    retry_action: ClobRetryAction,
+) {
+    metrics.reconnects = metrics.reconnects.saturating_add(1);
+    clob_failure_metrics(metrics, cause);
+    clob_retry_metrics(metrics, retry_action);
+}
+
+fn clob_candidate_attempt_metrics(
+    metrics: &mut BtcRuntimeMetrics,
+    cause: ClobDisconnectCause,
+    retry_action: ClobRetryAction,
+) {
+    clob_failure_metrics(metrics, cause);
+    clob_retry_metrics(metrics, retry_action);
+}
+
+fn clob_failure_metrics(metrics: &mut BtcRuntimeMetrics, cause: ClobDisconnectCause) {
+    match cause {
+        ClobDisconnectCause::ConnectFailure => {
+            metrics.clob_connection_failures = metrics.clob_connection_failures.saturating_add(1);
+        }
+        ClobDisconnectCause::SubscriptionFailure => {
+            metrics.clob_subscription_failures =
+                metrics.clob_subscription_failures.saturating_add(1);
+        }
+        ClobDisconnectCause::BootstrapFailure => {
+            metrics.clob_bootstrap_failures = metrics.clob_bootstrap_failures.saturating_add(1);
+        }
+        ClobDisconnectCause::TransportFailure => {
+            metrics.clob_transport_disconnects =
+                metrics.clob_transport_disconnects.saturating_add(1);
+        }
+        ClobDisconnectCause::Shutdown
+        | ClobDisconnectCause::MarketWatchClosed
+        | ClobDisconnectCause::CriticalPersistence => {}
+    }
+}
+
+fn clob_retry_metrics(metrics: &mut BtcRuntimeMetrics, retry_action: ClobRetryAction) {
+    match retry_action {
+        ClobRetryAction::ImmediateRecovery => {
+            metrics.clob_immediate_recoveries_scheduled = metrics
+                .clob_immediate_recoveries_scheduled
+                .saturating_add(1);
+        }
+        ClobRetryAction::Backoff(delay) => {
+            metrics.clob_backoff_scheduled_milliseconds = metrics
+                .clob_backoff_scheduled_milliseconds
+                .saturating_add(duration_milliseconds(delay));
+        }
+        ClobRetryAction::Stop => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn promote_clob_epoch_if_ready(
+    active: &mut Option<ClobEpoch>,
+    successor: &mut Option<ClobEpoch>,
+    desired_markets: &watch::Receiver<Vec<BtcIntervalMarket>>,
+    repository: &BtcRepository,
+    state: &Arc<RwLock<RealtimeState>>,
+    shared_books: &Arc<RwLock<BookRegistry>>,
+    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
+    max_book_age: Duration,
+    consecutive_failures: &mut u32,
+    recovery_window: &mut ClobRecoveryWindow,
+) -> Result<bool> {
+    if active.is_some() {
+        return Ok(false);
+    }
+    let publication_boundary = Utc::now();
+    let desired_before = desired_markets.borrow().clone();
+    let Some(publication) = successor
+        .as_ref()
+        .map(|candidate| {
+            prepare_clob_successor_publication(
+                candidate,
+                &desired_before,
+                publication_boundary,
+                max_book_age,
+            )
+        })
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(false);
+    };
+    repository
+        .insert_orderbook_checkpoint_pair(
+            &publication.checkpoints,
+            "websocket_book",
+            publication_boundary,
+        )
+        .await
+        .context("failed to persist CLOB successor checkpoint pair")?;
+
+    let checked_after_checkpoint = Utc::now();
+    if !successor.as_ref().is_some_and(|candidate| {
+        clob_successor_publication_still_valid(
+            candidate,
+            &desired_markets.borrow(),
+            &publication.current_market,
+            checked_after_checkpoint,
+            max_book_age,
+        )
+    }) {
+        return Ok(false);
+    }
+
+    // Ownership transfers before subscription acknowledgement. From this point onward the
+    // connection is either published as active or dropped fail-closed; it is never restored to
+    // the private successor slot with durable acknowledgement attached to it.
+    let mut promoted = successor
+        .take()
+        .expect("validated CLOB successor remains in its fixed slot");
+    let buffered_resolutions = std::mem::take(&mut promoted.pending_resolutions)
+        .into_values()
+        .collect::<Vec<_>>();
+    let checked_before_ack = Utc::now();
+    let desired_before_ack = desired_markets.borrow().clone();
+    if !clob_successor_publication_still_valid(
+        &promoted,
+        &desired_before_ack,
+        &publication.current_market,
+        checked_before_ack,
+        max_book_age,
+    ) {
+        quarantine_published_clob_books(state, shared_books, checked_before_ack).await;
+        if !complete_clob_epoch(
+            repository,
+            metrics,
+            &mut promoted,
+            "promotion_market_changed_after_checkpoint".to_string(),
+            ClobDisconnectCause::SubscriptionFailure,
+            ClobRetryAction::ImmediateRecovery,
+            0,
+        )
+        .await
+        {
+            bail!("failed to finalize rejected CLOB promotion session");
+        }
+        return Ok(false);
+    }
+    if let Err(error) = acknowledge_clob_subscriptions(
+        repository,
+        &desired_before_ack,
+        promoted.connection_id,
+        checked_before_ack,
+    )
+    .await
+    {
+        quarantine_published_clob_books(state, shared_books, Utc::now()).await;
+        let _ = complete_clob_epoch(
+            repository,
+            metrics,
+            &mut promoted,
+            "critical_promotion_subscription_ack".to_string(),
+            ClobDisconnectCause::CriticalPersistence,
+            ClobRetryAction::Stop,
+            0,
+        )
+        .await;
+        return Err(error).context("failed to acknowledge promoted CLOB successor subscriptions");
+    }
+
+    let mut published_books = shared_books.write().await;
+    let mut shared = state.write().await;
+    let published_at = Utc::now();
+    let publication_valid = {
+        let desired_at_publication = desired_markets.borrow();
+        if clob_successor_publication_still_valid(
+            &promoted,
+            &desired_at_publication,
+            &publication.current_market,
+            published_at,
+            max_book_age,
+        ) {
+            *published_books = publication.registry.clone();
+            shared.update_books(&publication.registry);
+            shared.last_updated_at = Some(published_at);
+            true
+        } else {
+            published_books.quarantine(FeedIntegrityStatus::Stale);
+            shared.update_books(&published_books);
+            shared.last_updated_at = Some(published_at);
+            false
+        }
+    };
+    drop(shared);
+    drop(published_books);
+    if !publication_valid {
+        if !complete_clob_epoch(
+            repository,
+            metrics,
+            &mut promoted,
+            "promotion_market_changed_after_ack".to_string(),
+            ClobDisconnectCause::SubscriptionFailure,
+            ClobRetryAction::ImmediateRecovery,
+            0,
+        )
+        .await
+        {
+            bail!("failed to finalize post-ack CLOB promotion session");
+        }
+        return Ok(false);
+    }
+
+    promoted.healthy_epoch = true;
+    promoted.books_usable = true;
+    promoted.subscription_stats.active_assets = promoted.registry.len();
+    let promoted_connection_id = promoted.connection_id;
+    let promoted_connection_epoch = promoted.connection_epoch;
+    let promoted_connected_at = promoted.session.connected_at;
+    let promoted_assets = promoted.registry.len();
+    *active = Some(promoted);
+    {
+        let mut runtime_metrics = metrics.write().await;
+        runtime_metrics.persistence_items_written =
+            runtime_metrics.persistence_items_written.saturating_add(2);
+    }
+    for buffered in buffered_resolutions {
+        match persist_official_resolution(
+            repository,
+            &buffered.message,
+            buffered.received_at,
+            metrics,
+        )
+        .await
+        {
+            Ok(Some(resolution)) => {
+                state
+                    .write()
+                    .await
+                    .apply_market_resolution(&resolution.market_id, &resolution.winning_token_id);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let mut failed = active
+                    .take()
+                    .expect("published CLOB promotion remains in the active slot");
+                quarantine_clob_books_on_disconnect(
+                    &mut failed.registry,
+                    state,
+                    shared_books,
+                    Utc::now(),
+                )
+                .await;
+                let _ = complete_clob_epoch(
+                    repository,
+                    metrics,
+                    &mut failed,
+                    "critical_buffered_resolution_persistence".to_string(),
+                    ClobDisconnectCause::CriticalPersistence,
+                    ClobRetryAction::Stop,
+                    0,
+                )
+                .await;
+                return Err(error).context("failed to persist buffered CLOB successor resolution");
+            }
+        }
+    }
+    let post_flush_checked_at = Utc::now();
+    if !active.as_ref().is_some_and(|epoch| {
+        clob_successor_publication_still_valid(
+            epoch,
+            &desired_markets.borrow(),
+            &publication.current_market,
+            post_flush_checked_at,
+            max_book_age,
+        )
+    }) {
+        let mut failed = active
+            .take()
+            .expect("published CLOB promotion remains in the active slot");
+        quarantine_clob_books_on_disconnect(
+            &mut failed.registry,
+            state,
+            shared_books,
+            post_flush_checked_at,
+        )
+        .await;
+        if !complete_clob_epoch(
+            repository,
+            metrics,
+            &mut failed,
+            "promotion_stale_after_resolution_flush".to_string(),
+            ClobDisconnectCause::TransportFailure,
+            ClobRetryAction::ImmediateRecovery,
+            0,
+        )
+        .await
+        {
+            bail!("failed to finalize stale CLOB promotion session");
+        }
+        return Ok(false);
+    }
+    record_clob_epoch_healthy(
+        metrics,
+        promoted_connection_id,
+        promoted_connection_epoch,
+        published_at,
+        Instant::now(),
+        true,
+        consecutive_failures,
+        recovery_window,
+    )
+    .await;
+    {
+        let mut runtime_metrics = metrics.write().await;
+        runtime_metrics.clob_connected_connection_epoch = Some(promoted_connection_epoch);
+        runtime_metrics.clob_connected_connection_id = Some(promoted_connection_id);
+        runtime_metrics.clob_last_connected_at = promoted_connected_at;
+        runtime_metrics.clob_active_subscribed_assets =
+            u64::try_from(promoted_assets).unwrap_or(u64::MAX);
+    }
+    tracing::info!(
+        feed = "polymarket_clob_market",
+        connection_id = %promoted_connection_id,
+        connection_epoch = promoted_connection_epoch,
+        active_assets = promoted_assets,
+        "CLOB successor promoted with an atomic ready-book handoff"
+    );
+    Ok(true)
+}
+
 async fn run_clob_supervisor(
     config: BtcRuntimeConfig,
     repository: BtcRepository,
@@ -1419,704 +2456,953 @@ async fn run_clob_supervisor(
     if !config.enabled {
         return;
     }
-    let mut reconnect_ordinal = 0i32;
+    let max_book_age = chrono_duration(config.max_book_age);
+    let mut active: Option<ClobEpoch> = None;
+    let mut successor: Option<ClobEpoch> = None;
+    let mut connect_task: Option<JoinHandle<ClobConnectOutcome>> = None;
+    let mut connection_epoch = 0i32;
     let mut consecutive_failures = 0u32;
+    let mut successor_failures = 0u32;
+    let mut successor_retry_at = Instant::now();
+    let mut desired_connection_targets = markets.borrow().clone();
+    let mut connecting_markets: Option<Vec<BtcIntervalMarket>> = None;
     let mut recovery_window = ClobRecoveryWindow::open(Utc::now(), Instant::now());
     metrics.write().await.clob_recovery_unavailable_since = recovery_window.since;
-    loop {
+    let started_at = Instant::now();
+    let mut heartbeat = interval_at(
+        started_at + config.clob_heartbeat_interval,
+        config.clob_heartbeat_interval,
+    );
+    let mut checkpoints = interval_at(
+        started_at + config.checkpoint_interval,
+        config.checkpoint_interval,
+    );
+    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    checkpoints.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut terminate = false;
+    let dormant_deadline = Instant::now() + StdDuration::from_secs(86_400);
+    let active_bootstrap_sleep = sleep_until(dormant_deadline);
+    let active_pong_sleep = sleep_until(dormant_deadline);
+    let active_read_sleep = sleep_until(dormant_deadline);
+    let successor_bootstrap_sleep = sleep_until(dormant_deadline);
+    let successor_pong_sleep = sleep_until(dormant_deadline);
+    let successor_read_sleep = sleep_until(dormant_deadline);
+    let retry_sleep = sleep_until(dormant_deadline);
+    tokio::pin!(
+        active_bootstrap_sleep,
+        active_pong_sleep,
+        active_read_sleep,
+        successor_bootstrap_sleep,
+        successor_pong_sleep,
+        successor_read_sleep,
+        retry_sleep
+    );
+
+    while !terminate {
         if *shutdown.borrow() {
             break;
         }
-        if markets.borrow().is_empty() {
-            tokio::select! {
-                _ = shutdown.changed() => break,
-                changed = markets.changed() => {
-                    if changed.is_err() {
-                        break;
-                    }
+        if active.is_none() {
+            match promote_clob_epoch_if_ready(
+                &mut active,
+                &mut successor,
+                &markets,
+                &repository,
+                &state,
+                &shared_books,
+                &metrics,
+                max_book_age,
+                &mut consecutive_failures,
+                &mut recovery_window,
+            )
+            .await
+            {
+                Ok(true) => {
+                    successor_failures = 0;
+                    successor_retry_at = Instant::now();
                     continue;
                 }
-            }
-        }
-        reconnect_ordinal = reconnect_ordinal.saturating_add(1);
-        let connection_id = Uuid::new_v4();
-        let started_at = Utc::now();
-        let attempt_started_at = Instant::now();
-        let mut session = new_session(
-            connection_id,
-            "polymarket_clob_market",
-            &config.clob_ws_url,
-            reconnect_ordinal,
-            started_at,
-        );
-        let outcome = connect_async(&config.clob_ws_url).await;
-        let (mut socket, _) = match outcome {
-            Ok(value) => value,
-            Err(error) => {
-                let disconnected_at = Utc::now();
-                let reason = error.to_string();
-                consecutive_failures = consecutive_failures.saturating_add(1);
-                let delay = reconnect_backoff(&config, consecutive_failures);
-                session.disconnected_at = Some(disconnected_at);
-                session.disconnect_reason = Some(reason.clone());
-                session.metadata = clob_session_metadata(
-                    false,
-                    ClobDisconnectCause::ConnectFailure,
-                    ClobRetryAction::Backoff(delay),
-                    consecutive_failures,
-                    &ClobSubscriptionStats::default(),
-                );
-                if !start_feed_session_or_fail(&repository, &session, &metrics).await
-                    || !finish_feed_session_or_fail(&repository, &session, &metrics).await
-                {
+                Ok(false) => {}
+                Err(error) => {
+                    quarantine_published_clob_books(&state, &shared_books, Utc::now()).await;
+                    if let Some(mut failed) = successor.take() {
+                        let _ = complete_clob_epoch(
+                            &repository,
+                            &metrics,
+                            &mut failed,
+                            "critical_promotion_persistence".to_string(),
+                            ClobDisconnectCause::CriticalPersistence,
+                            ClobRetryAction::Stop,
+                            successor_failures,
+                        )
+                        .await;
+                    }
+                    record_critical_persistence_error(&metrics, error).await;
                     return;
                 }
-                {
-                    let delay_milliseconds = duration_milliseconds(delay);
-                    let mut runtime_metrics = metrics.write().await;
-                    runtime_metrics.clob_connection_failures =
-                        runtime_metrics.clob_connection_failures.saturating_add(1);
-                    runtime_metrics.clob_backoff_scheduled_milliseconds = runtime_metrics
-                        .clob_backoff_scheduled_milliseconds
-                        .saturating_add(delay_milliseconds);
-                    clear_clob_connection_metrics(
-                        &mut runtime_metrics,
-                        disconnected_at,
-                        &reason,
-                        recovery_window.since,
-                        consecutive_failures,
-                    );
-                }
-                tracing::warn!(
-                    feed = "polymarket_clob_market",
-                    %connection_id,
-                    connection_epoch = reconnect_ordinal,
-                    connect_latency_ms = duration_milliseconds(attempt_started_at.elapsed()),
-                    failure_streak = consecutive_failures,
-                    retry_delay_ms = duration_milliseconds(delay),
-                    reason = %reason,
-                    "CLOB websocket connection attempt failed"
-                );
-                record_error(&metrics, error.into()).await;
-                if !wait_reconnect_backoff(delay, &mut shutdown).await {
-                    break;
-                }
-                continue;
-            }
-        };
-        let connected_at = Utc::now();
-        let connected_instant = Instant::now();
-        session.connected_at = Some(connected_at);
-        if !start_feed_session_or_fail(&repository, &session, &metrics).await {
-            return;
-        }
-        {
-            let mut runtime_metrics = metrics.write().await;
-            runtime_metrics.clob_connections_established = runtime_metrics
-                .clob_connections_established
-                .saturating_add(1);
-            runtime_metrics.clob_connected_connection_epoch = Some(reconnect_ordinal);
-            runtime_metrics.clob_connected_connection_id = Some(connection_id);
-            runtime_metrics.clob_last_connected_at = Some(connected_at);
-            runtime_metrics.clob_consecutive_failures = consecutive_failures;
-        }
-        tracing::info!(
-            feed = "polymarket_clob_market",
-            %connection_id,
-            connection_epoch = reconnect_ordinal,
-            failure_streak = consecutive_failures,
-            connect_latency_ms = duration_milliseconds(connected_instant.duration_since(attempt_started_at)),
-            "CLOB websocket connected"
-        );
-        let mut terminate_supervisor = false;
-        let mut fatal_persistence_error = None;
-        let mut subscription_failed = false;
-        let mut healthy_epoch = false;
-        let mut books_usable = false;
-        // The durable watch ledger, not the three-window Gamma cache, owns this subscription set.
-        // That keeps delayed outcomes subscribed across multiple rollovers and process restarts.
-        let mut active_markets = markets.borrow().iter().cloned().collect::<Vec<_>>();
-        let mut subscription_stats = ClobSubscriptionStats::default();
-        let mut registry = BookRegistry::new(connection_id);
-        let registration_succeeded = match register_clob_markets(&mut registry, &active_markets) {
-            Ok(()) => true,
-            Err(error) => {
-                session.disconnect_reason = Some(format!("invalid_subscription_identity:{error}"));
-                subscription_failed = true;
-                record_error(&metrics, error).await;
-                false
-            }
-        };
-        if registration_succeeded {
-            *shared_books.write().await = registry.clone();
-            {
-                let mut shared = state.write().await;
-                shared.update_books(&registry);
-                shared.last_updated_at = Some(Utc::now());
             }
         }
-        if !registration_succeeded {
-            // The connection is closed below. No subscription is sent for an invalid identity set.
-        } else if let Err(error) = socket
-            .send(Message::Text(clob_subscription(&active_markets).into()))
-            .await
-        {
-            subscription_failed = true;
-            session.disconnect_reason = Some(error.to_string());
-        } else if let Err(error) =
-            acknowledge_clob_subscriptions(&repository, &active_markets, connection_id, Utc::now())
-                .await
-        {
-            session.disconnect_reason = Some(format!("critical_subscription_ack:{error}"));
-            fatal_persistence_error = Some(error);
-        } else {
-            subscription_stats.active_assets = registry.len();
-            metrics.write().await.clob_active_subscribed_assets =
-                u64::try_from(subscription_stats.active_assets).unwrap_or(u64::MAX);
-            let mut heartbeat = interval(config.clob_heartbeat_interval);
-            let mut checkpoints = interval(config.checkpoint_interval);
-            heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
-            checkpoints.set_missed_tick_behavior(MissedTickBehavior::Delay);
-            'connection: loop {
-                tokio::select! {
-                    _ = shutdown.changed() => {
-                        session.disconnect_reason = Some("shutdown".to_string());
-                        break;
-                    }
-                    changed = markets.changed() => {
-                        match market_watch_disposition(&changed) {
-                            MarketWatchDisposition::UpdateSubscriptions => {
-                                let desired_markets = markets.borrow().clone();
-                                if let Err(error) = registry.validate_market_set(&desired_markets) {
-                                    subscription_failed = true;
-                                    session.disconnect_reason = Some(format!(
-                                        "invalid_subscription_transition:{error}"
-                                    ));
-                                    record_error(&metrics, error).await;
-                                    break 'connection;
-                                }
-                                let delta = clob_subscription_delta(
-                                    &active_markets,
-                                    &desired_markets,
-                                );
-                                if let Err(error) = register_clob_markets(
-                                    &mut registry,
-                                    &delta.added_markets,
-                                ) {
-                                    subscription_failed = true;
-                                    session.disconnect_reason = Some(format!(
-                                        "subscription_registration_failed:{error}"
-                                    ));
-                                    record_error(&metrics, error).await;
-                                    break 'connection;
-                                }
-                                if !delta.added_assets.is_empty() {
-                                    if let Err(error) = socket
-                                        .send(Message::Text(
-                                            clob_subscription_operation(
-                                                &delta.added_assets,
-                                                ClobSubscriptionOperation::Subscribe,
-                                            )
-                                            .into(),
-                                        ))
-                                        .await
-                                    {
-                                        subscription_failed = true;
-                                        session.disconnect_reason = Some(format!(
-                                            "dynamic_subscribe_failed:{error}"
-                                        ));
-                                        break 'connection;
-                                    }
-                                }
-                                if !delta.added_markets.is_empty() {
-                                    if let Err(error) = acknowledge_clob_subscriptions(
-                                        &repository,
-                                        &delta.added_markets,
-                                        connection_id,
-                                        Utc::now(),
-                                    )
-                                    .await
-                                    {
-                                        session.disconnect_reason = Some(format!(
-                                            "critical_subscription_ack:{error}"
-                                        ));
-                                        fatal_persistence_error = Some(error);
-                                        break 'connection;
-                                    }
-                                }
-                                if !delta.removed_assets.is_empty() {
-                                    if let Err(error) = socket
-                                        .send(Message::Text(
-                                            clob_subscription_operation(
-                                                &delta.removed_assets,
-                                                ClobSubscriptionOperation::Unsubscribe,
-                                            )
-                                            .into(),
-                                        ))
-                                        .await
-                                    {
-                                        subscription_failed = true;
-                                        session.disconnect_reason = Some(format!(
-                                            "dynamic_unsubscribe_failed:{error}"
-                                        ));
-                                        break 'connection;
-                                    }
-                                }
-                                if let Err(error) = registry.retain_markets(&desired_markets) {
-                                    subscription_failed = true;
-                                    session.disconnect_reason = Some(format!(
-                                        "subscription_retention_failed:{error}"
-                                    ));
-                                    record_error(&metrics, error).await;
-                                    break 'connection;
-                                }
+        if should_start_clob_successor(
+            successor.is_some(),
+            connect_task.is_some(),
+            !markets.borrow().is_empty(),
+            Instant::now(),
+            successor_retry_at,
+        ) {
+            connection_epoch = connection_epoch.saturating_add(1);
+            let connection_config = config.clone();
+            let desired_markets = markets.borrow().clone();
+            connecting_markets = Some(desired_markets.clone());
+            let connection_shutdown = shutdown.clone();
+            connect_task = Some(tokio::spawn(connect_clob_epoch(
+                connection_config,
+                desired_markets,
+                connection_epoch,
+                connection_shutdown,
+            )));
+        }
 
-                                active_markets = desired_markets;
-                                let updated_at = Utc::now();
-                                let update_instant = Instant::now();
-                                if !delta.is_empty() {
-                                    subscription_stats.updates =
-                                        subscription_stats.updates.saturating_add(1);
-                                    subscription_stats.active_assets = registry.len();
-                                    subscription_stats.last_updated_at = Some(updated_at);
+        let active_bootstrap_deadline = active
+            .as_ref()
+            .and_then(|epoch| epoch.watchdog.bootstrap_deadline);
+        let active_pong_deadline = active
+            .as_ref()
+            .and_then(|epoch| epoch.watchdog.pong_deadline);
+        let active_read_deadline = active
+            .as_ref()
+            .map(|epoch| epoch.watchdog.read_idle_deadline);
+        let successor_bootstrap_deadline = successor
+            .as_ref()
+            .and_then(|epoch| epoch.watchdog.bootstrap_deadline);
+        let successor_pong_deadline = successor
+            .as_ref()
+            .and_then(|epoch| epoch.watchdog.pong_deadline);
+        let successor_read_deadline = successor
+            .as_ref()
+            .map(|epoch| epoch.watchdog.read_idle_deadline);
+        let retry_deadline =
+            (successor.is_none() && connect_task.is_none() && !markets.borrow().is_empty())
+                .then_some(successor_retry_at);
+        if let Some(deadline) = active_bootstrap_deadline {
+            active_bootstrap_sleep.as_mut().reset(deadline);
+        }
+        if let Some(deadline) = active_pong_deadline {
+            active_pong_sleep.as_mut().reset(deadline);
+        }
+        if let Some(deadline) = active_read_deadline {
+            active_read_sleep.as_mut().reset(deadline);
+        }
+        if let Some(deadline) = successor_bootstrap_deadline {
+            successor_bootstrap_sleep.as_mut().reset(deadline);
+        }
+        if let Some(deadline) = successor_pong_deadline {
+            successor_pong_sleep.as_mut().reset(deadline);
+        }
+        if let Some(deadline) = successor_read_deadline {
+            successor_read_sleep.as_mut().reset(deadline);
+        }
+        if let Some(deadline) = retry_deadline {
+            retry_sleep.as_mut().reset(deadline);
+        }
+
+        let mut active_failure: Option<(String, ClobDisconnectCause, Option<anyhow::Error>)> = None;
+        let mut successor_failure: Option<(String, ClobDisconnectCause)> = None;
+        let mut shutdown_requested = false;
+
+        tokio::select! {
+            _ = shutdown.changed() => {
+                shutdown_requested = true;
+            }
+            _ = &mut active_bootstrap_sleep, if active_bootstrap_deadline.is_some() => {
+                active_failure = Some((
+                    "bootstrap_book_timeout".to_string(),
+                    ClobDisconnectCause::BootstrapFailure,
+                    None,
+                ));
+            }
+            _ = &mut active_pong_sleep, if active_pong_deadline.is_some() => {
+                let cause = if active.as_ref().is_some_and(|epoch| epoch.healthy_epoch) {
+                    ClobDisconnectCause::TransportFailure
+                } else {
+                    ClobDisconnectCause::BootstrapFailure
+                };
+                active_failure = Some(("heartbeat_ack_timeout".to_string(), cause, None));
+            }
+            _ = &mut active_read_sleep, if active_read_deadline.is_some() => {
+                let cause = if active.as_ref().is_some_and(|epoch| epoch.healthy_epoch) {
+                    ClobDisconnectCause::TransportFailure
+                } else {
+                    ClobDisconnectCause::BootstrapFailure
+                };
+                active_failure = Some(("read_idle_timeout".to_string(), cause, None));
+            }
+            _ = &mut successor_bootstrap_sleep, if successor_bootstrap_deadline.is_some() => {
+                successor_failure = Some((
+                    "bootstrap_book_timeout".to_string(),
+                    ClobDisconnectCause::BootstrapFailure,
+                ));
+            }
+            _ = &mut successor_pong_sleep, if successor_pong_deadline.is_some() => {
+                let cause = if successor.as_ref().is_some_and(|epoch| epoch.healthy_epoch) {
+                    ClobDisconnectCause::TransportFailure
+                } else {
+                    ClobDisconnectCause::BootstrapFailure
+                };
+                successor_failure = Some(("heartbeat_ack_timeout".to_string(), cause));
+            }
+            _ = &mut successor_read_sleep, if successor_read_deadline.is_some() => {
+                let cause = if successor.as_ref().is_some_and(|epoch| epoch.healthy_epoch) {
+                    ClobDisconnectCause::TransportFailure
+                } else {
+                    ClobDisconnectCause::BootstrapFailure
+                };
+                successor_failure = Some(("read_idle_timeout".to_string(), cause));
+            }
+            changed = markets.changed() => {
+                match market_watch_disposition(&changed) {
+                    MarketWatchDisposition::Terminate => terminate = true,
+                    MarketWatchDisposition::UpdateSubscriptions => {
+                        let desired_markets = markets.borrow().clone();
+                        if !same_market_subscriptions(
+                            &desired_connection_targets,
+                            &desired_markets,
+                        ) {
+                            desired_connection_targets = desired_markets.clone();
+                            successor_failures = 0;
+                            successor_retry_at = Instant::now();
+                            if connecting_markets.as_ref().is_some_and(|connecting| {
+                                !same_market_subscriptions(connecting, &desired_markets)
+                            }) {
+                                if let Some(task) = connect_task.take() {
+                                    task.abort();
+                                    let _ = task.await;
                                 }
-                                *shared_books.write().await = registry.clone();
-                                {
-                                    let mut shared = state.write().await;
-                                    shared.update_books(&registry);
-                                    shared.last_updated_at = Some(updated_at);
-                                }
-                                if !delta.is_empty() {
+                                connecting_markets = None;
+                            }
+                        }
+                        if let Some(epoch) = active.as_mut() {
+                            match update_clob_epoch_subscriptions(
+                                epoch,
+                                &desired_markets,
+                                Some(&repository),
+                                &mut shutdown,
+                                max_book_age,
+                            )
+                            .await
+                            {
+                                Ok(delta) => {
+                                    let updated_at = Utc::now();
                                     {
+                                        let mut published_books = shared_books.write().await;
+                                        let mut shared = state.write().await;
+                                        *published_books = epoch.registry.clone();
+                                        shared.update_books(&epoch.registry);
+                                        shared.last_updated_at = Some(updated_at);
+                                    }
+                                    if !delta.is_empty() {
                                         let mut runtime_metrics = metrics.write().await;
                                         runtime_metrics.clob_subscription_updates = runtime_metrics
                                             .clob_subscription_updates
                                             .saturating_add(1);
-                                        runtime_metrics.clob_active_subscribed_assets = u64::try_from(
-                                            subscription_stats.active_assets,
-                                        )
-                                        .unwrap_or(u64::MAX);
-                                        runtime_metrics.clob_last_subscription_update_at =
-                                            Some(updated_at);
+                                        runtime_metrics.clob_active_subscribed_assets =
+                                            u64::try_from(epoch.registry.len()).unwrap_or(u64::MAX);
+                                        runtime_metrics.clob_last_subscription_update_at = Some(updated_at);
                                     }
-                                    tracing::info!(
-                                        feed = "polymarket_clob_market",
-                                        %connection_id,
-                                        connection_epoch = reconnect_ordinal,
-                                        added_assets = delta.added_assets.len(),
-                                        removed_assets = delta.removed_assets.len(),
-                                        active_assets = subscription_stats.active_assets,
-                                        "CLOB websocket subscriptions updated in place"
-                                    );
                                 }
-
+                                Err(ClobEpochUpdateError::Shutdown) => shutdown_requested = true,
+                                Err(ClobEpochUpdateError::Recoverable(reason)) => {
+                                    active_failure = Some((
+                                        reason,
+                                        ClobDisconnectCause::SubscriptionFailure,
+                                        None,
+                                    ));
+                                }
+                                Err(ClobEpochUpdateError::Critical(error)) => {
+                                    active_failure = Some((
+                                        "critical_subscription_ack".to_string(),
+                                        ClobDisconnectCause::CriticalPersistence,
+                                        Some(error),
+                                    ));
+                                }
+                            }
+                        }
+                        if let Some(epoch) = successor.as_mut() {
+                            match update_clob_epoch_subscriptions(
+                                epoch,
+                                &desired_markets,
+                                None,
+                                &mut shutdown,
+                                max_book_age,
+                            )
+                            .await
+                            {
+                                Ok(_) => {}
+                                Err(ClobEpochUpdateError::Shutdown) => shutdown_requested = true,
+                                Err(ClobEpochUpdateError::Recoverable(reason)) => {
+                                    successor_failure = Some((
+                                        reason,
+                                        ClobDisconnectCause::SubscriptionFailure,
+                                    ));
+                                }
+                                Err(ClobEpochUpdateError::Critical(_)) => {
+                                    unreachable!("private CLOB successors never acknowledge subscriptions")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            message = async {
+                active
+                    .as_mut()
+                    .expect("active CLOB socket branch is guarded")
+                    .socket
+                    .next()
+                    .await
+            }, if active.is_some() => {
+                match message {
+                    None => {
+                        let cause = clob_disconnect_cause(
+                            active
+                                .as_ref()
+                                .is_some_and(|epoch| epoch.healthy_epoch),
+                            false,
+                            false,
+                            false,
+                            false,
+                        );
+                        active_failure = Some(("websocket_eof".to_string(), cause, None));
+                    }
+                    Some(Err(error)) => {
+                        let cause = if active.as_ref().is_some_and(|epoch| epoch.healthy_epoch) {
+                            ClobDisconnectCause::TransportFailure
+                        } else {
+                            ClobDisconnectCause::BootstrapFailure
+                        };
+                        active_failure = Some((
+                            format!("transport_read_failed:{error}"),
+                            cause,
+                            None,
+                        ));
+                    }
+                    Some(Ok(message)) => {
+                        let epoch = active.as_mut().expect("active epoch remains installed");
+                        match apply_active_clob_frame(
+                            epoch,
+                            message,
+                            &repository,
+                            &writer,
+                            &state,
+                            &shared_books,
+                            &metrics,
+                        )
+                        .await
+                        {
+                            Ok(ClobFrameAction::Disconnect) => {
+                                active_failure = Some((
+                                    epoch
+                                        .session
+                                        .disconnect_reason
+                                        .clone()
+                                        .unwrap_or_else(|| "remote_close".to_string()),
+                                    if epoch.healthy_epoch {
+                                        ClobDisconnectCause::TransportFailure
+                                    } else {
+                                        ClobDisconnectCause::BootstrapFailure
+                                    },
+                                    None,
+                                ));
+                            }
+                            Ok(ClobFrameAction::Continue) => {
+                                let checked_at = Utc::now();
+                                epoch.watchdog.refresh_bootstrap(
+                                    Instant::now(),
+                                    &epoch.registry,
+                                    &epoch.markets,
+                                    checked_at,
+                                    max_book_age,
+                                );
                                 update_clob_usability(
-                                    &registry,
-                                    &active_markets,
-                                    updated_at,
-                                    update_instant,
-                                    chrono_duration(config.max_book_age),
-                                    &mut books_usable,
-                                    &mut healthy_epoch,
+                                    &epoch.registry,
+                                    &epoch.markets,
+                                    checked_at,
+                                    Instant::now(),
+                                    max_book_age,
+                                    &mut epoch.books_usable,
+                                    &mut epoch.healthy_epoch,
                                     &metrics,
-                                    connection_id,
-                                    reconnect_ordinal,
+                                    epoch.connection_id,
+                                    epoch.connection_epoch,
                                     &mut consecutive_failures,
                                     &mut recovery_window,
                                 )
                                 .await;
+                                if !epoch.books_usable
+                                    && successor.as_ref().is_some_and(|candidate| {
+                                        clob_successor_ready(
+                                            candidate,
+                                            &markets.borrow(),
+                                            checked_at,
+                                            max_book_age,
+                                        )
+                                    })
+                                {
+                                    active_failure = Some((
+                                        "active_book_stale".to_string(),
+                                        ClobDisconnectCause::TransportFailure,
+                                        None,
+                                    ));
+                                }
                             }
-                            MarketWatchDisposition::Terminate => {
-                                terminate_supervisor = true;
-                                session.disconnect_reason = Some("market_watch_closed".to_string());
-                                break 'connection;
+                            Err(error) => {
+                                active_failure = Some((
+                                    "critical_clob_persistence".to_string(),
+                                    ClobDisconnectCause::CriticalPersistence,
+                                    Some(error),
+                                ));
                             }
                         }
                     }
-                    _ = heartbeat.tick() => {
-                        if let Err(error) = socket.send(Message::Text("PING".into())).await {
-                            session.disconnect_reason = Some(error.to_string());
-                            break;
+                }
+            }
+            message = async {
+                successor
+                    .as_mut()
+                    .expect("successor CLOB socket branch is guarded")
+                    .socket
+                    .next()
+                    .await
+            }, if successor.is_some() => {
+                match message {
+                    None => {
+                        let cause = if successor.as_ref().is_some_and(|epoch| epoch.healthy_epoch) {
+                            ClobDisconnectCause::TransportFailure
+                        } else {
+                            ClobDisconnectCause::BootstrapFailure
+                        };
+                        successor_failure = Some(("websocket_eof".to_string(), cause));
+                    }
+                    Some(Err(error)) => {
+                        let cause = if successor.as_ref().is_some_and(|epoch| epoch.healthy_epoch) {
+                            ClobDisconnectCause::TransportFailure
+                        } else {
+                            ClobDisconnectCause::BootstrapFailure
+                        };
+                        successor_failure = Some((
+                            format!("transport_read_failed:{error}"),
+                            cause,
+                        ));
+                    }
+                    Some(Ok(message)) => {
+                        let epoch = successor
+                            .as_mut()
+                            .expect("successor epoch remains installed");
+                        if apply_private_clob_frame(epoch, message) == ClobFrameAction::Disconnect {
+                            successor_failure = Some((
+                                epoch
+                                    .session
+                                    .disconnect_reason
+                                    .clone()
+                                    .unwrap_or_else(|| "remote_close".to_string()),
+                                if epoch.healthy_epoch {
+                                    ClobDisconnectCause::TransportFailure
+                                } else {
+                                    ClobDisconnectCause::BootstrapFailure
+                                },
+                            ));
+                        } else {
+                            epoch.refresh_private_health(Utc::now(), Instant::now(), max_book_age);
+                            if epoch.books_usable {
+                                successor_failures = 0;
+                                successor_retry_at = Instant::now();
+                            }
                         }
                     }
-                    _ = checkpoints.tick() => {
-                        let checked_at = Utc::now();
-                        update_clob_usability(
-                            &registry,
-                            &active_markets,
-                            checked_at,
-                            Instant::now(),
-                            chrono_duration(config.max_book_age),
-                            &mut books_usable,
-                            &mut healthy_epoch,
+                }
+            }
+            outcome = async {
+                connect_task
+                    .as_mut()
+                    .expect("CLOB connect task branch is guarded")
+                    .await
+            }, if connect_task.is_some() => {
+                connect_task = None;
+                connecting_markets = None;
+                match outcome {
+                    Err(error) => {
+                        successor_failures = successor_failures.saturating_add(1);
+                        let delay = reconnect_backoff(&config, successor_failures);
+                        successor_retry_at = Instant::now() + delay;
+                        record_error(
                             &metrics,
-                            connection_id,
-                            reconnect_ordinal,
-                            &mut consecutive_failures,
-                            &mut recovery_window,
+                            anyhow::anyhow!("CLOB connection task failed: {error}"),
                         )
                         .await;
-                        let checkpoint_markets = active_markets.clone();
-                        for market in &checkpoint_markets {
+                        {
+                            let mut runtime_metrics = metrics.write().await;
+                            clob_candidate_attempt_metrics(
+                                &mut runtime_metrics,
+                                ClobDisconnectCause::ConnectFailure,
+                                ClobRetryAction::Backoff(delay),
+                            );
+                        }
+                    }
+                    Ok(ClobConnectOutcome::Failed { mut session, reason, kind }) => {
+                        if kind == ClobConnectFailureKind::Shutdown {
+                            shutdown_requested = true;
+                        } else {
+                            successor_failures = successor_failures.saturating_add(1);
+                            let delay = reconnect_backoff(&config, successor_failures);
+                            successor_retry_at = Instant::now() + delay;
+                            let cause = match kind {
+                                ClobConnectFailureKind::Connect => ClobDisconnectCause::ConnectFailure,
+                                ClobConnectFailureKind::Subscription => {
+                                    ClobDisconnectCause::SubscriptionFailure
+                                }
+                                ClobConnectFailureKind::Identity => {
+                                    ClobDisconnectCause::BootstrapFailure
+                                }
+                                ClobConnectFailureKind::Shutdown => unreachable!(),
+                            };
+                            session.metadata = clob_session_metadata(
+                                false,
+                                cause,
+                                ClobRetryAction::Backoff(delay),
+                                successor_failures,
+                                &ClobSubscriptionStats::default(),
+                            );
+                            if start_feed_session_or_fail(&repository, &session, &metrics).await {
+                                let _ =
+                                    finish_feed_session_or_fail(&repository, &session, &metrics)
+                                        .await;
+                            }
+                            let mut runtime_metrics = metrics.write().await;
+                            clob_candidate_attempt_metrics(
+                                &mut runtime_metrics,
+                                cause,
+                                ClobRetryAction::Backoff(delay),
+                            );
+                            tracing::warn!(
+                                feed = "polymarket_clob_market",
+                                %reason,
+                                successor_failures,
+                                retry_delay_ms = duration_milliseconds(delay),
+                                active_present = active.is_some(),
+                                "CLOB successor connection attempt failed"
+                            );
+                        }
+                    }
+                    Ok(ClobConnectOutcome::Connected { mut epoch, connect_latency }) => {
+                        epoch.subscription_stats.active_assets = epoch.registry.len();
+                        if !start_feed_session_or_fail(&repository, &epoch.session, &metrics).await {
+                            successor_failures = successor_failures.saturating_add(1);
+                            let delay = reconnect_backoff(&config, successor_failures);
+                            successor_retry_at = Instant::now() + delay;
+                            {
+                                let mut runtime_metrics = metrics.write().await;
+                                clob_retry_metrics(
+                                    &mut runtime_metrics,
+                                    ClobRetryAction::Backoff(delay),
+                                );
+                            }
+                        } else if !same_market_subscriptions(&epoch.markets, &markets.borrow()) {
+                            let _ = complete_clob_epoch(
+                                &repository,
+                                &metrics,
+                                &mut epoch,
+                                "subscription_target_changed_during_connect".to_string(),
+                                ClobDisconnectCause::SubscriptionFailure,
+                                ClobRetryAction::ImmediateRecovery,
+                                successor_failures,
+                            )
+                            .await;
+                            successor_failures = 0;
+                            successor_retry_at = Instant::now();
+                        } else {
+                            {
+                                let mut runtime_metrics = metrics.write().await;
+                                runtime_metrics.clob_connections_established = runtime_metrics
+                                    .clob_connections_established
+                                    .saturating_add(1);
+                            }
+                            tracing::info!(
+                                feed = "polymarket_clob_market",
+                                connection_id = %epoch.connection_id,
+                                connection_epoch = epoch.connection_epoch,
+                                connect_latency_ms = duration_milliseconds(connect_latency),
+                                active_present = active.is_some(),
+                                "private CLOB successor connected"
+                            );
+                            successor = Some(epoch);
+                        }
+                    }
+                }
+            }
+            _ = checkpoints.tick() => {
+                let checked_at = Utc::now();
+                if let Some(epoch) = successor.as_mut() {
+                    epoch.refresh_private_health(checked_at, Instant::now(), max_book_age);
+                    if epoch.books_usable {
+                        successor_failures = 0;
+                        successor_retry_at = Instant::now();
+                    }
+                }
+                if let Some(epoch) = active.as_mut() {
+                    epoch.watchdog.refresh_bootstrap(
+                        Instant::now(),
+                        &epoch.registry,
+                        &epoch.markets,
+                        checked_at,
+                        max_book_age,
+                    );
+                    update_clob_usability(
+                        &epoch.registry,
+                        &epoch.markets,
+                        checked_at,
+                        Instant::now(),
+                        max_book_age,
+                        &mut epoch.books_usable,
+                        &mut epoch.healthy_epoch,
+                        &metrics,
+                        epoch.connection_id,
+                        epoch.connection_epoch,
+                        &mut consecutive_failures,
+                        &mut recovery_window,
+                    )
+                    .await;
+                    if !epoch.books_usable
+                        && successor.as_ref().is_some_and(|candidate| {
+                            clob_successor_ready(
+                                candidate,
+                                &markets.borrow(),
+                                checked_at,
+                                max_book_age,
+                            )
+                        })
+                    {
+                        active_failure = Some((
+                            "active_book_stale".to_string(),
+                            ClobDisconnectCause::TransportFailure,
+                            None,
+                        ));
+                    } else {
+                        for market in &epoch.markets {
                             if !market.is_trade_window(checked_at) {
                                 continue;
                             }
                             for token_id in [&market.up_token_id, &market.down_token_id] {
-                                if let Some(checkpoint) = registry.checkpoint(token_id) {
+                                if let Some(checkpoint) = epoch.registry.checkpoint(token_id) {
                                     if enqueue(&writer, PersistItem::Checkpoint(checkpoint), &metrics).await {
                                         let mut runtime_metrics = metrics.write().await;
-                                        runtime_metrics.checkpoints_queued =
-                                            runtime_metrics.checkpoints_queued.saturating_add(1);
+                                        runtime_metrics.checkpoints_queued = runtime_metrics
+                                            .checkpoints_queued
+                                            .saturating_add(1);
                                     } else {
-                                        session.dropped_messages =
-                                            session.dropped_messages.saturating_add(1);
-                                        session.disconnect_reason = Some(
+                                        epoch.session.dropped_messages =
+                                            epoch.session.dropped_messages.saturating_add(1);
+                                        active_failure = Some((
                                             "critical_checkpoint_queue_closed".to_string(),
-                                        );
-                                        fatal_persistence_error = Some(anyhow::anyhow!(
-                                            "CLOB checkpoint persistence queue closed"
+                                            ClobDisconnectCause::CriticalPersistence,
+                                            Some(anyhow::anyhow!(
+                                                "CLOB checkpoint persistence queue closed"
+                                            )),
                                         ));
-                                        break 'connection;
+                                        break;
                                     }
                                 }
                             }
-                        }
-                    }
-                    message = socket.next() => {
-                        let Some(message) = message else {
-                            session.disconnect_reason = Some("websocket_eof".to_string());
-                            break;
-                        };
-                        match message {
-                            Ok(Message::Text(text)) => {
-                                if text.trim().eq_ignore_ascii_case("PONG") || text.trim().is_empty() {
-                                    continue;
-                                }
-                                let received_at = Utc::now();
-                                session.messages_received = session.messages_received.saturating_add(1);
-                                {
-                                    let mut runtime_metrics = metrics.write().await;
-                                    runtime_metrics.clob_messages_received =
-                                        runtime_metrics.clob_messages_received.saturating_add(1);
-                                }
-                                match serde_json::from_str::<serde_json::Value>(&text)
-                                    .context("failed to decode CLOB websocket JSON")
-                                    .and_then(|value| parse_clob_messages(&value))
-                                {
-                                    Ok(messages) => {
-                                        for message in messages {
-                                            let resolution = match persist_official_resolution(
-                                                &repository,
-                                                &message,
-                                                received_at,
-                                                &metrics,
-                                            )
-                                            .await
-                                            {
-                                                Ok(resolution) => resolution,
-                                                Err(error) => {
-                                                    session.disconnect_reason = Some(format!(
-                                                        "critical_official_resolution:{error}"
-                                                    ));
-                                                    fatal_persistence_error = Some(error);
-                                                    break 'connection;
-                                                }
-                                            };
-                                            let events = registry.apply(message, received_at);
-                                            *shared_books.write().await = registry.clone();
-                                            {
-                                                let mut shared = state.write().await;
-                                                shared.update_books(&registry);
-                                                shared.last_updated_at = Some(received_at);
-                                                if let Some(resolution) = resolution {
-                                                    shared.apply_market_resolution(
-                                                        &resolution.market_id,
-                                                        &resolution.winning_token_id,
-                                                    );
-                                                }
-                                            }
-                                            for event in events {
-                                                if event.applied {
-                                                    let mut runtime_metrics = metrics.write().await;
-                                                    runtime_metrics.feed_events_applied =
-                                                        runtime_metrics.feed_events_applied.saturating_add(1);
-                                                } else {
-                                                    session.integrity_gaps =
-                                                        session.integrity_gaps.saturating_add(1);
-                                                    let mut runtime_metrics = metrics.write().await;
-                                                    runtime_metrics.integrity_gaps =
-                                                        runtime_metrics.integrity_gaps.saturating_add(1);
-                                                }
-                                                if !should_persist_feed_event(&event) {
-                                                    continue;
-                                                }
-                                                if enqueue(&writer, PersistItem::FeedEvent(event), &metrics).await {
-                                                    session.messages_persisted =
-                                                        session.messages_persisted.saturating_add(1);
-                                                } else {
-                                                    session.dropped_messages =
-                                                        session.dropped_messages.saturating_add(1);
-                                                    session.disconnect_reason = Some(
-                                                        "critical_feed_event_queue_closed".to_string(),
-                                                    );
-                                                    fatal_persistence_error = Some(anyhow::anyhow!(
-                                                        "CLOB feed event persistence queue closed"
-                                                    ));
-                                                    break 'connection;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(error) => {
-                                        registry.quarantine(FeedIntegrityStatus::DecodeError);
-                                        *shared_books.write().await = registry.clone();
-                                        {
-                                            let mut shared = state.write().await;
-                                            shared.update_books(&registry);
-                                            shared.last_updated_at = Some(received_at);
-                                        }
-                                        session.decode_errors = session.decode_errors.saturating_add(1);
-                                        {
-                                            let mut runtime_metrics = metrics.write().await;
-                                            runtime_metrics.decode_errors =
-                                                runtime_metrics.decode_errors.saturating_add(1);
-                                        }
-                                        record_error(&metrics, error).await;
-                                    }
-                                }
-                                update_clob_usability(
-                                    &registry,
-                                    &active_markets,
-                                    Utc::now(),
-                                    Instant::now(),
-                                    chrono_duration(config.max_book_age),
-                                    &mut books_usable,
-                                    &mut healthy_epoch,
-                                    &metrics,
-                                    connection_id,
-                                    reconnect_ordinal,
-                                    &mut consecutive_failures,
-                                    &mut recovery_window,
-                                )
-                                .await;
-                            }
-                            Ok(Message::Binary(bytes)) => {
-                                let received_at = Utc::now();
-                                session.messages_received = session.messages_received.saturating_add(1);
-                                match serde_json::from_slice::<serde_json::Value>(&bytes)
-                                    .context("failed to decode binary CLOB websocket JSON")
-                                    .and_then(|value| parse_clob_messages(&value))
-                                {
-                                    Ok(messages) => {
-                                        for message in messages {
-                                            let resolution = match persist_official_resolution(
-                                                &repository,
-                                                &message,
-                                                received_at,
-                                                &metrics,
-                                            )
-                                            .await
-                                            {
-                                                Ok(resolution) => resolution,
-                                                Err(error) => {
-                                                    session.disconnect_reason = Some(format!(
-                                                        "critical_official_resolution:{error}"
-                                                    ));
-                                                    fatal_persistence_error = Some(error);
-                                                    break 'connection;
-                                                }
-                                            };
-                                            for event in registry.apply(message, received_at) {
-                                                if should_persist_feed_event(&event) {
-                                                    if !enqueue(
-                                                        &writer,
-                                                        PersistItem::FeedEvent(event),
-                                                        &metrics,
-                                                    )
-                                                    .await
-                                                    {
-                                                        session.dropped_messages = session
-                                                            .dropped_messages
-                                                            .saturating_add(1);
-                                                        session.disconnect_reason = Some(
-                                                            "critical_feed_event_queue_closed"
-                                                                .to_string(),
-                                                        );
-                                                        fatal_persistence_error = Some(
-                                                            anyhow::anyhow!(
-                                                                "CLOB feed event persistence queue closed"
-                                                            ),
-                                                        );
-                                                        break 'connection;
-                                                    }
-                                                }
-                                            }
-                                            if let Some(resolution) = resolution {
-                                                state.write().await.apply_market_resolution(
-                                                    &resolution.market_id,
-                                                    &resolution.winning_token_id,
-                                                );
-                                            }
-                                        }
-                                        *shared_books.write().await = registry.clone();
-                                        let mut shared = state.write().await;
-                                        shared.update_books(&registry);
-                                        shared.last_updated_at = Some(received_at);
-                                    }
-                                    Err(error) => {
-                                        registry.quarantine(FeedIntegrityStatus::DecodeError);
-                                        *shared_books.write().await = registry.clone();
-                                        {
-                                            let mut shared = state.write().await;
-                                            shared.update_books(&registry);
-                                            shared.last_updated_at = Some(received_at);
-                                        }
-                                        session.decode_errors = session.decode_errors.saturating_add(1);
-                                        {
-                                            let mut runtime_metrics = metrics.write().await;
-                                            runtime_metrics.decode_errors =
-                                                runtime_metrics.decode_errors.saturating_add(1);
-                                        }
-                                        record_error(&metrics, error).await;
-                                    }
-                                }
-                                update_clob_usability(
-                                    &registry,
-                                    &active_markets,
-                                    Utc::now(),
-                                    Instant::now(),
-                                    chrono_duration(config.max_book_age),
-                                    &mut books_usable,
-                                    &mut healthy_epoch,
-                                    &metrics,
-                                    connection_id,
-                                    reconnect_ordinal,
-                                    &mut consecutive_failures,
-                                    &mut recovery_window,
-                                )
-                                .await;
-                            }
-                            Ok(Message::Close(frame)) => {
-                                session.disconnect_reason = Some(format!("remote_close:{frame:?}"));
-                                break;
-                            }
-                            Ok(_) => {}
-                            Err(error) => {
-                                session.disconnect_reason = Some(error.to_string());
+                            if active_failure.is_some() {
                                 break;
                             }
                         }
                     }
                 }
             }
+            _ = heartbeat.tick() => {
+                if let Some(epoch) = active.as_mut() {
+                    if !epoch.watchdog.awaiting_text_pong {
+                        match send_clob_text(&mut epoch.socket, "PING".to_string(), &mut shutdown).await {
+                            Ok(()) => epoch.watchdog.arm_text_pong(Instant::now()),
+                            Err(ClobSendFailure::Shutdown) => shutdown_requested = true,
+                            Err(ClobSendFailure::Timeout) => {
+                                active_failure = Some((
+                                    "heartbeat_send_timeout".to_string(),
+                                    if epoch.healthy_epoch {
+                                        ClobDisconnectCause::TransportFailure
+                                    } else {
+                                        ClobDisconnectCause::BootstrapFailure
+                                    },
+                                    None,
+                                ));
+                            }
+                            Err(ClobSendFailure::Transport(error)) => {
+                                active_failure = Some((
+                                    format!("heartbeat_send_failed:{error}"),
+                                    if epoch.healthy_epoch {
+                                        ClobDisconnectCause::TransportFailure
+                                    } else {
+                                        ClobDisconnectCause::BootstrapFailure
+                                    },
+                                    None,
+                                ));
+                            }
+                        }
+                    }
+                }
+                if let Some(epoch) = successor.as_mut() {
+                    if !epoch.watchdog.awaiting_text_pong {
+                        match send_clob_text(&mut epoch.socket, "PING".to_string(), &mut shutdown).await {
+                            Ok(()) => epoch.watchdog.arm_text_pong(Instant::now()),
+                            Err(ClobSendFailure::Shutdown) => shutdown_requested = true,
+                            Err(ClobSendFailure::Timeout) => {
+                                successor_failure = Some((
+                                    "heartbeat_send_timeout".to_string(),
+                                    if epoch.healthy_epoch {
+                                        ClobDisconnectCause::TransportFailure
+                                    } else {
+                                        ClobDisconnectCause::BootstrapFailure
+                                    },
+                                ));
+                            }
+                            Err(ClobSendFailure::Transport(error)) => {
+                                successor_failure = Some((
+                                    format!("heartbeat_send_failed:{error}"),
+                                    if epoch.healthy_epoch {
+                                        ClobDisconnectCause::TransportFailure
+                                    } else {
+                                        ClobDisconnectCause::BootstrapFailure
+                                    },
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            _ = &mut retry_sleep, if retry_deadline.is_some() => {}
         }
-        let disconnected_at = Utc::now();
-        let disconnected_instant = Instant::now();
-        session.disconnected_at = Some(disconnected_at);
-        recovery_window.open_if_closed(disconnected_at, disconnected_instant);
-        let reason = session
-            .disconnect_reason
-            .clone()
-            .unwrap_or_else(|| "unknown_disconnect".to_string());
-        let disconnect_cause = clob_disconnect_cause(
-            healthy_epoch,
-            subscription_failed,
-            terminate_supervisor,
-            *shutdown.borrow() || reason == "shutdown",
-            fatal_persistence_error.is_some(),
-        );
-        let retry_action = clob_retry_action(
-            &config,
-            healthy_epoch,
-            matches!(
-                disconnect_cause,
-                ClobDisconnectCause::Shutdown
-                    | ClobDisconnectCause::MarketWatchClosed
-                    | ClobDisconnectCause::CriticalPersistence
-            ),
-            &mut consecutive_failures,
-        );
-        let immediate_recovery = matches!(retry_action, ClobRetryAction::ImmediateRecovery);
-        let retry_delay = match retry_action {
-            ClobRetryAction::Backoff(delay) => Some(delay),
-            ClobRetryAction::Stop | ClobRetryAction::ImmediateRecovery => None,
-        };
-        session.metadata = clob_session_metadata(
-            healthy_epoch,
-            disconnect_cause,
-            retry_action,
-            consecutive_failures,
-            &subscription_stats,
-        );
-        quarantine_clob_books_on_disconnect(&mut registry, &state, &shared_books, disconnected_at)
-            .await;
-        {
-            let mut runtime_metrics = metrics.write().await;
-            clear_clob_connection_metrics(
-                &mut runtime_metrics,
-                disconnected_at,
-                &reason,
-                recovery_window.since,
-                consecutive_failures,
+
+        if shutdown_requested || terminate {
+            break;
+        }
+
+        if let Some((reason, cause)) = successor_failure {
+            if let Some(mut failed) = successor.take() {
+                let retry_action = clob_candidate_retry_action(
+                    &config,
+                    failed.healthy_epoch,
+                    &mut successor_failures,
+                );
+                successor_retry_at = match retry_action {
+                    ClobRetryAction::ImmediateRecovery => Instant::now(),
+                    ClobRetryAction::Backoff(delay) => Instant::now() + delay,
+                    ClobRetryAction::Stop => unreachable!("failed successors always retry"),
+                };
+                let _ = complete_clob_epoch(
+                    &repository,
+                    &metrics,
+                    &mut failed,
+                    reason.clone(),
+                    cause,
+                    retry_action,
+                    successor_failures,
+                )
+                .await;
+                let mut runtime_metrics = metrics.write().await;
+                clob_candidate_attempt_metrics(&mut runtime_metrics, cause, retry_action);
+                tracing::warn!(
+                    feed = "polymarket_clob_market",
+                    %reason,
+                    successor_failures,
+                    immediate_retry = matches!(retry_action, ClobRetryAction::ImmediateRecovery),
+                    active_present = active.is_some(),
+                    "private CLOB successor retired"
+                );
+            }
+        }
+
+        if let Some((reason, cause, fatal_error)) = active_failure {
+            let Some(mut failed) = active.take() else {
+                continue;
+            };
+            let retry_action = clob_retry_action(
+                &config,
+                failed.healthy_epoch,
+                cause == ClobDisconnectCause::CriticalPersistence,
+                &mut consecutive_failures,
             );
-            if retry_action != ClobRetryAction::Stop {
-                runtime_metrics.reconnects = runtime_metrics.reconnects.saturating_add(1);
+            {
+                let mut runtime_metrics = metrics.write().await;
+                clob_disconnect_metrics(&mut runtime_metrics, cause, retry_action);
+                runtime_metrics.clob_last_disconnect_at = Some(Utc::now());
+                runtime_metrics.clob_last_disconnect_reason = Some(reason.clone());
             }
-            match disconnect_cause {
-                ClobDisconnectCause::TransportFailure => {
-                    runtime_metrics.clob_transport_disconnects =
-                        runtime_metrics.clob_transport_disconnects.saturating_add(1);
-                }
-                ClobDisconnectCause::SubscriptionFailure => {
-                    runtime_metrics.clob_subscription_failures =
-                        runtime_metrics.clob_subscription_failures.saturating_add(1);
-                }
-                ClobDisconnectCause::BootstrapFailure => {
-                    runtime_metrics.clob_bootstrap_failures =
-                        runtime_metrics.clob_bootstrap_failures.saturating_add(1);
-                }
-                ClobDisconnectCause::ConnectFailure
-                | ClobDisconnectCause::Shutdown
-                | ClobDisconnectCause::MarketWatchClosed
-                | ClobDisconnectCause::CriticalPersistence => {}
+            if let Some(error) = fatal_error {
+                quarantine_clob_books_on_disconnect(
+                    &mut failed.registry,
+                    &state,
+                    &shared_books,
+                    Utc::now(),
+                )
+                .await;
+                let _ = complete_clob_epoch(
+                    &repository,
+                    &metrics,
+                    &mut failed,
+                    reason,
+                    cause,
+                    retry_action,
+                    consecutive_failures,
+                )
+                .await;
+                record_critical_persistence_error(&metrics, error).await;
+                return;
             }
-            if immediate_recovery {
-                runtime_metrics.clob_immediate_recoveries_scheduled = runtime_metrics
-                    .clob_immediate_recoveries_scheduled
-                    .saturating_add(1);
-            }
-            if let Some(delay) = retry_delay {
-                runtime_metrics.clob_backoff_scheduled_milliseconds = runtime_metrics
-                    .clob_backoff_scheduled_milliseconds
-                    .saturating_add(duration_milliseconds(delay));
+            match promote_clob_epoch_if_ready(
+                &mut active,
+                &mut successor,
+                &markets,
+                &repository,
+                &state,
+                &shared_books,
+                &metrics,
+                max_book_age,
+                &mut consecutive_failures,
+                &mut recovery_window,
+            )
+            .await
+            {
+                Ok(true) => {
+                    successor_failures = 0;
+                    successor_retry_at = Instant::now();
+                    let _ = complete_clob_epoch(
+                        &repository,
+                        &metrics,
+                        &mut failed,
+                        reason,
+                        cause,
+                        retry_action,
+                        consecutive_failures,
+                    )
+                    .await;
+                }
+                Ok(false) => {
+                    let unavailable_at = Utc::now();
+                    let unavailable_instant = Instant::now();
+                    quarantine_clob_books_on_disconnect(
+                        &mut failed.registry,
+                        &state,
+                        &shared_books,
+                        unavailable_at,
+                    )
+                    .await;
+                    record_clob_epoch_unavailable(
+                        &metrics,
+                        unavailable_at,
+                        unavailable_instant,
+                        &mut recovery_window,
+                    )
+                    .await;
+                    {
+                        let mut runtime_metrics = metrics.write().await;
+                        clear_clob_connection_metrics(
+                            &mut runtime_metrics,
+                            unavailable_at,
+                            &reason,
+                            recovery_window.since,
+                            consecutive_failures,
+                        );
+                    }
+                    if successor.is_none() && connect_task.is_none() {
+                        successor_failures = 0;
+                        successor_retry_at = Instant::now();
+                    }
+                    let _ = complete_clob_epoch(
+                        &repository,
+                        &metrics,
+                        &mut failed,
+                        reason,
+                        cause,
+                        retry_action,
+                        consecutive_failures,
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    quarantine_clob_books_on_disconnect(
+                        &mut failed.registry,
+                        &state,
+                        &shared_books,
+                        Utc::now(),
+                    )
+                    .await;
+                    let _ = complete_clob_epoch(
+                        &repository,
+                        &metrics,
+                        &mut failed,
+                        reason,
+                        cause,
+                        retry_action,
+                        consecutive_failures,
+                    )
+                    .await;
+                    if let Some(mut failed_successor) = successor.take() {
+                        let _ = complete_clob_epoch(
+                            &repository,
+                            &metrics,
+                            &mut failed_successor,
+                            "critical_promotion_persistence".to_string(),
+                            ClobDisconnectCause::CriticalPersistence,
+                            ClobRetryAction::Stop,
+                            successor_failures,
+                        )
+                        .await;
+                    }
+                    record_critical_persistence_error(&metrics, error).await;
+                    return;
+                }
             }
         }
-        log_clob_disconnect(
-            connection_id,
-            reconnect_ordinal,
-            disconnected_instant.duration_since(connected_instant),
-            healthy_epoch,
-            disconnect_cause,
-            retry_action,
+    }
+
+    if let Some(task) = connect_task.take() {
+        task.abort();
+        let _ = task.await;
+    }
+    let stop_cause = if *shutdown.borrow() {
+        ClobDisconnectCause::Shutdown
+    } else {
+        ClobDisconnectCause::MarketWatchClosed
+    };
+    let stop_reason = match stop_cause {
+        ClobDisconnectCause::Shutdown => "shutdown",
+        ClobDisconnectCause::MarketWatchClosed => "market_watch_closed",
+        _ => unreachable!("CLOB supervisor only stops for shutdown or a closed market watch"),
+    };
+    if let Some(mut epoch) = active.take() {
+        quarantine_clob_books_on_disconnect(&mut epoch.registry, &state, &shared_books, Utc::now())
+            .await;
+        let _ = complete_clob_epoch(
+            &repository,
+            &metrics,
+            &mut epoch,
+            stop_reason.to_string(),
+            stop_cause,
+            ClobRetryAction::Stop,
             consecutive_failures,
-            &reason,
-        );
-        if !finish_feed_session_or_fail(&repository, &session, &metrics).await {
-            return;
-        }
-        if let Some(error) = fatal_persistence_error {
-            record_critical_persistence_error(&metrics, error).await;
-            return;
-        }
-        match retry_action {
-            ClobRetryAction::Stop => return,
-            ClobRetryAction::ImmediateRecovery => continue,
-            ClobRetryAction::Backoff(delay) => {
-                if !wait_reconnect_backoff(delay, &mut shutdown).await {
-                    break;
-                }
-            }
-        }
+        )
+        .await;
+    }
+    if let Some(mut epoch) = successor.take() {
+        let _ = complete_clob_epoch(
+            &repository,
+            &metrics,
+            &mut epoch,
+            stop_reason.to_string(),
+            stop_cause,
+            ClobRetryAction::Stop,
+            successor_failures,
+        )
+        .await;
     }
 }
 
@@ -2196,6 +3482,20 @@ fn clob_retry_action(
     }
 }
 
+fn clob_candidate_retry_action(
+    config: &BtcRuntimeConfig,
+    healthy_epoch: bool,
+    consecutive_failures: &mut u32,
+) -> ClobRetryAction {
+    if healthy_epoch {
+        *consecutive_failures = 0;
+        ClobRetryAction::ImmediateRecovery
+    } else {
+        *consecutive_failures = consecutive_failures.saturating_add(1);
+        ClobRetryAction::Backoff(reconnect_backoff(config, *consecutive_failures))
+    }
+}
+
 fn market_watch_disposition(
     changed: &Result<(), watch::error::RecvError>,
 ) -> MarketWatchDisposition {
@@ -2213,12 +3513,23 @@ async fn quarantine_clob_books_on_disconnect(
     disconnected_at: DateTime<Utc>,
 ) {
     registry.quarantine(FeedIntegrityStatus::Stale);
-    {
-        let mut shared = state.write().await;
-        shared.update_books(registry);
-        shared.last_updated_at = Some(disconnected_at);
-    }
-    *shared_books.write().await = registry.clone();
+    let mut published_books = shared_books.write().await;
+    let mut shared = state.write().await;
+    *published_books = registry.clone();
+    shared.update_books(registry);
+    shared.last_updated_at = Some(disconnected_at);
+}
+
+async fn quarantine_published_clob_books(
+    state: &Arc<RwLock<RealtimeState>>,
+    shared_books: &Arc<RwLock<BookRegistry>>,
+    disconnected_at: DateTime<Utc>,
+) {
+    let mut published_books = shared_books.write().await;
+    published_books.quarantine(FeedIntegrityStatus::Stale);
+    let mut shared = state.write().await;
+    shared.update_books(&published_books);
+    shared.last_updated_at = Some(disconnected_at);
 }
 
 fn clob_epoch_ready(
@@ -2229,6 +3540,117 @@ fn clob_epoch_ready(
 ) -> bool {
     unique_current_clob_market(markets, now)
         .is_some_and(|market| registry.market_books_ready(market, now, max_age))
+}
+
+fn should_start_clob_successor(
+    successor_present: bool,
+    connect_in_flight: bool,
+    has_desired_markets: bool,
+    now: Instant,
+    retry_at: Instant,
+) -> bool {
+    !successor_present && !connect_in_flight && has_desired_markets && now >= retry_at
+}
+
+#[cfg(test)]
+fn clob_subscription_identities(markets: &[BtcIntervalMarket]) -> Vec<ClobMarketIdentity> {
+    let mut identities = markets
+        .iter()
+        .map(ClobMarketIdentity::from)
+        .collect::<Vec<_>>();
+    identities.sort();
+    identities.dedup();
+    identities
+}
+
+#[cfg(test)]
+fn same_clob_subscription_identity(
+    left: &[BtcIntervalMarket],
+    right: &[BtcIntervalMarket],
+) -> bool {
+    clob_subscription_identities(left) == clob_subscription_identities(right)
+}
+
+fn clob_successor_ready(
+    successor: &ClobEpoch,
+    desired_markets: &[BtcIntervalMarket],
+    checked_at: DateTime<Utc>,
+    max_book_age: Duration,
+) -> bool {
+    successor.connection_id == successor.registry.connection_id()
+        && same_market_subscriptions(&successor.markets, desired_markets)
+        && clob_epoch_ready(
+            &successor.registry,
+            desired_markets,
+            checked_at,
+            max_book_age,
+        )
+}
+
+#[derive(Debug)]
+struct ClobSuccessorPublication {
+    current_market: ClobMarketIdentity,
+    registry: BookRegistry,
+    checkpoints: [OrderbookCheckpoint; 2],
+}
+
+fn prepare_clob_successor_publication(
+    successor: &ClobEpoch,
+    desired_markets: &[BtcIntervalMarket],
+    publication_boundary: DateTime<Utc>,
+    max_book_age: Duration,
+) -> Result<Option<ClobSuccessorPublication>> {
+    if !clob_successor_ready(
+        successor,
+        desired_markets,
+        publication_boundary,
+        max_book_age,
+    ) {
+        return Ok(None);
+    }
+    let Some(current_market) = unique_current_clob_market(desired_markets, publication_boundary)
+    else {
+        return Ok(None);
+    };
+    let frozen_registry = successor.registry.clone();
+    let checkpoints = [
+        frozen_registry
+            .checkpoint(&current_market.up_token_id)
+            .context("ready CLOB successor is missing its up checkpoint")?,
+        frozen_registry
+            .checkpoint(&current_market.down_token_id)
+            .context("ready CLOB successor is missing its down checkpoint")?,
+    ];
+    if checkpoints.iter().any(|checkpoint| {
+        checkpoint.connection_id != successor.connection_id
+            || checkpoint.market_id != current_market.market_id
+            || checkpoint.source_timestamp > publication_boundary
+            || checkpoint.received_at > publication_boundary
+    }) {
+        return Ok(None);
+    }
+    if checkpoints[0].token_id != current_market.up_token_id
+        || checkpoints[1].token_id != current_market.down_token_id
+    {
+        return Ok(None);
+    }
+    Ok(Some(ClobSuccessorPublication {
+        current_market: ClobMarketIdentity::from(current_market),
+        registry: frozen_registry,
+        checkpoints,
+    }))
+}
+
+fn clob_successor_publication_still_valid(
+    successor: &ClobEpoch,
+    desired_markets: &[BtcIntervalMarket],
+    expected_current_market: &ClobMarketIdentity,
+    checked_at: DateTime<Utc>,
+    max_book_age: Duration,
+) -> bool {
+    clob_successor_ready(successor, desired_markets, checked_at, max_book_age)
+        && unique_current_clob_market(desired_markets, checked_at)
+            .is_some_and(|market| expected_current_market.matches(market))
 }
 
 fn unique_current_clob_market(
@@ -4537,6 +5959,7 @@ fn same_market_subscriptions(left: &[BtcIntervalMarket], right: &[BtcIntervalMar
                 &market.up_token_id,
                 &market.down_token_id,
                 market.window_start,
+                market.window_end,
             )
         })
         .collect();
@@ -4549,6 +5972,7 @@ fn same_market_subscriptions(left: &[BtcIntervalMarket], right: &[BtcIntervalMar
                 &market.up_token_id,
                 &market.down_token_id,
                 market.window_start,
+                market.window_end,
             )
         })
         .collect();
@@ -4906,6 +6330,706 @@ mod tests {
             assert!(events.iter().all(|event| event.applied));
         }
         registry
+    }
+
+    fn apply_ready_book_snapshot(
+        registry: &mut BookRegistry,
+        market: &BtcIntervalMarket,
+        token_id: &str,
+        source_at: DateTime<Utc>,
+    ) {
+        let events = registry.apply(
+            ClobMessage::Book {
+                market_id: market.condition_id.clone(),
+                token_id: token_id.to_string(),
+                bids: vec![OrderbookLevel {
+                    price: dec!(0.48),
+                    size: dec!(10),
+                }],
+                asks: vec![OrderbookLevel {
+                    price: dec!(0.52),
+                    size: dec!(10),
+                }],
+                source_timestamp: source_at,
+                source_hash: Some(format!("hash-{token_id}")),
+                raw_payload: serde_json::json!({}),
+            },
+            source_at + Duration::milliseconds(1),
+        );
+        assert!(events.iter().all(|event| event.applied));
+    }
+
+    async fn inert_clob_socket() -> ClobSocket {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let (client, server) =
+            tokio::join!(tokio::net::TcpStream::connect(address), listener.accept());
+        let client = client.unwrap();
+        let (server, _) = server.unwrap();
+        let socket = WebSocketStream::from_raw_socket(
+            MaybeTlsStream::Plain(client),
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        drop(server);
+        socket
+    }
+
+    async fn private_clob_epoch(
+        market: BtcIntervalMarket,
+        registry: BookRegistry,
+        checked_at: DateTime<Utc>,
+        max_book_age: Duration,
+    ) -> ClobEpoch {
+        let connection_id = registry.connection_id();
+        let connected_instant = Instant::now();
+        let watchdog = ClobFeedWatchdog::new(
+            connected_instant,
+            &registry,
+            std::slice::from_ref(&market),
+            checked_at,
+            max_book_age,
+        );
+        ClobEpoch {
+            connection_id,
+            connection_epoch: 1,
+            socket: inert_clob_socket().await,
+            registry,
+            markets: vec![market],
+            session: new_session(
+                connection_id,
+                "polymarket_clob_market",
+                "ws://127.0.0.1",
+                1,
+                checked_at,
+            ),
+            subscription_stats: ClobSubscriptionStats::default(),
+            connected_instant,
+            watchdog,
+            healthy_epoch: false,
+            books_usable: false,
+            pending_resolutions: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn clob_subscription_identity_is_exact_and_order_independent() {
+        let first = market();
+        let mut second = first.clone();
+        second.market_id = "market-next".to_string();
+        second.condition_id = "condition-next".to_string();
+        second.up_token_id = "up-next".to_string();
+        second.down_token_id = "down-next".to_string();
+        second.window_start += Duration::minutes(5);
+        second.window_end += Duration::minutes(5);
+
+        let mut refreshed_first = first.clone();
+        refreshed_first.event_id = "refreshed-event".to_string();
+        refreshed_first.tick_size = dec!(0.001);
+        refreshed_first.minimum_order_size = Some(dec!(10));
+        refreshed_first.fee_schedule = serde_json::json!({"maker": "updated"});
+        refreshed_first.raw_payload = serde_json::json!({"refreshed": true});
+        assert!(same_clob_subscription_identity(
+            &[first.clone(), second.clone(), first.clone()],
+            &[second.clone(), refreshed_first],
+        ));
+
+        for changed in [
+            ("market", "changed-market"),
+            ("condition", "changed-condition"),
+            ("up", "changed-up"),
+            ("down", "changed-down"),
+        ] {
+            let mut mutated = first.clone();
+            match changed.0 {
+                "market" => mutated.market_id = changed.1.to_string(),
+                "condition" => mutated.condition_id = changed.1.to_string(),
+                "up" => mutated.up_token_id = changed.1.to_string(),
+                "down" => mutated.down_token_id = changed.1.to_string(),
+                _ => unreachable!(),
+            }
+            assert!(!same_clob_subscription_identity(
+                std::slice::from_ref(&first),
+                &[mutated],
+            ));
+        }
+    }
+
+    #[test]
+    fn successor_admission_enforces_two_connection_cap() {
+        let now = Instant::now();
+        assert!(should_start_clob_successor(false, false, true, now, now));
+        assert!(!should_start_clob_successor(true, false, true, now, now));
+        assert!(!should_start_clob_successor(false, true, true, now, now));
+        assert!(!should_start_clob_successor(false, false, false, now, now));
+        assert!(!should_start_clob_successor(
+            false,
+            false,
+            true,
+            now,
+            now + StdDuration::from_millis(1),
+        ));
+    }
+
+    #[test]
+    fn healthy_successor_failure_retries_immediately_without_backoff_debt() {
+        let config = BtcRuntimeConfig::default();
+        let mut failures = 7;
+        assert_eq!(
+            clob_candidate_retry_action(&config, true, &mut failures),
+            ClobRetryAction::ImmediateRecovery
+        );
+        assert_eq!(failures, 0);
+
+        assert!(matches!(
+            clob_candidate_retry_action(&config, false, &mut failures),
+            ClobRetryAction::Backoff(delay) if delay == config.reconnect_initial_delay
+        ));
+        assert_eq!(failures, 1);
+    }
+
+    #[test]
+    fn successor_attempt_metrics_do_not_overwrite_active_availability() {
+        let connected_id = Uuid::new_v4();
+        let disconnected_at = Utc::now();
+        let mut metrics = BtcRuntimeMetrics {
+            reconnects: 4,
+            clob_connected_connection_epoch: Some(8),
+            clob_connected_connection_id: Some(connected_id),
+            clob_last_disconnect_at: Some(disconnected_at),
+            clob_last_disconnect_reason: Some("active-history".to_string()),
+            ..BtcRuntimeMetrics::default()
+        };
+
+        clob_candidate_attempt_metrics(
+            &mut metrics,
+            ClobDisconnectCause::TransportFailure,
+            ClobRetryAction::ImmediateRecovery,
+        );
+
+        assert_eq!(metrics.reconnects, 4);
+        assert_eq!(metrics.clob_connected_connection_epoch, Some(8));
+        assert_eq!(metrics.clob_connected_connection_id, Some(connected_id));
+        assert_eq!(metrics.clob_last_disconnect_at, Some(disconnected_at));
+        assert_eq!(
+            metrics.clob_last_disconnect_reason.as_deref(),
+            Some("active-history")
+        );
+        assert_eq!(metrics.clob_transport_disconnects, 1);
+        assert_eq!(metrics.clob_immediate_recoveries_scheduled, 1);
+    }
+
+    #[tokio::test]
+    async fn private_successor_frames_remain_private() {
+        let current = market();
+        let checked_at = current.window_start + Duration::minutes(1);
+        let max_book_age = Duration::seconds(2);
+        let mut candidate_registry = BookRegistry::new(Uuid::new_v4());
+        candidate_registry.register_market(&current);
+        let mut candidate = private_clob_epoch(
+            current.clone(),
+            candidate_registry,
+            checked_at,
+            max_book_age,
+        )
+        .await;
+        let mut public_registry = BookRegistry::new(Uuid::new_v4());
+        public_registry.register_market(&current);
+        let public_connection_id = public_registry.connection_id();
+        let public_state = RealtimeState::default();
+        let public_metrics = BtcRuntimeMetrics::default();
+        let (_writer, mut reader) = mpsc::channel::<PersistItem>(4);
+
+        let book = serde_json::json!({
+            "event_type": "book",
+            "market": current.condition_id,
+            "asset_id": current.up_token_id,
+            "timestamp": checked_at.timestamp_millis().to_string(),
+            "hash": "candidate-up",
+            "bids": [{"price": ".48", "size": "10"}],
+            "asks": [{"price": ".52", "size": "10"}]
+        });
+        assert_eq!(
+            apply_private_clob_frame(&mut candidate, Message::Text(book.to_string().into())),
+            ClobFrameAction::Continue
+        );
+        assert!(candidate
+            .registry
+            .checkpoint(&current.up_token_id)
+            .is_some());
+
+        let resolution_received_before = Utc::now();
+        let resolution_source_at = current.window_end + Duration::seconds(1);
+        let resolved = serde_json::json!({
+            "event_type": "market_resolved",
+            "market": current.condition_id,
+            "winning_asset_id": current.down_token_id,
+            "winning_outcome": "Down",
+            "timestamp": resolution_source_at.timestamp_millis().to_string()
+        });
+        assert_eq!(
+            apply_private_clob_frame(&mut candidate, Message::Text(resolved.to_string().into()),),
+            ClobFrameAction::Continue
+        );
+        let resolution_received_after = Utc::now();
+        let buffered = candidate
+            .pending_resolutions
+            .get(&current.market_id)
+            .expect("known private resolution remains buffered before promotion");
+        assert!(buffered.received_at >= resolution_received_before);
+        assert!(buffered.received_at <= resolution_received_after);
+        assert!(matches!(
+            &buffered.message,
+            ClobMessage::MarketResolved { winning_token_id, .. }
+                if winning_token_id == &current.down_token_id
+        ));
+        let first_resolution_receipt = buffered.received_at;
+        let duplicate = serde_json::json!({
+            "event_type": "market_resolved",
+            "market": current.market_id,
+            "winning_asset_id": current.down_token_id,
+            "winning_outcome": "Down",
+            "timestamp": (resolution_source_at + Duration::milliseconds(1))
+                .timestamp_millis()
+                .to_string()
+        });
+        assert_eq!(
+            apply_private_clob_frame(&mut candidate, Message::Text(duplicate.to_string().into()),),
+            ClobFrameAction::Continue
+        );
+        assert_eq!(
+            candidate
+                .pending_resolutions
+                .get(&current.market_id)
+                .expect("duplicate resolution preserves first observation")
+                .received_at,
+            first_resolution_receipt
+        );
+
+        assert_eq!(public_registry.connection_id(), public_connection_id);
+        assert!(public_registry.checkpoint(&current.up_token_id).is_none());
+        assert_eq!(public_state, RealtimeState::default());
+        assert_eq!(public_metrics.clob_messages_received, 0);
+        assert!(matches!(
+            reader.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+
+        assert_eq!(
+            apply_private_clob_frame(
+                &mut candidate,
+                Message::Text("{malformed".to_string().into()),
+            ),
+            ClobFrameAction::Disconnect
+        );
+        assert!(public_registry.checkpoint(&current.up_token_id).is_none());
+        assert_eq!(public_metrics.decode_errors, 0);
+        assert!(matches!(
+            reader.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn conflicting_private_resolution_retires_without_overwriting_first_fact() {
+        let current = market();
+        let checked_at = current.window_start + Duration::minutes(1);
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&current);
+        let mut candidate =
+            private_clob_epoch(current.clone(), registry, checked_at, Duration::seconds(2)).await;
+        let source_at = current.window_end + Duration::seconds(1);
+        let first = serde_json::json!({
+            "event_type": "market_resolved",
+            "market": current.condition_id,
+            "winning_asset_id": current.down_token_id,
+            "winning_outcome": "Down",
+            "timestamp": source_at.timestamp_millis().to_string()
+        });
+        assert_eq!(
+            apply_private_clob_frame(&mut candidate, Message::Text(first.to_string().into())),
+            ClobFrameAction::Continue
+        );
+        let first_received_at = candidate
+            .pending_resolutions
+            .get(&current.market_id)
+            .expect("first resolution is buffered")
+            .received_at;
+
+        let conflicting = serde_json::json!({
+            "event_type": "market_resolved",
+            "market": current.market_id,
+            "winning_asset_id": current.up_token_id,
+            "winning_outcome": "Up",
+            "timestamp": (source_at + Duration::milliseconds(1))
+                .timestamp_millis()
+                .to_string()
+        });
+        assert_eq!(
+            apply_private_clob_frame(
+                &mut candidate,
+                Message::Text(conflicting.to_string().into()),
+            ),
+            ClobFrameAction::Disconnect
+        );
+        assert_eq!(
+            candidate.session.disconnect_reason.as_deref(),
+            Some("successor_resolution_conflict")
+        );
+        let preserved = candidate
+            .pending_resolutions
+            .get(&current.market_id)
+            .expect("conflict preserves the first resolution fact");
+        assert_eq!(preserved.received_at, first_received_at);
+        assert!(matches!(
+            &preserved.message,
+            ClobMessage::MarketResolved { winning_token_id, .. }
+                if winning_token_id == &current.down_token_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn promotion_preparation_requires_exact_causal_book_pair() {
+        let current = market();
+        let publication_boundary = current.window_start + Duration::minutes(1);
+        let max_book_age = Duration::seconds(2);
+        let registry =
+            ready_book_registry(&current, publication_boundary - Duration::milliseconds(1));
+        let mut candidate = private_clob_epoch(
+            current.clone(),
+            registry,
+            publication_boundary,
+            max_book_age,
+        )
+        .await;
+        let prepared = prepare_clob_successor_publication(
+            &candidate,
+            std::slice::from_ref(&current),
+            publication_boundary,
+            max_book_age,
+        )
+        .unwrap()
+        .expect("fresh exact outcome pair should be promotable");
+        assert!(prepared.current_market.matches(&current));
+        assert_eq!(prepared.checkpoints[0].token_id, current.up_token_id);
+        assert_eq!(prepared.checkpoints[1].token_id, current.down_token_id);
+
+        let connection_id = candidate.connection_id;
+        candidate.connection_id = Uuid::new_v4();
+        assert!(prepare_clob_successor_publication(
+            &candidate,
+            std::slice::from_ref(&current),
+            publication_boundary,
+            max_book_age,
+        )
+        .unwrap()
+        .is_none());
+        candidate.connection_id = connection_id;
+
+        let mut mutated_identity = current.clone();
+        mutated_identity.up_token_id = "different-up".to_string();
+        assert!(prepare_clob_successor_publication(
+            &candidate,
+            &[mutated_identity],
+            publication_boundary,
+            max_book_age,
+        )
+        .unwrap()
+        .is_none());
+        let mut shifted_window = current.clone();
+        shifted_window.window_start += Duration::seconds(1);
+        shifted_window.window_end += Duration::seconds(1);
+        assert!(prepare_clob_successor_publication(
+            &candidate,
+            &[shifted_window],
+            publication_boundary,
+            max_book_age,
+        )
+        .unwrap()
+        .is_none());
+        assert!(prepare_clob_successor_publication(
+            &candidate,
+            std::slice::from_ref(&current),
+            publication_boundary + max_book_age + Duration::milliseconds(1),
+            max_book_age,
+        )
+        .unwrap()
+        .is_none());
+
+        let mut incomplete = BookRegistry::new(Uuid::new_v4());
+        incomplete.register_market(&current);
+        apply_ready_book_snapshot(
+            &mut incomplete,
+            &current,
+            &current.up_token_id,
+            publication_boundary - Duration::milliseconds(1),
+        );
+        candidate.connection_id = incomplete.connection_id();
+        candidate.registry = incomplete;
+        assert!(prepare_clob_successor_publication(
+            &candidate,
+            std::slice::from_ref(&current),
+            publication_boundary,
+            max_book_age,
+        )
+        .unwrap()
+        .is_none());
+
+        let future_registry =
+            ready_book_registry(&current, publication_boundary + Duration::milliseconds(1));
+        candidate.connection_id = future_registry.connection_id();
+        candidate.registry = future_registry;
+        assert!(prepare_clob_successor_publication(
+            &candidate,
+            std::slice::from_ref(&current),
+            publication_boundary,
+            max_book_age,
+        )
+        .unwrap()
+        .is_none());
+    }
+
+    #[test]
+    fn clob_watchdog_tracks_read_and_pong_deadlines_independently() {
+        let now = Instant::now();
+        let checked_at = market().window_start + Duration::minutes(1);
+        let registry = BookRegistry::new(Uuid::new_v4());
+        let mut watchdog =
+            ClobFeedWatchdog::new(now, &registry, &[], checked_at, Duration::seconds(2));
+        let initial_read_deadline = now + CLOB_READ_IDLE_TIMEOUT;
+        assert_eq!(watchdog.read_idle_deadline, initial_read_deadline);
+        assert_eq!(watchdog.pong_deadline, None);
+
+        let ping_at = now + StdDuration::from_secs(1);
+        watchdog.arm_text_pong(ping_at);
+        let pong_deadline = ping_at + CLOB_PONG_TIMEOUT;
+        assert_eq!(watchdog.read_idle_deadline, initial_read_deadline);
+        assert_eq!(watchdog.pong_deadline, Some(pong_deadline));
+
+        let frame_at = now + StdDuration::from_secs(2);
+        watchdog.on_frame(frame_at);
+        assert_eq!(
+            watchdog.read_idle_deadline,
+            frame_at + CLOB_READ_IDLE_TIMEOUT
+        );
+        assert_eq!(watchdog.pong_deadline, Some(pong_deadline));
+        assert!(watchdog.awaiting_text_pong);
+
+        assert!(!watchdog.acknowledge_text_pong("pong"));
+        assert!(!watchdog.acknowledge_text_pong("PONG "));
+        assert_eq!(watchdog.pong_deadline, Some(pong_deadline));
+        assert!(watchdog.acknowledge_text_pong("PONG"));
+        assert_eq!(watchdog.pong_deadline, None);
+        assert!(!watchdog.awaiting_text_pong);
+        assert_eq!(
+            watchdog.read_idle_deadline,
+            frame_at + CLOB_READ_IDLE_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn clob_watchdog_bootstrap_requires_both_current_books() {
+        let current = market();
+        let checked_at = current.window_start + Duration::minutes(1);
+        let source_at = checked_at - Duration::milliseconds(1);
+        let now = Instant::now();
+        let max_book_age = Duration::seconds(2);
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&current);
+        let mut watchdog = ClobFeedWatchdog::new(
+            now,
+            &registry,
+            std::slice::from_ref(&current),
+            checked_at,
+            max_book_age,
+        );
+        let bootstrap_deadline = now + CLOB_BOOTSTRAP_TIMEOUT;
+        assert_eq!(watchdog.bootstrap_deadline, Some(bootstrap_deadline));
+
+        apply_ready_book_snapshot(&mut registry, &current, &current.up_token_id, source_at);
+        watchdog.refresh_bootstrap(
+            now + StdDuration::from_millis(1),
+            &registry,
+            std::slice::from_ref(&current),
+            checked_at,
+            max_book_age,
+        );
+        assert_eq!(watchdog.bootstrap_deadline, Some(bootstrap_deadline));
+
+        apply_ready_book_snapshot(&mut registry, &current, &current.down_token_id, source_at);
+        watchdog.refresh_bootstrap(
+            now + StdDuration::from_millis(2),
+            &registry,
+            std::slice::from_ref(&current),
+            checked_at,
+            max_book_age,
+        );
+        assert_eq!(watchdog.bootstrap_deadline, None);
+    }
+
+    #[tokio::test]
+    async fn once_ready_private_epoch_rearms_bootstrap_retirement_when_books_age_stale() {
+        let current = market();
+        let ready_at = current.window_start + Duration::minutes(1);
+        let ready_instant = Instant::now();
+        let max_book_age = Duration::seconds(2);
+        let registry = ready_book_registry(&current, ready_at - Duration::milliseconds(1));
+        let connection_id = registry.connection_id();
+        let watchdog = ClobFeedWatchdog::new(
+            ready_instant,
+            &registry,
+            std::slice::from_ref(&current),
+            ready_at,
+            max_book_age,
+        );
+        assert_eq!(watchdog.bootstrap_deadline, None);
+
+        let mut epoch = ClobEpoch {
+            connection_id,
+            connection_epoch: 1,
+            socket: inert_clob_socket().await,
+            registry,
+            markets: vec![current],
+            session: new_session(
+                connection_id,
+                "polymarket_clob_market",
+                "ws://127.0.0.1",
+                1,
+                ready_at,
+            ),
+            subscription_stats: ClobSubscriptionStats::default(),
+            connected_instant: ready_instant,
+            watchdog,
+            healthy_epoch: true,
+            books_usable: true,
+            pending_resolutions: HashMap::new(),
+        };
+        let stale_at = ready_at + max_book_age + Duration::milliseconds(1);
+        let stale_instant = ready_instant + StdDuration::from_millis(2_001);
+
+        epoch.refresh_private_health(stale_at, stale_instant, max_book_age);
+
+        let retirement_deadline = stale_instant + CLOB_BOOTSTRAP_TIMEOUT;
+        assert!(!epoch.books_usable);
+        assert!(epoch.healthy_epoch);
+        assert_eq!(epoch.watchdog.bootstrap_deadline, Some(retirement_deadline));
+
+        epoch.refresh_private_health(
+            stale_at + Duration::milliseconds(100),
+            stale_instant + StdDuration::from_millis(100),
+            max_book_age,
+        );
+        assert_eq!(epoch.watchdog.bootstrap_deadline, Some(retirement_deadline));
+    }
+
+    #[test]
+    fn clob_watchdog_omits_bootstrap_deadline_without_unique_current_market() {
+        let current = market();
+        let checked_at = current.window_start + Duration::minutes(1);
+        let now = Instant::now();
+        let max_book_age = Duration::seconds(2);
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&current);
+        let mut watchdog = ClobFeedWatchdog::new(
+            now,
+            &registry,
+            std::slice::from_ref(&current),
+            checked_at,
+            max_book_age,
+        );
+        assert!(watchdog.bootstrap_deadline.is_some());
+
+        let mut conflicting = current.clone();
+        conflicting.market_id = "other-market".to_string();
+        conflicting.condition_id = "other-condition".to_string();
+        conflicting.up_token_id = "other-up".to_string();
+        conflicting.down_token_id = "other-down".to_string();
+        watchdog.refresh_bootstrap(
+            now + StdDuration::from_millis(1),
+            &registry,
+            &[current, conflicting],
+            checked_at,
+            max_book_age,
+        );
+        assert_eq!(watchdog.bootstrap_market, None);
+        assert_eq!(watchdog.bootstrap_deadline, None);
+
+        watchdog.refresh_bootstrap(
+            now + StdDuration::from_millis(2),
+            &registry,
+            &[],
+            checked_at,
+            max_book_age,
+        );
+        assert_eq!(watchdog.bootstrap_market, None);
+        assert_eq!(watchdog.bootstrap_deadline, None);
+    }
+
+    #[test]
+    fn stale_or_prior_window_books_cannot_satisfy_current_bootstrap() {
+        let current = market();
+        let checked_at = current.window_start + Duration::minutes(1);
+        let max_book_age = Duration::seconds(2);
+        let mut prior = current.clone();
+        prior.market_id = "prior-market".to_string();
+        prior.condition_id = "prior-condition".to_string();
+        prior.up_token_id = "prior-up".to_string();
+        prior.down_token_id = "prior-down".to_string();
+        prior.window_start -= Duration::minutes(5);
+        prior.window_end -= Duration::minutes(5);
+
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&prior);
+        registry.register_market(&current);
+        let fresh_source_at = checked_at - Duration::milliseconds(1);
+        for token_id in [&prior.up_token_id, &prior.down_token_id] {
+            apply_ready_book_snapshot(&mut registry, &prior, token_id, fresh_source_at);
+        }
+        assert!(registry.market_books_ready(&prior, checked_at, max_book_age));
+        assert!(!clob_epoch_ready(
+            &registry,
+            &[prior.clone(), current.clone()],
+            checked_at,
+            max_book_age,
+        ));
+
+        let now = Instant::now();
+        let mut watchdog = ClobFeedWatchdog::new(
+            now,
+            &registry,
+            &[prior.clone(), current.clone()],
+            checked_at,
+            max_book_age,
+        );
+        assert_eq!(
+            watchdog.bootstrap_market,
+            Some(ClobMarketIdentity::from(&current))
+        );
+        let bootstrap_deadline = now + CLOB_BOOTSTRAP_TIMEOUT;
+        assert_eq!(watchdog.bootstrap_deadline, Some(bootstrap_deadline));
+
+        let stale_source_at = checked_at - max_book_age - Duration::milliseconds(1);
+        for token_id in [&current.up_token_id, &current.down_token_id] {
+            apply_ready_book_snapshot(&mut registry, &current, token_id, stale_source_at);
+        }
+        let active_markets = [prior, current];
+        watchdog.refresh_bootstrap(
+            now + StdDuration::from_millis(1),
+            &registry,
+            &active_markets,
+            checked_at,
+            max_book_age,
+        );
+        assert_eq!(watchdog.bootstrap_deadline, Some(bootstrap_deadline));
+        assert!(!clob_epoch_ready(
+            &registry,
+            &active_markets,
+            checked_at,
+            max_book_age,
+        ));
     }
 
     #[tokio::test]
@@ -5669,6 +7793,13 @@ mod tests {
         assert!(same_market_subscriptions(
             std::slice::from_ref(&left),
             std::slice::from_ref(&refreshed),
+        ));
+        let mut shifted_window = left.clone();
+        shifted_window.window_start += Duration::seconds(1);
+        shifted_window.window_end += Duration::seconds(1);
+        assert!(!same_market_subscriptions(
+            std::slice::from_ref(&left),
+            &[shifted_window],
         ));
         refreshed.condition_id = "changed-condition".to_string();
         assert!(!same_market_subscriptions(&[left], &[refreshed]));
