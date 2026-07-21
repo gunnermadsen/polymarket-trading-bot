@@ -2490,7 +2490,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgres"
       },
-      "description": "One bar per filled, officially resolved paper entry for the selected process. Right/green means UP; left/red means DOWN. Bar length is the stored forecast probability. A ✓ label means the official outcome matched the prediction; ✕ means it did not. This uses the durable process ID and official market outcome only—never an experiment.",
+      "description": "One bar per filled, officially resolved paper entry for the selected process. Right/green means an UP forecast; left/red means DOWN. Bar length and its inline value show the stored forecast probability. Each category label shows the UTC decision time and signed net realized PnL after entry fees. This uses the durable process ID and official market outcome only—never an experiment.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2573,7 +2573,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH resolved_decisions AS MATERIALIZED (\n  SELECT\n    d.decision_at,\n    d.decision_id,\n    d.outcome AS forecast_outcome,\n    d.fair_probability,\n    m.official_outcome\n  FROM polymarket.btc_strategy_decisions d\n  JOIN polymarket.btc_interval_markets m\n    ON m.market_id=d.market_id\n  WHERE d.process_id=(${process_id:sqlstring})::uuid\n    AND d.execution_mode='paper'\n    AND d.action='buy'\n    AND d.status='filled'\n    AND d.outcome IN ('up','down')\n    AND d.fair_probability BETWEEN 0 AND 1\n    AND d.decision_at BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n    AND m.official_outcome IN ('up','down')\n    AND m.official_resolution_received_at IS NOT NULL\n  ORDER BY d.decision_at DESC\n  LIMIT 20\n)\nSELECT\n  CASE WHEN forecast_outcome=official_outcome THEN '✅ ' ELSE '❌ ' END\n    ||to_char(decision_at AT TIME ZONE 'UTC','MM-DD HH24:MI')||' UTC '\n    ||upper(forecast_outcome)||' '\n    ||to_char(fair_probability*100,'FM990.0')||'% → '\n    ||upper(official_outcome) AS \"Decision\",\n  (CASE WHEN forecast_outcome='up' THEN fair_probability ELSE -fair_probability END)::double precision\n    AS \"Forecast confidence\"\nFROM resolved_decisions\nORDER BY decision_at DESC;",
+          "rawSql": "WITH resolved_decisions AS MATERIALIZED (\n  SELECT\n    d.decision_at,\n    d.decision_id,\n    d.process_id,\n    d.outcome AS forecast_outcome,\n    d.fair_probability,\n    m.official_winning_token_id,\n    (d.metadata#>>'{paper_order_plan,orders,0,request,client_order_id}')::uuid AS client_order_id\n  FROM polymarket.btc_strategy_decisions d\n  JOIN polymarket.btc_interval_markets m\n    ON m.market_id=d.market_id\n  WHERE d.process_id=(${process_id:sqlstring})::uuid\n    AND d.execution_mode='paper'\n    AND d.action='buy'\n    AND d.status='filled'\n    AND d.outcome IN ('up','down')\n    AND d.fair_probability BETWEEN 0 AND 1\n    AND d.decision_at BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n    AND m.official_outcome IN ('up','down')\n    AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n    AND d.metadata#>>'{paper_order_plan,orders,0,request,client_order_id}' IS NOT NULL\n  ORDER BY d.decision_at DESC\n  LIMIT 20\n), resolved_entries AS MATERIALIZED (\n  SELECT\n    d.decision_at,\n    d.decision_id,\n    d.forecast_outcome,\n    d.fair_probability,\n    SUM(\n      CASE WHEN o.token_id=d.official_winning_token_id THEN f.size ELSE 0::numeric END\n      -f.price*f.size-f.fee\n    )::numeric AS net_pnl\n  FROM resolved_decisions d\n  JOIN polymarket.orders o\n    ON o.client_order_id=d.client_order_id\n   AND o.process_id=d.process_id\n  JOIN polymarket.fills f\n    ON f.order_id=o.order_id\n   AND f.process_id=o.process_id\n   AND f.source='paper'\n  GROUP BY d.decision_at,d.decision_id,d.forecast_outcome,d.fair_probability\n)\nSELECT\n  to_char(decision_at AT TIME ZONE 'UTC','MM-DD HH24:MI')||' UTC - '||\n  CASE\n    WHEN net_pnl>0 THEN '+'||chr(36)||to_char(net_pnl,'FM999999990.00')\n    WHEN net_pnl<0 THEN '-'||chr(36)||to_char(abs(net_pnl),'FM999999990.00')\n    ELSE chr(36)||'0.00'\n  END AS \"Decision\",\n  (CASE WHEN forecast_outcome='up' THEN fair_probability ELSE -fair_probability END)::double precision\n    AS \"Forecast confidence\"\nFROM resolved_entries\nORDER BY decision_at DESC;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -3126,6 +3126,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 42,
+  "version": 43,
   "weekStart": ""
 }
