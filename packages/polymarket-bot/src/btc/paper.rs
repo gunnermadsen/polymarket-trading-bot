@@ -15,6 +15,10 @@ use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use super::{
+    execution_guard::{
+        reference_execution_guard, BtcReferenceExecutionAssessment, BtcReferenceExecutionGuard,
+        BtcReferenceExecutionRejectReason,
+    },
     feeds::BookRegistry,
     strategy::dynamic_crypto_taker_fee,
     types::{FeedIntegrityStatus, OrderbookCheckpoint, OrderbookLevel},
@@ -133,9 +137,16 @@ pub struct PaperVenue {
     config: PaperVenueConfig,
     /// Process-owned strategy cap applied to raw displayed ask depth at arrival.
     max_depth_participation: Decimal,
+    reference_execution_policy: Option<ReferenceExecutionPolicy>,
     state: Arc<Mutex<PaperState>>,
     /// Serializes arrival simulation so concurrent retries cannot both fill the same client id.
     submit_guard: Arc<Mutex<()>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ReferenceExecutionPolicy {
+    expected_process_id: Uuid,
+    max_reference_age: chrono::Duration,
 }
 
 #[derive(Debug, Default)]
@@ -171,10 +182,44 @@ struct AskDepthAtLimit {
 }
 
 impl PaperVenue {
+    #[cfg(test)]
     pub fn new(
         registry: Arc<RwLock<BookRegistry>>,
         config: PaperVenueConfig,
         max_depth_participation: Decimal,
+    ) -> Result<Self> {
+        Self::new_inner(registry, config, max_depth_participation, None)
+    }
+
+    pub fn new_with_reference_execution_guard(
+        registry: Arc<RwLock<BookRegistry>>,
+        config: PaperVenueConfig,
+        max_depth_participation: Decimal,
+        expected_process_id: Uuid,
+        max_reference_age: chrono::Duration,
+    ) -> Result<Self> {
+        if expected_process_id == Uuid::nil() {
+            bail!("paper reference execution process_id must not be nil");
+        }
+        if max_reference_age <= chrono::Duration::zero() {
+            bail!("paper max_reference_age must be positive");
+        }
+        Self::new_inner(
+            registry,
+            config,
+            max_depth_participation,
+            Some(ReferenceExecutionPolicy {
+                expected_process_id,
+                max_reference_age,
+            }),
+        )
+    }
+
+    fn new_inner(
+        registry: Arc<RwLock<BookRegistry>>,
+        config: PaperVenueConfig,
+        max_depth_participation: Decimal,
+        reference_execution_policy: Option<ReferenceExecutionPolicy>,
     ) -> Result<Self> {
         config.validate()?;
         if max_depth_participation <= Decimal::ZERO || max_depth_participation > Decimal::ONE {
@@ -185,12 +230,52 @@ impl PaperVenue {
             registry,
             config,
             max_depth_participation,
+            reference_execution_policy,
             state: Arc::new(Mutex::new(PaperState {
                 collateral_usd: starting_collateral_usd,
                 ..PaperState::default()
             })),
             submit_guard: Arc::new(Mutex::new(())),
         })
+    }
+
+    fn validate_reference_execution(
+        &self,
+        request: &OrderRequest,
+        checked_at: DateTime<Utc>,
+    ) -> std::result::Result<
+        Option<(BtcReferenceExecutionGuard, BtcReferenceExecutionAssessment)>,
+        BtcReferenceExecutionRejectReason,
+    > {
+        let Some(policy) = self.reference_execution_policy else {
+            return Ok(None);
+        };
+        let guard = reference_execution_guard(request)?;
+        let assessment = guard.validate_for_request(
+            request,
+            checked_at,
+            policy.expected_process_id,
+            policy.max_reference_age,
+        )?;
+        Ok(Some((guard, assessment)))
+    }
+
+    fn validate_parsed_reference_execution(
+        &self,
+        request: &OrderRequest,
+        guard: &BtcReferenceExecutionGuard,
+        checked_at: DateTime<Utc>,
+    ) -> std::result::Result<BtcReferenceExecutionAssessment, BtcReferenceExecutionRejectReason>
+    {
+        let policy = self
+            .reference_execution_policy
+            .ok_or(BtcReferenceExecutionRejectReason::MissingGuard)?;
+        guard.validate_for_request(
+            request,
+            checked_at,
+            policy.expected_process_id,
+            policy.max_reference_age,
+        )
     }
 
     pub fn registry(&self) -> Arc<RwLock<BookRegistry>> {
@@ -243,6 +328,23 @@ impl PaperVenue {
     ) -> Result<PaperPreviewResult> {
         config.validate()?;
         let submitted_at = Utc::now();
+        let (reference_guard, reference_submit_assessment) =
+            match self.validate_reference_execution(request, submitted_at) {
+                Ok(Some((guard, assessment))) => (Some(guard), Some(assessment)),
+                Ok(None) => (None, None),
+                Err(reason) => {
+                    let execution = paper_reject(
+                        reference_execution_rejection_metadata("submit", submitted_at, reason),
+                        reason.as_str(),
+                    );
+                    return Ok(paper_preview_result(
+                        &config.scenario_key,
+                        submitted_at,
+                        submitted_at,
+                        execution,
+                    ));
+                }
+            };
         if !config.arrival_latency.is_zero() {
             tokio::time::sleep(config.arrival_latency).await;
         }
@@ -256,6 +358,8 @@ impl PaperVenue {
             .execute_at_arrival(
                 &order_id,
                 request,
+                reference_guard.as_ref(),
+                reference_submit_assessment.as_ref(),
                 submitted_at,
                 arrival_at,
                 available_collateral_usd,
@@ -266,36 +370,12 @@ impl PaperVenue {
                 Some(&config.scenario_key),
             )
             .await;
-        let filled_size = execution
-            .fills
-            .iter()
-            .map(|fill| fill.size)
-            .sum::<Decimal>();
-        let filled_notional = execution
-            .fills
-            .iter()
-            .map(|fill| fill.price * fill.size)
-            .sum::<Decimal>();
-        let fees = execution.fills.iter().map(|fill| fill.fee).sum::<Decimal>();
-        let average_fill_price =
-            (filled_size > Decimal::ZERO).then(|| filled_notional / filled_size);
-        let reject_reason = execution
-            .metadata
-            .get("reject_reason")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
-        Ok(PaperPreviewResult {
-            scenario_key: config.scenario_key.clone(),
-            state: execution.state,
+        Ok(paper_preview_result(
+            &config.scenario_key,
             submitted_at,
             arrival_at,
-            filled_size,
-            filled_notional,
-            fees,
-            average_fill_price,
-            reject_reason,
-            execution_metadata: execution.metadata,
-        })
+            execution,
+        ))
     }
 
     /// Credits an official binary-market payout exactly once for this venue instance. The
@@ -342,6 +422,8 @@ impl PaperVenue {
         &self,
         order_id: &str,
         request: &OrderRequest,
+        reference_guard: Option<&BtcReferenceExecutionGuard>,
+        reference_submit_assessment: Option<&BtcReferenceExecutionAssessment>,
         submitted_at: DateTime<Utc>,
         arrival_at: DateTime<Utc>,
         available_collateral_usd: Decimal,
@@ -351,7 +433,7 @@ impl PaperVenue {
         enforce_collateral: bool,
         preview_scenario_key: Option<&str>,
     ) -> PaperExecution {
-        let base = serde_json::json!({
+        let mut base = serde_json::json!({
             "paper_execution": {
                 "submitted_at": submitted_at,
                 "arrival_at": arrival_at,
@@ -369,6 +451,32 @@ impl PaperVenue {
                 "requested_size": request.size,
             }
         });
+
+        if let Some(assessment) = reference_submit_assessment {
+            base = merge_json(
+                base,
+                reference_execution_success_metadata("submit", assessment),
+            );
+        }
+        if let Some(guard) = reference_guard {
+            match self.validate_parsed_reference_execution(request, guard, arrival_at) {
+                Ok(assessment) => {
+                    base = merge_json(
+                        base,
+                        reference_execution_success_metadata("arrival", &assessment),
+                    );
+                }
+                Err(reason) => {
+                    return paper_reject(
+                        merge_json(
+                            base,
+                            reference_execution_rejection_metadata("arrival", arrival_at, reason),
+                        ),
+                        reason.as_str(),
+                    );
+                }
+            }
+        }
 
         if request.side != OrderSide::Buy {
             return paper_reject(base, "paper_only_supports_buy_orders");
@@ -572,10 +680,44 @@ impl ExecutionVenue for PaperVenue {
         let _guard = self.submit_guard.lock().await;
         let order_id = format!("paper-{}", request.client_order_id);
         if let Some(existing) = self.state.lock().await.orders.get(&order_id).cloned() {
-            return Ok(existing);
+            if immutable_order_request_matches(&existing.request, &request) {
+                return Ok(existing);
+            }
+            // A deterministic client ID with different immutable evidence is process corruption,
+            // not an ordinary venue rejection. Stop the owning strategy before another fill can
+            // mutate accounting or obscure the canonical order.
+            bail!(
+                "paper client_order_id {} collides with different immutable execution identity",
+                request.client_order_id
+            );
         }
 
         let submitted_at = Utc::now();
+        let (reference_guard, reference_submit_assessment) =
+            match self.validate_reference_execution(&request, submitted_at) {
+                Ok(Some((guard, assessment))) => (Some(guard), Some(assessment)),
+                Ok(None) => (None, None),
+                Err(reason) => {
+                    let execution = paper_reject(
+                        reference_execution_rejection_metadata("submit", submitted_at, reason),
+                        reason.as_str(),
+                    );
+                    request.metadata = merge_json(request.metadata, execution.metadata);
+                    let order = OrderRecord {
+                        order_id: order_id.clone(),
+                        request,
+                        state: execution.state,
+                        created_at: submitted_at,
+                        updated_at: submitted_at,
+                    };
+                    self.state
+                        .lock()
+                        .await
+                        .orders
+                        .insert(order_id, order.clone());
+                    return Ok(order);
+                }
+            };
         if !self.config.arrival_latency.is_zero() {
             tokio::time::sleep(self.config.arrival_latency).await;
         }
@@ -585,6 +727,8 @@ impl ExecutionVenue for PaperVenue {
             .execute_at_arrival(
                 &order_id,
                 &request,
+                reference_guard.as_ref(),
+                reference_submit_assessment.as_ref(),
                 submitted_at,
                 arrival_at,
                 available_collateral_usd,
@@ -836,6 +980,119 @@ impl ExecutionVenue for PaperVenue {
     }
 }
 
+fn reference_execution_success_metadata(
+    boundary: &str,
+    assessment: &BtcReferenceExecutionAssessment,
+) -> serde_json::Value {
+    let mut metadata = serde_json::Map::with_capacity(1);
+    metadata.insert(
+        format!("reference_execution_{boundary}"),
+        serde_json::json!({
+            "status": "accepted",
+            "assessment": assessment,
+        }),
+    );
+    serde_json::Value::Object(metadata)
+}
+
+fn reference_execution_rejection_metadata(
+    boundary: &str,
+    checked_at: DateTime<Utc>,
+    reason: BtcReferenceExecutionRejectReason,
+) -> serde_json::Value {
+    let mut metadata = serde_json::Map::with_capacity(1);
+    metadata.insert(
+        format!("reference_execution_{boundary}"),
+        serde_json::json!({
+            "status": "rejected",
+            "checked_at": checked_at,
+            "reason": reason.as_str(),
+        }),
+    );
+    serde_json::Value::Object(metadata)
+}
+
+fn paper_preview_result(
+    scenario_key: &str,
+    submitted_at: DateTime<Utc>,
+    arrival_at: DateTime<Utc>,
+    execution: PaperExecution,
+) -> PaperPreviewResult {
+    let filled_size = execution
+        .fills
+        .iter()
+        .map(|fill| fill.size)
+        .sum::<Decimal>();
+    let filled_notional = execution
+        .fills
+        .iter()
+        .map(|fill| fill.price * fill.size)
+        .sum::<Decimal>();
+    let fees = execution.fills.iter().map(|fill| fill.fee).sum::<Decimal>();
+    let average_fill_price = (filled_size > Decimal::ZERO).then(|| filled_notional / filled_size);
+    let reject_reason = execution
+        .metadata
+        .get("reject_reason")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    PaperPreviewResult {
+        scenario_key: scenario_key.to_string(),
+        state: execution.state,
+        submitted_at,
+        arrival_at,
+        filled_size,
+        filled_notional,
+        fees,
+        average_fill_price,
+        reject_reason,
+        execution_metadata: execution.metadata,
+    }
+}
+
+fn immutable_order_request_matches(existing: &OrderRequest, incoming: &OrderRequest) -> bool {
+    existing.client_order_id == incoming.client_order_id
+        && existing.process_id == incoming.process_id
+        && existing.market_id == incoming.market_id
+        && existing.token_id == incoming.token_id
+        && existing.side == incoming.side
+        && existing.order_type == incoming.order_type
+        && existing.price == incoming.price
+        && existing.size == incoming.size
+        && existing.signal_id == incoming.signal_id
+        && immutable_order_metadata_matches(&existing.metadata, &incoming.metadata)
+}
+
+fn immutable_order_metadata_matches(
+    existing: &serde_json::Value,
+    incoming: &serde_json::Value,
+) -> bool {
+    let (Some(existing), Some(incoming)) = (existing.as_object(), incoming.as_object()) else {
+        return existing == incoming;
+    };
+    let existing_len = existing
+        .keys()
+        .filter(|key| !execution_generated_metadata_key(key))
+        .count();
+    let incoming_len = incoming
+        .keys()
+        .filter(|key| !execution_generated_metadata_key(key))
+        .count();
+    existing_len == incoming_len
+        && existing.iter().all(|(key, value)| {
+            execution_generated_metadata_key(key) || incoming.get(key) == Some(value)
+        })
+}
+
+fn execution_generated_metadata_key(key: &str) -> bool {
+    matches!(
+        key,
+        "paper_execution"
+            | "reject_reason"
+            | "reference_execution_submit"
+            | "reference_execution_arrival"
+    )
+}
+
 fn paper_reject(base: serde_json::Value, reason: &str) -> PaperExecution {
     PaperExecution {
         state: OrderState::Rejected,
@@ -1026,8 +1283,13 @@ mod tests {
     use super::*;
     use crate::{
         btc::{
+            execution_guard::{
+                BtcReferenceExecutionGuard, BtcReferenceTickEvidence,
+                BTC_REFERENCE_EXECUTION_GUARD_VERSION,
+            },
             feeds::ClobMessage,
-            types::{BtcIntervalMarket, OrderbookLevel},
+            strategy::BTC_FEATURE_LINEAGE_VERSION,
+            types::{BtcIntervalMarket, BtcOutcome, OrderbookLevel},
         },
         models::{OrderRequest, OrderSide, OrderState, OrderType},
     };
@@ -1128,6 +1390,180 @@ mod tests {
                 "dynamic_fee_rate": "0.25"
             }),
         }
+    }
+
+    fn guarded_venue(
+        registry: Arc<RwLock<BookRegistry>>,
+        arrival_latency: Duration,
+        max_reference_age: ChronoDuration,
+    ) -> PaperVenue {
+        PaperVenue::new_with_reference_execution_guard(
+            registry,
+            PaperVenueConfig {
+                arrival_latency,
+                visible_depth_haircut: Decimal::ONE,
+                max_book_age: ChronoDuration::hours(24),
+                starting_collateral_usd: dec!(100),
+            },
+            Decimal::ONE,
+            Uuid::from_u128(201),
+            max_reference_age,
+        )
+        .unwrap()
+    }
+
+    fn guarded_request(at: DateTime<Utc>, max_reference_age: ChronoDuration) -> OrderRequest {
+        let mut request = request(dec!(2), dec!(0.40));
+        let tick = |id, age_ms| BtcReferenceTickEvidence {
+            tick_id: Uuid::from_u128(id),
+            source_timestamp: at - ChronoDuration::milliseconds(age_ms),
+            received_at: at - ChronoDuration::milliseconds(age_ms.saturating_sub(1)),
+            ingest_sequence: id as u64,
+        };
+        let mut guard = BtcReferenceExecutionGuard {
+            guard_version: BTC_REFERENCE_EXECUTION_GUARD_VERSION.to_string(),
+            process_id: request.process_id.unwrap(),
+            intent_id: Uuid::from_u128(301),
+            decision_id: Uuid::from_u128(302),
+            decision_at: at,
+            snapshot_id: Uuid::from_u128(303),
+            feature_as_of: at,
+            market_id: request.market_id.clone(),
+            token_id: request.token_id.clone(),
+            outcome: BtcOutcome::Up,
+            strategy_version: "strategy-v1".to_string(),
+            feature_schema_version: "features-v1".to_string(),
+            lineage_version: BTC_FEATURE_LINEAGE_VERSION.to_string(),
+            feature_sha256: "b".repeat(64),
+            client_order_id: request.client_order_id,
+            side: request.side,
+            order_type: request.order_type,
+            limit_price: request.price,
+            size: request.size,
+            signal_id: request.signal_id,
+            dynamic_fee_rate: dec!(0.25),
+            chainlink_open: tick(304, 60_000),
+            chainlink: tick(305, 5),
+            binance: tick(306, 4),
+            max_reference_age_ms: max_reference_age.num_milliseconds(),
+            evidence_sha256: String::new(),
+        };
+        guard.reseal_for_test();
+        request.metadata = serde_json::json!({
+            "execution_intent": "entry",
+            "process_id": guard.process_id,
+            "decision_id": guard.decision_id,
+            "feature_snapshot_id": guard.snapshot_id,
+            "strategy_version": guard.strategy_version,
+            "feature_schema_version": guard.feature_schema_version,
+            "outcome": guard.outcome,
+            "dynamic_fee_rate": guard.dynamic_fee_rate,
+        });
+        guard.insert_into_metadata(&mut request.metadata).unwrap();
+        request
+    }
+
+    #[tokio::test]
+    async fn production_venue_rejects_missing_reference_guard_without_accounting_mutation() {
+        let venue = guarded_venue(
+            registry_with_book(
+                Utc::now(),
+                vec![OrderbookLevel {
+                    price: dec!(0.40),
+                    size: dec!(10),
+                }],
+            ),
+            Duration::ZERO,
+            ChronoDuration::seconds(2),
+        );
+
+        let order = venue
+            .submit_order(request(dec!(2), dec!(0.40)))
+            .await
+            .unwrap();
+        let status = venue.status().await;
+
+        assert_eq!(order.state, OrderState::Rejected);
+        assert_eq!(
+            order.request.metadata["reject_reason"],
+            "missing_reference_execution_guard"
+        );
+        assert_eq!(status.available_collateral_usd, dec!(100));
+        assert_eq!(status.entry_debits_usd, Decimal::ZERO);
+        assert_eq!(status.fill_count, 0);
+        assert_eq!(status.order_count, 1);
+    }
+
+    #[tokio::test]
+    async fn reference_evidence_expiring_during_latency_rejects_before_book_or_accounting() {
+        let max_reference_age = ChronoDuration::milliseconds(100);
+        let venue = guarded_venue(
+            registry_with_book(
+                Utc::now(),
+                vec![OrderbookLevel {
+                    price: dec!(0.40),
+                    size: dec!(10),
+                }],
+            ),
+            Duration::from_millis(150),
+            max_reference_age,
+        );
+        let order = venue
+            .submit_order(guarded_request(Utc::now(), max_reference_age))
+            .await
+            .unwrap();
+        let status = venue.status().await;
+
+        assert_eq!(order.state, OrderState::Rejected);
+        assert_eq!(
+            order.request.metadata["reject_reason"],
+            "stale_reference_execution_evidence"
+        );
+        assert_eq!(
+            order.request.metadata["reference_execution_submit"]["status"],
+            "accepted"
+        );
+        assert_eq!(
+            order.request.metadata["reference_execution_arrival"]["status"],
+            "rejected"
+        );
+        assert_eq!(status.available_collateral_usd, dec!(100));
+        assert_eq!(status.entry_debits_usd, Decimal::ZERO);
+        assert_eq!(status.fill_count, 0);
+    }
+
+    #[tokio::test]
+    async fn exact_replay_is_idempotent_but_changed_execution_identity_collides() {
+        let max_reference_age = ChronoDuration::milliseconds(500);
+        let venue = guarded_venue(
+            registry_with_book(
+                Utc::now(),
+                vec![OrderbookLevel {
+                    price: dec!(0.40),
+                    size: dec!(10),
+                }],
+            ),
+            Duration::ZERO,
+            max_reference_age,
+        );
+        let original_request = guarded_request(Utc::now(), max_reference_age);
+        let original = venue.submit_order(original_request.clone()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(550)).await;
+
+        let replay = venue.submit_order(original_request.clone()).await.unwrap();
+        assert_eq!(replay.order_id, original.order_id);
+        assert_eq!(replay.updated_at, original.updated_at);
+
+        let mut changed = original_request;
+        changed.metadata["reference_execution_guard"]["binance"]["tick_id"] =
+            serde_json::json!(Uuid::from_u128(999));
+        let error = venue.submit_order(changed).await.unwrap_err();
+        assert!(error.to_string().contains("collides"));
+
+        let status = venue.status().await;
+        assert_eq!(status.order_count, 1);
+        assert_eq!(status.fill_count, 1);
+        assert_eq!(status.entry_debits_usd, dec!(0.92));
     }
 
     #[tokio::test]
