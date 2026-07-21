@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
 use uuid::Uuid;
@@ -47,6 +47,35 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 ON CONFLICT (client_order_id) DO NOTHING
 "#;
 
+const INSERT_FILL_IDENTITY_SQL: &str = r#"
+INSERT INTO polymarket.fill_identities (
+  fill_id, process_id, timestamp_utc
+)
+VALUES ($1,$2,$3)
+ON CONFLICT (fill_id) DO NOTHING
+"#;
+
+const SELECT_FILL_IDENTITY_SQL: &str = r#"
+SELECT process_id, timestamp_utc
+FROM polymarket.fill_identities
+WHERE fill_id = $1
+"#;
+
+const INSERT_FILL_SQL: &str = r#"
+INSERT INTO polymarket.fills (
+  fill_id, process_id, order_id, token_id, timestamp_utc, price, size, fee, source, raw_payload
+)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+ON CONFLICT (fill_id, timestamp_utc) DO NOTHING
+"#;
+
+const SELECT_FILL_SQL: &str = r#"
+SELECT process_id, order_id, token_id, timestamp_utc, price, size, fee, source
+FROM polymarket.fills
+WHERE fill_id = $1
+  AND timestamp_utc = $2
+"#;
+
 #[derive(Debug, FromRow)]
 struct OrderDbRow {
     order_id: String,
@@ -54,6 +83,18 @@ struct OrderDbRow {
     raw_payload: serde_json::Value,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, FromRow)]
+struct FillDbRow {
+    process_id: Option<Uuid>,
+    order_id: String,
+    token_id: String,
+    timestamp_utc: DateTime<Utc>,
+    price: Decimal,
+    size: Decimal,
+    fee: Decimal,
+    source: String,
 }
 
 #[derive(Debug, FromRow)]
@@ -951,59 +992,94 @@ impl Store {
     }
 
     pub async fn insert_fill(&self, fill: &FillRecord) -> Result<()> {
-        let source = serialized_name(&fill.source)?;
-        let result = sqlx::query(
-            r#"
-            INSERT INTO polymarket.fills (
-              fill_id, process_id, order_id, token_id, timestamp_utc, price, size, fee, source, raw_payload
-            )
-            SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10
-            WHERE NOT EXISTS (
-              SELECT 1
-              FROM polymarket.fills
-              WHERE fill_id = $1
-            )
-            ON CONFLICT (fill_id, timestamp_utc) DO NOTHING
-            "#,
-        )
-        .bind(fill.fill_id)
-        .bind(fill.process_id)
-        .bind(&fill.order_id)
-        .bind(&fill.token_id)
-        .bind(fill.filled_at)
-        .bind(fill.price)
-        .bind(fill.size)
-        .bind(fill.fee)
-        .bind(source)
-        .bind(serde_json::to_value(fill)?)
-        .execute(&self.pool)
-        .await
-        .context("failed to insert fill")?;
-        if result.rows_affected() == 1 {
+        let fill = canonical_fill_for_storage(fill)?;
+        let process_id = required_fill_process_id(&fill)?;
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin fill identity transaction")?;
+        // The Timescale hypertable key includes timestamp_utc. Claim the deterministic fill_id in
+        // a small canonical table first so different timestamps cannot become separate fills.
+        let identity = sqlx::query(INSERT_FILL_IDENTITY_SQL)
+            .bind(fill.fill_id)
+            .bind(process_id)
+            .bind(fill.filled_at)
+            .execute(&mut *transaction)
+            .await
+            .context("failed to claim deterministic fill identity")?;
+        if identity.rows_affected() == 0 {
+            let (existing_process_id, existing_timestamp) =
+                sqlx::query_as::<_, (Option<Uuid>, DateTime<Utc>)>(SELECT_FILL_IDENTITY_SQL)
+                    .bind(fill.fill_id)
+                    .fetch_optional(&mut *transaction)
+                    .await
+                    .context("failed to verify canonical fill identity")?
+                    .context("canonical fill identity disappeared during verification")?;
+            if existing_process_id != Some(process_id) || existing_timestamp != fill.filled_at {
+                transaction
+                    .rollback()
+                    .await
+                    .context("failed to release conflicting fill identity transaction")?;
+                bail!(
+                    "fill_id {} collides with a different process or execution timestamp",
+                    fill.fill_id
+                );
+            }
+            let durable = sqlx::query_as::<_, FillDbRow>(SELECT_FILL_SQL)
+                .bind(fill.fill_id)
+                .bind(fill.filled_at)
+                .fetch_optional(&mut *transaction)
+                .await
+                .context("failed to verify fill for canonical identity")?
+                .context("canonical fill identity has no durable fill row")?;
+            let durable = fill_from_db_row(fill.fill_id, durable)?;
+            if !fill_record_matches(&durable, &fill) {
+                transaction
+                    .rollback()
+                    .await
+                    .context("failed to release conflicting durable fill transaction")?;
+                bail!(
+                    "fill_id {} has a canonical identity but conflicting durable fill",
+                    fill.fill_id
+                );
+            }
+            transaction
+                .commit()
+                .await
+                .context("failed to commit idempotent fill verification")?;
             return Ok(());
         }
-        let existing = sqlx::query_scalar::<_, serde_json::Value>(
-            r#"
-            SELECT raw_payload
-            FROM polymarket.fills
-            WHERE fill_id = $1
-            ORDER BY timestamp_utc
-            LIMIT 1
-            "#,
-        )
-        .bind(fill.fill_id)
-        .fetch_optional(&self.pool)
-        .await
-        .context("failed to verify existing fill identity")?
-        .context("conflicting fill disappeared during identity verification")?;
-        let existing: FillRecord = serde_json::from_value(existing)
-            .context("failed to deserialize existing fill identity")?;
-        if !fill_record_matches(&existing, fill) {
+        let source = serialized_name(&fill.source)?;
+        let raw_payload = serde_json::to_value(&fill)?;
+        let result = sqlx::query(INSERT_FILL_SQL)
+            .bind(fill.fill_id)
+            .bind(process_id)
+            .bind(&fill.order_id)
+            .bind(&fill.token_id)
+            .bind(fill.filled_at)
+            .bind(fill.price)
+            .bind(fill.size)
+            .bind(fill.fee)
+            .bind(source)
+            .bind(raw_payload)
+            .execute(&mut *transaction)
+            .await
+            .context("failed to insert fill")?;
+        if result.rows_affected() == 0 {
+            transaction
+                .rollback()
+                .await
+                .context("failed to release noncanonical fill transaction")?;
             bail!(
-                "fill_id {} collides with different process, order, token, or economics",
+                "newly claimed fill_id {} already has a durable fill row",
                 fill.fill_id
             );
         }
+        transaction
+            .commit()
+            .await
+            .context("failed to commit canonical fill")?;
         Ok(())
     }
 
@@ -1397,6 +1473,47 @@ fn serialized_name<T: Serialize>(value: &T) -> Result<String> {
     }
 }
 
+fn required_fill_process_id(fill: &FillRecord) -> Result<Uuid> {
+    fill.process_id.with_context(|| {
+        format!(
+            "fill {} is missing canonical process_id ownership",
+            fill.fill_id
+        )
+    })
+}
+
+fn canonical_fill_for_storage(fill: &FillRecord) -> Result<FillRecord> {
+    let mut canonical = fill.clone();
+    canonical.filled_at = DateTime::<Utc>::from_timestamp_micros(fill.filled_at.timestamp_micros())
+        .context("fill timestamp is outside the PostgreSQL timestamptz range")?;
+    canonical.price = fill
+        .price
+        .round_dp_with_strategy(8, RoundingStrategy::MidpointAwayFromZero);
+    canonical.size = fill
+        .size
+        .round_dp_with_strategy(10, RoundingStrategy::MidpointAwayFromZero);
+    canonical.fee = fill
+        .fee
+        .round_dp_with_strategy(10, RoundingStrategy::MidpointAwayFromZero);
+    Ok(canonical)
+}
+
+fn fill_from_db_row(fill_id: Uuid, row: FillDbRow) -> Result<FillRecord> {
+    let source = serde_json::from_value(serde_json::Value::String(row.source))
+        .context("failed to deserialize persisted fill source")?;
+    Ok(FillRecord {
+        fill_id,
+        process_id: row.process_id,
+        order_id: row.order_id,
+        token_id: row.token_id,
+        price: row.price,
+        size: row.size,
+        fee: row.fee,
+        source,
+        filled_at: row.timestamp_utc,
+    })
+}
+
 fn order_from_db_row(row: OrderDbRow) -> Result<OrderRecord> {
     let mut order: OrderRecord = serde_json::from_value(row.raw_payload.clone())
         .context("failed to deserialize persisted order raw_payload")?;
@@ -1486,9 +1603,11 @@ mod tests {
     use crate::{
         models::{FillRecord, FillSource, OrderRequest, OrderSide, OrderType},
         store::{
-            fill_record_matches, order_request_identity_matches, order_request_result_matches,
-            HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL, INSERT_ORDER_SQL,
-            RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL,
+            canonical_fill_for_storage, fill_record_matches, order_request_identity_matches,
+            order_request_result_matches, required_fill_process_id,
+            HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL, INSERT_FILL_IDENTITY_SQL, INSERT_FILL_SQL,
+            INSERT_ORDER_SQL, RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL,
+            SELECT_FILL_IDENTITY_SQL, SELECT_FILL_SQL,
         },
     };
 
@@ -1571,8 +1690,81 @@ mod tests {
         let mut changed = fill.clone();
         changed.price = dec!(0.41);
         assert!(!fill_record_matches(&fill, &changed));
+
+        changed = fill.clone();
+        changed.order_id = "other-order".to_string();
+        assert!(!fill_record_matches(&fill, &changed));
+
+        changed = fill.clone();
+        changed.token_id = "other-token".to_string();
+        assert!(!fill_record_matches(&fill, &changed));
+
+        changed = fill.clone();
+        changed.size = dec!(3);
+        assert!(!fill_record_matches(&fill, &changed));
+
+        changed = fill.clone();
+        changed.fee = dec!(0.13);
+        assert!(!fill_record_matches(&fill, &changed));
+
+        changed = fill.clone();
+        changed.source = FillSource::Live;
+        assert!(!fill_record_matches(&fill, &changed));
+
         changed = fill.clone();
         changed.process_id = Some(Uuid::from_u128(12));
         assert!(!fill_record_matches(&fill, &changed));
+
+        changed = fill.clone();
+        changed.filled_at += chrono::Duration::microseconds(1);
+        assert!(!fill_record_matches(&fill, &changed));
+
+        assert_eq!(
+            required_fill_process_id(&fill).unwrap(),
+            Uuid::from_u128(11)
+        );
+        let mut unowned = fill;
+        unowned.process_id = None;
+        assert!(required_fill_process_id(&unowned)
+            .unwrap_err()
+            .to_string()
+            .contains("missing canonical process_id"));
+    }
+
+    #[test]
+    fn fill_insert_claims_a_global_identity_before_the_timescale_row() {
+        assert!(INSERT_FILL_IDENTITY_SQL.contains("ON CONFLICT (fill_id) DO NOTHING"));
+        assert!(SELECT_FILL_IDENTITY_SQL.contains("WHERE fill_id = $1"));
+        assert!(SELECT_FILL_IDENTITY_SQL.contains("process_id, timestamp_utc"));
+        assert!(INSERT_FILL_SQL.contains("ON CONFLICT (fill_id, timestamp_utc) DO NOTHING"));
+        assert!(SELECT_FILL_SQL.contains("WHERE fill_id = $1"));
+        assert!(SELECT_FILL_SQL.contains("timestamp_utc = $2"));
+        assert!(!SELECT_FILL_SQL.contains("raw_payload"));
+    }
+
+    #[test]
+    fn fill_identity_uses_the_exact_postgres_storage_representation() {
+        let fill = FillRecord {
+            fill_id: Uuid::from_u128(20),
+            process_id: Some(Uuid::from_u128(21)),
+            order_id: "order".to_string(),
+            token_id: "token".to_string(),
+            price: dec!(0.123456785),
+            size: dec!(2.12345678905),
+            fee: dec!(0.00000000005),
+            source: FillSource::Paper,
+            filled_at: chrono::DateTime::from_timestamp(1_700_000_000, 123_456_789).unwrap(),
+        };
+
+        let canonical = canonical_fill_for_storage(&fill).unwrap();
+
+        assert_eq!(canonical.filled_at.timestamp_subsec_nanos(), 123_456_000);
+        assert_eq!(canonical.price, dec!(0.12345679));
+        assert_eq!(canonical.size, dec!(2.1234567891));
+        assert_eq!(canonical.fee, dec!(0.0000000001));
+        assert_eq!(
+            canonical_fill_for_storage(&canonical).unwrap().filled_at,
+            canonical.filled_at
+        );
     }
 }
