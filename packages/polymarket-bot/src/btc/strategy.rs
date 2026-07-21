@@ -7,15 +7,20 @@ use uuid::Uuid;
 
 use super::types::{BtcOutcome, FeedIntegrityStatus};
 
+mod chainlink_path_conditioned;
 mod chainlink_persistence_calibrated;
 mod market_anchored;
 
 pub const BTC_FEATURE_SCHEMA_VERSION: &str = "btc_5m_features_v2";
 pub const BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION: &str =
     chainlink_persistence_calibrated::FEATURE_SCHEMA_VERSION;
+pub const BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION: &str =
+    chainlink_path_conditioned::FEATURE_SCHEMA_VERSION;
 pub const BTC_STRATEGY_VERSION: &str = "btc_5m_chainlink_fair_value_v1";
 pub const BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION: &str =
     chainlink_persistence_calibrated::STRATEGY_VERSION;
+pub const BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION: &str =
+    chainlink_path_conditioned::STRATEGY_VERSION;
 pub const BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION: &str = "btc_5m_volatility_continuation_v1";
 pub const BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION: &str =
     market_anchored::MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION;
@@ -27,10 +32,17 @@ pub const BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_ID: &str =
     chainlink_persistence_calibrated::PROFILE_ID;
 pub const BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_SHA256: &str =
     chainlink_persistence_calibrated::PROFILE_SHA256;
+pub const BTC_CHAINLINK_PATH_CONDITIONED_PROFILE_ID: &str = chainlink_path_conditioned::PROFILE_ID;
+pub const BTC_CHAINLINK_PATH_CONDITIONED_PROFILE_SHA256: &str =
+    chainlink_path_conditioned::PROFILE_SHA256;
 pub const BTC_FEATURE_LINEAGE_VERSION: &str = "btc_5m_feature_lineage_v2";
+pub const BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_LINEAGE_VERSION: &str =
+    chainlink_path_conditioned::FEATURE_LINEAGE_VERSION;
 pub const BTC_CHAINLINK_FAIR_VALUE_STRATEGY_FAMILY: &str = "btc_5m_chainlink_fair_value";
 pub const BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_FAMILY: &str =
     "btc_5m_chainlink_persistence_calibrated_fair_value";
+pub const BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_FAMILY: &str =
+    "btc_5m_chainlink_path_conditioned_fair_value";
 pub const BTC_VOLATILITY_CONTINUATION_STRATEGY_FAMILY: &str = "btc_5m_volatility_continuation";
 pub const BTC_MARKET_ANCHORED_FAIR_VALUE_STRATEGY_FAMILY: &str =
     "btc_5m_market_anchored_fair_value";
@@ -82,6 +94,10 @@ impl Default for BtcVolatilityContinuationConfig {
 pub enum BtcDecisionStrategyConfig {
     ChainlinkFairValue {},
     ChainlinkPersistenceCalibratedFairValue {
+        profile_id: String,
+        profile_sha256: String,
+    },
+    ChainlinkPathConditionedFairValue {
         profile_id: String,
         profile_sha256: String,
     },
@@ -195,6 +211,9 @@ impl BtcStrategyConfig {
             ResolvedBtcDecisionStrategy::ChainlinkPersistenceCalibratedFairValue(_) => {
                 BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_FAMILY
             }
+            ResolvedBtcDecisionStrategy::ChainlinkPathConditionedFairValue(_) => {
+                BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_FAMILY
+            }
             ResolvedBtcDecisionStrategy::VolatilityContinuation(_) => {
                 BTC_VOLATILITY_CONTINUATION_STRATEGY_FAMILY
             }
@@ -207,6 +226,10 @@ impl BtcStrategyConfig {
         };
         let (profile_id, profile_sha256) = match self.decision_strategy.as_ref() {
             Some(BtcDecisionStrategyConfig::ChainlinkPersistenceCalibratedFairValue {
+                profile_id,
+                profile_sha256,
+            })
+            | Some(BtcDecisionStrategyConfig::ChainlinkPathConditionedFairValue {
                 profile_id,
                 profile_sha256,
             })
@@ -262,6 +285,26 @@ pub struct BtcFeatureLineage {
     pub chainlink_open_received_at: Option<DateTime<Utc>>,
     pub chainlink_source_timestamp: Option<DateTime<Utc>>,
     pub chainlink_received_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_15s_tick_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_15s_source_timestamp: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_15s_received_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_15s_ingest_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_15s_effective_lookback_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_30s_tick_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_30s_source_timestamp: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_30s_received_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_30s_ingest_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_anchor_30s_effective_lookback_ms: Option<i64>,
     pub binance_source_timestamp: Option<DateTime<Utc>>,
     pub binance_received_at: Option<DateTime<Utc>>,
     pub chainlink_ingest_sequence: Option<u64>,
@@ -321,6 +364,20 @@ pub struct BtcFeatureSnapshot {
     pub chainlink_gap_bps: Option<Decimal>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chainlink_return_5s: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_return_15s: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_return_30s: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_path_efficiency_30s: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_path_tick_count_30s: Option<usize>,
+    /// Chainlink realized log-return volatility measured per square-root second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_realized_volatility_5s: Option<Decimal>,
+    /// Chainlink realized log-return volatility measured per square-root second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_realized_volatility_30s: Option<Decimal>,
     pub binance_return_1s: Option<Decimal>,
     pub binance_return_5s: Option<Decimal>,
     pub binance_return_30s: Option<Decimal>,
@@ -368,6 +425,38 @@ pub struct FairValueEstimate {
     pub evidence_reliability: Option<Decimal>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uncalibrated_up_probability: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_recent_log_return_30s: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_prior_log_gap_30s: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_mature_gap_support: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_fresh_aligned_impulse: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_fresh_impulse_concentration: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_efficiency_score: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_choppiness_score: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_volatility_expansion_score: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projected_terminal_gap: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_crossing_score: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_path_up_probability: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_probability_delta: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_uncertainty_increment: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimator_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimator_profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimator_profile_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -570,6 +659,9 @@ enum ResolvedBtcDecisionStrategy<'a> {
     ChainlinkPersistenceCalibratedFairValue(
         &'static chainlink_persistence_calibrated::ChainlinkPersistenceCalibratedProfile,
     ),
+    ChainlinkPathConditionedFairValue(
+        &'static chainlink_path_conditioned::ChainlinkPathConditionedProfile,
+    ),
     VolatilityContinuation(&'a BtcVolatilityContinuationConfig),
     MarketAnchoredFairValue(&'static market_anchored::MarketAnchoredProfile),
     MarketAnchoredDirectionalPrediction {
@@ -604,6 +696,22 @@ impl<'a> ResolvedBtcDecisionStrategy<'a> {
                         ),
                     )
                     .map(Self::ChainlinkPersistenceCalibratedFairValue)
+                }
+                BtcDecisionStrategyConfig::ChainlinkPathConditionedFairValue {
+                    profile_id,
+                    profile_sha256,
+                } if config.strategy_version == BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION
+                    && config.feature_schema_version
+                        == BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION
+                    && config.volatility_continuation.is_none() =>
+                {
+                    chainlink_path_conditioned::resolve_profile(
+                        &chainlink_path_conditioned::ProfileSelection::new(
+                            profile_id,
+                            profile_sha256,
+                        ),
+                    )
+                    .map(Self::ChainlinkPathConditionedFairValue)
                 }
                 BtcDecisionStrategyConfig::VolatilityContinuation {
                     config: continuation,
@@ -674,6 +782,11 @@ impl<'a> ResolvedBtcDecisionStrategy<'a> {
             }),
             Self::ChainlinkPersistenceCalibratedFairValue(profile) => Ok(BtcStrategyEstimate {
                 fair_value: chainlink_persistence_calibrated::estimate(config, snapshot, profile)?,
+                outcome_scope: BtcOutcomeScope::Both,
+                executable_price_bounds: None,
+            }),
+            Self::ChainlinkPathConditionedFairValue(profile) => Ok(BtcStrategyEstimate {
+                fair_value: chainlink_path_conditioned::estimate(config, snapshot, profile)?,
                 outcome_scope: BtcOutcomeScope::Both,
                 executable_price_bounds: None,
             }),
@@ -1059,6 +1172,9 @@ pub fn estimate_fair_value(
         ResolvedBtcDecisionStrategy::ChainlinkPersistenceCalibratedFairValue(profile) => {
             chainlink_persistence_calibrated::estimate(config, snapshot, profile)
         }
+        ResolvedBtcDecisionStrategy::ChainlinkPathConditionedFairValue(profile) => {
+            chainlink_path_conditioned::estimate(config, snapshot, profile)
+        }
         ResolvedBtcDecisionStrategy::VolatilityContinuation(continuation) => {
             estimate_market_anchored_continuation(config, continuation, snapshot)
         }
@@ -1175,6 +1291,22 @@ fn estimate_chainlink_fair_value(
         confirmation_deficiency_score: None,
         evidence_reliability: None,
         uncalibrated_up_probability: None,
+        path_recent_log_return_30s: None,
+        path_prior_log_gap_30s: None,
+        path_mature_gap_support: None,
+        path_fresh_aligned_impulse: None,
+        path_fresh_impulse_concentration: None,
+        path_efficiency_score: None,
+        path_choppiness_score: None,
+        path_volatility_expansion_score: None,
+        projected_terminal_gap: None,
+        open_crossing_score: None,
+        pre_path_up_probability: None,
+        path_probability_delta: None,
+        path_uncertainty_increment: None,
+        estimator_id: None,
+        estimator_profile_id: None,
+        estimator_profile_sha256: None,
     })
 }
 
@@ -1318,6 +1450,22 @@ fn estimate_market_anchored_continuation(
         confirmation_deficiency_score: None,
         evidence_reliability: None,
         uncalibrated_up_probability: None,
+        path_recent_log_return_30s: None,
+        path_prior_log_gap_30s: None,
+        path_mature_gap_support: None,
+        path_fresh_aligned_impulse: None,
+        path_fresh_impulse_concentration: None,
+        path_efficiency_score: None,
+        path_choppiness_score: None,
+        path_volatility_expansion_score: None,
+        projected_terminal_gap: None,
+        open_crossing_score: None,
+        pre_path_up_probability: None,
+        path_probability_delta: None,
+        path_uncertainty_increment: None,
+        estimator_id: None,
+        estimator_profile_id: None,
+        estimator_profile_sha256: None,
     })
 }
 
@@ -1351,6 +1499,9 @@ fn validate_config(config: &BtcStrategyConfig) -> Result<(), BtcRejectReason> {
         Ok(ResolvedBtcDecisionStrategy::ChainlinkFairValue) => true,
         Ok(ResolvedBtcDecisionStrategy::ChainlinkPersistenceCalibratedFairValue(profile)) => {
             chainlink_persistence_calibrated::validate_strategy_config(config, profile).is_ok()
+        }
+        Ok(ResolvedBtcDecisionStrategy::ChainlinkPathConditionedFairValue(profile)) => {
+            chainlink_path_conditioned::validate_strategy_config(config, profile).is_ok()
         }
         Ok(ResolvedBtcDecisionStrategy::VolatilityContinuation(continuation)) => {
             continuation.min_seconds_to_close > 0
@@ -1496,8 +1647,23 @@ fn validate_snapshot(
     }
     if matches!(
         ResolvedBtcDecisionStrategy::resolve(config),
-        Ok(ResolvedBtcDecisionStrategy::ChainlinkPersistenceCalibratedFairValue(_))
+        Ok(
+            ResolvedBtcDecisionStrategy::ChainlinkPersistenceCalibratedFairValue(_)
+                | ResolvedBtcDecisionStrategy::ChainlinkPathConditionedFairValue(_)
+        )
     ) && snapshot.chainlink_return_5s.is_none()
+    {
+        return Err(BtcRejectReason::MissingChainlinkReturns);
+    }
+    if matches!(
+        ResolvedBtcDecisionStrategy::resolve(config),
+        Ok(ResolvedBtcDecisionStrategy::ChainlinkPathConditionedFairValue(_))
+    ) && (snapshot.chainlink_return_15s.is_none()
+        || snapshot.chainlink_return_30s.is_none()
+        || snapshot.chainlink_path_efficiency_30s.is_none()
+        || snapshot.chainlink_path_tick_count_30s.is_none()
+        || snapshot.chainlink_realized_volatility_5s.is_none()
+        || snapshot.chainlink_realized_volatility_30s.is_none())
     {
         return Err(BtcRejectReason::MissingChainlinkReturns);
     }
@@ -1966,6 +2132,12 @@ mod tests {
             binance_price: Some(dec!(100090)),
             chainlink_gap_bps: Some(dec!(8)),
             chainlink_return_5s: None,
+            chainlink_return_15s: None,
+            chainlink_return_30s: None,
+            chainlink_path_efficiency_30s: None,
+            chainlink_path_tick_count_30s: None,
+            chainlink_realized_volatility_5s: None,
+            chainlink_realized_volatility_30s: None,
             binance_return_1s: Some(dec!(0.00005)),
             binance_return_5s: Some(dec!(0.00010)),
             binance_return_30s: Some(dec!(0.00020)),
@@ -1992,6 +2164,16 @@ mod tests {
                 chainlink_open_received_at: Some(window_start),
                 chainlink_source_timestamp: Some(source_at),
                 chainlink_received_at: Some(source_at),
+                chainlink_anchor_15s_tick_id: None,
+                chainlink_anchor_15s_source_timestamp: None,
+                chainlink_anchor_15s_received_at: None,
+                chainlink_anchor_15s_ingest_sequence: None,
+                chainlink_anchor_15s_effective_lookback_ms: None,
+                chainlink_anchor_30s_tick_id: None,
+                chainlink_anchor_30s_source_timestamp: None,
+                chainlink_anchor_30s_received_at: None,
+                chainlink_anchor_30s_ingest_sequence: None,
+                chainlink_anchor_30s_effective_lookback_ms: None,
                 binance_source_timestamp: Some(source_at),
                 binance_received_at: Some(source_at),
                 chainlink_ingest_sequence: Some(10),
@@ -2061,6 +2243,21 @@ mod tests {
                 BtcDecisionStrategyConfig::ChainlinkPersistenceCalibratedFairValue {
                     profile_id: BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_ID.to_string(),
                     profile_sha256: BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_SHA256.to_string(),
+                },
+            ),
+            ..BtcStrategyConfig::default()
+        }
+    }
+
+    fn chainlink_path_conditioned_config() -> BtcStrategyConfig {
+        BtcStrategyConfig {
+            strategy_version: BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION.to_string(),
+            feature_schema_version: BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION
+                .to_string(),
+            decision_strategy: Some(
+                BtcDecisionStrategyConfig::ChainlinkPathConditionedFairValue {
+                    profile_id: BTC_CHAINLINK_PATH_CONDITIONED_PROFILE_ID.to_string(),
+                    profile_sha256: BTC_CHAINLINK_PATH_CONDITIONED_PROFILE_SHA256.to_string(),
                 },
             ),
             ..BtcStrategyConfig::default()
@@ -2704,6 +2901,22 @@ mod tests {
         assert_eq!(
             persistence.profile_sha256,
             Some(BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_SHA256)
+        );
+
+        let path_config = chainlink_path_conditioned_config();
+        let path = path_config.attribution().unwrap();
+        assert_eq!(path.family, BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_FAMILY);
+        assert_eq!(
+            path.strategy_version,
+            BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION
+        );
+        assert_eq!(
+            path.profile_id,
+            Some(BTC_CHAINLINK_PATH_CONDITIONED_PROFILE_ID)
+        );
+        assert_eq!(
+            path.profile_sha256,
+            Some(BTC_CHAINLINK_PATH_CONDITIONED_PROFILE_SHA256)
         );
 
         let continuation_config = continuation_config();

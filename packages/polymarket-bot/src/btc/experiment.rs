@@ -32,6 +32,8 @@ use super::{
         BtcDecision, BtcDecisionAction, BtcFeatureLineage, BtcFeatureSnapshot,
         BtcInputWindowLineage, BtcOutcomeBookFeatures, BtcRejectReason, BtcStrategyConfig,
         BtcStrategyPrediction, DeterministicBtcStrategy,
+        BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_LINEAGE_VERSION,
+        BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
         BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION, BTC_FEATURE_LINEAGE_VERSION,
         BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_FAMILY,
     },
@@ -1015,10 +1017,45 @@ fn build_snapshot(
     let chainlink_gap_bps = chainlink_open.zip(chainlink).and_then(|(open, current)| {
         ratio_return(current.price, open.price).map(|value| value * Decimal::from(10_000))
     });
-    let chainlink_return_5s = (feature_schema_version
-        == BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION)
-        .then(|| return_over(&inputs.chainlink_history, observed_at, 5))
+    let path_conditioned =
+        feature_schema_version == BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION;
+    let chainlink_anchor_5s = path_conditioned
+        .then(|| point_in_time_return_anchor(&inputs.chainlink_history, chainlink, observed_at, 5))
         .flatten();
+    let chainlink_anchor_15s = path_conditioned
+        .then(|| point_in_time_return_anchor(&inputs.chainlink_history, chainlink, observed_at, 15))
+        .flatten();
+    let chainlink_anchor_30s = path_conditioned
+        .then(|| point_in_time_return_anchor(&inputs.chainlink_history, chainlink, observed_at, 30))
+        .flatten();
+    let chainlink_return_5s = if path_conditioned {
+        chainlink_anchor_5s.map(|anchor| anchor.return_value)
+    } else if feature_schema_version == BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION
+    {
+        return_over(&inputs.chainlink_history, observed_at, 5)
+    } else {
+        None
+    };
+    let chainlink_return_15s = chainlink_anchor_15s.map(|anchor| anchor.return_value);
+    let chainlink_return_30s = chainlink_anchor_30s.map(|anchor| anchor.return_value);
+    let chainlink_path_5s = chainlink_anchor_5s.and_then(|anchor| {
+        chainlink.map(|current| {
+            point_in_time_path(&inputs.chainlink_history, anchor.tick, current, observed_at)
+        })
+    });
+    let chainlink_path_30s = chainlink_anchor_30s.and_then(|anchor| {
+        chainlink.map(|current| {
+            point_in_time_path(&inputs.chainlink_history, anchor.tick, current, observed_at)
+        })
+    });
+    let chainlink_path_efficiency_30s = chainlink_path_30s.as_deref().and_then(path_efficiency);
+    let chainlink_path_tick_count_30s = chainlink_path_30s.as_ref().map(Vec::len);
+    let chainlink_realized_volatility_5s = chainlink_path_5s
+        .as_deref()
+        .and_then(path_realized_volatility);
+    let chainlink_realized_volatility_30s = chainlink_path_30s
+        .as_deref()
+        .and_then(path_realized_volatility);
     let latest_binance = binance.map(|tick| tick.price);
     let binance_return_1s = return_over(&inputs.binance_history, observed_at, 1);
     let binance_return_5s = return_over(&inputs.binance_history, observed_at, 5);
@@ -1067,6 +1104,12 @@ fn build_snapshot(
         binance_price: latest_binance,
         chainlink_gap_bps,
         chainlink_return_5s,
+        chainlink_return_15s,
+        chainlink_return_30s,
+        chainlink_path_efficiency_30s,
+        chainlink_path_tick_count_30s,
+        chainlink_realized_volatility_5s,
+        chainlink_realized_volatility_30s,
         binance_return_1s,
         binance_return_5s,
         binance_return_30s,
@@ -1083,7 +1126,11 @@ fn build_snapshot(
         fee_rate: inputs.fee_rate,
         fee_rate_observed_at: inputs.fee_observed_at,
         lineage: BtcFeatureLineage {
-            lineage_version: BTC_FEATURE_LINEAGE_VERSION.to_string(),
+            lineage_version: if path_conditioned {
+                BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_LINEAGE_VERSION.to_string()
+            } else {
+                BTC_FEATURE_LINEAGE_VERSION.to_string()
+            },
             chainlink_open_tick_id: chainlink_open.map(|tick| tick.tick_id),
             chainlink_tick_id: chainlink.map(|tick| tick.tick_id),
             binance_tick_id: binance.map(|tick| tick.tick_id),
@@ -1093,6 +1140,24 @@ fn build_snapshot(
             chainlink_open_received_at: chainlink_open.map(|tick| tick.received_at),
             chainlink_source_timestamp: chainlink.map(|tick| tick.source_timestamp),
             chainlink_received_at: chainlink.map(|tick| tick.received_at),
+            chainlink_anchor_15s_tick_id: chainlink_anchor_15s.map(|anchor| anchor.tick.tick_id),
+            chainlink_anchor_15s_source_timestamp: chainlink_anchor_15s
+                .map(|anchor| anchor.tick.source_timestamp),
+            chainlink_anchor_15s_received_at: chainlink_anchor_15s
+                .map(|anchor| anchor.tick.received_at),
+            chainlink_anchor_15s_ingest_sequence: chainlink_anchor_15s
+                .map(|anchor| anchor.tick.ingest_sequence),
+            chainlink_anchor_15s_effective_lookback_ms: chainlink_anchor_15s
+                .map(|anchor| anchor.effective_lookback_ms),
+            chainlink_anchor_30s_tick_id: chainlink_anchor_30s.map(|anchor| anchor.tick.tick_id),
+            chainlink_anchor_30s_source_timestamp: chainlink_anchor_30s
+                .map(|anchor| anchor.tick.source_timestamp),
+            chainlink_anchor_30s_received_at: chainlink_anchor_30s
+                .map(|anchor| anchor.tick.received_at),
+            chainlink_anchor_30s_ingest_sequence: chainlink_anchor_30s
+                .map(|anchor| anchor.tick.ingest_sequence),
+            chainlink_anchor_30s_effective_lookback_ms: chainlink_anchor_30s
+                .map(|anchor| anchor.effective_lookback_ms),
             binance_source_timestamp: binance.map(|tick| tick.source_timestamp),
             binance_received_at: binance.map(|tick| tick.received_at),
             chainlink_ingest_sequence: chainlink.map(|tick| tick.ingest_sequence),
@@ -1201,6 +1266,115 @@ fn input_window_lineage(history: &[ReferencePriceTick]) -> BtcInputWindowLineage
     }
 }
 
+const CHAINLINK_PATH_ANCHOR_TOLERANCE_MS: i64 = 5_000;
+
+#[derive(Debug, Clone, Copy)]
+struct PointInTimeReturnAnchor<'a> {
+    tick: &'a ReferencePriceTick,
+    return_value: Decimal,
+    effective_lookback_ms: i64,
+}
+
+fn reference_tick_order_key(
+    tick: &ReferencePriceTick,
+) -> (DateTime<Utc>, DateTime<Utc>, u64, Uuid) {
+    (
+        tick.source_timestamp,
+        tick.received_at,
+        tick.ingest_sequence,
+        tick.tick_id,
+    )
+}
+
+fn point_in_time_return_anchor<'a>(
+    history: &'a [ReferencePriceTick],
+    current: Option<&ReferencePriceTick>,
+    observed_at: DateTime<Utc>,
+    seconds: i64,
+) -> Option<PointInTimeReturnAnchor<'a>> {
+    let current = current
+        .filter(|tick| tick.source_timestamp <= observed_at && tick.received_at <= observed_at)?;
+    let latest_causal = history
+        .iter()
+        .filter(|tick| tick.source_timestamp <= observed_at && tick.received_at <= observed_at)
+        .max_by_key(|tick| reference_tick_order_key(tick))?;
+    if latest_causal.tick_id != current.tick_id {
+        return None;
+    }
+    let target = observed_at - chrono::Duration::seconds(seconds);
+    let anchor = history
+        .iter()
+        .filter(|tick| {
+            tick.source_timestamp <= target
+                && tick.received_at <= observed_at
+                && tick.source_timestamp <= observed_at
+        })
+        .max_by_key(|tick| reference_tick_order_key(tick))?;
+    let anchor_staleness_ms = (target - anchor.source_timestamp).num_milliseconds();
+    if !(0..=CHAINLINK_PATH_ANCHOR_TOLERANCE_MS).contains(&anchor_staleness_ms)
+        || current.source_timestamp <= anchor.source_timestamp
+    {
+        return None;
+    }
+    Some(PointInTimeReturnAnchor {
+        tick: anchor,
+        return_value: ratio_return(current.price, anchor.price)?,
+        effective_lookback_ms: (current.source_timestamp - anchor.source_timestamp)
+            .num_milliseconds(),
+    })
+}
+
+fn point_in_time_path(
+    history: &[ReferencePriceTick],
+    anchor: &ReferencePriceTick,
+    current: &ReferencePriceTick,
+    observed_at: DateTime<Utc>,
+) -> Vec<ReferencePriceTick> {
+    let anchor_key = reference_tick_order_key(anchor);
+    let current_key = reference_tick_order_key(current);
+    let mut path = history
+        .iter()
+        .filter(|tick| {
+            let key = reference_tick_order_key(tick);
+            key >= anchor_key
+                && key <= current_key
+                && tick.source_timestamp <= observed_at
+                && tick.received_at <= observed_at
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if !path.iter().any(|tick| tick.tick_id == anchor.tick_id) {
+        path.push(anchor.clone());
+    }
+    if current.source_timestamp <= observed_at
+        && current.received_at <= observed_at
+        && !path.iter().any(|tick| tick.tick_id == current.tick_id)
+    {
+        path.push(current.clone());
+    }
+    path.sort_by_key(reference_tick_order_key);
+    path.dedup_by_key(|tick| tick.tick_id);
+    path
+}
+
+fn path_efficiency(history: &[ReferencePriceTick]) -> Option<Decimal> {
+    let first = history.first()?.price;
+    let last = history.last()?.price;
+    if first <= Decimal::ZERO || last <= Decimal::ZERO || history.len() < 2 {
+        return None;
+    }
+    let net = (last - first).abs();
+    let travelled = history
+        .windows(2)
+        .map(|pair| (pair[1].price - pair[0].price).abs())
+        .sum::<Decimal>();
+    Some(if travelled > Decimal::ZERO {
+        (net / travelled).clamp(Decimal::ZERO, Decimal::ONE)
+    } else {
+        Decimal::ZERO
+    })
+}
+
 fn return_over(
     history: &[ReferencePriceTick],
     observed_at: DateTime<Utc>,
@@ -1223,6 +1397,17 @@ fn realized_volatility(history: &[ReferencePriceTick]) -> Option<Decimal> {
     if history.len() < 3 {
         return None;
     }
+    realized_volatility_from_path(history)
+}
+
+fn path_realized_volatility(history: &[ReferencePriceTick]) -> Option<Decimal> {
+    if history.len() < 2 {
+        return None;
+    }
+    realized_volatility_from_path(history)
+}
+
+fn realized_volatility_from_path(history: &[ReferencePriceTick]) -> Option<Decimal> {
     let elapsed = (history.last()?.source_timestamp - history.first()?.source_timestamp)
         .num_milliseconds() as f64
         / 1_000.0;
@@ -1615,7 +1800,38 @@ mod tests {
     }
 
     #[test]
-    fn persistence_feature_is_additive_and_v3_only() {
+    fn path_efficiency_is_exact_bounded_and_flat_safe() {
+        let start = Utc.with_ymd_and_hms(2026, 7, 20, 12, 0, 0).unwrap();
+        let ticks = |prices: &[Decimal]| {
+            prices
+                .iter()
+                .enumerate()
+                .map(|(index, price)| ReferencePriceTick {
+                    tick_id: Uuid::from_u128(350 + index as u128),
+                    dedup_key: index.to_string(),
+                    source: super::super::types::ReferencePriceSource::RtdsChainlink,
+                    symbol: "btcusd".to_string(),
+                    price: *price,
+                    source_timestamp: start + chrono::Duration::seconds(index as i64),
+                    envelope_timestamp: None,
+                    received_at: start + chrono::Duration::seconds(index as i64),
+                    connection_id: Uuid::from_u128(360),
+                    ingest_sequence: index as u64,
+                    source_event_id: None,
+                    raw_payload: serde_json::json!({}),
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let moving = ticks(&[dec!(100), dec!(102), dec!(101), dec!(103)]);
+        assert_eq!(path_efficiency(&moving), Some(dec!(0.6)));
+        let flat = ticks(&[dec!(100), dec!(100)]);
+        assert_eq!(path_efficiency(&flat), Some(Decimal::ZERO));
+        assert!(path_realized_volatility(&moving).unwrap() > Decimal::ZERO);
+    }
+
+    #[test]
+    fn chainlink_path_features_are_additive_and_schema_scoped() {
         let window_start = Utc.with_ymd_and_hms(2026, 7, 20, 12, 0, 0).unwrap();
         let observed_at = window_start + chrono::Duration::seconds(180);
         let tick = |index: u128,
@@ -1647,6 +1863,30 @@ mod tests {
             dec!(100),
             observed_at - chrono::Duration::seconds(6),
         );
+        let chainlink_15s_anchor = tick(
+            408,
+            super::super::types::ReferencePriceSource::RtdsChainlink,
+            dec!(99.8),
+            observed_at - chrono::Duration::seconds(16),
+        );
+        let chainlink_30s_anchor = tick(
+            409,
+            super::super::types::ReferencePriceSource::RtdsChainlink,
+            dec!(99.5),
+            observed_at - chrono::Duration::seconds(31),
+        );
+        let chainlink_mid_1 = tick(
+            410,
+            super::super::types::ReferencePriceSource::RtdsChainlink,
+            dec!(100.5),
+            observed_at - chrono::Duration::seconds(4),
+        );
+        let chainlink_mid_2 = tick(
+            411,
+            super::super::types::ReferencePriceSource::RtdsChainlink,
+            dec!(100.2),
+            observed_at - chrono::Duration::seconds(2),
+        );
         let chainlink_current = tick(
             403,
             super::super::types::ReferencePriceSource::RtdsChainlink,
@@ -1668,7 +1908,14 @@ mod tests {
         let inputs = BtcPointInTimeInputs {
             chainlink_open: Some(chainlink_open),
             chainlink_current: Some(chainlink_current.clone()),
-            chainlink_history: vec![chainlink_prior, chainlink_current],
+            chainlink_history: vec![
+                chainlink_30s_anchor,
+                chainlink_15s_anchor,
+                chainlink_prior,
+                chainlink_mid_1,
+                chainlink_mid_2,
+                chainlink_current,
+            ],
             binance_history: vec![binance_prior, binance_current],
             up_book: None,
             down_book: None,
@@ -1723,6 +1970,144 @@ mod tests {
             v3.feature_schema_version,
             BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION
         );
+        assert!(serde_json::to_value(&v3)
+            .unwrap()
+            .get("chainlink_return_15s")
+            .is_none());
+
+        let v4 = build_snapshot(
+            Uuid::from_u128(412),
+            &market,
+            observed_at,
+            &inputs,
+            dec!(5),
+            BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
+        );
+        let v4_repeat = build_snapshot(
+            Uuid::from_u128(412),
+            &market,
+            observed_at,
+            &inputs,
+            dec!(5),
+            BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
+        );
+        assert_eq!(v4, v4_repeat);
+        assert_eq!(v4.process_id, Uuid::from_u128(412));
+        assert_eq!(v4.chainlink_return_5s, Some(dec!(0.01)));
+        assert_eq!(
+            v4.chainlink_return_15s,
+            Some(dec!(101) / dec!(99.8) - Decimal::ONE)
+        );
+        assert_eq!(
+            v4.chainlink_return_30s,
+            Some(dec!(101) / dec!(99.5) - Decimal::ONE)
+        );
+        assert_eq!(
+            v4.lineage.lineage_version,
+            BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_LINEAGE_VERSION
+        );
+        assert_eq!(
+            v4.lineage.chainlink_anchor_15s_tick_id,
+            Some(Uuid::from_u128(408))
+        );
+        assert_eq!(v4.lineage.chainlink_anchor_15s_ingest_sequence, Some(408));
+        assert_eq!(
+            v4.lineage.chainlink_anchor_15s_effective_lookback_ms,
+            Some(16_000)
+        );
+        assert_eq!(
+            v4.lineage.chainlink_anchor_30s_tick_id,
+            Some(Uuid::from_u128(409))
+        );
+        assert_eq!(v4.lineage.chainlink_anchor_30s_ingest_sequence, Some(409));
+        assert_eq!(
+            v4.lineage.chainlink_anchor_30s_effective_lookback_ms,
+            Some(31_000)
+        );
+        assert_eq!(v4.chainlink_path_tick_count_30s, Some(6));
+        assert!(v4.chainlink_path_efficiency_30s > Some(Decimal::ZERO));
+        assert!(v4.chainlink_path_efficiency_30s <= Some(Decimal::ONE));
+        assert!(v4.chainlink_realized_volatility_5s > Some(Decimal::ZERO));
+        assert!(v4.chainlink_realized_volatility_30s > Some(Decimal::ZERO));
+    }
+
+    #[test]
+    fn path_anchor_excludes_future_received_ticks_and_rejects_stale_history() {
+        let observed_at = Utc.with_ymd_and_hms(2026, 7, 20, 12, 3, 0).unwrap();
+        let tick = |index: u128, price: Decimal, source_offset: i64, received_offset: i64| {
+            ReferencePriceTick {
+                tick_id: Uuid::from_u128(index),
+                dedup_key: index.to_string(),
+                source: super::super::types::ReferencePriceSource::RtdsChainlink,
+                symbol: "btcusd".to_string(),
+                price,
+                source_timestamp: observed_at + chrono::Duration::seconds(source_offset),
+                envelope_timestamp: None,
+                received_at: observed_at + chrono::Duration::seconds(received_offset),
+                connection_id: Uuid::from_u128(420),
+                ingest_sequence: index as u64,
+                source_event_id: None,
+                raw_payload: serde_json::json!({}),
+            }
+        };
+        let causal_anchor = tick(421, dec!(100), -31, -31);
+        let future_received_anchor = tick(422, dec!(90), -30, 1);
+        let current = tick(423, dec!(101), 0, 0);
+        let history = vec![causal_anchor, future_received_anchor, current.clone()];
+
+        let selected = point_in_time_return_anchor(&history, Some(&current), observed_at, 30)
+            .expect("causal anchor inside tolerance");
+        assert_eq!(selected.tick.tick_id, Uuid::from_u128(421));
+        assert_eq!(selected.effective_lookback_ms, 31_000);
+
+        let stale = vec![tick(424, dec!(100), -36, -36), current.clone()];
+        assert!(point_in_time_return_anchor(&stale, Some(&current), observed_at, 30).is_none());
+
+        let future_current = tick(425, dec!(101), 0, 1);
+        assert!(
+            point_in_time_return_anchor(&history, Some(&future_current), observed_at, 30).is_none()
+        );
+    }
+
+    #[test]
+    fn path_begins_at_the_exact_selected_anchor_in_full_tick_order() {
+        let observed_at = Utc.with_ymd_and_hms(2026, 7, 20, 12, 3, 0).unwrap();
+        let source_at = observed_at - chrono::Duration::seconds(30);
+        let tick =
+            |index: u128, price: Decimal, source_timestamp, ingest_sequence| ReferencePriceTick {
+                tick_id: Uuid::from_u128(index),
+                dedup_key: index.to_string(),
+                source: super::super::types::ReferencePriceSource::RtdsChainlink,
+                symbol: "btcusd".to_string(),
+                price,
+                source_timestamp,
+                envelope_timestamp: None,
+                received_at: source_timestamp,
+                connection_id: Uuid::from_u128(430),
+                ingest_sequence,
+                source_event_id: None,
+                raw_payload: serde_json::json!({}),
+            };
+        let superseded_same_time = tick(431, dec!(80), source_at, 431);
+        let selected_anchor = tick(432, dec!(100), source_at, 432);
+        let current = tick(433, dec!(101), observed_at, 433);
+        let history = vec![
+            superseded_same_time,
+            selected_anchor.clone(),
+            current.clone(),
+        ];
+
+        let selected = point_in_time_return_anchor(&history, Some(&current), observed_at, 30)
+            .expect("latest full-order target tick is selected");
+        assert_eq!(selected.tick.tick_id, selected_anchor.tick_id);
+        assert_eq!(selected.return_value, dec!(0.01));
+
+        let path = point_in_time_path(&history, selected.tick, &current, observed_at);
+        assert_eq!(
+            path.iter().map(|tick| tick.tick_id).collect::<Vec<_>>(),
+            vec![selected_anchor.tick_id, current.tick_id]
+        );
+        assert_eq!(path_efficiency(&path), Some(Decimal::ONE));
     }
 
     #[test]

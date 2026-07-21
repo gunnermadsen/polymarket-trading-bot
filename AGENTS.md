@@ -1,5 +1,6 @@
 ## Code
-- rebuild image and rebuild rust package after each code change
+- rebuild image and rebuild rust package after each code change.
+- do not rebuild polymarket-bot or rust-related packages on grafana dashboard changes or database configuration changes.
 - put sensitive secrets in .env files
 - put non-sensitive runtime configuration in docker-compose files
 - .env example files are templates, do not put plaintext env vars in the example env files.

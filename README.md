@@ -64,11 +64,14 @@ Open `http://127.0.0.1:3030` in a browser.
 Log in with `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` from `.env.grafana`.
 The provisioned dashboard refreshes every 30 seconds. The BTC five-minute
 countdown uses a provisioned Grafana Live channel and updates every second,
-independently of that global refresh. Use the Trading process selector at the
-top of the dashboard to control every process-specific P&L, forecast, and
-lead/lag panel. The selector uses the durable trading-process ID and keeps
-stopped and disabled process history available. Process health remains a
-fleet-wide view, and the market countdown is process-independent. Recreate
+independently of that global refresh. The Trading process selector at the top
+of the dashboard controls every forecast and lead/lag panel, and supplies the
+process used by PnL panels when PnL scope is Selected process. The neighboring
+PnL scope selector controls only the first PnL section; All processes renders
+per-process chart series and table rows while aggregating the PnL stats.
+Forecast and lead/lag panels remain scoped to the Trading process selection.
+Stopped and disabled process history remains available. Process health remains
+a fleet-wide view, and the market countdown is process-independent. Recreate
 Grafana after changing the provisioned JSON:
 
 ```bash
@@ -193,6 +196,13 @@ The supported selectors are:
   research estimator that preserves the Chainlink fair-value edge contract and
   adjusts probability and uncertainty using recent Chainlink persistence and
   same-direction Binance confirmation.
+- `chainlink_path_conditioned_fair_value`, an additive, profile-pinned research
+  estimator that preserves the persistence-calibrated estimator's external
+  evidence and calibration while distinguishing a mature Chainlink gap from a
+  gap concentrated in the latest 15/30-second path. It continuously discounts
+  fresh or choppy impulses and expands uncertainty during short-horizon
+  volatility expansion; it does not add a gate, veto, cooldown, PnL input, or
+  order-book input.
 - `volatility_continuation`, the existing one-sided continuation strategy with
   its configuration nested under the selector's `config` field.
 - `market_anchored_fair_value`, the two-sided research estimator that starts
@@ -216,6 +226,16 @@ For its approved decision rows, the canonical edge columns describe that direct
 approval contract (central probability, actual fee, and zero contractual
 reserve); the hypothetical legacy reserve breakdown remains available in the
 serialized decision metadata.
+
+The path-conditioned selector uses feature schema `btc_5m_features_v4`. Its
+point-in-time inputs include causal 15/30-second Chainlink anchors, path
+efficiency, and short/long realized volatility with exact tick lineage. Fresh
+evidence cannot reverse the predicted side by itself; the side changes only
+when the projected terminal gap crosses the Chainlink open. Its immutable
+profile `btc5m-chainlink-path-conditioned-20260720-v1` is explicitly
+`research_only`: the path coefficients are fixed research hypotheses, not
+historically fitted or validated parameters. Promotion therefore requires a
+prospective, process-ID-scoped A/B test.
 
 A minimal directional selector is:
 
@@ -354,7 +374,7 @@ service, worker, table, or migration is introduced.
 }
 ```
 
-Two paper-only A/B definitions are provided in `infra/processes`. Both retain
+Two paper-only HWM A/B definitions are provided in `infra/processes`. Both retain
 the control process's min-entry `0.30` strategy, execution, runtime, paper
 venue, stress-preview, and loss-regime-floor settings. They differ only by the
 HWM block and stable process identity:
@@ -369,6 +389,29 @@ The existing process `8958246a-3d62-4c75-ab73-019971e0cc00` remains the
 unchanged control. The two candidate definitions are additive and are created
 inactive; use the standard stable-key upsert, start-preview, and explicit start
 endpoints to run them.
+
+The estimator-quality A/B adds one independent treatment definition:
+
+- `btc-5m-chainlink-path-conditioned-paper-min-entry-030-floor.json` selects
+  `chainlink_path_conditioned_fair_value` without HWM.
+
+Its control is process `39183e9d-6af4-4671-b985-e6d1284ba28d`, which continues
+to run `chainlink_persistence_calibrated_fair_value` unchanged. The treatment
+preserves the control's paper venue, size, minimum entry price, execution and
+edge parameters, and `loss_regime_confidence_floor_v1`; it does not enable the
+daily HWM policy. Compare the two arms using their canonical `process_id`
+values, never an experiment ID. Do not tune the immutable treatment profile
+during the forward test. Evaluate time-aligned resolved markets for Brier
+score, log loss, calibration, directional accuracy, fresh-impulse errors,
+maximum drawdown, and peak-to-close daily giveback. Treat fills separately from
+forecast metrics because the shared loss floor can alter entry selection.
+
+Files under `infra/processes` are operational request templates, not runtime
+configuration watched or read directly by the Rust application. Submitting a
+template through the stable-key API (or bootstrap script) creates or updates a
+persistent inactive process definition and returns its `process_id`.
+Start-preview is the recommended read-only validation step; the Rust runtime
+begins trading only after an explicit start for that `process_id`.
 
 Create the definition through the stable-key API, preview the immutable run,
 then start it explicitly:
