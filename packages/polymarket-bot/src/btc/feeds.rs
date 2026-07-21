@@ -807,6 +807,30 @@ impl BookRegistry {
         self.books.get(token_id)?.checkpoint(self.connection_id)
     }
 
+    pub fn market_books_ready(
+        &self,
+        market: &BtcIntervalMarket,
+        now: DateTime<Utc>,
+        max_age: Duration,
+    ) -> bool {
+        [&market.up_token_id, &market.down_token_id]
+            .into_iter()
+            .all(|token_id| {
+                self.books.get(token_id).is_some_and(|book| {
+                    book.bootstrapped
+                        && book.integrity_status == FeedIntegrityStatus::Ok
+                        && book.best_bid().is_some()
+                        && book.best_ask().is_some()
+                        && book.source_timestamp.is_some_and(|timestamp| {
+                            timestamp - now <= max_age && now - timestamp <= max_age
+                        })
+                        && book.received_at.is_some_and(|timestamp| {
+                            timestamp - now <= max_age && now - timestamp <= max_age
+                        })
+                })
+            })
+    }
+
     pub fn book_readiness(&self) -> Vec<BookReadiness> {
         let mut books: Vec<_> = self
             .books
@@ -1497,6 +1521,27 @@ mod tests {
             },
             ts(millis + 5),
         );
+    }
+
+    #[test]
+    fn market_book_health_requires_complete_fresh_integrity_valid_pair() {
+        let market = market();
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&market);
+        let source_millis = 1_783_902_701_000;
+        let max_age = Duration::milliseconds(20);
+        let ready_at = ts(source_millis + 10);
+
+        assert!(!registry.market_books_ready(&market, ready_at, max_age));
+        seed_book(&mut registry, &market.up_token_id, source_millis);
+        assert!(!registry.market_books_ready(&market, ready_at, max_age));
+        seed_book(&mut registry, &market.down_token_id, source_millis);
+        assert!(registry.market_books_ready(&market, ready_at, max_age));
+        assert!(!registry.market_books_ready(&market, ts(source_millis + 21), max_age,));
+        assert!(!registry.market_books_ready(&market, ts(source_millis - 21), max_age,));
+
+        registry.quarantine(FeedIntegrityStatus::Stale);
+        assert!(!registry.market_books_ready(&market, ready_at, max_age));
     }
 
     fn replace_book(
