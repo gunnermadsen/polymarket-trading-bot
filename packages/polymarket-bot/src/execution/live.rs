@@ -1204,17 +1204,10 @@ impl ExecutionVenue for LiveVenue {
             return Err(self.live_submit_unavailable(&request));
         }
         let store = self.store()?;
-        if let Some(existing) = self
-            .store()?
-            .find_order_by_client_order_id(request.client_order_id)
-            .await?
-        {
-            if !matches!(existing.state, OrderState::Rejected | OrderState::Unknown) {
-                return Ok(existing);
-            }
+        let (pending_order, newly_created) = store.create_pending_order(&request).await?;
+        if !newly_created {
+            return Ok(pending_order);
         }
-
-        store.create_pending_order(&request).await?;
         let private_key = self
             .config
             .private_key

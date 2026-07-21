@@ -38,6 +38,15 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, now())
 ON CONFLICT (event_id, timestamp_utc) DO NOTHING
 "#;
 
+const INSERT_ORDER_SQL: &str = r#"
+INSERT INTO polymarket.orders (
+  order_id, client_order_id, process_id, created_at, updated_at, market_id, token_id,
+  side, order_type, price, size, state, raw_payload
+)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+ON CONFLICT (client_order_id) DO NOTHING
+"#;
+
 #[derive(Debug, FromRow)]
 struct OrderDbRow {
     order_id: String,
@@ -693,50 +702,53 @@ impl Store {
     }
 
     pub async fn insert_order(&self, order: &OrderRecord) -> Result<()> {
-        let side = serialized_name(&order.request.side)?;
-        let order_type = serialized_name(&order.request.order_type)?;
-        let state = serialized_name(&order.state)?;
-        sqlx::query(
-            r#"
-            INSERT INTO polymarket.orders (
-              order_id, client_order_id, process_id, created_at, updated_at, market_id, token_id,
-              side, order_type, price, size, state, raw_payload
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-            ON CONFLICT (client_order_id) DO UPDATE SET
-              order_id = EXCLUDED.order_id,
-              process_id = EXCLUDED.process_id,
-              market_id = EXCLUDED.market_id,
-              token_id = EXCLUDED.token_id,
-              side = EXCLUDED.side,
-              order_type = EXCLUDED.order_type,
-              price = EXCLUDED.price,
-              size = EXCLUDED.size,
-              updated_at = EXCLUDED.updated_at,
-              state = EXCLUDED.state,
-              raw_payload = EXCLUDED.raw_payload
-            "#,
-        )
-        .bind(&order.order_id)
-        .bind(order.request.client_order_id)
-        .bind(order.request.process_id)
-        .bind(order.created_at)
-        .bind(order.updated_at)
-        .bind(&order.request.market_id)
-        .bind(&order.request.token_id)
-        .bind(side)
-        .bind(order_type)
-        .bind(order.request.price)
-        .bind(order.request.size)
-        .bind(state)
-        .bind(serde_json::to_value(order)?)
-        .execute(&self.pool)
-        .await
-        .context("failed to upsert order")?;
+        if self.try_insert_order(order).await? {
+            return Ok(());
+        }
+        let existing = self
+            .find_order_by_client_order_id(order.request.client_order_id)
+            .await?
+            .context("conflicting order disappeared during identity verification")?;
+        if !order_request_result_matches(&existing.request, &order.request)
+            || existing.order_id != order.order_id
+            || existing.state != order.state
+        {
+            bail!(
+                "client_order_id {} collides with immutable order identity, result, or reference execution evidence",
+                order.request.client_order_id
+            );
+        }
         Ok(())
     }
 
-    pub async fn create_pending_order(&self, request: &OrderRequest) -> Result<OrderRecord> {
+    async fn try_insert_order(&self, order: &OrderRecord) -> Result<bool> {
+        let side = serialized_name(&order.request.side)?;
+        let order_type = serialized_name(&order.request.order_type)?;
+        let state = serialized_name(&order.state)?;
+        let result = sqlx::query(INSERT_ORDER_SQL)
+            .bind(&order.order_id)
+            .bind(order.request.client_order_id)
+            .bind(order.request.process_id)
+            .bind(order.created_at)
+            .bind(order.updated_at)
+            .bind(&order.request.market_id)
+            .bind(&order.request.token_id)
+            .bind(side)
+            .bind(order_type)
+            .bind(order.request.price)
+            .bind(order.request.size)
+            .bind(state)
+            .bind(serde_json::to_value(order)?)
+            .execute(&self.pool)
+            .await
+            .context("failed to upsert order")?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn create_pending_order(
+        &self,
+        request: &OrderRequest,
+    ) -> Result<(OrderRecord, bool)> {
         let now = Utc::now();
         let order = OrderRecord {
             order_id: format!("live-pending-{}", request.client_order_id),
@@ -745,8 +757,20 @@ impl Store {
             created_at: now,
             updated_at: now,
         };
-        self.insert_order(&order).await?;
-        Ok(order)
+        if self.try_insert_order(&order).await? {
+            return Ok((order, true));
+        }
+        let existing = self
+            .find_order_by_client_order_id(request.client_order_id)
+            .await?
+            .context("pending order disappeared during identity verification")?;
+        if !order_request_identity_matches(&existing.request, request) {
+            bail!(
+                "client_order_id {} collides with immutable order identity or reference execution evidence",
+                request.client_order_id
+            );
+        }
+        Ok((existing, false))
     }
 
     pub async fn find_order_by_client_order_id(
@@ -928,7 +952,7 @@ impl Store {
 
     pub async fn insert_fill(&self, fill: &FillRecord) -> Result<()> {
         let source = serialized_name(&fill.source)?;
-        sqlx::query(
+        let result = sqlx::query(
             r#"
             INSERT INTO polymarket.fills (
               fill_id, process_id, order_id, token_id, timestamp_utc, price, size, fee, source, raw_payload
@@ -955,6 +979,31 @@ impl Store {
         .execute(&self.pool)
         .await
         .context("failed to insert fill")?;
+        if result.rows_affected() == 1 {
+            return Ok(());
+        }
+        let existing = sqlx::query_scalar::<_, serde_json::Value>(
+            r#"
+            SELECT raw_payload
+            FROM polymarket.fills
+            WHERE fill_id = $1
+            ORDER BY timestamp_utc
+            LIMIT 1
+            "#,
+        )
+        .bind(fill.fill_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to verify existing fill identity")?
+        .context("conflicting fill disappeared during identity verification")?;
+        let existing: FillRecord = serde_json::from_value(existing)
+            .context("failed to deserialize existing fill identity")?;
+        if !fill_record_matches(&existing, fill) {
+            bail!(
+                "fill_id {} collides with different process, order, token, or economics",
+                fill.fill_id
+            );
+        }
         Ok(())
     }
 
@@ -1359,10 +1408,88 @@ fn order_from_db_row(row: OrderDbRow) -> Result<OrderRecord> {
     Ok(order)
 }
 
+fn order_request_identity_matches(existing: &OrderRequest, incoming: &OrderRequest) -> bool {
+    existing.client_order_id == incoming.client_order_id
+        && existing.process_id == incoming.process_id
+        && existing.market_id == incoming.market_id
+        && existing.token_id == incoming.token_id
+        && existing.side == incoming.side
+        && existing.order_type == incoming.order_type
+        && existing.price == incoming.price
+        && existing.size == incoming.size
+        && existing.signal_id == incoming.signal_id
+        && immutable_order_metadata_matches(&existing.metadata, &incoming.metadata)
+}
+
+fn order_request_result_matches(existing: &OrderRequest, incoming: &OrderRequest) -> bool {
+    existing.client_order_id == incoming.client_order_id
+        && existing.process_id == incoming.process_id
+        && existing.market_id == incoming.market_id
+        && existing.token_id == incoming.token_id
+        && existing.side == incoming.side
+        && existing.order_type == incoming.order_type
+        && existing.price == incoming.price
+        && existing.size == incoming.size
+        && existing.signal_id == incoming.signal_id
+        && existing.metadata == incoming.metadata
+}
+
+fn fill_record_matches(existing: &FillRecord, incoming: &FillRecord) -> bool {
+    existing.fill_id == incoming.fill_id
+        && existing.process_id == incoming.process_id
+        && existing.order_id == incoming.order_id
+        && existing.token_id == incoming.token_id
+        && existing.price == incoming.price
+        && existing.size == incoming.size
+        && existing.fee == incoming.fee
+        && existing.source == incoming.source
+        && existing.filled_at == incoming.filled_at
+}
+
+fn immutable_order_metadata_matches(
+    existing: &serde_json::Value,
+    incoming: &serde_json::Value,
+) -> bool {
+    let (Some(existing), Some(incoming)) = (existing.as_object(), incoming.as_object()) else {
+        return existing == incoming;
+    };
+    let existing_len = existing
+        .keys()
+        .filter(|key| !execution_generated_metadata_key(key))
+        .count();
+    let incoming_len = incoming
+        .keys()
+        .filter(|key| !execution_generated_metadata_key(key))
+        .count();
+    existing_len == incoming_len
+        && existing.iter().all(|(key, value)| {
+            execution_generated_metadata_key(key) || incoming.get(key) == Some(value)
+        })
+}
+
+fn execution_generated_metadata_key(key: &str) -> bool {
+    matches!(
+        key,
+        "paper_execution"
+            | "reject_reason"
+            | "reference_execution_submit"
+            | "reference_execution_arrival"
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::store::{
-        HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL, RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL,
+    use chrono::Utc;
+    use rust_decimal_macros::dec;
+    use uuid::Uuid;
+
+    use crate::{
+        models::{FillRecord, FillSource, OrderRequest, OrderSide, OrderType},
+        store::{
+            fill_record_matches, order_request_identity_matches, order_request_result_matches,
+            HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL, INSERT_ORDER_SQL,
+            RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL,
+        },
     };
 
     #[test]
@@ -1380,5 +1507,72 @@ mod tests {
             .contains("ON CONFLICT (event_id, timestamp_utc) DO NOTHING"));
         assert!(RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL
             .contains("VALUES ($1, $2, $3, $4, $5, $6, $7, now())"));
+    }
+
+    #[test]
+    fn order_insert_never_mutates_an_existing_client_order() {
+        assert!(
+            INSERT_ORDER_SQL.contains("ON CONFLICT (client_order_id) DO NOTHING"),
+            "duplicate identity must be verified in application code without rewriting the row"
+        );
+        assert!(!INSERT_ORDER_SQL.contains("DO UPDATE"));
+        assert!(!INSERT_ORDER_SQL.contains("EXCLUDED."));
+    }
+
+    #[test]
+    fn order_identity_ignores_only_execution_generated_metadata() {
+        let request = OrderRequest {
+            client_order_id: Uuid::from_u128(1),
+            process_id: Some(Uuid::from_u128(2)),
+            market_id: "market".to_string(),
+            token_id: "token".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            price: dec!(0.40),
+            size: dec!(2),
+            signal_id: Some(Uuid::from_u128(3)),
+            metadata: serde_json::json!({
+                "execution_intent": "entry",
+                "reference_execution_guard": { "evidence_sha256": "evidence" },
+            }),
+        };
+        let mut observed = request.clone();
+        observed.metadata["paper_execution"] = serde_json::json!({ "arrival_at": "later" });
+        observed.metadata["reference_execution_submit"] =
+            serde_json::json!({ "status": "accepted" });
+        assert!(order_request_identity_matches(&observed, &request));
+        assert!(!order_request_result_matches(&observed, &request));
+
+        let mut changed_guard = request.clone();
+        changed_guard.metadata["reference_execution_guard"]["evidence_sha256"] =
+            serde_json::json!("changed");
+        assert!(!order_request_identity_matches(&changed_guard, &request));
+
+        let mut changed_intent = request.clone();
+        changed_intent.metadata["execution_intent"] = serde_json::json!("exit");
+        assert!(!order_request_identity_matches(&changed_intent, &request));
+    }
+
+    #[test]
+    fn duplicate_fill_requires_exact_process_order_token_and_economics() {
+        let fill = FillRecord {
+            fill_id: Uuid::from_u128(10),
+            process_id: Some(Uuid::from_u128(11)),
+            order_id: "order".to_string(),
+            token_id: "token".to_string(),
+            price: dec!(0.40),
+            size: dec!(2),
+            fee: dec!(0.12),
+            source: FillSource::Paper,
+            filled_at: Utc::now(),
+        };
+        assert!(fill_record_matches(&fill, &fill));
+
+        let mut changed = fill.clone();
+        changed.price = dec!(0.41);
+        assert!(!fill_record_matches(&fill, &changed));
+        changed = fill.clone();
+        changed.process_id = Some(Uuid::from_u128(12));
+        assert!(!fill_record_matches(&fill, &changed));
     }
 }
