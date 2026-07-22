@@ -910,10 +910,12 @@ impl BookRegistry {
                 let status = if let Some(book) = self.books.get_mut(&token_id) {
                     if !book.matches_market(&market_id) {
                         FeedIntegrityStatus::MarketMismatch
-                    } else if !book.bootstrapped {
-                        FeedIntegrityStatus::PreSnapshot
                     } else if new_tick_size <= Decimal::ZERO {
                         FeedIntegrityStatus::DecodeError
+                    } else if !book.bootstrapped {
+                        book.tick_size = new_tick_size;
+                        book.ingest_sequence = sequence;
+                        FeedIntegrityStatus::PreSnapshot
                     } else {
                         book.tick_size = new_tick_size;
                         book.ingest_sequence = sequence;
@@ -973,28 +975,57 @@ impl BookRegistry {
         self.books.get(token_id)?.checkpoint(self.connection_id)
     }
 
+    pub fn market_books_structurally_ready(&self, market: &BtcIntervalMarket) -> bool {
+        [
+            (&market.up_token_id, BtcOutcome::Up),
+            (&market.down_token_id, BtcOutcome::Down),
+        ]
+        .into_iter()
+        .all(|(token_id, outcome)| {
+            self.books.get(token_id).is_some_and(|book| {
+                book.market_id == market.market_id
+                    && book.wire_market_id == market.condition_id
+                    && book.token_id == *token_id
+                    && book.outcome == outcome
+                    && book.bootstrapped
+                    && book.integrity_status == FeedIntegrityStatus::Ok
+                    && book.best_bid().is_some()
+                    && book.best_ask().is_some()
+                    && book.source_timestamp.is_some()
+                    && book.received_at.is_some()
+            })
+        })
+    }
+
     pub fn market_books_ready(
         &self,
         market: &BtcIntervalMarket,
         now: DateTime<Utc>,
         max_age: Duration,
     ) -> bool {
-        [&market.up_token_id, &market.down_token_id]
-            .into_iter()
-            .all(|token_id| {
-                self.books.get(token_id).is_some_and(|book| {
-                    book.bootstrapped
-                        && book.integrity_status == FeedIntegrityStatus::Ok
-                        && book.best_bid().is_some()
-                        && book.best_ask().is_some()
-                        && book.source_timestamp.is_some_and(|timestamp| {
-                            timestamp - now <= max_age && now - timestamp <= max_age
-                        })
-                        && book.received_at.is_some_and(|timestamp| {
-                            timestamp - now <= max_age && now - timestamp <= max_age
-                        })
-                })
+        [
+            (&market.up_token_id, BtcOutcome::Up),
+            (&market.down_token_id, BtcOutcome::Down),
+        ]
+        .into_iter()
+        .all(|(token_id, outcome)| {
+            self.books.get(token_id).is_some_and(|book| {
+                book.market_id == market.market_id
+                    && book.wire_market_id == market.condition_id
+                    && book.token_id == *token_id
+                    && book.outcome == outcome
+                    && book.bootstrapped
+                    && book.integrity_status == FeedIntegrityStatus::Ok
+                    && book.best_bid().is_some()
+                    && book.best_ask().is_some()
+                    && book.source_timestamp.is_some_and(|timestamp| {
+                        timestamp - now <= max_age && now - timestamp <= max_age
+                    })
+                    && book.received_at.is_some_and(|timestamp| {
+                        timestamp - now <= max_age && now - timestamp <= max_age
+                    })
             })
+        })
     }
 
     pub fn book_readiness(&self) -> Vec<BookReadiness> {
@@ -2101,15 +2132,20 @@ mod tests {
         let max_age = Duration::milliseconds(20);
         let ready_at = ts(source_millis + 10);
 
+        assert!(!registry.market_books_structurally_ready(&market));
         assert!(!registry.market_books_ready(&market, ready_at, max_age));
         seed_book(&mut registry, &market.up_token_id, source_millis);
+        assert!(!registry.market_books_structurally_ready(&market));
         assert!(!registry.market_books_ready(&market, ready_at, max_age));
         seed_book(&mut registry, &market.down_token_id, source_millis);
+        assert!(registry.market_books_structurally_ready(&market));
         assert!(registry.market_books_ready(&market, ready_at, max_age));
         assert!(!registry.market_books_ready(&market, ts(source_millis + 21), max_age,));
         assert!(!registry.market_books_ready(&market, ts(source_millis - 21), max_age,));
+        assert!(registry.market_books_structurally_ready(&market));
 
         registry.quarantine(FeedIntegrityStatus::Stale);
+        assert!(!registry.market_books_structurally_ready(&market));
         assert!(!registry.market_books_ready(&market, ready_at, max_age));
     }
 
