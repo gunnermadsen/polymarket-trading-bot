@@ -60,6 +60,7 @@ const CLOB_SEND_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const CLOB_BOOTSTRAP_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const CLOB_PONG_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 const CLOB_READ_IDLE_TIMEOUT: StdDuration = StdDuration::from_secs(40);
+const CLOB_GRACEFUL_CLOSE_TIMEOUT: StdDuration = StdDuration::from_millis(100);
 const CLOB_PROVENANCE_VALUE_MAX_BYTES: usize = 128;
 const CLOB_ERROR_REASON_MAX_BYTES: usize = 256;
 const REFERENCE_CONNECT_TIMEOUT: StdDuration = StdDuration::from_secs(5);
@@ -504,6 +505,23 @@ enum ClobConnectionRole {
     Successor,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClobCloseAction {
+    Skip,
+    Initiate,
+    AcknowledgeRemote,
+}
+
+impl ClobCloseAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Skip => "skip",
+            Self::Initiate => "initiate",
+            Self::AcknowledgeRemote => "acknowledge_remote",
+        }
+    }
+}
+
 impl ClobConnectionRole {
     fn as_str(self) -> &'static str {
         match self {
@@ -555,6 +573,7 @@ struct ClobSocketTelemetry {
     last_frame_at: Option<DateTime<Utc>>,
     last_frame_instant: Option<Instant>,
     last_data_or_heartbeat_at: Option<DateTime<Utc>>,
+    remote_close_observed: bool,
     remote_close_code: Option<u16>,
     remote_close_reason: Option<String>,
     last_transport_error: Option<ClobTransportErrorDetail>,
@@ -578,6 +597,7 @@ impl ClobSocketTelemetry {
             last_frame_at: None,
             last_frame_instant: None,
             last_data_or_heartbeat_at: None,
+            remote_close_observed: false,
             remote_close_code: None,
             remote_close_reason: None,
             last_transport_error: None,
@@ -635,6 +655,7 @@ impl ClobSocketTelemetry {
     }
 
     fn record_remote_close(&mut self, frame: Option<&CloseFrame>) {
+        self.remote_close_observed = true;
         self.remote_close_code = frame.map(|frame| u16::from(frame.code));
         self.remote_close_reason = frame
             .map(|frame| frame.reason.as_str())
@@ -2546,6 +2567,68 @@ fn same_clob_resolution_outcome(left: &ClobMessage, right: &ClobMessage) -> bool
     }
 }
 
+#[derive(Debug)]
+enum ClobCloseOutcome {
+    Skipped,
+    Completed,
+    TimedOut,
+    Failed(ClobTransportErrorDetail),
+}
+
+async fn attempt_clob_close<S>(
+    socket: &mut WebSocketStream<S>,
+    action: ClobCloseAction,
+) -> ClobCloseOutcome
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let result = match action {
+        ClobCloseAction::Skip => return ClobCloseOutcome::Skipped,
+        ClobCloseAction::Initiate => timeout(CLOB_GRACEFUL_CLOSE_TIMEOUT, socket.close(None)).await,
+        ClobCloseAction::AcknowledgeRemote => {
+            timeout(CLOB_GRACEFUL_CLOSE_TIMEOUT, socket.flush()).await
+        }
+    };
+    match result {
+        Ok(Ok(())) => ClobCloseOutcome::Completed,
+        Ok(Err(error)) => ClobCloseOutcome::Failed(clob_transport_error_detail(&error)),
+        Err(_) => ClobCloseOutcome::TimedOut,
+    }
+}
+
+fn clob_failure_close_action(telemetry: &ClobSocketTelemetry) -> ClobCloseAction {
+    if telemetry.remote_close_observed {
+        ClobCloseAction::AcknowledgeRemote
+    } else {
+        ClobCloseAction::Skip
+    }
+}
+
+fn clob_unavailable_recovery_close_action() -> ClobCloseAction {
+    ClobCloseAction::Skip
+}
+
+fn clob_handoff_close_action(
+    cause: ClobDisconnectCause,
+    telemetry: &ClobSocketTelemetry,
+) -> ClobCloseAction {
+    if telemetry.remote_close_observed {
+        ClobCloseAction::AcknowledgeRemote
+    } else if cause == ClobDisconnectCause::ReadinessRefresh {
+        ClobCloseAction::Initiate
+    } else {
+        ClobCloseAction::Skip
+    }
+}
+
+fn clob_stop_close_action(telemetry: &ClobSocketTelemetry) -> ClobCloseAction {
+    if telemetry.remote_close_observed {
+        ClobCloseAction::AcknowledgeRemote
+    } else {
+        ClobCloseAction::Initiate
+    }
+}
+
 async fn complete_clob_epoch(
     repository: &BtcRepository,
     metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
@@ -2555,8 +2638,70 @@ async fn complete_clob_epoch(
     retry_action: ClobRetryAction,
     consecutive_failures: u32,
 ) -> bool {
-    let reason = bounded_clob_error_reason(&reason);
+    complete_clob_epoch_with_close(
+        repository,
+        metrics,
+        epoch,
+        reason,
+        cause,
+        retry_action,
+        consecutive_failures,
+        ClobCloseAction::Skip,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_clob_epoch_with_close(
+    repository: &BtcRepository,
+    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
+    epoch: &mut ClobEpoch,
+    reason: String,
+    cause: ClobDisconnectCause,
+    retry_action: ClobRetryAction,
+    consecutive_failures: u32,
+    close_action: ClobCloseAction,
+) -> bool {
     let disconnected_at = Utc::now();
+    let disconnected_instant = Instant::now();
+    match attempt_clob_close(&mut epoch.socket, close_action).await {
+        ClobCloseOutcome::Skipped => {}
+        ClobCloseOutcome::Completed => {
+            tracing::debug!(
+                feed = "polymarket_clob_market",
+                connection_id = %epoch.connection_id,
+                connection_epoch = epoch.connection_epoch,
+                connection_role = epoch.telemetry.role.as_str(),
+                close_action = close_action.as_str(),
+                "CLOB websocket close action completed"
+            );
+        }
+        ClobCloseOutcome::TimedOut => {
+            tracing::warn!(
+                feed = "polymarket_clob_market",
+                connection_id = %epoch.connection_id,
+                connection_epoch = epoch.connection_epoch,
+                connection_role = epoch.telemetry.role.as_str(),
+                close_action = close_action.as_str(),
+                timeout_ms = duration_milliseconds(CLOB_GRACEFUL_CLOSE_TIMEOUT),
+                "CLOB websocket close action timed out"
+            );
+        }
+        ClobCloseOutcome::Failed(detail) => {
+            tracing::warn!(
+                feed = "polymarket_clob_market",
+                connection_id = %epoch.connection_id,
+                connection_epoch = epoch.connection_epoch,
+                connection_role = epoch.telemetry.role.as_str(),
+                close_action = close_action.as_str(),
+                transport_error_class = detail.class,
+                transport_io_kind = ?detail.io_kind.as_deref(),
+                transport_os_error_code = ?detail.os_error_code,
+                "CLOB websocket close action failed"
+            );
+        }
+    }
+    let reason = bounded_clob_error_reason(&reason);
     epoch.session.disconnected_at = Some(disconnected_at);
     epoch.session.disconnect_reason = Some(reason.clone());
     epoch.session.metadata = clob_session_metadata(
@@ -2569,7 +2714,8 @@ async fn complete_clob_epoch(
     log_clob_disconnect(
         epoch.connection_id,
         epoch.connection_epoch,
-        Instant::now().duration_since(epoch.connected_instant),
+        disconnected_instant.duration_since(epoch.connected_instant),
+        disconnected_instant,
         epoch.healthy_epoch,
         cause,
         retry_action,
@@ -2790,7 +2936,7 @@ async fn promote_clob_epoch_if_ready(
         checked_before_publication,
         max_book_age,
     ) {
-        if !complete_clob_epoch(
+        if !complete_clob_epoch_with_close(
             repository,
             metrics,
             &mut promoted,
@@ -2798,6 +2944,7 @@ async fn promote_clob_epoch_if_ready(
             ClobDisconnectCause::ReadinessRefresh,
             ClobRetryAction::ImmediateRecovery,
             0,
+            clob_unavailable_recovery_close_action(),
         )
         .await
         {
@@ -2827,7 +2974,7 @@ async fn promote_clob_epoch_if_ready(
     drop(shared);
     drop(published_books);
     if !publication_valid {
-        if !complete_clob_epoch(
+        if !complete_clob_epoch_with_close(
             repository,
             metrics,
             &mut promoted,
@@ -2835,6 +2982,7 @@ async fn promote_clob_epoch_if_ready(
             ClobDisconnectCause::ReadinessRefresh,
             ClobRetryAction::ImmediateRecovery,
             0,
+            clob_unavailable_recovery_close_action(),
         )
         .await
         {
@@ -3028,7 +3176,7 @@ async fn run_clob_supervisor(
             successor_failures = 0;
             successor_rapid_retry_allowed = true;
             successor_retry_at = Instant::now() + retry_delay;
-            let _ = complete_clob_epoch(
+            let _ = complete_clob_epoch_with_close(
                 &repository,
                 &metrics,
                 &mut stale,
@@ -3036,6 +3184,7 @@ async fn run_clob_supervisor(
                 ClobDisconnectCause::ReadinessRefresh,
                 ClobRetryAction::Backoff(retry_delay),
                 successor_failures,
+                clob_unavailable_recovery_close_action(),
             )
             .await;
             continue;
@@ -3793,7 +3942,8 @@ async fn run_clob_supervisor(
                     ClobRetryAction::Backoff(delay) => Instant::now() + delay,
                     ClobRetryAction::Stop => unreachable!("failed successors always retry"),
                 };
-                let _ = complete_clob_epoch(
+                let close_action = clob_failure_close_action(&failed.telemetry);
+                let _ = complete_clob_epoch_with_close(
                     &repository,
                     &metrics,
                     &mut failed,
@@ -3801,6 +3951,7 @@ async fn run_clob_supervisor(
                     cause,
                     retry_action,
                     successor_failures,
+                    close_action,
                 )
                 .await;
                 let mut runtime_metrics = metrics.write().await;
@@ -3886,7 +4037,8 @@ async fn run_clob_supervisor(
                             runtime_metrics.clob_last_disconnect_at = Some(Utc::now());
                             runtime_metrics.clob_last_disconnect_reason = Some(reason.clone());
                         }
-                        let _ = complete_clob_epoch(
+                        let close_action = clob_handoff_close_action(cause, &failed.telemetry);
+                        let _ = complete_clob_epoch_with_close(
                             &repository,
                             &metrics,
                             &mut failed,
@@ -3894,6 +4046,7 @@ async fn run_clob_supervisor(
                             cause,
                             retry_action,
                             retired_failures,
+                            close_action,
                         )
                         .await;
                     }
@@ -3954,7 +4107,8 @@ async fn run_clob_supervisor(
                         successor_retry_at = Instant::now();
                         successor_rapid_retry_allowed = true;
                     }
-                    let _ = complete_clob_epoch(
+                    let close_action = clob_failure_close_action(&failed.telemetry);
+                    let _ = complete_clob_epoch_with_close(
                         &repository,
                         &metrics,
                         &mut failed,
@@ -3962,6 +4116,7 @@ async fn run_clob_supervisor(
                         cause,
                         retry_action,
                         consecutive_failures,
+                        close_action,
                     )
                     .await;
                 }
@@ -4035,7 +4190,8 @@ async fn run_clob_supervisor(
     if let Some(mut epoch) = active.take() {
         quarantine_clob_books_on_disconnect(&mut epoch.registry, &state, &shared_books, Utc::now())
             .await;
-        let _ = complete_clob_epoch(
+        let close_action = clob_stop_close_action(&epoch.telemetry);
+        let _ = complete_clob_epoch_with_close(
             &repository,
             &metrics,
             &mut epoch,
@@ -4043,11 +4199,13 @@ async fn run_clob_supervisor(
             stop_cause,
             ClobRetryAction::Stop,
             consecutive_failures,
+            close_action,
         )
         .await;
     }
     if let Some(mut epoch) = successor.take() {
-        let _ = complete_clob_epoch(
+        let close_action = clob_stop_close_action(&epoch.telemetry);
+        let _ = complete_clob_epoch_with_close(
             &repository,
             &metrics,
             &mut epoch,
@@ -4055,6 +4213,7 @@ async fn run_clob_supervisor(
             stop_cause,
             ClobRetryAction::Stop,
             successor_failures,
+            close_action,
         )
         .await;
     }
@@ -4549,6 +4708,7 @@ fn log_clob_disconnect(
     connection_id: Uuid,
     connection_epoch: i32,
     connected_duration: StdDuration,
+    observed_at: Instant,
     healthy_epoch: bool,
     disconnect_cause: ClobDisconnectCause,
     retry_action: ClobRetryAction,
@@ -4563,7 +4723,6 @@ fn log_clob_disconnect(
     };
     let immediate_recovery = matches!(retry_action, ClobRetryAction::ImmediateRecovery);
     let connected_duration_milliseconds = duration_milliseconds(connected_duration);
-    let observed_at = Instant::now();
     let last_ping_age_milliseconds = telemetry
         .last_heartbeat_sent_instant
         .map(|sent_at| duration_milliseconds(observed_at.saturating_duration_since(sent_at)));
@@ -4619,6 +4778,7 @@ fn log_clob_disconnect(
                 max_heartbeat_send_lateness_ms =
                     duration_milliseconds(telemetry.max_heartbeat_send_lateness),
                 last_frame_age_ms = ?last_frame_age_milliseconds,
+                remote_close_observed = telemetry.remote_close_observed,
                 remote_close_code = ?telemetry.remote_close_code,
                 remote_close_reason = ?telemetry.remote_close_reason.as_deref(),
                 transport_error_class = ?transport_error_class,
@@ -7222,11 +7382,145 @@ mod tests {
 
         telemetry.record_remote_close(Some(&frame));
 
+        assert!(telemetry.remote_close_observed);
         assert_eq!(telemetry.remote_close_code, Some(1001));
         assert_eq!(
             telemetry.remote_close_reason.as_deref(),
             Some("planned maintenance")
         );
+    }
+
+    #[test]
+    fn clob_close_actions_are_explicit_and_failure_safe() {
+        let mut telemetry = ClobSocketTelemetry::new(std::slice::from_ref(&market()));
+        let causes = [
+            ClobDisconnectCause::ConnectFailure,
+            ClobDisconnectCause::SubscriptionFailure,
+            ClobDisconnectCause::BootstrapFailure,
+            ClobDisconnectCause::TransportFailure,
+            ClobDisconnectCause::ReadinessRefresh,
+            ClobDisconnectCause::Shutdown,
+            ClobDisconnectCause::MarketWatchClosed,
+            ClobDisconnectCause::CriticalPersistence,
+        ];
+
+        assert_eq!(clob_failure_close_action(&telemetry), ClobCloseAction::Skip);
+        assert_eq!(
+            clob_unavailable_recovery_close_action(),
+            ClobCloseAction::Skip
+        );
+        assert_eq!(
+            clob_stop_close_action(&telemetry),
+            ClobCloseAction::Initiate
+        );
+        for cause in causes {
+            let expected = if cause == ClobDisconnectCause::ReadinessRefresh {
+                ClobCloseAction::Initiate
+            } else {
+                ClobCloseAction::Skip
+            };
+            assert_eq!(clob_handoff_close_action(cause, &telemetry), expected);
+        }
+
+        telemetry.record_remote_close(None);
+        assert!(telemetry.remote_close_observed);
+        assert_eq!(
+            clob_failure_close_action(&telemetry),
+            ClobCloseAction::AcknowledgeRemote
+        );
+        assert_eq!(
+            clob_stop_close_action(&telemetry),
+            ClobCloseAction::AcknowledgeRemote
+        );
+        for cause in causes {
+            assert_eq!(
+                clob_handoff_close_action(cause, &telemetry),
+                ClobCloseAction::AcknowledgeRemote
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn planned_clob_close_sends_one_close_frame() {
+        let (client_io, server_io) = tokio::io::duplex(1_024);
+        let mut client = WebSocketStream::from_raw_socket(
+            client_io,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let mut server = WebSocketStream::from_raw_socket(
+            server_io,
+            tokio_tungstenite::tungstenite::protocol::Role::Server,
+            None,
+        )
+        .await;
+
+        assert!(matches!(
+            attempt_clob_close(&mut client, ClobCloseAction::Initiate).await,
+            ClobCloseOutcome::Completed
+        ));
+        let frame = timeout(CLOB_GRACEFUL_CLOSE_TIMEOUT, server.next())
+            .await
+            .expect("planned close frame must arrive within the close bound")
+            .expect("planned close must produce a frame")
+            .expect("planned close frame must decode");
+        assert!(matches!(frame, Message::Close(_)));
+    }
+
+    #[tokio::test]
+    async fn remote_clob_close_is_acknowledged_by_flushing_the_queued_reply() {
+        let (client_io, server_io) = tokio::io::duplex(1_024);
+        let mut client = WebSocketStream::from_raw_socket(
+            client_io,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let mut server = WebSocketStream::from_raw_socket(
+            server_io,
+            tokio_tungstenite::tungstenite::protocol::Role::Server,
+            None,
+        )
+        .await;
+        server.send(Message::Close(None)).await.unwrap();
+        assert!(matches!(
+            client.next().await.unwrap().unwrap(),
+            Message::Close(None)
+        ));
+
+        assert!(matches!(
+            attempt_clob_close(&mut client, ClobCloseAction::AcknowledgeRemote).await,
+            ClobCloseOutcome::Completed
+        ));
+        let acknowledgement = timeout(CLOB_GRACEFUL_CLOSE_TIMEOUT, server.next())
+            .await
+            .expect("remote close acknowledgement must arrive within the close bound")
+            .expect("remote close acknowledgement must produce a frame")
+            .expect("remote close acknowledgement must decode");
+        assert!(matches!(acknowledgement, Message::Close(_)));
+    }
+
+    #[tokio::test]
+    async fn clob_close_action_respects_the_hard_timeout() {
+        use tokio::io::AsyncWriteExt;
+
+        let (client_io, blocked_peer) = tokio::io::duplex(1);
+        let mut client = WebSocketStream::from_raw_socket(
+            client_io,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        client.get_mut().write_all(&[0]).await.unwrap();
+
+        let started_at = Instant::now();
+        assert!(matches!(
+            attempt_clob_close(&mut client, ClobCloseAction::Initiate).await,
+            ClobCloseOutcome::TimedOut
+        ));
+        assert!(started_at.elapsed() < StdDuration::from_millis(500));
+        drop(blocked_peer);
     }
 
     #[test]
