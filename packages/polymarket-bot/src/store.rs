@@ -251,80 +251,6 @@ impl Store {
         Ok(Self::from_pool(pool))
     }
 
-    pub async fn create_trading_process(
-        &self,
-        name: &str,
-        process_type: &str,
-        process_scope: &str,
-        process_key: Option<&str>,
-        enabled: bool,
-        config: TradingProcessConfig,
-        metadata: serde_json::Value,
-    ) -> Result<TradingProcess> {
-        let row = sqlx::query_as::<_, TradingProcessRow>(
-            r#"
-            INSERT INTO polymarket.trading_processes (
-              process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
-              created_at, updated_at
-            )
-            VALUES (gen_random_uuid(),$1,$2,$3,$4,'created',$5,$6,$7,now(),now())
-            RETURNING process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
-              created_at, updated_at, started_at, stopped_at, last_error
-            "#,
-        )
-        .bind(name)
-        .bind(process_type)
-        .bind(process_scope)
-        .bind(process_key)
-        .bind(enabled)
-        .bind(serde_json::to_value(config)?)
-        .bind(metadata)
-        .fetch_one(&self.pool)
-        .await
-        .context("failed to create trading process")?;
-        trading_process_from_row(row)
-    }
-
-    pub async fn create_trading_process_with_status(
-        &self,
-        name: &str,
-        process_type: &str,
-        process_scope: &str,
-        process_key: Option<&str>,
-        status: &str,
-        enabled: bool,
-        config: TradingProcessConfig,
-        metadata: serde_json::Value,
-    ) -> Result<TradingProcess> {
-        let row = sqlx::query_as::<_, TradingProcessRow>(
-            r#"
-            INSERT INTO polymarket.trading_processes (
-              process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
-              created_at, updated_at, started_at, stopped_at
-            )
-            VALUES (
-              gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7,$8,now(),now(),
-              now(),
-              CASE WHEN $5 IN ('stopped', 'failed', 'expired', 'completed') THEN now() ELSE NULL END
-            )
-            RETURNING process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
-              created_at, updated_at, started_at, stopped_at, last_error
-            "#,
-        )
-        .bind(name)
-        .bind(process_type)
-        .bind(process_scope)
-        .bind(process_key)
-        .bind(status)
-        .bind(enabled)
-        .bind(serde_json::to_value(config)?)
-        .bind(metadata)
-        .fetch_one(&self.pool)
-        .await
-        .context("failed to create trading process with status")?;
-        trading_process_from_row(row)
-    }
-
     pub async fn update_trading_process_status(
         &self,
         process_id: Uuid,
@@ -436,13 +362,10 @@ impl Store {
         Ok(result.rows_affected() == 1)
     }
 
-    pub async fn upsert_trading_process_by_key(
+    pub async fn upsert_btc_realtime_paper_process_by_key(
         &self,
         name: &str,
-        process_type: &str,
-        process_scope: &str,
         process_key: &str,
-        enabled: bool,
         status: &str,
         config: TradingProcessConfig,
         metadata: serde_json::Value,
@@ -453,28 +376,23 @@ impl Store {
             WITH updated AS (
               UPDATE polymarket.trading_processes
               SET name = $1,
-                  status = $5,
-                  enabled = $6,
-                  config = $7,
-                  metadata = $8,
-                  started_at = CASE
-                    WHEN $6 = true AND $5 = 'running' THEN COALESCE(started_at, now())
-                    ELSE started_at
-                  END,
+                  status = $3,
+                  enabled = false,
+                  config = $4,
+                  metadata = $5,
                   stopped_at = CASE
-                    WHEN $5 IN ('stopped', 'failed', 'expired', 'completed')
+                    WHEN $3 IN ('stopped', 'failed', 'expired', 'completed')
                       THEN COALESCE(stopped_at, now())
-                    WHEN $6 = true THEN NULL
                     ELSE stopped_at
                   END,
                   last_error = CASE
-                    WHEN $5 NOT IN ('failed', 'error') THEN NULL
+                    WHEN $3 NOT IN ('failed', 'error') THEN NULL
                     ELSE last_error
                   END,
                   updated_at = now()
-              WHERE process_type = $2
-                AND process_scope = $3
-                AND process_key = $4
+              WHERE process_type = 'btc_5m'
+                AND process_scope = 'realtime_paper'
+                AND process_key = $2
               RETURNING process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
                 created_at, updated_at, started_at, stopped_at, last_error
             ),
@@ -484,10 +402,10 @@ impl Store {
                 created_at, updated_at, started_at, stopped_at, last_error
               )
               SELECT
-                gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8,
+                gen_random_uuid(), $1, 'btc_5m', 'realtime_paper', $2, $3, false, $4, $5,
                 now(), now(),
-                CASE WHEN $6 = true AND $5 = 'running' THEN now() ELSE NULL END,
-                CASE WHEN $5 IN ('stopped', 'failed', 'expired', 'completed') THEN now() ELSE NULL END,
+                NULL,
+                CASE WHEN $3 IN ('stopped', 'failed', 'expired', 'completed') THEN now() ELSE NULL END,
                 NULL
               WHERE NOT EXISTS (SELECT 1 FROM updated)
               RETURNING process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
@@ -499,16 +417,13 @@ impl Store {
             "#,
         )
         .bind(name)
-        .bind(process_type)
-        .bind(process_scope)
         .bind(process_key)
         .bind(status)
-        .bind(enabled)
         .bind(config_value)
         .bind(metadata)
         .fetch_one(&self.pool)
         .await
-        .context("failed to upsert trading process by key")?;
+        .context("failed to upsert BTC realtime-paper process by key")?;
         trading_process_from_row(row)
     }
 
@@ -545,10 +460,8 @@ impl Store {
         row.map(trading_process_from_row).transpose()
     }
 
-    pub async fn get_trading_process_by_key(
+    pub async fn get_btc_realtime_paper_process_by_key(
         &self,
-        process_type: &str,
-        process_scope: &str,
         process_key: &str,
     ) -> Result<Option<TradingProcess>> {
         let row = sqlx::query_as::<_, TradingProcessRow>(
@@ -556,17 +469,15 @@ impl Store {
             SELECT process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
               created_at, updated_at, started_at, stopped_at, last_error
             FROM polymarket.trading_processes
-            WHERE process_type = $1
-              AND process_scope = $2
-              AND process_key = $3
+            WHERE process_type = 'btc_5m'
+              AND process_scope = 'realtime_paper'
+              AND process_key = $1
             "#,
         )
-        .bind(process_type)
-        .bind(process_scope)
         .bind(process_key)
         .fetch_optional(&self.pool)
         .await
-        .context("failed to get trading process by key")?;
+        .context("failed to get BTC realtime-paper process by key")?;
         row.map(trading_process_from_row).transpose()
     }
 
@@ -652,15 +563,10 @@ impl Store {
         Ok(status)
     }
 
-    pub async fn update_trading_process(
+    pub async fn update_btc_realtime_paper_process_definition(
         &self,
         process_id: Uuid,
         name: Option<&str>,
-        process_type: Option<&str>,
-        process_scope: Option<&str>,
-        process_key: Option<Option<&str>>,
-        enabled: Option<bool>,
-        status: Option<&str>,
         config: Option<TradingProcessConfig>,
         metadata: Option<serde_json::Value>,
     ) -> Result<Option<TradingProcess>> {
@@ -669,76 +575,23 @@ impl Store {
             r#"
             UPDATE polymarket.trading_processes
             SET name = COALESCE($2, name),
-                process_type = COALESCE($3, process_type),
-                process_scope = COALESCE($4, process_scope),
-                process_key = CASE WHEN $5::boolean THEN $6 ELSE process_key END,
-                enabled = COALESCE($7, enabled),
-                status = COALESCE($8, status),
-                config = COALESCE($9, config),
-                metadata = COALESCE($10, metadata),
+                config = COALESCE($3, config),
+                metadata = COALESCE($4, metadata),
                 updated_at = now()
             WHERE process_id = $1
+              AND process_type = 'btc_5m'
+              AND process_scope = 'realtime_paper'
             RETURNING process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
               created_at, updated_at, started_at, stopped_at, last_error
             "#,
         )
         .bind(process_id)
         .bind(name)
-        .bind(process_type)
-        .bind(process_scope)
-        .bind(process_key.is_some())
-        .bind(process_key.flatten())
-        .bind(enabled)
-        .bind(status)
         .bind(config_value)
         .bind(metadata)
         .fetch_optional(&self.pool)
         .await
-        .context("failed to update trading process")?;
-        row.map(trading_process_from_row).transpose()
-    }
-
-    pub async fn start_trading_process(&self, process_id: Uuid) -> Result<Option<TradingProcess>> {
-        let row = sqlx::query_as::<_, TradingProcessRow>(
-            r#"
-            UPDATE polymarket.trading_processes
-            SET status = 'running',
-                enabled = true,
-                started_at = now(),
-                heartbeat_at = NULL,
-                stopped_at = NULL,
-                stop_reason = NULL,
-                last_error = NULL,
-                updated_at = now()
-            WHERE process_id = $1
-            RETURNING process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
-              created_at, updated_at, started_at, stopped_at, last_error
-            "#,
-        )
-        .bind(process_id)
-        .fetch_optional(&self.pool)
-        .await
-        .context("failed to start trading process")?;
-        row.map(trading_process_from_row).transpose()
-    }
-
-    pub async fn stop_trading_process(&self, process_id: Uuid) -> Result<Option<TradingProcess>> {
-        let row = sqlx::query_as::<_, TradingProcessRow>(
-            r#"
-            UPDATE polymarket.trading_processes
-            SET status = 'stopped',
-                enabled = false,
-                stopped_at = now(),
-                updated_at = now()
-            WHERE process_id = $1
-            RETURNING process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
-              created_at, updated_at, started_at, stopped_at, last_error
-            "#,
-        )
-        .bind(process_id)
-        .fetch_optional(&self.pool)
-        .await
-        .context("failed to stop trading process")?;
+        .context("failed to update BTC realtime-paper process definition")?;
         row.map(trading_process_from_row).transpose()
     }
 
@@ -1334,35 +1187,6 @@ impl Store {
         .await
         .context("failed to insert account reconciliation run")?;
         Ok(run_id)
-    }
-
-    pub async fn fetch_market_end_date_for_entry(
-        &self,
-        market_id: &str,
-        token_id: &str,
-    ) -> Result<Option<DateTime<Utc>>> {
-        let row = sqlx::query_scalar::<_, DateTime<Utc>>(
-            r#"
-            SELECT m.end_date
-            FROM polymarket.markets m
-            WHERE m.market_id = $1
-              AND m.end_date IS NOT NULL
-            UNION ALL
-            SELECT m.end_date
-            FROM polymarket.outcome_tokens ot
-            JOIN polymarket.markets m ON m.market_id = ot.market_id
-            WHERE ot.token_id = $2
-              AND m.end_date IS NOT NULL
-            ORDER BY 1 ASC
-            LIMIT 1
-            "#,
-        )
-        .bind(market_id)
-        .bind(token_id)
-        .fetch_optional(&self.pool)
-        .await
-        .context("failed to fetch market end date for entry safety")?;
-        Ok(row)
     }
 
     pub async fn insert_conversion_result(

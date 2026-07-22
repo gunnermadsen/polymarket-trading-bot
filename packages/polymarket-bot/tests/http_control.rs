@@ -421,24 +421,6 @@ impl ControlApi for FakeControlApi {
         })
     }
 
-    async fn create_trading_process(
-        &self,
-        request: http::CreateTradingProcessRequest,
-    ) -> Result<http::TradingProcessResponse, HttpError> {
-        Ok(http::TradingProcessResponse {
-            process: test_process(
-                Uuid::new_v4(),
-                request.name,
-                request.process_type,
-                request.process_scope,
-                request.process_key,
-                "created",
-                request.enabled,
-                request.config,
-            ),
-        })
-    }
-
     async fn list_trading_processes(
         &self,
         _request: http::ListTradingProcessesRequest,
@@ -446,10 +428,10 @@ impl ControlApi for FakeControlApi {
         Ok(http::TradingProcessesResponse {
             processes: vec![test_process(
                 Uuid::new_v4(),
-                "default-generic-process".to_string(),
-                "generic".to_string(),
-                "default".to_string(),
-                Some("default-generic-process".to_string()),
+                "btc-paper-process".to_string(),
+                "btc_5m".to_string(),
+                "realtime_paper".to_string(),
+                Some("btc-paper-process".to_string()),
                 "running",
                 true,
                 TradingProcessConfig::default(),
@@ -464,10 +446,10 @@ impl ControlApi for FakeControlApi {
         Ok(http::TradingProcessResponse {
             process: test_process(
                 process_id,
-                "paper-canary".to_string(),
-                "generic".to_string(),
-                "default".to_string(),
-                Some("paper-canary".to_string()),
+                "btc-paper-canary".to_string(),
+                "btc_5m".to_string(),
+                "realtime_paper".to_string(),
+                Some("btc-paper-canary".to_string()),
                 "running",
                 true,
                 TradingProcessConfig::default(),
@@ -483,18 +465,14 @@ impl ControlApi for FakeControlApi {
         Ok(http::TradingProcessResponse {
             process: test_process(
                 process_id,
-                request.name.unwrap_or_else(|| "paper-canary".to_string()),
                 request
-                    .process_type
-                    .unwrap_or_else(|| "generic".to_string()),
-                request
-                    .process_scope
-                    .unwrap_or_else(|| "default".to_string()),
-                request
-                    .process_key
-                    .unwrap_or(Some("paper-canary".to_string())),
-                request.status.as_deref().unwrap_or("created"),
-                request.enabled.unwrap_or(true),
+                    .name
+                    .unwrap_or_else(|| "btc-paper-canary".to_string()),
+                "btc_5m".to_string(),
+                "realtime_paper".to_string(),
+                Some("btc-paper-canary".to_string()),
+                "created",
+                false,
                 request.config.unwrap_or_default(),
             ),
         })
@@ -507,10 +485,10 @@ impl ControlApi for FakeControlApi {
         Ok(http::TradingProcessResponse {
             process: test_process(
                 process_id,
-                "paper-canary".to_string(),
-                "generic".to_string(),
-                "default".to_string(),
-                Some("paper-canary".to_string()),
+                "btc-paper-canary".to_string(),
+                "btc_5m".to_string(),
+                "realtime_paper".to_string(),
+                Some("btc-paper-canary".to_string()),
                 "running",
                 true,
                 TradingProcessConfig::default(),
@@ -525,10 +503,10 @@ impl ControlApi for FakeControlApi {
         Ok(http::TradingProcessResponse {
             process: test_process(
                 process_id,
-                "paper-canary".to_string(),
-                "generic".to_string(),
-                "default".to_string(),
-                Some("paper-canary".to_string()),
+                "btc-paper-canary".to_string(),
+                "btc_5m".to_string(),
+                "realtime_paper".to_string(),
+                Some("btc-paper-canary".to_string()),
                 "stopped",
                 false,
                 TradingProcessConfig::default(),
@@ -1215,7 +1193,7 @@ async fn authenticated_admin_can_read_live_status_and_halt() {
 #[tokio::test]
 async fn authenticated_admin_can_manage_trading_processes() {
     let app = http::router(Arc::new(FakeControlApi), "secret");
-    let create_response = app
+    let retired_create_response = app
         .clone()
         .oneshot(
             Request::builder()
@@ -1224,23 +1202,17 @@ async fn authenticated_admin_can_manage_trading_processes() {
                 .header(AUTHORIZATION, "Bearer secret")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"name":"paper-canary","process_type":"generic","enabled":true,"config":{"execution":{"mode":"paper","execute_signals":true,"live_capital":false}}}"#,
+                    r#"{"name":"generic-process","process_type":"generic","enabled":true,"config":{}}"#,
                 ))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(create_response.status(), StatusCode::OK);
-    let create_body = to_bytes(create_response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let create_json: Value = serde_json::from_slice(&create_body).unwrap();
-    let process_id = create_json["process"]["process_id"].as_str().unwrap();
-    assert_eq!(create_json["process"]["name"], "paper-canary");
     assert_eq!(
-        create_json["process"]["config"]["execution"]["mode"],
-        "paper"
+        retired_create_response.status(),
+        StatusCode::METHOD_NOT_ALLOWED
     );
+    let process_id = Uuid::new_v4().to_string();
 
     let list_response = app
         .clone()
@@ -1265,11 +1237,11 @@ async fn authenticated_admin_can_manage_trading_processes() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/admin/trading-processes/by-key/prod-generic-canary")
+                .uri("/admin/trading-processes/by-key/btc-paper-canary")
                 .header(AUTHORIZATION, "Bearer secret")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"name":"prod-generic-canary","process_type":"generic","process_scope":"production","enabled":true,"status":"running","config":{}}"#,
+                    r#"{"name":"btc-paper-canary","process_type":"btc_5m","process_scope":"realtime_paper","enabled":false,"status":"created","config":{}}"#,
                 ))
                 .unwrap(),
         )
@@ -1280,8 +1252,8 @@ async fn authenticated_admin_can_manage_trading_processes() {
         .await
         .unwrap();
     let upsert_json: Value = serde_json::from_slice(&upsert_body).unwrap();
-    assert_eq!(upsert_json["process"]["process_key"], "prod-generic-canary");
-    assert_eq!(upsert_json["process"]["process_scope"], "production");
+    assert_eq!(upsert_json["process"]["process_key"], "btc-paper-canary");
+    assert_eq!(upsert_json["process"]["process_scope"], "realtime_paper");
 
     let status_response = app
         .clone()
@@ -1304,12 +1276,30 @@ async fn authenticated_admin_can_manage_trading_processes() {
                 .uri(format!("/admin/trading-processes/{process_id}"))
                 .header(AUTHORIZATION, "Bearer secret")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"status":"created","enabled":false}"#))
+                .body(Body::from(r#"{"name":"btc-paper-canary-updated"}"#))
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(update_response.status(), StatusCode::OK);
+
+    let lifecycle_update_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/admin/trading-processes/{process_id}"))
+                .header(AUTHORIZATION, "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"status":"running"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        lifecycle_update_response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
 
     let preview_response = app
         .clone()

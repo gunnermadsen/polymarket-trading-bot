@@ -60,6 +60,8 @@ const BTC_PROCESS_SCHEMA_VERSION: &str = "btc_realtime_paper_process_v2";
 const SELECTABLE_BTC_PIPELINE_VERSION: &str = "btc_realtime_paper_pipeline_v12";
 const SELECTABLE_BTC_PROCESS_SCHEMA_VERSION: &str = "btc_realtime_paper_process_v3";
 const LEGACY_BTC_PROCESS_SCHEMA_VERSION: &str = "btc_realtime_paper_process_v1";
+const BTC_PROCESS_TYPE: &str = "btc_5m";
+const BTC_PROCESS_SCOPE: &str = "realtime_paper";
 const BTC_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(45);
 const COMPILED_SOURCE_IDENTITY: &str = env!("POLYMARKET_COMPILED_SOURCE_ID");
 
@@ -846,11 +848,11 @@ impl BtcProcessManager {
     }
 
     fn is_managed_process(process: &TradingProcess) -> bool {
-        process.process_type == "btc_5m" && process.process_scope == "realtime_paper"
+        Self::is_managed_identity(&process.process_type, &process.process_scope)
     }
 
     fn is_managed_identity(process_type: &str, process_scope: &str) -> bool {
-        process_type == "btc_5m" && process_scope == "realtime_paper"
+        process_type == BTC_PROCESS_TYPE && process_scope == BTC_PROCESS_SCOPE
     }
 
     async fn record_event(
@@ -2509,49 +2511,6 @@ impl ControlApi for RuntimeControl {
             .map_err(|error| HttpError::internal(error.to_string()))
     }
 
-    async fn create_trading_process(
-        &self,
-        request: control_http::CreateTradingProcessRequest,
-    ) -> Result<TradingProcessResponse, HttpError> {
-        let name = request.name.trim();
-        if name.is_empty() {
-            return Err(HttpError::bad_request("trading process name is required"));
-        }
-        let process_type = request.process_type.trim();
-        if process_type.is_empty() {
-            return Err(HttpError::bad_request("trading process type is required"));
-        }
-        let process_scope = request.process_scope.trim();
-        if process_scope.is_empty() {
-            return Err(HttpError::bad_request("trading process scope is required"));
-        }
-        let process_key = request.process_key.as_deref().map(str::trim);
-        if matches!(process_key, Some("")) {
-            return Err(HttpError::bad_request(
-                "trading process key cannot be empty",
-            ));
-        }
-        if BtcProcessManager::is_managed_identity(process_type, process_scope) {
-            return Err(HttpError::bad_request(
-                "create is disabled for managed BTC definitions; use stable-key PUT, then the process /start endpoint",
-            ));
-        }
-        let process = self
-            .store
-            .create_trading_process(
-                name,
-                process_type,
-                process_scope,
-                process_key,
-                request.enabled,
-                request.config,
-                request.metadata,
-            )
-            .await
-            .map_err(|error| HttpError::internal(error.to_string()))?;
-        Ok(TradingProcessResponse { process })
-    }
-
     async fn list_trading_processes(
         &self,
         request: control_http::ListTradingProcessesRequest,
@@ -2591,132 +2550,109 @@ impl ControlApi for RuntimeControl {
             return Err(HttpError::bad_request("trading process name is required"));
         }
         let process_type = request.process_type.trim();
-        if process_type.is_empty() {
-            return Err(HttpError::bad_request("trading process type is required"));
-        }
         let process_scope = request.process_scope.trim();
-        if process_scope.is_empty() {
-            return Err(HttpError::bad_request("trading process scope is required"));
+        if !BtcProcessManager::is_managed_identity(process_type, process_scope) {
+            return Err(HttpError::bad_request(
+                "only btc_5m/realtime_paper process definitions are supported",
+            ));
         }
         let status = request.status.trim();
         if status.is_empty() {
             return Err(HttpError::bad_request("trading process status is required"));
         }
-        if BtcProcessManager::is_managed_identity(process_type, process_scope) {
-            if request.enabled || matches!(status, "starting" | "running" | "stopping") {
+        if request.enabled || matches!(status, "starting" | "running" | "stopping") {
+            return Err(HttpError::bad_request(
+                "BTC lifecycle cannot be activated through PUT; use the process /start endpoint",
+            ));
+        }
+        if !matches!(status, "created" | "stopped" | "failed" | "completed") {
+            return Err(HttpError::bad_request(
+                "BTC definition status must be created, stopped, failed, or completed while inactive",
+            ));
+        }
+        // Keep the lifecycle lock through the definition read and write. This
+        // prevents /start from freezing the old definition while this request
+        // concurrently replaces it.
+        let lifecycle_guard = match &self.btc_manager {
+            Some(manager) => Some(manager.transition.lock().await),
+            None => None,
+        };
+        let manager = self.btc_manager.as_ref().ok_or_else(|| {
+            HttpError::bad_request("BTC realtime-paper capability is disabled for this deployment")
+        })?;
+        let now = Utc::now();
+        manager.validate_start_definition(&TradingProcess {
+            process_id: uuid::Uuid::nil(),
+            name: name.to_string(),
+            process_type: BTC_PROCESS_TYPE.to_string(),
+            process_scope: BTC_PROCESS_SCOPE.to_string(),
+            process_key: Some(key.to_string()),
+            status: status.to_string(),
+            enabled: false,
+            config: request.config.clone(),
+            metadata: request.metadata.clone(),
+            created_at: now,
+            updated_at: now,
+            started_at: None,
+            stopped_at: Some(now),
+            last_error: None,
+        })?;
+        let existing = self
+            .store
+            .get_btc_realtime_paper_process_by_key(key)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        if let Some(existing) = existing {
+            if status != existing.status {
                 return Err(HttpError::bad_request(
-                    "BTC lifecycle cannot be activated through PUT; use the process /start endpoint",
+                    "BTC status is lifecycle-owned; stable-key PUT must preserve the current status",
                 ));
             }
-            if !matches!(status, "created" | "stopped" | "failed" | "completed") {
-                return Err(HttpError::bad_request(
-                    "BTC definition status must be created, stopped, failed, or completed while inactive",
-                ));
-            }
-            // Keep the lifecycle lock through the definition read and write. This
-            // prevents /start from freezing the old definition while this request
-            // concurrently replaces it.
-            let lifecycle_guard = match &self.btc_manager {
-                Some(manager) => Some(manager.transition.lock().await),
-                None => None,
+            let runtime_active = match &self.btc_manager {
+                Some(manager) => manager
+                    .active_playbooks
+                    .lock()
+                    .await
+                    .contains_key(&existing.process_id),
+                None => false,
             };
-            let manager = self.btc_manager.as_ref().ok_or_else(|| {
-                HttpError::bad_request(
-                    "BTC realtime-paper capability is disabled for this deployment",
+            let terminal_pending = match &self.btc_manager {
+                Some(manager) => manager
+                    .terminal_pending
+                    .lock()
+                    .await
+                    .contains_key(&existing.process_id),
+                None => false,
+            };
+            if runtime_active
+                || terminal_pending
+                || existing.enabled
+                || matches!(
+                    existing.status.as_str(),
+                    "starting" | "running" | "stopping"
                 )
-            })?;
-            let now = Utc::now();
-            manager.validate_start_definition(&TradingProcess {
-                process_id: uuid::Uuid::nil(),
-                name: name.to_string(),
-                process_type: process_type.to_string(),
-                process_scope: process_scope.to_string(),
-                process_key: Some(key.to_string()),
-                status: status.to_string(),
-                enabled: false,
-                config: request.config.clone(),
-                metadata: request.metadata.clone(),
-                created_at: now,
-                updated_at: now,
-                started_at: None,
-                stopped_at: Some(now),
-                last_error: None,
-            })?;
-            let existing = self
-                .store
-                .get_trading_process_by_key(process_type, process_scope, key)
-                .await
-                .map_err(|error| HttpError::internal(error.to_string()))?;
-            if let Some(existing) = existing {
-                if status != existing.status {
-                    return Err(HttpError::bad_request(
-                        "BTC status is lifecycle-owned; stable-key PUT must preserve the current status",
-                    ));
-                }
-                let runtime_active = match &self.btc_manager {
-                    Some(manager) => manager
-                        .active_playbooks
-                        .lock()
-                        .await
-                        .contains_key(&existing.process_id),
-                    None => false,
-                };
-                let terminal_pending = match &self.btc_manager {
-                    Some(manager) => manager
-                        .terminal_pending
-                        .lock()
-                        .await
-                        .contains_key(&existing.process_id),
-                    None => false,
-                };
-                if runtime_active
-                    || terminal_pending
-                    || existing.enabled
-                    || matches!(
-                        existing.status.as_str(),
-                        "starting" | "running" | "stopping"
-                    )
-                {
-                    return Err(HttpError::conflict(
-                        "stop the BTC trading process through its /stop endpoint before reconfiguring it",
-                    ));
-                }
-            } else if status != "created" {
-                return Err(HttpError::bad_request(
-                    "a new BTC process definition must be created with status=created",
+            {
+                return Err(HttpError::conflict(
+                    "stop the BTC trading process through its /stop endpoint before reconfiguring it",
                 ));
             }
-            let process = self
-                .store
-                .upsert_trading_process_by_key(
-                    name,
-                    process_type,
-                    process_scope,
-                    key,
-                    request.enabled,
-                    status,
-                    request.config,
-                    request.metadata,
-                )
-                .await
-                .map_err(|error| HttpError::internal(error.to_string()))?;
-            drop(lifecycle_guard);
-            return Ok(TradingProcessResponse { process });
+        } else if status != "created" {
+            return Err(HttpError::bad_request(
+                "a new BTC process definition must be created with status=created",
+            ));
         }
         let process = self
             .store
-            .upsert_trading_process_by_key(
+            .upsert_btc_realtime_paper_process_by_key(
                 name,
-                process_type,
-                process_scope,
                 key,
-                request.enabled,
                 status,
                 request.config,
                 request.metadata,
             )
             .await
             .map_err(|error| HttpError::internal(error.to_string()))?;
+        drop(lifecycle_guard);
         Ok(TradingProcessResponse { process })
     }
 
@@ -2796,33 +2732,6 @@ impl ControlApi for RuntimeControl {
                 "trading process name cannot be empty",
             ));
         }
-        let process_type = request.process_type.as_deref().map(str::trim);
-        if matches!(process_type, Some("")) {
-            return Err(HttpError::bad_request(
-                "trading process type cannot be empty",
-            ));
-        }
-        let process_scope = request.process_scope.as_deref().map(str::trim);
-        if matches!(process_scope, Some("")) {
-            return Err(HttpError::bad_request(
-                "trading process scope cannot be empty",
-            ));
-        }
-        let process_key = request
-            .process_key
-            .as_ref()
-            .map(|key| key.as_deref().map(str::trim));
-        if matches!(process_key, Some(Some(""))) {
-            return Err(HttpError::bad_request(
-                "trading process key cannot be empty",
-            ));
-        }
-        let status = request.status.as_deref().map(str::trim);
-        if matches!(status, Some("")) {
-            return Err(HttpError::bad_request(
-                "trading process status cannot be empty",
-            ));
-        }
         let lifecycle_guard = match &self.btc_manager {
             Some(manager) => Some(manager.transition.lock().await),
             None => None,
@@ -2833,77 +2742,51 @@ impl ControlApi for RuntimeControl {
             .await
             .map_err(|error| HttpError::internal(error.to_string()))?
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
-        let proposed_type = process_type.unwrap_or(current.process_type.as_str());
-        let proposed_scope = process_scope.unwrap_or(current.process_scope.as_str());
-        let managed_now = BtcProcessManager::is_managed_process(&current);
-        let managed_after = BtcProcessManager::is_managed_identity(proposed_type, proposed_scope);
-        if !managed_now && managed_after {
+        if !BtcProcessManager::is_managed_process(&current) {
             return Err(HttpError::bad_request(
-                "an existing generic process cannot be converted into a managed BTC process; create a dedicated stopped BTC definition",
+                "only managed BTC realtime-paper process definitions can be updated",
             ));
         }
-        if managed_now || managed_after {
-            let runtime_active = match &self.btc_manager {
-                Some(manager) => manager
-                    .active_playbooks
-                    .lock()
-                    .await
-                    .contains_key(&process_id),
-                None => false,
-            };
-            let terminal_pending = match &self.btc_manager {
-                Some(manager) => manager
-                    .terminal_pending
-                    .lock()
-                    .await
-                    .contains_key(&process_id),
-                None => false,
-            };
-            if runtime_active
-                || terminal_pending
-                || current.enabled
-                || matches!(current.status.as_str(), "starting" | "running" | "stopping")
-            {
-                return Err(HttpError::conflict(
-                    "stop the BTC trading process through its /stop endpoint before reconfiguring it",
-                ));
-            }
-            if request.enabled.is_some() || request.status.is_some() {
-                return Err(HttpError::bad_request(
-                    "BTC enabled/status fields are lifecycle-owned; use the /start and /stop endpoints",
-                ));
-            }
-            if managed_now {
-                if process_type.is_some_and(|value| value != current.process_type)
-                    || process_scope.is_some_and(|value| value != current.process_scope)
-                    || process_key.is_some()
-                {
-                    return Err(HttpError::bad_request(
-                        "BTC process type, scope, and stable key are immutable; name and config remain mutable while stopped",
-                    ));
-                }
-            }
-            if let Some(config) = &request.config {
-                let manager = self.btc_manager.as_ref().ok_or_else(|| {
-                    HttpError::bad_request(
-                        "BTC realtime-paper capability is disabled for this deployment",
-                    )
-                })?;
-                let mut candidate = current.clone();
-                candidate.config = config.clone();
-                manager.validate_start_definition(&candidate)?;
-            }
+        let runtime_active = match &self.btc_manager {
+            Some(manager) => manager
+                .active_playbooks
+                .lock()
+                .await
+                .contains_key(&process_id),
+            None => false,
+        };
+        let terminal_pending = match &self.btc_manager {
+            Some(manager) => manager
+                .terminal_pending
+                .lock()
+                .await
+                .contains_key(&process_id),
+            None => false,
+        };
+        if runtime_active
+            || terminal_pending
+            || current.enabled
+            || matches!(current.status.as_str(), "starting" | "running" | "stopping")
+        {
+            return Err(HttpError::conflict(
+                "stop the BTC trading process through its /stop endpoint before reconfiguring it",
+            ));
+        }
+        if let Some(config) = &request.config {
+            let manager = self.btc_manager.as_ref().ok_or_else(|| {
+                HttpError::bad_request(
+                    "BTC realtime-paper capability is disabled for this deployment",
+                )
+            })?;
+            let mut candidate = current.clone();
+            candidate.config = config.clone();
+            manager.validate_start_definition(&candidate)?;
         }
         let process = self
             .store
-            .update_trading_process(
+            .update_btc_realtime_paper_process_definition(
                 process_id,
                 name,
-                process_type,
-                process_scope,
-                process_key,
-                request.enabled,
-                status,
                 request.config,
                 request.metadata,
             )
@@ -2924,21 +2807,15 @@ impl ControlApi for RuntimeControl {
             .await
             .map_err(|error| HttpError::internal(error.to_string()))?
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
-        if BtcProcessManager::is_managed_process(&current) {
-            let manager = self.btc_manager.as_ref().ok_or_else(|| {
-                HttpError::bad_request(
-                    "BTC realtime-paper capability is disabled for this deployment",
-                )
-            })?;
-            let process = manager.start_process(process_id).await?;
-            return Ok(TradingProcessResponse { process });
+        if !BtcProcessManager::is_managed_process(&current) {
+            return Err(HttpError::bad_request(
+                "only managed BTC realtime-paper processes can be started",
+            ));
         }
-        let process = self
-            .store
-            .start_trading_process(process_id)
-            .await
-            .map_err(|error| HttpError::internal(error.to_string()))?
-            .ok_or_else(|| HttpError::not_found("trading process not found"))?;
+        let manager = self.btc_manager.as_ref().ok_or_else(|| {
+            HttpError::bad_request("BTC realtime-paper capability is disabled for this deployment")
+        })?;
+        let process = manager.start_process(process_id).await?;
         Ok(TradingProcessResponse { process })
     }
 
@@ -2952,21 +2829,15 @@ impl ControlApi for RuntimeControl {
             .await
             .map_err(|error| HttpError::internal(error.to_string()))?
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
-        if BtcProcessManager::is_managed_process(&current) {
-            let manager = self.btc_manager.as_ref().ok_or_else(|| {
-                HttpError::bad_request(
-                    "BTC realtime-paper capability is disabled for this deployment",
-                )
-            })?;
-            let process = manager.stop_process(process_id, "api_stop").await?;
-            return Ok(TradingProcessResponse { process });
+        if !BtcProcessManager::is_managed_process(&current) {
+            return Err(HttpError::bad_request(
+                "only managed BTC realtime-paper processes can be stopped",
+            ));
         }
-        let process = self
-            .store
-            .stop_trading_process(process_id)
-            .await
-            .map_err(|error| HttpError::internal(error.to_string()))?
-            .ok_or_else(|| HttpError::not_found("trading process not found"))?;
+        let manager = self.btc_manager.as_ref().ok_or_else(|| {
+            HttpError::bad_request("BTC realtime-paper capability is disabled for this deployment")
+        })?;
+        let process = manager.stop_process(process_id, "api_stop").await?;
         Ok(TradingProcessResponse { process })
     }
 }

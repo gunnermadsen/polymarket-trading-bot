@@ -5,45 +5,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Market {
-    pub event_id: String,
-    pub market_id: String,
-    pub outcome_group_id: Option<String>,
-    pub question: String,
-    pub category: Option<String>,
-    pub active: bool,
-    pub closed: bool,
-    pub archived: bool,
-    pub neg_risk: bool,
-    pub neg_risk_augmented: bool,
-    pub rules: Option<String>,
-    pub end_date: Option<DateTime<Utc>>,
-    pub underlying_key: String,
-    pub resolution_score: i32,
-    #[serde(default)]
-    pub outcome_tokens: Vec<OutcomeToken>,
-    pub raw: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OutcomeToken {
-    pub market_id: String,
-    pub token_id: String,
-    pub outcome: String,
-    pub side: TokenSide,
-    pub condition_id: Option<String>,
-    pub tick_size: Decimal,
-    pub neg_risk: bool,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum TokenSide {
-    Yes,
-    No,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderRequest {
     pub client_order_id: Uuid,
     #[serde(default)]
