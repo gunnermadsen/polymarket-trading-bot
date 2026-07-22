@@ -365,13 +365,13 @@ impl ShadowPredictiveRegimeV2State {
         process_id: Uuid,
         config: &ShadowPredictiveRegimeCircuitBreakerV2Config,
     ) -> Result<Self> {
-        config.validate()?;
+        let config_hash = config.config_hash()?;
         if process_id.is_nil() {
             bail!("predictive-regime v2 state process_id cannot be nil");
         }
         Ok(Self {
             process_id,
-            config_hash: config.config_hash()?,
+            config_hash,
             degraded: false,
             consecutive_degradation_markets: 0,
             consecutive_recovery_markets: 0,
@@ -397,9 +397,7 @@ impl ShadowPredictiveRegimeV2State {
         candidates: &[ShadowPredictiveRegimeV2Candidate],
     ) -> Result<Self> {
         let mut state = Self::new(process_id, config)?;
-        for candidate in candidates {
-            state.apply_candidate(config, candidate)?;
-        }
+        state.replay_candidates(config, candidates, |_, _, _| {})?;
         Ok(state)
     }
 
@@ -409,9 +407,7 @@ impl ShadowPredictiveRegimeV2State {
         candidates: &[ShadowPredictiveRegimeV2Candidate],
     ) -> Result<Self> {
         state.validate(config)?;
-        for candidate in candidates {
-            state.apply_candidate(config, candidate)?;
-        }
+        state.replay_candidates(config, candidates, |_, _, _| {})?;
         Ok(state)
     }
 
@@ -516,11 +512,19 @@ impl ShadowPredictiveRegimeV2State {
         &self,
         config: &ShadowPredictiveRegimeCircuitBreakerV2Config,
     ) -> Result<()> {
-        config.validate()?;
+        let config_hash = config.config_hash()?;
+        self.validate_runtime_header_with_hash(config, &config_hash)
+    }
+
+    fn validate_runtime_header_with_hash(
+        &self,
+        config: &ShadowPredictiveRegimeCircuitBreakerV2Config,
+        config_hash: &str,
+    ) -> Result<()> {
         if self.process_id.is_nil() {
             bail!("predictive-regime v2 state process_id cannot be nil");
         }
-        if self.config_hash != config.config_hash()? {
+        if self.config_hash != config_hash {
             bail!("predictive-regime v2 state config hash does not match configuration");
         }
         if self.slow_candidates.len() > config.slow_window()?
@@ -593,7 +597,38 @@ impl ShadowPredictiveRegimeV2State {
         config: &ShadowPredictiveRegimeCircuitBreakerV2Config,
         candidate: &ShadowPredictiveRegimeV2Candidate,
     ) -> Result<Option<ShadowPredictiveRegimeTransition>> {
-        self.validate_runtime_header(config)?;
+        let config_hash = config.config_hash()?;
+        self.apply_candidate_with_hash(config, &config_hash, candidate)
+    }
+
+    pub(super) fn replay_candidates<F>(
+        &mut self,
+        config: &ShadowPredictiveRegimeCircuitBreakerV2Config,
+        candidates: &[ShadowPredictiveRegimeV2Candidate],
+        mut on_transition: F,
+    ) -> Result<()>
+    where
+        F: FnMut(ShadowPredictiveRegimeTransition, &ShadowPredictiveRegimeV2Candidate, &Self),
+    {
+        let config_hash = config.config_hash()?;
+        self.validate_runtime_header_with_hash(config, &config_hash)?;
+        for candidate in candidates {
+            if let Some(transition) =
+                self.apply_candidate_with_hash(config, &config_hash, candidate)?
+            {
+                on_transition(transition, candidate, self);
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_candidate_with_hash(
+        &mut self,
+        config: &ShadowPredictiveRegimeCircuitBreakerV2Config,
+        config_hash: &str,
+        candidate: &ShadowPredictiveRegimeV2Candidate,
+    ) -> Result<Option<ShadowPredictiveRegimeTransition>> {
+        self.validate_runtime_header_with_hash(config, config_hash)?;
         candidate.validate()?;
         if let Some(last) = self.slow_candidates.back() {
             if candidate_ordering_key(candidate) <= candidate_ordering_key(last) {
@@ -1016,6 +1051,19 @@ mod tests {
     }
 
     #[test]
+    fn selector_preserves_exact_v2_wire_contract_and_hash() {
+        let selector = ShadowPredictiveRegimeCircuitBreakerConfigSelector::V2(v2_config());
+        assert_eq!(
+            serde_json::to_string(&selector).unwrap(),
+            r#"{"schema_version":"shadow_predictive_regime_circuit_breaker_v2","mode":"shadow","fast_resolved_market_window":4,"slow_resolved_market_window":20,"minimum_resolved_markets":20,"max_evidence_gap_seconds":900,"degradation_fast_brier_score_threshold":"0.27","degradation_fast_minus_slow_threshold":"0.02","degradation_slow_brier_score_threshold":"0.25","degradation_confirmation_markets":2,"recovery_fast_brier_score_threshold":"0.25","recovery_fast_minus_slow_ceiling":"0","recovery_confirmation_markets":2}"#
+        );
+        assert_eq!(
+            selector.config_hash().unwrap(),
+            "f117befa3338c965b293b5f980a1b84f6d27d560d62c71cfb47e9841f4dcdb72"
+        );
+    }
+
+    #[test]
     fn selector_dispatches_by_schema_and_rejects_mixed_contracts() {
         let v2 = serde_json::to_value(v2_config()).unwrap();
         assert!(matches!(
@@ -1165,6 +1213,98 @@ mod tests {
                 .unwrap()
                 .sample_ready
         );
+    }
+
+    #[test]
+    fn v2_batched_replay_matches_strict_candidate_application() {
+        let config = v2_config();
+        let process_id = Uuid::from_u128(905);
+        let mut candidates = (0..20)
+            .map(|index| candidate(index, dec!(0.50), index % 2 == 0))
+            .collect::<Vec<_>>();
+        candidates.extend([
+            candidate(20, dec!(0.90), false),
+            candidate(21, dec!(0.90), false),
+            candidate(22, dec!(0.99), true),
+            candidate(23, dec!(0.99), true),
+            candidate(24, dec!(0.99), true),
+            candidate(25, dec!(0.99), true),
+        ]);
+        candidates.extend((26..50).map(|index| {
+            let probability = if index % 2 == 0 {
+                dec!(0.72)
+            } else {
+                dec!(0.58)
+            };
+            candidate(index, probability, index % 3 != 0)
+        }));
+        candidates.push(candidate(100, dec!(0.63), true));
+
+        let mut strict = ShadowPredictiveRegimeV2State::new(process_id, &config).unwrap();
+        let mut strict_transitions = Vec::new();
+        for replay_candidate in &candidates {
+            if let Some(transition) = strict.apply_candidate(&config, replay_candidate).unwrap() {
+                strict_transitions.push((transition, replay_candidate.clone(), strict.clone()));
+            }
+        }
+
+        let mut batched = ShadowPredictiveRegimeV2State::new(process_id, &config).unwrap();
+        let mut batched_transitions = Vec::new();
+        batched
+            .replay_candidates(
+                &config,
+                &candidates,
+                |transition, replay_candidate, state| {
+                    batched_transitions.push((transition, replay_candidate.clone(), state.clone()));
+                },
+            )
+            .unwrap();
+
+        assert_eq!(batched, strict);
+        assert_eq!(batched_transitions, strict_transitions);
+        assert_eq!(
+            batched.evidence_sha256(&config).unwrap(),
+            strict.evidence_sha256(&config).unwrap()
+        );
+        let as_of = candidates.last().unwrap().label_available_at;
+        assert_eq!(
+            batched.evaluate(&config, as_of).unwrap(),
+            strict.evaluate(&config, as_of).unwrap()
+        );
+    }
+
+    #[test]
+    fn v2_batched_replay_rejects_invalid_inputs_before_mutation() {
+        let config = v2_config();
+        let process_id = Uuid::from_u128(906);
+        let mut state = ShadowPredictiveRegimeV2State::new(process_id, &config).unwrap();
+        let original = state.clone();
+        let first = candidate(0, dec!(0.50), true);
+
+        let mut invalid_config = config.clone();
+        invalid_config.max_evidence_gap_seconds = 1;
+        assert!(state
+            .replay_candidates(&invalid_config, std::slice::from_ref(&first), |_, _, _| {})
+            .is_err());
+        assert_eq!(state, original);
+
+        let mut different_config = config.clone();
+        different_config.degradation_fast_brier_score_threshold = dec!(0.28);
+        assert!(state
+            .replay_candidates(
+                &different_config,
+                std::slice::from_ref(&first),
+                |_, _, _| {}
+            )
+            .is_err());
+        assert_eq!(state, original);
+
+        let mut invalid_candidate = first;
+        invalid_candidate.selected_point_probability = dec!(1.01);
+        assert!(state
+            .replay_candidates(&config, &[invalid_candidate], |_, _, _| {})
+            .is_err());
+        assert_eq!(state, original);
     }
 
     #[test]
