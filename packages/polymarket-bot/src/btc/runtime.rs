@@ -99,7 +99,7 @@ impl Default for BtcRuntimeConfig {
             rtds_ws_url: "wss://ws-live-data.polymarket.com".to_string(),
             binance_ws_url: "wss://stream.binance.com:9443/ws/btcusdt@aggTrade".to_string(),
             discovery_interval: StdDuration::from_secs(5),
-            clob_heartbeat_interval: StdDuration::from_secs(10),
+            clob_heartbeat_interval: StdDuration::from_secs(5),
             rtds_heartbeat_interval: StdDuration::from_secs(5),
             binance_heartbeat_interval: StdDuration::from_secs(20),
             reconnect_initial_delay: StdDuration::from_secs(1),
@@ -435,7 +435,7 @@ impl ClobFeedWatchdog {
     }
 
     fn acknowledge_text_pong(&mut self, text: &str) -> bool {
-        if self.awaiting_text_pong && text == "PONG" {
+        if self.awaiting_text_pong && is_clob_text_pong(text) {
             self.awaiting_text_pong = false;
             self.pong_deadline = None;
             true
@@ -469,6 +469,10 @@ impl ClobFeedWatchdog {
             self.bootstrap_deadline = Some(now + CLOB_BOOTSTRAP_TIMEOUT);
         }
     }
+}
+
+fn is_clob_text_pong(text: &str) -> bool {
+    text.trim().eq_ignore_ascii_case("PONG")
 }
 
 #[derive(Debug)]
@@ -1913,7 +1917,7 @@ async fn apply_active_clob_frame(
     let received_at = Utc::now();
     let parsed = match message {
         Message::Text(text) => {
-            let pong_like = text.trim().eq_ignore_ascii_case("PONG");
+            let pong_like = is_clob_text_pong(text.as_str());
             if epoch.watchdog.acknowledge_text_pong(text.as_str())
                 || pong_like
                 || text.trim().is_empty()
@@ -2015,7 +2019,7 @@ fn apply_private_clob_frame(epoch: &mut ClobEpoch, message: Message) -> ClobFram
     let received_at = Utc::now();
     let parsed = match message {
         Message::Text(text) => {
-            let pong_like = text.trim().eq_ignore_ascii_case("PONG");
+            let pong_like = is_clob_text_pong(text.as_str());
             if epoch.watchdog.acknowledge_text_pong(text.as_str())
                 || pong_like
                 || text.trim().is_empty()
@@ -7369,10 +7373,7 @@ mod tests {
         assert_eq!(watchdog.pong_deadline, Some(pong_deadline));
         assert!(watchdog.awaiting_text_pong);
 
-        assert!(!watchdog.acknowledge_text_pong("pong"));
-        assert!(!watchdog.acknowledge_text_pong("PONG "));
-        assert_eq!(watchdog.pong_deadline, Some(pong_deadline));
-        assert!(watchdog.acknowledge_text_pong("PONG"));
+        assert!(watchdog.acknowledge_text_pong(" pong \n"));
         assert_eq!(watchdog.pong_deadline, None);
         assert!(!watchdog.awaiting_text_pong);
         assert_eq!(
@@ -8295,6 +8296,14 @@ mod tests {
         config.clob_ws_url = BtcRuntimeConfig::default().clob_ws_url;
         config.clob_rest_base_url = "ws://not-http".to_string();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn default_clob_heartbeat_keeps_provider_deadline_margin() {
+        assert_eq!(
+            BtcRuntimeConfig::default().clob_heartbeat_interval,
+            StdDuration::from_secs(5)
+        );
     }
 
     #[test]
