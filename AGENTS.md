@@ -3,7 +3,7 @@
 - Do not name artifacts, branches, files or code comments based on phases or stages of an implementation. use domain specific naming for the issue or feature being addresses. I dont' want to see 'phase X' in git history, code files, branches, or file names or code comments. 
 
 ## Code
-- rebuild image and rebuild rust package after each code change.
+- rebuild docker image after each code change, ensuring new rust change build as packages with the image.
 - do not rebuild polymarket-bot or rust-related packages on grafana dashboard changes or database configuration changes.
 - put sensitive secrets in .env files
 - put non-sensitive runtime configuration in docker-compose files
@@ -12,6 +12,8 @@
 # Source Control
 - Commit changes, grouped by feature domain.
 - New features must be committed to a new branch, based from the latest commit on development branch.
+- For one feature change, do not merge changes into development.
+- For multiple features in a task, group feature by branch, and merge into development, only when the feature is stable by performance, latency and optimization standards.
 
 # Database
 - all database mutations or changes must be executed through database migrations.
