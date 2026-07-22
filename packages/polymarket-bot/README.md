@@ -15,8 +15,11 @@ Rust microservice for Polymarket negative-risk arbitrage scanning, execution-sta
 Trading activity is controlled by rows in `trading_processes`, not by a
 process-wide environment variable. Managed BTC process definitions are
 paper-only and use the dedicated BTC paper venue. The legacy generic simulator
-is retired. Authenticated live-execution controls still require CLOB credentials
-and wallet secrets in the runtime environment.
+is retired. The admin API can list historical process rows, but definition
+upsert, update, start, and stop operations are restricted to
+`btc_5m/realtime_paper`; collection `POST` is unsupported. Authenticated
+live-execution controls still require CLOB credentials and wallet secrets in the
+runtime environment.
 
 ## Build and test
 

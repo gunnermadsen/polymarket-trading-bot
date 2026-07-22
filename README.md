@@ -92,7 +92,10 @@ POLYMARKET_SIGNATURE_TYPE=...
 ```
 
 Starting or stopping the `polymarket-bot` container does not select trading
-activity. Trading process definitions are mutable and API-driven; use
+activity. The admin lifecycle supports only `btc_5m/realtime_paper` processes.
+Create or replace an inactive definition through
+`PUT /admin/trading-processes/by-key/{process_key}`; collection `POST` and
+generic process activation are intentionally unsupported. Use
 `POST /admin/trading-processes/{process_id}/start` and
 `POST /admin/trading-processes/{process_id}/stop` while leaving the service
 running. Each BTC paper start creates a distinct immutable experiment while the
@@ -427,10 +430,12 @@ gap `0.05`, and two confirming markets. Compare this arm to its control by the
 two canonical `process_id` values. Forward shadow evidence is required before
 considering any separately authorized enforcement behavior.
 
-Files under `infra/processes` are operational request templates, not runtime
-configuration watched or read directly by the Rust application. Submitting a
-template through the stable-key API (or bootstrap script) creates or updates a
-persistent inactive process definition and returns its `process_id`.
+Files under `infra/processes` are managed BTC realtime-paper operational request
+templates, not runtime configuration watched or read directly by the Rust
+application. The bootstrap script rejects any other process identity, active
+status, or `enabled=true`. Submitting a template through the stable-key API (or
+bootstrap script) creates or updates a persistent inactive process definition
+and returns its `process_id`.
 Start-preview is the recommended read-only validation step; the Rust runtime
 begins trading only after an explicit start for that `process_id`.
 

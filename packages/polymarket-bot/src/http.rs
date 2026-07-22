@@ -171,15 +171,6 @@ pub trait ControlApi: Send + Sync + 'static {
 
     async fn live_set_entries_enabled(&self, enabled: bool) -> Result<LiveVenueStatus, HttpError>;
 
-    async fn create_trading_process(
-        &self,
-        _request: CreateTradingProcessRequest,
-    ) -> Result<TradingProcessResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "trading processes are not wired",
-        ))
-    }
-
     async fn list_trading_processes(
         &self,
         _request: ListTradingProcessesRequest,
@@ -313,15 +304,6 @@ impl ControlApi for PlaceholderControlApi {
         Err(HttpError::not_implemented("live entry toggle is not wired"))
     }
 
-    async fn create_trading_process(
-        &self,
-        _request: CreateTradingProcessRequest,
-    ) -> Result<TradingProcessResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "trading processes are not wired",
-        ))
-    }
-
     async fn list_trading_processes(
         &self,
         _request: ListTradingProcessesRequest,
@@ -441,10 +423,7 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .route("/live/account-reconcile", post(live_account_reconcile))
         .route("/live/entries/enable", post(live_entries_enable))
         .route("/live/entries/disable", post(live_entries_disable))
-        .route(
-            "/trading-processes",
-            get(list_trading_processes).post(create_trading_process),
-        )
+        .route("/trading-processes", get(list_trading_processes))
         .route(
             "/trading-processes/by-key/:process_key",
             put(upsert_trading_process_by_key),
@@ -650,17 +629,6 @@ async fn live_entries_disable(
         .map(Json)
 }
 
-async fn create_trading_process(
-    State(state): State<HttpState>,
-    Json(request): Json<CreateTradingProcessRequest>,
-) -> Result<Json<TradingProcessResponse>, HttpError> {
-    state
-        .control
-        .create_trading_process(request)
-        .await
-        .map(Json)
-}
-
 async fn list_trading_processes(
     State(state): State<HttpState>,
     Query(request): Query<ListTradingProcessesRequest>,
@@ -823,35 +791,10 @@ impl LiveWalletDiagnosticsRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateTradingProcessRequest {
-    pub name: String,
-    pub process_type: String,
-    #[serde(default = "default_process_scope")]
-    pub process_scope: String,
-    #[serde(default)]
-    pub process_key: Option<String>,
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub config: TradingProcessConfig,
-    #[serde(default)]
-    pub metadata: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateTradingProcessRequest {
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub process_type: Option<String>,
-    #[serde(default)]
-    pub process_scope: Option<String>,
-    #[serde(default)]
-    pub process_key: Option<Option<String>>,
-    #[serde(default)]
-    pub enabled: Option<bool>,
-    #[serde(default)]
-    pub status: Option<String>,
     #[serde(default)]
     pub config: Option<TradingProcessConfig>,
     #[serde(default)]
@@ -883,7 +826,6 @@ pub struct IngestionReadinessRequest {
 pub struct UpsertTradingProcessByKeyRequest {
     pub name: String,
     pub process_type: String,
-    #[serde(default = "default_process_scope")]
     pub process_scope: String,
     pub enabled: bool,
     pub status: String,
@@ -982,10 +924,6 @@ pub struct ErrorResponse {
 pub struct ErrorBody {
     pub code: String,
     pub message: String,
-}
-
-fn default_process_scope() -> String {
-    "default".to_string()
 }
 
 #[derive(Debug, Clone)]

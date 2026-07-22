@@ -54,7 +54,7 @@ function printHelp() {
   console.log(`Usage:
   node scripts/bootstrap-trading-processes.mjs [--template-dir infra/processes] [--file path/to/process.json] [--base-url http://127.0.0.1:8097] [--endpoint /admin/trading-processes/by-key] [--token token] [--dry-run]
 
-Reads trading process JSON templates and upserts them by process key through the local admin API.
+Reads managed BTC realtime-paper process JSON templates and upserts them by process key through the local admin API.
 POLYMARKET_HTTP_ADMIN_TOKEN, POLYMARKET_HTTP_BASE_URL, POLYMARKET_ADMIN_BASE_URL, and POLYMARKET_PROCESS_UPSERT_ENDPOINT are also supported.
 `);
 }
@@ -76,6 +76,15 @@ function readTemplate(pathname) {
   const missing = required.filter((key) => template[key] == null || template[key] === "");
   if (missing.length > 0) {
     throw new Error(`${pathname} is missing required keys: ${missing.join(", ")}`);
+  }
+  if (template.process_type !== "btc_5m" || template.process_scope !== "realtime_paper") {
+    throw new Error(`${pathname} must define a btc_5m/realtime_paper process`);
+  }
+  if (template.enabled !== false) {
+    throw new Error(`${pathname} must be inactive; start it through the process /start endpoint`);
+  }
+  if (!["created", "stopped", "failed", "completed"].includes(template.status)) {
+    throw new Error(`${pathname} has an unsupported inactive status: ${template.status}`);
   }
   return template;
 }
