@@ -332,6 +332,7 @@ struct ShadowPredictiveRegimeV2CandidateRow {
     decision_action: Option<String>,
     decision_outcome: Option<String>,
     decision_fair_probability: Option<Decimal>,
+    decision_prediction_status: Option<String>,
     decision_at: Option<DateTime<Utc>>,
     resolved_outcome: String,
     label_available_at: DateTime<Utc>,
@@ -341,6 +342,8 @@ struct ShadowPredictiveRegimeV2CandidateRow {
     feature_schema_version: Option<String>,
     feature_hash: Option<String>,
     fair_up_probability: Option<Decimal>,
+    fair_up_lower: Option<Decimal>,
+    fair_up_upper: Option<Decimal>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -636,7 +639,8 @@ WITH process_boundary AS MATERIALIZED (
     o.size AS order_size,
     COALESCE(o.raw_payload #> '{request}', 'null'::jsonb) AS order_request,
     fill.fill_id,
-    fill.fill_at
+    fill.fill_at,
+    boundary.created_at AS process_created_at
   FROM first_process_fills fill
   JOIN polymarket.orders o
     ON o.process_id = $1
@@ -676,6 +680,7 @@ WITH process_boundary AS MATERIALIZED (
     decision.action AS decision_action,
     decision.outcome AS decision_outcome,
     decision.fair_probability AS decision_fair_probability,
+    decision.metadata #>> '{prediction,status}' AS decision_prediction_status,
     decision.decision_at,
     exposure.resolved_outcome,
     exposure.label_available_at,
@@ -684,7 +689,9 @@ WITH process_boundary AS MATERIALIZED (
     feature.feature_as_of,
     feature.feature_schema_version,
     feature.feature_hash,
-    feature.fair_up_probability
+    feature.fair_up_probability,
+    feature.fair_up_lower,
+    feature.fair_up_upper
   FROM resolved_exposures exposure
   LEFT JOIN polymarket.btc_strategy_decisions decision
     ON decision.process_id = $1
@@ -708,12 +715,16 @@ WITH process_boundary AS MATERIALIZED (
       feature.feature_as_of,
       feature.feature_schema_version,
       feature.feature_hash,
-      feature.fair_up_probability
+      feature.fair_up_probability,
+      feature.fair_up_lower,
+      feature.fair_up_upper
     FROM polymarket.btc_feature_snapshots feature
     WHERE feature.snapshot_id = decision.snapshot_id
       AND feature.market_id = exposure.market_id
       AND feature.features #>> '{process_id}' = $1::text
       AND feature.feature_as_of = decision.decision_at
+      AND feature.feature_as_of >= exposure.process_created_at
+      AND feature.feature_as_of <= $2
       AND feature.fair_up_probability BETWEEN 0 AND 1
     OFFSET 0
   ) feature ON true
@@ -3747,6 +3758,58 @@ fn shadow_predictive_regime_v2_history_limit(max_candidates: u32) -> Result<i64>
     Ok(i64::from(max_candidates))
 }
 
+fn shadow_predictive_regime_v2_selected_point_probability(
+    decision_outcome: BtcOutcome,
+    decision_fair_probability: Decimal,
+    prediction_status: Option<&str>,
+    feature_up_probability: Decimal,
+    feature_up_lower: Decimal,
+    feature_up_upper: Decimal,
+) -> Result<Decimal> {
+    let probabilities = [
+        decision_fair_probability,
+        feature_up_probability,
+        feature_up_lower,
+        feature_up_upper,
+    ];
+    if probabilities
+        .iter()
+        .any(|value| *value < Decimal::ZERO || *value > Decimal::ONE)
+        || feature_up_lower > feature_up_probability
+        || feature_up_probability > feature_up_upper
+    {
+        bail!("shadow predictive-regime v2 feature fair-value interval is inconsistent");
+    }
+
+    let (selected_point_probability, selected_conservative_probability) = match decision_outcome {
+        BtcOutcome::Up => (feature_up_probability, feature_up_lower),
+        BtcOutcome::Down => (
+            Decimal::ONE - feature_up_probability,
+            Decimal::ONE - feature_up_upper,
+        ),
+    };
+    let projected_decision_probability = match prediction_status {
+        None => selected_conservative_probability,
+        Some("directional_prediction") => selected_point_probability,
+        Some(status) => bail!(
+            "shadow predictive-regime v2 buy decision has unsupported prediction status {status}"
+        ),
+    };
+    // The persisted probability columns use numeric(18,10). Down probabilities are stored from
+    // the raw complement, while replay derives the complement from the stored Up value; midpoint
+    // rounding can therefore differ by one storage quantum without changing the evidence.
+    let projection_tolerance = match decision_outcome {
+        BtcOutcome::Up => Decimal::ZERO,
+        BtcOutcome::Down => Decimal::new(1, 10),
+    };
+    if (decision_fair_probability - projected_decision_probability).abs() > projection_tolerance {
+        bail!(
+            "shadow predictive-regime v2 persisted decision probability projection is inconsistent"
+        );
+    }
+    Ok(selected_point_probability)
+}
+
 fn shadow_predictive_regime_v2_candidate_from_row(
     process_id: Uuid,
     expected_max_reference_age: Duration,
@@ -3839,6 +3902,16 @@ fn shadow_predictive_regime_v2_candidate_from_row(
     let fair_up_probability = row
         .fair_up_probability
         .context("shadow predictive-regime v2 exposure feature has no fair probability")?;
+    let fair_up_lower = row
+        .fair_up_lower
+        .context("shadow predictive-regime v2 exposure feature has no lower probability bound")?;
+    let fair_up_upper = row
+        .fair_up_upper
+        .context("shadow predictive-regime v2 exposure feature has no upper probability bound")?;
+    let order_prediction_status = request
+        .metadata
+        .pointer("/prediction/status")
+        .and_then(serde_json::Value::as_str);
 
     if decision_action != "buy"
         || guard.decision_id != decision_id
@@ -3851,17 +3924,19 @@ fn shadow_predictive_regime_v2_candidate_from_row(
         || guard.feature_as_of.timestamp_micros() != feature_as_of.timestamp_micros()
         || guard.feature_schema_version != feature_schema_version
         || guard.feature_sha256 != feature_hash
+        || order_prediction_status != row.decision_prediction_status.as_deref()
     {
         bail!("shadow predictive-regime v2 guarded evidence identity is inconsistent");
     }
 
-    let selected_point_probability = match decision_outcome {
-        BtcOutcome::Up => fair_up_probability,
-        BtcOutcome::Down => Decimal::ONE - fair_up_probability,
-    };
-    if decision_fair_probability != selected_point_probability {
-        bail!("shadow predictive-regime v2 decision and feature probabilities disagree");
-    }
+    let selected_point_probability = shadow_predictive_regime_v2_selected_point_probability(
+        decision_outcome,
+        decision_fair_probability,
+        row.decision_prediction_status.as_deref(),
+        fair_up_probability,
+        fair_up_lower,
+        fair_up_upper,
+    )?;
     let candidate = ShadowPredictiveRegimeV2Candidate {
         market_id: row.market_id,
         decision_id,
@@ -4414,6 +4489,13 @@ mod tests {
     fn predictive_regime_v2_candidate_row(
         process_id: Uuid,
     ) -> ShadowPredictiveRegimeV2CandidateRow {
+        predictive_regime_v2_candidate_row_for_outcome(process_id, BtcOutcome::Up)
+    }
+
+    fn predictive_regime_v2_candidate_row_for_outcome(
+        process_id: Uuid,
+        outcome: BtcOutcome,
+    ) -> ShadowPredictiveRegimeV2CandidateRow {
         let fill_at = Utc
             .with_ymd_and_hms(2026, 7, 22, 12, 0, 0)
             .single()
@@ -4424,6 +4506,10 @@ mod tests {
         let decision_id = Uuid::from_u128(7_002);
         let snapshot_id = Uuid::from_u128(7_003);
         let intent_id = Uuid::from_u128(7_004);
+        let (token_id, outcome_name, resolved_outcome, decision_fair_probability) = match outcome {
+            BtcOutcome::Up => ("v2-up-token", "up", "down", dec!(0.58)),
+            BtcOutcome::Down => ("v2-down-token", "down", "up", dec!(0.28)),
+        };
         let tick = |id| BtcReferenceTickEvidence {
             tick_id: Uuid::from_u128(id),
             source_timestamp: feature_as_of - Duration::seconds(1),
@@ -4439,8 +4525,8 @@ mod tests {
             snapshot_id,
             feature_as_of,
             market_id: "v2-exposure-market".to_string(),
-            token_id: "v2-up-token".to_string(),
-            outcome: BtcOutcome::Up,
+            token_id: token_id.to_string(),
+            outcome,
             strategy_version: "strategy-v2-test".to_string(),
             feature_schema_version: "feature-v2-test".to_string(),
             lineage_version: BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_LINEAGE_VERSION.to_string(),
@@ -4498,12 +4584,13 @@ mod tests {
             decision_id: Some(decision_id),
             decision_snapshot_id: Some(snapshot_id),
             decision_action: Some("buy".to_string()),
-            decision_outcome: Some("up".to_string()),
-            decision_fair_probability: Some(dec!(0.61)),
+            decision_outcome: Some(outcome_name.to_string()),
+            decision_fair_probability: Some(decision_fair_probability),
+            decision_prediction_status: None,
             decision_at: Some(
                 DateTime::<Utc>::from_timestamp_micros(decision_at.timestamp_micros()).unwrap(),
             ),
-            resolved_outcome: "down".to_string(),
+            resolved_outcome: resolved_outcome.to_string(),
             label_available_at: fill_at + Duration::minutes(4),
             feature_snapshot_id: Some(snapshot_id),
             feature_market_id: Some("v2-exposure-market".to_string()),
@@ -4512,7 +4599,9 @@ mod tests {
             ),
             feature_schema_version: Some(guard.feature_schema_version.clone()),
             feature_hash: Some(guard.feature_sha256.clone()),
-            fair_up_probability: Some(dec!(0.61)),
+            fair_up_probability: Some(dec!(0.65)),
+            fair_up_lower: Some(dec!(0.58)),
+            fair_up_upper: Some(dec!(0.72)),
         }
     }
 
@@ -4808,6 +4897,7 @@ mod tests {
         assert!(normalized.contains("distinct on (o.market_id)"));
         assert!(normalized.contains("o.created_at >= boundary.created_at"));
         assert!(normalized.contains("o.created_at <= fill.fill_at"));
+        assert!(normalized.contains("boundary.created_at as process_created_at"));
         assert!(normalized.contains("o.order_type = 'fok'"));
         assert!(normalized
             .contains("o.raw_payload #>> '{request,metadata,execution_intent}' = 'entry'"));
@@ -4829,6 +4919,8 @@ mod tests {
         assert!(normalized.contains("decision.action = 'buy'"));
         assert!(normalized.contains("decision.outcome in ('up', 'down')"));
         assert!(normalized.contains("decision.fair_probability between 0 and 1"));
+        assert!(normalized
+            .contains("decision.metadata #>> '{prediction,status}' as decision_prediction_status"));
         assert!(normalized.contains("decision.execution_mode = 'paper'"));
         assert!(normalized.contains("decision.decision_at <= exposure.fill_at"));
         assert!(normalized.contains("exposure.fill_at < exposure.label_available_at"));
@@ -4837,8 +4929,13 @@ mod tests {
         assert!(normalized.contains("feature.market_id = exposure.market_id"));
         assert!(normalized.contains("feature.features #>> '{process_id}' = $1::text"));
         assert!(normalized.contains("feature.feature_as_of = decision.decision_at"));
+        assert!(normalized.contains("feature.feature_as_of >= exposure.process_created_at"));
+        assert!(normalized.contains("feature.feature_as_of <= $2"));
         assert!(normalized.contains("feature.feature_schema_version"));
         assert!(normalized.contains("feature.feature_hash"));
+        assert!(normalized.contains("feature.fair_up_probability"));
+        assert!(normalized.contains("feature.fair_up_lower"));
+        assert!(normalized.contains("feature.fair_up_upper"));
         assert!(normalized.contains("offset 0"));
         assert!(normalized.contains(
             "order by label_available_at desc, fill_at desc, fill_id desc, market_id desc limit $3"
@@ -4886,11 +4983,114 @@ mod tests {
         assert_eq!(candidate.order_id, "paper-v2-exposure-order");
         assert_eq!(candidate.decision_outcome, BtcOutcome::Up);
         assert_eq!(candidate.resolved_outcome, BtcOutcome::Down);
-        assert_eq!(candidate.selected_point_probability, dec!(0.61));
+        assert_eq!(candidate.selected_point_probability, dec!(0.65));
         assert_eq!(
             candidate.source,
             ShadowPredictiveRegimeV2CandidateSource::ActualPaperFill
         );
+    }
+
+    #[test]
+    fn shadow_predictive_regime_v2_row_preserves_fair_value_and_directional_projections() {
+        let process_id = Uuid::from_u128(7_000);
+        for (outcome, expected_point, expected_conservative) in [
+            (BtcOutcome::Up, dec!(0.65), dec!(0.58)),
+            (BtcOutcome::Down, dec!(0.35), dec!(0.28)),
+        ] {
+            let fair_value_row =
+                predictive_regime_v2_candidate_row_for_outcome(process_id, outcome);
+            let fair_value_candidate = shadow_predictive_regime_v2_candidate_from_row(
+                process_id,
+                Duration::milliseconds(60_000),
+                fair_value_row,
+            )
+            .unwrap();
+            assert_eq!(
+                fair_value_candidate.selected_point_probability,
+                expected_point
+            );
+
+            let mut directional_row =
+                predictive_regime_v2_candidate_row_for_outcome(process_id, outcome);
+            directional_row.decision_prediction_status = Some("directional_prediction".to_string());
+            directional_row.order_request["metadata"]["prediction"] =
+                serde_json::json!({ "status": "directional_prediction" });
+            directional_row.decision_fair_probability = Some(expected_point);
+            let directional_candidate = shadow_predictive_regime_v2_candidate_from_row(
+                process_id,
+                Duration::milliseconds(60_000),
+                directional_row,
+            )
+            .unwrap();
+            assert_eq!(
+                directional_candidate.selected_point_probability,
+                expected_point
+            );
+            assert_ne!(expected_point, expected_conservative);
+        }
+    }
+
+    #[test]
+    fn shadow_predictive_regime_v2_row_validates_closed_probability_interval() {
+        let process_id = Uuid::from_u128(7_000);
+        let mut exact_interval = predictive_regime_v2_candidate_row(process_id);
+        exact_interval.fair_up_lower = Some(dec!(0.65));
+        exact_interval.fair_up_upper = Some(dec!(0.65));
+        exact_interval.decision_fair_probability = Some(dec!(0.65));
+        let candidate = shadow_predictive_regime_v2_candidate_from_row(
+            process_id,
+            Duration::milliseconds(60_000),
+            exact_interval,
+        )
+        .unwrap();
+        assert_eq!(candidate.selected_point_probability, dec!(0.65));
+
+        for (lower, point, upper) in [
+            (dec!(-0.01), dec!(0.65), dec!(0.72)),
+            (dec!(0.58), dec!(0.65), dec!(1.01)),
+            (dec!(0.66), dec!(0.65), dec!(0.72)),
+            (dec!(0.58), dec!(0.73), dec!(0.72)),
+        ] {
+            let mut malformed = predictive_regime_v2_candidate_row(process_id);
+            malformed.fair_up_lower = Some(lower);
+            malformed.fair_up_probability = Some(point);
+            malformed.fair_up_upper = Some(upper);
+            assert!(shadow_predictive_regime_v2_candidate_from_row(
+                process_id,
+                Duration::milliseconds(60_000),
+                malformed
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("feature fair-value interval is inconsistent"));
+        }
+    }
+
+    #[test]
+    fn shadow_predictive_regime_v2_down_projection_allows_only_one_storage_quantum() {
+        let process_id = Uuid::from_u128(7_000);
+        let mut one_quantum =
+            predictive_regime_v2_candidate_row_for_outcome(process_id, BtcOutcome::Down);
+        one_quantum.decision_fair_probability = Some(dec!(0.2800000001));
+        let candidate = shadow_predictive_regime_v2_candidate_from_row(
+            process_id,
+            Duration::milliseconds(60_000),
+            one_quantum,
+        )
+        .unwrap();
+        assert_eq!(candidate.selected_point_probability, dec!(0.35));
+
+        let mut two_quanta =
+            predictive_regime_v2_candidate_row_for_outcome(process_id, BtcOutcome::Down);
+        two_quanta.decision_fair_probability = Some(dec!(0.2800000002));
+        assert!(shadow_predictive_regime_v2_candidate_from_row(
+            process_id,
+            Duration::milliseconds(60_000),
+            two_quanta
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("persisted decision probability projection is inconsistent"));
     }
 
     #[test]
@@ -4957,7 +5157,56 @@ mod tests {
         )
         .unwrap_err()
         .to_string()
-        .contains("decision and feature probabilities disagree"));
+        .contains("persisted decision probability projection is inconsistent"));
+
+        let mut wrong_directional_projection = predictive_regime_v2_candidate_row(process_id);
+        wrong_directional_projection.decision_prediction_status =
+            Some("directional_prediction".to_string());
+        wrong_directional_projection.order_request["metadata"]["prediction"] =
+            serde_json::json!({ "status": "directional_prediction" });
+        assert!(shadow_predictive_regime_v2_candidate_from_row(
+            process_id,
+            Duration::milliseconds(60_000),
+            wrong_directional_projection
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("persisted decision probability projection is inconsistent"));
+
+        let mut malformed_interval = predictive_regime_v2_candidate_row(process_id);
+        malformed_interval.fair_up_lower = Some(dec!(0.66));
+        assert!(shadow_predictive_regime_v2_candidate_from_row(
+            process_id,
+            Duration::milliseconds(60_000),
+            malformed_interval
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("feature fair-value interval is inconsistent"));
+
+        let mut missing_bound = predictive_regime_v2_candidate_row(process_id);
+        missing_bound.fair_up_upper = None;
+        assert!(shadow_predictive_regime_v2_candidate_from_row(
+            process_id,
+            Duration::milliseconds(60_000),
+            missing_bound
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("no upper probability bound"));
+
+        let mut unsupported_prediction = predictive_regime_v2_candidate_row(process_id);
+        unsupported_prediction.decision_prediction_status = Some("no_prediction".to_string());
+        unsupported_prediction.order_request["metadata"]["prediction"] =
+            serde_json::json!({ "status": "no_prediction" });
+        assert!(shadow_predictive_regime_v2_candidate_from_row(
+            process_id,
+            Duration::milliseconds(60_000),
+            unsupported_prediction
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("unsupported prediction status"));
     }
 
     #[test]
