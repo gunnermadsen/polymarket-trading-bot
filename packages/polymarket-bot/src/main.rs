@@ -64,6 +64,8 @@ const BTC_PROCESS_TYPE: &str = "btc_5m";
 const BTC_PROCESS_SCOPE: &str = "realtime_paper";
 const BTC_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(45);
 const COMPILED_SOURCE_IDENTITY: &str = env!("POLYMARKET_COMPILED_SOURCE_ID");
+const CURRENT_CLOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+const LEGACY_CLOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 
 async fn preflight_btc_experiment_identity(
     pool: &PgPool,
@@ -525,6 +527,25 @@ struct PreparedBtcStartDefinition {
     config_hash: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BtcResumeHeartbeatCompatibility {
+    Current,
+    LegacyTenSeconds,
+}
+
+impl BtcResumeHeartbeatCompatibility {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::LegacyTenSeconds => "legacy_10_seconds",
+        }
+    }
+
+    fn applied(self) -> bool {
+        matches!(self, Self::LegacyTenSeconds)
+    }
+}
+
 fn validate_btc_start_eligibility(
     process: &TradingProcess,
     realtime_enabled: bool,
@@ -647,13 +668,7 @@ fn prepare_btc_start_definition(
         raw: frozen_raw,
         ..TradingProcessConfig::default()
     };
-    let config_hash = format!(
-        "{:x}",
-        Sha256::digest(
-            serde_json::to_vec(&frozen_process_config)
-                .map_err(|error| HttpError::internal(error.to_string()))?
-        )
-    );
+    let config_hash = hash_btc_frozen_process_config(&frozen_process_config)?;
     Ok(PreparedBtcStartDefinition {
         experiment_id,
         experiment_key,
@@ -666,6 +681,64 @@ fn prepare_btc_start_definition(
         frozen_process_config,
         config_hash,
     })
+}
+
+fn hash_btc_frozen_process_config(
+    frozen_process_config: &TradingProcessConfig,
+) -> Result<String, HttpError> {
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(frozen_process_config)
+                .map_err(|error| HttpError::internal(error.to_string()))?
+        )
+    ))
+}
+
+fn apply_btc_resume_heartbeat_compatibility(
+    prepared: &mut PreparedBtcStartDefinition,
+    durable_frozen_process_config: &serde_json::Value,
+) -> Result<BtcResumeHeartbeatCompatibility, HttpError> {
+    let durable_heartbeat = durable_frozen_process_config
+        .pointer("/raw/runtime/clob_heartbeat_interval")
+        .ok_or_else(|| {
+            HttpError::conflict(
+                "durable BTC runtime CLOB heartbeat is missing and cannot be resumed",
+            )
+        })?;
+    let durable_heartbeat = Duration::deserialize(durable_heartbeat).map_err(|_| {
+        HttpError::conflict("durable BTC runtime CLOB heartbeat is malformed and cannot be resumed")
+    })?;
+    if durable_heartbeat == prepared.runtime.clob_heartbeat_interval {
+        return Ok(BtcResumeHeartbeatCompatibility::Current);
+    }
+    if prepared.runtime.clob_heartbeat_interval != CURRENT_CLOB_HEARTBEAT_INTERVAL
+        || durable_heartbeat != LEGACY_CLOB_HEARTBEAT_INTERVAL
+    {
+        return Err(HttpError::conflict(
+            "durable BTC runtime CLOB heartbeat is incompatible with this build",
+        ));
+    }
+
+    prepared.runtime.clob_heartbeat_interval = durable_heartbeat;
+    prepared
+        .runtime
+        .validate()
+        .map_err(|error| HttpError::conflict(error.to_string()))?;
+    let frozen_heartbeat = prepared
+        .frozen_process_config
+        .raw
+        .pointer_mut("/runtime/clob_heartbeat_interval")
+        .ok_or_else(|| {
+            HttpError::internal(
+                "prepared BTC runtime CLOB heartbeat is missing from its frozen configuration",
+            )
+        })?;
+    *frozen_heartbeat = serde_json::to_value(durable_heartbeat)
+        .map_err(|error| HttpError::internal(error.to_string()))?;
+    prepared.config_hash = hash_btc_frozen_process_config(&prepared.frozen_process_config)?;
+
+    Ok(BtcResumeHeartbeatCompatibility::LegacyTenSeconds)
 }
 
 fn resume_config_without_compiled_source_identity(
@@ -1249,20 +1322,7 @@ impl BtcProcessManager {
             .await
             .map_err(|error| HttpError::internal(error.to_string()))?
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
-        let PreparedBtcStartDefinition {
-            experiment_id,
-            experiment_key,
-            preregistration_sha256,
-            strategy,
-            entry_admission,
-            runtime: runtime_config,
-            paper_venue: paper_venue_config,
-            paper_stress_previews,
-            frozen_process_config,
-            config_hash: current_config_hash,
-        } = self.prepare_resume_definition(&process)?;
-        let current_frozen_process_config = serde_json::to_value(&frozen_process_config)
-            .map_err(|error| HttpError::internal(error.to_string()))?;
+        let mut prepared = self.prepare_resume_definition(&process)?;
         let (config_hash, frozen_process_config_value) = sqlx::query_as::<
             _,
             (String, serde_json::Value),
@@ -1277,8 +1337,8 @@ impl BtcProcessManager {
                   AND stopped_at IS NULL
                 "#,
         )
-        .bind(experiment_id)
-        .bind(&experiment_key)
+        .bind(prepared.experiment_id)
+        .bind(&prepared.experiment_key)
         .bind(process_id)
         .fetch_optional(&self.pool)
         .await
@@ -1286,6 +1346,11 @@ impl BtcProcessManager {
         .ok_or_else(|| {
             HttpError::conflict("durable BTC experiment disappeared before runtime reattachment")
         })?;
+        let heartbeat_compatibility =
+            apply_btc_resume_heartbeat_compatibility(&mut prepared, &frozen_process_config_value)?;
+        let current_frozen_process_config =
+            serde_json::to_value(&prepared.frozen_process_config)
+                .map_err(|error| HttpError::internal(error.to_string()))?;
         if resume_config_without_compiled_source_identity(current_frozen_process_config)
             != resume_config_without_compiled_source_identity(frozen_process_config_value.clone())
         {
@@ -1293,6 +1358,19 @@ impl BtcProcessManager {
                 "durable BTC experiment parameters changed and cannot be resumed by this process definition",
             ));
         }
+        let PreparedBtcStartDefinition {
+            experiment_id,
+            experiment_key,
+            preregistration_sha256,
+            strategy,
+            entry_admission,
+            runtime: runtime_config,
+            paper_venue: paper_venue_config,
+            paper_stress_previews,
+            frozen_process_config: _,
+            config_hash: current_config_hash,
+        } = prepared;
+        let clob_heartbeat_interval_secs = runtime_config.clob_heartbeat_interval.as_secs();
         self.record_event(
             process_id,
             "info",
@@ -1305,6 +1383,9 @@ impl BtcProcessManager {
                 "config_hash": &config_hash,
                 "current_definition_config_hash": &current_config_hash,
                 "compiled_source_identity": COMPILED_SOURCE_IDENTITY,
+                "clob_heartbeat_interval_secs": clob_heartbeat_interval_secs,
+                "clob_heartbeat_compatibility": heartbeat_compatibility.as_str(),
+                "clob_heartbeat_compatibility_applied": heartbeat_compatibility.applied(),
             }),
         )
         .await;
@@ -1373,6 +1454,9 @@ impl BtcProcessManager {
                 "config_hash": &config_hash,
                 "current_definition_config_hash": &current_config_hash,
                 "compiled_source_identity": COMPILED_SOURCE_IDENTITY,
+                "clob_heartbeat_interval_secs": clob_heartbeat_interval_secs,
+                "clob_heartbeat_compatibility": heartbeat_compatibility.as_str(),
+                "clob_heartbeat_compatibility_applied": heartbeat_compatibility.applied(),
             }),
         )
         .await;
@@ -1381,6 +1465,8 @@ impl BtcProcessManager {
             experiment_id = %experiment_id,
             experiment_key = %experiment_key,
             config_hash = %config_hash,
+            clob_heartbeat_interval_secs,
+            clob_heartbeat_compatibility = heartbeat_compatibility.as_str(),
             "durable BTC realtime-paper runtime resumed"
         );
         Ok(process)
@@ -3128,6 +3214,26 @@ mod lifecycle_tests {
         }
     }
 
+    fn prepared_btc_definition_with_default_runtime() -> PreparedBtcStartDefinition {
+        prepare_btc_start_definition(ResolvedBtcProcessDefinition {
+            control: BtcRealtimePaperControlConfig {
+                schema_version: BTC_PROCESS_SCHEMA_VERSION.to_string(),
+                next_experiment_key: "btc-5m-heartbeat-resume-test".to_string(),
+                preregistration_sha256: "a".repeat(64),
+                ..BtcRealtimePaperControlConfig::default()
+            },
+            strategy: BtcStrategyConfig::default(),
+            entry_admission: None,
+            runtime: BtcRuntimeConfig {
+                enabled: true,
+                ..BtcRuntimeConfig::default()
+            },
+            paper_venue: PaperVenueConfig::default(),
+            paper_stress_previews: Vec::new(),
+        })
+        .unwrap()
+    }
+
     #[test]
     fn btc_run_identity_is_owned_by_process_control_config() {
         let control: BtcRealtimePaperControlConfig = serde_json::from_value(serde_json::json!({
@@ -3708,6 +3814,17 @@ mod lifecycle_tests {
         assert_eq!(first.config_hash, expected_config_hash);
         assert_eq!(first.config_hash, second.config_hash);
         assert_eq!(
+            first.runtime.clob_heartbeat_interval,
+            CURRENT_CLOB_HEARTBEAT_INTERVAL
+        );
+        assert_eq!(
+            Duration::deserialize(
+                &first.frozen_process_config.raw["runtime"]["clob_heartbeat_interval"]
+            )
+            .unwrap(),
+            CURRENT_CLOB_HEARTBEAT_INTERVAL
+        );
+        assert_eq!(
             serde_json::to_value(&first.frozen_process_config).unwrap(),
             serde_json::to_value(&second.frozen_process_config).unwrap()
         );
@@ -4016,6 +4133,135 @@ mod lifecycle_tests {
 
         playbook.writer_capacity += 1;
         assert!(!shared_market_data_config_compatible(&shared, &playbook));
+
+        let mut legacy_heartbeat = shared.clone();
+        legacy_heartbeat.clob_heartbeat_interval = LEGACY_CLOB_HEARTBEAT_INTERVAL;
+        assert!(!shared_market_data_config_compatible(
+            &shared,
+            &legacy_heartbeat
+        ));
+        assert!(!shared_market_data_config_compatible(
+            &legacy_heartbeat,
+            &shared
+        ));
+    }
+
+    #[test]
+    fn btc_resume_applies_legacy_frozen_clob_heartbeat_to_the_runtime() {
+        let mut prepared = prepared_btc_definition_with_default_runtime();
+        let original_current_hash = prepared.config_hash.clone();
+        let mut durable = serde_json::to_value(&prepared.frozen_process_config).unwrap();
+        durable["raw"]["runtime"]["clob_heartbeat_interval"] =
+            serde_json::to_value(LEGACY_CLOB_HEARTBEAT_INTERVAL).unwrap();
+        let durable_before = durable.clone();
+
+        let compatibility =
+            apply_btc_resume_heartbeat_compatibility(&mut prepared, &durable).unwrap();
+
+        assert_eq!(
+            compatibility,
+            BtcResumeHeartbeatCompatibility::LegacyTenSeconds
+        );
+        assert!(compatibility.applied());
+        assert_eq!(
+            prepared.runtime.clob_heartbeat_interval,
+            LEGACY_CLOB_HEARTBEAT_INTERVAL
+        );
+        assert_eq!(
+            Duration::deserialize(
+                &prepared.frozen_process_config.raw["runtime"]["clob_heartbeat_interval"]
+            )
+            .unwrap(),
+            LEGACY_CLOB_HEARTBEAT_INTERVAL
+        );
+        assert_ne!(prepared.config_hash, original_current_hash);
+        assert_eq!(
+            prepared.config_hash,
+            hash_btc_frozen_process_config(&prepared.frozen_process_config).unwrap()
+        );
+        assert_eq!(
+            resume_config_without_compiled_source_identity(
+                serde_json::to_value(&prepared.frozen_process_config).unwrap()
+            ),
+            resume_config_without_compiled_source_identity(durable.clone())
+        );
+        assert_eq!(durable, durable_before);
+    }
+
+    #[test]
+    fn btc_resume_keeps_current_frozen_clob_heartbeat() {
+        let mut prepared = prepared_btc_definition_with_default_runtime();
+        let original_current_hash = prepared.config_hash.clone();
+        let durable = serde_json::to_value(&prepared.frozen_process_config).unwrap();
+
+        let compatibility =
+            apply_btc_resume_heartbeat_compatibility(&mut prepared, &durable).unwrap();
+
+        assert_eq!(compatibility, BtcResumeHeartbeatCompatibility::Current);
+        assert!(!compatibility.applied());
+        assert_eq!(
+            prepared.runtime.clob_heartbeat_interval,
+            CURRENT_CLOB_HEARTBEAT_INTERVAL
+        );
+        assert_eq!(prepared.config_hash, original_current_hash);
+    }
+
+    #[test]
+    fn btc_resume_rejects_missing_malformed_and_unsupported_clob_heartbeats() {
+        let prepared = prepared_btc_definition_with_default_runtime();
+        let durable = serde_json::to_value(&prepared.frozen_process_config).unwrap();
+
+        let mut missing = durable.clone();
+        missing["raw"]["runtime"]
+            .as_object_mut()
+            .unwrap()
+            .remove("clob_heartbeat_interval");
+        let mut missing_candidate = prepared_btc_definition_with_default_runtime();
+        assert!(
+            apply_btc_resume_heartbeat_compatibility(&mut missing_candidate, &missing).is_err()
+        );
+
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!("10s"),
+            serde_json::to_value(Duration::ZERO).unwrap(),
+            serde_json::to_value(Duration::from_secs(6)).unwrap(),
+            serde_json::to_value(Duration::from_secs(30)).unwrap(),
+            serde_json::to_value(Duration::new(10, 1)).unwrap(),
+        ] {
+            let mut invalid_durable = durable.clone();
+            invalid_durable["raw"]["runtime"]["clob_heartbeat_interval"] = invalid;
+            let mut invalid_candidate = prepared_btc_definition_with_default_runtime();
+            let unchanged_hash = invalid_candidate.config_hash.clone();
+            assert!(apply_btc_resume_heartbeat_compatibility(
+                &mut invalid_candidate,
+                &invalid_durable
+            )
+            .is_err());
+            assert_eq!(
+                invalid_candidate.runtime.clob_heartbeat_interval,
+                CURRENT_CLOB_HEARTBEAT_INTERVAL
+            );
+            assert_eq!(invalid_candidate.config_hash, unchanged_hash);
+        }
+    }
+
+    #[test]
+    fn btc_resume_legacy_heartbeat_does_not_relax_other_frozen_parameters() {
+        let mut prepared = prepared_btc_definition_with_default_runtime();
+        let mut durable = serde_json::to_value(&prepared.frozen_process_config).unwrap();
+        durable["raw"]["runtime"]["clob_heartbeat_interval"] =
+            serde_json::to_value(LEGACY_CLOB_HEARTBEAT_INTERVAL).unwrap();
+        durable["raw"]["runtime"]["writer_capacity"] = serde_json::json!(1);
+
+        apply_btc_resume_heartbeat_compatibility(&mut prepared, &durable).unwrap();
+
+        assert_ne!(
+            resume_config_without_compiled_source_identity(
+                serde_json::to_value(&prepared.frozen_process_config).unwrap()
+            ),
+            resume_config_without_compiled_source_identity(durable)
+        );
     }
 
     #[test]
