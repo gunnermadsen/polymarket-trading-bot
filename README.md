@@ -433,6 +433,29 @@ gap `0.05`, and two confirming markets. Compare this arm to its control by the
 two canonical `process_id` values. Forward shadow evidence is required before
 considering any separately authorized enforcement behavior.
 
+The V2 predictive-regime comparator adds one parallel shadow definition:
+
+- `btc-5m-chainlink-path-conditioned-paper-min-entry-030-floor-shadow-regime-circuit-breaker-v2.json`
+  preserves the V1 control process's path-conditioned selector and immutable
+  profile, execution settings, paper venue, and loss-regime floor.
+
+V2 remains observational and uses the same
+`entry_admission.shadow_predictive_regime_circuit_breaker` contract key with an
+explicit V2 schema selector. Its evidence is the first actual paper fill in
+each resolved market, rather than every prediction candidate. It compares a
+four-market fast Brier window with a 20-market slow window, requires 20
+resolved exposures before classification, and treats an evidence gap greater
+than 900 seconds as a break in the fast regime sequence. Degradation requires
+fast Brier at least `0.27` plus either fast-minus-slow Brier at least `0.02` or
+slow Brier at least `0.25`, confirmed across two exposures. Recovery requires
+fast Brier at most `0.25` and fast-minus-slow Brier at most `0`, also confirmed
+across two exposures. The V1 process `7c60f051-cdaf-47b4-8834-c695a9729041`
+remains the unchanged control. Compare V1 and V2 solely by their canonical
+`process_id` values. V2 records counterfactual `would_defer` evidence but
+continues to allow entry; it does not alter estimator probabilities, strategy
+selection, order sizing, edge rules, or actual admission, and it does not
+enable HWM.
+
 Files under `infra/processes` are managed BTC realtime-paper operational request
 templates, not runtime configuration watched or read directly by the Rust
 application. The bootstrap script rejects any other process identity, active
