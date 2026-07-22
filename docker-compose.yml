@@ -101,6 +101,8 @@ services:
     build:
       context: .
       dockerfile: packages/polymarket-bot/Dockerfile
+      args:
+        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
     image: polymarket/polymarket-bot:btc-paper
     container_name: polymarket-bot
     hostname: polymarket-bot
@@ -150,6 +152,8 @@ services:
     build:
       context: .
       dockerfile: packages/polymarket-bot/Dockerfile
+      args:
+        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
     image: polymarket/polymarket-bot:btc-paper
     container_name: polymarket-backfill-worker
     hostname: polymarket-backfill-worker

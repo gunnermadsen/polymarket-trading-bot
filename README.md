@@ -30,9 +30,12 @@ Non-secret runtime configuration belongs in `docker-compose.yml`.
 ```bash
 docker compose up -d timescaledb-0
 docker compose up --build db-migrate
-docker compose build polymarket-bot
+./scripts/build-polymarket-bot-image.sh
 docker compose up -d polymarket-bot grafana
 ```
+
+The bot-image build refuses an uncommitted worktree and records the full source
+commit in the `org.opencontainers.image.revision` OCI label.
 
 Starting the service leaves BTC trading inactive. Next, create or update the
 stopped API-controlled process definition and call that process's `/start`
