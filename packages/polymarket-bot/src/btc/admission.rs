@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::types::BtcOutcome;
+use super::{
+    predictive_regime_v2::ShadowPredictiveRegimeCircuitBreakerConfigSelector, types::BtcOutcome,
+};
 
 pub const LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION: &str = "loss_regime_confidence_floor_v1";
 pub const DAILY_REALIZED_PNL_HIGH_WATER_MARK_SCHEMA_VERSION: &str =
@@ -29,7 +31,7 @@ pub struct BtcEntryAdmissionConfig {
     pub daily_realized_pnl_high_water_mark: Option<DailyRealizedPnlHighWaterMarkConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow_predictive_regime_circuit_breaker:
-        Option<ShadowPredictiveRegimeCircuitBreakerConfig>,
+        Option<ShadowPredictiveRegimeCircuitBreakerConfigSelector>,
 }
 
 impl BtcEntryAdmissionConfig {
@@ -1138,6 +1140,11 @@ mod tests {
     use chrono::{Duration, TimeZone};
     use rust_decimal_macros::dec;
 
+    use crate::btc::{
+        ShadowPredictiveRegimeCircuitBreakerV2Config,
+        SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_V2_SCHEMA_VERSION,
+    };
+
     use super::*;
 
     fn config() -> LossRegimeConfidenceFloorConfig {
@@ -1176,6 +1183,24 @@ mod tests {
             degradation_confirmation_markets: 2,
             recovery_brier_score_threshold: dec!(0.21),
             recovery_overconfidence_gap_threshold: dec!(0.05),
+            recovery_confirmation_markets: 2,
+        }
+    }
+
+    fn shadow_v2_config() -> ShadowPredictiveRegimeCircuitBreakerV2Config {
+        ShadowPredictiveRegimeCircuitBreakerV2Config {
+            schema_version: SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_V2_SCHEMA_VERSION.to_string(),
+            mode: SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE.to_string(),
+            fast_resolved_market_window: 4,
+            slow_resolved_market_window: 20,
+            minimum_resolved_markets: 20,
+            max_evidence_gap_seconds: 900,
+            degradation_fast_brier_score_threshold: dec!(0.27),
+            degradation_fast_minus_slow_threshold: dec!(0.02),
+            degradation_slow_brier_score_threshold: dec!(0.25),
+            degradation_confirmation_markets: 2,
+            recovery_fast_brier_score_threshold: dec!(0.25),
+            recovery_fast_minus_slow_ceiling: Decimal::ZERO,
             recovery_confirmation_markets: 2,
         }
     }
@@ -1585,6 +1610,65 @@ mod tests {
             .get("shadow_predictive_regime_circuit_breaker")
             .is_none());
         assert_eq!(serialized.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn versioned_shadow_config_preserves_exact_v1_wire_shape_and_hash() {
+        let shadow = shadow_config();
+        let entry_admission = BtcEntryAdmissionConfig {
+            loss_regime_confidence_floor: config(),
+            daily_realized_pnl_high_water_mark: None,
+            shadow_predictive_regime_circuit_breaker: Some(shadow.clone().into()),
+        };
+
+        entry_admission.validate().unwrap();
+        let serialized = serde_json::to_value(&entry_admission).unwrap();
+        assert_eq!(
+            serialized["shadow_predictive_regime_circuit_breaker"],
+            serde_json::to_value(&shadow).unwrap()
+        );
+        assert!(serialized["shadow_predictive_regime_circuit_breaker"]
+            .get("V1")
+            .is_none());
+        assert_eq!(
+            entry_admission
+                .shadow_predictive_regime_circuit_breaker
+                .as_ref()
+                .unwrap()
+                .config_hash()
+                .unwrap(),
+            "45545d1b10183a6c33eb559134575c739e93766fc06837cc5db95bc13ec0480f"
+        );
+
+        let restored: BtcEntryAdmissionConfig = serde_json::from_value(serialized).unwrap();
+        assert_eq!(restored, entry_admission);
+    }
+
+    #[test]
+    fn versioned_shadow_config_parses_v2_under_existing_strict_key() {
+        let shadow = shadow_v2_config();
+        let entry_admission = BtcEntryAdmissionConfig {
+            loss_regime_confidence_floor: config(),
+            daily_realized_pnl_high_water_mark: None,
+            shadow_predictive_regime_circuit_breaker: Some(shadow.clone().into()),
+        };
+        let serialized = serde_json::to_value(&entry_admission).unwrap();
+
+        let restored: BtcEntryAdmissionConfig = serde_json::from_value(serialized.clone()).unwrap();
+        assert!(restored
+            .shadow_predictive_regime_circuit_breaker
+            .as_ref()
+            .unwrap()
+            .as_v2()
+            .is_some());
+        assert_eq!(
+            serialized["shadow_predictive_regime_circuit_breaker"],
+            serde_json::to_value(shadow).unwrap()
+        );
+
+        let mut unknown = serialized;
+        unknown["shadow_predictive_regime_circuit_breaker"]["enforce"] = serde_json::json!(false);
+        assert!(serde_json::from_value::<BtcEntryAdmissionConfig>(unknown).is_err());
     }
 
     #[test]

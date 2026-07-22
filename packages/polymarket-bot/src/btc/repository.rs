@@ -12,12 +12,19 @@ use sqlx::{postgres::PgPoolOptions, FromRow, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::config::PostgresConfig;
+use crate::models::{OrderRequest, OrderSide};
 
 use super::{
     admission::{
-        DailyRealizedPnlCredit, DailyRealizedPnlHighWaterMarkState, LossRegimeCandidate,
-        ShadowPredictiveRegimeCandidate, ShadowPredictiveRegimeEvaluation,
+        AdmissionDisposition, DailyRealizedPnlCredit, DailyRealizedPnlHighWaterMarkState,
+        LossRegimeCandidate, ShadowPredictiveRegimeCandidate, ShadowPredictiveRegimeEvaluation,
         ShadowPredictiveRegimeState, UnsettledEntryExposure,
+    },
+    execution_guard::reference_execution_guard,
+    predictive_regime_v2::{
+        ShadowPredictiveRegimeV2Candidate, ShadowPredictiveRegimeV2CandidateSource,
+        ShadowPredictiveRegimeV2Evaluation, ShadowPredictiveRegimeV2State,
+        SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_V2_SCHEMA_VERSION,
     },
     strategy::{
         BtcDecision, BtcDecisionAction, BtcFeatureSnapshot, BtcStrategyPrediction,
@@ -308,6 +315,41 @@ struct PersistedShadowPredictiveRegimeEvaluationRow {
 }
 
 #[derive(Debug, Clone, FromRow)]
+struct ShadowPredictiveRegimeV2CandidateRow {
+    market_id: String,
+    order_id: String,
+    order_client_order_id: Uuid,
+    order_token_id: String,
+    order_side: String,
+    order_type: String,
+    order_price: Decimal,
+    order_size: Decimal,
+    order_request: serde_json::Value,
+    fill_id: Uuid,
+    fill_at: DateTime<Utc>,
+    decision_id: Option<Uuid>,
+    decision_snapshot_id: Option<Uuid>,
+    decision_action: Option<String>,
+    decision_outcome: Option<String>,
+    decision_fair_probability: Option<Decimal>,
+    decision_at: Option<DateTime<Utc>>,
+    resolved_outcome: String,
+    label_available_at: DateTime<Utc>,
+    feature_snapshot_id: Option<Uuid>,
+    feature_market_id: Option<String>,
+    feature_as_of: Option<DateTime<Utc>>,
+    feature_schema_version: Option<String>,
+    feature_hash: Option<String>,
+    fair_up_probability: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct PersistedShadowPredictiveRegimeV2EvaluationRow {
+    decision_at: DateTime<Utc>,
+    evaluation: serde_json::Value,
+}
+
+#[derive(Debug, Clone, FromRow)]
 struct DailyHighWaterMarkEvidenceRow {
     evidence_kind: String,
     settlement_id: Option<Uuid>,
@@ -532,6 +574,158 @@ SELECT
   label_available_at
 FROM bounded
 ORDER BY label_available_at, decision_at, decision_id, market_id
+"#;
+
+// One look-ahead row lets replay distinguish an exact 10,000-candidate history from truncation.
+const MAX_SHADOW_PREDICTIVE_REGIME_V2_HISTORY_CANDIDATES: u32 = 10_001;
+
+const LATEST_SHADOW_PREDICTIVE_REGIME_V2_STATE_SQL: &str = r#"
+SELECT
+  d.decision_at,
+  d.metadata #> '{entry_admission,shadow_predictive_regime_circuit_breaker}' AS evaluation
+FROM polymarket.btc_strategy_decisions d
+WHERE d.process_id = $1
+  AND d.metadata #>> '{entry_admission,shadow_predictive_regime_circuit_breaker,schema_version}' = 'shadow_predictive_regime_circuit_breaker_v2'
+  AND d.metadata #>> '{entry_admission,shadow_predictive_regime_circuit_breaker,mode}' = 'shadow'
+  AND ($2::text IS NULL OR d.metadata #>> '{entry_admission,shadow_predictive_regime_circuit_breaker,state,config_hash}' = $2)
+  AND d.decision_at <= $3
+  AND d.action = 'buy'
+  AND d.metadata #>> '{entry_admission,shadow_predictive_regime_circuit_breaker,state_checkpoint_eligible}' = 'true'
+  AND COALESCE(
+    d.metadata #>> '{entry_admission,shadow_predictive_regime_circuit_breaker,refresh_pending}',
+    'false'
+  ) = 'false'
+  AND COALESCE(
+    d.metadata #> '{entry_admission,shadow_predictive_regime_circuit_breaker,telemetry_error}',
+    'null'::jsonb
+  ) = 'null'::jsonb
+  AND jsonb_typeof(
+    d.metadata #> '{entry_admission,shadow_predictive_regime_circuit_breaker}'
+  ) = 'object'
+ORDER BY d.decision_at DESC, d.decision_id DESC
+LIMIT 1
+"#;
+
+const SHADOW_PREDICTIVE_REGIME_V2_CANDIDATES_SQL: &str = r#"
+WITH process_boundary AS MATERIALIZED (
+  SELECT created_at
+  FROM polymarket.trading_processes
+  WHERE process_id = $1
+), first_process_fills AS MATERIALIZED (
+  SELECT DISTINCT ON (f.order_id)
+    f.order_id,
+    f.fill_id,
+    f.timestamp_utc AS fill_at
+  FROM polymarket.fills f
+  CROSS JOIN process_boundary boundary
+  WHERE f.process_id = $1
+    AND f.source = 'paper'
+    AND f.size > 0
+    AND f.timestamp_utc >= boundary.created_at
+    AND f.timestamp_utc <= $2
+  ORDER BY f.order_id, f.timestamp_utc, f.fill_id
+), first_market_exposures AS MATERIALIZED (
+  SELECT DISTINCT ON (o.market_id)
+    o.market_id,
+    o.order_id,
+    o.client_order_id AS order_client_order_id,
+    o.token_id AS order_token_id,
+    o.side AS order_side,
+    o.order_type,
+    o.price AS order_price,
+    o.size AS order_size,
+    COALESCE(o.raw_payload #> '{request}', 'null'::jsonb) AS order_request,
+    fill.fill_id,
+    fill.fill_at
+  FROM first_process_fills fill
+  JOIN polymarket.orders o
+    ON o.process_id = $1
+   AND o.order_id = fill.order_id
+  CROSS JOIN process_boundary boundary
+  WHERE o.created_at >= boundary.created_at
+    AND o.created_at <= fill.fill_at
+    AND o.side = 'buy'
+    AND o.order_type = 'fok'
+    AND o.raw_payload #>> '{request,metadata,execution_intent}' = 'entry'
+    AND o.raw_payload #>> '{request,metadata,paper_execution,non_mutating_preview}' = 'false'
+  ORDER BY o.market_id, fill.fill_at, fill.fill_id, o.order_id
+), resolved_exposures AS MATERIALIZED (
+  SELECT
+    exposure.*,
+    label.outcome AS resolved_outcome,
+    label.label_available_at
+  FROM first_market_exposures exposure
+  JOIN polymarket.btc_market_labels label
+    ON label.market_id = exposure.market_id
+   AND label.label_available_at <= $2
+), linked_evidence AS (
+  SELECT
+    exposure.market_id,
+    exposure.order_id,
+    exposure.order_client_order_id,
+    exposure.order_token_id,
+    exposure.order_side,
+    exposure.order_type,
+    exposure.order_price,
+    exposure.order_size,
+    exposure.order_request,
+    exposure.fill_id,
+    exposure.fill_at,
+    decision.decision_id,
+    decision.snapshot_id AS decision_snapshot_id,
+    decision.action AS decision_action,
+    decision.outcome AS decision_outcome,
+    decision.fair_probability AS decision_fair_probability,
+    decision.decision_at,
+    exposure.resolved_outcome,
+    exposure.label_available_at,
+    feature.snapshot_id AS feature_snapshot_id,
+    feature.market_id AS feature_market_id,
+    feature.feature_as_of,
+    feature.feature_schema_version,
+    feature.feature_hash,
+    feature.fair_up_probability
+  FROM resolved_exposures exposure
+  LEFT JOIN polymarket.btc_strategy_decisions decision
+    ON decision.process_id = $1
+   AND decision.market_id = exposure.market_id
+   AND decision.decision_id = CASE
+     WHEN exposure.order_request #>> '{metadata,reference_execution_guard,decision_id}'
+       ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+     THEN (exposure.order_request #>> '{metadata,reference_execution_guard,decision_id}')::uuid
+     ELSE NULL::uuid
+   END
+   AND decision.action = 'buy'
+   AND decision.outcome IN ('up', 'down')
+   AND decision.fair_probability BETWEEN 0 AND 1
+   AND decision.execution_mode = 'paper'
+   AND decision.decision_at <= exposure.fill_at
+   AND exposure.fill_at < exposure.label_available_at
+  LEFT JOIN LATERAL (
+    SELECT
+      feature.snapshot_id,
+      feature.market_id,
+      feature.feature_as_of,
+      feature.feature_schema_version,
+      feature.feature_hash,
+      feature.fair_up_probability
+    FROM polymarket.btc_feature_snapshots feature
+    WHERE feature.snapshot_id = decision.snapshot_id
+      AND feature.market_id = exposure.market_id
+      AND feature.features #>> '{process_id}' = $1::text
+      AND feature.feature_as_of = decision.decision_at
+      AND feature.fair_up_probability BETWEEN 0 AND 1
+    OFFSET 0
+  ) feature ON true
+), bounded AS (
+  SELECT *
+  FROM linked_evidence
+  ORDER BY label_available_at DESC, fill_at DESC, fill_id DESC, market_id DESC
+  LIMIT $3
+)
+SELECT *
+FROM bounded
+ORDER BY label_available_at, fill_at, fill_id, market_id
 "#;
 
 #[derive(Debug, Clone, FromRow)]
@@ -2319,6 +2513,78 @@ impl BtcRepository {
         .transpose()
     }
 
+    /// Loads a bounded, causal history of the first actual paper exposure in each market.
+    /// Exposure ownership is exclusively the stable trading process; experiment identity and
+    /// decision status never participate in candidate selection.
+    pub async fn load_shadow_predictive_regime_v2_candidates(
+        &self,
+        process_id: Uuid,
+        as_of: DateTime<Utc>,
+        max_candidates: u32,
+        expected_max_reference_age: Duration,
+    ) -> Result<Vec<ShadowPredictiveRegimeV2Candidate>> {
+        if process_id.is_nil() {
+            bail!("shadow predictive-regime v2 candidate process_id cannot be nil");
+        }
+        if expected_max_reference_age <= Duration::zero() {
+            bail!("shadow predictive-regime v2 expected reference age must be positive");
+        }
+        let limit = shadow_predictive_regime_v2_history_limit(max_candidates)?;
+        let rows = sqlx::query_as::<_, ShadowPredictiveRegimeV2CandidateRow>(
+            SHADOW_PREDICTIVE_REGIME_V2_CANDIDATES_SQL,
+        )
+        .bind(process_id)
+        .bind(as_of)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to load shadow predictive-regime v2 exposure candidates")?;
+
+        rows.into_iter()
+            .map(|row| {
+                shadow_predictive_regime_v2_candidate_from_row(
+                    process_id,
+                    expected_max_reference_age,
+                    row,
+                )
+            })
+            .collect()
+    }
+
+    /// Loads the newest causally persisted V2 checkpoint owned by this trading process. V1
+    /// evaluations are excluded by the durable schema discriminator before deserialization.
+    pub async fn load_latest_shadow_predictive_regime_v2_state(
+        &self,
+        process_id: Uuid,
+        breaker_state_config_hash: Option<&str>,
+        as_of: DateTime<Utc>,
+    ) -> Result<Option<ShadowPredictiveRegimeV2State>> {
+        if process_id.is_nil() {
+            bail!("shadow predictive-regime v2 state process_id cannot be nil");
+        }
+        if breaker_state_config_hash.is_some_and(|config_hash| config_hash.trim().is_empty()) {
+            bail!("shadow predictive-regime v2 state config hash cannot be empty");
+        }
+        let row = sqlx::query_as::<_, PersistedShadowPredictiveRegimeV2EvaluationRow>(
+            LATEST_SHADOW_PREDICTIVE_REGIME_V2_STATE_SQL,
+        )
+        .bind(process_id)
+        .bind(breaker_state_config_hash)
+        .bind(as_of)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to load latest shadow predictive-regime v2 state")?;
+
+        row.map(|row| {
+            shadow_predictive_regime_v2_state_from_persisted_evaluation(
+                process_id,
+                breaker_state_config_hash,
+                row,
+            )
+        })
+        .transpose()
+    }
+
     /// Reconstructs the causal UTC-day realized-PnL watermark and every still-unsettled paper
     /// entry for one stable trading process. This state is deliberately process-owned: it carries
     /// across immutable experiment runs and must never be filtered by experiment identity.
@@ -3471,6 +3737,149 @@ fn shadow_predictive_regime_candidate_from_row(
     Ok(candidate)
 }
 
+fn shadow_predictive_regime_v2_history_limit(max_candidates: u32) -> Result<i64> {
+    if !(1..=MAX_SHADOW_PREDICTIVE_REGIME_V2_HISTORY_CANDIDATES).contains(&max_candidates) {
+        bail!(
+            "shadow predictive-regime v2 history limit must be between 1 and {} candidates",
+            MAX_SHADOW_PREDICTIVE_REGIME_V2_HISTORY_CANDIDATES
+        );
+    }
+    Ok(i64::from(max_candidates))
+}
+
+fn shadow_predictive_regime_v2_candidate_from_row(
+    process_id: Uuid,
+    expected_max_reference_age: Duration,
+    row: ShadowPredictiveRegimeV2CandidateRow,
+) -> Result<ShadowPredictiveRegimeV2Candidate> {
+    if process_id.is_nil() {
+        bail!("shadow predictive-regime v2 candidate process_id cannot be nil");
+    }
+    let request = serde_json::from_value::<OrderRequest>(row.order_request)
+        .context("failed to deserialize shadow predictive-regime v2 exposure order request")?;
+    if request.process_id != Some(process_id)
+        || request.client_order_id != row.order_client_order_id
+        || request.market_id != row.market_id
+        || request.token_id != row.order_token_id
+        || serde_name(&request.side)? != row.order_side
+        || serde_name(&request.order_type)? != row.order_type
+        || request.price != row.order_price
+        || request.size != row.order_size
+        || request.side != OrderSide::Buy
+    {
+        bail!("shadow predictive-regime v2 order request does not match persisted exposure");
+    }
+    if request
+        .metadata
+        .get("execution_intent")
+        .and_then(serde_json::Value::as_str)
+        != Some("entry")
+        || request
+            .metadata
+            .pointer("/paper_execution/non_mutating_preview")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+    {
+        bail!("shadow predictive-regime v2 exposure is not an actual paper entry");
+    }
+
+    let guard = reference_execution_guard(&request)
+        .map_err(anyhow::Error::new)
+        .context("shadow predictive-regime v2 exposure has no valid execution guard")?;
+    guard
+        .validate_for_request(
+            &request,
+            row.fill_at,
+            process_id,
+            expected_max_reference_age,
+        )
+        .map_err(anyhow::Error::new)
+        .context("shadow predictive-regime v2 exposure execution guard failed validation")?;
+
+    let decision_id = row
+        .decision_id
+        .context("shadow predictive-regime v2 exposure has no exact guarded decision")?;
+    let snapshot_id = row
+        .decision_snapshot_id
+        .context("shadow predictive-regime v2 exposure decision has no snapshot")?;
+    let decision_at = row
+        .decision_at
+        .context("shadow predictive-regime v2 exposure decision has no timestamp")?;
+    let decision_action = row
+        .decision_action
+        .as_deref()
+        .context("shadow predictive-regime v2 exposure decision has no action")?;
+    let decision_outcome = parse_outcome_name(
+        row.decision_outcome
+            .as_deref()
+            .context("shadow predictive-regime v2 exposure decision has no outcome")?,
+    )?;
+    let decision_fair_probability = row
+        .decision_fair_probability
+        .context("shadow predictive-regime v2 exposure decision has no fair probability")?;
+    let resolved_outcome = parse_outcome_name(&row.resolved_outcome)?;
+    let feature_snapshot_id = row
+        .feature_snapshot_id
+        .context("shadow predictive-regime v2 exposure has no exact feature snapshot")?;
+    let feature_market_id = row
+        .feature_market_id
+        .as_deref()
+        .context("shadow predictive-regime v2 exposure feature has no market")?;
+    let feature_as_of = row
+        .feature_as_of
+        .context("shadow predictive-regime v2 exposure feature has no timestamp")?;
+    let feature_schema_version = row
+        .feature_schema_version
+        .as_deref()
+        .context("shadow predictive-regime v2 exposure feature has no schema version")?;
+    let feature_hash = row
+        .feature_hash
+        .as_deref()
+        .context("shadow predictive-regime v2 exposure feature has no hash")?;
+    let fair_up_probability = row
+        .fair_up_probability
+        .context("shadow predictive-regime v2 exposure feature has no fair probability")?;
+
+    if decision_action != "buy"
+        || guard.decision_id != decision_id
+        || guard.snapshot_id != snapshot_id
+        || feature_snapshot_id != snapshot_id
+        || guard.market_id != row.market_id
+        || feature_market_id != row.market_id
+        || guard.outcome != decision_outcome
+        || guard.decision_at.timestamp_micros() != decision_at.timestamp_micros()
+        || guard.feature_as_of.timestamp_micros() != feature_as_of.timestamp_micros()
+        || guard.feature_schema_version != feature_schema_version
+        || guard.feature_sha256 != feature_hash
+    {
+        bail!("shadow predictive-regime v2 guarded evidence identity is inconsistent");
+    }
+
+    let selected_point_probability = match decision_outcome {
+        BtcOutcome::Up => fair_up_probability,
+        BtcOutcome::Down => Decimal::ONE - fair_up_probability,
+    };
+    if decision_fair_probability != selected_point_probability {
+        bail!("shadow predictive-regime v2 decision and feature probabilities disagree");
+    }
+    let candidate = ShadowPredictiveRegimeV2Candidate {
+        market_id: row.market_id,
+        decision_id,
+        snapshot_id,
+        order_id: row.order_id,
+        fill_id: row.fill_id,
+        source: ShadowPredictiveRegimeV2CandidateSource::ActualPaperFill,
+        decision_outcome,
+        resolved_outcome,
+        selected_point_probability,
+        decision_at,
+        fill_at: row.fill_at,
+        label_available_at: row.label_available_at,
+    };
+    candidate.validate()?;
+    Ok(candidate)
+}
+
 fn shadow_predictive_regime_state_from_persisted_evaluation(
     process_id: Uuid,
     breaker_state_config_hash: Option<&str>,
@@ -3583,6 +3992,266 @@ fn shadow_predictive_regime_state_from_persisted_evaluation(
     Ok(evaluation.state)
 }
 
+fn shadow_predictive_regime_v2_state_from_persisted_evaluation(
+    process_id: Uuid,
+    breaker_state_config_hash: Option<&str>,
+    row: PersistedShadowPredictiveRegimeV2EvaluationRow,
+) -> Result<ShadowPredictiveRegimeV2State> {
+    let evaluation =
+        serde_json::from_value::<ShadowPredictiveRegimeV2Evaluation>(row.evaluation)
+            .context("failed to deserialize persisted shadow predictive-regime v2 evaluation")?;
+    let state = &evaluation.state;
+
+    if evaluation.schema_version != SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_V2_SCHEMA_VERSION
+        || evaluation.mode != "shadow"
+    {
+        bail!("persisted shadow predictive-regime v2 evaluation has the wrong contract");
+    }
+    if evaluation.process_id != process_id || state.process_id != process_id {
+        bail!("persisted shadow predictive-regime v2 state is owned by another process");
+    }
+    if evaluation.config_hash != state.config_hash {
+        bail!("persisted shadow predictive-regime v2 evaluation and state config hashes disagree");
+    }
+    if state.config_hash.len() != 64
+        || !state
+            .config_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        bail!("persisted shadow predictive-regime v2 state config hash is invalid");
+    }
+    if let Some(expected) = breaker_state_config_hash {
+        if evaluation.config_hash != expected {
+            bail!("persisted shadow predictive-regime v2 state config hash does not match");
+        }
+    }
+    if evaluation.as_of.timestamp_micros() != row.decision_at.timestamp_micros() {
+        bail!("persisted shadow predictive-regime v2 evaluation is not aligned to its decision");
+    }
+    if evaluation.degraded != state.degraded
+        || evaluation.would_defer != state.degraded
+        || evaluation.consecutive_degradation_markets != state.consecutive_degradation_markets
+        || evaluation.consecutive_recovery_markets != state.consecutive_recovery_markets
+        || evaluation.resolved_markets_observed != state.resolved_markets_observed
+        || evaluation.state_as_of_market_id != state.state_as_of_market_id
+        || evaluation.state_as_of_decision_id != state.state_as_of_decision_id
+        || evaluation.state_as_of_fill_id != state.state_as_of_fill_id
+        || evaluation.state_as_of_label_available_at != state.state_as_of_label_available_at
+    {
+        bail!("persisted shadow predictive-regime v2 evaluation and state evidence disagree");
+    }
+
+    #[derive(Serialize)]
+    struct PersistedV2StateEvidence<'a> {
+        schema_version: &'a str,
+        config_hash: String,
+        state: &'a ShadowPredictiveRegimeV2State,
+    }
+    let expected_state_evidence_sha256 = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&PersistedV2StateEvidence {
+            schema_version: &evaluation.schema_version,
+            config_hash: state.config_hash.clone(),
+            state,
+        })?)
+    );
+    #[derive(Serialize)]
+    struct PersistedV2EvaluationEvidence<'a> {
+        schema_version: &'a str,
+        config_hash: &'a str,
+        mode: &'a str,
+        process_id: Uuid,
+        as_of: DateTime<Utc>,
+        state_evidence_sha256: &'a str,
+        evidence_fresh: bool,
+        degraded: bool,
+        would_defer: bool,
+        degradation_condition_met: bool,
+        recovery_condition_met: bool,
+        reason: &'a str,
+    }
+    let expected_evaluation_evidence_sha256 = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&PersistedV2EvaluationEvidence {
+            schema_version: &evaluation.schema_version,
+            config_hash: &evaluation.config_hash,
+            mode: &evaluation.mode,
+            process_id: evaluation.process_id,
+            as_of: evaluation.as_of,
+            state_evidence_sha256: &evaluation.state_evidence_sha256,
+            evidence_fresh: evaluation.evidence_fresh,
+            degraded: evaluation.degraded,
+            would_defer: evaluation.would_defer,
+            degradation_condition_met: evaluation.degradation_condition_met,
+            recovery_condition_met: evaluation.recovery_condition_met,
+            reason: &evaluation.reason,
+        })?)
+    );
+    if !evaluation.shadow_only
+        || !evaluation.state_checkpoint_eligible
+        || evaluation.disposition != AdmissionDisposition::Allow
+        || evaluation.telemetry_error.is_some()
+        || evaluation.refresh_pending
+        || evaluation.state_evidence_sha256 != expected_state_evidence_sha256
+        || evaluation.evaluation_evidence_sha256 != expected_evaluation_evidence_sha256
+    {
+        bail!("persisted shadow predictive-regime v2 evaluation evidence is incomplete");
+    }
+
+    if state.resolved_markets_observed
+        < u64::try_from(state.slow_candidates.len()).unwrap_or(u64::MAX)
+    {
+        bail!("persisted shadow predictive-regime v2 observation count is inconsistent");
+    }
+    let mut market_ids = HashSet::new();
+    let mut decision_ids = HashSet::new();
+    let mut order_ids = HashSet::new();
+    let mut fill_ids = HashSet::new();
+    let mut previous_ordering_key = None;
+    let mut slow_probability_sum = Decimal::ZERO;
+    let mut slow_win_count = 0_u32;
+    let mut slow_brier_sum = Decimal::ZERO;
+    for candidate in &state.slow_candidates {
+        candidate.validate()?;
+        if candidate.label_available_at > evaluation.as_of {
+            bail!("persisted shadow predictive-regime v2 state contains future evidence");
+        }
+        if !market_ids.insert(candidate.market_id.as_str())
+            || !decision_ids.insert(candidate.decision_id)
+            || !order_ids.insert(candidate.order_id.as_str())
+            || !fill_ids.insert(candidate.fill_id)
+        {
+            bail!("persisted shadow predictive-regime v2 state contains duplicate evidence");
+        }
+        let ordering_key = (
+            candidate.label_available_at,
+            candidate.fill_at,
+            candidate.fill_id,
+            candidate.market_id.as_str(),
+        );
+        if previous_ordering_key.is_some_and(|previous| ordering_key <= previous) {
+            bail!("persisted shadow predictive-regime v2 state is not in causal order");
+        }
+        previous_ordering_key = Some(ordering_key);
+        slow_probability_sum += candidate.selected_point_probability;
+        slow_win_count = slow_win_count.saturating_add(u32::from(candidate.won()));
+        slow_brier_sum += shadow_predictive_regime_v2_brier_score(candidate);
+    }
+    let fresh_count = usize::try_from(state.fresh_evidence_count)
+        .context("persisted shadow predictive-regime v2 fresh count does not fit in memory")?;
+    if fresh_count > state.slow_candidates.len()
+        || (!state.slow_candidates.is_empty() && fresh_count == 0)
+    {
+        bail!("persisted shadow predictive-regime v2 fresh evidence count is inconsistent");
+    }
+    let mut fast_brier_sum = Decimal::ZERO;
+    let mut fast_confidence_weighted_miss_sum = Decimal::ZERO;
+    for candidate in state.slow_candidates.iter().rev().take(fresh_count) {
+        fast_brier_sum += shadow_predictive_regime_v2_brier_score(candidate);
+        if !candidate.won() {
+            fast_confidence_weighted_miss_sum += candidate.selected_point_probability;
+        }
+    }
+    if state.slow_probability_sum != slow_probability_sum
+        || state.slow_win_count != slow_win_count
+        || state.slow_brier_sum != slow_brier_sum
+        || state.fast_brier_sum != fast_brier_sum
+        || state.fast_confidence_weighted_miss_sum != fast_confidence_weighted_miss_sum
+    {
+        bail!("persisted shadow predictive-regime v2 rolling aggregates are inconsistent");
+    }
+
+    match state.slow_candidates.back() {
+        Some(last)
+            if state.state_as_of_market_id.as_deref() == Some(last.market_id.as_str())
+                && state.state_as_of_decision_id == Some(last.decision_id)
+                && state.state_as_of_fill_id == Some(last.fill_id)
+                && state.state_as_of_decision_at == Some(last.decision_at)
+                && state.state_as_of_label_available_at == Some(last.label_available_at) => {}
+        Some(_) => {
+            bail!("persisted shadow predictive-regime v2 state cursor does not match its evidence")
+        }
+        None if state.resolved_markets_observed == 0
+            && state.fresh_evidence_count == 0
+            && state.slow_probability_sum == Decimal::ZERO
+            && state.slow_win_count == 0
+            && state.slow_brier_sum == Decimal::ZERO
+            && state.fast_brier_sum == Decimal::ZERO
+            && state.fast_confidence_weighted_miss_sum == Decimal::ZERO
+            && state.state_as_of_market_id.is_none()
+            && state.state_as_of_decision_id.is_none()
+            && state.state_as_of_fill_id.is_none()
+            && state.state_as_of_decision_at.is_none()
+            && state.state_as_of_label_available_at.is_none()
+            && !state.degraded
+            && state.consecutive_degradation_markets == 0
+            && state.consecutive_recovery_markets == 0 => {}
+        None => bail!("persisted shadow predictive-regime v2 state is missing its evidence"),
+    }
+
+    let metrics_present = evaluation.slow_resolved_market_count.is_some();
+    if [
+        evaluation.fast_resolved_market_count.is_some(),
+        evaluation.rolling_wins.is_some(),
+        evaluation.mean_selected_point_probability.is_some(),
+        evaluation.empirical_accuracy.is_some(),
+        evaluation.brier_score.is_some(),
+        evaluation.slow_brier_score.is_some(),
+        evaluation.fast_brier_score.is_some(),
+        evaluation.fast_minus_slow_brier.is_some(),
+        evaluation.fast_confidence_weighted_miss.is_some(),
+    ]
+    .into_iter()
+    .any(|present| present != metrics_present)
+        || evaluation.sample_ready != (metrics_present && evaluation.evidence_fresh)
+    {
+        bail!("persisted shadow predictive-regime v2 metric evidence is inconsistent");
+    }
+    if metrics_present {
+        let slow_count = u32::try_from(state.slow_candidates.len())
+            .context("persisted shadow predictive-regime v2 slow count does not fit in u32")?;
+        let fast_count = state.fresh_evidence_count;
+        if slow_count == 0 || fast_count == 0 {
+            bail!("persisted shadow predictive-regime v2 metric window is empty");
+        }
+        let slow_denominator = Decimal::from(slow_count);
+        let fast_denominator = Decimal::from(fast_count);
+        let slow_brier_score = state.slow_brier_sum / slow_denominator;
+        let fast_brier_score = state.fast_brier_sum / fast_denominator;
+        if evaluation.slow_resolved_market_count != Some(slow_count)
+            || evaluation.fast_resolved_market_count != Some(fast_count)
+            || evaluation.rolling_wins != Some(state.slow_win_count)
+            || evaluation.mean_selected_point_probability
+                != Some(state.slow_probability_sum / slow_denominator)
+            || evaluation.empirical_accuracy
+                != Some(Decimal::from(state.slow_win_count) / slow_denominator)
+            || evaluation.brier_score != Some(slow_brier_score)
+            || evaluation.slow_brier_score != Some(slow_brier_score)
+            || evaluation.fast_brier_score != Some(fast_brier_score)
+            || evaluation.fast_minus_slow_brier != Some(fast_brier_score - slow_brier_score)
+            || evaluation.fast_confidence_weighted_miss
+                != Some(state.fast_confidence_weighted_miss_sum / fast_denominator)
+        {
+            bail!("persisted shadow predictive-regime v2 metric values are inconsistent");
+        }
+    }
+
+    Ok(evaluation.state)
+}
+
+fn shadow_predictive_regime_v2_brier_score(
+    candidate: &ShadowPredictiveRegimeV2Candidate,
+) -> Decimal {
+    let observed = if candidate.won() {
+        Decimal::ONE
+    } else {
+        Decimal::ZERO
+    };
+    let error = candidate.selected_point_probability - observed;
+    error * error
+}
+
 fn decimal_json_field(value: &serde_json::Value, keys: &[&str]) -> Option<Decimal> {
     keys.iter().find_map(|key| match value.get(*key)? {
         serde_json::Value::String(value) => Decimal::from_str(value).ok(),
@@ -3666,8 +4335,19 @@ mod tests {
             SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE,
             SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION,
         },
-        strategy::{ApprovedIntent, OutcomeEdge},
+        execution_guard::{
+            BtcReferenceExecutionGuard, BtcReferenceTickEvidence,
+            BTC_REFERENCE_EXECUTION_GUARD_VERSION,
+        },
+        predictive_regime_v2::{
+            ShadowPredictiveRegimeCircuitBreakerV2Config,
+            SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_V2_SCHEMA_VERSION,
+        },
+        strategy::{
+            ApprovedIntent, OutcomeEdge, BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_LINEAGE_VERSION,
+        },
     };
+    use crate::models::OrderType;
 
     fn history_tick(id: u128, at: DateTime<Utc>) -> ReferencePriceTick {
         ReferencePriceTick {
@@ -3683,6 +4363,156 @@ mod tests {
             ingest_sequence: id as u64,
             source_event_id: None,
             raw_payload: serde_json::json!({}),
+        }
+    }
+
+    fn predictive_regime_v2_config() -> ShadowPredictiveRegimeCircuitBreakerV2Config {
+        ShadowPredictiveRegimeCircuitBreakerV2Config {
+            schema_version: SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_V2_SCHEMA_VERSION.to_string(),
+            mode: "shadow".to_string(),
+            fast_resolved_market_window: 4,
+            slow_resolved_market_window: 20,
+            minimum_resolved_markets: 20,
+            max_evidence_gap_seconds: 900,
+            degradation_fast_brier_score_threshold: dec!(0.27),
+            degradation_fast_minus_slow_threshold: dec!(0.02),
+            degradation_slow_brier_score_threshold: dec!(0.25),
+            degradation_confirmation_markets: 2,
+            recovery_fast_brier_score_threshold: dec!(0.25),
+            recovery_fast_minus_slow_ceiling: Decimal::ZERO,
+            recovery_confirmation_markets: 2,
+        }
+    }
+
+    fn predictive_regime_v2_candidate(
+        index: i64,
+        probability: Decimal,
+        won: bool,
+    ) -> ShadowPredictiveRegimeV2Candidate {
+        let label_available_at = Utc.with_ymd_and_hms(2026, 7, 22, 0, 0, 1).single().unwrap()
+            + Duration::minutes(index * 5);
+        ShadowPredictiveRegimeV2Candidate {
+            market_id: format!("v2-market-{index}"),
+            decision_id: Uuid::from_u128(u128::try_from(index + 1).unwrap()),
+            snapshot_id: Uuid::from_u128(u128::try_from(index + 10_001).unwrap()),
+            order_id: format!("v2-order-{index}"),
+            fill_id: Uuid::from_u128(u128::try_from(index + 20_001).unwrap()),
+            source: ShadowPredictiveRegimeV2CandidateSource::ActualPaperFill,
+            decision_outcome: BtcOutcome::Up,
+            resolved_outcome: if won {
+                BtcOutcome::Up
+            } else {
+                BtcOutcome::Down
+            },
+            selected_point_probability: probability,
+            decision_at: label_available_at - Duration::minutes(4),
+            fill_at: label_available_at - Duration::minutes(3),
+            label_available_at,
+        }
+    }
+
+    fn predictive_regime_v2_candidate_row(
+        process_id: Uuid,
+    ) -> ShadowPredictiveRegimeV2CandidateRow {
+        let fill_at = Utc
+            .with_ymd_and_hms(2026, 7, 22, 12, 0, 0)
+            .single()
+            .unwrap();
+        let decision_at = fill_at - Duration::seconds(1) + Duration::nanoseconds(999);
+        let feature_as_of = decision_at - Duration::seconds(1);
+        let client_order_id = Uuid::from_u128(7_001);
+        let decision_id = Uuid::from_u128(7_002);
+        let snapshot_id = Uuid::from_u128(7_003);
+        let intent_id = Uuid::from_u128(7_004);
+        let tick = |id| BtcReferenceTickEvidence {
+            tick_id: Uuid::from_u128(id),
+            source_timestamp: feature_as_of - Duration::seconds(1),
+            received_at: feature_as_of - Duration::seconds(1),
+            ingest_sequence: u64::try_from(id).unwrap(),
+        };
+        let mut guard = BtcReferenceExecutionGuard {
+            guard_version: BTC_REFERENCE_EXECUTION_GUARD_VERSION.to_string(),
+            process_id,
+            intent_id,
+            decision_id,
+            decision_at,
+            snapshot_id,
+            feature_as_of,
+            market_id: "v2-exposure-market".to_string(),
+            token_id: "v2-up-token".to_string(),
+            outcome: BtcOutcome::Up,
+            strategy_version: "strategy-v2-test".to_string(),
+            feature_schema_version: "feature-v2-test".to_string(),
+            lineage_version: BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_LINEAGE_VERSION.to_string(),
+            feature_sha256: "a".repeat(64),
+            client_order_id,
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            limit_price: dec!(0.61),
+            size: dec!(5),
+            signal_id: None,
+            dynamic_fee_rate: dec!(0.01),
+            chainlink_open: tick(7_101),
+            chainlink: tick(7_102),
+            binance: tick(7_103),
+            max_reference_age_ms: 60_000,
+            evidence_sha256: String::new(),
+        };
+        guard.reseal_for_test();
+        let mut request = OrderRequest {
+            client_order_id,
+            process_id: Some(process_id),
+            market_id: guard.market_id.clone(),
+            token_id: guard.token_id.clone(),
+            side: guard.side,
+            order_type: guard.order_type,
+            price: guard.limit_price,
+            size: guard.size,
+            signal_id: guard.signal_id,
+            metadata: serde_json::json!({
+                "process_id": process_id,
+                "decision_id": decision_id,
+                "feature_snapshot_id": snapshot_id,
+                "strategy_version": guard.strategy_version,
+                "feature_schema_version": guard.feature_schema_version,
+                "outcome": guard.outcome,
+                "dynamic_fee_rate": guard.dynamic_fee_rate,
+                "execution_intent": "entry",
+                "paper_execution": { "non_mutating_preview": false }
+            }),
+        };
+        guard.insert_into_metadata(&mut request.metadata).unwrap();
+
+        ShadowPredictiveRegimeV2CandidateRow {
+            market_id: request.market_id.clone(),
+            order_id: "paper-v2-exposure-order".to_string(),
+            order_client_order_id: request.client_order_id,
+            order_token_id: request.token_id.clone(),
+            order_side: "buy".to_string(),
+            order_type: "fok".to_string(),
+            order_price: request.price,
+            order_size: request.size,
+            order_request: serde_json::to_value(request).unwrap(),
+            fill_id: Uuid::from_u128(7_005),
+            fill_at,
+            decision_id: Some(decision_id),
+            decision_snapshot_id: Some(snapshot_id),
+            decision_action: Some("buy".to_string()),
+            decision_outcome: Some("up".to_string()),
+            decision_fair_probability: Some(dec!(0.61)),
+            decision_at: Some(
+                DateTime::<Utc>::from_timestamp_micros(decision_at.timestamp_micros()).unwrap(),
+            ),
+            resolved_outcome: "down".to_string(),
+            label_available_at: fill_at + Duration::minutes(4),
+            feature_snapshot_id: Some(snapshot_id),
+            feature_market_id: Some("v2-exposure-market".to_string()),
+            feature_as_of: Some(
+                DateTime::<Utc>::from_timestamp_micros(feature_as_of.timestamp_micros()).unwrap(),
+            ),
+            feature_schema_version: Some(guard.feature_schema_version.clone()),
+            feature_hash: Some(guard.feature_sha256.clone()),
+            fair_up_probability: Some(dec!(0.61)),
         }
     }
 
@@ -3956,6 +4786,240 @@ mod tests {
         assert!(!normalized.contains("d.config_hash"));
         assert!(!normalized.contains("status"));
         assert!(!normalized.contains("polymarket.fills"));
+    }
+
+    #[test]
+    fn shadow_predictive_regime_v2_query_is_exposure_aligned_process_owned_and_bounded() {
+        let normalized = SHADOW_PREDICTIVE_REGIME_V2_CANDIDATES_SQL
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+
+        assert!(normalized.contains("process_boundary as materialized"));
+        assert!(normalized.contains("where process_id = $1"));
+        assert!(normalized.contains("first_process_fills as materialized"));
+        assert!(normalized.contains("distinct on (f.order_id)"));
+        assert!(normalized.contains("f.process_id = $1"));
+        assert!(normalized.contains("f.source = 'paper'"));
+        assert!(normalized.contains("f.size > 0"));
+        assert!(normalized.contains("f.timestamp_utc >= boundary.created_at"));
+        assert!(normalized.contains("first_market_exposures as materialized"));
+        assert!(normalized.contains("distinct on (o.market_id)"));
+        assert!(normalized.contains("o.created_at >= boundary.created_at"));
+        assert!(normalized.contains("o.created_at <= fill.fill_at"));
+        assert!(normalized.contains("o.order_type = 'fok'"));
+        assert!(normalized
+            .contains("o.raw_payload #>> '{request,metadata,execution_intent}' = 'entry'"));
+        assert!(normalized.contains(
+            "o.raw_payload #>> '{request,metadata,paper_execution,non_mutating_preview}' = 'false'"
+        ));
+        assert!(normalized.contains("order by o.market_id, fill.fill_at, fill.fill_id, o.order_id"));
+        assert!(
+            normalized
+                .find("first_market_exposures as materialized")
+                .unwrap()
+                < normalized
+                    .find("left join polymarket.btc_strategy_decisions")
+                    .unwrap()
+        );
+        assert!(normalized.contains("decision.process_id = $1"));
+        assert!(normalized.contains("decision.market_id = exposure.market_id"));
+        assert!(normalized.contains("else null::uuid end"));
+        assert!(normalized.contains("decision.action = 'buy'"));
+        assert!(normalized.contains("decision.outcome in ('up', 'down')"));
+        assert!(normalized.contains("decision.fair_probability between 0 and 1"));
+        assert!(normalized.contains("decision.execution_mode = 'paper'"));
+        assert!(normalized.contains("decision.decision_at <= exposure.fill_at"));
+        assert!(normalized.contains("exposure.fill_at < exposure.label_available_at"));
+        assert!(normalized.contains("left join lateral"));
+        assert!(normalized.contains("feature.snapshot_id = decision.snapshot_id"));
+        assert!(normalized.contains("feature.market_id = exposure.market_id"));
+        assert!(normalized.contains("feature.features #>> '{process_id}' = $1::text"));
+        assert!(normalized.contains("feature.feature_as_of = decision.decision_at"));
+        assert!(normalized.contains("feature.feature_schema_version"));
+        assert!(normalized.contains("feature.feature_hash"));
+        assert!(normalized.contains("offset 0"));
+        assert!(normalized.contains(
+            "order by label_available_at desc, fill_at desc, fill_id desc, market_id desc limit $3"
+        ));
+        assert!(normalized.contains("order by label_available_at, fill_at, fill_id, market_id"));
+        assert!(!normalized.contains("experiment_id"));
+        assert!(!normalized.contains("decision.status"));
+    }
+
+    #[test]
+    fn latest_shadow_predictive_regime_v2_state_query_is_schema_isolated_and_process_owned() {
+        let normalized = LATEST_SHADOW_PREDICTIVE_REGIME_V2_STATE_SQL
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+
+        assert!(normalized.contains("d.process_id = $1"));
+        assert!(normalized.contains(
+            "shadow_predictive_regime_circuit_breaker,schema_version}' = 'shadow_predictive_regime_circuit_breaker_v2'"
+        ));
+        assert!(normalized.contains("shadow_predictive_regime_circuit_breaker,mode}' = 'shadow'"));
+        assert!(normalized
+            .contains("shadow_predictive_regime_circuit_breaker,state,config_hash}' = $2"));
+        assert!(normalized.contains("d.decision_at <= $3"));
+        assert!(normalized.contains("state_checkpoint_eligible}' = 'true'"));
+        assert!(normalized.contains("refresh_pending}', 'false' ) = 'false'"));
+        assert!(normalized.contains("telemetry_error}"));
+        assert!(!normalized.contains("experiment_id"));
+        assert!(!normalized.contains("d.config_hash"));
+    }
+
+    #[test]
+    fn shadow_predictive_regime_v2_row_validates_guard_and_postgres_timestamp_precision() {
+        let process_id = Uuid::from_u128(7_000);
+        let row = predictive_regime_v2_candidate_row(process_id);
+        let candidate = shadow_predictive_regime_v2_candidate_from_row(
+            process_id,
+            Duration::milliseconds(60_000),
+            row,
+        )
+        .unwrap();
+
+        assert_eq!(candidate.market_id, "v2-exposure-market");
+        assert_eq!(candidate.order_id, "paper-v2-exposure-order");
+        assert_eq!(candidate.decision_outcome, BtcOutcome::Up);
+        assert_eq!(candidate.resolved_outcome, BtcOutcome::Down);
+        assert_eq!(candidate.selected_point_probability, dec!(0.61));
+        assert_eq!(
+            candidate.source,
+            ShadowPredictiveRegimeV2CandidateSource::ActualPaperFill
+        );
+    }
+
+    #[test]
+    fn shadow_predictive_regime_v2_row_fails_closed_on_tampered_or_unlinked_evidence() {
+        let process_id = Uuid::from_u128(7_000);
+        let mut tampered_guard = predictive_regime_v2_candidate_row(process_id);
+        tampered_guard.order_request["metadata"]["reference_execution_guard"]["evidence_sha256"] =
+            serde_json::json!("0".repeat(64));
+        assert!(shadow_predictive_regime_v2_candidate_from_row(
+            process_id,
+            Duration::milliseconds(60_000),
+            tampered_guard
+        )
+        .is_err());
+
+        let mut missing_decision = predictive_regime_v2_candidate_row(process_id);
+        missing_decision.decision_id = None;
+        assert!(shadow_predictive_regime_v2_candidate_from_row(
+            process_id,
+            Duration::milliseconds(60_000),
+            missing_decision
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("no exact guarded decision"));
+
+        let mut preview = predictive_regime_v2_candidate_row(process_id);
+        preview.order_request["metadata"]["paper_execution"]["non_mutating_preview"] =
+            serde_json::json!(true);
+        assert!(shadow_predictive_regime_v2_candidate_from_row(
+            process_id,
+            Duration::milliseconds(60_000),
+            preview
+        )
+        .is_err());
+
+        let mismatched_age = predictive_regime_v2_candidate_row(process_id);
+        assert!(shadow_predictive_regime_v2_candidate_from_row(
+            process_id,
+            Duration::milliseconds(2_000),
+            mismatched_age
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("execution guard failed validation"));
+
+        let mut mismatched_feature_hash = predictive_regime_v2_candidate_row(process_id);
+        mismatched_feature_hash.feature_hash = Some("0".repeat(64));
+        assert!(shadow_predictive_regime_v2_candidate_from_row(
+            process_id,
+            Duration::milliseconds(60_000),
+            mismatched_feature_hash
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("guarded evidence identity is inconsistent"));
+
+        let mut mismatched_probability = predictive_regime_v2_candidate_row(process_id);
+        mismatched_probability.decision_fair_probability = Some(dec!(0.62));
+        assert!(shadow_predictive_regime_v2_candidate_from_row(
+            process_id,
+            Duration::milliseconds(60_000),
+            mismatched_probability
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("decision and feature probabilities disagree"));
+    }
+
+    #[test]
+    fn persisted_shadow_predictive_regime_v2_state_round_trips_and_rejects_v1_schema() {
+        let process_id = Uuid::from_u128(7_500);
+        let config = predictive_regime_v2_config();
+        let candidates = (0_i64..20)
+            .map(|index| predictive_regime_v2_candidate(index, dec!(0.90), index < 15))
+            .collect::<Vec<_>>();
+        let state =
+            ShadowPredictiveRegimeV2State::from_candidates(process_id, &config, &candidates)
+                .unwrap();
+        let evaluation_as_of = candidates.last().unwrap().label_available_at
+            + Duration::seconds(1)
+            + Duration::nanoseconds(999);
+        let postgres_decision_at =
+            DateTime::<Utc>::from_timestamp_micros(evaluation_as_of.timestamp_micros()).unwrap();
+        let mut evaluation = state.evaluate(&config, evaluation_as_of).unwrap();
+        evaluation.state_checkpoint_eligible = true;
+        let config_hash = config.config_hash().unwrap();
+        let persisted = serde_json::to_value(&evaluation).unwrap();
+
+        let restored = shadow_predictive_regime_v2_state_from_persisted_evaluation(
+            process_id,
+            Some(&config_hash),
+            PersistedShadowPredictiveRegimeV2EvaluationRow {
+                decision_at: postgres_decision_at,
+                evaluation: persisted.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(restored, state);
+
+        let mut wrong_schema = persisted;
+        wrong_schema["schema_version"] =
+            serde_json::json!(SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION);
+        assert!(shadow_predictive_regime_v2_state_from_persisted_evaluation(
+            process_id,
+            Some(&config_hash),
+            PersistedShadowPredictiveRegimeV2EvaluationRow {
+                decision_at: postgres_decision_at,
+                evaluation: wrong_schema,
+            },
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn shadow_predictive_regime_v2_history_limit_is_strictly_bounded() {
+        assert!(shadow_predictive_regime_v2_history_limit(0).is_err());
+        assert_eq!(shadow_predictive_regime_v2_history_limit(1).unwrap(), 1);
+        assert_eq!(
+            shadow_predictive_regime_v2_history_limit(
+                MAX_SHADOW_PREDICTIVE_REGIME_V2_HISTORY_CANDIDATES
+            )
+            .unwrap(),
+            i64::from(MAX_SHADOW_PREDICTIVE_REGIME_V2_HISTORY_CANDIDATES)
+        );
+        assert!(shadow_predictive_regime_v2_history_limit(
+            MAX_SHADOW_PREDICTIVE_REGIME_V2_HISTORY_CANDIDATES + 1
+        )
+        .is_err());
     }
 
     #[test]
