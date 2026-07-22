@@ -1189,35 +1189,6 @@ impl Store {
         Ok(run_id)
     }
 
-    pub async fn fetch_market_end_date_for_entry(
-        &self,
-        market_id: &str,
-        token_id: &str,
-    ) -> Result<Option<DateTime<Utc>>> {
-        let row = sqlx::query_scalar::<_, DateTime<Utc>>(
-            r#"
-            SELECT m.end_date
-            FROM polymarket.markets m
-            WHERE m.market_id = $1
-              AND m.end_date IS NOT NULL
-            UNION ALL
-            SELECT m.end_date
-            FROM polymarket.outcome_tokens ot
-            JOIN polymarket.markets m ON m.market_id = ot.market_id
-            WHERE ot.token_id = $2
-              AND m.end_date IS NOT NULL
-            ORDER BY 1 ASC
-            LIMIT 1
-            "#,
-        )
-        .bind(market_id)
-        .bind(token_id)
-        .fetch_optional(&self.pool)
-        .await
-        .context("failed to fetch market end date for entry safety")?;
-        Ok(row)
-    }
-
     pub async fn insert_conversion_result(
         &self,
         request: &ConversionRequest,
