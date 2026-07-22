@@ -347,6 +347,7 @@ struct ClobSubscriptionStats {
     updates: u64,
     active_assets: usize,
     ignored_foreign_events: u64,
+    ignored_superseded_events: u64,
     last_updated_at: Option<DateTime<Utc>>,
 }
 
@@ -462,9 +463,9 @@ impl ClobFeedWatchdog {
         if identity_changed {
             self.bootstrap_market = Some(ClobMarketIdentity::from(current_market));
         }
-        if registry.market_books_structurally_ready(current_market) {
+        if registry.market_books_bootstrapped(current_market) {
             self.bootstrap_deadline = None;
-        } else if identity_changed || self.bootstrap_deadline.is_none() {
+        } else if identity_changed {
             self.bootstrap_deadline = Some(now + CLOB_BOOTSTRAP_TIMEOUT);
         }
     }
@@ -1841,6 +1842,7 @@ enum PrivateClobEventDisposition {
     Accept,
     AwaitSnapshot,
     IgnoreForeign,
+    IgnoreSuperseded,
     Reject,
 }
 
@@ -1858,6 +1860,13 @@ fn private_clob_event_disposition(
                 && (market.up_token_id == token_id || market.down_token_id == token_id)
         })
     });
+    if !event.applied
+        && event.integrity_status == FeedIntegrityStatus::OutOfOrder
+        && exact_subscription_identity
+        && event.event_type == MarketFeedEventType::PriceChange
+    {
+        return PrivateClobEventDisposition::IgnoreSuperseded;
+    }
     if !event.applied
         && event.integrity_status == FeedIntegrityStatus::PreSnapshot
         && exact_subscription_identity
@@ -2078,6 +2087,12 @@ fn apply_private_clob_frame(epoch: &mut ClobEpoch, message: Message) -> ClobFram
                                 .ignored_foreign_events
                                 .saturating_add(1);
                         }
+                        PrivateClobEventDisposition::IgnoreSuperseded => {
+                            epoch.subscription_stats.ignored_superseded_events = epoch
+                                .subscription_stats
+                                .ignored_superseded_events
+                                .saturating_add(1);
+                        }
                         PrivateClobEventDisposition::Reject => {
                             epoch.session.integrity_gaps =
                                 epoch.session.integrity_gaps.saturating_add(1);
@@ -2214,6 +2229,12 @@ fn clob_retry_metrics(metrics: &mut BtcRuntimeMetrics, retry_action: ClobRetryAc
     }
 }
 
+#[derive(Debug)]
+enum ClobPromotionOutcome {
+    NotReady,
+    Promoted { retired: Option<ClobEpoch> },
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn promote_clob_epoch_if_ready(
     active: &mut Option<ClobEpoch>,
@@ -2226,10 +2247,7 @@ async fn promote_clob_epoch_if_ready(
     max_book_age: Duration,
     consecutive_failures: &mut u32,
     recovery_window: &mut ClobRecoveryWindow,
-) -> Result<bool> {
-    if active.is_some() {
-        return Ok(false);
-    }
+) -> Result<ClobPromotionOutcome> {
     let publication_boundary = Utc::now();
     let desired_before = desired_markets.borrow().clone();
     let Some(publication) = successor
@@ -2245,7 +2263,7 @@ async fn promote_clob_epoch_if_ready(
         .transpose()?
         .flatten()
     else {
-        return Ok(false);
+        return Ok(ClobPromotionOutcome::NotReady);
     };
     repository
         .insert_orderbook_checkpoint_pair(
@@ -2266,7 +2284,7 @@ async fn promote_clob_epoch_if_ready(
             max_book_age,
         )
     }) {
-        return Ok(false);
+        return Ok(ClobPromotionOutcome::NotReady);
     }
 
     // Ownership transfers before subscription acknowledgement. From this point onward the
@@ -2287,7 +2305,6 @@ async fn promote_clob_epoch_if_ready(
         checked_before_ack,
         max_book_age,
     ) {
-        quarantine_published_clob_books(state, shared_books, checked_before_ack).await;
         if !complete_clob_epoch(
             repository,
             metrics,
@@ -2301,7 +2318,7 @@ async fn promote_clob_epoch_if_ready(
         {
             bail!("failed to finalize rejected CLOB promotion session");
         }
-        return Ok(false);
+        return Ok(ClobPromotionOutcome::NotReady);
     }
     if let Err(error) = acknowledge_clob_subscriptions(
         repository,
@@ -2311,7 +2328,6 @@ async fn promote_clob_epoch_if_ready(
     )
     .await
     {
-        quarantine_published_clob_books(state, shared_books, Utc::now()).await;
         let _ = complete_clob_epoch(
             repository,
             metrics,
@@ -2325,61 +2341,6 @@ async fn promote_clob_epoch_if_ready(
         return Err(error).context("failed to acknowledge promoted CLOB successor subscriptions");
     }
 
-    let mut published_books = shared_books.write().await;
-    let mut shared = state.write().await;
-    let published_at = Utc::now();
-    let publication_valid = {
-        let desired_at_publication = desired_markets.borrow();
-        if clob_successor_publication_still_valid(
-            &promoted,
-            &desired_at_publication,
-            &publication.current_market,
-            published_at,
-            max_book_age,
-        ) {
-            *published_books = publication.registry.clone();
-            shared.update_books(&publication.registry);
-            shared.last_updated_at = Some(published_at);
-            true
-        } else {
-            published_books.quarantine(FeedIntegrityStatus::Stale);
-            shared.update_books(&published_books);
-            shared.last_updated_at = Some(published_at);
-            false
-        }
-    };
-    drop(shared);
-    drop(published_books);
-    if !publication_valid {
-        if !complete_clob_epoch(
-            repository,
-            metrics,
-            &mut promoted,
-            "promotion_market_changed_after_ack".to_string(),
-            ClobDisconnectCause::SubscriptionFailure,
-            ClobRetryAction::ImmediateRecovery,
-            0,
-        )
-        .await
-        {
-            bail!("failed to finalize post-ack CLOB promotion session");
-        }
-        return Ok(false);
-    }
-
-    promoted.healthy_epoch = true;
-    promoted.books_usable = true;
-    promoted.subscription_stats.active_assets = promoted.registry.len();
-    let promoted_connection_id = promoted.connection_id;
-    let promoted_connection_epoch = promoted.connection_epoch;
-    let promoted_connected_at = promoted.session.connected_at;
-    let promoted_assets = promoted.registry.len();
-    *active = Some(promoted);
-    {
-        let mut runtime_metrics = metrics.write().await;
-        runtime_metrics.persistence_items_written =
-            runtime_metrics.persistence_items_written.saturating_add(2);
-    }
     for buffered in buffered_resolutions {
         match persist_official_resolution(
             repository,
@@ -2397,20 +2358,10 @@ async fn promote_clob_epoch_if_ready(
             }
             Ok(None) => {}
             Err(error) => {
-                let mut failed = active
-                    .take()
-                    .expect("published CLOB promotion remains in the active slot");
-                quarantine_clob_books_on_disconnect(
-                    &mut failed.registry,
-                    state,
-                    shared_books,
-                    Utc::now(),
-                )
-                .await;
                 let _ = complete_clob_epoch(
                     repository,
                     metrics,
-                    &mut failed,
+                    &mut promoted,
                     "critical_buffered_resolution_persistence".to_string(),
                     ClobDisconnectCause::CriticalPersistence,
                     ClobRetryAction::Stop,
@@ -2421,31 +2372,19 @@ async fn promote_clob_epoch_if_ready(
             }
         }
     }
-    let post_flush_checked_at = Utc::now();
-    if !active.as_ref().is_some_and(|epoch| {
-        clob_successor_publication_still_valid(
-            epoch,
-            &desired_markets.borrow(),
-            &publication.current_market,
-            post_flush_checked_at,
-            max_book_age,
-        )
-    }) {
-        let mut failed = active
-            .take()
-            .expect("published CLOB promotion remains in the active slot");
-        quarantine_clob_books_on_disconnect(
-            &mut failed.registry,
-            state,
-            shared_books,
-            post_flush_checked_at,
-        )
-        .await;
+    let checked_before_publication = Utc::now();
+    if !clob_successor_publication_still_valid(
+        &promoted,
+        &desired_markets.borrow(),
+        &publication.current_market,
+        checked_before_publication,
+        max_book_age,
+    ) {
         if !complete_clob_epoch(
             repository,
             metrics,
-            &mut failed,
-            "promotion_stale_after_resolution_flush".to_string(),
+            &mut promoted,
+            "promotion_stale_before_publication".to_string(),
             ClobDisconnectCause::ReadinessRefresh,
             ClobRetryAction::ImmediateRecovery,
             0,
@@ -2454,7 +2393,58 @@ async fn promote_clob_epoch_if_ready(
         {
             bail!("failed to finalize stale CLOB promotion session");
         }
-        return Ok(false);
+        return Ok(ClobPromotionOutcome::NotReady);
+    }
+
+    let mut published_books = shared_books.write().await;
+    let mut shared = state.write().await;
+    let published_at = Utc::now();
+    let publication_valid = {
+        let desired_at_publication = desired_markets.borrow();
+        clob_successor_publication_still_valid(
+            &promoted,
+            &desired_at_publication,
+            &publication.current_market,
+            published_at,
+            max_book_age,
+        )
+    };
+    if publication_valid {
+        *published_books = publication.registry.clone();
+        shared.update_books(&publication.registry);
+        shared.last_updated_at = Some(published_at);
+    }
+    drop(shared);
+    drop(published_books);
+    if !publication_valid {
+        if !complete_clob_epoch(
+            repository,
+            metrics,
+            &mut promoted,
+            "promotion_stale_at_publication".to_string(),
+            ClobDisconnectCause::ReadinessRefresh,
+            ClobRetryAction::ImmediateRecovery,
+            0,
+        )
+        .await
+        {
+            bail!("failed to finalize stale CLOB promotion session");
+        }
+        return Ok(ClobPromotionOutcome::NotReady);
+    }
+
+    promoted.healthy_epoch = true;
+    promoted.books_usable = true;
+    promoted.subscription_stats.active_assets = promoted.registry.len();
+    let promoted_connection_id = promoted.connection_id;
+    let promoted_connection_epoch = promoted.connection_epoch;
+    let promoted_connected_at = promoted.session.connected_at;
+    let promoted_assets = promoted.registry.len();
+    let retired = active.replace(promoted);
+    {
+        let mut runtime_metrics = metrics.write().await;
+        runtime_metrics.persistence_items_written =
+            runtime_metrics.persistence_items_written.saturating_add(2);
     }
     record_clob_epoch_healthy(
         metrics,
@@ -2482,7 +2472,7 @@ async fn promote_clob_epoch_if_ready(
         active_assets = promoted_assets,
         "CLOB successor promoted with an atomic ready-book handoff"
     );
-    Ok(true)
+    Ok(ClobPromotionOutcome::Promoted { retired })
 }
 
 async fn run_clob_supervisor(
@@ -2560,13 +2550,14 @@ async fn run_clob_supervisor(
             )
             .await
             {
-                Ok(true) => {
+                Ok(ClobPromotionOutcome::Promoted { retired }) => {
+                    debug_assert!(retired.is_none());
                     successor_failures = 0;
                     successor_retry_at = Instant::now();
                     successor_rapid_retry_allowed = true;
                     continue;
                 }
-                Ok(false) => {}
+                Ok(ClobPromotionOutcome::NotReady) => {}
                 Err(error) => {
                     quarantine_published_clob_books(&state, &shared_books, Utc::now()).await;
                     if let Some(mut failed) = successor.take() {
@@ -3327,22 +3318,22 @@ async fn run_clob_supervisor(
         }
 
         if let Some((reason, cause, fatal_error)) = active_failure {
-            let Some(mut failed) = active.take() else {
-                continue;
-            };
-            let retry_action = clob_retry_action(
-                &config,
-                failed.healthy_epoch,
-                cause == ClobDisconnectCause::CriticalPersistence,
-                &mut consecutive_failures,
-            );
-            {
-                let mut runtime_metrics = metrics.write().await;
-                clob_disconnect_metrics(&mut runtime_metrics, cause, retry_action);
-                runtime_metrics.clob_last_disconnect_at = Some(Utc::now());
-                runtime_metrics.clob_last_disconnect_reason = Some(reason.clone());
-            }
             if let Some(error) = fatal_error {
+                let Some(mut failed) = active.take() else {
+                    continue;
+                };
+                let retry_action = clob_retry_action(
+                    &config,
+                    failed.healthy_epoch,
+                    true,
+                    &mut consecutive_failures,
+                );
+                {
+                    let mut runtime_metrics = metrics.write().await;
+                    clob_disconnect_metrics(&mut runtime_metrics, cause, retry_action);
+                    runtime_metrics.clob_last_disconnect_at = Some(Utc::now());
+                    runtime_metrics.clob_last_disconnect_reason = Some(reason.clone());
+                }
                 quarantine_clob_books_on_disconnect(
                     &mut failed.registry,
                     &state,
@@ -3377,22 +3368,62 @@ async fn run_clob_supervisor(
             )
             .await
             {
-                Ok(true) => {
+                Ok(ClobPromotionOutcome::Promoted { retired }) => {
                     successor_failures = 0;
                     successor_retry_at = Instant::now();
                     successor_rapid_retry_allowed = true;
-                    let _ = complete_clob_epoch(
-                        &repository,
-                        &metrics,
-                        &mut failed,
-                        reason,
-                        cause,
-                        retry_action,
-                        consecutive_failures,
-                    )
-                    .await;
+                    debug_assert!(retired.is_some());
+                    if let Some(mut failed) = retired {
+                        let mut retired_failures = consecutive_failures;
+                        let retry_action = clob_retry_action(
+                            &config,
+                            failed.healthy_epoch,
+                            false,
+                            &mut retired_failures,
+                        );
+                        {
+                            let mut runtime_metrics = metrics.write().await;
+                            clob_disconnect_metrics(&mut runtime_metrics, cause, retry_action);
+                            runtime_metrics.clob_last_disconnect_at = Some(Utc::now());
+                            runtime_metrics.clob_last_disconnect_reason = Some(reason.clone());
+                        }
+                        let _ = complete_clob_epoch(
+                            &repository,
+                            &metrics,
+                            &mut failed,
+                            reason,
+                            cause,
+                            retry_action,
+                            retired_failures,
+                        )
+                        .await;
+                    }
                 }
-                Ok(false) => {
+                Ok(ClobPromotionOutcome::NotReady)
+                    if cause == ClobDisconnectCause::ReadinessRefresh =>
+                {
+                    if successor.is_none() && connect_task.is_none() {
+                        successor_failures = 0;
+                        successor_retry_at = Instant::now();
+                        successor_rapid_retry_allowed = true;
+                    }
+                }
+                Ok(ClobPromotionOutcome::NotReady) => {
+                    let Some(mut failed) = active.take() else {
+                        continue;
+                    };
+                    let retry_action = clob_retry_action(
+                        &config,
+                        failed.healthy_epoch,
+                        false,
+                        &mut consecutive_failures,
+                    );
+                    {
+                        let mut runtime_metrics = metrics.write().await;
+                        clob_disconnect_metrics(&mut runtime_metrics, cause, retry_action);
+                        runtime_metrics.clob_last_disconnect_at = Some(Utc::now());
+                        runtime_metrics.clob_last_disconnect_reason = Some(reason.clone());
+                    }
                     let unavailable_at = Utc::now();
                     let unavailable_instant = Instant::now();
                     quarantine_clob_books_on_disconnect(
@@ -3436,6 +3467,22 @@ async fn run_clob_supervisor(
                     .await;
                 }
                 Err(error) => {
+                    let Some(mut failed) = active.take() else {
+                        record_critical_persistence_error(&metrics, error).await;
+                        return;
+                    };
+                    let retry_action = clob_retry_action(
+                        &config,
+                        failed.healthy_epoch,
+                        true,
+                        &mut consecutive_failures,
+                    );
+                    {
+                        let mut runtime_metrics = metrics.write().await;
+                        clob_disconnect_metrics(&mut runtime_metrics, cause, retry_action);
+                        runtime_metrics.clob_last_disconnect_at = Some(Utc::now());
+                        runtime_metrics.clob_last_disconnect_reason = Some(reason.clone());
+                    }
                     quarantine_clob_books_on_disconnect(
                         &mut failed.registry,
                         &state,
@@ -3980,6 +4027,7 @@ fn clob_session_metadata(
         "subscription_updates": subscription_stats.updates,
         "active_subscribed_assets": subscription_stats.active_assets,
         "ignored_foreign_events": subscription_stats.ignored_foreign_events,
+        "ignored_superseded_events": subscription_stats.ignored_superseded_events,
         "last_subscription_update_at": subscription_stats.last_updated_at,
     })
 }
@@ -6963,6 +7011,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn private_successor_ignores_only_exact_superseded_price_changes() {
+        let current = market();
+        let snapshot_at = current.window_start + Duration::minutes(1);
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&current);
+        let mut candidate = private_clob_epoch(current.clone(), registry, snapshot_at).await;
+        let snapshots = serde_json::json!([{
+            "event_type": "book",
+            "market": current.condition_id.clone(),
+            "asset_id": current.up_token_id.clone(),
+            "timestamp": snapshot_at.timestamp_millis(),
+            "hash": "up-snapshot",
+            "bids": [{"price": ".48", "size": "10"}],
+            "asks": [{"price": ".52", "size": "10"}]
+        }, {
+            "event_type": "book",
+            "market": current.condition_id.clone(),
+            "asset_id": current.down_token_id.clone(),
+            "timestamp": snapshot_at.timestamp_millis(),
+            "hash": "down-snapshot",
+            "bids": [{"price": ".48", "size": "10"}],
+            "asks": [{"price": ".52", "size": "10"}]
+        }]);
+        assert_eq!(
+            apply_private_clob_frame(&mut candidate, Message::Text(snapshots.to_string().into()),),
+            ClobFrameAction::Continue
+        );
+
+        let superseded_at = snapshot_at - Duration::milliseconds(2);
+        let superseded = serde_json::json!({
+            "event_type": "price_change",
+            "market": current.condition_id.clone(),
+            "timestamp": superseded_at.timestamp_millis(),
+            "price_changes": [{
+                "asset_id": current.up_token_id.clone(),
+                "price": ".48",
+                "size": "999",
+                "side": "BUY",
+                "best_bid": ".48",
+                "best_ask": ".52"
+            }, {
+                "asset_id": current.down_token_id.clone(),
+                "price": ".52",
+                "size": "999",
+                "side": "SELL",
+                "best_bid": ".48",
+                "best_ask": ".52"
+            }]
+        });
+        assert_eq!(
+            apply_private_clob_frame(&mut candidate, Message::Text(superseded.to_string().into()),),
+            ClobFrameAction::Continue
+        );
+        assert_eq!(candidate.subscription_stats.ignored_superseded_events, 2);
+        assert_eq!(candidate.session.integrity_gaps, 0);
+        assert!(candidate.session.disconnect_reason.is_none());
+        for token_id in [&current.up_token_id, &current.down_token_id] {
+            let checkpoint = candidate
+                .registry
+                .checkpoint(token_id)
+                .expect("newer authoritative snapshot remains available");
+            assert_eq!(checkpoint.source_timestamp, snapshot_at);
+            assert_eq!(checkpoint.bids[0].size, dec!(10));
+            assert_eq!(checkpoint.asks[0].size, dec!(10));
+        }
+
+        let ambiguous = MarketFeedEvent {
+            event_id: Uuid::new_v4(),
+            market_id: current.market_id.clone(),
+            token_id: Some("unexpected-token".to_string()),
+            event_type: MarketFeedEventType::PriceChange,
+            source_timestamp: superseded_at,
+            received_at: snapshot_at,
+            connection_id: Uuid::new_v4(),
+            ingest_sequence: 1,
+            source_hash: None,
+            applied: false,
+            integrity_status: FeedIntegrityStatus::OutOfOrder,
+            raw_payload: serde_json::json!({}),
+        };
+        assert_eq!(
+            private_clob_event_disposition(std::slice::from_ref(&current), &ambiguous),
+            PrivateClobEventDisposition::Reject
+        );
+    }
+
+    #[tokio::test]
     async fn private_successor_preserves_pre_snapshot_tick_and_rejects_market_mismatch() {
         let current = market();
         let checked_at = current.window_start + Duration::minutes(1);
@@ -7337,14 +7472,91 @@ mod tests {
             structural_failure_at,
             max_book_age,
         );
-        let structural_deadline = structural_failure_at + CLOB_BOOTSTRAP_TIMEOUT;
-        assert_eq!(epoch.watchdog.bootstrap_deadline, Some(structural_deadline));
+        assert_eq!(epoch.watchdog.bootstrap_deadline, None);
         epoch.refresh_private_health(
             stale_at + Duration::milliseconds(300),
             structural_failure_at + StdDuration::from_millis(100),
             max_book_age,
         );
-        assert_eq!(epoch.watchdog.bootstrap_deadline, Some(structural_deadline));
+        assert_eq!(epoch.watchdog.bootstrap_deadline, None);
+    }
+
+    #[test]
+    fn one_sided_snapshot_pair_satisfies_bootstrap_only() {
+        let current = market();
+        let checked_at = current.window_start + Duration::minutes(1);
+        let now = Instant::now();
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&current);
+        let mut watchdog =
+            ClobFeedWatchdog::new(now, &registry, std::slice::from_ref(&current), checked_at);
+        let initial_deadline = now + CLOB_BOOTSTRAP_TIMEOUT;
+        assert_eq!(watchdog.bootstrap_deadline, Some(initial_deadline));
+
+        for (index, (token_id, bids, asks)) in [
+            (
+                &current.up_token_id,
+                vec![OrderbookLevel {
+                    price: dec!(0.99),
+                    size: dec!(10),
+                }],
+                Vec::new(),
+            ),
+            (
+                &current.down_token_id,
+                Vec::new(),
+                vec![OrderbookLevel {
+                    price: dec!(0.01),
+                    size: dec!(10),
+                }],
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let events = registry.apply(
+                ClobMessage::Book {
+                    market_id: current.condition_id.clone(),
+                    token_id: token_id.clone(),
+                    bids,
+                    asks,
+                    source_timestamp: checked_at,
+                    source_hash: Some(format!("one-sided-{token_id}")),
+                    raw_payload: serde_json::json!({}),
+                },
+                checked_at + Duration::milliseconds(1),
+            );
+            assert!(events.iter().all(|event| event.applied));
+            watchdog.refresh_bootstrap(
+                now + StdDuration::from_millis(u64::try_from(index + 1).unwrap()),
+                &registry,
+                std::slice::from_ref(&current),
+                checked_at,
+            );
+            if index == 0 {
+                assert_eq!(watchdog.bootstrap_deadline, Some(initial_deadline));
+            }
+        }
+        assert!(registry.market_books_bootstrapped(&current));
+        assert!(!registry.market_books_structurally_ready(&current));
+        assert!(!registry.market_books_ready(&current, checked_at, Duration::seconds(2)));
+        assert_eq!(watchdog.bootstrap_deadline, None);
+
+        let mut replacement = current.clone();
+        replacement.market_id = "replacement-market".to_string();
+        replacement.condition_id = "replacement-condition".to_string();
+        replacement.up_token_id = "replacement-up".to_string();
+        replacement.down_token_id = "replacement-down".to_string();
+        watchdog.refresh_bootstrap(
+            now + StdDuration::from_millis(3),
+            &registry,
+            std::slice::from_ref(&replacement),
+            checked_at,
+        );
+        assert_eq!(
+            watchdog.bootstrap_deadline,
+            Some(now + StdDuration::from_millis(3) + CLOB_BOOTSTRAP_TIMEOUT)
+        );
     }
 
     #[test]
@@ -8190,6 +8402,7 @@ mod tests {
             updates: 7,
             active_assets: 12,
             ignored_foreign_events: 3,
+            ignored_superseded_events: 5,
             last_updated_at: Some(updated_at),
         };
         let metadata = clob_session_metadata(
@@ -8202,6 +8415,7 @@ mod tests {
         assert_eq!(metadata["subscription_updates"], 7);
         assert_eq!(metadata["active_subscribed_assets"], 12);
         assert_eq!(metadata["ignored_foreign_events"], 3);
+        assert_eq!(metadata["ignored_superseded_events"], 5);
         assert_eq!(
             metadata["last_subscription_update_at"],
             serde_json::json!(updated_at)

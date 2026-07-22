@@ -975,6 +975,26 @@ impl BookRegistry {
         self.books.get(token_id)?.checkpoint(self.connection_id)
     }
 
+    pub fn market_books_bootstrapped(&self, market: &BtcIntervalMarket) -> bool {
+        [
+            (&market.up_token_id, BtcOutcome::Up),
+            (&market.down_token_id, BtcOutcome::Down),
+        ]
+        .into_iter()
+        .all(|(token_id, outcome)| {
+            self.books.get(token_id).is_some_and(|book| {
+                book.market_id == market.market_id
+                    && book.wire_market_id == market.condition_id
+                    && book.token_id == *token_id
+                    && book.outcome == outcome
+                    && book.bootstrapped
+                    && book.integrity_status == FeedIntegrityStatus::Ok
+                    && book.source_timestamp.is_some()
+                    && book.received_at.is_some()
+            })
+        })
+    }
+
     pub fn market_books_structurally_ready(&self, market: &BtcIntervalMarket) -> bool {
         [
             (&market.up_token_id, BtcOutcome::Up),
