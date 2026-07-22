@@ -3491,7 +3491,10 @@ fn shadow_predictive_regime_state_from_persisted_evaluation(
             bail!("persisted shadow predictive-regime state config hash does not match");
         }
     }
-    if evaluation.as_of != row.decision_at {
+    // PostgreSQL timestamptz round-trips at microsecond precision, while the JSON evaluation
+    // retains Chrono's nanosecond precision. Compare only the precision the durable row can
+    // represent so a valid checkpoint remains hydratable after restart.
+    if evaluation.as_of.timestamp_micros() != row.decision_at.timestamp_micros() {
         bail!("persisted shadow predictive-regime evaluation is not aligned to its decision");
     }
     if evaluation.degraded != state.degraded
@@ -3659,7 +3662,7 @@ mod tests {
     use crate::btc::types::{FeedIntegrityStatus, MarketFeedEventType};
     use crate::btc::{
         admission::{
-            ShadowPredictiveRegimeCircuitBreakerConfig,
+            ShadowPredictiveRegimeCandidate, ShadowPredictiveRegimeCircuitBreakerConfig,
             SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE,
             SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION,
         },
@@ -3956,9 +3959,10 @@ mod tests {
     }
 
     #[test]
-    fn persisted_shadow_predictive_regime_state_round_trips_typed_evidence() {
+    fn persisted_shadow_predictive_regime_state_round_trips_degraded_evidence_at_postgres_precision(
+    ) {
         let process_id = Uuid::from_u128(450);
-        let decision_at = Utc
+        let candidate_origin = Utc
             .with_ymd_and_hms(2026, 7, 20, 12, 0, 0)
             .single()
             .unwrap();
@@ -3974,22 +3978,71 @@ mod tests {
             recovery_overconfidence_gap_threshold: dec!(0.05),
             recovery_confirmation_markets: 2,
         };
-        let state = ShadowPredictiveRegimeState::new(process_id, &config).unwrap();
-        let mut evaluation = state.evaluate(&config, decision_at).unwrap();
+        let candidates = (0_i64..21)
+            .map(|index| {
+                let label_available_at = candidate_origin + Duration::minutes(index * 5);
+                ShadowPredictiveRegimeCandidate {
+                    market_id: format!("postgres-precision-market-{index}"),
+                    decision_id: Uuid::from_u128(u128::try_from(index + 1).unwrap()),
+                    decision_outcome: BtcOutcome::Up,
+                    resolved_outcome: BtcOutcome::Down,
+                    selected_point_probability: dec!(0.90),
+                    decision_at: label_available_at - Duration::minutes(4),
+                    label_available_at,
+                }
+            })
+            .collect::<Vec<_>>();
+        let state =
+            ShadowPredictiveRegimeState::from_candidates(process_id, &config, &candidates).unwrap();
+        assert!(state.degraded);
+        assert_eq!(state.resolved_markets_observed, 21);
+        assert_eq!(state.rolling_candidates.len(), 20);
+        assert_eq!(state.consecutive_degradation_markets, 2);
+
+        let evaluation_as_of = candidates.last().unwrap().label_available_at
+            + Duration::seconds(1)
+            + Duration::nanoseconds(999);
+        let postgres_decision_at =
+            DateTime::<Utc>::from_timestamp_micros(evaluation_as_of.timestamp_micros()).unwrap();
+        assert_ne!(evaluation_as_of, postgres_decision_at);
+        assert_eq!(
+            evaluation_as_of.timestamp_micros(),
+            postgres_decision_at.timestamp_micros()
+        );
+
+        let mut evaluation = state.evaluate(&config, evaluation_as_of).unwrap();
         evaluation.state_checkpoint_eligible = true;
         let config_hash = config.config_hash().unwrap();
+        let persisted_evaluation = serde_json::to_value(evaluation).unwrap();
 
         let restored = shadow_predictive_regime_state_from_persisted_evaluation(
             process_id,
             Some(&config_hash),
             PersistedShadowPredictiveRegimeEvaluationRow {
-                decision_at,
-                evaluation: serde_json::to_value(evaluation).unwrap(),
+                decision_at: postgres_decision_at,
+                evaluation: persisted_evaluation.clone(),
             },
         )
         .unwrap();
 
         assert_eq!(restored, state);
+        let restored_evaluation = restored.evaluate(&config, evaluation_as_of).unwrap();
+        assert!(restored_evaluation.sample_ready);
+        assert!(restored_evaluation.degraded);
+        assert!(restored_evaluation.would_defer);
+
+        let error = shadow_predictive_regime_state_from_persisted_evaluation(
+            process_id,
+            Some(&config_hash),
+            PersistedShadowPredictiveRegimeEvaluationRow {
+                decision_at: postgres_decision_at + Duration::microseconds(1),
+                evaluation: persisted_evaluation,
+            },
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("persisted shadow predictive-regime evaluation is not aligned"));
     }
 
     #[test]
