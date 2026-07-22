@@ -27,8 +27,11 @@ The standard bot image build runs its Rust unit, integration, and contract tests
 before producing the release binary.
 
 ```bash
-docker compose build polymarket-bot
+./scripts/build-polymarket-bot-image.sh
 ```
+
+The build refuses an uncommitted worktree and records the full source commit in
+the `org.opencontainers.image.revision` OCI label.
 
 ## Derive CLOB Credentials
 
@@ -62,7 +65,7 @@ live execution and belong in `.env`.
 From the repository root:
 
 ```bash
-docker compose build polymarket-bot
+./scripts/build-polymarket-bot-image.sh
 docker compose up polymarket-bot
 ```
 

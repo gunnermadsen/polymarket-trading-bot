@@ -39,6 +39,20 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      - name: Resolve source revision
+        id: source-revision
+        run: |
+          revision="$(git rev-parse --verify 'HEAD^{commit}')"
+          if [ "$revision" != "$GITHUB_SHA" ]; then
+            echo "Checked-out revision $revision does not match GITHUB_SHA $GITHUB_SHA." >&2
+            exit 1
+          fi
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            echo "Refusing to publish an image from a dirty checkout." >&2
+            exit 1
+          fi
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
       - name: Build and push image
         uses: docker/build-push-action@v7
         with:
@@ -47,6 +61,7 @@ jobs:
           push: true
           build-args: |
             RUST_VERSION=${{ env.RUST_TOOLCHAIN }}
+            POLYMARKET_GIT_REVISION=${{ steps.source-revision.outputs.revision }}
           tags: |
             ${{ env.ECR_REGISTRY }}/${{ env.ECR_POLYMARKET_BOT_REPOSITORY }}:${{ github.sha }}
             ${{ env.ECR_REGISTRY }}/${{ env.ECR_POLYMARKET_BOT_REPOSITORY }}:production

@@ -24,6 +24,24 @@ RUN apt-get update \
     && mkdir -p /var/lib/polymarket/backfill-cache \
     && chown -R polymarket:polymarket /var/lib/polymarket
 
+ARG POLYMARKET_GIT_REVISION
+RUN case "$POLYMARKET_GIT_REVISION" in \
+      ""|*[!0-9a-f]*) \
+        echo "POLYMARKET_GIT_REVISION must be a lowercase hexadecimal Git commit ID" >&2; \
+        exit 64 \
+        ;; \
+    esac \
+    && case "${#POLYMARKET_GIT_REVISION}" in \
+      40|64) ;; \
+      *) \
+        echo "POLYMARKET_GIT_REVISION must contain 40 or 64 characters" >&2; \
+        exit 64 \
+        ;; \
+    esac
+
+LABEL org.opencontainers.image.source="https://github.com/gunnermadsen/polymarket-trading-bot" \
+      org.opencontainers.image.revision="$POLYMARKET_GIT_REVISION"
+
 COPY --from=builder /app/target/release/polymarket-bot /usr/local/bin/polymarket-bot
 COPY --from=builder /app/target/release/polymarket-backfill-worker /usr/local/bin/polymarket-backfill-worker
 COPY --from=builder /app/target/release/derive-clob-creds /usr/local/bin/derive-clob-creds
