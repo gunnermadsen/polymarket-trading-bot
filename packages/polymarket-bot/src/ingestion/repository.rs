@@ -4,19 +4,16 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde_json::Value;
-use sqlx::{postgres::PgPoolOptions, FromRow, PgPool, Postgres, QueryBuilder, Row, Transaction};
+use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Row, Transaction};
 use uuid::Uuid;
 
-use crate::{
-    config::PostgresConfig,
-    ingestion::job::{
-        ArtifactCompletion, ArtifactDisposition, ArtifactSpec, BackfillArtifact,
-        BackfillArtifactStatus, BackfillCheckpoint, BackfillEventLevel, BackfillFailureKind,
-        BackfillJob, BackfillJobEvent, BackfillJobStatus, BackfillJobSummary, BackfillProgress,
-        BatchWriteResult, BinanceAggregateTradeRecord, BinanceOneSecondKlineRecord,
-        BtcIntervalMarket, BtcOutcome, BtcReferenceFact, BtcResolutionCandidate, ClaimedJob,
-        IngesterKey, PreparedArtifact, TrainingReadiness, ValidatedBackfillRequest, WorkerControl,
-    },
+use crate::ingestion::job::{
+    ArtifactCompletion, ArtifactDisposition, ArtifactSpec, BackfillArtifact,
+    BackfillArtifactStatus, BackfillCheckpoint, BackfillEventLevel, BackfillFailureKind,
+    BackfillJob, BackfillJobEvent, BackfillJobStatus, BackfillJobSummary, BackfillProgress,
+    BatchWriteResult, BinanceAggregateTradeRecord, BinanceOneSecondKlineRecord, BtcIntervalMarket,
+    BtcOutcome, BtcReferenceFact, BtcResolutionCandidate, ClaimedJob, IngesterKey,
+    PreparedArtifact, TrainingReadiness, ValidatedBackfillRequest, WorkerControl,
 };
 
 const MAX_DATABASE_BATCH_ROWS: usize = 4_000;
@@ -27,15 +24,6 @@ pub struct IngestionRepository {
 }
 
 impl IngestionRepository {
-    pub async fn connect(config: &PostgresConfig) -> Result<Self> {
-        let pool = PgPoolOptions::new()
-            .max_connections(4)
-            .connect(&config.database_url())
-            .await
-            .context("failed to connect ingestion repository to Postgres")?;
-        Ok(Self { pool })
-    }
-
     pub fn from_pool(pool: PgPool) -> Self {
         Self { pool }
     }

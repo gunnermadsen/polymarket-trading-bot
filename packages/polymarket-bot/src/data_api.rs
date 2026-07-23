@@ -5,7 +5,7 @@ use reqwest::{Client, Url};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
-use crate::models::{DataApiActivity, DataApiPosition, DataApiValue};
+use crate::models::{DataApiActivity, DataApiPosition};
 
 #[derive(Debug, Clone)]
 pub struct DataApiClient {
@@ -48,13 +48,6 @@ pub struct ActivityQuery {
     pub side: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ValueQuery {
-    pub user: String,
-    #[serde(default)]
-    pub markets: Vec<String>,
-}
-
 impl DataApiClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         let http = Client::builder()
@@ -67,17 +60,6 @@ impl DataApiClient {
         }
     }
 
-    pub fn with_http_client(base_url: impl Into<String>, http: Client) -> Self {
-        Self {
-            http,
-            base_url: base_url.into().trim_end_matches('/').to_string(),
-        }
-    }
-
-    pub fn polymarket() -> Self {
-        Self::new("https://data-api.polymarket.com")
-    }
-
     pub async fn fetch_positions(&self, query: &PositionsQuery) -> Result<Vec<DataApiPosition>> {
         self.fetch_endpoint("positions", positions_params(query))
             .await
@@ -86,10 +68,6 @@ impl DataApiClient {
     pub async fn fetch_activity(&self, query: &ActivityQuery) -> Result<Vec<DataApiActivity>> {
         self.fetch_endpoint("activity", activity_params(query))
             .await
-    }
-
-    pub async fn fetch_value(&self, query: &ValueQuery) -> Result<Vec<DataApiValue>> {
-        self.fetch_endpoint("value", value_params(query)).await
     }
 
     async fn fetch_endpoint<T>(&self, path: &str, params: Vec<(String, String)>) -> Result<T>
@@ -122,15 +100,6 @@ impl PositionsQuery {
 }
 
 impl ActivityQuery {
-    pub fn for_user(user: impl Into<String>) -> Self {
-        Self {
-            user: user.into(),
-            ..Self::default()
-        }
-    }
-}
-
-impl ValueQuery {
     pub fn for_user(user: impl Into<String>) -> Self {
         Self {
             user: user.into(),
@@ -174,12 +143,6 @@ fn activity_params(query: &ActivityQuery) -> Vec<(String, String)> {
         query.sort_direction.as_deref(),
     );
     push_string(&mut params, "side", query.side.as_deref());
-    params
-}
-
-fn value_params(query: &ValueQuery) -> Vec<(String, String)> {
-    let mut params = vec![("user".to_string(), query.user.clone())];
-    push_csv(&mut params, "market", &query.markets);
     params
 }
 

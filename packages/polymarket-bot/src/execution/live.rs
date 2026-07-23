@@ -157,18 +157,6 @@ impl LiveVenue {
         })
     }
 
-    pub fn user_ws_subscription(&self, markets: &[String]) -> serde_json::Value {
-        json!({
-            "auth": {
-                "apiKey": self.config.clob_api_key.as_deref().unwrap_or(""),
-                "secret": self.config.clob_secret.as_deref().unwrap_or(""),
-                "passphrase": self.config.clob_passphrase.as_deref().unwrap_or("")
-            },
-            "markets": markets,
-            "type": "user"
-        })
-    }
-
     pub fn parse_user_event(raw_payload: serde_json::Value) -> LiveVenueEvent {
         let event_type = raw_payload
             .get("event_type")
