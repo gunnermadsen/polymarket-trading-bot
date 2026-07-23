@@ -50,9 +50,9 @@ pub use repository::{
     BtcPaperSettlementRecord, BtcRepository, FeedSession, PersistedOfficialResolution,
 };
 pub use runtime::{
-    runtime_status_from_inputs, BtcPlaybookRuntimeHandle, BtcRuntime, BtcRuntimeConfig,
-    BtcRuntimeHandle, BtcRuntimeMetrics, BtcRuntimeStatus, BtcStrategyRunner, NoopStrategyRunner,
-    StrategyObservation,
+    runtime_status_from_inputs, BtcHeartbeatConfig, BtcPlaybookRuntimeHandle, BtcRuntime,
+    BtcRuntimeConfig, BtcRuntimeHandle, BtcRuntimeMetrics, BtcRuntimeStatus, BtcStrategyRunner,
+    NoopStrategyRunner, StrategyObservation,
 };
 pub use strategy::*;
 pub use types::*;

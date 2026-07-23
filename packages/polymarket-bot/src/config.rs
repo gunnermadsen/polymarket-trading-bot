@@ -4,6 +4,8 @@ use anyhow::{bail, Result};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
+use crate::btc::BtcHeartbeatConfig;
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub live: LiveExecutionConfig,
@@ -54,6 +56,7 @@ pub struct BtcConfig {
     pub paper_enabled: bool,
     pub rtds_ws_url: String,
     pub binance_ws_url: String,
+    pub data_source_heartbeat: BtcHeartbeatConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +147,7 @@ impl AppConfig {
             live.validate_for_live()?;
         }
 
+        let heartbeat_defaults = BtcHeartbeatConfig::default();
         let btc = BtcConfig {
             realtime_enabled: parse_bool("POLYMARKET_BTC_REALTIME_ENABLED", false),
             paper_enabled: parse_bool("POLYMARKET_BTC_PAPER_ENABLED", false),
@@ -155,6 +159,20 @@ impl AppConfig {
                 "POLYMARKET_BTC_BINANCE_WS_URL",
                 "wss://stream.binance.com:9443/ws/btcusdt@aggTrade",
             ),
+            data_source_heartbeat: BtcHeartbeatConfig {
+                clob_interval: parse_positive_duration_secs(
+                    "POLYMARKET_BTC_CLOB_HEARTBEAT_INTERVAL_SECS",
+                    heartbeat_defaults.clob_interval.as_secs(),
+                )?,
+                rtds_interval: parse_positive_duration_secs(
+                    "POLYMARKET_BTC_RTDS_HEARTBEAT_INTERVAL_SECS",
+                    heartbeat_defaults.rtds_interval.as_secs(),
+                )?,
+                binance_interval: parse_positive_duration_secs(
+                    "POLYMARKET_BTC_BINANCE_HEARTBEAT_INTERVAL_SECS",
+                    heartbeat_defaults.binance_interval.as_secs(),
+                )?,
+            },
         };
         if btc.paper_enabled && !btc.realtime_enabled {
             bail!("POLYMARKET_BTC_PAPER_ENABLED requires POLYMARKET_BTC_REALTIME_ENABLED");
@@ -417,6 +435,28 @@ fn parse_u64(key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+fn parse_positive_duration_secs(key: &str, default: u64) -> Result<Duration> {
+    let value = env::var(key).ok().filter(|value| !value.trim().is_empty());
+    positive_duration_secs(key, value.as_deref(), default)
+}
+
+fn positive_duration_secs(key: &str, value: Option<&str>, default: u64) -> Result<Duration> {
+    let seconds = match value {
+        Some(value) => match value.parse::<u64>() {
+            Ok(seconds) => seconds,
+            Err(_) => bail!("{key} must be a positive integer number of seconds"),
+        },
+        None => default,
+    };
+    if seconds == 0 || seconds > BtcHeartbeatConfig::MAX_INTERVAL_SECS {
+        bail!(
+            "{key} must be an integer between 1 and {} seconds",
+            BtcHeartbeatConfig::MAX_INTERVAL_SECS
+        );
+    }
+    Ok(Duration::from_secs(seconds))
+}
+
 fn parse_usize(key: &str, default: usize) -> usize {
     env::var(key)
         .ok()
@@ -429,4 +469,28 @@ fn parse_decimal(key: &str, default: Decimal) -> Decimal {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heartbeat_intervals_parse_strictly_without_silent_fallbacks() {
+        let key = "POLYMARKET_BTC_CLOB_HEARTBEAT_INTERVAL_SECS";
+        assert_eq!(
+            positive_duration_secs(key, None, 5).unwrap(),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            positive_duration_secs(key, Some("7"), 5).unwrap(),
+            Duration::from_secs(7)
+        );
+        assert!(positive_duration_secs(key, Some("0"), 5).is_err());
+        assert!(positive_duration_secs(key, Some("invalid"), 5).is_err());
+        assert!(positive_duration_secs(key, Some("-1"), 5).is_err());
+        assert!(
+            positive_duration_secs(key, Some("31"), BtcHeartbeatConfig::MAX_INTERVAL_SECS).is_err()
+        );
+    }
 }

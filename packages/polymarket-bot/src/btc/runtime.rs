@@ -76,6 +76,43 @@ const REFERENCE_RETRY_JITTER_PERCENT: u64 = 20;
 
 type ClobSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BtcHeartbeatConfig {
+    pub clob_interval: StdDuration,
+    pub rtds_interval: StdDuration,
+    pub binance_interval: StdDuration,
+}
+
+impl Default for BtcHeartbeatConfig {
+    fn default() -> Self {
+        Self {
+            clob_interval: StdDuration::from_secs(5),
+            rtds_interval: StdDuration::from_secs(5),
+            binance_interval: StdDuration::from_secs(20),
+        }
+    }
+}
+
+impl BtcHeartbeatConfig {
+    pub const MAX_INTERVAL_SECS: u64 = 30;
+
+    pub fn validate(self) -> Result<()> {
+        for (name, interval) in [
+            ("CLOB", self.clob_interval),
+            ("RTDS", self.rtds_interval),
+            ("Binance", self.binance_interval),
+        ] {
+            if interval.is_zero() || interval > StdDuration::from_secs(Self::MAX_INTERVAL_SECS) {
+                bail!(
+                    "BTC {name} heartbeat interval must be between 1 and {} seconds",
+                    Self::MAX_INTERVAL_SECS
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BtcRuntimeConfig {
     pub enabled: bool,
@@ -85,9 +122,6 @@ pub struct BtcRuntimeConfig {
     pub rtds_ws_url: String,
     pub binance_ws_url: String,
     pub discovery_interval: StdDuration,
-    pub clob_heartbeat_interval: StdDuration,
-    pub rtds_heartbeat_interval: StdDuration,
-    pub binance_heartbeat_interval: StdDuration,
     pub reconnect_initial_delay: StdDuration,
     pub reconnect_max_delay: StdDuration,
     pub checkpoint_interval: StdDuration,
@@ -110,9 +144,6 @@ impl Default for BtcRuntimeConfig {
             rtds_ws_url: "wss://ws-live-data.polymarket.com".to_string(),
             binance_ws_url: "wss://stream.binance.com:9443/ws/btcusdt@aggTrade".to_string(),
             discovery_interval: StdDuration::from_secs(5),
-            clob_heartbeat_interval: StdDuration::from_secs(5),
-            rtds_heartbeat_interval: StdDuration::from_secs(5),
-            binance_heartbeat_interval: StdDuration::from_secs(20),
             reconnect_initial_delay: StdDuration::from_secs(1),
             reconnect_max_delay: StdDuration::from_secs(30),
             checkpoint_interval: StdDuration::from_secs(1),
@@ -134,12 +165,6 @@ impl BtcRuntimeConfig {
         }
         for (name, duration) in [
             ("discovery_interval", self.discovery_interval),
-            ("clob_heartbeat_interval", self.clob_heartbeat_interval),
-            ("rtds_heartbeat_interval", self.rtds_heartbeat_interval),
-            (
-                "binance_heartbeat_interval",
-                self.binance_heartbeat_interval,
-            ),
             ("reconnect_initial_delay", self.reconnect_initial_delay),
             ("reconnect_max_delay", self.reconnect_max_delay),
             ("checkpoint_interval", self.checkpoint_interval),
@@ -1352,15 +1377,21 @@ impl BtcStrategyRunner for NoopStrategyRunner {
 
 pub struct BtcRuntime {
     config: BtcRuntimeConfig,
+    heartbeat: BtcHeartbeatConfig,
     repository: BtcRepository,
     books: Option<Arc<RwLock<BookRegistry>>>,
     state: Option<Arc<RwLock<RealtimeState>>>,
 }
 
 impl BtcRuntime {
-    pub fn new(config: BtcRuntimeConfig, repository: BtcRepository) -> Self {
+    pub fn new(
+        config: BtcRuntimeConfig,
+        heartbeat: BtcHeartbeatConfig,
+        repository: BtcRepository,
+    ) -> Self {
         Self {
             config,
+            heartbeat,
             repository,
             books: None,
             state: None,
@@ -1381,6 +1412,7 @@ impl BtcRuntime {
 
     pub async fn start(self) -> Result<BtcRuntimeHandle> {
         self.config.validate()?;
+        self.heartbeat.validate()?;
         self.repository.healthcheck().await?;
 
         let state = self
@@ -1420,6 +1452,7 @@ impl BtcRuntime {
                 "clob",
                 run_clob_supervisor(
                     self.config.clone(),
+                    self.heartbeat.clob_interval,
                     self.repository.clone(),
                     market_rx,
                     writer_tx.clone(),
@@ -1435,6 +1468,7 @@ impl BtcRuntime {
                 "rtds",
                 run_rtds_supervisor(
                     self.config.clone(),
+                    self.heartbeat.rtds_interval,
                     self.repository.clone(),
                     writer_tx.clone(),
                     state.clone(),
@@ -1449,6 +1483,7 @@ impl BtcRuntime {
                 "binance",
                 run_binance_supervisor(
                     self.config.clone(),
+                    self.heartbeat.binance_interval,
                     self.repository.clone(),
                     writer_tx.clone(),
                     state.clone(),
@@ -3047,6 +3082,7 @@ async fn promote_clob_epoch_if_ready(
 
 async fn run_clob_supervisor(
     config: BtcRuntimeConfig,
+    heartbeat_interval: StdDuration,
     repository: BtcRepository,
     mut markets: watch::Receiver<Vec<BtcIntervalMarket>>,
     writer: mpsc::Sender<PersistItem>,
@@ -3072,10 +3108,7 @@ async fn run_clob_supervisor(
     let mut recovery_window = ClobRecoveryWindow::open(Utc::now(), Instant::now());
     metrics.write().await.clob_recovery_unavailable_since = recovery_window.since;
     let started_at = Instant::now();
-    let mut heartbeat = interval_at(
-        started_at + config.clob_heartbeat_interval,
-        config.clob_heartbeat_interval,
-    );
+    let mut heartbeat = interval_at(started_at + heartbeat_interval, heartbeat_interval);
     let mut checkpoints = interval_at(
         started_at + config.checkpoint_interval,
         config.checkpoint_interval,
@@ -5182,6 +5215,7 @@ fn log_reference_disconnect(
 
 async fn run_rtds_supervisor(
     config: BtcRuntimeConfig,
+    heartbeat_interval: StdDuration,
     repository: BtcRepository,
     writer: mpsc::Sender<PersistItem>,
     state: Arc<RwLock<RealtimeState>>,
@@ -5349,10 +5383,8 @@ async fn run_rtds_supervisor(
             Some(Ok(Ok(()))) => {
                 let watchdog_started = Instant::now();
                 let mut watchdog = ReferenceFeedWatchdog::new(watchdog_started, kind);
-                let mut heartbeat = interval_at(
-                    watchdog_started + config.rtds_heartbeat_interval,
-                    config.rtds_heartbeat_interval,
-                );
+                let mut heartbeat =
+                    interval_at(watchdog_started + heartbeat_interval, heartbeat_interval);
                 heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
                 let required_data_sleep = sleep(kind.required_data_timeout());
                 let read_idle_sleep = sleep(REFERENCE_READ_IDLE_TIMEOUT);
@@ -5697,6 +5729,7 @@ async fn run_rtds_supervisor(
 
 async fn run_binance_supervisor(
     config: BtcRuntimeConfig,
+    heartbeat_interval: StdDuration,
     repository: BtcRepository,
     writer: mpsc::Sender<PersistItem>,
     state: Arc<RwLock<RealtimeState>>,
@@ -5845,10 +5878,7 @@ async fn run_binance_supervisor(
         let mut stats = ReferenceSessionStats::default();
         let watchdog_started = Instant::now();
         let mut watchdog = ReferenceFeedWatchdog::new(watchdog_started, kind);
-        let mut heartbeat = interval_at(
-            watchdog_started + config.binance_heartbeat_interval,
-            config.binance_heartbeat_interval,
-        );
+        let mut heartbeat = interval_at(watchdog_started + heartbeat_interval, heartbeat_interval);
         heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let required_data_sleep = sleep(kind.required_data_timeout());
         let read_idle_sleep = sleep(REFERENCE_READ_IDLE_TIMEOUT);
@@ -9272,11 +9302,25 @@ mod tests {
     }
 
     #[test]
-    fn default_clob_heartbeat_keeps_provider_deadline_margin() {
-        assert_eq!(
-            BtcRuntimeConfig::default().clob_heartbeat_interval,
-            StdDuration::from_secs(5)
-        );
+    fn heartbeat_configuration_is_system_owned_and_validated() {
+        let heartbeat = BtcHeartbeatConfig::default();
+        assert_eq!(heartbeat.clob_interval, StdDuration::from_secs(5));
+        assert_eq!(heartbeat.rtds_interval, StdDuration::from_secs(5));
+        assert_eq!(heartbeat.binance_interval, StdDuration::from_secs(20));
+        heartbeat.validate().unwrap();
+
+        let invalid = BtcHeartbeatConfig {
+            clob_interval: StdDuration::ZERO,
+            ..heartbeat
+        };
+        assert!(invalid.validate().is_err());
+        let excessive = BtcHeartbeatConfig {
+            binance_interval: StdDuration::from_secs(BtcHeartbeatConfig::MAX_INTERVAL_SECS + 1),
+            ..heartbeat
+        };
+        assert!(excessive.validate().is_err());
+        assert_eq!(CLOB_PONG_TIMEOUT, StdDuration::from_secs(10));
+        assert_eq!(REFERENCE_PONG_TIMEOUT, StdDuration::from_secs(10));
     }
 
     #[test]
