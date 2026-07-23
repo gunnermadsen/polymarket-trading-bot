@@ -1349,7 +1349,6 @@ impl BtcPaperProcessRunner {
             order_type: OrderType::Fok,
             price: intent.limit_price,
             size: intent.size,
-            signal_id: None,
             metadata: order_metadata,
         };
         let reference_execution_guard = BtcReferenceExecutionGuard::from_snapshot(

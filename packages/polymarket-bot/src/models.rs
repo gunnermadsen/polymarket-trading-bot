@@ -15,7 +15,6 @@ pub struct OrderRequest {
     pub order_type: OrderType,
     pub price: Decimal,
     pub size: Decimal,
-    pub signal_id: Option<Uuid>,
     #[serde(default)]
     pub metadata: serde_json::Value,
 }

@@ -91,7 +91,6 @@ mod tests {
             order_type: OrderType::Fok,
             price: dec!(0.333333),
             size: dec!(15),
-            signal_id: None,
             metadata: serde_json::json!({}),
         };
 

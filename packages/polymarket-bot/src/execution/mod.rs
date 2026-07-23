@@ -306,7 +306,6 @@ mod tests {
             order_type: OrderType::Fok,
             price: dec!(0.42),
             size: dec!(10),
-            signal_id: None,
             metadata: serde_json::json!({"purpose": "entry"}),
         };
         assert_eq!(request.intent(), OrderIntent::Entry);

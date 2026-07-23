@@ -882,7 +882,6 @@ fn order_record_from_open_order(order: OpenOrderResponse) -> Result<OrderRecord>
             order_type,
             price,
             size: original_size,
-            signal_id: None,
             metadata: json!({
                 "source": "live_open_order",
                 "venue_order_id": order_id,
@@ -2169,7 +2168,6 @@ mod tests {
             order_type: OrderType::Fok,
             price: dec!(0.50),
             size: dec!(2),
-            signal_id: None,
             metadata: json!({"purpose": "entry"}),
         };
 
@@ -2200,7 +2198,6 @@ mod tests {
             order_type: OrderType::Fok,
             price: dec!(0.50),
             size: dec!(2),
-            signal_id: None,
             metadata: json!({"execution_intent": "risk_reduction"}),
         };
 
