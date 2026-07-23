@@ -1278,7 +1278,6 @@ fn order_request_identity_matches(existing: &OrderRequest, incoming: &OrderReque
         && existing.order_type == incoming.order_type
         && existing.price == incoming.price
         && existing.size == incoming.size
-        && existing.signal_id == incoming.signal_id
         && immutable_order_metadata_matches(&existing.metadata, &incoming.metadata)
 }
 
@@ -1291,7 +1290,6 @@ fn order_request_result_matches(existing: &OrderRequest, incoming: &OrderRequest
         && existing.order_type == incoming.order_type
         && existing.price == incoming.price
         && existing.size == incoming.size
-        && existing.signal_id == incoming.signal_id
         && existing.metadata == incoming.metadata
 }
 
@@ -1393,7 +1391,6 @@ mod tests {
             order_type: OrderType::Fok,
             price: dec!(0.40),
             size: dec!(2),
-            signal_id: Some(Uuid::from_u128(3)),
             metadata: serde_json::json!({
                 "execution_intent": "entry",
                 "reference_execution_guard": { "evidence_sha256": "evidence" },
@@ -1414,6 +1411,43 @@ mod tests {
         let mut changed_intent = request.clone();
         changed_intent.metadata["execution_intent"] = serde_json::json!("exit");
         assert!(!order_request_identity_matches(&changed_intent, &request));
+    }
+
+    #[test]
+    fn legacy_signal_null_order_matches_post_cutover_deterministic_retry() {
+        let incoming = OrderRequest {
+            client_order_id: Uuid::from_u128(20),
+            process_id: Some(Uuid::from_u128(21)),
+            market_id: "market".to_string(),
+            token_id: "token".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            price: dec!(0.40),
+            size: dec!(2),
+            metadata: serde_json::json!({
+                "execution_intent": "entry",
+                "reference_execution_guard": {
+                    "guard_version": "btc_reference_execution_guard_v1",
+                    "signal_id": null,
+                    "evidence_sha256": "evidence",
+                },
+            }),
+        };
+        let mut persisted_payload = serde_json::to_value(&incoming).unwrap();
+        persisted_payload["signal_id"] = serde_json::Value::Null;
+        let persisted: OrderRequest = serde_json::from_value(persisted_payload).unwrap();
+
+        assert_eq!(persisted.client_order_id, incoming.client_order_id);
+        assert!(
+            serde_json::to_value(&persisted)
+                .unwrap()
+                .get("signal_id")
+                .is_none(),
+            "retired top-level request identity must not be serialized again"
+        );
+        assert_eq!(persisted.metadata, incoming.metadata);
+        assert!(order_request_identity_matches(&persisted, &incoming));
+        assert!(order_request_result_matches(&persisted, &incoming));
     }
 
     #[test]
