@@ -45,10 +45,6 @@ impl ControlApi for FakeControlApi {
         Ok(serde_json::json!({"enabled": true, "readiness": {"ready": true}}))
     }
 
-    async fn btc_paper_experiment_status(&self) -> Result<Value, HttpError> {
-        Ok(serde_json::json!({"configured": true, "experiment": {"status": "running"}}))
-    }
-
     async fn enqueue_ingestion_backfill(
         &self,
         request: IngestionBackfillRequest,
@@ -550,15 +546,15 @@ impl ControlApi for FakeControlApi {
         &self,
         process_id: Uuid,
     ) -> Result<http::TradingProcessStartPreviewResponse, HttpError> {
-        let experiment_key = "btc-5m-paper-preview-test".to_string();
-        let experiment_id = Uuid::new_v5(
+        let run_key = "btc-5m-run-preview-test".to_string();
+        let run_id = Uuid::new_v5(
             &Uuid::NAMESPACE_URL,
-            format!("polymarket-bot/btc-paper/{experiment_key}").as_bytes(),
+            format!("polymarket-bot/run/{run_key}").as_bytes(),
         );
         Ok(http::TradingProcessStartPreviewResponse {
             process_id,
-            experiment_id,
-            experiment_key,
+            run_id,
+            run_key,
             preregistration_sha256: "b".repeat(64),
             config_hash: "c".repeat(64),
             frozen_process_config: TradingProcessConfig {
@@ -886,25 +882,35 @@ async fn authenticated_admin_can_inspect_cancel_and_check_generic_backfills() {
 }
 
 #[tokio::test]
-async fn authenticated_admin_can_read_btc_experiment_status() {
+async fn authenticated_admin_can_read_btc_realtime_status() {
     let app = http::router(Arc::new(FakeControlApi), "secret");
-    for uri in [
-        "/admin/strategy/btc-5m/readiness",
-        "/admin/strategy/btc-5m/paper-experiment",
-    ] {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(uri)
-                    .header(AUTHORIZATION, "Bearer secret")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "{uri}");
-    }
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/strategy/btc-5m/readiness")
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn retired_btc_paper_experiment_route_is_not_found_for_authenticated_admin() {
+    let app = http::router(Arc::new(FakeControlApi), "secret");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/strategy/btc-5m/paper-experiment")
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -1320,7 +1326,10 @@ async fn authenticated_admin_can_manage_trading_processes() {
         .unwrap();
     let preview_json: Value = serde_json::from_slice(&preview_body).unwrap();
     assert_eq!(preview_json["process_id"], process_id);
-    assert_eq!(preview_json["experiment_key"], "btc-5m-paper-preview-test");
+    assert!(preview_json["run_id"].is_string());
+    assert_eq!(preview_json["run_key"], "btc-5m-run-preview-test");
+    assert!(preview_json.get("experiment_id").is_none());
+    assert!(preview_json.get("experiment_key").is_none());
     assert_eq!(
         preview_json["preregistration_sha256"]
             .as_str()

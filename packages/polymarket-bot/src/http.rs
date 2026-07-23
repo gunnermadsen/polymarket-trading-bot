@@ -76,12 +76,6 @@ pub trait ControlApi: Send + Sync + 'static {
         ))
     }
 
-    async fn btc_paper_experiment_status(&self) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "BTC paper experiment status is not wired",
-        ))
-    }
-
     async fn enqueue_ingestion_backfill(
         &self,
         _request: IngestionBackfillRequest,
@@ -385,10 +379,6 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
 
     let admin_routes = Router::new()
         .route("/strategy/btc-5m/readiness", get(btc_realtime_status))
-        .route(
-            "/strategy/btc-5m/paper-experiment",
-            get(btc_paper_experiment_status),
-        )
         .route("/backfill/ingesters", get(list_ingesters))
         .route(
             "/backfill/jobs",
@@ -469,12 +459,6 @@ async fn btc_realtime_status(
     State(state): State<HttpState>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
     state.control.btc_realtime_status().await.map(Json)
-}
-
-async fn btc_paper_experiment_status(
-    State(state): State<HttpState>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state.control.btc_paper_experiment_status().await.map(Json)
 }
 
 async fn enqueue_ingestion_backfill(
@@ -908,8 +892,8 @@ pub struct TradingProcessStatusResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradingProcessStartPreviewResponse {
     pub process_id: Uuid,
-    pub experiment_id: Uuid,
-    pub experiment_key: String,
+    pub run_id: Uuid,
+    pub run_key: String,
     pub preregistration_sha256: String,
     pub config_hash: String,
     pub frozen_process_config: TradingProcessConfig,

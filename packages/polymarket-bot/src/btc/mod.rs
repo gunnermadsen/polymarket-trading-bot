@@ -46,8 +46,8 @@ pub use predictive_regime_v2::{
 };
 pub use process_runner::{BtcPaperProcessConfig, BtcPaperProcessRunner};
 pub use repository::{
-    BtcMarketLabel, BtcOfficialResolutionWatch, BtcPaperSettlementLedgerSummary,
-    BtcPaperSettlementRecord, BtcRepository, FeedSession, PersistedOfficialResolution,
+    BtcMarketLabel, BtcOfficialResolutionWatch, BtcPaperSettlementRecord, BtcRepository,
+    BtcRunManifest, FeedSession, PersistedOfficialResolution,
 };
 pub use runtime::{
     runtime_status_from_inputs, BtcHeartbeatConfig, BtcPlaybookRuntimeHandle, BtcRuntime,
