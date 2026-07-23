@@ -8,10 +8,9 @@ use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{postgres::PgPoolOptions, FromRow, PgPool, Postgres, Transaction};
+use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::config::PostgresConfig;
 use crate::models::{OrderRequest, OrderSide};
 
 use super::{
@@ -998,15 +997,6 @@ fn validate_official_resolution_subscription_ack(
 }
 
 impl BtcRepository {
-    pub async fn connect(config: &PostgresConfig) -> Result<Self> {
-        let pool = PgPoolOptions::new()
-            .max_connections(4)
-            .connect(&config.database_url())
-            .await
-            .context("failed to connect BTC realtime repository to Postgres")?;
-        Ok(Self { pool })
-    }
-
     pub fn from_pool(pool: PgPool) -> Self {
         Self { pool }
     }

@@ -2,11 +2,10 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
-use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
+use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 use crate::{
-    config::PostgresConfig,
     events::ServiceEvent,
     execution::live::LiveVenueEvent,
     execution::OrderPlanReport,
@@ -202,15 +201,6 @@ pub struct AccountPositionSnapshot {
 impl Store {
     pub fn from_pool(pool: PgPool) -> Self {
         Self { pool }
-    }
-
-    pub async fn connect(config: &PostgresConfig) -> Result<Self> {
-        let pool = PgPoolOptions::new()
-            .max_connections(5)
-            .connect(&config.database_url())
-            .await
-            .context("failed to connect to Postgres")?;
-        Ok(Self::from_pool(pool))
     }
 
     pub async fn update_trading_process_status(

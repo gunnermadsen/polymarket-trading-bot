@@ -212,16 +212,6 @@ pub struct DataApiActivity {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DataApiValue {
-    #[serde(default)]
-    pub user: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_decimal")]
-    pub value: Option<Decimal>,
-    #[serde(flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
-}
-
 fn deserialize_optional_decimal<'de, D>(deserializer: D) -> Result<Option<Decimal>, D::Error>
 where
     D: serde::Deserializer<'de>,
