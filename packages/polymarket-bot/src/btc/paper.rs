@@ -31,10 +31,7 @@ use crate::{
         LiveVenueStatus, LiveWalletAddressDiagnostics, LiveWalletCandidateAddressDiagnostics,
         ReconciliationReport,
     },
-    models::{
-        ConversionRequest, ConversionResult, FillRecord, FillSource, OrderRecord, OrderRequest,
-        OrderSide, OrderState, OrderType,
-    },
+    models::{FillRecord, FillSource, OrderRecord, OrderRequest, OrderSide, OrderState, OrderType},
 };
 
 pub const PAPER_DYNAMIC_FEE_RATE_METADATA_KEY: &str = "dynamic_fee_rate";
@@ -813,24 +810,6 @@ impl ExecutionVenue for PaperVenue {
             .collect())
     }
 
-    async fn convert_negative_risk(&self, request: ConversionRequest) -> Result<ConversionResult> {
-        Ok(ConversionResult {
-            conversion_id: request.conversion_id,
-            status: "paper_noop".to_string(),
-            tx_hash: None,
-            latency_ms: 0,
-            gas_cost_usd: Decimal::ZERO,
-        })
-    }
-
-    async fn split_ctf(&self, market_id: &str, size: Decimal) -> Result<ConversionResult> {
-        Ok(paper_conversion("split", market_id, size))
-    }
-
-    async fn merge_ctf(&self, market_id: &str, size: Decimal) -> Result<ConversionResult> {
-        Ok(paper_conversion("merge", market_id, size))
-    }
-
     async fn reconcile(&self) -> Result<ReconciliationReport> {
         Ok(ReconciliationReport {
             open_orders: self.get_open_orders().await?.len(),
@@ -1231,23 +1210,6 @@ fn unknown_order_request(order_id: &str) -> OrderRequest {
         size: Decimal::ZERO,
         signal_id: None,
         metadata: serde_json::json!({ "source": "paper_unknown_order" }),
-    }
-}
-
-fn paper_conversion(kind: &str, market_id: &str, size: Decimal) -> ConversionResult {
-    ConversionResult {
-        conversion_id: Uuid::new_v5(
-            &Uuid::NAMESPACE_URL,
-            format!(
-                "polymarket-bot:paper:{kind}:{market_id}:{}",
-                size.normalize()
-            )
-            .as_bytes(),
-        ),
-        status: format!("paper_{kind}_noop"),
-        tx_hash: None,
-        latency_ms: 0,
-        gas_cost_usd: Decimal::ZERO,
     }
 }
 

@@ -108,23 +108,6 @@ pub enum FillSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConversionRequest {
-    pub conversion_id: Uuid,
-    pub market_id: String,
-    pub no_token_id: String,
-    pub size: Decimal,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConversionResult {
-    pub conversion_id: Uuid,
-    pub status: String,
-    pub tx_hash: Option<String>,
-    pub latency_ms: i64,
-    pub gas_cost_usd: Decimal,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DataApiPosition {
     #[serde(default)]
