@@ -12,4 +12,3 @@ pub mod idempotency;
 pub mod ingestion;
 pub mod models;
 pub mod store;
-pub mod wallet;

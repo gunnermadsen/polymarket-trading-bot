@@ -43,7 +43,7 @@ use crate::{
         LiveWalletCandidateAddressDiagnostics, LiveWalletTokenBalances, ReconciliationReport,
     },
     idempotency::{event_hash, order_request_notional_key},
-    models::{ConversionRequest, ConversionResult, FillRecord, OrderRecord, OrderRequest},
+    models::{FillRecord, OrderRecord, OrderRequest},
     models::{FillSource, OrderSide, OrderState, OrderType},
     store::Store,
 };
@@ -1352,18 +1352,6 @@ impl ExecutionVenue for LiveVenue {
             .into_iter()
             .map(order_record_from_open_order)
             .collect()
-    }
-
-    async fn convert_negative_risk(&self, _request: ConversionRequest) -> Result<ConversionResult> {
-        bail!("live negative-risk conversion is not enabled for production canary")
-    }
-
-    async fn split_ctf(&self, _market_id: &str, _size: Decimal) -> Result<ConversionResult> {
-        bail!("live CTF split is not enabled for production canary")
-    }
-
-    async fn merge_ctf(&self, _market_id: &str, _size: Decimal) -> Result<ConversionResult> {
-        bail!("live CTF merge is not enabled for production canary")
     }
 
     async fn reconcile(&self) -> Result<ReconciliationReport> {

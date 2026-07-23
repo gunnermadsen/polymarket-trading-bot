@@ -11,8 +11,7 @@ use crate::{
     execution::live::LiveVenueEvent,
     execution::OrderPlanReport,
     models::{
-        ConversionRequest, ConversionResult, FillRecord, OrderRecord, OrderRequest, OrderState,
-        TradingProcess, TradingProcessConfig,
+        FillRecord, OrderRecord, OrderRequest, OrderState, TradingProcess, TradingProcessConfig,
     },
 };
 
@@ -198,43 +197,6 @@ pub struct AccountPositionSnapshot {
     pub snapshot_at: DateTime<Utc>,
     pub source: String,
     pub raw_payload: serde_json::Value,
-}
-
-#[derive(Debug, Clone)]
-pub struct ConversionRecord {
-    pub timestamp_utc: DateTime<Utc>,
-    pub conversion_id: Uuid,
-    pub market_id: String,
-    pub no_token_id: String,
-    pub size: Decimal,
-    pub status: String,
-    pub tx_hash: Option<String>,
-    pub latency_ms: i64,
-    pub gas_cost_usd: Decimal,
-    pub raw_payload: serde_json::Value,
-}
-
-impl ConversionRecord {
-    pub fn from_request_result(
-        request: &ConversionRequest,
-        result: &ConversionResult,
-    ) -> Result<Self> {
-        Ok(Self {
-            timestamp_utc: Utc::now(),
-            conversion_id: result.conversion_id,
-            market_id: request.market_id.clone(),
-            no_token_id: request.no_token_id.clone(),
-            size: request.size,
-            status: result.status.clone(),
-            tx_hash: result.tx_hash.clone(),
-            latency_ms: result.latency_ms,
-            gas_cost_usd: result.gas_cost_usd,
-            raw_payload: serde_json::json!({
-                "request": request,
-                "result": result,
-            }),
-        })
-    }
 }
 
 impl Store {
@@ -1187,48 +1149,6 @@ impl Store {
         .await
         .context("failed to insert account reconciliation run")?;
         Ok(run_id)
-    }
-
-    pub async fn insert_conversion_result(
-        &self,
-        request: &ConversionRequest,
-        result: &ConversionResult,
-    ) -> Result<()> {
-        let record = ConversionRecord::from_request_result(request, result)?;
-        self.upsert_conversion(&record).await
-    }
-
-    pub async fn upsert_conversion(&self, conversion: &ConversionRecord) -> Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO polymarket.conversions (
-              conversion_id, timestamp_utc, market_id, no_token_id, size, status,
-              tx_hash, latency_ms, gas_cost_usd, raw_payload, updated_at
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now())
-            ON CONFLICT (conversion_id, timestamp_utc) DO UPDATE SET
-              status = EXCLUDED.status,
-              tx_hash = EXCLUDED.tx_hash,
-              latency_ms = EXCLUDED.latency_ms,
-              gas_cost_usd = EXCLUDED.gas_cost_usd,
-              raw_payload = EXCLUDED.raw_payload,
-              updated_at = now()
-            "#,
-        )
-        .bind(conversion.conversion_id)
-        .bind(conversion.timestamp_utc)
-        .bind(&conversion.market_id)
-        .bind(&conversion.no_token_id)
-        .bind(conversion.size)
-        .bind(&conversion.status)
-        .bind(&conversion.tx_hash)
-        .bind(conversion.latency_ms)
-        .bind(conversion.gas_cost_usd)
-        .bind(&conversion.raw_payload)
-        .execute(&self.pool)
-        .await
-        .context("failed to upsert conversion")?;
-        Ok(())
     }
 
     pub async fn persist_order_plan_report(&self, report: &OrderPlanReport) -> Result<()> {
