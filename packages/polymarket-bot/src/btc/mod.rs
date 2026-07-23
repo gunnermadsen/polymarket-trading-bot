@@ -4,6 +4,7 @@ pub mod experiment;
 pub mod feeds;
 pub mod market;
 pub mod paper;
+pub mod predictive_regime_v2;
 pub mod repository;
 pub mod runtime;
 pub mod strategy;
@@ -37,6 +38,12 @@ pub use market::{
 pub use paper::{
     PaperPreviewConfig, PaperPreviewResult, PaperSettlementCreditResult, PaperVenue,
     PaperVenueConfig, PaperVenueStatus, PAPER_DYNAMIC_FEE_RATE_METADATA_KEY,
+};
+pub use predictive_regime_v2::{
+    ShadowPredictiveRegimeCircuitBreakerConfigSelector,
+    ShadowPredictiveRegimeCircuitBreakerV2Config, ShadowPredictiveRegimeV2Candidate,
+    ShadowPredictiveRegimeV2CandidateSource, ShadowPredictiveRegimeV2Evaluation,
+    ShadowPredictiveRegimeV2State, SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_V2_SCHEMA_VERSION,
 };
 pub use repository::{
     BtcMarketLabel, BtcOfficialResolutionWatch, BtcPaperSettlementLedgerSummary,

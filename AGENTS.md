@@ -26,6 +26,10 @@
 docker compose up -d --force-recreate --no-deps db-migrate
 ```
 
+# Diagnostics
+- Conservative query resource usage when performing diagnostics in the database.
+- do not run large table scans or inefficient queries that starve resources and cause crashes.
+
 # Implementation
 - Execute the narrow implementation plan, only focusing on the instructed plan parameters.
 - do not over correct and change code or systems outside the agreed upon plan.
