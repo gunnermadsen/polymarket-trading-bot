@@ -15,6 +15,11 @@
 - For one feature change, do not merge changes into development.
 - For multiple features in a task, group feature by branch, and merge into development with --no-ff, only when the feature is stable by performance, latency and optimization standards.
 
+# System
+- Trading process parameters that affect trades, go in the trading playbook config stored in 'trading_processes'. parameters that affect global systems go in environment variables.
+- Refactoring should not render trading processes as no longer compatible. 
+- Refactoring a system, introducing a new system, or removing a system and causing a lack of compatibility is an anti pattern in the trading bot.
+
 # Database
 - all database mutations or changes must be executed through database migrations.
 - all diagnostic database queries to read the database must be optimized for performance to prevent database crashes.
