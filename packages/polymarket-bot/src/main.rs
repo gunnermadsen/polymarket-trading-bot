@@ -13,7 +13,7 @@ use chrono::Utc;
 use polymarket_bot::{
     btc::{
         runtime_status_from_inputs, BookRegistry, BtcDecisionStrategyConfig,
-        BtcEntryAdmissionConfig, BtcPaperExperimentConfig, BtcPaperExperimentRunner,
+        BtcEntryAdmissionConfig, BtcPaperProcessConfig, BtcPaperProcessRunner,
         BtcPlaybookRuntimeHandle, BtcRepository, BtcRuntime, BtcRuntimeConfig, BtcRuntimeHandle,
         BtcStrategyConfig, PaperPreviewConfig, PaperVenue as BtcPaperVenue, PaperVenueConfig,
         BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
@@ -1339,13 +1339,13 @@ impl BtcProcessManager {
                 process_id,
                 chrono::Duration::milliseconds(strategy.max_reference_age_ms),
             )?;
-            let experiment = Arc::new(BtcPaperExperimentRunner::new(
+            let process_runner = Arc::new(BtcPaperProcessRunner::new(
                 self.repository.clone(),
                 self.store.clone(),
                 paper_venue,
-                BtcPaperExperimentConfig {
-                    experiment_id,
-                    experiment_name: experiment_key.clone(),
+                BtcPaperProcessConfig {
+                    paper_run_id: experiment_id,
+                    paper_run_key: experiment_key.clone(),
                     process_id,
                     config_hash: config_hash.clone(),
                     frozen_process_config: frozen_process_config_value,
@@ -1355,11 +1355,11 @@ impl BtcProcessManager {
                     paper_stress_previews,
                 },
             )?);
-            experiment
+            process_runner
                 .resume()
                 .await
                 .context("failed to reattach immutable BTC experiment before feed resume")?;
-            BtcPlaybookRuntimeHandle::start(runtime_config, experiment, state)
+            BtcPlaybookRuntimeHandle::start(runtime_config, process_runner, state)
         }
         .await;
         let runtime = match startup_result {
@@ -1490,13 +1490,13 @@ impl BtcProcessManager {
                 process_id,
                 chrono::Duration::milliseconds(strategy.max_reference_age_ms),
             )?;
-            let experiment = Arc::new(BtcPaperExperimentRunner::new(
+            let process_runner = Arc::new(BtcPaperProcessRunner::new(
                 self.repository.clone(),
                 self.store.clone(),
                 paper_venue,
-                BtcPaperExperimentConfig {
-                    experiment_id,
-                    experiment_name: experiment_key.clone(),
+                BtcPaperProcessConfig {
+                    paper_run_id: experiment_id,
+                    paper_run_key: experiment_key.clone(),
                     process_id,
                     config_hash: config_hash.clone(),
                     frozen_process_config: frozen_process_config_value,
@@ -1506,11 +1506,11 @@ impl BtcProcessManager {
                     paper_stress_previews: paper_stress_previews.clone(),
                 },
             )?);
-            experiment
+            process_runner
                 .initialize()
                 .await
                 .context("failed to initialize immutable BTC experiment before feed startup")?;
-            BtcPlaybookRuntimeHandle::start(runtime_config, experiment, state)
+            BtcPlaybookRuntimeHandle::start(runtime_config, process_runner, state)
         }
         .await;
 
