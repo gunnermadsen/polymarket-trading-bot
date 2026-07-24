@@ -101,9 +101,7 @@ async fn mark_btc_cohort_terminal(
     reason: &str,
     allow_missing_experiment: bool,
 ) -> Result<()> {
-    if !matches!(status, "stopped" | "failed") || reason.trim().is_empty() {
-        bail!("invalid BTC cohort terminal status or reason");
-    }
+    validate_btc_cohort_terminal_request(status, reason)?;
     let mut tx = pool
         .begin()
         .await
@@ -195,6 +193,13 @@ async fn mark_btc_cohort_terminal(
     tx.commit()
         .await
         .context("failed to commit BTC cohort terminal transaction")?;
+    Ok(())
+}
+
+fn validate_btc_cohort_terminal_request(status: &str, reason: &str) -> Result<()> {
+    if !matches!(status, "stopped" | "failed" | "completed") || reason.trim().is_empty() {
+        bail!("invalid BTC cohort terminal status or reason");
+    }
     Ok(())
 }
 
@@ -3178,6 +3183,15 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+
+    #[test]
+    fn btc_cohort_terminal_validation_accepts_all_supported_process_terminal_states() {
+        for status in ["stopped", "failed", "completed"] {
+            validate_btc_cohort_terminal_request(status, "api_transition").unwrap();
+        }
+        assert!(validate_btc_cohort_terminal_request("running", "api_transition").is_err());
+        assert!(validate_btc_cohort_terminal_request("completed", " ").is_err());
+    }
 
     fn eligible_btc_process() -> TradingProcess {
         let now = Utc::now();
