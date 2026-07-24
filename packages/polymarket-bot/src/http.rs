@@ -76,12 +76,6 @@ pub trait ControlApi: Send + Sync + 'static {
         ))
     }
 
-    async fn btc_paper_experiment_status(&self) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented(
-            "BTC paper experiment status is not wired",
-        ))
-    }
-
     async fn enqueue_ingestion_backfill(
         &self,
         _request: IngestionBackfillRequest,
@@ -255,149 +249,12 @@ pub trait ControlApi: Send + Sync + 'static {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct PlaceholderControlApi;
-
-#[async_trait]
-impl ControlApi for PlaceholderControlApi {
-    async fn metrics(&self) -> Result<MetricsResponse, HttpError> {
-        Err(HttpError::not_implemented("metrics provider is not wired"))
-    }
-
-    async fn live_status(&self) -> Result<LiveVenueStatus, HttpError> {
-        Err(HttpError::not_implemented("live status is not wired"))
-    }
-
-    async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics, HttpError> {
-        Err(HttpError::not_implemented(
-            "live identity diagnostics are not wired",
-        ))
-    }
-
-    async fn live_wallet_address_diagnostics(
-        &self,
-        _candidate_addresses: Vec<String>,
-    ) -> Result<LiveWalletAddressDiagnostics, HttpError> {
-        Err(HttpError::not_implemented(
-            "live wallet diagnostics are not wired",
-        ))
-    }
-
-    async fn live_order_dry_run(
-        &self,
-        _request: LiveOrderDryRunRequest,
-    ) -> Result<LiveOrderDryRunDiagnostics, HttpError> {
-        Err(HttpError::not_implemented(
-            "live order dry-run is not wired",
-        ))
-    }
-
-    async fn live_poly1271_funder_probe(
-        &self,
-        _request: LivePoly1271FunderProbeRequest,
-    ) -> Result<LivePoly1271FunderProbeResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "live POLY_1271 funder probe is not wired",
-        ))
-    }
-
-    async fn live_halt(&self) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented("live halt is not wired"))
-    }
-
-    async fn live_reconcile(&self) -> Result<serde_json::Value, HttpError> {
-        Err(HttpError::not_implemented("live reconcile is not wired"))
-    }
-
-    async fn live_set_entries_enabled(&self, _enabled: bool) -> Result<LiveVenueStatus, HttpError> {
-        Err(HttpError::not_implemented("live entry toggle is not wired"))
-    }
-
-    async fn list_trading_processes(
-        &self,
-        _request: ListTradingProcessesRequest,
-    ) -> Result<TradingProcessesResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "trading processes are not wired",
-        ))
-    }
-
-    async fn get_trading_process(
-        &self,
-        _process_id: Uuid,
-    ) -> Result<TradingProcessResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "trading processes are not wired",
-        ))
-    }
-
-    async fn upsert_trading_process_by_key(
-        &self,
-        _process_key: String,
-        _request: UpsertTradingProcessByKeyRequest,
-    ) -> Result<TradingProcessResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "trading processes are not wired",
-        ))
-    }
-
-    async fn get_trading_process_status(
-        &self,
-        _process_id: Uuid,
-    ) -> Result<TradingProcessStatusResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "trading process status is not wired",
-        ))
-    }
-
-    async fn preview_trading_process_start(
-        &self,
-        _process_id: Uuid,
-    ) -> Result<TradingProcessStartPreviewResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "trading process start preview is not wired",
-        ))
-    }
-
-    async fn update_trading_process(
-        &self,
-        _process_id: Uuid,
-        _request: UpdateTradingProcessRequest,
-    ) -> Result<TradingProcessResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "trading processes are not wired",
-        ))
-    }
-
-    async fn start_trading_process(
-        &self,
-        _process_id: Uuid,
-    ) -> Result<TradingProcessResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "trading processes are not wired",
-        ))
-    }
-
-    async fn stop_trading_process(
-        &self,
-        _process_id: Uuid,
-    ) -> Result<TradingProcessResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "trading processes are not wired",
-        ))
-    }
-}
-
 pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) -> Router {
     let state = HttpState::new(control);
     let admin_auth = AdminAuth::new(admin_bearer_token);
 
     let admin_routes = Router::new()
         .route("/strategy/btc-5m/readiness", get(btc_realtime_status))
-        .route(
-            "/strategy/btc-5m/paper-experiment",
-            get(btc_paper_experiment_status),
-        )
         .route("/backfill/ingesters", get(list_ingesters))
         .route(
             "/backfill/jobs",
@@ -482,12 +339,6 @@ async fn btc_realtime_status(
     State(state): State<HttpState>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
     state.control.btc_realtime_status().await.map(Json)
-}
-
-async fn btc_paper_experiment_status(
-    State(state): State<HttpState>,
-) -> Result<Json<serde_json::Value>, HttpError> {
-    state.control.btc_paper_experiment_status().await.map(Json)
 }
 
 async fn enqueue_ingestion_backfill(
@@ -932,8 +783,8 @@ pub struct TradingProcessStatusResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradingProcessStartPreviewResponse {
     pub process_id: Uuid,
-    pub experiment_id: Uuid,
-    pub experiment_key: String,
+    pub run_id: Uuid,
+    pub run_key: String,
     pub preregistration_sha256: String,
     pub config_hash: String,
     pub frozen_process_config: TradingProcessConfig,

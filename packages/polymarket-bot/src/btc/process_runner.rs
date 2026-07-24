@@ -63,12 +63,12 @@ const SHADOW_PREDICTIVE_REGIME_TRANSITION_EVENT_NAMESPACE: Uuid =
     Uuid::from_u128(0x8f0d_73b4_4e62_5b31_9a77_21cf_09d8_6a42);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BtcPaperExperimentConfig {
-    pub experiment_id: Uuid,
-    pub experiment_name: String,
+pub struct BtcPaperProcessConfig {
     pub process_id: Uuid,
+    pub run_id: Uuid,
+    pub run_key: String,
     pub config_hash: String,
-    /// Full immutable `TradingProcessConfig` snapshot for this experiment run.
+    /// Full immutable `TradingProcessConfig` snapshot for this execution run.
     /// The reusable process definition may be changed after the run stops, so
     /// evidence consumers must read this run-owned value instead.
     pub frozen_process_config: serde_json::Value,
@@ -341,11 +341,11 @@ struct EntryAdmissionEvaluation {
     evidence: serde_json::Value,
 }
 
-pub struct BtcPaperExperimentRunner {
+pub struct BtcPaperProcessRunner {
     repository: BtcRepository,
     store: Store,
     paper_venue: PaperVenue,
-    config: BtcPaperExperimentConfig,
+    config: BtcPaperProcessConfig,
     initialized: OnceCell<()>,
     loss_regime_admission: Mutex<Option<LossRegimeAdmissionRuntime>>,
     shadow_predictive_regime_admission:
@@ -355,22 +355,22 @@ pub struct BtcPaperExperimentRunner {
     paper_capital_reconcile_started_at: Mutex<Option<Instant>>,
 }
 
-impl BtcPaperExperimentRunner {
+impl BtcPaperProcessRunner {
     pub fn new(
         repository: BtcRepository,
         store: Store,
         paper_venue: PaperVenue,
-        config: BtcPaperExperimentConfig,
+        config: BtcPaperProcessConfig,
     ) -> Result<Self> {
-        if config.experiment_name.trim().is_empty() || config.config_hash.trim().is_empty() {
-            anyhow::bail!("BTC paper experiment identity and config hash must not be empty");
+        if config.run_key.trim().is_empty() || config.config_hash.trim().is_empty() {
+            anyhow::bail!("BTC run identity and config hash must not be empty");
         }
         if !config.frozen_process_config.is_object() {
-            anyhow::bail!("BTC paper experiment frozen process config must be a JSON object");
+            anyhow::bail!("BTC run frozen process config must be a JSON object");
         }
         config.strategy.validate()?;
         if config.strategy.attribution().is_none() {
-            anyhow::bail!("BTC paper experiment strategy attribution is invalid");
+            anyhow::bail!("BTC paper run strategy attribution is invalid");
         }
         if let Some(entry_admission) = config.entry_admission.as_ref() {
             entry_admission.validate()?;
@@ -427,12 +427,12 @@ impl BtcPaperExperimentRunner {
         })
     }
 
-    /// Claims the immutable experiment identity before feeds begin.
+    /// Claims the immutable execution-run identity before feeds begin.
     pub async fn initialize(&self) -> Result<()> {
         self.initialize_with_existing_identity(false).await
     }
 
-    /// Reattaches an already-running immutable experiment.
+    /// Reattaches an already-running immutable execution run.
     pub async fn resume(&self) -> Result<()> {
         self.initialize_with_existing_identity(true).await
     }
@@ -442,19 +442,17 @@ impl BtcPaperExperimentRunner {
             .get_or_try_init(|| async {
                 if resume {
                     self.repository
-                        .verify_resumable_paper_experiment(
-                            self.config.experiment_id,
-                            &self.config.experiment_name,
+                        .verify_run_manifest(
                             self.config.process_id,
-                            &self.config.strategy.strategy_version,
-                            &self.config.strategy.feature_schema_version,
+                            self.config.run_id,
+                            &self.config.run_key,
                             &self.config.config_hash,
                             &self.config.frozen_process_config,
                         )
                         .await?;
                     let state = self
                         .repository
-                        .paper_venue_resume_state(self.config.experiment_id)
+                        .paper_venue_resume_state(self.config.process_id, self.config.run_id)
                         .await?;
                     self.paper_venue
                         .rehydrate_capital(
@@ -467,12 +465,10 @@ impl BtcPaperExperimentRunner {
                         .await?;
                 } else {
                     self.repository
-                        .ensure_paper_experiment(
-                            self.config.experiment_id,
-                            &self.config.experiment_name,
+                        .claim_run_manifest(
                             self.config.process_id,
-                            &self.config.strategy.strategy_version,
-                            &self.config.strategy.feature_schema_version,
+                            self.config.run_id,
+                            &self.config.run_key,
                             &self.config.config_hash,
                             &self.config.frozen_process_config,
                         )
@@ -1098,9 +1094,6 @@ impl BtcPaperExperimentRunner {
     }
 
     async fn refresh_settlement_and_reconcile(&self) -> Result<()> {
-        self.repository
-            .refresh_paper_experiment_settlement(self.config.experiment_id)
-            .await?;
         self.reconcile_paper_capital().await
     }
 
@@ -1135,7 +1128,7 @@ impl BtcPaperExperimentRunner {
     async fn reconcile_paper_capital(&self) -> Result<()> {
         let pending = self
             .repository
-            .discover_pending_paper_settlements(self.config.experiment_id)
+            .discover_pending_paper_settlements(self.config.process_id, self.config.run_id)
             .await?;
         for settlement in pending {
             let credit = self
@@ -1145,8 +1138,8 @@ impl BtcPaperExperimentRunner {
             let evidence = serde_json::json!({
                 "evidence_version": "btc_paper_capital_credit_v1",
                 "settlement_id": settlement.settlement_id,
-                "experiment_id": settlement.experiment_id,
                 "process_id": settlement.process_id,
+                "run_id": settlement.run_id,
                 "order_id": settlement.order_id,
                 "market_id": settlement.market_id,
                 "token_id": settlement.token_id,
@@ -1166,7 +1159,8 @@ impl BtcPaperExperimentRunner {
             let marked = self
                 .repository
                 .mark_paper_settlement_credited(
-                    self.config.experiment_id,
+                    self.config.process_id,
+                    self.config.run_id,
                     settlement.settlement_id,
                     &evidence,
                 )
@@ -1174,29 +1168,12 @@ impl BtcPaperExperimentRunner {
             if !marked {
                 warn!(
                     settlement_id = %settlement.settlement_id,
-                    experiment_id = %self.config.experiment_id,
+                    run_id = %self.config.run_id,
                     "BTC paper settlement was already credited by a concurrent reconciliation"
                 );
             }
         }
-
-        let venue = self.paper_venue.status().await;
-        let ledger = self
-            .repository
-            .paper_settlement_ledger_summary(self.config.experiment_id)
-            .await?;
-        self.repository
-            .update_paper_capital_runtime_summary(
-                self.config.experiment_id,
-                &serde_json::json!({
-                    "status_version": "btc_paper_capital_v1",
-                    "venue": venue,
-                    "ledger": ledger,
-                    "reconciled_at": Utc::now(),
-                    "official_payout_only": true,
-                }),
-            )
-            .await
+        Ok(())
     }
 
     async fn observe(&self, observation: StrategyObservation) -> Result<()> {
@@ -1251,7 +1228,7 @@ impl BtcPaperExperimentRunner {
                 .await?
         {
             decision.action = BtcDecisionAction::NoTrade;
-            decision.reject_reason = Some(BtcRejectReason::ExistingExperimentEntry);
+            decision.reject_reason = Some(BtcRejectReason::ExistingProcessEntry);
             decision.approved_intent = None;
         }
         let feature_hash = sha256_json(&snapshot)?;
@@ -1284,7 +1261,8 @@ impl BtcPaperExperimentRunner {
         let Some(intent) = decision.approved_intent.clone() else {
             self.repository
                 .insert_strategy_decision(
-                    self.config.experiment_id,
+                    self.config.process_id,
+                    self.config.run_id,
                     &self.config.config_hash,
                     &snapshot.market_id,
                     &self.config.strategy.strategy_version,
@@ -1294,16 +1272,14 @@ impl BtcPaperExperimentRunner {
                     "rejected",
                 )
                 .await?;
-            self.repository
-                .increment_experiment_counts(self.config.experiment_id, 1, 1, 0)
-                .await?;
             return Ok(());
         };
 
         if !self.config.execution_enabled {
             self.repository
                 .insert_strategy_decision(
-                    self.config.experiment_id,
+                    self.config.process_id,
+                    self.config.run_id,
                     &self.config.config_hash,
                     &snapshot.market_id,
                     &self.config.strategy.strategy_version,
@@ -1312,9 +1288,6 @@ impl BtcPaperExperimentRunner {
                     None,
                     "shadow_only",
                 )
-                .await?;
-            self.repository
-                .increment_experiment_counts(self.config.experiment_id, 1, 1, 0)
                 .await?;
             return Ok(());
         }
@@ -1335,7 +1308,8 @@ impl BtcPaperExperimentRunner {
         {
             self.repository
                 .insert_strategy_decision(
-                    self.config.experiment_id,
+                    self.config.process_id,
+                    self.config.run_id,
                     &self.config.config_hash,
                     &snapshot.market_id,
                     &self.config.strategy.strategy_version,
@@ -1344,9 +1318,6 @@ impl BtcPaperExperimentRunner {
                     None,
                     "admission_blocked",
                 )
-                .await?;
-            self.repository
-                .increment_experiment_counts(self.config.experiment_id, 1, 1, 0)
                 .await?;
             return Ok(());
         }
@@ -1361,7 +1332,8 @@ impl BtcPaperExperimentRunner {
             &intent,
             decision.prediction.as_ref(),
             decision.decision_id,
-            self.config.experiment_id,
+            self.config.process_id,
+            self.config.run_id,
             fee_rate,
         )?;
         let client_order_id = Uuid::new_v5(
@@ -1377,7 +1349,6 @@ impl BtcPaperExperimentRunner {
             order_type: OrderType::Fok,
             price: intent.limit_price,
             size: intent.size,
-            signal_id: None,
             metadata: order_metadata,
         };
         let reference_execution_guard = BtcReferenceExecutionGuard::from_snapshot(
@@ -1392,7 +1363,8 @@ impl BtcPaperExperimentRunner {
         reference_execution_guard.insert_into_metadata(&mut request.metadata)?;
         self.repository
             .insert_strategy_decision(
-                self.config.experiment_id,
+                self.config.process_id,
+                self.config.run_id,
                 &self.config.config_hash,
                 &snapshot.market_id,
                 &self.config.strategy.strategy_version,
@@ -1460,6 +1432,8 @@ impl BtcPaperExperimentRunner {
             .map(str::to_string);
         self.repository
             .update_strategy_decision_execution(
+                self.config.process_id,
+                self.config.run_id,
                 decision.decision_id,
                 decision.evaluated_at,
                 if filled { "filled" } else { "rejected" },
@@ -1479,9 +1453,6 @@ impl BtcPaperExperimentRunner {
                     }
                 }),
             )
-            .await?;
-        self.repository
-            .increment_experiment_counts(self.config.experiment_id, 1, 1, i64::from(filled))
             .await?;
         if filled {
             self.force_refresh_settlement_and_reconcile().await?;
@@ -1883,12 +1854,17 @@ fn btc_entry_order_metadata(
     intent: &super::strategy::ApprovedIntent,
     prediction: Option<&BtcStrategyPrediction>,
     decision_id: Uuid,
-    experiment_id: Uuid,
+    process_id: Uuid,
+    run_id: Uuid,
     fee_rate: Decimal,
 ) -> Result<serde_json::Value> {
+    ensure!(
+        intent.process_id == process_id,
+        "BTC order metadata process ownership does not match its execution scope"
+    );
     let attribution = strategy
         .attribution()
-        .context("BTC paper experiment strategy attribution became invalid")?;
+        .context("BTC execution run strategy attribution became invalid")?;
     let mut metadata = serde_json::json!({
         "execution_intent": "entry",
         "strategy": attribution.family,
@@ -1896,8 +1872,8 @@ fn btc_entry_order_metadata(
         "feature_schema_version": intent.feature_schema_version,
         "feature_snapshot_id": intent.feature_snapshot_id,
         "decision_id": decision_id,
-        "process_id": intent.process_id,
-        "experiment_id": experiment_id,
+        "process_id": process_id,
+        "run_id": run_id,
         "outcome": intent.outcome,
         "expected_net_edge": intent.expected_net_edge,
         PAPER_DYNAMIC_FEE_RATE_METADATA_KEY: fee_rate,
@@ -2074,13 +2050,13 @@ fn observation_clob_connection_id(
 }
 
 #[async_trait]
-impl BtcStrategyRunner for BtcPaperExperimentRunner {
+impl BtcStrategyRunner for BtcPaperProcessRunner {
     async fn on_observation(&self, observation: StrategyObservation) -> Result<()> {
         self.observe(observation).await
     }
 
     async fn shutdown(&self) -> Result<()> {
-        BtcPaperExperimentRunner::shutdown(self).await
+        BtcPaperProcessRunner::shutdown(self).await
     }
 }
 
@@ -2646,6 +2622,7 @@ mod tests {
             &metadata_intent(&chainlink_config.strategy_version),
             None,
             Uuid::from_u128(204),
+            Uuid::from_u128(202),
             Uuid::from_u128(205),
             dec!(0.03),
         )
@@ -2654,6 +2631,9 @@ mod tests {
             chainlink["strategy"],
             BTC_CHAINLINK_FAIR_VALUE_STRATEGY_FAMILY
         );
+        assert_eq!(chainlink["process_id"], Uuid::from_u128(202).to_string());
+        assert_eq!(chainlink["run_id"], Uuid::from_u128(205).to_string());
+        assert!(chainlink.get("experiment_id").is_none());
         assert!(chainlink.get("profile_id").is_none());
         assert!(chainlink.get("profile_sha256").is_none());
         assert!(chainlink.get("prediction").is_none());
@@ -2668,6 +2648,7 @@ mod tests {
             &metadata_intent(&continuation_config.strategy_version),
             None,
             Uuid::from_u128(204),
+            Uuid::from_u128(202),
             Uuid::from_u128(205),
             dec!(0.03),
         )
@@ -2692,6 +2673,7 @@ mod tests {
             &metadata_intent(&candidate_config.strategy_version),
             None,
             Uuid::from_u128(204),
+            Uuid::from_u128(202),
             Uuid::from_u128(205),
             dec!(0.03),
         )
@@ -2730,6 +2712,7 @@ mod tests {
             &metadata_intent(&config.strategy_version),
             None,
             Uuid::from_u128(204),
+            Uuid::from_u128(202),
             Uuid::from_u128(205),
             dec!(0.03),
         )
@@ -2783,6 +2766,7 @@ mod tests {
             &metadata_intent(&config.strategy_version),
             Some(&prediction),
             Uuid::from_u128(204),
+            Uuid::from_u128(202),
             Uuid::from_u128(205),
             dec!(0.03),
         )

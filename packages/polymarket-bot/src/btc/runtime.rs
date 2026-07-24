@@ -1760,9 +1760,9 @@ async fn run_writer(
             Err(error) => {
                 metrics.persistence_errors = metrics.persistence_errors.saturating_add(1);
                 metrics.last_error = Some(error.to_string());
-                // An immutable realtime-paper experiment permits no primary-writer
+                // An immutable realtime execution run permits no primary-writer
                 // failures. Exit so the shared runtime fails instead of allowing a
-                // partially durable experiment to continue collecting.
+                // partially durable run to continue collecting.
                 return;
             }
         }
@@ -6242,7 +6242,7 @@ async fn run_strategy_loop(
                         runtime_metrics.strategy_errors.saturating_add(1);
                     runtime_metrics.last_error = Some(error.to_string());
                     // The deterministic strategy and shared paper execution path
-                    // are primary immutable experiment data. A callback failure
+                    // are primary immutable run data. A callback failure
                     // invalidates the run, so let the task exit and fail the runtime.
                     return;
                 } else {
@@ -6391,33 +6391,25 @@ async fn persist_official_resolution_fact(
         {
             Ok(mut persisted) => {
                 newly_recorded |= persisted.newly_recorded;
-                match repository
-                    .refresh_paper_experiments_for_market(&persisted.market_id)
-                    .await
-                {
-                    Ok(_) => {
-                        persisted.newly_recorded = newly_recorded;
-                        let mut runtime_metrics = metrics.write().await;
-                        runtime_metrics.persistence_items_written =
-                            runtime_metrics.persistence_items_written.saturating_add(1);
-                        if persisted.newly_recorded {
-                            match resolution_source {
-                                "clob_websocket" => {
-                                    runtime_metrics.official_resolutions_websocket = runtime_metrics
-                                        .official_resolutions_websocket
-                                        .saturating_add(1)
-                                }
-                                "clob_rest_reconciliation" => {
-                                    runtime_metrics.official_resolutions_rest =
-                                        runtime_metrics.official_resolutions_rest.saturating_add(1)
-                                }
-                                _ => {}
-                            }
+                persisted.newly_recorded = newly_recorded;
+                let mut runtime_metrics = metrics.write().await;
+                runtime_metrics.persistence_items_written =
+                    runtime_metrics.persistence_items_written.saturating_add(1);
+                if persisted.newly_recorded {
+                    match resolution_source {
+                        "clob_websocket" => {
+                            runtime_metrics.official_resolutions_websocket = runtime_metrics
+                                .official_resolutions_websocket
+                                .saturating_add(1)
                         }
-                        return Ok(persisted);
+                        "clob_rest_reconciliation" => {
+                            runtime_metrics.official_resolutions_rest =
+                                runtime_metrics.official_resolutions_rest.saturating_add(1)
+                        }
+                        _ => {}
                     }
-                    Err(error) => last_error = Some(error),
                 }
+                return Ok(persisted);
             }
             Err(error) => last_error = Some(error),
         }

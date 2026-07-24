@@ -2,17 +2,15 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
-use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
+use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 use crate::{
-    config::PostgresConfig,
     events::ServiceEvent,
     execution::live::LiveVenueEvent,
     execution::OrderPlanReport,
     models::{
-        ConversionRequest, ConversionResult, FillRecord, OrderRecord, OrderRequest, OrderState,
-        TradingProcess, TradingProcessConfig,
+        FillRecord, OrderRecord, OrderRequest, OrderState, TradingProcess, TradingProcessConfig,
     },
 };
 
@@ -200,55 +198,9 @@ pub struct AccountPositionSnapshot {
     pub raw_payload: serde_json::Value,
 }
 
-#[derive(Debug, Clone)]
-pub struct ConversionRecord {
-    pub timestamp_utc: DateTime<Utc>,
-    pub conversion_id: Uuid,
-    pub market_id: String,
-    pub no_token_id: String,
-    pub size: Decimal,
-    pub status: String,
-    pub tx_hash: Option<String>,
-    pub latency_ms: i64,
-    pub gas_cost_usd: Decimal,
-    pub raw_payload: serde_json::Value,
-}
-
-impl ConversionRecord {
-    pub fn from_request_result(
-        request: &ConversionRequest,
-        result: &ConversionResult,
-    ) -> Result<Self> {
-        Ok(Self {
-            timestamp_utc: Utc::now(),
-            conversion_id: result.conversion_id,
-            market_id: request.market_id.clone(),
-            no_token_id: request.no_token_id.clone(),
-            size: request.size,
-            status: result.status.clone(),
-            tx_hash: result.tx_hash.clone(),
-            latency_ms: result.latency_ms,
-            gas_cost_usd: result.gas_cost_usd,
-            raw_payload: serde_json::json!({
-                "request": request,
-                "result": result,
-            }),
-        })
-    }
-}
-
 impl Store {
     pub fn from_pool(pool: PgPool) -> Self {
         Self { pool }
-    }
-
-    pub async fn connect(config: &PostgresConfig) -> Result<Self> {
-        let pool = PgPoolOptions::new()
-            .max_connections(5)
-            .connect(&config.database_url())
-            .await
-            .context("failed to connect to Postgres")?;
-        Ok(Self::from_pool(pool))
     }
 
     pub async fn update_trading_process_status(
@@ -1189,48 +1141,6 @@ impl Store {
         Ok(run_id)
     }
 
-    pub async fn insert_conversion_result(
-        &self,
-        request: &ConversionRequest,
-        result: &ConversionResult,
-    ) -> Result<()> {
-        let record = ConversionRecord::from_request_result(request, result)?;
-        self.upsert_conversion(&record).await
-    }
-
-    pub async fn upsert_conversion(&self, conversion: &ConversionRecord) -> Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO polymarket.conversions (
-              conversion_id, timestamp_utc, market_id, no_token_id, size, status,
-              tx_hash, latency_ms, gas_cost_usd, raw_payload, updated_at
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now())
-            ON CONFLICT (conversion_id, timestamp_utc) DO UPDATE SET
-              status = EXCLUDED.status,
-              tx_hash = EXCLUDED.tx_hash,
-              latency_ms = EXCLUDED.latency_ms,
-              gas_cost_usd = EXCLUDED.gas_cost_usd,
-              raw_payload = EXCLUDED.raw_payload,
-              updated_at = now()
-            "#,
-        )
-        .bind(conversion.conversion_id)
-        .bind(conversion.timestamp_utc)
-        .bind(&conversion.market_id)
-        .bind(&conversion.no_token_id)
-        .bind(conversion.size)
-        .bind(&conversion.status)
-        .bind(&conversion.tx_hash)
-        .bind(conversion.latency_ms)
-        .bind(conversion.gas_cost_usd)
-        .bind(&conversion.raw_payload)
-        .execute(&self.pool)
-        .await
-        .context("failed to upsert conversion")?;
-        Ok(())
-    }
-
     pub async fn persist_order_plan_report(&self, report: &OrderPlanReport) -> Result<()> {
         for order in &report.orders {
             self.insert_order(order).await?;
@@ -1358,7 +1268,6 @@ fn order_request_identity_matches(existing: &OrderRequest, incoming: &OrderReque
         && existing.order_type == incoming.order_type
         && existing.price == incoming.price
         && existing.size == incoming.size
-        && existing.signal_id == incoming.signal_id
         && immutable_order_metadata_matches(&existing.metadata, &incoming.metadata)
 }
 
@@ -1371,7 +1280,6 @@ fn order_request_result_matches(existing: &OrderRequest, incoming: &OrderRequest
         && existing.order_type == incoming.order_type
         && existing.price == incoming.price
         && existing.size == incoming.size
-        && existing.signal_id == incoming.signal_id
         && existing.metadata == incoming.metadata
 }
 
@@ -1473,7 +1381,6 @@ mod tests {
             order_type: OrderType::Fok,
             price: dec!(0.40),
             size: dec!(2),
-            signal_id: Some(Uuid::from_u128(3)),
             metadata: serde_json::json!({
                 "execution_intent": "entry",
                 "reference_execution_guard": { "evidence_sha256": "evidence" },
@@ -1494,6 +1401,43 @@ mod tests {
         let mut changed_intent = request.clone();
         changed_intent.metadata["execution_intent"] = serde_json::json!("exit");
         assert!(!order_request_identity_matches(&changed_intent, &request));
+    }
+
+    #[test]
+    fn legacy_signal_null_order_matches_post_cutover_deterministic_retry() {
+        let incoming = OrderRequest {
+            client_order_id: Uuid::from_u128(20),
+            process_id: Some(Uuid::from_u128(21)),
+            market_id: "market".to_string(),
+            token_id: "token".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            price: dec!(0.40),
+            size: dec!(2),
+            metadata: serde_json::json!({
+                "execution_intent": "entry",
+                "reference_execution_guard": {
+                    "guard_version": "btc_reference_execution_guard_v1",
+                    "signal_id": null,
+                    "evidence_sha256": "evidence",
+                },
+            }),
+        };
+        let mut persisted_payload = serde_json::to_value(&incoming).unwrap();
+        persisted_payload["signal_id"] = serde_json::Value::Null;
+        let persisted: OrderRequest = serde_json::from_value(persisted_payload).unwrap();
+
+        assert_eq!(persisted.client_order_id, incoming.client_order_id);
+        assert!(
+            serde_json::to_value(&persisted)
+                .unwrap()
+                .get("signal_id")
+                .is_none(),
+            "retired top-level request identity must not be serialized again"
+        );
+        assert_eq!(persisted.metadata, incoming.metadata);
+        assert!(order_request_identity_matches(&persisted, &incoming));
+        assert!(order_request_result_matches(&persisted, &incoming));
     }
 
     #[test]

@@ -102,8 +102,11 @@ generic process activation are intentionally unsupported. Use
 `POST /admin/trading-processes/{process_id}/start` and
 `POST /admin/trading-processes/{process_id}/stop` for a resumable stop, or
 `POST /admin/trading-processes/{process_id}/complete` for an orderly terminal
-completion, while leaving the service running. Each BTC paper start creates a distinct immutable experiment while the
-stable process key can be reused. Trading mode is selected by
+completion, while leaving the service running. Each BTC paper start creates a
+distinct process-owned run, identified by `run_id`. Immutable run evidence
+lives in the existing process lifecycle records. Lifecycle and record ownership
+remain canonical to the selected `process_id`; the stable process key can be
+reused. Trading mode is selected by
 `trading_processes.config.execution.mode`; host configuration is limited to
 credentials, venue URLs, and hard risk caps.
 
@@ -120,7 +123,9 @@ and never permits live capital. Unknown fields inside
 
 Save the following request body as `btc-process-v2.json`. Replace the process
 name, `next_experiment_key`, and preregistration digest before creating a real
-process. The digest must be exactly 64 hexadecimal characters.
+process. The digest must be exactly 64 hexadecimal characters. The existing
+`next_experiment_key` field is the legacy compatibility name for the immutable
+run key; lifecycle and record ownership still belong to `process_id`.
 
 <!-- btc-5m-process-v2:start -->
 ```json
@@ -331,8 +336,8 @@ compiled identities and behavior.
 
 For an explicit Chainlink v3 process, replace the candidate selector with
 `{"type":"chainlink_fair_value"}`. Existing v2 definitions intentionally stay
-on the legacy inference contract so durable experiments resume without a
-selector or config-hash change.
+on the legacy inference contract so durable process-owned runs resume
+without a selector or config-hash change.
 
 The loss-regime state is reconstructed from the process's immutable,
 configuration-scoped decision history. Each resolved market contributes the
@@ -350,8 +355,8 @@ stored with each evaluated buy decision.
 The optional `daily_realized_pnl_high_water_mark_v1` admission policy protects
 a configurable portion of positive paper PnL without changing probability
 estimation. Its state is owned and scoped canonically by `process_id`; an
-experiment ID is not used to select, partition, or link policy evidence. For
-each UTC day, the policy reconstructs credited realized PnL and its running
+immutable `run_id` is not used to select, partition, or link policy evidence.
+For each UTC day, the policy reconstructs credited realized PnL and its running
 high-water mark from existing settlement records. It also reserves the full
 entry debit of unresolved paper fills. Once the running peak reaches the
 activation amount, the protected floor is `peak - max_drawdown`. A proposed
@@ -407,11 +412,11 @@ to run `chainlink_persistence_calibrated_fair_value` unchanged. The treatment
 preserves the control's paper venue, size, minimum entry price, execution and
 edge parameters, and `loss_regime_confidence_floor_v1`; it does not enable the
 daily HWM policy. Compare the two arms using their canonical `process_id`
-values, never an experiment ID. Do not tune the immutable treatment profile
-during the forward test. Evaluate time-aligned resolved markets for Brier
-score, log loss, calibration, directional accuracy, fresh-impulse errors,
-maximum drawdown, and peak-to-close daily giveback. Treat fills separately from
-forecast metrics because the shared loss floor can alter entry selection.
+values, never a `run_id`. Do not tune the immutable treatment profile during
+the forward test. Evaluate time-aligned resolved markets for Brier score, log
+loss, calibration, directional accuracy, fresh-impulse errors, maximum
+drawdown, and peak-to-close daily giveback. Treat fills separately from forecast
+metrics because the shared loss floor can alter entry selection.
 
 The predictive-regime circuit-breaker forward test adds one independent shadow
 definition:
@@ -466,8 +471,8 @@ and returns its `process_id`.
 Start-preview is the recommended read-only validation step; the Rust runtime
 begins trading only after an explicit start for that `process_id`.
 
-Create the definition through the stable-key API, preview the immutable run,
-then start it explicitly:
+Create the definition through the stable-key API, preview the next
+process-owned run, then start it explicitly:
 
 ```bash
 PROCESS_KEY="btc-5m-chainlink-paper"

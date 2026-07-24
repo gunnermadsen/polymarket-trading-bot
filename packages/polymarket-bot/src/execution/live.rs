@@ -43,7 +43,7 @@ use crate::{
         LiveWalletCandidateAddressDiagnostics, LiveWalletTokenBalances, ReconciliationReport,
     },
     idempotency::{event_hash, order_request_notional_key},
-    models::{ConversionRequest, ConversionResult, FillRecord, OrderRecord, OrderRequest},
+    models::{FillRecord, OrderRecord, OrderRequest},
     models::{FillSource, OrderSide, OrderState, OrderType},
     store::Store,
 };
@@ -154,18 +154,6 @@ impl LiveVenue {
                 manual_entries_enabled: false,
                 manual_entries_reason: Some("manual_enable_required".to_string()),
             })),
-        })
-    }
-
-    pub fn user_ws_subscription(&self, markets: &[String]) -> serde_json::Value {
-        json!({
-            "auth": {
-                "apiKey": self.config.clob_api_key.as_deref().unwrap_or(""),
-                "secret": self.config.clob_secret.as_deref().unwrap_or(""),
-                "passphrase": self.config.clob_passphrase.as_deref().unwrap_or("")
-            },
-            "markets": markets,
-            "type": "user"
         })
     }
 
@@ -882,7 +870,6 @@ fn order_record_from_open_order(order: OpenOrderResponse) -> Result<OrderRecord>
             order_type,
             price,
             size: original_size,
-            signal_id: None,
             metadata: json!({
                 "source": "live_open_order",
                 "venue_order_id": order_id,
@@ -1352,18 +1339,6 @@ impl ExecutionVenue for LiveVenue {
             .into_iter()
             .map(order_record_from_open_order)
             .collect()
-    }
-
-    async fn convert_negative_risk(&self, _request: ConversionRequest) -> Result<ConversionResult> {
-        bail!("live negative-risk conversion is not enabled for production canary")
-    }
-
-    async fn split_ctf(&self, _market_id: &str, _size: Decimal) -> Result<ConversionResult> {
-        bail!("live CTF split is not enabled for production canary")
-    }
-
-    async fn merge_ctf(&self, _market_id: &str, _size: Decimal) -> Result<ConversionResult> {
-        bail!("live CTF merge is not enabled for production canary")
     }
 
     async fn reconcile(&self) -> Result<ReconciliationReport> {
@@ -2181,7 +2156,6 @@ mod tests {
             order_type: OrderType::Fok,
             price: dec!(0.50),
             size: dec!(2),
-            signal_id: None,
             metadata: json!({"purpose": "entry"}),
         };
 
@@ -2212,7 +2186,6 @@ mod tests {
             order_type: OrderType::Fok,
             price: dec!(0.50),
             size: dec!(2),
-            signal_id: None,
             metadata: json!({"execution_intent": "risk_reduction"}),
         };
 

@@ -117,7 +117,7 @@ pub enum BtcDecisionStrategyConfig {
 
 /// Immutable, process-owned parameters for the deterministic baseline.
 ///
-/// Runtime configuration should be hashed and frozen when an experiment starts. The strategy
+/// Runtime configuration should be hashed and frozen when an execution run starts. The strategy
 /// deliberately excludes Polymarket order-book imbalance from its probability estimator. Book
 /// features are used only to determine executability and net edge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -546,7 +546,7 @@ pub enum BtcRejectReason {
     VolatilityRegimeBelowThreshold,
     ContinuationSignalUnconfirmed,
     MarketPriorOutsideBounds,
-    ExistingExperimentEntry,
+    ExistingProcessEntry,
     RuntimeNotReady,
 }
 
@@ -595,7 +595,8 @@ impl BtcRejectReason {
             Self::VolatilityRegimeBelowThreshold => "volatility_regime_below_threshold",
             Self::ContinuationSignalUnconfirmed => "continuation_signal_unconfirmed",
             Self::MarketPriorOutsideBounds => "market_prior_outside_bounds",
-            Self::ExistingExperimentEntry => "existing_experiment_entry",
+            // Preserve the immutable decision-evidence value written by existing processes.
+            Self::ExistingProcessEntry => "existing_experiment_entry",
             Self::RuntimeNotReady => "runtime_not_ready",
         }
     }

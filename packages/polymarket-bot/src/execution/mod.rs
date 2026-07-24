@@ -8,10 +8,7 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::account_reconcile::{AccountReconcileReport, AccountReconcileRequest};
-use crate::models::{
-    ConversionRequest, ConversionResult, FillRecord, OrderRecord, OrderRequest, OrderSide,
-    OrderState, OrderType,
-};
+use crate::models::{FillRecord, OrderRecord, OrderRequest, OrderSide, OrderState, OrderType};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ReconciliationReport {
@@ -264,9 +261,6 @@ pub trait ExecutionVenue: Send + Sync {
     async fn cancel_all(&self) -> Result<usize>;
     async fn get_balances(&self) -> Result<Vec<(String, Decimal)>>;
     async fn get_open_orders(&self) -> Result<Vec<OrderRecord>>;
-    async fn convert_negative_risk(&self, request: ConversionRequest) -> Result<ConversionResult>;
-    async fn split_ctf(&self, market_id: &str, size: Decimal) -> Result<ConversionResult>;
-    async fn merge_ctf(&self, market_id: &str, size: Decimal) -> Result<ConversionResult>;
     async fn reconcile(&self) -> Result<ReconciliationReport>;
     async fn fills_for_order(&self, order_id: &str) -> Result<Vec<FillRecord>>;
     async fn live_status(&self) -> Result<LiveVenueStatus>;
@@ -312,7 +306,6 @@ mod tests {
             order_type: OrderType::Fok,
             price: dec!(0.42),
             size: dec!(10),
-            signal_id: None,
             metadata: serde_json::json!({"purpose": "entry"}),
         };
         assert_eq!(request.intent(), OrderIntent::Entry);

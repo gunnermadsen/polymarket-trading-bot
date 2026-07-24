@@ -1,10 +1,10 @@
 pub mod admission;
 pub mod execution_guard;
-pub mod experiment;
 pub mod feeds;
 pub mod market;
 pub mod paper;
 pub mod predictive_regime_v2;
+pub mod process_runner;
 pub mod repository;
 pub mod runtime;
 pub mod strategy;
@@ -26,7 +26,6 @@ pub use execution_guard::{
     BtcReferenceExecutionAssessment, BtcReferenceExecutionGuard, BtcReferenceExecutionRejectReason,
     BTC_REFERENCE_EXECUTION_GUARD_METADATA_KEY, BTC_REFERENCE_EXECUTION_GUARD_VERSION,
 };
-pub use experiment::{BtcPaperExperimentConfig, BtcPaperExperimentRunner};
 pub use feeds::{
     parse_binance_agg_trade, parse_clob_messages, parse_rtds_reference_tick, BookRegistry,
     BookUpdateSide, ClobMessage, PriceChange,
@@ -45,9 +44,10 @@ pub use predictive_regime_v2::{
     ShadowPredictiveRegimeV2CandidateSource, ShadowPredictiveRegimeV2Evaluation,
     ShadowPredictiveRegimeV2State, SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_V2_SCHEMA_VERSION,
 };
+pub use process_runner::{BtcPaperProcessConfig, BtcPaperProcessRunner};
 pub use repository::{
-    BtcMarketLabel, BtcOfficialResolutionWatch, BtcPaperSettlementLedgerSummary,
-    BtcPaperSettlementRecord, BtcRepository, FeedSession, PersistedOfficialResolution,
+    BtcMarketLabel, BtcOfficialResolutionWatch, BtcPaperSettlementRecord, BtcRepository,
+    BtcRunManifest, FeedSession, PersistedOfficialResolution,
 };
 pub use runtime::{
     runtime_status_from_inputs, BtcHeartbeatConfig, BtcPlaybookRuntimeHandle, BtcRuntime,

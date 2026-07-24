@@ -8,10 +8,9 @@ use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{postgres::PgPoolOptions, FromRow, PgPool, Postgres, Transaction};
+use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::config::PostgresConfig;
 use crate::models::{OrderRequest, OrderSide};
 
 use super::{
@@ -121,23 +120,13 @@ pub struct BtcPointInTimeInputs {
     pub fee_observed_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, FromRow)]
-pub struct BtcPaperExperimentStatus {
-    pub experiment_id: Uuid,
-    pub name: String,
-    pub status: String,
-    pub started_at: Option<DateTime<Utc>>,
-    pub stopped_at: Option<DateTime<Utc>>,
-    pub markets_observed: i64,
-    pub snapshots_recorded: i64,
-    pub decisions_recorded: i64,
-    pub trades_entered: i64,
-    pub trades_resolved: i64,
-    pub gross_pnl: Decimal,
-    pub fees_paid: Decimal,
-    pub net_pnl: Decimal,
-    pub summary: serde_json::Value,
-    pub updated_at: DateTime<Utc>,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
+pub struct BtcRunManifest {
+    pub process_id: Uuid,
+    pub run_id: Uuid,
+    pub run_key: String,
+    pub config_hash: String,
+    pub frozen_process_config: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -149,20 +138,24 @@ pub struct BtcPaperVenueResumeState {
     pub credited_settlement_ids: Vec<Uuid>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, FromRow)]
-pub struct BtcExperimentSettlementSummary {
-    pub trades_entered: i64,
-    pub trades_resolved: i64,
-    pub gross_pnl: Decimal,
-    pub fees_paid: Decimal,
-    pub net_pnl: Decimal,
+fn ensure_unambiguous_order_run_identity(
+    process_id: Uuid,
+    run_id: Uuid,
+    has_identity_conflict: bool,
+) -> Result<()> {
+    if has_identity_conflict {
+        bail!(
+            "BTC process {process_id} run {run_id} has an order with conflicting current and legacy run identity"
+        );
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct BtcPaperSettlementRecord {
-    pub settlement_id: Uuid,
-    pub experiment_id: Uuid,
     pub process_id: Uuid,
+    pub run_id: Uuid,
+    pub settlement_id: Uuid,
     pub order_id: String,
     pub market_id: String,
     pub token_id: String,
@@ -182,19 +175,6 @@ pub struct BtcPaperSettlementRecord {
     pub credit_evidence: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, FromRow)]
-pub struct BtcPaperSettlementLedgerSummary {
-    pub settlements_discovered: i64,
-    pub settlements_credited: i64,
-    pub settlements_pending: i64,
-    pub entry_notional: Decimal,
-    pub entry_fees: Decimal,
-    pub payout_credited: Decimal,
-    pub net_pnl: Decimal,
-    pub last_official_resolution_received_at: Option<DateTime<Utc>>,
-    pub last_credited_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -480,6 +460,263 @@ SELECT EXISTS (
     AND action = 'buy'
     AND status IN ('approved','submitted','filled')
 )
+"#;
+
+const RUN_MANIFEST_EXISTS_SQL: &str = r#"
+SELECT EXISTS (
+  SELECT 1
+  FROM polymarket.trading_process_events
+  WHERE event_type = 'btc_run_manifest'
+    AND (
+      event_id = $1
+      OR metadata #>> '{run_id}' = $1::text
+      OR metadata #>> '{run_key}' = $2
+    )
+)
+"#;
+
+const LOAD_RUN_MANIFEST_SQL: &str = r#"
+SELECT
+  process_id,
+  event_id AS run_id,
+  metadata #>> '{run_key}' AS run_key,
+  metadata #>> '{config_hash}' AS config_hash,
+  metadata #> '{frozen_process_config}' AS frozen_process_config
+FROM polymarket.trading_process_events
+WHERE process_id = $1
+  AND event_type = 'btc_run_manifest'
+  AND event_id = $2
+  AND metadata #>> '{run_id}' = $2::text
+  AND metadata #>> '{run_key}' = $3
+ORDER BY timestamp_utc, created_at
+LIMIT 2
+"#;
+
+const CLAIM_RUN_MANIFEST_LOCK_SQL: &str = r#"
+SELECT pg_advisory_xact_lock(
+  hashtextextended('polymarket.btc_run_manifest.start', 0)
+)
+"#;
+
+const INSERT_RUN_MANIFEST_SQL: &str = r#"
+INSERT INTO polymarket.trading_process_events (
+  process_id, event_id, timestamp_utc, level, event_type, message, metadata, created_at
+)
+VALUES (
+  $1, $2, now(), 'info', 'btc_run_manifest',
+  'Immutable BTC execution run manifest', $3, now()
+)
+"#;
+
+const PAPER_VENUE_RESUME_STATE_SQL: &str = r#"
+WITH order_identity AS MATERIALIZED (
+  SELECT
+    o.order_id,
+    o.raw_payload #>> '{request,metadata,run_id}' AS metadata_run_id,
+    o.raw_payload #>> '{request,metadata,experiment_id}'
+      AS legacy_experiment_id
+  FROM polymarket.orders o
+  WHERE o.process_id = $1
+    AND (
+      o.raw_payload #>> '{request,metadata,run_id}' = $2::text
+      OR o.raw_payload #>> '{request,metadata,experiment_id}' = $2::text
+    )
+), identity_state AS (
+  SELECT COALESCE(
+    BOOL_OR(
+      metadata_run_id IS NOT NULL
+      AND legacy_experiment_id IS NOT NULL
+      AND metadata_run_id <> legacy_experiment_id
+    ),
+    false
+  ) AS has_identity_conflict
+  FROM order_identity
+), run_orders AS (
+  SELECT order_id
+  FROM order_identity
+  WHERE NOT COALESCE(metadata_run_id <> legacy_experiment_id, false)
+), fill_totals AS (
+  SELECT
+    COALESCE(SUM(f.price * f.size + f.fee), 0)::numeric AS entry_debits,
+    COUNT(f.fill_id)::bigint AS fill_count
+  FROM run_orders o
+  LEFT JOIN polymarket.fills f
+    ON f.process_id = $1
+   AND f.order_id = o.order_id
+   AND f.source = 'paper'
+), order_totals AS (
+  SELECT COUNT(*)::bigint AS order_count
+  FROM run_orders
+), settlement_totals AS (
+  SELECT
+    COALESCE(SUM(payout) FILTER (WHERE credit_status = 'credited'), 0)::numeric
+      AS settlement_credits,
+    COALESCE(
+      ARRAY_AGG(settlement_id ORDER BY settlement_id)
+        FILTER (WHERE credit_status = 'credited'),
+      ARRAY[]::uuid[]
+    ) AS settlement_ids
+  FROM polymarket.btc_paper_settlement_ledger
+  WHERE process_id = $1
+    AND run_id = $2
+)
+SELECT f.entry_debits, s.settlement_credits,
+       o.order_count, f.fill_count, s.settlement_ids,
+       i.has_identity_conflict
+FROM fill_totals f
+CROSS JOIN order_totals o
+CROSS JOIN settlement_totals s
+CROSS JOIN identity_state i
+"#;
+
+const INSERT_STRATEGY_DECISION_SQL: &str = r#"
+INSERT INTO polymarket.btc_strategy_decisions (
+  process_id, run_id, decision_id, decision_at, market_id, snapshot_id,
+  strategy_version, config_hash, action, outcome, token_id, fair_probability,
+  executable_price, gross_edge_per_share, fee_per_share, reserve_per_share,
+  net_edge_per_share, size, status, reject_reason, order_plan_id, execution_mode,
+  metadata
+)
+VALUES (
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+  $21,'paper',$22
+)
+ON CONFLICT (decision_id, decision_at) DO NOTHING
+"#;
+
+const UPDATE_STRATEGY_DECISION_EXECUTION_SQL: &str = r#"
+UPDATE polymarket.btc_strategy_decisions
+SET status = $5,
+    reject_reason = COALESCE($6, reject_reason),
+    metadata = metadata || $7
+WHERE process_id = $1
+  AND run_id = $2
+  AND decision_id = $3
+  AND decision_at = $4
+"#;
+
+const DISCOVER_PENDING_PAPER_SETTLEMENTS_SQL: &str = r#"
+WITH order_identity AS MATERIALIZED (
+  SELECT
+    o.process_id,
+    o.order_id,
+    o.market_id,
+    o.token_id,
+    o.raw_payload #>> '{request,metadata,run_id}' AS metadata_run_id,
+    o.raw_payload #>> '{request,metadata,experiment_id}'
+      AS legacy_experiment_id
+  FROM polymarket.orders o
+  WHERE o.process_id = $1
+    AND (
+      o.raw_payload #>> '{request,metadata,run_id}' = $2::text
+      OR o.raw_payload #>> '{request,metadata,experiment_id}' = $2::text
+    )
+), identity_state AS (
+  SELECT COALESCE(
+    BOOL_OR(
+      metadata_run_id IS NOT NULL
+      AND legacy_experiment_id IS NOT NULL
+      AND metadata_run_id <> legacy_experiment_id
+    ),
+    false
+  ) AS has_identity_conflict
+  FROM order_identity
+), entered AS (
+  SELECT
+    o.process_id,
+    $2::uuid AS run_id,
+    o.order_id,
+    o.market_id,
+    o.token_id,
+    jsonb_agg(to_jsonb(f.fill_id) ORDER BY f.timestamp_utc, f.fill_id) AS fill_ids,
+    round(sum(f.size), 10)::numeric(30,10) AS filled_size,
+    round(sum(f.price * f.size), 10)::numeric(30,10) AS entry_notional,
+    round(sum(f.fee), 10)::numeric(30,10) AS entry_fees
+  FROM order_identity o
+  JOIN polymarket.fills f
+    ON f.process_id = $1
+   AND f.order_id = o.order_id
+   AND f.source = 'paper'
+  WHERE NOT COALESCE(
+    o.metadata_run_id <> o.legacy_experiment_id,
+    false
+  )
+  GROUP BY o.process_id, o.order_id, o.market_id, o.token_id
+), eligible AS (
+  SELECT
+    e.*,
+    m.official_outcome,
+    m.official_winning_token_id,
+    m.official_resolution_received_at,
+    m.official_resolution_source,
+    CASE
+      WHEN e.token_id = m.official_winning_token_id THEN e.filled_size
+      ELSE 0::numeric(30,10)
+    END::numeric(30,10) AS payout
+  FROM entered e
+  JOIN polymarket.btc_interval_markets m ON m.market_id = e.market_id
+  JOIN polymarket.btc_official_resolution_watches w ON w.market_id = m.market_id
+  WHERE m.official_outcome IS NOT NULL
+    AND m.official_winning_token_id IS NOT NULL
+    AND m.official_resolution_received_at IS NOT NULL
+    AND m.official_resolution_source IS NOT NULL
+    AND (
+      (m.official_outcome = 'up' AND m.official_winning_token_id = m.up_token_id)
+      OR
+      (m.official_outcome = 'down' AND m.official_winning_token_id = m.down_token_id)
+    )
+    AND w.status IN ('resolved', 'resolved_late')
+    AND w.resolution_received_at = m.official_resolution_received_at
+    AND w.resolution_source = m.official_resolution_source
+), inserted AS (
+  INSERT INTO polymarket.btc_paper_settlement_ledger (
+    process_id, run_id, order_id, market_id, token_id, fill_ids,
+    official_outcome, official_winning_token_id,
+    official_resolution_received_at, official_resolution_source,
+    filled_size, entry_notional, entry_fees, payout, net_pnl
+  )
+  SELECT
+    process_id, run_id, order_id, market_id, token_id, fill_ids,
+    official_outcome, official_winning_token_id,
+    official_resolution_received_at, official_resolution_source,
+    filled_size, entry_notional, entry_fees, payout,
+    (payout - entry_notional - entry_fees)::numeric(30,10)
+  FROM eligible
+  WHERE NOT (SELECT has_identity_conflict FROM identity_state)
+  ON CONFLICT (run_id, order_id) DO NOTHING
+  RETURNING 1 AS inserted
+)
+SELECT
+  (SELECT has_identity_conflict FROM identity_state) AS has_identity_conflict,
+  (SELECT COUNT(*)::bigint FROM inserted) AS inserted_count
+"#;
+
+const LOAD_PENDING_PAPER_SETTLEMENTS_SQL: &str = r#"
+SELECT settlement_id, run_id, process_id, order_id, market_id, token_id,
+  fill_ids,
+  official_outcome, official_winning_token_id,
+  official_resolution_received_at, official_resolution_source,
+  filled_size, entry_notional, entry_fees, payout, net_pnl,
+  credit_status, credited_at, credit_attempts, credit_evidence,
+  created_at, updated_at
+FROM polymarket.btc_paper_settlement_ledger
+WHERE process_id = $1
+  AND run_id = $2
+  AND credit_status = 'pending'
+ORDER BY official_resolution_received_at, order_id, settlement_id
+"#;
+
+const MARK_PAPER_SETTLEMENT_CREDITED_SQL: &str = r#"
+UPDATE polymarket.btc_paper_settlement_ledger
+SET credit_status = 'credited',
+    credited_at = now(),
+    credit_attempts = credit_attempts + 1,
+    credit_evidence = $4,
+    updated_at = now()
+WHERE process_id = $1
+  AND run_id = $2
+  AND settlement_id = $3
+  AND credit_status = 'pending'
 "#;
 
 const INSERT_ORDERBOOK_CHECKPOINT_PAIR_SQL: &str = r#"
@@ -823,15 +1060,6 @@ fn validate_official_resolution_subscription_ack(
 }
 
 impl BtcRepository {
-    pub async fn connect(config: &PostgresConfig) -> Result<Self> {
-        let pool = PgPoolOptions::new()
-            .max_connections(4)
-            .connect(&config.database_url())
-            .await
-            .context("failed to connect BTC realtime repository to Postgres")?;
-        Ok(Self { pool })
-    }
-
     pub fn from_pool(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -1999,7 +2227,7 @@ impl BtcRepository {
     }
 
     /// Loads only information whose exchange event time and local receive time are no later than
-    /// `as_of`. This is the experiment runner's no-lookahead boundary.
+    /// `as_of`. This is the execution runner's no-lookahead boundary.
     pub async fn load_point_in_time_inputs(
         &self,
         market: &BtcIntervalMarket,
@@ -2203,136 +2431,140 @@ impl BtcRepository {
         .transpose()
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn ensure_paper_experiment(
+    pub async fn run_manifest_exists(&self, run_id: Uuid, run_key: &str) -> Result<bool> {
+        if run_key.trim().is_empty() {
+            bail!("BTC run key must not be empty");
+        }
+        sqlx::query_scalar::<_, bool>(RUN_MANIFEST_EXISTS_SQL)
+            .bind(run_id)
+            .bind(run_key)
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to check global BTC run-manifest identity")
+    }
+
+    pub async fn load_run_manifest(
         &self,
-        experiment_id: Uuid,
-        name: &str,
         process_id: Uuid,
-        strategy_version: &str,
-        feature_schema_version: &str,
+        run_id: Uuid,
+        run_key: &str,
+    ) -> Result<Option<BtcRunManifest>> {
+        if run_key.trim().is_empty() {
+            bail!("BTC run key must not be empty");
+        }
+        let manifests = sqlx::query_as::<_, BtcRunManifest>(LOAD_RUN_MANIFEST_SQL)
+            .bind(process_id)
+            .bind(run_id)
+            .bind(run_key)
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to load immutable BTC run manifest")?;
+        match manifests.len() {
+            0 => Ok(None),
+            1 => Ok(manifests.into_iter().next()),
+            count => bail!(
+                "BTC run manifest identity matched {count} immutable events for process {process_id}"
+            ),
+        }
+    }
+
+    pub async fn verify_run_manifest(
+        &self,
+        process_id: Uuid,
+        run_id: Uuid,
+        run_key: &str,
         config_hash: &str,
-        config: &serde_json::Value,
+        frozen_process_config: &serde_json::Value,
     ) -> Result<()> {
-        let result = sqlx::query(
-            r#"
-            INSERT INTO polymarket.btc_paper_experiments (
-              experiment_id, name, status, strategy_version, feature_schema_version,
-              config_hash, config, process_id, started_at
-            )
-            VALUES ($1,$2,'running',$3,$4,$5,$6,$7,now())
-            ON CONFLICT (experiment_id) DO NOTHING
-            "#,
-        )
-        .bind(experiment_id)
-        .bind(name)
-        .bind(strategy_version)
-        .bind(feature_schema_version)
-        .bind(config_hash)
-        .bind(config)
-        .bind(process_id)
-        .execute(&self.pool)
-        .await
-        .context("failed to ensure BTC paper experiment")?;
-        if result.rows_affected() != 1 {
-            anyhow::bail!(
-                "BTC experiment identity already exists; new explicit cohort starts require a new experiment key"
+        validate_run_manifest(run_key, config_hash, frozen_process_config)?;
+        let manifest = self
+            .load_run_manifest(process_id, run_id, run_key)
+            .await?
+            .with_context(|| {
+                format!("BTC run manifest {run_id} is missing for canonical process {process_id}")
+            })?;
+        if manifest.config_hash != config_hash
+            || manifest.frozen_process_config != *frozen_process_config
+        {
+            bail!(
+                "BTC run manifest cannot resume because its immutable frozen configuration no longer matches"
             );
         }
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn verify_resumable_paper_experiment(
+    pub async fn claim_run_manifest(
         &self,
-        experiment_id: Uuid,
-        name: &str,
         process_id: Uuid,
-        strategy_version: &str,
-        feature_schema_version: &str,
+        run_id: Uuid,
+        run_key: &str,
         config_hash: &str,
-        config: &serde_json::Value,
+        frozen_process_config: &serde_json::Value,
     ) -> Result<()> {
-        let matches = sqlx::query_scalar::<_, bool>(
-            r#"
-            SELECT EXISTS (
-              SELECT 1
-              FROM polymarket.btc_paper_experiments
-              WHERE experiment_id = $1
-                AND name = $2
-                AND process_id = $3
-                AND strategy_version = $4
-                AND feature_schema_version = $5
-                AND config_hash = $6
-                AND config = $7
-                AND status = 'running'
-                AND stopped_at IS NULL
-            )
-            "#,
-        )
-        .bind(experiment_id)
-        .bind(name)
-        .bind(process_id)
-        .bind(strategy_version)
-        .bind(feature_schema_version)
-        .bind(config_hash)
-        .bind(config)
-        .fetch_one(&self.pool)
-        .await
-        .context("failed to verify resumable BTC paper experiment")?;
-        if !matches {
-            anyhow::bail!(
-                "BTC paper experiment cannot resume because its running identity or frozen config no longer matches"
+        validate_run_manifest(run_key, config_hash, frozen_process_config)?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin BTC run-manifest claim transaction")?;
+        sqlx::query(CLAIM_RUN_MANIFEST_LOCK_SQL)
+            .execute(&mut *tx)
+            .await
+            .context("failed to acquire global BTC run-start lock")?;
+        let duplicate = sqlx::query_scalar::<_, bool>(RUN_MANIFEST_EXISTS_SQL)
+            .bind(run_id)
+            .bind(run_key)
+            .fetch_one(&mut *tx)
+            .await
+            .context("failed to check BTC run-manifest identity under the start lock")?;
+        if duplicate {
+            bail!(
+                "BTC run identity {run_id}/{run_key} already exists; every explicit start requires a globally unique id and key"
             );
         }
+        let metadata = serde_json::json!({
+            "run_id": run_id,
+            "run_key": run_key,
+            "config_hash": config_hash,
+            "frozen_process_config": frozen_process_config,
+        });
+        let inserted = sqlx::query(INSERT_RUN_MANIFEST_SQL)
+            .bind(process_id)
+            .bind(run_id)
+            .bind(metadata)
+            .execute(&mut *tx)
+            .await
+            .context("failed to persist immutable BTC run manifest")?;
+        if inserted.rows_affected() != 1 {
+            bail!("immutable BTC run-manifest insert did not write exactly one event");
+        }
+        tx.commit()
+            .await
+            .context("failed to commit BTC run-manifest claim transaction")?;
         Ok(())
     }
 
     pub async fn paper_venue_resume_state(
         &self,
-        experiment_id: Uuid,
+        process_id: Uuid,
+        run_id: Uuid,
     ) -> Result<BtcPaperVenueResumeState> {
-        let (entry_debits, settlement_credits, order_count, fill_count, settlement_ids) =
-            sqlx::query_as::<_, (Decimal, Decimal, i64, i64, Vec<Uuid>)>(
-                r#"
-                WITH experiment_orders AS (
-                  SELECT o.order_id
-                  FROM polymarket.btc_paper_experiments e
-                  JOIN polymarket.orders o
-                    ON o.process_id = e.process_id
-                   AND o.raw_payload #>> '{request,metadata,experiment_id}' = e.experiment_id::text
-                  WHERE e.experiment_id = $1
-                ), fill_totals AS (
-                  SELECT
-                    COALESCE(SUM(f.price * f.size + f.fee), 0)::numeric AS entry_debits,
-                    COUNT(f.fill_id)::bigint AS fill_count
-                  FROM experiment_orders o
-                  LEFT JOIN polymarket.fills f
-                    ON f.order_id = o.order_id
-                   AND f.source = 'paper'
-                ), order_totals AS (
-                  SELECT COUNT(*)::bigint AS order_count FROM experiment_orders
-                ), settlement_totals AS (
-                  SELECT
-                    COALESCE(SUM(payout) FILTER (WHERE credit_status = 'credited'), 0)::numeric
-                      AS settlement_credits,
-                    COALESCE(
-                      ARRAY_AGG(settlement_id ORDER BY settlement_id)
-                        FILTER (WHERE credit_status = 'credited'),
-                      ARRAY[]::uuid[]
-                    ) AS settlement_ids
-                  FROM polymarket.btc_paper_settlement_ledger
-                  WHERE experiment_id = $1
-                )
-                SELECT f.entry_debits, s.settlement_credits,
-                       o.order_count, f.fill_count, s.settlement_ids
-                FROM fill_totals f CROSS JOIN order_totals o CROSS JOIN settlement_totals s
-                "#,
-            )
-            .bind(experiment_id)
-            .fetch_one(&self.pool)
-            .await
-            .context("failed to load BTC paper venue resume state")?;
+        let (
+            entry_debits,
+            settlement_credits,
+            order_count,
+            fill_count,
+            settlement_ids,
+            has_identity_conflict,
+        ) = sqlx::query_as::<_, (Decimal, Decimal, i64, i64, Vec<Uuid>, bool)>(
+            PAPER_VENUE_RESUME_STATE_SQL,
+        )
+        .bind(process_id)
+        .bind(run_id)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to load BTC paper venue resume state")?;
+        ensure_unambiguous_order_run_identity(process_id, run_id, has_identity_conflict)?;
         Ok(BtcPaperVenueResumeState {
             entry_debits_usd: entry_debits,
             settlement_credits_usd: settlement_credits,
@@ -2342,61 +2574,6 @@ impl BtcRepository {
                 .context("BTC paper resume fill count exceeded usize")?,
             credited_settlement_ids: settlement_ids,
         })
-    }
-
-    pub async fn mark_paper_experiment_terminal(
-        &self,
-        experiment_id: Uuid,
-        status: &str,
-        reason: &str,
-    ) -> Result<()> {
-        if !matches!(status, "stopped" | "failed") || reason.trim().is_empty() {
-            anyhow::bail!("invalid BTC experiment terminal status or reason");
-        }
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .context("failed to begin BTC experiment terminal transaction")?;
-        sqlx::query(
-            r#"
-            UPDATE polymarket.btc_paper_experiments
-            SET status = $2, stopped_at = now(), stop_reason = $3, updated_at = now()
-            WHERE experiment_id = $1 AND status = 'running'
-            "#,
-        )
-        .bind(experiment_id)
-        .bind(status)
-        .bind(reason)
-        .execute(&mut *tx)
-        .await
-        .context("failed to mark BTC paper experiment terminal")?;
-        sqlx::query(
-            r#"
-            UPDATE polymarket.trading_processes
-            SET status = $2,
-                enabled = false,
-                stopped_at = now(),
-                last_error = CASE WHEN $2 = 'failed' THEN $3 ELSE last_error END,
-                updated_at = now()
-            WHERE process_id = (
-              SELECT process_id
-              FROM polymarket.btc_paper_experiments
-              WHERE experiment_id = $1
-            )
-              AND status = 'running'
-            "#,
-        )
-        .bind(experiment_id)
-        .bind(status)
-        .bind(reason)
-        .execute(&mut *tx)
-        .await
-        .context("failed to mark BTC trading process terminal")?;
-        tx.commit()
-            .await
-            .context("failed to commit BTC experiment terminal transaction")?;
-        Ok(())
     }
 
     pub async fn process_has_entry(&self, process_id: Uuid, market_id: &str) -> Result<bool> {
@@ -2491,7 +2668,7 @@ impl BtcRepository {
 
     /// Loads the newest causally persisted shadow predictive-regime state from this process's
     /// decision evidence. The optional hash is the breaker's state-config hash, not the enclosing
-    /// process-config hash. Execution status and experiment identity do not own this state.
+    /// process-config hash. Execution status and run identity do not own this state.
     pub async fn load_latest_shadow_predictive_regime_state(
         &self,
         process_id: Uuid,
@@ -2525,7 +2702,7 @@ impl BtcRepository {
     }
 
     /// Loads a bounded, causal history of the first actual paper exposure in each market.
-    /// Exposure ownership is exclusively the stable trading process; experiment identity and
+    /// Exposure ownership is exclusively the stable trading process; run identity and
     /// decision status never participate in candidate selection.
     pub async fn load_shadow_predictive_regime_v2_candidates(
         &self,
@@ -2598,7 +2775,7 @@ impl BtcRepository {
 
     /// Reconstructs the causal UTC-day realized-PnL watermark and every still-unsettled paper
     /// entry for one stable trading process. This state is deliberately process-owned: it carries
-    /// across immutable experiment runs and must never be filtered by experiment identity.
+    /// across immutable execution runs and must never be filtered by run identity.
     pub async fn load_daily_realized_pnl_high_water_mark_state(
         &self,
         process_id: Uuid,
@@ -2715,7 +2892,8 @@ impl BtcRepository {
     #[allow(clippy::too_many_arguments)]
     pub async fn insert_strategy_decision(
         &self,
-        experiment_id: Uuid,
+        process_id: Uuid,
+        run_id: Uuid,
         config_hash: &str,
         market_id: &str,
         strategy_version: &str,
@@ -2724,6 +2902,9 @@ impl BtcRepository {
         order_plan_id: Option<Uuid>,
         status: &str,
     ) -> Result<bool> {
+        if decision.process_id != process_id {
+            bail!("BTC strategy decision process ownership does not match its repository scope");
+        }
         let edge = decision_edge_projection(decision)?;
         let (action, outcome) = match decision.action {
             BtcDecisionAction::BuyUp => ("buy", Some("up")),
@@ -2740,168 +2921,57 @@ impl BtcRepository {
                     entry_admission_evidence.clone(),
                 );
         }
-        let inserted = sqlx::query(
-            r#"
-            INSERT INTO polymarket.btc_strategy_decisions (
-              decision_id, decision_at, experiment_id, process_id, market_id, snapshot_id,
-              strategy_version, config_hash, action, outcome, token_id, fair_probability,
-              executable_price, gross_edge_per_share, fee_per_share, reserve_per_share,
-              net_edge_per_share, size, status, reject_reason, order_plan_id, execution_mode,
-              metadata
-            )
-            VALUES (
-              $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-              $21,'paper',$22
-            )
-            ON CONFLICT (decision_id, decision_at) DO NOTHING
-            "#,
-        )
-        .bind(decision.decision_id)
-        .bind(decision.evaluated_at)
-        .bind(experiment_id)
-        .bind(decision.process_id)
-        .bind(market_id)
-        .bind(decision.feature_snapshot_id)
-        .bind(strategy_version)
-        .bind(config_hash)
-        .bind(action)
-        .bind(outcome)
-        .bind(edge.token_id)
-        .bind(edge.fair_probability)
-        .bind(edge.executable_price)
-        .bind(edge.gross_edge_per_share)
-        .bind(edge.fee_per_share)
-        .bind(edge.reserve_per_share)
-        .bind(edge.net_edge_per_share)
-        .bind(edge.size)
-        .bind(status)
-        .bind(decision.reject_reason.map(|reason| reason.as_str()))
-        .bind(order_plan_id)
-        .bind(metadata)
-        .execute(&self.pool)
-        .await
-        .context("failed to insert BTC strategy decision")?;
+        let inserted = sqlx::query(INSERT_STRATEGY_DECISION_SQL)
+            .bind(process_id)
+            .bind(run_id)
+            .bind(decision.decision_id)
+            .bind(decision.evaluated_at)
+            .bind(market_id)
+            .bind(decision.feature_snapshot_id)
+            .bind(strategy_version)
+            .bind(config_hash)
+            .bind(action)
+            .bind(outcome)
+            .bind(edge.token_id)
+            .bind(edge.fair_probability)
+            .bind(edge.executable_price)
+            .bind(edge.gross_edge_per_share)
+            .bind(edge.fee_per_share)
+            .bind(edge.reserve_per_share)
+            .bind(edge.net_edge_per_share)
+            .bind(edge.size)
+            .bind(status)
+            .bind(decision.reject_reason.map(|reason| reason.as_str()))
+            .bind(order_plan_id)
+            .bind(metadata)
+            .execute(&self.pool)
+            .await
+            .context("failed to insert BTC strategy decision")?;
         Ok(inserted.rows_affected() == 1)
     }
 
     pub async fn update_strategy_decision_execution(
         &self,
+        process_id: Uuid,
+        run_id: Uuid,
         decision_id: Uuid,
         decision_at: DateTime<Utc>,
         status: &str,
         reject_reason: Option<&str>,
         metadata: serde_json::Value,
     ) -> Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE polymarket.btc_strategy_decisions
-            SET status = $3,
-                reject_reason = COALESCE($4, reject_reason),
-                metadata = metadata || $5
-            WHERE decision_id = $1 AND decision_at = $2
-            "#,
-        )
-        .bind(decision_id)
-        .bind(decision_at)
-        .bind(status)
-        .bind(reject_reason)
-        .bind(metadata)
-        .execute(&self.pool)
-        .await
-        .context("failed to update BTC decision execution")?;
+        sqlx::query(UPDATE_STRATEGY_DECISION_EXECUTION_SQL)
+            .bind(process_id)
+            .bind(run_id)
+            .bind(decision_id)
+            .bind(decision_at)
+            .bind(status)
+            .bind(reject_reason)
+            .bind(metadata)
+            .execute(&self.pool)
+            .await
+            .context("failed to update BTC decision execution")?;
         Ok(())
-    }
-
-    pub async fn update_paper_capital_runtime_summary<T: Serialize + ?Sized>(
-        &self,
-        experiment_id: Uuid,
-        status: &T,
-    ) -> Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE polymarket.btc_paper_experiments
-            SET summary = jsonb_set(
-                  COALESCE(summary, '{}'::jsonb),
-                  '{paper_capital}',
-                  $2::jsonb,
-                  true
-                ),
-                updated_at = now()
-            WHERE experiment_id = $1
-            "#,
-        )
-        .bind(experiment_id)
-        .bind(serde_json::to_value(status)?)
-        .execute(&self.pool)
-        .await
-        .context("failed to update durable paper-capital runtime summary")?;
-        Ok(())
-    }
-
-    pub async fn increment_experiment_counts(
-        &self,
-        experiment_id: Uuid,
-        snapshots: i64,
-        decisions: i64,
-        trades: i64,
-    ) -> Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE polymarket.btc_paper_experiments
-            SET markets_observed = (
-                  SELECT count(DISTINCT market_id)::bigint
-                  FROM polymarket.btc_strategy_decisions
-                  WHERE experiment_id = $1
-                ),
-                snapshots_recorded = snapshots_recorded + $2,
-                decisions_recorded = decisions_recorded + $3,
-                trades_entered = trades_entered + $4,
-                updated_at = now()
-            WHERE experiment_id = $1
-            "#,
-        )
-        .bind(experiment_id)
-        .bind(snapshots)
-        .bind(decisions)
-        .bind(trades)
-        .execute(&self.pool)
-        .await
-        .context("failed to update BTC experiment counters")?;
-        sqlx::query(
-            r#"
-            UPDATE polymarket.trading_processes
-            SET heartbeat_at = now(), updated_at = now()
-            WHERE process_id = (
-              SELECT process_id
-              FROM polymarket.btc_paper_experiments
-              WHERE experiment_id = $1
-            )
-            "#,
-        )
-        .bind(experiment_id)
-        .execute(&self.pool)
-        .await
-        .context("failed to heartbeat BTC trading process")?;
-        Ok(())
-    }
-
-    pub async fn paper_experiment_status(
-        &self,
-        experiment_id: Uuid,
-    ) -> Result<Option<BtcPaperExperimentStatus>> {
-        sqlx::query_as::<_, BtcPaperExperimentStatus>(
-            r#"
-            SELECT experiment_id, name, status, started_at, stopped_at, markets_observed,
-              snapshots_recorded, decisions_recorded, trades_entered, trades_resolved,
-              gross_pnl, fees_paid, net_pnl, summary, updated_at
-            FROM polymarket.btc_paper_experiments
-            WHERE experiment_id = $1
-            "#,
-        )
-        .bind(experiment_id)
-        .fetch_optional(&self.pool)
-        .await
-        .context("failed to fetch BTC paper experiment status")
     }
 
     /// Materializes every newly eligible official settlement into a durable, idempotent ledger
@@ -2909,98 +2979,25 @@ impl BtcRepository {
     /// requires the immutable official market fact and its matching durable resolution watch.
     pub async fn discover_pending_paper_settlements(
         &self,
-        experiment_id: Uuid,
+        process_id: Uuid,
+        run_id: Uuid,
     ) -> Result<Vec<BtcPaperSettlementRecord>> {
-        sqlx::query(
-            r#"
-            WITH entered AS (
-              SELECT
-                e.experiment_id,
-                e.process_id,
-                o.order_id,
-                o.market_id,
-                o.token_id,
-                jsonb_agg(to_jsonb(f.fill_id) ORDER BY f.timestamp_utc, f.fill_id) AS fill_ids,
-                round(sum(f.size), 10)::numeric(30,10) AS filled_size,
-                round(sum(f.price * f.size), 10)::numeric(30,10) AS entry_notional,
-                round(sum(f.fee), 10)::numeric(30,10) AS entry_fees
-              FROM polymarket.btc_paper_experiments e
-              JOIN polymarket.orders o
-                ON o.process_id = e.process_id
-               AND o.raw_payload #>> '{request,metadata,experiment_id}' = e.experiment_id::text
-              JOIN polymarket.fills f
-                ON f.order_id = o.order_id
-               AND f.source = 'paper'
-               AND f.process_id = e.process_id
-              WHERE e.experiment_id = $1
-              GROUP BY e.experiment_id, e.process_id, o.order_id, o.market_id, o.token_id
-            ),
-            eligible AS (
-              SELECT
-                e.*,
-                m.official_outcome,
-                m.official_winning_token_id,
-                m.official_resolution_received_at,
-                m.official_resolution_source,
-                CASE
-                  WHEN e.token_id = m.official_winning_token_id THEN e.filled_size
-                  ELSE 0::numeric(30,10)
-                END::numeric(30,10) AS payout
-              FROM entered e
-              JOIN polymarket.btc_interval_markets m ON m.market_id = e.market_id
-              JOIN polymarket.btc_official_resolution_watches w ON w.market_id = m.market_id
-              WHERE m.official_outcome IS NOT NULL
-                AND m.official_winning_token_id IS NOT NULL
-                AND m.official_resolution_received_at IS NOT NULL
-                AND m.official_resolution_source IS NOT NULL
-                AND (
-                  (m.official_outcome = 'up' AND m.official_winning_token_id = m.up_token_id)
-                  OR
-                  (m.official_outcome = 'down' AND m.official_winning_token_id = m.down_token_id)
-                )
-                AND w.status IN ('resolved', 'resolved_late')
-                AND w.resolution_received_at = m.official_resolution_received_at
-                AND w.resolution_source = m.official_resolution_source
-            )
-            INSERT INTO polymarket.btc_paper_settlement_ledger (
-              experiment_id, process_id, order_id, market_id, token_id, fill_ids,
-              official_outcome, official_winning_token_id,
-              official_resolution_received_at, official_resolution_source,
-              filled_size, entry_notional, entry_fees, payout, net_pnl
-            )
-            SELECT
-              experiment_id, process_id, order_id, market_id, token_id, fill_ids,
-              official_outcome, official_winning_token_id,
-              official_resolution_received_at, official_resolution_source,
-              filled_size, entry_notional, entry_fees, payout,
-              (payout - entry_notional - entry_fees)::numeric(30,10)
-            FROM eligible
-            ON CONFLICT (experiment_id, order_id) DO NOTHING
-            "#,
-        )
-        .bind(experiment_id)
-        .execute(&self.pool)
-        .await
-        .context("failed to discover durable BTC paper settlements")?;
+        let (has_identity_conflict, _inserted_count) =
+            sqlx::query_as::<_, (bool, i64)>(DISCOVER_PENDING_PAPER_SETTLEMENTS_SQL)
+                .bind(process_id)
+                .bind(run_id)
+                .fetch_one(&self.pool)
+                .await
+                .context("failed to discover durable BTC paper settlements")?;
+        ensure_unambiguous_order_run_identity(process_id, run_id, has_identity_conflict)?;
 
-        let records = sqlx::query_as::<_, BtcPaperSettlementRecord>(
-            r#"
-            SELECT settlement_id, experiment_id, process_id, order_id, market_id, token_id,
-              fill_ids,
-              official_outcome, official_winning_token_id,
-              official_resolution_received_at, official_resolution_source,
-              filled_size, entry_notional, entry_fees, payout, net_pnl,
-              credit_status, credited_at, credit_attempts, credit_evidence,
-              created_at, updated_at
-            FROM polymarket.btc_paper_settlement_ledger
-            WHERE experiment_id = $1 AND credit_status = 'pending'
-            ORDER BY official_resolution_received_at, order_id, settlement_id
-            "#,
-        )
-        .bind(experiment_id)
-        .fetch_all(&self.pool)
-        .await
-        .context("failed to load pending BTC paper settlement credits")?;
+        let records =
+            sqlx::query_as::<_, BtcPaperSettlementRecord>(LOAD_PENDING_PAPER_SETTLEMENTS_SQL)
+                .bind(process_id)
+                .bind(run_id)
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to load pending BTC paper settlement credits")?;
         for record in &records {
             validate_paper_settlement_record(record)?;
         }
@@ -3009,207 +3006,23 @@ impl BtcRepository {
 
     pub async fn mark_paper_settlement_credited(
         &self,
-        experiment_id: Uuid,
+        process_id: Uuid,
+        run_id: Uuid,
         settlement_id: Uuid,
         credit_evidence: &serde_json::Value,
     ) -> Result<bool> {
         if !credit_evidence.is_object() {
             bail!("paper settlement credit evidence must be a JSON object");
         }
-        let result = sqlx::query(
-            r#"
-            UPDATE polymarket.btc_paper_settlement_ledger
-            SET credit_status = 'credited',
-                credited_at = now(),
-                credit_attempts = credit_attempts + 1,
-                credit_evidence = $3,
-                updated_at = now()
-            WHERE experiment_id = $1
-              AND settlement_id = $2
-              AND credit_status = 'pending'
-            "#,
-        )
-        .bind(experiment_id)
-        .bind(settlement_id)
-        .bind(credit_evidence)
-        .execute(&self.pool)
-        .await
-        .context("failed to mark BTC paper settlement credited")?;
+        let result = sqlx::query(MARK_PAPER_SETTLEMENT_CREDITED_SQL)
+            .bind(process_id)
+            .bind(run_id)
+            .bind(settlement_id)
+            .bind(credit_evidence)
+            .execute(&self.pool)
+            .await
+            .context("failed to mark BTC paper settlement credited")?;
         Ok(result.rows_affected() == 1)
-    }
-
-    pub async fn list_paper_settlements(
-        &self,
-        experiment_id: Uuid,
-    ) -> Result<Vec<BtcPaperSettlementRecord>> {
-        sqlx::query_as::<_, BtcPaperSettlementRecord>(
-            r#"
-            SELECT settlement_id, experiment_id, process_id, order_id, market_id, token_id,
-              fill_ids,
-              official_outcome, official_winning_token_id,
-              official_resolution_received_at, official_resolution_source,
-              filled_size, entry_notional, entry_fees, payout, net_pnl,
-              credit_status, credited_at, credit_attempts, credit_evidence,
-              created_at, updated_at
-            FROM polymarket.btc_paper_settlement_ledger
-            WHERE experiment_id = $1
-            ORDER BY official_resolution_received_at, order_id, settlement_id
-            "#,
-        )
-        .bind(experiment_id)
-        .fetch_all(&self.pool)
-        .await
-        .context("failed to query BTC paper settlement evidence")
-    }
-
-    pub async fn paper_settlement_ledger_summary(
-        &self,
-        experiment_id: Uuid,
-    ) -> Result<BtcPaperSettlementLedgerSummary> {
-        sqlx::query_as::<_, BtcPaperSettlementLedgerSummary>(
-            r#"
-            SELECT
-              count(*)::bigint AS settlements_discovered,
-              count(*) FILTER (WHERE credit_status = 'credited')::bigint
-                AS settlements_credited,
-              count(*) FILTER (WHERE credit_status = 'pending')::bigint
-                AS settlements_pending,
-              COALESCE(sum(entry_notional) FILTER (WHERE credit_status = 'credited'), 0)::numeric
-                AS entry_notional,
-              COALESCE(sum(entry_fees) FILTER (WHERE credit_status = 'credited'), 0)::numeric
-                AS entry_fees,
-              COALESCE(sum(payout) FILTER (WHERE credit_status = 'credited'), 0)::numeric
-                AS payout_credited,
-              COALESCE(sum(net_pnl) FILTER (WHERE credit_status = 'credited'), 0)::numeric
-                AS net_pnl,
-              max(official_resolution_received_at) AS last_official_resolution_received_at,
-              max(credited_at) AS last_credited_at
-            FROM polymarket.btc_paper_settlement_ledger
-            WHERE experiment_id = $1
-            "#,
-        )
-        .bind(experiment_id)
-        .fetch_one(&self.pool)
-        .await
-        .context("failed to summarize BTC paper settlement ledger")
-    }
-
-    /// Recomputes paper results from immutable fills and official Polymarket outcomes. A local
-    /// Chainlink label alone is never authoritative for P&L. Re-running this method is idempotent
-    /// because counters and PnL are assigned from the aggregate rather than incremented.
-    pub async fn refresh_paper_experiment_settlement(
-        &self,
-        experiment_id: Uuid,
-    ) -> Result<BtcExperimentSettlementSummary> {
-        let summary = sqlx::query_as::<_, BtcExperimentSettlementSummary>(
-            r#"
-            WITH entered AS (
-              SELECT
-                o.order_id,
-                o.market_id,
-                o.token_id,
-                sum(f.size)::numeric AS filled_size,
-                sum(f.price * f.size)::numeric AS entry_cost,
-                sum(f.fee)::numeric AS fees
-              FROM polymarket.orders o
-              JOIN polymarket.fills f ON f.order_id = o.order_id
-              WHERE o.raw_payload #>> '{request,metadata,experiment_id}' = $1::text
-                AND f.source = 'paper'
-              GROUP BY o.order_id, o.market_id, o.token_id
-            ),
-            resolved AS (
-              SELECT
-                e.*,
-                CASE
-                  WHEN (m.official_outcome = 'up' AND e.token_id = m.up_token_id)
-                    OR (m.official_outcome = 'down' AND e.token_id = m.down_token_id)
-                  THEN e.filled_size
-                  ELSE 0::numeric
-                END AS payout
-              FROM entered e
-              JOIN polymarket.btc_interval_markets m ON m.market_id = e.market_id
-              JOIN polymarket.btc_official_resolution_watches w ON w.market_id = m.market_id
-              WHERE m.official_outcome IS NOT NULL
-                AND m.official_winning_token_id IS NOT NULL
-                AND m.official_resolution_received_at IS NOT NULL
-                AND m.official_resolution_source IS NOT NULL
-                AND (
-                  (m.official_outcome = 'up' AND m.official_winning_token_id = m.up_token_id)
-                  OR
-                  (m.official_outcome = 'down' AND m.official_winning_token_id = m.down_token_id)
-                )
-                AND w.status IN ('resolved', 'resolved_late')
-                AND w.resolution_received_at = m.official_resolution_received_at
-                AND w.resolution_source = m.official_resolution_source
-            )
-            SELECT
-              (SELECT count(*)::bigint FROM entered) AS trades_entered,
-              count(*)::bigint AS trades_resolved,
-              COALESCE(sum(payout - entry_cost), 0)::numeric AS gross_pnl,
-              COALESCE(sum(fees), 0)::numeric AS fees_paid,
-              COALESCE(sum(payout - entry_cost - fees), 0)::numeric AS net_pnl
-            FROM resolved
-            "#,
-        )
-        .bind(experiment_id)
-        .fetch_one(&self.pool)
-        .await
-        .context("failed to aggregate BTC paper experiment settlement")?;
-        sqlx::query(
-            r#"
-            UPDATE polymarket.btc_paper_experiments
-            SET trades_entered = $2,
-                trades_resolved = $3,
-                gross_pnl = $4,
-                fees_paid = $5,
-                net_pnl = $6,
-                updated_at = now()
-            WHERE experiment_id = $1
-            "#,
-        )
-        .bind(experiment_id)
-        .bind(summary.trades_entered)
-        .bind(summary.trades_resolved)
-        .bind(summary.gross_pnl)
-        .bind(summary.fees_paid)
-        .bind(summary.net_pnl)
-        .execute(&self.pool)
-        .await
-        .context("failed to refresh BTC paper experiment settlement")?;
-        Ok(summary)
-    }
-
-    /// Repairs settlement projections for every experiment that actually filled this market,
-    /// including stopped cohorts. Running it after every idempotent official replay closes the
-    /// crash window between the official commit and projection refresh.
-    pub async fn refresh_paper_experiments_for_market(&self, market_id: &str) -> Result<u64> {
-        let experiment_ids = sqlx::query_scalar::<_, Uuid>(
-            r#"
-            SELECT DISTINCT e.experiment_id
-            FROM polymarket.btc_paper_experiments e
-            JOIN polymarket.orders o
-              ON o.raw_payload #>> '{request,metadata,experiment_id}' = e.experiment_id::text
-            WHERE o.market_id = $1
-              AND EXISTS (
-                SELECT 1
-                FROM polymarket.fills f
-                WHERE f.order_id = o.order_id AND f.source = 'paper'
-              )
-            ORDER BY e.experiment_id
-            "#,
-        )
-        .bind(market_id)
-        .fetch_all(&self.pool)
-        .await
-        .context("failed to locate BTC experiments affected by official resolution")?;
-        for experiment_id in &experiment_ids {
-            self.refresh_paper_experiment_settlement(*experiment_id)
-                .await
-                .with_context(|| {
-                    format!("failed to refresh BTC paper settlement for experiment {experiment_id}")
-                })?;
-        }
-        Ok(experiment_ids.len() as u64)
     }
 }
 
@@ -3233,6 +3046,20 @@ async fn load_market_boundary_for_update(
     .await
     .context("failed to lock BTC market boundary state")?
     .with_context(|| format!("BTC market {market_id} does not exist"))
+}
+
+fn validate_run_manifest(
+    run_key: &str,
+    config_hash: &str,
+    frozen_process_config: &serde_json::Value,
+) -> Result<()> {
+    if run_key.trim().is_empty() || config_hash.trim().is_empty() {
+        bail!("BTC run key and config hash must not be empty");
+    }
+    if !frozen_process_config.is_object() {
+        bail!("BTC run manifest frozen process config must be a JSON object");
+    }
+    Ok(())
 }
 
 fn validate_paper_settlement_record(record: &BtcPaperSettlementRecord) -> Result<()> {
@@ -4516,34 +4343,35 @@ mod tests {
             received_at: feature_as_of - Duration::seconds(1),
             ingest_sequence: u64::try_from(id).unwrap(),
         };
-        let mut guard = BtcReferenceExecutionGuard {
-            guard_version: BTC_REFERENCE_EXECUTION_GUARD_VERSION.to_string(),
-            process_id,
-            intent_id,
-            decision_id,
-            decision_at,
-            snapshot_id,
-            feature_as_of,
-            market_id: "v2-exposure-market".to_string(),
-            token_id: token_id.to_string(),
-            outcome,
-            strategy_version: "strategy-v2-test".to_string(),
-            feature_schema_version: "feature-v2-test".to_string(),
-            lineage_version: BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_LINEAGE_VERSION.to_string(),
-            feature_sha256: "a".repeat(64),
-            client_order_id,
-            side: OrderSide::Buy,
-            order_type: OrderType::Fok,
-            limit_price: dec!(0.61),
-            size: dec!(5),
-            signal_id: None,
-            dynamic_fee_rate: dec!(0.01),
-            chainlink_open: tick(7_101),
-            chainlink: tick(7_102),
-            binance: tick(7_103),
-            max_reference_age_ms: 60_000,
-            evidence_sha256: String::new(),
-        };
+        let mut guard: BtcReferenceExecutionGuard = serde_json::from_value(serde_json::json!({
+            "guard_version": BTC_REFERENCE_EXECUTION_GUARD_VERSION,
+            "process_id": process_id,
+            "intent_id": intent_id,
+            "decision_id": decision_id,
+            "decision_at": decision_at,
+            "snapshot_id": snapshot_id,
+            "feature_as_of": feature_as_of,
+            "market_id": "v2-exposure-market",
+            "token_id": token_id,
+            "outcome": outcome,
+            "strategy_version": "strategy-v2-test",
+            "feature_schema_version": "feature-v2-test",
+            "lineage_version": BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_LINEAGE_VERSION,
+            "feature_sha256": "a".repeat(64),
+            "client_order_id": client_order_id,
+            "side": OrderSide::Buy,
+            "order_type": OrderType::Fok,
+            "limit_price": dec!(0.61),
+            "size": dec!(5),
+            "signal_id": null,
+            "dynamic_fee_rate": dec!(0.01),
+            "chainlink_open": tick(7_101),
+            "chainlink": tick(7_102),
+            "binance": tick(7_103),
+            "max_reference_age_ms": 60_000,
+            "evidence_sha256": "",
+        }))
+        .unwrap();
         guard.reseal_for_test();
         let mut request = OrderRequest {
             client_order_id,
@@ -4554,7 +4382,6 @@ mod tests {
             order_type: guard.order_type,
             price: guard.limit_price,
             size: guard.size,
-            signal_id: guard.signal_id,
             metadata: serde_json::json!({
                 "process_id": process_id,
                 "decision_id": decision_id,
@@ -4799,6 +4626,97 @@ mod tests {
             approved_intent: Some(intent),
             prediction,
         }
+    }
+
+    #[test]
+    fn run_manifest_queries_use_global_identity_and_process_owned_loads() {
+        let exists = RUN_MANIFEST_EXISTS_SQL.to_ascii_lowercase();
+        assert!(exists.contains("event_type = 'btc_run_manifest'"));
+        assert!(exists.contains("event_id = $1"));
+        assert!(exists.contains("metadata #>> '{run_id}' = $1::text"));
+        assert!(exists.contains("metadata #>> '{run_key}' = $2"));
+        assert!(!exists.contains("process_id"));
+
+        let load = LOAD_RUN_MANIFEST_SQL.to_ascii_lowercase();
+        assert!(load.contains("where process_id = $1"));
+        assert!(load.contains("event_id = $2"));
+        assert!(load.contains("metadata #>> '{run_id}' = $2::text"));
+        assert!(load.contains("metadata #>> '{run_key}' = $3"));
+        assert!(load.contains("metadata #> '{frozen_process_config}'"));
+        assert!(load.contains("limit 2"));
+
+        let claim_lock = CLAIM_RUN_MANIFEST_LOCK_SQL.to_ascii_lowercase();
+        assert!(claim_lock.contains("pg_advisory_xact_lock"));
+        assert!(claim_lock.contains("polymarket.btc_run_manifest.start"));
+
+        let insert = INSERT_RUN_MANIFEST_SQL.to_ascii_lowercase();
+        assert!(insert.contains("process_id, event_id"));
+        assert!(insert.contains("$1, $2, now()"));
+        assert!(insert.contains("'btc_run_manifest'"));
+        assert!(!insert.contains("on conflict"));
+    }
+
+    #[test]
+    fn run_child_queries_are_process_first_with_historical_order_metadata_fallback() {
+        let resume = PAPER_VENUE_RESUME_STATE_SQL.to_ascii_lowercase();
+        assert!(resume.contains("with order_identity as materialized"));
+        assert!(resume.contains("where o.process_id = $1"));
+        assert!(resume.contains("bool_or("));
+        assert!(resume.contains("as has_identity_conflict"));
+        assert!(resume.contains("i.has_identity_conflict"));
+        assert!(resume.contains("f.process_id = $1"));
+        assert!(resume.contains("where process_id = $1\n    and run_id = $2"));
+        assert!(resume.matches("metadata,run_id").count() >= 2);
+        assert!(resume.matches("experiment_id").count() >= 2);
+        assert!(!resume.contains("btc_paper_experiments"));
+
+        let decision_insert = INSERT_STRATEGY_DECISION_SQL.to_ascii_lowercase();
+        assert!(decision_insert.contains("process_id, run_id, decision_id"));
+        assert!(decision_insert.contains("values (\n  $1,$2,$3"));
+        assert!(!decision_insert.contains("experiment_id"));
+
+        let decision_update = UPDATE_STRATEGY_DECISION_EXECUTION_SQL.to_ascii_lowercase();
+        assert!(decision_update.contains("where process_id = $1"));
+        assert!(decision_update.contains("and run_id = $2"));
+
+        let discovery = DISCOVER_PENDING_PAPER_SETTLEMENTS_SQL.to_ascii_lowercase();
+        assert!(discovery.contains("with order_identity as materialized"));
+        assert!(discovery.contains("where o.process_id = $1"));
+        assert!(discovery.contains("bool_or("));
+        assert!(discovery.contains("as has_identity_conflict"));
+        assert!(discovery.contains("on f.process_id = $1"));
+        assert!(discovery.contains("$2::uuid as run_id"));
+        assert!(discovery.contains("on conflict (run_id, order_id) do nothing"));
+        assert!(discovery.contains("where not (select has_identity_conflict from identity_state)"));
+        assert!(discovery.contains(
+            "(select has_identity_conflict from identity_state) as has_identity_conflict"
+        ));
+        assert!(discovery.matches("metadata,run_id").count() >= 2);
+        assert!(discovery.matches("experiment_id").count() >= 2);
+        assert!(!discovery.contains("btc_paper_experiments"));
+
+        for query in [
+            LOAD_PENDING_PAPER_SETTLEMENTS_SQL,
+            MARK_PAPER_SETTLEMENT_CREDITED_SQL,
+        ] {
+            let normalized = query.to_ascii_lowercase();
+            assert!(normalized.contains("process_id = $1"));
+            assert!(normalized.contains("run_id = $2"));
+            assert!(!normalized.contains("experiment_id"));
+        }
+    }
+
+    #[test]
+    fn conflicting_current_and_legacy_order_identity_fails_closed() {
+        let process_id = Uuid::from_u128(101);
+        let run_id = Uuid::from_u128(202);
+
+        ensure_unambiguous_order_run_identity(process_id, run_id, false).unwrap();
+        let error = ensure_unambiguous_order_run_identity(process_id, run_id, true).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains(&process_id.to_string()));
+        assert!(message.contains(&run_id.to_string()));
+        assert!(message.contains("conflicting current and legacy run identity"));
     }
 
     #[test]
@@ -5767,9 +5685,9 @@ mod tests {
     fn settlement_record() -> BtcPaperSettlementRecord {
         let at = Utc::now();
         BtcPaperSettlementRecord {
-            settlement_id: Uuid::from_u128(1),
-            experiment_id: Uuid::from_u128(2),
             process_id: Uuid::from_u128(3),
+            run_id: Uuid::from_u128(2),
+            settlement_id: Uuid::from_u128(1),
             order_id: "order".to_string(),
             market_id: "market".to_string(),
             token_id: "up-token".to_string(),

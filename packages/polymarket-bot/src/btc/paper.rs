@@ -31,10 +31,7 @@ use crate::{
         LiveVenueStatus, LiveWalletAddressDiagnostics, LiveWalletCandidateAddressDiagnostics,
         ReconciliationReport,
     },
-    models::{
-        ConversionRequest, ConversionResult, FillRecord, FillSource, OrderRecord, OrderRequest,
-        OrderSide, OrderState, OrderType,
-    },
+    models::{FillRecord, FillSource, OrderRecord, OrderRequest, OrderSide, OrderState, OrderType},
 };
 
 pub const PAPER_DYNAMIC_FEE_RATE_METADATA_KEY: &str = "dynamic_fee_rate";
@@ -813,24 +810,6 @@ impl ExecutionVenue for PaperVenue {
             .collect())
     }
 
-    async fn convert_negative_risk(&self, request: ConversionRequest) -> Result<ConversionResult> {
-        Ok(ConversionResult {
-            conversion_id: request.conversion_id,
-            status: "paper_noop".to_string(),
-            tx_hash: None,
-            latency_ms: 0,
-            gas_cost_usd: Decimal::ZERO,
-        })
-    }
-
-    async fn split_ctf(&self, market_id: &str, size: Decimal) -> Result<ConversionResult> {
-        Ok(paper_conversion("split", market_id, size))
-    }
-
-    async fn merge_ctf(&self, market_id: &str, size: Decimal) -> Result<ConversionResult> {
-        Ok(paper_conversion("merge", market_id, size))
-    }
-
     async fn reconcile(&self) -> Result<ReconciliationReport> {
         Ok(ReconciliationReport {
             open_orders: self.get_open_orders().await?.len(),
@@ -1058,7 +1037,6 @@ fn immutable_order_request_matches(existing: &OrderRequest, incoming: &OrderRequ
         && existing.order_type == incoming.order_type
         && existing.price == incoming.price
         && existing.size == incoming.size
-        && existing.signal_id == incoming.signal_id
         && immutable_order_metadata_matches(&existing.metadata, &incoming.metadata)
 }
 
@@ -1229,25 +1207,7 @@ fn unknown_order_request(order_id: &str) -> OrderRequest {
         order_type: OrderType::Fok,
         price: Decimal::ZERO,
         size: Decimal::ZERO,
-        signal_id: None,
         metadata: serde_json::json!({ "source": "paper_unknown_order" }),
-    }
-}
-
-fn paper_conversion(kind: &str, market_id: &str, size: Decimal) -> ConversionResult {
-    ConversionResult {
-        conversion_id: Uuid::new_v5(
-            &Uuid::NAMESPACE_URL,
-            format!(
-                "polymarket-bot:paper:{kind}:{market_id}:{}",
-                size.normalize()
-            )
-            .as_bytes(),
-        ),
-        status: format!("paper_{kind}_noop"),
-        tx_hash: None,
-        latency_ms: 0,
-        gas_cost_usd: Decimal::ZERO,
     }
 }
 
@@ -1385,7 +1345,6 @@ mod tests {
             order_type: OrderType::Fok,
             price: limit,
             size,
-            signal_id: Some(Uuid::from_u128(202)),
             metadata: serde_json::json!({
                 "dynamic_fee_rate": "0.25"
             }),
@@ -1420,34 +1379,35 @@ mod tests {
             received_at: at - ChronoDuration::milliseconds(age_ms.saturating_sub(1)),
             ingest_sequence: id as u64,
         };
-        let mut guard = BtcReferenceExecutionGuard {
-            guard_version: BTC_REFERENCE_EXECUTION_GUARD_VERSION.to_string(),
-            process_id: request.process_id.unwrap(),
-            intent_id: Uuid::from_u128(301),
-            decision_id: Uuid::from_u128(302),
-            decision_at: at,
-            snapshot_id: Uuid::from_u128(303),
-            feature_as_of: at,
-            market_id: request.market_id.clone(),
-            token_id: request.token_id.clone(),
-            outcome: BtcOutcome::Up,
-            strategy_version: "strategy-v1".to_string(),
-            feature_schema_version: "features-v1".to_string(),
-            lineage_version: BTC_FEATURE_LINEAGE_VERSION.to_string(),
-            feature_sha256: "b".repeat(64),
-            client_order_id: request.client_order_id,
-            side: request.side,
-            order_type: request.order_type,
-            limit_price: request.price,
-            size: request.size,
-            signal_id: request.signal_id,
-            dynamic_fee_rate: dec!(0.25),
-            chainlink_open: tick(304, 60_000),
-            chainlink: tick(305, 5),
-            binance: tick(306, 4),
-            max_reference_age_ms: max_reference_age.num_milliseconds(),
-            evidence_sha256: String::new(),
-        };
+        let mut guard: BtcReferenceExecutionGuard = serde_json::from_value(serde_json::json!({
+            "guard_version": BTC_REFERENCE_EXECUTION_GUARD_VERSION,
+            "process_id": request.process_id.unwrap(),
+            "intent_id": Uuid::from_u128(301),
+            "decision_id": Uuid::from_u128(302),
+            "decision_at": at,
+            "snapshot_id": Uuid::from_u128(303),
+            "feature_as_of": at,
+            "market_id": request.market_id,
+            "token_id": request.token_id,
+            "outcome": BtcOutcome::Up,
+            "strategy_version": "strategy-v1",
+            "feature_schema_version": "features-v1",
+            "lineage_version": BTC_FEATURE_LINEAGE_VERSION,
+            "feature_sha256": "b".repeat(64),
+            "client_order_id": request.client_order_id,
+            "side": request.side,
+            "order_type": request.order_type,
+            "limit_price": request.price,
+            "size": request.size,
+            "signal_id": null,
+            "dynamic_fee_rate": dec!(0.25),
+            "chainlink_open": tick(304, 60_000),
+            "chainlink": tick(305, 5),
+            "binance": tick(306, 4),
+            "max_reference_age_ms": max_reference_age.num_milliseconds(),
+            "evidence_sha256": "",
+        }))
+        .unwrap();
         guard.reseal_for_test();
         request.metadata = serde_json::json!({
             "execution_intent": "entry",

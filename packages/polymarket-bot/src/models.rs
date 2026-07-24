@@ -15,7 +15,6 @@ pub struct OrderRequest {
     pub order_type: OrderType,
     pub price: Decimal,
     pub size: Decimal,
-    pub signal_id: Option<Uuid>,
     #[serde(default)]
     pub metadata: serde_json::Value,
 }
@@ -105,23 +104,6 @@ pub struct FillRecord {
 pub enum FillSource {
     Paper,
     Live,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConversionRequest {
-    pub conversion_id: Uuid,
-    pub market_id: String,
-    pub no_token_id: String,
-    pub size: Decimal,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConversionResult {
-    pub conversion_id: Uuid,
-    pub status: String,
-    pub tx_hash: Option<String>,
-    pub latency_ms: i64,
-    pub gas_cost_usd: Decimal,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,16 +208,6 @@ pub struct DataApiActivity {
     pub profile_image: Option<String>,
     #[serde(default)]
     pub profile_image_optimized: Option<String>,
-    #[serde(flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DataApiValue {
-    #[serde(default)]
-    pub user: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_decimal")]
-    pub value: Option<Decimal>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }

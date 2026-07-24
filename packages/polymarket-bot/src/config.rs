@@ -235,7 +235,7 @@ impl AppConfig {
             }
             if !conflicting_flags.is_empty() {
                 bail!(
-                    "BTC realtime/paper experiments require an isolated process; disable {}",
+                    "BTC realtime execution runs require an isolated process; disable {}",
                     conflicting_flags.join(", ")
                 );
             }

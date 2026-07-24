@@ -13,7 +13,7 @@ use chrono::Utc;
 use polymarket_bot::{
     btc::{
         runtime_status_from_inputs, BookRegistry, BtcDecisionStrategyConfig,
-        BtcEntryAdmissionConfig, BtcPaperExperimentConfig, BtcPaperExperimentRunner,
+        BtcEntryAdmissionConfig, BtcPaperProcessConfig, BtcPaperProcessRunner,
         BtcPlaybookRuntimeHandle, BtcRepository, BtcRuntime, BtcRuntimeConfig, BtcRuntimeHandle,
         BtcStrategyConfig, PaperPreviewConfig, PaperVenue as BtcPaperVenue, PaperVenueConfig,
         BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
@@ -65,86 +65,35 @@ const BTC_PROCESS_SCOPE: &str = "realtime_paper";
 const BTC_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(45);
 const COMPILED_SOURCE_IDENTITY: &str = env!("POLYMARKET_COMPILED_SOURCE_ID");
 
-async fn preflight_btc_experiment_identity(
-    pool: &PgPool,
-    _process_id: uuid::Uuid,
-    experiment_key: &str,
-    experiment_id: uuid::Uuid,
+async fn preflight_btc_run_identity(
+    repository: &BtcRepository,
+    run_key: &str,
+    run_id: uuid::Uuid,
 ) -> Result<()> {
-    let identity_exists = sqlx::query_scalar::<_, bool>(
-        r#"
-        SELECT EXISTS (
-          SELECT 1
-          FROM polymarket.btc_paper_experiments
-          WHERE experiment_id = $1 OR name = $2
-        )
-        "#,
-    )
-    .bind(experiment_id)
-    .bind(experiment_key)
-    .fetch_one(pool)
-    .await
-    .context("failed to preflight immutable BTC experiment identity")?;
+    let identity_exists = repository
+        .run_manifest_exists(run_id, run_key)
+        .await
+        .context("failed to preflight immutable BTC run identity")?;
     if identity_exists {
         bail!(
-            "BTC experiment identity {experiment_key} already exists; every new explicit cohort start requires a new experiment key"
+            "BTC run identity {run_key} already exists; every new explicit start requires a globally unique run key"
         );
     }
     Ok(())
 }
 
-async fn mark_btc_cohort_terminal(
+async fn mark_btc_process_terminal(
     pool: &PgPool,
-    experiment_id: uuid::Uuid,
     process_id: uuid::Uuid,
     status: &str,
     reason: &str,
-    allow_missing_experiment: bool,
+    allow_inactive_process: bool,
 ) -> Result<()> {
-    validate_btc_cohort_terminal_request(status, reason)?;
+    validate_btc_process_terminal_request(status, reason)?;
     let mut tx = pool
         .begin()
         .await
-        .context("failed to begin BTC cohort terminal transaction")?;
-    let experiment_update = sqlx::query(
-        r#"
-        UPDATE polymarket.btc_paper_experiments
-        SET status = $2,
-            stopped_at = now(),
-            stop_reason = $3,
-            updated_at = now()
-        WHERE experiment_id = $1 AND status = 'running'
-        "#,
-    )
-    .bind(experiment_id)
-    .bind(status)
-    .bind(reason)
-    .execute(&mut *tx)
-    .await
-    .context("failed to mark BTC experiment terminal")?;
-    if experiment_update.rows_affected() == 0 {
-        let existing_status = sqlx::query_scalar::<_, String>(
-            r#"
-            SELECT status
-            FROM polymarket.btc_paper_experiments
-            WHERE experiment_id = $1
-            "#,
-        )
-        .bind(experiment_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .context("failed to inspect existing BTC experiment terminal state")?;
-        match existing_status {
-            Some(existing_status) if existing_status == status => {}
-            Some(existing_status) => {
-                bail!(
-                    "cannot overwrite BTC experiment terminal state {existing_status} with {status}"
-                );
-            }
-            None if allow_missing_experiment => {}
-            None => bail!("BTC experiment disappeared during terminal transition"),
-        }
-    }
+        .context("failed to begin BTC process terminal transaction")?;
     let process_update = sqlx::query(
         r#"
         UPDATE polymarket.trading_processes
@@ -179,7 +128,7 @@ async fn mark_btc_cohort_terminal(
         match existing_status {
             Some(existing_status) if existing_status == status => {}
             Some(existing_status)
-                if allow_missing_experiment
+                if allow_inactive_process
                     && matches!(
                         existing_status.as_str(),
                         "created" | "stopped" | "failed" | "completed" | "expired"
@@ -192,13 +141,13 @@ async fn mark_btc_cohort_terminal(
     }
     tx.commit()
         .await
-        .context("failed to commit BTC cohort terminal transaction")?;
+        .context("failed to commit BTC process terminal transaction")?;
     Ok(())
 }
 
-fn validate_btc_cohort_terminal_request(status: &str, reason: &str) -> Result<()> {
+fn validate_btc_process_terminal_request(status: &str, reason: &str) -> Result<()> {
     if !matches!(status, "stopped" | "failed" | "completed") || reason.trim().is_empty() {
-        bail!("invalid BTC cohort terminal status or reason");
+        bail!("invalid BTC process terminal status or reason");
     }
     Ok(())
 }
@@ -515,8 +464,8 @@ struct ResolvedBtcProcessDefinition {
 }
 
 struct PreparedBtcStartDefinition {
-    experiment_id: uuid::Uuid,
-    experiment_key: String,
+    run_id: uuid::Uuid,
+    run_key: String,
     preregistration_sha256: String,
     strategy: BtcStrategyConfig,
     entry_admission: Option<BtcEntryAdmissionConfig>,
@@ -607,11 +556,11 @@ fn prepare_btc_start_definition(
             )))
         }
     };
-    let experiment_key = control.next_experiment_key;
+    let run_key = control.next_experiment_key;
     let preregistration_sha256 = control.preregistration_sha256;
-    let experiment_id = uuid::Uuid::new_v5(
+    let run_id = uuid::Uuid::new_v5(
         &uuid::Uuid::NAMESPACE_URL,
-        format!("polymarket-bot/btc-paper/{experiment_key}").as_bytes(),
+        format!("polymarket-bot/btc-paper/{run_key}").as_bytes(),
     );
     let mut frozen_raw = serde_json::json!({
         "pipeline_version": pipeline_version,
@@ -651,8 +600,8 @@ fn prepare_btc_start_definition(
     };
     let config_hash = hash_btc_frozen_process_config(&frozen_process_config)?;
     Ok(PreparedBtcStartDefinition {
-        experiment_id,
-        experiment_key,
+        run_id,
+        run_key,
         preregistration_sha256,
         strategy,
         entry_admission,
@@ -712,8 +661,8 @@ fn resume_process_contract_projection(mut config: serde_json::Value) -> serde_js
 
 struct ActiveBtcPlaybook {
     process_id: uuid::Uuid,
-    experiment_id: uuid::Uuid,
-    experiment_key: String,
+    run_id: uuid::Uuid,
+    run_key: String,
     config_hash: String,
     runtime: BtcPlaybookRuntimeHandle,
 }
@@ -726,12 +675,12 @@ struct SharedBtcRuntime {
 #[derive(Debug, Clone)]
 struct PendingBtcTerminal {
     process_id: uuid::Uuid,
-    experiment_id: uuid::Uuid,
-    experiment_key: String,
+    run_id: uuid::Uuid,
+    run_key: String,
     config_hash: String,
     terminal_status: String,
     terminal_reason: String,
-    allow_missing_experiment: bool,
+    allow_inactive_process: bool,
 }
 
 #[derive(Clone)]
@@ -1116,14 +1065,14 @@ impl BtcProcessManager {
     async fn ensure_start_slot_available(&self, process_id: uuid::Uuid) -> Result<(), HttpError> {
         if let Some(pending) = self.terminal_pending.lock().await.get(&process_id) {
             return Err(HttpError::conflict(format!(
-                "BTC experiment {} still has a pending terminal transition",
-                pending.experiment_key
+                "BTC run {} still has a pending terminal transition",
+                pending.run_key
             )));
         }
         if let Some(active) = self.active_playbooks.lock().await.get(&process_id) {
             return Err(HttpError::conflict(format!(
-                "BTC process {} is already running experiment {}",
-                active.process_id, active.experiment_key
+                "BTC process {} is already running paper run {}",
+                active.process_id, active.run_key
             )));
         }
         Ok(())
@@ -1152,18 +1101,13 @@ impl BtcProcessManager {
             .map_err(|error| HttpError::internal(error.to_string()))?
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
         let prepared = self.prepare_start_definition(&process)?;
-        preflight_btc_experiment_identity(
-            &self.pool,
-            process_id,
-            &prepared.experiment_key,
-            prepared.experiment_id,
-        )
-        .await
-        .map_err(|error| HttpError::conflict(error.to_string()))?;
+        preflight_btc_run_identity(&self.repository, &prepared.run_key, prepared.run_id)
+            .await
+            .map_err(|error| HttpError::conflict(error.to_string()))?;
         Ok(TradingProcessStartPreviewResponse {
             process_id,
-            experiment_id: prepared.experiment_id,
-            experiment_key: prepared.experiment_key,
+            run_id: prepared.run_id,
+            run_key: prepared.run_key,
             preregistration_sha256: prepared.preregistration_sha256,
             config_hash: prepared.config_hash,
             frozen_process_config: prepared.frozen_process_config,
@@ -1204,18 +1148,23 @@ impl BtcProcessManager {
             r#"
             SELECT p.process_id
             FROM polymarket.trading_processes p
-            JOIN polymarket.btc_paper_experiments e
-              ON e.process_id = p.process_id
-             AND e.name = p.config #>> '{raw,btc_realtime_paper,next_experiment_key}'
+            JOIN LATERAL (
+              SELECT event.timestamp_utc
+              FROM polymarket.trading_process_events event
+              WHERE event.process_id = p.process_id
+                AND event.event_type = 'btc_run_manifest'
+                AND event.metadata #>> '{run_key}' =
+                    p.config #>> '{raw,btc_realtime_paper,next_experiment_key}'
+              ORDER BY event.timestamp_utc DESC, event.created_at DESC
+              LIMIT 1
+            ) run ON true
             WHERE p.process_type = 'btc_5m'
               AND p.process_scope = 'realtime_paper'
               AND p.config #>> '{raw,btc_realtime_paper,schema_version}' IN ($1, $2, $3)
               AND p.enabled
               AND p.status IN ('starting','running','stopping')
               AND p.stopped_at IS NULL
-              AND e.status = 'running'
-              AND e.stopped_at IS NULL
-            ORDER BY e.started_at DESC
+            ORDER BY run.timestamp_utc DESC
             "#,
         )
         .bind(SELECTABLE_BTC_PROCESS_SCHEMA_VERSION)
@@ -1227,18 +1176,13 @@ impl BtcProcessManager {
         if candidates.is_empty() {
             let durable_claims = sqlx::query_scalar::<_, i64>(
                 r#"
-                SELECT COUNT(DISTINCT p.process_id)
+                SELECT COUNT(*)
                 FROM polymarket.trading_processes p
-                LEFT JOIN polymarket.btc_paper_experiments e
-                  ON e.process_id = p.process_id
-                 AND e.status = 'running'
-                 AND e.stopped_at IS NULL
                 WHERE p.process_type = 'btc_5m'
                   AND p.process_scope = 'realtime_paper'
-                  AND (
-                    (p.enabled AND p.status IN ('starting','running','stopping') AND p.stopped_at IS NULL)
-                    OR e.experiment_id IS NOT NULL
-                  )
+                  AND p.enabled
+                  AND p.status IN ('starting','running','stopping')
+                  AND p.stopped_at IS NULL
                 "#,
             )
             .fetch_one(&self.pool)
@@ -1271,29 +1215,16 @@ impl BtcProcessManager {
             .map_err(|error| HttpError::internal(error.to_string()))?
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
         let prepared = self.prepare_resume_definition(&process)?;
-        let (config_hash, frozen_process_config_value) = sqlx::query_as::<
-            _,
-            (String, serde_json::Value),
-        >(
-            r#"
-                SELECT config_hash, config
-                FROM polymarket.btc_paper_experiments
-                WHERE experiment_id = $1
-                  AND name = $2
-                  AND process_id = $3
-                  AND status = 'running'
-                  AND stopped_at IS NULL
-                "#,
-        )
-        .bind(prepared.experiment_id)
-        .bind(&prepared.experiment_key)
-        .bind(process_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|error| HttpError::internal(error.to_string()))?
-        .ok_or_else(|| {
-            HttpError::conflict("durable BTC experiment disappeared before runtime reattachment")
-        })?;
+        let manifest = self
+            .repository
+            .load_run_manifest(process_id, prepared.run_id, &prepared.run_key)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?
+            .ok_or_else(|| {
+                HttpError::conflict("durable BTC run disappeared before runtime reattachment")
+            })?;
+        let config_hash = manifest.config_hash;
+        let frozen_process_config_value = manifest.frozen_process_config;
         let current_frozen_process_config =
             serde_json::to_value(&prepared.frozen_process_config)
                 .map_err(|error| HttpError::internal(error.to_string()))?;
@@ -1301,12 +1232,12 @@ impl BtcProcessManager {
             != resume_process_contract_projection(frozen_process_config_value.clone())
         {
             return Err(HttpError::conflict(
-                "durable BTC experiment parameters changed and cannot be resumed by this process definition",
+                "durable BTC run parameters changed and cannot be resumed by this process definition",
             ));
         }
         let PreparedBtcStartDefinition {
-            experiment_id,
-            experiment_key,
+            run_id,
+            run_key,
             preregistration_sha256,
             strategy,
             entry_admission,
@@ -1322,8 +1253,8 @@ impl BtcProcessManager {
             "btc_runtime_resuming",
             "BTC realtime-paper runtime resume accepted",
             serde_json::json!({
-                "experiment_id": experiment_id,
-                "experiment_key": &experiment_key,
+                "run_id": run_id,
+                "run_key": &run_key,
                 "preregistration_sha256": &preregistration_sha256,
                 "config_hash": &config_hash,
                 "current_definition_config_hash": &current_config_hash,
@@ -1344,13 +1275,13 @@ impl BtcProcessManager {
                 process_id,
                 chrono::Duration::milliseconds(strategy.max_reference_age_ms),
             )?;
-            let experiment = Arc::new(BtcPaperExperimentRunner::new(
+            let process_runner = Arc::new(BtcPaperProcessRunner::new(
                 self.repository.clone(),
                 self.store.clone(),
                 paper_venue,
-                BtcPaperExperimentConfig {
-                    experiment_id,
-                    experiment_name: experiment_key.clone(),
+                BtcPaperProcessConfig {
+                    run_id,
+                    run_key: run_key.clone(),
                     process_id,
                     config_hash: config_hash.clone(),
                     frozen_process_config: frozen_process_config_value,
@@ -1360,11 +1291,11 @@ impl BtcProcessManager {
                     paper_stress_previews,
                 },
             )?);
-            experiment
+            process_runner
                 .resume()
                 .await
-                .context("failed to reattach immutable BTC experiment before feed resume")?;
-            BtcPlaybookRuntimeHandle::start(runtime_config, experiment, state)
+                .context("failed to reattach immutable BTC run before feed resume")?;
+            BtcPlaybookRuntimeHandle::start(runtime_config, process_runner, state)
         }
         .await;
         let runtime = match startup_result {
@@ -1379,8 +1310,8 @@ impl BtcProcessManager {
             process_id,
             ActiveBtcPlaybook {
                 process_id,
-                experiment_id,
-                experiment_key: experiment_key.clone(),
+                run_id,
+                run_key: run_key.clone(),
                 config_hash: config_hash.clone(),
                 runtime,
             },
@@ -1391,8 +1322,8 @@ impl BtcProcessManager {
             "btc_runtime_resumed",
             "BTC realtime-paper runtime resumed after service restart",
             serde_json::json!({
-                "experiment_id": experiment_id,
-                "experiment_key": &experiment_key,
+                "run_id": run_id,
+                "run_key": &run_key,
                 "config_hash": &config_hash,
                 "current_definition_config_hash": &current_config_hash,
                 "compiled_source_identity": COMPILED_SOURCE_IDENTITY,
@@ -1401,8 +1332,8 @@ impl BtcProcessManager {
         .await;
         info!(
             process_id = %process_id,
-            experiment_id = %experiment_id,
-            experiment_key = %experiment_key,
+            run_id = %run_id,
+            run_key = %run_key,
             config_hash = %config_hash,
             "durable BTC realtime-paper runtime resumed"
         );
@@ -1421,8 +1352,8 @@ impl BtcProcessManager {
             .map_err(|error| HttpError::internal(error.to_string()))?
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
         let PreparedBtcStartDefinition {
-            experiment_id,
-            experiment_key,
+            run_id,
+            run_key,
             preregistration_sha256,
             strategy,
             entry_admission,
@@ -1432,7 +1363,7 @@ impl BtcProcessManager {
             frozen_process_config,
             config_hash,
         } = self.prepare_start_definition(&process)?;
-        preflight_btc_experiment_identity(&self.pool, process_id, &experiment_key, experiment_id)
+        preflight_btc_run_identity(&self.repository, &run_key, run_id)
             .await
             .map_err(|error| HttpError::conflict(error.to_string()))?;
         let frozen_process_config_value = serde_json::to_value(&frozen_process_config)
@@ -1440,12 +1371,12 @@ impl BtcProcessManager {
 
         let start_pending = PendingBtcTerminal {
             process_id,
-            experiment_id,
-            experiment_key: experiment_key.clone(),
+            run_id,
+            run_key: run_key.clone(),
             config_hash: config_hash.clone(),
             terminal_status: "failed".to_string(),
             terminal_reason: "btc_start_transition_interrupted".to_string(),
-            allow_missing_experiment: true,
+            allow_inactive_process: true,
         };
         self.terminal_pending
             .lock()
@@ -1476,8 +1407,8 @@ impl BtcProcessManager {
             "btc_runtime_starting",
             "BTC realtime-paper runtime start accepted",
             serde_json::json!({
-                "experiment_id": experiment_id,
-                "experiment_key": &experiment_key,
+                "run_id": run_id,
+                "run_key": &run_key,
                 "preregistration_sha256": &preregistration_sha256,
             }),
         )
@@ -1495,13 +1426,13 @@ impl BtcProcessManager {
                 process_id,
                 chrono::Duration::milliseconds(strategy.max_reference_age_ms),
             )?;
-            let experiment = Arc::new(BtcPaperExperimentRunner::new(
+            let process_runner = Arc::new(BtcPaperProcessRunner::new(
                 self.repository.clone(),
                 self.store.clone(),
                 paper_venue,
-                BtcPaperExperimentConfig {
-                    experiment_id,
-                    experiment_name: experiment_key.clone(),
+                BtcPaperProcessConfig {
+                    run_id,
+                    run_key: run_key.clone(),
                     process_id,
                     config_hash: config_hash.clone(),
                     frozen_process_config: frozen_process_config_value,
@@ -1511,11 +1442,11 @@ impl BtcProcessManager {
                     paper_stress_previews: paper_stress_previews.clone(),
                 },
             )?);
-            experiment
+            process_runner
                 .initialize()
                 .await
-                .context("failed to initialize immutable BTC experiment before feed startup")?;
-            BtcPlaybookRuntimeHandle::start(runtime_config, experiment, state)
+                .context("failed to initialize immutable BTC run before feed startup")?;
+            BtcPlaybookRuntimeHandle::start(runtime_config, process_runner, state)
         }
         .await;
 
@@ -1557,8 +1488,8 @@ impl BtcProcessManager {
             process_id,
             ActiveBtcPlaybook {
                 process_id,
-                experiment_id,
-                experiment_key: experiment_key.clone(),
+                run_id,
+                run_key: run_key.clone(),
                 config_hash: config_hash.clone(),
                 runtime,
             },
@@ -1566,7 +1497,7 @@ impl BtcProcessManager {
         let mut pending_guard = self.terminal_pending.lock().await;
         if pending_guard
             .get(&process_id)
-            .is_some_and(|pending| pending.experiment_id == experiment_id)
+            .is_some_and(|pending| pending.run_id == run_id)
         {
             pending_guard.remove(&process_id);
         }
@@ -1577,16 +1508,16 @@ impl BtcProcessManager {
             "btc_runtime_started",
             "BTC realtime-paper runtime is running",
             serde_json::json!({
-                "experiment_id": experiment_id,
-                "experiment_key": &experiment_key,
+                "run_id": run_id,
+                "run_key": &run_key,
                 "config_hash": &config_hash,
             }),
         )
         .await;
         info!(
             process_id = %process_id,
-            experiment_id = %experiment_id,
-            experiment_key = %experiment_key,
+            run_id = %run_id,
+            run_key = %run_key,
             config_hash = %config_hash,
             compiled_source_identity = COMPILED_SOURCE_IDENTITY,
             "API-owned BTC realtime-paper runtime started"
@@ -1611,8 +1542,8 @@ impl BtcProcessManager {
             "btc_runtime_start_failed",
             &reason,
             serde_json::json!({
-                "experiment_id": pending.experiment_id,
-                "experiment_key": pending.experiment_key,
+                "run_id": pending.run_id,
+                "run_key": pending.run_key,
                 "config_hash": pending.config_hash,
             }),
         )
@@ -1646,7 +1577,7 @@ impl BtcProcessManager {
     async fn stop_process_for_generation(
         &self,
         process_id: uuid::Uuid,
-        expected_experiment_id: Option<uuid::Uuid>,
+        expected_run_id: Option<uuid::Uuid>,
         reason: &str,
         runtime_failed: bool,
         successful_terminal_status: &str,
@@ -1665,7 +1596,7 @@ impl BtcProcessManager {
             manager
                 .stop_process_locked(
                     process_id,
-                    expected_experiment_id,
+                    expected_run_id,
                     &reason,
                     runtime_failed,
                     &successful_terminal_status,
@@ -1679,7 +1610,7 @@ impl BtcProcessManager {
     async fn stop_process_locked(
         &self,
         process_id: uuid::Uuid,
-        expected_experiment_id: Option<uuid::Uuid>,
+        expected_run_id: Option<uuid::Uuid>,
         reason: &str,
         runtime_failed: bool,
         successful_terminal_status: &str,
@@ -1698,7 +1629,7 @@ impl BtcProcessManager {
 
         let pending = { self.terminal_pending.lock().await.get(&process_id).cloned() };
         if let Some(pending) = pending {
-            if expected_experiment_id.is_some_and(|expected| expected != pending.experiment_id) {
+            if expected_run_id.is_some_and(|expected| expected != pending.run_id) {
                 return Ok(process);
             }
             return self.finalize_pending_locked(pending).await;
@@ -1708,8 +1639,8 @@ impl BtcProcessManager {
             .lock()
             .await
             .get(&process_id)
-            .map(|active| (active.experiment_id, active.experiment_key.clone()));
-        let Some((active_experiment_id, active_experiment_key)) = active_identity else {
+            .map(|active| (active.run_id, active.run_key.clone()));
+        let Some((active_run_id, active_run_key)) = active_identity else {
             if process.enabled
                 || matches!(process.status.as_str(), "starting" | "running" | "stopping")
             {
@@ -1724,7 +1655,7 @@ impl BtcProcessManager {
             }
             return Ok(process);
         };
-        if expected_experiment_id.is_some_and(|expected| expected != active_experiment_id) {
+        if expected_run_id.is_some_and(|expected| expected != active_run_id) {
             return Ok(process);
         }
         self.store
@@ -1738,8 +1669,8 @@ impl BtcProcessManager {
             "btc_runtime_stopping",
             "BTC realtime-paper runtime stop accepted",
             serde_json::json!({
-                "experiment_id": active_experiment_id,
-                "experiment_key": active_experiment_key,
+                "run_id": active_run_id,
+                "run_key": active_run_key,
                 "reason": reason,
             }),
         )
@@ -1753,12 +1684,12 @@ impl BtcProcessManager {
             .expect("active BTC playbook exists while lifecycle transition is held");
         let provisional_pending = PendingBtcTerminal {
             process_id: active.process_id,
-            experiment_id: active.experiment_id,
-            experiment_key: active.experiment_key.clone(),
+            run_id: active.run_id,
+            run_key: active.run_key.clone(),
             config_hash: active.config_hash.clone(),
             terminal_status: "failed".to_string(),
             terminal_reason: format!("{reason}; stop_transition_interrupted"),
-            allow_missing_experiment: false,
+            allow_inactive_process: false,
         };
         self.terminal_pending
             .lock()
@@ -1786,12 +1717,12 @@ impl BtcProcessManager {
             .unwrap_or_else(|| reason.to_string());
         let pending = PendingBtcTerminal {
             process_id: active.process_id,
-            experiment_id: active.experiment_id,
-            experiment_key: active.experiment_key,
+            run_id: active.run_id,
+            run_key: active.run_key,
             config_hash: active.config_hash,
             terminal_status: terminal_status.to_string(),
             terminal_reason,
-            allow_missing_experiment: false,
+            allow_inactive_process: false,
         };
         self.terminal_pending
             .lock()
@@ -1806,13 +1737,12 @@ impl BtcProcessManager {
         &self,
         pending: PendingBtcTerminal,
     ) -> Result<TradingProcess, HttpError> {
-        if let Err(terminal_error) = mark_btc_cohort_terminal(
+        if let Err(terminal_error) = mark_btc_process_terminal(
             &self.pool,
-            pending.experiment_id,
             pending.process_id,
             &pending.terminal_status,
             &pending.terminal_reason,
-            pending.allow_missing_experiment,
+            pending.allow_inactive_process,
         )
         .await
         {
@@ -1826,8 +1756,8 @@ impl BtcProcessManager {
                 "btc_runtime_terminal_persistence_pending",
                 &persistence_reason,
                 serde_json::json!({
-                    "experiment_id": pending.experiment_id,
-                    "experiment_key": pending.experiment_key,
+                    "run_id": pending.run_id,
+                    "run_key": pending.run_key,
                     "config_hash": pending.config_hash,
                     "desired_terminal_status": pending.terminal_status,
                 }),
@@ -1838,7 +1768,7 @@ impl BtcProcessManager {
         let mut pending_guard = self.terminal_pending.lock().await;
         if pending_guard
             .get(&pending.process_id)
-            .is_some_and(|current| current.experiment_id == pending.experiment_id)
+            .is_some_and(|current| current.run_id == pending.run_id)
         {
             pending_guard.remove(&pending.process_id);
         }
@@ -1854,8 +1784,8 @@ impl BtcProcessManager {
             event_type,
             &pending.terminal_reason,
             serde_json::json!({
-                "experiment_id": pending.experiment_id,
-                "experiment_key": pending.experiment_key,
+                "run_id": pending.run_id,
+                "run_key": pending.run_key,
                 "config_hash": pending.config_hash,
             }),
         )
@@ -1875,8 +1805,8 @@ impl BtcProcessManager {
         let pending = self.terminal_pending.lock().await.values().next().cloned();
         if let Some(pending) = pending {
             return Err(HttpError::conflict(format!(
-                "BTC experiment {} has a pending API lifecycle transition; service shutdown left durable state unchanged",
-                pending.experiment_key
+                "BTC run {} has a pending API lifecycle transition; service shutdown left durable state unchanged",
+                pending.run_key
             )));
         }
         let active_runs = self
@@ -1889,8 +1819,8 @@ impl BtcProcessManager {
         let mut failures = Vec::new();
         for active in active_runs {
             let process_id = active.process_id;
-            let experiment_id = active.experiment_id;
-            let experiment_key = active.experiment_key.clone();
+            let run_id = active.run_id;
+            let run_key = active.run_key.clone();
             let config_hash = active.config_hash.clone();
             let shutdown_result =
                 tokio::time::timeout(BTC_RUNTIME_SHUTDOWN_TIMEOUT, active.runtime.shutdown()).await;
@@ -1911,8 +1841,8 @@ impl BtcProcessManager {
                 "btc_runtime_suspended",
                 "BTC realtime-paper runtime suspended for service shutdown",
                 serde_json::json!({
-                    "experiment_id": experiment_id,
-                    "experiment_key": experiment_key,
+                    "run_id": run_id,
+                    "run_key": run_key,
                     "config_hash": config_hash,
                     "reason": reason,
                     "resume_on_service_restart": true,
@@ -1921,7 +1851,7 @@ impl BtcProcessManager {
             .await;
             info!(
                 process_id = %process_id,
-                experiment_id = %experiment_id,
+                run_id = %run_id,
                 "BTC realtime-paper runtime suspended with durable resume intent"
             );
         }
@@ -1987,7 +1917,7 @@ impl BtcProcessManager {
             if let Err(stop_error) = self
                 .stop_process_for_generation(
                     pending.process_id,
-                    Some(pending.experiment_id),
+                    Some(pending.run_id),
                     &pending.terminal_reason,
                     pending.terminal_status == "failed",
                     if pending.terminal_status == "completed" {
@@ -2001,7 +1931,7 @@ impl BtcProcessManager {
                 error!(
                     error = ?stop_error,
                     process_id = %pending.process_id,
-                    experiment_id = %pending.experiment_id,
+                    run_id = %pending.run_id,
                     "failed to retry pending BTC terminal transition"
                 );
             }
@@ -2035,19 +1965,19 @@ impl BtcProcessManager {
                     .unwrap_or("shared market-data runtime handle is unavailable")
             );
             for process_id in process_ids {
-                let experiment_id = self
+                let run_id = self
                     .active_playbooks
                     .lock()
                     .await
                     .get(&process_id)
-                    .map(|active| active.experiment_id);
-                let Some(experiment_id) = experiment_id else {
+                    .map(|active| active.run_id);
+                let Some(run_id) = run_id else {
                     continue;
                 };
                 if let Err(stop_error) = self
                     .stop_process_for_generation(
                         process_id,
-                        Some(experiment_id),
+                        Some(run_id),
                         &failure_reason,
                         true,
                         "stopped",
@@ -2057,7 +1987,7 @@ impl BtcProcessManager {
                     error!(
                         error = ?stop_error,
                         process_id = %process_id,
-                        experiment_id = %experiment_id,
+                        run_id = %run_id,
                         "failed to terminalize playbook after shared market-data failure"
                     );
                 }
@@ -2070,9 +2000,9 @@ impl BtcProcessManager {
                 let Some(active) = active_guard.get(&process_id) else {
                     continue;
                 };
-                (active.experiment_id, active.runtime.status_inputs())
+                (active.run_id, active.runtime.status_inputs())
             };
-            let (experiment_id, (state, metrics, config, running)) = status_input;
+            let (run_id, (state, metrics, config, running)) = status_input;
             let status = runtime_status_from_inputs(state, metrics, config, running).await;
             let runtime_running = status.running;
             let last_error = status.metrics.last_error;
@@ -2088,7 +2018,7 @@ impl BtcProcessManager {
                         warn!(
                             error = %heartbeat_error,
                             process_id = %process_id,
-                            experiment_id = %experiment_id,
+                            run_id = %run_id,
                             "failed to persist BTC manager heartbeat"
                         );
                         continue;
@@ -2107,7 +2037,7 @@ impl BtcProcessManager {
             if let Err(stop_error) = self
                 .stop_process_for_generation(
                     process_id,
-                    Some(experiment_id),
+                    Some(run_id),
                     &terminal_reason,
                     true,
                     "stopped",
@@ -2117,7 +2047,7 @@ impl BtcProcessManager {
                 error!(
                     error = ?stop_error,
                     process_id = %process_id,
-                    experiment_id = %experiment_id,
+                    run_id = %run_id,
                     "failed to terminalize BTC runtime child failure"
                 );
             }
@@ -2171,21 +2101,21 @@ impl BtcProcessManager {
             .map(|active| {
                 (
                     active.process_id,
-                    active.experiment_id,
-                    active.experiment_key.clone(),
+                    active.run_id,
+                    active.run_key.clone(),
                     active.config_hash.clone(),
                     active.runtime.status_inputs(),
                 )
             });
-        if let Some((process_id, experiment_id, experiment_key, config_hash, inputs)) = active {
+        if let Some((process_id, run_id, run_key, config_hash, inputs)) = active {
             let (state, metrics, config, running) = inputs;
             let runtime = runtime_status_from_inputs(state, metrics, config, running).await;
             return serde_json::json!({
                 "capability_enabled": self.config.btc.realtime_enabled,
                 "active": true,
                 "process_id": process_id,
-                "experiment_id": experiment_id,
-                "experiment_key": experiment_key,
+                "run_id": run_id,
+                "run_key": run_key,
                 "config_hash": config_hash,
                 "runtime": runtime,
             });
@@ -2198,8 +2128,8 @@ impl BtcProcessManager {
                 "running": false,
                 "lifecycle_state": "terminal_pending",
                 "process_id": pending.process_id,
-                "experiment_id": pending.experiment_id,
-                "experiment_key": pending.experiment_key,
+                "run_id": pending.run_id,
+                "run_key": pending.run_key,
                 "config_hash": pending.config_hash,
                 "desired_terminal_status": pending.terminal_status,
                 "terminal_reason": pending.terminal_reason,
@@ -2213,78 +2143,6 @@ impl BtcProcessManager {
             "process_id": process_id,
             "readiness": {"ready": false, "reasons": ["trading_process_inactive"]}
         })
-    }
-
-    async fn paper_experiment_status(&self) -> Result<serde_json::Value, HttpError> {
-        let process_ids = self
-            .active_playbooks
-            .lock()
-            .await
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
-        let mut processes = Vec::with_capacity(process_ids.len());
-        for process_id in process_ids {
-            processes.push(self.paper_experiment_status_for_process(process_id).await?);
-        }
-        Ok(serde_json::json!({
-            "configured": true,
-            "active": !processes.is_empty(),
-            "active_process_count": processes.len(),
-            "processes": processes,
-        }))
-    }
-
-    async fn paper_experiment_status_for_process(
-        &self,
-        process_id: uuid::Uuid,
-    ) -> Result<serde_json::Value, HttpError> {
-        let active = self
-            .active_playbooks
-            .lock()
-            .await
-            .get(&process_id)
-            .map(|active| {
-                (
-                    active.process_id,
-                    active.experiment_id,
-                    active.experiment_key.clone(),
-                )
-            });
-        let Some((active_process_id, experiment_id, experiment_key)) = active else {
-            let pending = self.terminal_pending.lock().await.get(&process_id).cloned();
-            if let Some(pending) = pending {
-                return Ok(serde_json::json!({
-                    "configured": true,
-                    "active": false,
-                    "status": "terminal_pending",
-                    "process_id": pending.process_id,
-                    "experiment_id": pending.experiment_id,
-                    "experiment_key": pending.experiment_key,
-                    "desired_terminal_status": pending.terminal_status,
-                    "terminal_reason": pending.terminal_reason,
-                }));
-            }
-            return Ok(serde_json::json!({
-                "configured": true,
-                "active": false,
-                "status": "inactive",
-                "process_id": process_id,
-            }));
-        };
-        let experiment = self
-            .repository
-            .paper_experiment_status(experiment_id)
-            .await
-            .map_err(|error| HttpError::internal(error.to_string()))?;
-        Ok(serde_json::json!({
-            "configured": true,
-            "active": true,
-            "process_id": active_process_id,
-            "experiment_id": experiment_id,
-            "experiment_key": experiment_key,
-            "experiment": experiment,
-        }))
     }
 }
 
@@ -2362,13 +2220,6 @@ impl ControlApi for RuntimeControl {
             }));
         };
         Ok(manager.runtime_status().await)
-    }
-
-    async fn btc_paper_experiment_status(&self) -> Result<serde_json::Value, HttpError> {
-        let Some(manager) = &self.btc_manager else {
-            return Ok(serde_json::json!({"configured": false, "status": "disabled"}));
-        };
-        manager.paper_experiment_status().await
     }
 
     async fn enqueue_ingestion_backfill(
@@ -2742,14 +2593,6 @@ impl ControlApi for RuntimeControl {
                     }),
                 };
                 object.insert("btc_runtime".to_string(), runtime);
-                if let Some(manager) = &self.btc_manager {
-                    object.insert(
-                        "active_experiment".to_string(),
-                        manager
-                            .paper_experiment_status_for_process(process_id)
-                            .await?,
-                    );
-                }
             }
         }
         Ok(TradingProcessStatusResponse { process_id, status })
@@ -3185,12 +3028,12 @@ mod lifecycle_tests {
     use super::*;
 
     #[test]
-    fn btc_cohort_terminal_validation_accepts_all_supported_process_terminal_states() {
+    fn btc_process_terminal_validation_accepts_all_supported_terminal_states() {
         for status in ["stopped", "failed", "completed"] {
-            validate_btc_cohort_terminal_request(status, "api_transition").unwrap();
+            validate_btc_process_terminal_request(status, "api_transition").unwrap();
         }
-        assert!(validate_btc_cohort_terminal_request("running", "api_transition").is_err());
-        assert!(validate_btc_cohort_terminal_request("completed", " ").is_err());
+        assert!(validate_btc_process_terminal_request("running", "api_transition").is_err());
+        assert!(validate_btc_process_terminal_request("completed", " ").is_err());
     }
 
     fn eligible_btc_process() -> TradingProcess {
@@ -3805,12 +3648,12 @@ mod lifecycle_tests {
 
     #[test]
     fn btc_start_preparation_is_deterministic_and_freezes_exact_execution_config() {
-        let experiment_key = "btc-5m-paper-20260713-preview";
+        let run_key = "btc-5m-paper-20260713-preview";
         let preregistration_sha256 = "b".repeat(64);
         let resolved = ResolvedBtcProcessDefinition {
             control: BtcRealtimePaperControlConfig {
                 schema_version: BTC_PROCESS_SCHEMA_VERSION.to_string(),
-                next_experiment_key: experiment_key.to_string(),
+                next_experiment_key: run_key.to_string(),
                 preregistration_sha256: preregistration_sha256.clone(),
                 ..BtcRealtimePaperControlConfig::default()
             },
@@ -3826,15 +3669,15 @@ mod lifecycle_tests {
 
         let first = prepare_btc_start_definition(resolved.clone()).unwrap();
         let second = prepare_btc_start_definition(resolved).unwrap();
-        let expected_experiment_id = uuid::Uuid::new_v5(
+        let expected_run_id = uuid::Uuid::new_v5(
             &uuid::Uuid::NAMESPACE_URL,
-            format!("polymarket-bot/btc-paper/{experiment_key}").as_bytes(),
+            format!("polymarket-bot/btc-paper/{run_key}").as_bytes(),
         );
         let serialized_config = serde_json::to_vec(&first.frozen_process_config).unwrap();
         let expected_config_hash = format!("{:x}", Sha256::digest(serialized_config));
 
-        assert_eq!(first.experiment_id, expected_experiment_id);
-        assert_eq!(first.experiment_id, second.experiment_id);
+        assert_eq!(first.run_id, expected_run_id);
+        assert_eq!(first.run_id, second.run_id);
         assert_eq!(first.config_hash, expected_config_hash);
         assert_eq!(first.config_hash, second.config_hash);
         let frozen_runtime = first.frozen_process_config.raw["runtime"]

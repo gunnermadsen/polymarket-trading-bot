@@ -48,7 +48,8 @@ pub struct BtcReferenceExecutionGuard {
     pub order_type: OrderType,
     pub limit_price: Decimal,
     pub size: Decimal,
-    pub signal_id: Option<Uuid>,
+    #[serde(default, rename = "signal_id")]
+    legacy_signal_id: Option<Uuid>,
     pub dynamic_fee_rate: Decimal,
     pub chainlink_open: BtcReferenceTickEvidence,
     pub chainlink: BtcReferenceTickEvidence,
@@ -215,7 +216,7 @@ impl BtcReferenceExecutionGuard {
             order_type: request.order_type,
             limit_price: request.price,
             size: request.size,
-            signal_id: request.signal_id,
+            legacy_signal_id: None,
             dynamic_fee_rate,
             chainlink_open: required_tick_evidence(
                 "Chainlink open",
@@ -303,7 +304,6 @@ impl BtcReferenceExecutionGuard {
             || request.order_type != self.order_type
             || request.price != self.limit_price
             || request.size != self.size
-            || request.signal_id != self.signal_id
             || metadata_uuid(&request.metadata, "process_id") != Some(self.process_id)
             || metadata_uuid(&request.metadata, "intent_id") != Some(self.intent_id)
             || metadata_uuid(&request.metadata, "decision_id") != Some(self.decision_id)
@@ -337,6 +337,7 @@ impl BtcReferenceExecutionGuard {
             return Err(BtcReferenceExecutionRejectReason::IdentityMismatch);
         }
         if !is_sha256(&self.feature_sha256)
+            || self.legacy_signal_id.is_some()
             || self.side != OrderSide::Buy
             || self.order_type != OrderType::Fok
             || self.limit_price <= Decimal::ZERO
@@ -418,7 +419,7 @@ impl BtcReferenceExecutionGuard {
             order_type: self.order_type,
             limit_price: self.limit_price,
             size: self.size,
-            signal_id: self.signal_id,
+            signal_id: self.legacy_signal_id,
             dynamic_fee_rate: self.dynamic_fee_rate,
             chainlink_open: &self.chainlink_open,
             chainlink: &self.chainlink,
@@ -552,7 +553,7 @@ mod tests {
             order_type: OrderType::Fok,
             limit_price: dec!(0.40),
             size: dec!(2),
-            signal_id: None,
+            legacy_signal_id: None,
             dynamic_fee_rate: dec!(0.25),
             chainlink_open: tick(5, 1_000),
             chainlink: tick(6, 100),
@@ -586,9 +587,76 @@ mod tests {
             order_type: OrderType::Fok,
             price: guard.limit_price,
             size: guard.size,
-            signal_id: guard.signal_id,
             metadata,
         }
+    }
+
+    #[test]
+    fn legacy_signal_id_json_preserves_guard_v1_hash() {
+        let checked_at = Utc.with_ymd_and_hms(2026, 7, 21, 12, 0, 0).unwrap();
+        let guard = sealed_guard(checked_at);
+        assert_eq!(
+            guard.evidence_sha256,
+            "1c4ff39f324097b0ab7f97b956bf40cb7a864c23a04422ed0143c0fa116143e8"
+        );
+
+        let mut legacy_guard_json = serde_json::to_value(&guard).unwrap();
+        assert_eq!(
+            legacy_guard_json.get("signal_id"),
+            Some(&serde_json::Value::Null)
+        );
+        legacy_guard_json["signal_id"] = serde_json::Value::Null;
+        let legacy_guard: BtcReferenceExecutionGuard =
+            serde_json::from_value(legacy_guard_json).unwrap();
+        assert_eq!(
+            legacy_guard.calculate_evidence_sha256().unwrap(),
+            guard.evidence_sha256
+        );
+        assert_eq!(
+            serde_json::to_value(&legacy_guard)
+                .unwrap()
+                .get("signal_id"),
+            Some(&serde_json::Value::Null)
+        );
+
+        let mut legacy_request_json = serde_json::to_value(request(&guard)).unwrap();
+        legacy_request_json["signal_id"] = serde_json::Value::Null;
+        legacy_request_json["metadata"][BTC_REFERENCE_EXECUTION_GUARD_METADATA_KEY]["signal_id"] =
+            serde_json::Value::Null;
+        let legacy_request: OrderRequest = serde_json::from_value(legacy_request_json).unwrap();
+        assert_eq!(legacy_request.client_order_id, guard.client_order_id);
+        assert_eq!(
+            reference_execution_guard(&legacy_request).unwrap(),
+            legacy_guard
+        );
+        assert!(legacy_guard
+            .validate_for_request(
+                &legacy_request,
+                checked_at,
+                guard.process_id,
+                Duration::seconds(2),
+            )
+            .is_ok());
+        assert!(serde_json::to_value(legacy_request)
+            .unwrap()
+            .get("signal_id")
+            .is_none());
+
+        let mut unsupported_signal_guard = guard.clone();
+        unsupported_signal_guard.legacy_signal_id = Some(Uuid::from_u128(99));
+        unsupported_signal_guard.reseal_for_test();
+        let unsupported_signal_request = request(&unsupported_signal_guard);
+        assert_eq!(
+            unsupported_signal_guard
+                .validate_for_request(
+                    &unsupported_signal_request,
+                    checked_at,
+                    guard.process_id,
+                    Duration::seconds(2),
+                )
+                .unwrap_err(),
+            BtcReferenceExecutionRejectReason::InvalidGuard
+        );
     }
 
     #[test]
