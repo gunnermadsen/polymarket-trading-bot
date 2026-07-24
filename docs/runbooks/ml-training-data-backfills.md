@@ -83,6 +83,10 @@ fabricate a book. Each five-minute market therefore has exactly 1,200 rows and a
 345,600 rows. The preceding UTC hour is read for full-book seeds. When a completed raw
 materialization exists, it is reprocessed without downloading the source again; otherwise the
 worker streams the PMXT files directly to compact rows and removes the hourly cache as it advances.
+Raw database chunks may be pruned only after exact market coverage, cadence, causality, completed
+replacement artifacts, and source-artifact lineage have been validated in a database migration.
+The raw rows are disposable materialization; immutable `replaced` and `pruned` retention events,
+source checksums, record counts, and compact artifact checksums remain as evidence after pruning.
 The source is the
 [PMXT Polymarket Orderbook Archive v2](https://archive.pmxt.dev/docs/v2-data-overview), provided by
 [pmxt](https://pmxt.dev) under CC BY 4.0.
