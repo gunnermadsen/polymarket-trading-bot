@@ -244,6 +244,15 @@ pub trait ControlApi: Send + Sync + 'static {
             "trading processes are not wired",
         ))
     }
+
+    async fn complete_trading_process(
+        &self,
+        _process_id: Uuid,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "trading processes are not wired",
+        ))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -447,6 +456,10 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .route(
             "/trading-processes/:process_id/stop",
             post(stop_trading_process),
+        )
+        .route(
+            "/trading-processes/:process_id/complete",
+            post(complete_trading_process),
         )
         .route_layer(from_fn_with_state(admin_auth, require_admin_bearer));
 
@@ -715,6 +728,17 @@ async fn stop_trading_process(
     state
         .control
         .stop_trading_process(process_id)
+        .await
+        .map(Json)
+}
+
+async fn complete_trading_process(
+    State(state): State<HttpState>,
+    Path(process_id): Path<Uuid>,
+) -> Result<Json<TradingProcessResponse>, HttpError> {
+    state
+        .control
+        .complete_trading_process(process_id)
         .await
         .map(Json)
 }

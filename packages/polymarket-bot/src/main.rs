@@ -1625,7 +1625,16 @@ impl BtcProcessManager {
         process_id: uuid::Uuid,
         reason: &str,
     ) -> Result<TradingProcess, HttpError> {
-        self.stop_process_for_generation(process_id, None, reason, false)
+        self.stop_process_for_generation(process_id, None, reason, false, "stopped")
+            .await
+    }
+
+    async fn complete_process(
+        &self,
+        process_id: uuid::Uuid,
+        reason: &str,
+    ) -> Result<TradingProcess, HttpError> {
+        self.stop_process_for_generation(process_id, None, reason, false, "completed")
             .await
     }
 
@@ -1635,14 +1644,27 @@ impl BtcProcessManager {
         expected_experiment_id: Option<uuid::Uuid>,
         reason: &str,
         runtime_failed: bool,
+        successful_terminal_status: &str,
     ) -> Result<TradingProcess, HttpError> {
+        if !matches!(successful_terminal_status, "stopped" | "completed") {
+            return Err(HttpError::internal(
+                "unsupported successful BTC terminal status",
+            ));
+        }
         let transition_guard = self.transition.clone().lock_owned().await;
         let manager = self.clone();
         let reason = reason.to_string();
+        let successful_terminal_status = successful_terminal_status.to_string();
         tokio::spawn(async move {
             let _transition_guard = transition_guard;
             manager
-                .stop_process_locked(process_id, expected_experiment_id, &reason, runtime_failed)
+                .stop_process_locked(
+                    process_id,
+                    expected_experiment_id,
+                    &reason,
+                    runtime_failed,
+                    &successful_terminal_status,
+                )
                 .await
         })
         .await
@@ -1655,6 +1677,7 @@ impl BtcProcessManager {
         expected_experiment_id: Option<uuid::Uuid>,
         reason: &str,
         runtime_failed: bool,
+        successful_terminal_status: &str,
     ) -> Result<TradingProcess, HttpError> {
         let process = self
             .store
@@ -1687,6 +1710,11 @@ impl BtcProcessManager {
             {
                 return Err(HttpError::conflict(
                     "BTC process claims to be active but this service owns no runtime handle",
+                ));
+            }
+            if successful_terminal_status == "completed" && process.status != "completed" {
+                return Err(HttpError::conflict(
+                    "only an active or already completed BTC process can be completed",
                 ));
             }
             return Ok(process);
@@ -1746,7 +1774,7 @@ impl BtcProcessManager {
         let terminal_status = if runtime_failed || shutdown_failure.is_some() {
             "failed"
         } else {
-            "stopped"
+            successful_terminal_status
         };
         let terminal_reason = shutdown_failure
             .map(|failure| format!("{reason}; {failure}"))
@@ -1810,18 +1838,15 @@ impl BtcProcessManager {
             pending_guard.remove(&pending.process_id);
         }
         drop(pending_guard);
+        let (level, event_type) = match pending.terminal_status.as_str() {
+            "stopped" => ("info", "btc_runtime_stopped"),
+            "completed" => ("info", "btc_runtime_completed"),
+            _ => ("error", "btc_runtime_stop_failed"),
+        };
         self.record_event(
             pending.process_id,
-            if pending.terminal_status == "stopped" {
-                "info"
-            } else {
-                "error"
-            },
-            if pending.terminal_status == "stopped" {
-                "btc_runtime_stopped"
-            } else {
-                "btc_runtime_stop_failed"
-            },
+            level,
+            event_type,
             &pending.terminal_reason,
             serde_json::json!({
                 "experiment_id": pending.experiment_id,
@@ -1960,6 +1985,11 @@ impl BtcProcessManager {
                     Some(pending.experiment_id),
                     &pending.terminal_reason,
                     pending.terminal_status == "failed",
+                    if pending.terminal_status == "completed" {
+                        "completed"
+                    } else {
+                        "stopped"
+                    },
                 )
                 .await
             {
@@ -2015,6 +2045,7 @@ impl BtcProcessManager {
                         Some(experiment_id),
                         &failure_reason,
                         true,
+                        "stopped",
                     )
                     .await
                 {
@@ -2074,6 +2105,7 @@ impl BtcProcessManager {
                     Some(experiment_id),
                     &terminal_reason,
                     true,
+                    "stopped",
                 )
                 .await
             {
@@ -2856,6 +2888,28 @@ impl ControlApi for RuntimeControl {
             HttpError::bad_request("BTC realtime-paper capability is disabled for this deployment")
         })?;
         let process = manager.stop_process(process_id, "api_stop").await?;
+        Ok(TradingProcessResponse { process })
+    }
+
+    async fn complete_trading_process(
+        &self,
+        process_id: uuid::Uuid,
+    ) -> Result<TradingProcessResponse, HttpError> {
+        let current = self
+            .store
+            .get_trading_process(process_id)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?
+            .ok_or_else(|| HttpError::not_found("trading process not found"))?;
+        if !BtcProcessManager::is_managed_process(&current) {
+            return Err(HttpError::bad_request(
+                "only managed BTC realtime-paper processes can be completed",
+            ));
+        }
+        let manager = self.btc_manager.as_ref().ok_or_else(|| {
+            HttpError::bad_request("BTC realtime-paper capability is disabled for this deployment")
+        })?;
+        let process = manager.complete_process(process_id, "api_complete").await?;
         Ok(TradingProcessResponse { process })
     }
 }
