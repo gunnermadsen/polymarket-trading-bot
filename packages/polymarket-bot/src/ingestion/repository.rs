@@ -18,6 +18,10 @@ use crate::ingestion::job::{
 };
 
 const MAX_DATABASE_BATCH_ROWS: usize = 4_000;
+const POSTGRES_MAX_BIND_PARAMETERS: usize = 65_535;
+const ORDERBOOK_EVENT_INSERT_COLUMNS: usize = 18;
+const MAX_ORDERBOOK_EVENT_INSERT_ROWS: usize =
+    POSTGRES_MAX_BIND_PARAMETERS / ORDERBOOK_EVENT_INSERT_COLUMNS;
 
 #[derive(Clone)]
 pub struct IngestionRepository {
@@ -1144,40 +1148,46 @@ impl IngestionRepository {
             }
         }
 
-        let mut query = QueryBuilder::<Postgres>::new(
-            "INSERT INTO polymarket.btc_orderbook_archive_events (artifact_id, \
-             source_row_number, provider_received_at, source_timestamp, condition_id, asset_id, \
-             event_type, bids, asks, price, size, side, best_bid, best_ask, fee_rate_bps, \
-             transaction_hash, old_tick_size, new_tick_size) ",
-        );
-        query.push_values(records, |mut row, record| {
-            row.push_bind(artifact_id)
-                .push_bind(record.source_row_number)
-                .push_bind(record.provider_received_at)
-                .push_bind(record.source_timestamp)
-                .push_bind(&record.condition_id)
-                .push_bind(&record.asset_id)
-                .push_bind(&record.event_type)
-                .push_bind(&record.bids)
-                .push_bind(&record.asks)
-                .push_bind(record.price)
-                .push_bind(record.size)
-                .push_bind(&record.side)
-                .push_bind(record.best_bid)
-                .push_bind(record.best_ask)
-                .push_bind(record.fee_rate_bps)
-                .push_bind(&record.transaction_hash)
-                .push_bind(record.old_tick_size)
-                .push_bind(record.new_tick_size);
-        });
-        query
-            .push(" ON CONFLICT (artifact_id, source_row_number, provider_received_at) DO NOTHING");
-        let inserted = query
-            .build()
-            .execute(&mut *tx)
-            .await
-            .context("failed to persist PMXT orderbook-event batch")?
-            .rows_affected();
+        let mut inserted = 0u64;
+        for chunk in records.chunks(MAX_ORDERBOOK_EVENT_INSERT_ROWS) {
+            let mut query = QueryBuilder::<Postgres>::new(
+                "INSERT INTO polymarket.btc_orderbook_archive_events (artifact_id, \
+                 source_row_number, provider_received_at, source_timestamp, condition_id, asset_id, \
+                 event_type, bids, asks, price, size, side, best_bid, best_ask, fee_rate_bps, \
+                 transaction_hash, old_tick_size, new_tick_size) ",
+            );
+            query.push_values(chunk, |mut row, record| {
+                row.push_bind(artifact_id)
+                    .push_bind(record.source_row_number)
+                    .push_bind(record.provider_received_at)
+                    .push_bind(record.source_timestamp)
+                    .push_bind(&record.condition_id)
+                    .push_bind(&record.asset_id)
+                    .push_bind(&record.event_type)
+                    .push_bind(&record.bids)
+                    .push_bind(&record.asks)
+                    .push_bind(record.price)
+                    .push_bind(record.size)
+                    .push_bind(&record.side)
+                    .push_bind(record.best_bid)
+                    .push_bind(record.best_ask)
+                    .push_bind(record.fee_rate_bps)
+                    .push_bind(&record.transaction_hash)
+                    .push_bind(record.old_tick_size)
+                    .push_bind(record.new_tick_size);
+            });
+            query.push(
+                " ON CONFLICT (artifact_id, source_row_number, provider_received_at) DO NOTHING",
+            );
+            inserted = inserted.saturating_add(
+                query
+                    .build()
+                    .execute(&mut *tx)
+                    .await
+                    .context("failed to persist PMXT orderbook-event batch")?
+                    .rows_affected(),
+            );
+        }
         tx.commit().await?;
         batch_write_result(records.len(), inserted, "orderbook-event")
     }
