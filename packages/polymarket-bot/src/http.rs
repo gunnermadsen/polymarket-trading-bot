@@ -359,7 +359,7 @@ async fn list_ingesters() -> Json<IngesterListResponse> {
             .map(|key| IngesterDescription {
                 key,
                 request_version: key.supported_request_version(),
-                range_alignment_seconds: if key.is_binance() { 86_400 } else { 300 },
+                range_alignment_seconds: key.alignment_seconds(),
             })
             .collect(),
     })

@@ -12,8 +12,9 @@ use crate::ingestion::job::{
     BackfillArtifactStatus, BackfillCheckpoint, BackfillEventLevel, BackfillFailureKind,
     BackfillJob, BackfillJobEvent, BackfillJobStatus, BackfillJobSummary, BackfillProgress,
     BatchWriteResult, BinanceAggregateTradeRecord, BinanceOneSecondKlineRecord, BtcIntervalMarket,
-    BtcOutcome, BtcReferenceFact, BtcResolutionCandidate, ClaimedJob, IngesterKey,
-    PreparedArtifact, TrainingReadiness, ValidatedBackfillRequest, WorkerControl,
+    BtcOrderbookArchiveEvent, BtcOrderbookMarketScope, BtcOutcome, BtcReferenceFact,
+    BtcResolutionCandidate, ChainlinkBtcusdArchiveTick, ClaimedJob, IngesterKey, PreparedArtifact,
+    TrainingReadiness, ValidatedBackfillRequest, WorkerControl,
 };
 
 const MAX_DATABASE_BATCH_ROWS: usize = 4_000;
@@ -1070,6 +1071,189 @@ impl IngestionRepository {
         .collect()
     }
 
+    pub async fn orderbook_market_scope(
+        &self,
+        file_start: DateTime<Utc>,
+        file_end: DateTime<Utc>,
+    ) -> Result<Vec<BtcOrderbookMarketScope>> {
+        if file_end <= file_start {
+            bail!("orderbook market scope range must be non-empty");
+        }
+        sqlx::query_as::<_, BtcOrderbookMarketScopeRow>(
+            r#"
+            SELECT condition_id, up_token_id, down_token_id, window_start
+            FROM polymarket.btc_interval_markets
+            WHERE validation_status = 'valid'
+              AND window_start >= $1 AND window_start <= $2
+            ORDER BY window_start, market_id
+            "#,
+        )
+        .bind(file_start)
+        .bind(file_end)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to load BTC orderbook market scope")
+        .map(|rows| rows.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn insert_orderbook_event_batch(
+        &self,
+        claim: &ClaimedJob,
+        artifact_id: Uuid,
+        records: &[BtcOrderbookArchiveEvent],
+    ) -> Result<BatchWriteResult> {
+        if records.is_empty() {
+            return Ok(BatchWriteResult::default());
+        }
+        if records.len() > MAX_DATABASE_BATCH_ROWS {
+            bail!("orderbook-event batch exceeds {MAX_DATABASE_BATCH_ROWS} rows");
+        }
+        validate_orderbook_event_batch(records)?;
+        let mut tx = self.pool.begin().await?;
+        require_active_lease(&mut tx, claim).await?;
+        require_writable_artifact(&mut tx, claim, artifact_id).await?;
+        let row_numbers = records
+            .iter()
+            .map(|record| record.source_row_number)
+            .collect::<Vec<_>>();
+        let existing = sqlx::query_as::<_, ExistingOrderbookEventRow>(
+            r#"
+            SELECT artifact_id, source_row_number, provider_received_at, source_timestamp,
+              condition_id, asset_id, event_type, bids, asks, price, size, side, best_bid,
+              best_ask, fee_rate_bps, transaction_hash, old_tick_size, new_tick_size
+            FROM polymarket.btc_orderbook_archive_events
+            WHERE artifact_id = $1 AND source_row_number = ANY($2)
+            "#,
+        )
+        .bind(artifact_id)
+        .bind(&row_numbers)
+        .fetch_all(&mut *tx)
+        .await
+        .context("failed to inspect existing PMXT orderbook events")?;
+        for stored in &existing {
+            let candidate = records
+                .iter()
+                .find(|record| record.source_row_number == stored.source_row_number)
+                .context("stored PMXT row identity was absent from candidate batch")?;
+            if !stored.same_as(candidate, artifact_id) {
+                bail!(
+                    "immutable PMXT orderbook-event conflict for {}:{}",
+                    artifact_id,
+                    stored.source_row_number
+                );
+            }
+        }
+
+        let mut query = QueryBuilder::<Postgres>::new(
+            "INSERT INTO polymarket.btc_orderbook_archive_events (artifact_id, \
+             source_row_number, provider_received_at, source_timestamp, condition_id, asset_id, \
+             event_type, bids, asks, price, size, side, best_bid, best_ask, fee_rate_bps, \
+             transaction_hash, old_tick_size, new_tick_size) ",
+        );
+        query.push_values(records, |mut row, record| {
+            row.push_bind(artifact_id)
+                .push_bind(record.source_row_number)
+                .push_bind(record.provider_received_at)
+                .push_bind(record.source_timestamp)
+                .push_bind(&record.condition_id)
+                .push_bind(&record.asset_id)
+                .push_bind(&record.event_type)
+                .push_bind(&record.bids)
+                .push_bind(&record.asks)
+                .push_bind(record.price)
+                .push_bind(record.size)
+                .push_bind(&record.side)
+                .push_bind(record.best_bid)
+                .push_bind(record.best_ask)
+                .push_bind(record.fee_rate_bps)
+                .push_bind(&record.transaction_hash)
+                .push_bind(record.old_tick_size)
+                .push_bind(record.new_tick_size);
+        });
+        query
+            .push(" ON CONFLICT (artifact_id, source_row_number, provider_received_at) DO NOTHING");
+        let inserted = query
+            .build()
+            .execute(&mut *tx)
+            .await
+            .context("failed to persist PMXT orderbook-event batch")?
+            .rows_affected();
+        tx.commit().await?;
+        batch_write_result(records.len(), inserted, "orderbook-event")
+    }
+
+    pub async fn insert_chainlink_tick_batch(
+        &self,
+        claim: &ClaimedJob,
+        artifact_id: Uuid,
+        records: &[ChainlinkBtcusdArchiveTick],
+    ) -> Result<BatchWriteResult> {
+        if records.is_empty() {
+            return Ok(BatchWriteResult::default());
+        }
+        if records.len() > MAX_DATABASE_BATCH_ROWS {
+            bail!("Chainlink tick batch exceeds {MAX_DATABASE_BATCH_ROWS} rows");
+        }
+        validate_chainlink_tick_batch(records)?;
+        let mut tx = self.pool.begin().await?;
+        require_active_lease(&mut tx, claim).await?;
+        require_writable_artifact(&mut tx, claim, artifact_id).await?;
+        let timestamps = records
+            .iter()
+            .map(|record| record.source_timestamp)
+            .collect::<Vec<_>>();
+        let existing = sqlx::query_as::<_, ExistingChainlinkTickRow>(
+            r#"
+            SELECT feed_id, source_timestamp, valid_from_timestamp, price, bid, ask,
+              report_sha256, artifact_id
+            FROM polymarket.chainlink_btcusd_archive_ticks
+            WHERE feed_id = $1 AND source_timestamp = ANY($2)
+            "#,
+        )
+        .bind(&records[0].feed_id)
+        .bind(&timestamps)
+        .fetch_all(&mut *tx)
+        .await
+        .context("failed to inspect existing Chainlink ticks")?;
+        for stored in &existing {
+            let candidate = records
+                .iter()
+                .find(|record| record.source_timestamp == stored.source_timestamp)
+                .context("stored Chainlink tick identity was absent from candidate batch")?;
+            if !stored.same_as(candidate, artifact_id) {
+                bail!(
+                    "immutable Chainlink tick conflict for {}:{}",
+                    stored.feed_id,
+                    stored.source_timestamp
+                );
+            }
+        }
+
+        let mut query = QueryBuilder::<Postgres>::new(
+            "INSERT INTO polymarket.chainlink_btcusd_archive_ticks (feed_id, \
+             source_timestamp, valid_from_timestamp, price, bid, ask, report_sha256, artifact_id) ",
+        );
+        query.push_values(records, |mut row, record| {
+            row.push_bind(&record.feed_id)
+                .push_bind(record.source_timestamp)
+                .push_bind(record.valid_from_timestamp)
+                .push_bind(record.price)
+                .push_bind(record.bid)
+                .push_bind(record.ask)
+                .push_bind(&record.report_sha256)
+                .push_bind(artifact_id);
+        });
+        query.push(" ON CONFLICT (feed_id, source_timestamp) DO NOTHING");
+        let inserted = query
+            .build()
+            .execute(&mut *tx)
+            .await
+            .context("failed to persist Chainlink tick batch")?
+            .rows_affected();
+        tx.commit().await?;
+        batch_write_result(records.len(), inserted, "Chainlink tick")
+    }
+
     pub async fn insert_aggregate_trade_batch(
         &self,
         claim: &ClaimedJob,
@@ -1249,7 +1433,8 @@ impl IngestionRepository {
         let row = sqlx::query_as::<_, TrainingReadinessRow>(
             r#"
             WITH markets AS MATERIALIZED (
-              SELECT market_id, window_start, window_end, validation_status, official_outcome
+              SELECT market_id, condition_id, up_token_id, down_token_id, window_start,
+                window_end, validation_status, official_outcome
               FROM polymarket.btc_interval_markets
               WHERE window_start >= $1 AND window_start < $2
             ), facts AS MATERIALIZED (
@@ -1280,7 +1465,54 @@ impl IngestionRepository {
                     AND k.open_timestamp >= m.window_start
                     AND k.open_timestamp < m.window_end
                     AND a.status = 'completed'
-                ), false) AS kline_covered
+                ), false) AS kline_covered,
+                EXISTS (
+                  SELECT 1
+                  FROM polymarket.chainlink_btcusd_archive_ticks c
+                  JOIN polymarket.backfill_artifacts a USING (artifact_id)
+                  WHERE c.source_timestamp >= m.window_start
+                    AND c.source_timestamp <= m.window_start + interval '5 seconds'
+                    AND a.status = 'completed'
+                ) AND EXISTS (
+                  SELECT 1
+                  FROM polymarket.chainlink_btcusd_archive_ticks c
+                  JOIN polymarket.backfill_artifacts a USING (artifact_id)
+                  WHERE c.source_timestamp >= m.window_end - interval '5 seconds'
+                    AND c.source_timestamp < m.window_end
+                    AND a.status = 'completed'
+                ) AS chainlink_covered,
+                EXISTS (
+                  SELECT 1
+                  FROM polymarket.btc_orderbook_archive_events e
+                  JOIN polymarket.backfill_artifacts a USING (artifact_id)
+                  WHERE e.condition_id = m.condition_id
+                    AND e.asset_id = m.up_token_id
+                    AND e.event_type = 'book'
+                    AND e.source_timestamp >= m.window_start - interval '1 hour'
+                    AND e.source_timestamp <= m.window_start
+                    AND a.status = 'completed'
+                ) AND EXISTS (
+                  SELECT 1
+                  FROM polymarket.btc_orderbook_archive_events e
+                  JOIN polymarket.backfill_artifacts a USING (artifact_id)
+                  WHERE e.condition_id = m.condition_id
+                    AND e.asset_id = m.down_token_id
+                    AND e.event_type = 'book'
+                    AND e.source_timestamp >= m.window_start - interval '1 hour'
+                    AND e.source_timestamp <= m.window_start
+                    AND a.status = 'completed'
+                ) AND EXISTS (
+                  SELECT 1
+                  FROM polymarket.btc_orderbook_archive_events e
+                  JOIN polymarket.backfill_artifacts a USING (artifact_id)
+                  WHERE e.condition_id = m.condition_id
+                    AND e.asset_id IN (m.up_token_id, m.down_token_id)
+                    AND e.source_timestamp >= m.window_start
+                    AND e.source_timestamp < m.window_end
+                    AND a.status = 'completed'
+                  GROUP BY e.condition_id
+                  HAVING count(DISTINCT e.asset_id) = 2
+                ) AS orderbook_covered
               FROM markets m
             )
             SELECT
@@ -1290,10 +1522,12 @@ impl IngestionRepository {
               count(*) FILTER (WHERE m.official_outcome IS NOT NULL)::bigint AS official_outcomes,
               count(*) FILTER (WHERE c.agg_covered)::bigint AS aggregate_trade_covered_markets,
               count(*) FILTER (WHERE c.kline_covered)::bigint AS one_second_kline_covered_markets,
+              count(*) FILTER (WHERE c.chainlink_covered)::bigint AS chainlink_covered_markets,
+              count(*) FILTER (WHERE c.orderbook_covered)::bigint AS orderbook_covered_markets,
               count(*) FILTER (
                 WHERE m.validation_status = 'valid' AND m.official_outcome IS NOT NULL
                   AND COALESCE(f.opening_boundary, false)
-                  AND c.agg_covered AND c.kline_covered
+                  AND c.kline_covered AND c.chainlink_covered AND c.orderbook_covered
               )::bigint AS usable_markets,
               (SELECT min(trade_timestamp) FROM polymarket.binance_aggregate_trades
                 WHERE symbol = 'BTCUSDT' AND trade_timestamp >= $1 AND trade_timestamp < $2)
@@ -1306,7 +1540,19 @@ impl IngestionRepository {
                 AS one_second_kline_min_timestamp,
               (SELECT max(open_timestamp) FROM polymarket.binance_one_second_klines
                 WHERE symbol = 'BTCUSDT' AND open_timestamp >= $1 AND open_timestamp < $2)
-                AS one_second_kline_max_timestamp
+                AS one_second_kline_max_timestamp,
+              (SELECT min(source_timestamp) FROM polymarket.chainlink_btcusd_archive_ticks
+                WHERE source_timestamp >= $1 AND source_timestamp < $2)
+                AS chainlink_min_timestamp,
+              (SELECT max(source_timestamp) FROM polymarket.chainlink_btcusd_archive_ticks
+                WHERE source_timestamp >= $1 AND source_timestamp < $2)
+                AS chainlink_max_timestamp,
+              (SELECT min(source_timestamp) FROM polymarket.btc_orderbook_archive_events
+                WHERE source_timestamp >= $1 AND source_timestamp < $2)
+                AS orderbook_min_timestamp,
+              (SELECT max(source_timestamp) FROM polymarket.btc_orderbook_archive_events
+                WHERE source_timestamp >= $1 AND source_timestamp < $2)
+                AS orderbook_max_timestamp
             FROM markets m
             LEFT JOIN facts f USING (market_id)
             LEFT JOIN coverage c USING (market_id)
@@ -1338,6 +1584,14 @@ impl IngestionRepository {
         missing_by_reason.insert(
             "missing_one_second_klines".to_string(),
             expected_markets.saturating_sub(row.one_second_kline_covered_markets),
+        );
+        missing_by_reason.insert(
+            "missing_chainlink_reference_ticks".to_string(),
+            expected_markets.saturating_sub(row.chainlink_covered_markets),
+        );
+        missing_by_reason.insert(
+            "missing_orderbook_seed_or_events".to_string(),
+            expected_markets.saturating_sub(row.orderbook_covered_markets),
         );
         let artifact_rows = sqlx::query(
             r#"
@@ -1378,11 +1632,17 @@ impl IngestionRepository {
             official_outcomes: row.official_outcomes,
             aggregate_trade_covered_markets: row.aggregate_trade_covered_markets,
             one_second_kline_covered_markets: row.one_second_kline_covered_markets,
+            chainlink_covered_markets: row.chainlink_covered_markets,
+            orderbook_covered_markets: row.orderbook_covered_markets,
             usable_markets: row.usable_markets,
             aggregate_trade_min_timestamp: row.aggregate_trade_min_timestamp,
             aggregate_trade_max_timestamp: row.aggregate_trade_max_timestamp,
             one_second_kline_min_timestamp: row.one_second_kline_min_timestamp,
             one_second_kline_max_timestamp: row.one_second_kline_max_timestamp,
+            chainlink_min_timestamp: row.chainlink_min_timestamp,
+            chainlink_max_timestamp: row.chainlink_max_timestamp,
+            orderbook_min_timestamp: row.orderbook_min_timestamp,
+            orderbook_max_timestamp: row.orderbook_max_timestamp,
             missing_by_reason,
             artifact_status_counts,
         })
@@ -1658,6 +1918,95 @@ impl ExistingKlineRow {
 }
 
 #[derive(Debug, FromRow)]
+struct BtcOrderbookMarketScopeRow {
+    condition_id: String,
+    up_token_id: String,
+    down_token_id: String,
+    window_start: DateTime<Utc>,
+}
+
+impl From<BtcOrderbookMarketScopeRow> for BtcOrderbookMarketScope {
+    fn from(row: BtcOrderbookMarketScopeRow) -> Self {
+        Self {
+            condition_id: row.condition_id,
+            up_token_id: row.up_token_id,
+            down_token_id: row.down_token_id,
+            window_start: row.window_start,
+        }
+    }
+}
+
+#[derive(Debug, FromRow)]
+struct ExistingOrderbookEventRow {
+    artifact_id: Uuid,
+    source_row_number: i64,
+    provider_received_at: DateTime<Utc>,
+    source_timestamp: DateTime<Utc>,
+    condition_id: String,
+    asset_id: String,
+    event_type: String,
+    bids: Option<Value>,
+    asks: Option<Value>,
+    price: Option<Decimal>,
+    size: Option<Decimal>,
+    side: Option<String>,
+    best_bid: Option<Decimal>,
+    best_ask: Option<Decimal>,
+    fee_rate_bps: Option<i32>,
+    transaction_hash: Option<String>,
+    old_tick_size: Option<Decimal>,
+    new_tick_size: Option<Decimal>,
+}
+
+impl ExistingOrderbookEventRow {
+    fn same_as(&self, row: &BtcOrderbookArchiveEvent, artifact_id: Uuid) -> bool {
+        self.artifact_id == artifact_id
+            && self.source_row_number == row.source_row_number
+            && self.provider_received_at == row.provider_received_at
+            && self.source_timestamp == row.source_timestamp
+            && self.condition_id == row.condition_id
+            && self.asset_id == row.asset_id
+            && self.event_type == row.event_type
+            && self.bids == row.bids
+            && self.asks == row.asks
+            && self.price == row.price
+            && self.size == row.size
+            && self.side == row.side
+            && self.best_bid == row.best_bid
+            && self.best_ask == row.best_ask
+            && self.fee_rate_bps == row.fee_rate_bps
+            && self.transaction_hash == row.transaction_hash
+            && self.old_tick_size == row.old_tick_size
+            && self.new_tick_size == row.new_tick_size
+    }
+}
+
+#[derive(Debug, FromRow)]
+struct ExistingChainlinkTickRow {
+    feed_id: String,
+    source_timestamp: DateTime<Utc>,
+    valid_from_timestamp: DateTime<Utc>,
+    price: Decimal,
+    bid: Decimal,
+    ask: Decimal,
+    report_sha256: String,
+    artifact_id: Uuid,
+}
+
+impl ExistingChainlinkTickRow {
+    fn same_as(&self, row: &ChainlinkBtcusdArchiveTick, artifact_id: Uuid) -> bool {
+        self.feed_id == row.feed_id
+            && self.source_timestamp == row.source_timestamp
+            && self.valid_from_timestamp == row.valid_from_timestamp
+            && self.price == row.price
+            && self.bid == row.bid
+            && self.ask == row.ask
+            && self.report_sha256 == row.report_sha256
+            && self.artifact_id == artifact_id
+    }
+}
+
+#[derive(Debug, FromRow)]
 struct TrainingReadinessRow {
     valid_market_identities: i64,
     opening_boundaries: i64,
@@ -1665,11 +2014,17 @@ struct TrainingReadinessRow {
     official_outcomes: i64,
     aggregate_trade_covered_markets: i64,
     one_second_kline_covered_markets: i64,
+    chainlink_covered_markets: i64,
+    orderbook_covered_markets: i64,
     usable_markets: i64,
     aggregate_trade_min_timestamp: Option<DateTime<Utc>>,
     aggregate_trade_max_timestamp: Option<DateTime<Utc>>,
     one_second_kline_min_timestamp: Option<DateTime<Utc>>,
     one_second_kline_max_timestamp: Option<DateTime<Utc>>,
+    chainlink_min_timestamp: Option<DateTime<Utc>>,
+    chainlink_max_timestamp: Option<DateTime<Utc>>,
+    orderbook_min_timestamp: Option<DateTime<Utc>>,
+    orderbook_max_timestamp: Option<DateTime<Utc>>,
 }
 
 async fn require_active_lease(
@@ -1793,6 +2148,79 @@ fn validate_kline_batch(records: &[BinanceOneSecondKlineRecord]) -> Result<()> {
         previous = Some(record.open_timestamp);
     }
     Ok(())
+}
+
+fn validate_orderbook_event_batch(records: &[BtcOrderbookArchiveEvent]) -> Result<()> {
+    let mut previous = None;
+    for record in records {
+        if record.source_row_number < 0
+            || !record.condition_id.starts_with("0x")
+            || record.condition_id.len() != 66
+            || record.asset_id.is_empty()
+            || !matches!(
+                record.event_type.as_str(),
+                "book" | "price_change" | "last_trade_price" | "tick_size_change"
+            )
+            || record
+                .price
+                .is_some_and(|value| value < Decimal::ZERO || value > Decimal::ONE)
+            || record.size.is_some_and(|value| value < Decimal::ZERO)
+            || record
+                .best_bid
+                .is_some_and(|value| value < Decimal::ZERO || value > Decimal::ONE)
+            || record
+                .best_ask
+                .is_some_and(|value| value < Decimal::ZERO || value > Decimal::ONE)
+            || record
+                .side
+                .as_deref()
+                .is_some_and(|side| !matches!(side, "buy" | "sell"))
+            || (record.event_type == "book"
+                && (!record.bids.as_ref().is_some_and(Value::is_array)
+                    || !record.asks.as_ref().is_some_and(Value::is_array)))
+        {
+            bail!("invalid PMXT orderbook-event record");
+        }
+        if previous.is_some_and(|value| record.source_row_number <= value) {
+            bail!("PMXT source row numbers must be strictly increasing within a batch");
+        }
+        previous = Some(record.source_row_number);
+    }
+    Ok(())
+}
+
+fn validate_chainlink_tick_batch(records: &[ChainlinkBtcusdArchiveTick]) -> Result<()> {
+    let feed_id = &records[0].feed_id;
+    let mut previous = None;
+    for record in records {
+        if &record.feed_id != feed_id
+            || record.feed_id.len() != 66
+            || !record.feed_id.starts_with("0x")
+            || record.valid_from_timestamp > record.source_timestamp
+            || record.price <= Decimal::ZERO
+            || record.bid <= Decimal::ZERO
+            || record.ask <= Decimal::ZERO
+            || record.bid > record.price
+            || record.price > record.ask
+        {
+            bail!("invalid Chainlink BTC/USD tick record");
+        }
+        validate_sha256(&record.report_sha256, "Chainlink report checksum")?;
+        if previous.is_some_and(|value| record.source_timestamp <= value) {
+            bail!("Chainlink tick timestamps must be strictly increasing within a batch");
+        }
+        previous = Some(record.source_timestamp);
+    }
+    Ok(())
+}
+
+fn batch_write_result(records: usize, inserted: u64, name: &str) -> Result<BatchWriteResult> {
+    let input = u64::try_from(records).with_context(|| format!("{name} batch size overflow"))?;
+    Ok(BatchWriteResult {
+        input_records: input,
+        inserted_records: inserted,
+        duplicate_records: input.saturating_sub(inserted),
+    })
 }
 
 fn validate_artifact_spec(spec: &ArtifactSpec) -> Result<()> {

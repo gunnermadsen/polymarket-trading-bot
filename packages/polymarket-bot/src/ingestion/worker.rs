@@ -9,8 +9,13 @@ use crate::config::AppConfig;
 
 use super::{
     binance_archive::ArchiveCancellation,
+    chainlink_archive::{
+        ChainlinkArchiveConfig, ChainlinkCredentials, DEFAULT_CHAINLINK_BTCUSD_FEED_ID,
+        DEFAULT_CHAINLINK_REST_URL,
+    },
     executor::{IngestionExecutor, IngestionExecutorConfig},
     job::{BackfillEventLevel, BackfillFailureKind, BackfillJobSummary, ClaimedJob, WorkerControl},
+    pmxt_archive::DEFAULT_PMXT_ARCHIVE_URL,
     repository::IngestionRepository,
 };
 
@@ -108,6 +113,22 @@ impl BackfillWorker {
                 gamma_base_url: app.gamma_base_url,
                 clob_base_url: app.clob_base_url,
                 binance_archive_base_url: DEFAULT_BINANCE_ARCHIVE_BASE_URL.to_string(),
+                pmxt_archive_base_url: env_string(
+                    "POLYMARKET_PMXT_ARCHIVE_BASE_URL",
+                    DEFAULT_PMXT_ARCHIVE_URL,
+                ),
+                chainlink: ChainlinkArchiveConfig {
+                    rest_url: env_string(
+                        "POLYMARKET_CHAINLINK_DATA_STREAMS_REST_URL",
+                        DEFAULT_CHAINLINK_REST_URL,
+                    ),
+                    feed_id: env_string(
+                        "POLYMARKET_CHAINLINK_DATA_STREAMS_FEED_ID",
+                        DEFAULT_CHAINLINK_BTCUSD_FEED_ID,
+                    ),
+                    page_limit: env_usize("POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT", 1_000)?,
+                    credentials: chainlink_credentials_from_env()?,
+                },
                 cache_directory: config.cache_directory.clone(),
                 batch_rows: config.batch_rows,
             },
@@ -338,6 +359,25 @@ fn env_string(key: &str, default: &str) -> String {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| default.to_string())
+}
+
+fn chainlink_credentials_from_env() -> Result<Option<ChainlinkCredentials>> {
+    let api_key = env::var("POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let api_secret = env::var("POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    match (api_key, api_secret) {
+        (None, None) => Ok(None),
+        (Some(api_key), Some(api_secret)) => Ok(Some(ChainlinkCredentials {
+            api_key,
+            api_secret,
+        })),
+        _ => bail!(
+            "POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY and POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET must be configured together"
+        ),
+    }
 }
 
 fn env_u64(key: &str, default: u64) -> Result<u64> {

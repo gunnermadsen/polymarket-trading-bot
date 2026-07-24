@@ -63,14 +63,18 @@ pub enum IngesterKey {
     BtcFiveMinuteResolutions,
     BinanceBtcusdtAggTrades,
     BinanceBtcusdtOneSecondKlines,
+    PolymarketBtcFiveMinuteOrderbooks,
+    ChainlinkBtcusdReferenceTicks,
 }
 
 impl IngesterKey {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 6] = [
         Self::BtcFiveMinuteMarkets,
         Self::BtcFiveMinuteResolutions,
         Self::BinanceBtcusdtAggTrades,
         Self::BinanceBtcusdtOneSecondKlines,
+        Self::PolymarketBtcFiveMinuteOrderbooks,
+        Self::ChainlinkBtcusdReferenceTicks,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -79,6 +83,8 @@ impl IngesterKey {
             Self::BtcFiveMinuteResolutions => "btc_five_minute_resolutions",
             Self::BinanceBtcusdtAggTrades => "binance_btcusdt_agg_trades",
             Self::BinanceBtcusdtOneSecondKlines => "binance_btcusdt_one_second_klines",
+            Self::PolymarketBtcFiveMinuteOrderbooks => "polymarket_btc_five_minute_orderbooks",
+            Self::ChainlinkBtcusdReferenceTicks => "chainlink_btcusd_reference_ticks",
         }
     }
 
@@ -86,11 +92,25 @@ impl IngesterKey {
         BACKFILL_REQUEST_VERSION
     }
 
-    pub const fn is_binance(self) -> bool {
-        matches!(
-            self,
-            Self::BinanceBtcusdtAggTrades | Self::BinanceBtcusdtOneSecondKlines
-        )
+    pub const fn alignment_seconds(self) -> i64 {
+        match self {
+            Self::BtcFiveMinuteMarkets | Self::BtcFiveMinuteResolutions => 300,
+            Self::PolymarketBtcFiveMinuteOrderbooks => 3_600,
+            Self::BinanceBtcusdtAggTrades
+            | Self::BinanceBtcusdtOneSecondKlines
+            | Self::ChainlinkBtcusdReferenceTicks => 86_400,
+        }
+    }
+
+    pub fn latest_complete_end(self, now: DateTime<Utc>) -> DateTime<Utc> {
+        let alignment = self.alignment_seconds();
+        let source_lag_seconds = match self {
+            Self::PolymarketBtcFiveMinuteOrderbooks => 10 * 60,
+            _ => 0,
+        };
+        let safe_now = now - chrono::Duration::seconds(source_lag_seconds);
+        DateTime::from_timestamp(safe_now.timestamp().div_euclid(alignment) * alignment, 0)
+            .expect("an aligned current UTC timestamp is representable")
     }
 }
 
@@ -109,6 +129,8 @@ impl FromStr for IngesterKey {
             "btc_five_minute_resolutions" => Ok(Self::BtcFiveMinuteResolutions),
             "binance_btcusdt_agg_trades" => Ok(Self::BinanceBtcusdtAggTrades),
             "binance_btcusdt_one_second_klines" => Ok(Self::BinanceBtcusdtOneSecondKlines),
+            "polymarket_btc_five_minute_orderbooks" => Ok(Self::PolymarketBtcFiveMinuteOrderbooks),
+            "chainlink_btcusd_reference_ticks" => Ok(Self::ChainlinkBtcusdReferenceTicks),
             other => Err(BackfillRequestValidationError::new(format!(
                 "unsupported ingester {other}"
             ))),
@@ -144,16 +166,7 @@ impl BackfillRequest {
                 "range_end must be later than range_start",
             ));
         }
-        let now = Utc::now();
-        let latest_complete_end = if self.ingester.is_binance() {
-            now.date_naive()
-                .and_hms_opt(0, 0, 0)
-                .expect("UTC midnight is representable")
-                .and_utc()
-        } else {
-            DateTime::from_timestamp(now.timestamp().div_euclid(300) * 300, 0)
-                .expect("an aligned current UTC timestamp is representable")
-        };
+        let latest_complete_end = self.ingester.latest_complete_end(Utc::now());
         if self.range_end > latest_complete_end {
             return Err(BackfillRequestValidationError::new(
                 "range_end must not exceed the latest complete historical source interval",
@@ -187,11 +200,7 @@ impl BackfillRequest {
             )));
         }
 
-        let alignment_seconds = if self.ingester.is_binance() {
-            86_400
-        } else {
-            300
-        };
+        let alignment_seconds = self.ingester.alignment_seconds();
         validate_aligned_timestamp(self.range_start, alignment_seconds, "range_start")?;
         validate_aligned_timestamp(self.range_end, alignment_seconds, "range_end")?;
 
@@ -628,6 +637,46 @@ pub struct BinanceOneSecondKlineRecord {
     pub taker_buy_quote_volume: Decimal,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct BtcOrderbookMarketScope {
+    pub condition_id: String,
+    pub up_token_id: String,
+    pub down_token_id: String,
+    pub window_start: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BtcOrderbookArchiveEvent {
+    pub source_row_number: i64,
+    pub provider_received_at: DateTime<Utc>,
+    pub source_timestamp: DateTime<Utc>,
+    pub condition_id: String,
+    pub asset_id: String,
+    pub event_type: String,
+    pub bids: Option<Value>,
+    pub asks: Option<Value>,
+    pub price: Option<Decimal>,
+    pub size: Option<Decimal>,
+    pub side: Option<String>,
+    pub best_bid: Option<Decimal>,
+    pub best_ask: Option<Decimal>,
+    pub fee_rate_bps: Option<i32>,
+    pub transaction_hash: Option<String>,
+    pub old_tick_size: Option<Decimal>,
+    pub new_tick_size: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChainlinkBtcusdArchiveTick {
+    pub feed_id: String,
+    pub source_timestamp: DateTime<Utc>,
+    pub valid_from_timestamp: DateTime<Utc>,
+    pub price: Decimal,
+    pub bid: Decimal,
+    pub ask: Decimal,
+    pub report_sha256: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrainingReadiness {
     pub range_start: DateTime<Utc>,
@@ -639,11 +688,17 @@ pub struct TrainingReadiness {
     pub official_outcomes: i64,
     pub aggregate_trade_covered_markets: i64,
     pub one_second_kline_covered_markets: i64,
+    pub chainlink_covered_markets: i64,
+    pub orderbook_covered_markets: i64,
     pub usable_markets: i64,
     pub aggregate_trade_min_timestamp: Option<DateTime<Utc>>,
     pub aggregate_trade_max_timestamp: Option<DateTime<Utc>>,
     pub one_second_kline_min_timestamp: Option<DateTime<Utc>>,
     pub one_second_kline_max_timestamp: Option<DateTime<Utc>>,
+    pub chainlink_min_timestamp: Option<DateTime<Utc>>,
+    pub chainlink_max_timestamp: Option<DateTime<Utc>>,
+    pub orderbook_min_timestamp: Option<DateTime<Utc>>,
+    pub orderbook_max_timestamp: Option<DateTime<Utc>>,
     pub missing_by_reason: BTreeMap<String, i64>,
     pub artifact_status_counts: BTreeMap<String, i64>,
 }
@@ -720,6 +775,35 @@ mod tests {
             1_783_468_800,
         );
         assert!(unaligned.validate().is_err());
+    }
+
+    #[test]
+    fn source_work_units_use_their_native_archive_cadence() {
+        let pmxt = request(
+            IngesterKey::PolymarketBtcFiveMinuteOrderbooks,
+            1_783_382_400,
+            1_783_386_000,
+        )
+        .validate()
+        .unwrap();
+        assert_eq!(pmxt.expected_work_units, 1);
+
+        let chainlink = request(
+            IngesterKey::ChainlinkBtcusdReferenceTicks,
+            1_783_382_400,
+            1_783_468_800,
+        )
+        .validate()
+        .unwrap();
+        assert_eq!(chainlink.expected_work_units, 1);
+
+        assert!(request(
+            IngesterKey::PolymarketBtcFiveMinuteOrderbooks,
+            1_783_382_700,
+            1_783_386_000,
+        )
+        .validate()
+        .is_err());
     }
 
     #[test]

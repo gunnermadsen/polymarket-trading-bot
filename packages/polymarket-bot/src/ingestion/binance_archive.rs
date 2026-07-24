@@ -113,7 +113,7 @@ impl ArchiveCancellation {
 
     fn check(&self) -> Result<()> {
         if self.is_cancelled() {
-            bail!("Binance archive operation was cancelled");
+            bail!("archive operation was cancelled");
         }
         Ok(())
     }
