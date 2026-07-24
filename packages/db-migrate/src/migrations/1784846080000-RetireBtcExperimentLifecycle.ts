@@ -693,16 +693,14 @@ export class RetireBtcExperimentLifecycle1784846080000
           FROM polymarket.btc_strategy_decisions decision
           LEFT JOIN polymarket.btc_paper_experiments manifest
             ON manifest.experiment_id = decision.experiment_id
-          WHERE decision.experiment_id IS NOT NULL
-            AND (
-              manifest.experiment_id IS NULL
-              OR decision.process_id IS NULL
-              OR decision.process_id IS DISTINCT FROM manifest.process_id
-            )
+          WHERE decision.experiment_id IS NULL
+             OR decision.process_id IS NULL
+             OR manifest.experiment_id IS NULL
+             OR decision.process_id IS DISTINCT FROM manifest.process_id
           LIMIT 1
         ) THEN
           RAISE EXCEPTION
-            'refusing to retire BTC experiment lifecycle: decision run ownership is invalid';
+            'refusing to retire BTC experiment lifecycle: decision process/run ownership is incomplete or invalid';
         END IF;
 
         IF EXISTS (
@@ -854,6 +852,10 @@ export class RetireBtcExperimentLifecycle1784846080000
         RENAME COLUMN experiment_id TO run_id;
       ALTER TABLE polymarket.btc_paper_settlement_ledger
         RENAME COLUMN experiment_id TO run_id;
+
+      ALTER TABLE polymarket.btc_strategy_decisions
+        ALTER COLUMN process_id SET NOT NULL,
+        ALTER COLUMN run_id SET NOT NULL;
 
       ALTER TABLE polymarket.btc_paper_settlement_ledger
         RENAME CONSTRAINT uq_btc_paper_settlement_experiment_order

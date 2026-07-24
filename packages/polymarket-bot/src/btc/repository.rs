@@ -500,6 +500,11 @@ WITH run_orders AS (
   SELECT o.order_id
   FROM polymarket.orders o
   WHERE o.process_id = $1
+    AND NOT COALESCE(
+      o.raw_payload #>> '{request,metadata,run_id}'
+        <> o.raw_payload #>> '{request,metadata,experiment_id}',
+      false
+    )
     AND COALESCE(
       o.raw_payload #>> '{request,metadata,run_id}',
       o.raw_payload #>> '{request,metadata,experiment_id}'
@@ -580,6 +585,11 @@ WITH entered AS (
    AND f.order_id = o.order_id
    AND f.source = 'paper'
   WHERE o.process_id = $1
+    AND NOT COALESCE(
+      o.raw_payload #>> '{request,metadata,run_id}'
+        <> o.raw_payload #>> '{request,metadata,experiment_id}',
+      false
+    )
     AND COALESCE(
       o.raw_payload #>> '{request,metadata,run_id}',
       o.raw_payload #>> '{request,metadata,experiment_id}'
@@ -4590,8 +4600,10 @@ mod tests {
         assert!(resume.contains("where o.process_id = $1"));
         assert!(resume.contains("f.process_id = $1"));
         assert!(resume.contains("where process_id = $1\n    and run_id = $2"));
-        assert_eq!(resume.matches("metadata,run_id").count(), 1);
-        assert_eq!(resume.matches("experiment_id").count(), 1);
+        assert!(resume.contains("and not coalesce("));
+        assert!(resume.contains("<> o.raw_payload #>> '{request,metadata,experiment_id}'"));
+        assert_eq!(resume.matches("metadata,run_id").count(), 2);
+        assert_eq!(resume.matches("experiment_id").count(), 2);
         assert!(!resume.contains("btc_paper_experiments"));
 
         let decision_insert = INSERT_STRATEGY_DECISION_SQL.to_ascii_lowercase();
@@ -4608,8 +4620,10 @@ mod tests {
         assert!(discovery.contains("on f.process_id = $1"));
         assert!(discovery.contains("$2::uuid as run_id"));
         assert!(discovery.contains("on conflict (run_id, order_id) do nothing"));
-        assert_eq!(discovery.matches("metadata,run_id").count(), 1);
-        assert_eq!(discovery.matches("experiment_id").count(), 1);
+        assert!(discovery.contains("and not coalesce("));
+        assert!(discovery.contains("<> o.raw_payload #>> '{request,metadata,experiment_id}'"));
+        assert_eq!(discovery.matches("metadata,run_id").count(), 2);
+        assert_eq!(discovery.matches("experiment_id").count(), 2);
         assert!(!discovery.contains("btc_paper_experiments"));
 
         for query in [
