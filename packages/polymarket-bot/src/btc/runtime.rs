@@ -3181,47 +3181,16 @@ async fn run_clob_supervisor(
             }
         }
         let readiness_checked_at = Utc::now();
-        let active_ready =
-            clob_active_epoch_ready(active.as_ref(), readiness_checked_at, max_book_age);
+        let active_structurally_ready =
+            clob_active_epoch_structurally_ready(active.as_ref(), readiness_checked_at);
         successor_retry_at = expedite_clob_candidate_retry(
             &config,
-            active_ready,
+            active_structurally_ready,
             successor_rapid_retry_allowed,
             Instant::now(),
             successor_retry_at,
             &mut successor_failures,
         );
-        let successor_requires_refresh = successor.as_ref().is_some_and(|candidate| {
-            let desired = markets.borrow();
-            let readiness =
-                clob_successor_readiness(candidate, &desired, readiness_checked_at, max_book_age);
-            clob_candidate_requires_refresh(
-                active_ready,
-                readiness.structurally_ready,
-                readiness.execution_ready,
-            )
-        });
-        if successor_requires_refresh {
-            let mut stale = successor
-                .take()
-                .expect("stale CLOB successor remains installed");
-            let retry_delay = clob_unavailable_retry_delay(&config);
-            successor_failures = 0;
-            successor_rapid_retry_allowed = true;
-            successor_retry_at = Instant::now() + retry_delay;
-            let _ = complete_clob_epoch_with_close(
-                &repository,
-                &metrics,
-                &mut stale,
-                "successor_freshness_refresh".to_string(),
-                ClobDisconnectCause::ReadinessRefresh,
-                ClobRetryAction::Backoff(retry_delay),
-                successor_failures,
-                clob_unavailable_recovery_close_action(),
-            )
-            .await;
-            continue;
-        }
         if should_start_clob_successor(
             successor.is_some(),
             connect_task.is_some(),
@@ -3511,21 +3480,32 @@ async fn run_clob_supervisor(
                                     &mut recovery_window,
                                 )
                                 .await;
-                                if !epoch.books_usable
-                                    && successor.as_ref().is_some_and(|candidate| {
-                                        clob_successor_ready(
-                                            candidate,
-                                            &markets.borrow(),
+                                if !epoch.books_usable {
+                                    let active_structurally_ready =
+                                        clob_epoch_structurally_ready(
+                                            &epoch.registry,
+                                            &epoch.markets,
                                             checked_at,
-                                            max_book_age,
-                                        )
-                                    })
-                                {
-                                    active_failure = Some((
-                                        "active_book_stale".to_string(),
-                                        ClobDisconnectCause::ReadinessRefresh,
-                                        None,
-                                    ));
+                                        );
+                                    let successor_execution_ready =
+                                        successor.as_ref().is_some_and(|candidate| {
+                                            clob_successor_ready(
+                                                candidate,
+                                                &markets.borrow(),
+                                                checked_at,
+                                                max_book_age,
+                                            )
+                                        });
+                                    if should_replace_active_clob_epoch(
+                                        active_structurally_ready,
+                                        successor_execution_ready,
+                                    ) {
+                                        active_failure = Some((
+                                            "active_book_structurally_unavailable".to_string(),
+                                            ClobDisconnectCause::ReadinessRefresh,
+                                            None,
+                                        ));
+                                    }
                                 }
                             }
                             Err(error) => {
@@ -3597,15 +3577,19 @@ async fn run_clob_supervisor(
                                 successor_failures = 0;
                                 successor_retry_at = Instant::now();
                                 successor_rapid_retry_allowed = true;
-                                if active.is_some()
-                                    && !clob_active_epoch_ready(
+                                let active_structurally_ready =
+                                    clob_active_epoch_structurally_ready(
                                         active.as_ref(),
                                         checked_at,
-                                        max_book_age,
+                                    );
+                                if active.is_some()
+                                    && should_replace_active_clob_epoch(
+                                        active_structurally_ready,
+                                        true,
                                     )
                                 {
                                     active_failure = Some((
-                                        "active_book_stale".to_string(),
+                                        "active_book_structurally_unavailable".to_string(),
                                         ClobDisconnectCause::ReadinessRefresh,
                                         None,
                                     ));
@@ -3627,12 +3611,12 @@ async fn run_clob_supervisor(
                     Err(error) => {
                         successor_rapid_retry_allowed = false;
                         let checked_at = Utc::now();
-                        let active_ready_now =
-                            clob_active_epoch_ready(active.as_ref(), checked_at, max_book_age);
+                        let active_structurally_ready_now =
+                            clob_active_epoch_structurally_ready(active.as_ref(), checked_at);
                         let retry_action = clob_candidate_retry_action(
                             &config,
                             false,
-                            active_ready_now,
+                            active_structurally_ready_now,
                             successor_rapid_retry_allowed,
                             &mut successor_failures,
                         );
@@ -3667,12 +3651,12 @@ async fn run_clob_supervisor(
                             successor_rapid_retry_allowed =
                                 kind != ClobConnectFailureKind::Identity;
                             let checked_at = Utc::now();
-                            let active_ready_now =
-                                clob_active_epoch_ready(active.as_ref(), checked_at, max_book_age);
+                            let active_structurally_ready_now =
+                                clob_active_epoch_structurally_ready(active.as_ref(), checked_at);
                             let retry_action = clob_candidate_retry_action(
                                 &config,
                                 false,
-                                active_ready_now,
+                                active_structurally_ready_now,
                                 successor_rapid_retry_allowed,
                                 &mut successor_failures,
                             );
@@ -3739,12 +3723,12 @@ async fn run_clob_supervisor(
                         if !start_feed_session_or_fail(&repository, &epoch.session, &metrics).await {
                             successor_rapid_retry_allowed = false;
                             let checked_at = Utc::now();
-                            let active_ready_now =
-                                clob_active_epoch_ready(active.as_ref(), checked_at, max_book_age);
+                            let active_structurally_ready_now =
+                                clob_active_epoch_structurally_ready(active.as_ref(), checked_at);
                             let retry_action = clob_candidate_retry_action(
                                 &config,
                                 false,
-                                active_ready_now,
+                                active_structurally_ready_now,
                                 successor_rapid_retry_allowed,
                                 &mut successor_failures,
                             );
@@ -3832,22 +3816,33 @@ async fn run_clob_supervisor(
                         &mut recovery_window,
                     )
                     .await;
-                    if !epoch.books_usable
-                        && successor.as_ref().is_some_and(|candidate| {
-                            clob_successor_ready(
-                                candidate,
-                                &markets.borrow(),
-                                checked_at,
-                                max_book_age,
-                            )
-                        })
-                    {
-                        active_failure = Some((
-                            "active_book_stale".to_string(),
-                            ClobDisconnectCause::ReadinessRefresh,
-                            None,
-                        ));
-                    } else {
+                    if !epoch.books_usable {
+                        let active_structurally_ready = clob_epoch_structurally_ready(
+                            &epoch.registry,
+                            &epoch.markets,
+                            checked_at,
+                        );
+                        let successor_execution_ready =
+                            successor.as_ref().is_some_and(|candidate| {
+                                clob_successor_ready(
+                                    candidate,
+                                    &markets.borrow(),
+                                    checked_at,
+                                    max_book_age,
+                                )
+                            });
+                        if should_replace_active_clob_epoch(
+                            active_structurally_ready,
+                            successor_execution_ready,
+                        ) {
+                            active_failure = Some((
+                                "active_book_structurally_unavailable".to_string(),
+                                ClobDisconnectCause::ReadinessRefresh,
+                                None,
+                            ));
+                        }
+                    }
+                    if active_failure.is_none() {
                         for market in &epoch.markets {
                             if !market.is_trade_window(checked_at) {
                                 continue;
@@ -3960,13 +3955,13 @@ async fn run_clob_supervisor(
         if let Some((reason, cause)) = successor_failure {
             if let Some(mut failed) = successor.take() {
                 let checked_at = Utc::now();
-                let active_ready_now =
-                    clob_active_epoch_ready(active.as_ref(), checked_at, max_book_age);
+                let active_structurally_ready_now =
+                    clob_active_epoch_structurally_ready(active.as_ref(), checked_at);
                 successor_rapid_retry_allowed = true;
                 let retry_action = clob_candidate_retry_action(
                     &config,
                     failed.healthy_epoch,
-                    active_ready_now,
+                    active_structurally_ready_now,
                     successor_rapid_retry_allowed,
                     &mut successor_failures,
                 );
@@ -4338,14 +4333,14 @@ fn clob_retry_action(
 fn clob_candidate_retry_action(
     config: &BtcRuntimeConfig,
     healthy_epoch: bool,
-    active_ready: bool,
+    active_structurally_ready: bool,
     rapid_retry_allowed: bool,
     consecutive_failures: &mut u32,
 ) -> ClobRetryAction {
     if healthy_epoch {
         *consecutive_failures = 0;
         ClobRetryAction::ImmediateRecovery
-    } else if !active_ready && rapid_retry_allowed {
+    } else if !active_structurally_ready && rapid_retry_allowed {
         *consecutive_failures = 0;
         ClobRetryAction::Backoff(clob_unavailable_retry_delay(config))
     } else {
@@ -4360,23 +4355,15 @@ fn clob_unavailable_retry_delay(config: &BtcRuntimeConfig) -> StdDuration {
         .min(StdDuration::from_secs(1))
 }
 
-fn clob_candidate_requires_refresh(
-    active_ready: bool,
-    candidate_structurally_ready: bool,
-    candidate_execution_ready: bool,
-) -> bool {
-    !active_ready && candidate_structurally_ready && !candidate_execution_ready
-}
-
 fn expedite_clob_candidate_retry(
     config: &BtcRuntimeConfig,
-    active_ready: bool,
+    active_structurally_ready: bool,
     rapid_retry_allowed: bool,
     now: Instant,
     retry_at: Instant,
     consecutive_failures: &mut u32,
 ) -> Instant {
-    if active_ready || !rapid_retry_allowed {
+    if active_structurally_ready || !rapid_retry_allowed {
         retry_at
     } else {
         *consecutive_failures = 0;
@@ -4430,12 +4417,24 @@ fn clob_epoch_ready(
         .is_some_and(|market| registry.market_books_ready(market, now, max_age))
 }
 
-fn clob_active_epoch_ready(
-    active: Option<&ClobEpoch>,
+fn clob_epoch_structurally_ready(
+    registry: &BookRegistry,
+    markets: &[BtcIntervalMarket],
     now: DateTime<Utc>,
-    max_age: Duration,
 ) -> bool {
-    active.is_some_and(|epoch| clob_epoch_ready(&epoch.registry, &epoch.markets, now, max_age))
+    unique_current_clob_market(markets, now)
+        .is_some_and(|market| registry.market_books_structurally_ready(market))
+}
+
+fn clob_active_epoch_structurally_ready(active: Option<&ClobEpoch>, now: DateTime<Utc>) -> bool {
+    active.is_some_and(|epoch| clob_epoch_structurally_ready(&epoch.registry, &epoch.markets, now))
+}
+
+fn should_replace_active_clob_epoch(
+    active_structurally_ready: bool,
+    successor_execution_ready: bool,
+) -> bool {
+    !active_structurally_ready && successor_execution_ready
 }
 
 fn should_start_clob_successor(
@@ -4473,39 +4472,17 @@ fn clob_successor_ready(
     checked_at: DateTime<Utc>,
     max_book_age: Duration,
 ) -> bool {
-    clob_successor_readiness(successor, desired_markets, checked_at, max_book_age).execution_ready
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct ClobSuccessorReadiness {
-    structurally_ready: bool,
-    execution_ready: bool,
-}
-
-fn clob_successor_readiness(
-    successor: &ClobEpoch,
-    desired_markets: &[BtcIntervalMarket],
-    checked_at: DateTime<Utc>,
-    max_book_age: Duration,
-) -> ClobSuccessorReadiness {
     if successor.connection_id != successor.registry.connection_id()
         || !same_market_subscriptions(&successor.markets, desired_markets)
     {
-        return ClobSuccessorReadiness::default();
+        return false;
     }
     let Some(current_market) = unique_current_clob_market(desired_markets, checked_at) else {
-        return ClobSuccessorReadiness::default();
+        return false;
     };
-    let structurally_ready = successor
+    successor
         .registry
-        .market_books_structurally_ready(current_market);
-    ClobSuccessorReadiness {
-        structurally_ready,
-        execution_ready: structurally_ready
-            && successor
-                .registry
-                .market_books_ready(current_market, checked_at, max_book_age),
-    }
+        .market_books_ready(current_market, checked_at, max_book_age)
 }
 
 #[derive(Debug)]
@@ -7656,11 +7633,36 @@ mod tests {
             retry_at
         );
         assert_eq!(failures, 4);
+    }
 
-        assert!(clob_candidate_requires_refresh(false, true, false));
-        assert!(!clob_candidate_requires_refresh(true, true, false));
-        assert!(!clob_candidate_requires_refresh(false, false, false));
-        assert!(!clob_candidate_requires_refresh(false, true, true));
+    #[test]
+    fn book_age_revokes_execution_without_replacing_structural_connection() {
+        let current = market();
+        let ready_at = current.window_start + Duration::minutes(1);
+        let max_book_age = Duration::seconds(2);
+        let registry = ready_book_registry(&current, ready_at - Duration::milliseconds(1));
+        let markets = std::slice::from_ref(&current);
+
+        assert!(clob_epoch_ready(&registry, markets, ready_at, max_book_age,));
+        assert!(clob_epoch_structurally_ready(&registry, markets, ready_at));
+
+        let stale_at = ready_at + max_book_age + Duration::milliseconds(1);
+        assert!(!clob_epoch_ready(
+            &registry,
+            markets,
+            stale_at,
+            max_book_age,
+        ));
+        assert!(clob_epoch_structurally_ready(&registry, markets, stale_at));
+        assert!(!should_replace_active_clob_epoch(true, true));
+    }
+
+    #[test]
+    fn ready_successor_replaces_only_structurally_unavailable_active_epoch() {
+        assert!(should_replace_active_clob_epoch(false, true));
+        assert!(!should_replace_active_clob_epoch(false, false));
+        assert!(!should_replace_active_clob_epoch(true, false));
+        assert!(!should_replace_active_clob_epoch(true, true));
     }
 
     #[test]
@@ -9249,6 +9251,11 @@ mod tests {
         .await;
 
         assert!(!books_usable);
+        assert!(clob_epoch_structurally_ready(
+            &registry,
+            std::slice::from_ref(&market),
+            stale_at,
+        ));
         let status = metrics.read().await;
         assert!(status.clob_active_connection_epoch.is_none());
         assert_eq!(status.clob_recovery_unavailable_since, Some(stale_at));
