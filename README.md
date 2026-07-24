@@ -100,11 +100,13 @@ Create or replace an inactive definition through
 `PUT /admin/trading-processes/by-key/{process_key}`; collection `POST` and
 generic process activation are intentionally unsupported. Use
 `POST /admin/trading-processes/{process_id}/start` and
-`POST /admin/trading-processes/{process_id}/stop` while leaving the service
-running. Each BTC paper start creates a distinct process-owned run, identified
-by `run_id`. Immutable run evidence lives in the existing process lifecycle
-records. Lifecycle and record ownership remain canonical to the selected
-`process_id`; the stable process key can be reused. Trading mode is selected by
+`POST /admin/trading-processes/{process_id}/stop` for a resumable stop, or
+`POST /admin/trading-processes/{process_id}/complete` for an orderly terminal
+completion, while leaving the service running. Each BTC paper start creates a
+distinct process-owned run, identified by `run_id`. Immutable run evidence
+lives in the existing process lifecycle records. Lifecycle and record ownership
+remain canonical to the selected `process_id`; the stable process key can be
+reused. Trading mode is selected by
 `trading_processes.config.execution.mode`; host configuration is limited to
 credentials, venue URLs, and hard risk caps.
 
@@ -500,6 +502,10 @@ curl -fsS \
 
 curl -fsS -X POST \
   "http://127.0.0.1:${POLYMARKET_HTTP_HOST_PORT:-8098}/admin/trading-processes/${PROCESS_ID}/stop" \
+  -H "Authorization: Bearer ${POLYMARKET_HTTP_ADMIN_TOKEN}"
+
+curl -fsS -X POST \
+  "http://127.0.0.1:${POLYMARKET_HTTP_HOST_PORT:-8098}/admin/trading-processes/${PROCESS_ID}/complete" \
   -H "Authorization: Bearer ${POLYMARKET_HTTP_ADMIN_TOKEN}"
 ```
 

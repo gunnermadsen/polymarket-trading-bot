@@ -510,6 +510,24 @@ impl ControlApi for FakeControlApi {
         })
     }
 
+    async fn complete_trading_process(
+        &self,
+        process_id: Uuid,
+    ) -> Result<http::TradingProcessResponse, HttpError> {
+        Ok(http::TradingProcessResponse {
+            process: test_process(
+                process_id,
+                "btc-paper-canary".to_string(),
+                "btc_5m".to_string(),
+                "realtime_paper".to_string(),
+                Some("btc-paper-canary".to_string()),
+                "completed",
+                false,
+                TradingProcessConfig::default(),
+            ),
+        })
+    }
+
     async fn upsert_trading_process_by_key(
         &self,
         process_key: String,
@@ -1358,6 +1376,7 @@ async fn authenticated_admin_can_manage_trading_processes() {
     assert_eq!(start_response.status(), StatusCode::OK);
 
     let stop_response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -1369,6 +1388,25 @@ async fn authenticated_admin_can_manage_trading_processes() {
         .await
         .unwrap();
     assert_eq!(stop_response.status(), StatusCode::OK);
+
+    let complete_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/trading-processes/{process_id}/complete"))
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(complete_response.status(), StatusCode::OK);
+    let complete_body = to_bytes(complete_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let complete_json: Value = serde_json::from_slice(&complete_body).unwrap();
+    assert_eq!(complete_json["process"]["status"], "completed");
+    assert_eq!(complete_json["process"]["enabled"], false);
 }
 
 fn test_ingestion_job(
