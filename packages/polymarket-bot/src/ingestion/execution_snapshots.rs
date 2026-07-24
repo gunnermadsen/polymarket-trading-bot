@@ -72,6 +72,13 @@ struct MarketState {
     down: BookState,
 }
 
+#[derive(Debug, Clone)]
+pub struct ExecutionMarketSeed {
+    market_id: String,
+    up: BookState,
+    down: BookState,
+}
+
 #[derive(Debug)]
 pub struct ExecutionSnapshotReconstructor {
     markets: Vec<MarketState>,
@@ -81,6 +88,13 @@ pub struct ExecutionSnapshotReconstructor {
 
 impl ExecutionSnapshotReconstructor {
     pub fn new(markets: Vec<BtcOrderbookMarketScope>) -> Result<Self> {
+        Self::new_with_seed(markets, None)
+    }
+
+    pub fn new_with_seed(
+        markets: Vec<BtcOrderbookMarketScope>,
+        seed: Option<ExecutionMarketSeed>,
+    ) -> Result<Self> {
         if markets.is_empty() {
             bail!("execution snapshot reconstruction requires market scope");
         }
@@ -100,11 +114,16 @@ impl ExecutionSnapshotReconstructor {
             {
                 bail!("execution snapshot token identity must be unique");
             }
+            let seeded_books = seed
+                .as_ref()
+                .filter(|seed| seed.market_id == scope.market_id)
+                .map(|seed| (seed.up.clone(), seed.down.clone()))
+                .unwrap_or_default();
             states.push(MarketState {
                 next_sample: scope.window_start,
                 scope,
-                up: BookState::default(),
-                down: BookState::default(),
+                up: seeded_books.0,
+                down: seeded_books.1,
             });
         }
         Ok(Self {
@@ -143,6 +162,25 @@ impl ExecutionSnapshotReconstructor {
 
     pub fn finish(&mut self, through: DateTime<Utc>, output: &mut Vec<BtcExecutionSnapshot>) {
         self.emit_through(through, output);
+    }
+
+    pub fn finish_before(
+        &mut self,
+        boundary: DateTime<Utc>,
+        output: &mut Vec<BtcExecutionSnapshot>,
+    ) {
+        self.emit_before(boundary, output);
+    }
+
+    pub fn market_seed(&self, market_id: &str) -> Option<ExecutionMarketSeed> {
+        self.markets
+            .iter()
+            .find(|market| market.scope.market_id == market_id)
+            .map(|market| ExecutionMarketSeed {
+                market_id: market.scope.market_id.clone(),
+                up: market.up.clone(),
+                down: market.down.clone(),
+            })
     }
 
     fn emit_through(&mut self, through: DateTime<Utc>, output: &mut Vec<BtcExecutionSnapshot>) {
@@ -368,6 +406,17 @@ mod tests {
         }
     }
 
+    fn next_scope() -> BtcOrderbookMarketScope {
+        BtcOrderbookMarketScope {
+            market_id: "next-market".to_string(),
+            condition_id: "condition".to_string(),
+            up_token_id: "next-up".to_string(),
+            down_token_id: "next-down".to_string(),
+            window_start: time(2_000),
+            window_end: time(3_000),
+        }
+    }
+
     fn book(asset_id: &str, received_at: i64, row: i64) -> BtcOrderbookArchiveEvent {
         BtcOrderbookArchiveEvent {
             source_row_number: row,
@@ -423,5 +472,29 @@ mod tests {
         assert_ne!(snapshots[0].quality_flags & QUALITY_UP_MISSING, 0);
         assert_ne!(snapshots[0].quality_flags & QUALITY_DOWN_MISSING, 0);
         assert_eq!(snapshots[1].up_provider_received_at, Some(time(1_100)));
+    }
+
+    #[test]
+    fn carries_the_next_market_seed_without_rereading_the_previous_hour() {
+        let next = next_scope();
+        let mut first = ExecutionSnapshotReconstructor::new(vec![scope(), next.clone()]).unwrap();
+        let mut discarded = Vec::new();
+        let mut next_up = book("next-up", 1_900, 1);
+        next_up.condition_id = next.condition_id.clone();
+        let mut next_down = book("next-down", 1_900, 2);
+        next_down.condition_id = next.condition_id.clone();
+        first.apply(&next_up, &mut discarded).unwrap();
+        first.apply(&next_down, &mut discarded).unwrap();
+        first.finish_before(time(2_000), &mut discarded);
+        let seed = first.market_seed(&next.market_id).unwrap();
+
+        let mut second =
+            ExecutionSnapshotReconstructor::new_with_seed(vec![next], Some(seed)).unwrap();
+        let mut snapshots = Vec::new();
+        second.finish(time(2_250), &mut snapshots);
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots[0].sampled_at, time(2_000));
+        assert_eq!(snapshots[0].quality_flags, 0);
+        assert_eq!(snapshots[0].up_provider_received_at, Some(time(1_900)));
     }
 }

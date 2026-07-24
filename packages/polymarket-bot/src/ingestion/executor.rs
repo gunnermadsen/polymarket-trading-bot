@@ -15,7 +15,9 @@ use super::{
         BinanceArchiveSpec, BINANCE_ARCHIVE_PROVIDER,
     },
     chainlink_archive::{ChainlinkArchiveConfig, CHAINLINK_ARCHIVE_PROVIDER},
-    execution_snapshots::{ExecutionSnapshotReconstructor, EXECUTION_SNAPSHOT_SCHEMA_VERSION},
+    execution_snapshots::{
+        ExecutionMarketSeed, ExecutionSnapshotReconstructor, EXECUTION_SNAPSHOT_SCHEMA_VERSION,
+    },
     job::{
         ArtifactCompletion, ArtifactDisposition, ArtifactSpec, BackfillArtifactStatus,
         BackfillCheckpoint, BackfillFailureKind, BackfillJobSummary, BackfillProgress,
@@ -906,18 +908,24 @@ impl IngestionExecutor {
         }
         let mut summary = summary_from_progress(&progress);
         let mut hour = checkpoint_window_start(claim, range_start, 3_600);
-        let mut retained_direct_cache = None;
+        let mut retained_direct_cache: Option<PathBuf> = None;
+        let mut carry_seed: Option<ExecutionMarketSeed> = None;
         while hour < range_end {
             self.ensure_continue(claim, &cancellation).await?;
             let next_hour = hour + ChronoDuration::hours(1);
-            let previous_spec = PmxtArchiveSpec::new(
-                &self.config.pmxt_archive_base_url,
-                hour - ChronoDuration::hours(1),
-            )
-            .map_err(IngestionExecutionError::permanent)?;
             let current_spec = PmxtArchiveSpec::new(&self.config.pmxt_archive_base_url, hour)
                 .map_err(IngestionExecutionError::permanent)?;
-            let source_specs = [previous_spec, current_spec];
+            let mut source_specs = Vec::with_capacity(2);
+            if carry_seed.is_none() {
+                source_specs.push(
+                    PmxtArchiveSpec::new(
+                        &self.config.pmxt_archive_base_url,
+                        hour - ChronoDuration::hours(1),
+                    )
+                    .map_err(IngestionExecutionError::permanent)?,
+                );
+            }
+            source_specs.push(current_spec);
             let logical_keys = source_specs
                 .iter()
                 .map(|spec| spec.logical_key.clone())
@@ -928,15 +936,26 @@ impl IngestionExecutor {
                 .await
                 .map_err(IngestionExecutionError::transient)?;
             let reuse_raw_materialization = source_artifacts.len() == source_specs.len();
-            let scope = self
+            let output_scope = self
                 .repository
                 .execution_snapshot_market_scope(hour, next_hour)
                 .await
                 .map_err(IngestionExecutionError::transient)?;
-            if scope.len() != 12 {
+            if output_scope.len() != 12 {
                 return Err(IngestionExecutionError::permanent(format!(
                     "expected 12 valid BTC five-minute markets for compact PMXT hour {hour}, found {}",
-                    scope.len()
+                    output_scope.len()
+                )));
+            }
+            let reconstruction_scope = self
+                .repository
+                .orderbook_market_scope(hour, next_hour)
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            if reconstruction_scope.len() != 13 {
+                return Err(IngestionExecutionError::permanent(format!(
+                    "expected 13 BTC market identities including the next-hour seed for compact PMXT hour {hour}, found {}",
+                    reconstruction_scope.len()
                 )));
             }
             let stamp = hour.format("%Y-%m-%dT%H");
@@ -951,7 +970,13 @@ impl IngestionExecutor {
                         ingester: IngesterKey::PolymarketBtcFiveMinuteExecutionSnapshots,
                         logical_key,
                         provider: "pmxt_v2_execution_snapshots".to_string(),
-                        source_uri: format!("{}#btc5m-250ms", source_specs[1].source_uri),
+                        source_uri: format!(
+                            "{}#btc5m-250ms",
+                            source_specs
+                                .last()
+                                .expect("compact PMXT source contains the current hour")
+                                .source_uri
+                        ),
                         source_date: Some(hour.date_naive()),
                         expected_checksum: None,
                         metadata: serde_json::json!({
@@ -986,8 +1011,11 @@ impl IngestionExecutor {
                 continue;
             }
 
-            let mut reconstructor = ExecutionSnapshotReconstructor::new(scope.clone())
-                .map_err(IngestionExecutionError::permanent)?;
+            let mut reconstructor = ExecutionSnapshotReconstructor::new_with_seed(
+                reconstruction_scope.clone(),
+                carry_seed.take(),
+            )
+            .map_err(IngestionExecutionError::permanent)?;
             let mut output = Vec::with_capacity(self.config.batch_rows);
             let mut digest = Sha256::new();
             let mut reconstructed_records = 0u64;
@@ -1007,7 +1035,7 @@ impl IngestionExecutor {
                         .map(|bytes| total.saturating_add(bytes))
                         .map_err(IngestionExecutionError::permanent)
                 })?;
-                let condition_ids = scope
+                let condition_ids = reconstruction_scope
                     .iter()
                     .map(|market| market.condition_id.clone())
                     .collect::<Vec<_>>();
@@ -1057,6 +1085,11 @@ impl IngestionExecutor {
                     BackfillArtifactStatus::Downloading,
                 )
                 .await?;
+                if source_specs.len() == 1 {
+                    if let Some(path) = retained_direct_cache.take() {
+                        cleanup_archive_cache(&self.repository, claim, &path).await;
+                    }
+                }
                 let mut source_bytes = 0u64;
                 let mut direct_ready = false;
                 for spec in &source_specs {
@@ -1107,7 +1140,7 @@ impl IngestionExecutor {
                     }
                     let (mut receiver, handle) = spawn_pmxt_parser(
                         archive.path.clone(),
-                        scope.clone(),
+                        reconstruction_scope.clone(),
                         self.config.batch_rows,
                         cancellation.clone(),
                     );
@@ -1141,15 +1174,27 @@ impl IngestionExecutor {
                     retained_direct_cache = Some(archive.path);
                 }
                 compressed_bytes = source_bytes;
-                cleanup_archive_cache(
-                    &self.repository,
-                    claim,
-                    &self.config.cache_directory.join(&source_specs[0].file_name),
-                )
-                .await;
+                if source_specs.len() == 2 {
+                    cleanup_archive_cache(
+                        &self.repository,
+                        claim,
+                        &self.config.cache_directory.join(&source_specs[0].file_name),
+                    )
+                    .await;
+                }
             }
 
-            reconstructor.finish(next_hour, &mut output);
+            reconstructor.finish_before(next_hour, &mut output);
+            let next_market_id = reconstruction_scope
+                .last()
+                .filter(|market| market.window_start == next_hour)
+                .map(|market| market.market_id.as_str())
+                .ok_or_else(|| {
+                    IngestionExecutionError::permanent(
+                        "compact PMXT reconstruction scope is missing its next-hour seed market",
+                    )
+                })?;
+            carry_seed = reconstructor.market_seed(next_market_id);
             self.persist_execution_snapshot_output(
                 claim,
                 prepared.artifact.artifact_id,
@@ -1160,7 +1205,7 @@ impl IngestionExecutor {
                 &mut summary,
             )
             .await?;
-            let expected_records = u64::try_from(scope.len())
+            let expected_records = u64::try_from(output_scope.len())
                 .map_err(IngestionExecutionError::permanent)?
                 .saturating_mul(1_200);
             if reconstructed_records != expected_records {
