@@ -1046,7 +1046,7 @@ impl IngestionExecutor {
                         let page = self
                             .repository
                             .raw_orderbook_event_page(
-                                &[source_artifact.artifact_id],
+                                source_artifact.artifact_id,
                                 &condition_ids,
                                 cursor.as_ref(),
                                 20_000,

@@ -34,7 +34,6 @@ pub struct IngestionRepository {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OrderbookEventCursor {
     pub provider_received_at: DateTime<Utc>,
-    pub artifact_id: Uuid,
     pub source_row_number: i64,
 }
 
@@ -1180,19 +1179,18 @@ impl IngestionRepository {
 
     pub async fn raw_orderbook_event_page(
         &self,
-        artifact_ids: &[Uuid],
+        artifact_id: Uuid,
         condition_ids: &[String],
         cursor: Option<&OrderbookEventCursor>,
         limit: i64,
     ) -> Result<RawOrderbookEventPage> {
-        if artifact_ids.is_empty() || condition_ids.is_empty() {
+        if condition_ids.is_empty() {
             return Ok(RawOrderbookEventPage {
                 events: Vec::new(),
                 next_cursor: None,
             });
         }
         let cursor_received_at = cursor.map(|value| value.provider_received_at);
-        let cursor_artifact_id = cursor.map(|value| value.artifact_id);
         let cursor_row_number = cursor.map(|value| value.source_row_number);
         let rows = sqlx::query_as::<_, ExistingOrderbookEventRow>(
             r#"
@@ -1200,21 +1198,19 @@ impl IngestionRepository {
               condition_id, asset_id, event_type, bids, asks, price, size, side, best_bid,
               best_ask, fee_rate_bps, transaction_hash, old_tick_size, new_tick_size
             FROM polymarket.btc_orderbook_archive_events
-            WHERE artifact_id = ANY($1)
+            WHERE artifact_id = $1
               AND condition_id = ANY($2)
               AND (
                 $3::timestamptz IS NULL
-                OR (provider_received_at, artifact_id, source_row_number)
-                  > ($3, $4::uuid, $5::bigint)
+                OR (provider_received_at, source_row_number) > ($3, $4::bigint)
               )
-            ORDER BY provider_received_at, artifact_id, source_row_number
-            LIMIT $6
+            ORDER BY provider_received_at, source_row_number
+            LIMIT $5
             "#,
         )
-        .bind(artifact_ids)
+        .bind(artifact_id)
         .bind(condition_ids)
         .bind(cursor_received_at)
-        .bind(cursor_artifact_id)
         .bind(cursor_row_number)
         .bind(limit.clamp(1, 20_000))
         .fetch_all(&self.pool)
@@ -1222,7 +1218,6 @@ impl IngestionRepository {
         .context("failed to page raw PMXT events for compact reconstruction")?;
         let next_cursor = rows.last().map(|row| OrderbookEventCursor {
             provider_received_at: row.provider_received_at,
-            artifact_id: row.artifact_id,
             source_row_number: row.source_row_number,
         });
         Ok(RawOrderbookEventPage {
