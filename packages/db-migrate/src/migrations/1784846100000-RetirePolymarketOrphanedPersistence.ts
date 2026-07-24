@@ -141,7 +141,7 @@ export class RetirePolymarketOrphanedPersistence1784846100000
               AND NOT constraint_record.condeferrable
               AND NOT constraint_record.condeferred
               AND ARRAY(
-                SELECT attribute.attname
+                SELECT attribute.attname::text
                 FROM unnest(constraint_record.conkey)
                   WITH ORDINALITY AS key_column(attnum, position)
                 JOIN pg_attribute attribute
@@ -198,7 +198,7 @@ export class RetirePolymarketOrphanedPersistence1784846100000
               AND NOT constraint_record.condeferrable
               AND NOT constraint_record.condeferred
               AND ARRAY(
-                SELECT attribute.attname
+                SELECT attribute.attname::text
                 FROM unnest(constraint_record.conkey)
                   WITH ORDINALITY AS key_column(attnum, position)
                 JOIN pg_attribute attribute
