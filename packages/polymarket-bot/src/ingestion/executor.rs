@@ -14,11 +14,16 @@ use super::{
         ArchiveCancellation, ArchiveDownloadLimits, ArchiveParseSummary, BinanceArchiveKind,
         BinanceArchiveSpec, BINANCE_ARCHIVE_PROVIDER,
     },
+    chainlink_archive::{ChainlinkArchiveConfig, CHAINLINK_ARCHIVE_PROVIDER},
     job::{
         ArtifactCompletion, ArtifactDisposition, ArtifactSpec, BackfillArtifactStatus,
         BackfillCheckpoint, BackfillFailureKind, BackfillJobSummary, BackfillProgress,
         BtcIntervalMarket, BtcOutcome, BtcReferenceFact, BtcReferenceFactType, ClaimedJob,
         IngesterKey, WorkerControl,
+    },
+    pmxt_archive::{
+        download_archive as download_pmxt_archive, spawn_parser as spawn_pmxt_parser,
+        PmxtArchiveSpec, PMXT_ARCHIVE_PROVIDER, PMXT_COVERAGE_START_EPOCH,
     },
     repository::IngestionRepository,
 };
@@ -32,6 +37,8 @@ pub struct IngestionExecutorConfig {
     pub gamma_base_url: String,
     pub clob_base_url: String,
     pub binance_archive_base_url: String,
+    pub pmxt_archive_base_url: String,
+    pub chainlink: ChainlinkArchiveConfig,
     pub cache_directory: PathBuf,
     pub batch_rows: usize,
 }
@@ -41,9 +48,11 @@ impl IngestionExecutorConfig {
         if self.gamma_base_url.trim().is_empty()
             || self.clob_base_url.trim().is_empty()
             || self.binance_archive_base_url.trim().is_empty()
+            || self.pmxt_archive_base_url.trim().is_empty()
         {
             bail!("backfill source base URLs must not be empty");
         }
+        self.chainlink.validate()?;
         if !(1..=4_000).contains(&self.batch_rows) {
             bail!("POLYMARKET_BACKFILL_BATCH_ROWS must be between 1 and 4000");
         }
@@ -154,6 +163,14 @@ impl IngestionExecutor {
                     cancellation,
                 )
                 .await
+            }
+            IngesterKey::PolymarketBtcFiveMinuteOrderbooks => {
+                self.ingest_pmxt_orderbooks(claim, range_start, range_end, progress, cancellation)
+                    .await
+            }
+            IngesterKey::ChainlinkBtcusdReferenceTicks => {
+                self.ingest_chainlink(claim, range_start, range_end, progress, &cancellation)
+                    .await
             }
         }
     }
@@ -687,6 +704,321 @@ impl IngestionExecutor {
         Ok(summary)
     }
 
+    async fn ingest_pmxt_orderbooks(
+        &self,
+        claim: &ClaimedJob,
+        range_start: DateTime<Utc>,
+        range_end: DateTime<Utc>,
+        mut progress: BackfillProgress,
+        cancellation: ArchiveCancellation,
+    ) -> std::result::Result<BackfillJobSummary, IngestionExecutionError> {
+        if range_start.timestamp() < PMXT_COVERAGE_START_EPOCH {
+            return Err(IngestionExecutionError::permanent(
+                "PMXT v2 coverage begins at 2026-04-13T19:00:00Z",
+            ));
+        }
+        let mut summary = summary_from_progress(&progress);
+        let mut hour = checkpoint_window_start(claim, range_start, 3_600);
+        while hour < range_end {
+            self.ensure_continue(claim, &cancellation).await?;
+            let spec = PmxtArchiveSpec::new(&self.config.pmxt_archive_base_url, hour)
+                .map_err(IngestionExecutionError::permanent)?;
+            let scope = self
+                .repository
+                .orderbook_market_scope(hour, hour + ChronoDuration::hours(1))
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            if scope.is_empty() {
+                return Err(IngestionExecutionError::permanent(format!(
+                    "no valid BTC five-minute market identities exist for PMXT hour {hour}; run the market ingester first"
+                )));
+            }
+            progress.current_logical_key = Some(spec.logical_key.clone());
+            let prepared = self
+                .repository
+                .prepare_artifact(
+                    claim,
+                    &ArtifactSpec {
+                        job_id: claim.job.job_id,
+                        ingester: IngesterKey::PolymarketBtcFiveMinuteOrderbooks,
+                        logical_key: spec.logical_key.clone(),
+                        provider: PMXT_ARCHIVE_PROVIDER.to_string(),
+                        source_uri: spec.source_uri.clone(),
+                        source_date: Some(hour.date_naive()),
+                        expected_checksum: None,
+                        metadata: serde_json::json!({
+                            "archive_file": spec.file_name,
+                            "license": "CC BY 4.0",
+                            "attribution": "pmxt.dev",
+                            "market_scope_count": scope.len(),
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            if prepared.disposition == ArtifactDisposition::AlreadyCompleted {
+                observe_reused_artifact(&mut progress, &mut summary, &prepared.artifact);
+                hour += ChronoDuration::hours(1);
+                self.finish_work_unit(claim, &mut progress, hour, None)
+                    .await?;
+                continue;
+            }
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Downloading,
+            )
+            .await?;
+            let archive = match download_pmxt_archive(
+                &self.client,
+                &spec,
+                &self.config.cache_directory,
+                &ArchiveDownloadLimits {
+                    maximum_compressed_bytes: 2 * 1024 * 1024 * 1024,
+                    chunk_idle_timeout: std::time::Duration::from_secs(60),
+                },
+                &cancellation,
+            )
+            .await
+            {
+                Ok(Some(archive)) => archive,
+                Ok(None) => {
+                    self.repository
+                        .fail_artifact(
+                            claim,
+                            prepared.artifact.artifact_id,
+                            "PMXT archive object was absent",
+                        )
+                        .await
+                        .map_err(IngestionExecutionError::transient)?;
+                    increment_missing(&mut summary, "missing_pmxt_archive");
+                    summary.artifacts_failed = summary.artifacts_failed.saturating_add(1);
+                    hour += ChronoDuration::hours(1);
+                    self.finish_work_unit(claim, &mut progress, hour, None)
+                        .await?;
+                    continue;
+                }
+                Err(error) => {
+                    let _ = self
+                        .repository
+                        .fail_artifact(claim, prepared.artifact.artifact_id, &error.to_string())
+                        .await;
+                    return Err(IngestionExecutionError::transient(error));
+                }
+            };
+            if !archive.reused_cache {
+                progress.bytes_downloaded = progress
+                    .bytes_downloaded
+                    .saturating_add(archive.compressed_bytes);
+            }
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Downloaded,
+            )
+            .await?;
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Verified,
+            )
+            .await?;
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Ingesting,
+            )
+            .await?;
+            let (mut receiver, handle) = spawn_pmxt_parser(
+                archive.path.clone(),
+                scope,
+                self.config.batch_rows,
+                cancellation.clone(),
+            );
+            while let Some(batch) = receiver.recv().await {
+                self.ensure_continue(claim, &cancellation).await?;
+                let batch = batch.map_err(IngestionExecutionError::permanent)?;
+                let result = self
+                    .repository
+                    .insert_orderbook_event_batch(claim, prepared.artifact.artifact_id, &batch)
+                    .await
+                    .map_err(IngestionExecutionError::transient)?;
+                observe_batch(&mut progress, &mut summary, result);
+                self.update_batch_checkpoint(claim, &progress, hour.date_naive())
+                    .await?;
+            }
+            let parse_summary = handle
+                .await
+                .map_err(IngestionExecutionError::transient)?
+                .map_err(IngestionExecutionError::permanent)?;
+            self.repository
+                .complete_artifact(
+                    claim,
+                    prepared.artifact.artifact_id,
+                    &ArtifactCompletion {
+                        actual_checksum: archive.sha256,
+                        compressed_bytes: archive.compressed_bytes,
+                        record_count: parse_summary.records,
+                        minimum_source_timestamp: parse_summary.minimum_timestamp,
+                        maximum_source_timestamp: parse_summary.maximum_timestamp,
+                        metadata: serde_json::json!({
+                            "batches": parse_summary.batches,
+                            "maximum_batch_records": parse_summary.maximum_batch_records,
+                            "filtered_to_btc_five_minute_markets": true,
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            summary.artifacts_completed = summary.artifacts_completed.saturating_add(1);
+            cleanup_archive_cache(&self.repository, claim, &archive.path).await;
+            hour += ChronoDuration::hours(1);
+            self.finish_work_unit(claim, &mut progress, hour, None)
+                .await?;
+        }
+        summary.completed_work_units = progress.completed_work_units;
+        Ok(summary)
+    }
+
+    async fn ingest_chainlink(
+        &self,
+        claim: &ClaimedJob,
+        range_start: DateTime<Utc>,
+        range_end: DateTime<Utc>,
+        mut progress: BackfillProgress,
+        cancellation: &ArchiveCancellation,
+    ) -> std::result::Result<BackfillJobSummary, IngestionExecutionError> {
+        if self.config.chainlink.credentials.is_none() {
+            return Err(IngestionExecutionError::permanent(
+                "Chainlink Data Streams credentials are not configured for this worker",
+            ));
+        }
+        let mut summary = summary_from_progress(&progress);
+        let mut date = checkpoint_date(claim).unwrap_or(range_start.date_naive());
+        let end_date = range_end.date_naive();
+        while date < end_date {
+            self.ensure_continue(claim, cancellation).await?;
+            let logical_key = self.config.chainlink.logical_key(date);
+            let source_uri = self.config.chainlink.source_uri(date);
+            progress.current_logical_key = Some(logical_key.clone());
+            let prepared = self
+                .repository
+                .prepare_artifact(
+                    claim,
+                    &ArtifactSpec {
+                        job_id: claim.job.job_id,
+                        ingester: IngesterKey::ChainlinkBtcusdReferenceTicks,
+                        logical_key,
+                        provider: CHAINLINK_ARCHIVE_PROVIDER.to_string(),
+                        source_uri,
+                        source_date: Some(date),
+                        expected_checksum: None,
+                        metadata: serde_json::json!({
+                            "feed_id": self.config.chainlink.feed_id,
+                            "report_schema": "v3",
+                            "price_decimals": 18,
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            if prepared.disposition == ArtifactDisposition::AlreadyCompleted {
+                observe_reused_artifact(&mut progress, &mut summary, &prepared.artifact);
+                date += ChronoDuration::days(1);
+                self.finish_work_unit(claim, &mut progress, range_end, Some(date))
+                    .await?;
+                continue;
+            }
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Downloading,
+            )
+            .await?;
+            let day = match self
+                .config
+                .chainlink
+                .fetch_day(&self.client, date, cancellation)
+                .await
+            {
+                Ok(day) => day,
+                Err(error) => {
+                    let _ = self
+                        .repository
+                        .fail_artifact(claim, prepared.artifact.artifact_id, &error.to_string())
+                        .await;
+                    return Err(classify_chainlink_error(error));
+                }
+            };
+            if day.records.is_empty() {
+                let message = format!("Chainlink returned no BTC/USD reports for {date}");
+                let _ = self
+                    .repository
+                    .fail_artifact(claim, prepared.artifact.artifact_id, &message)
+                    .await;
+                return Err(IngestionExecutionError::permanent(message));
+            }
+            progress.bytes_downloaded =
+                progress.bytes_downloaded.saturating_add(day.response_bytes);
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Downloaded,
+            )
+            .await?;
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Verified,
+            )
+            .await?;
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Ingesting,
+            )
+            .await?;
+            for batch in day.records.chunks(self.config.batch_rows) {
+                self.ensure_continue(claim, cancellation).await?;
+                let result = self
+                    .repository
+                    .insert_chainlink_tick_batch(claim, prepared.artifact.artifact_id, batch)
+                    .await
+                    .map_err(IngestionExecutionError::transient)?;
+                observe_batch(&mut progress, &mut summary, result);
+                self.update_batch_checkpoint(claim, &progress, date).await?;
+            }
+            let minimum_source_timestamp =
+                day.records.first().map(|record| record.source_timestamp);
+            let maximum_source_timestamp = day.records.last().map(|record| record.source_timestamp);
+            self.repository
+                .complete_artifact(
+                    claim,
+                    prepared.artifact.artifact_id,
+                    &ArtifactCompletion {
+                        actual_checksum: day.sha256,
+                        compressed_bytes: day.response_bytes,
+                        record_count: u64::try_from(day.records.len())
+                            .map_err(IngestionExecutionError::permanent)?,
+                        minimum_source_timestamp,
+                        maximum_source_timestamp,
+                        metadata: serde_json::json!({
+                            "feed_id": self.config.chainlink.feed_id,
+                            "page_limit": self.config.chainlink.page_limit,
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            summary.artifacts_completed = summary.artifacts_completed.saturating_add(1);
+            date += ChronoDuration::days(1);
+            self.finish_work_unit(claim, &mut progress, range_end, Some(date))
+                .await?;
+        }
+        summary.completed_work_units = progress.completed_work_units;
+        Ok(summary)
+    }
+
     async fn fetch_bounded_json_bytes(
         &self,
         source_uri: &str,
@@ -870,8 +1202,47 @@ fn expected_units(
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
 ) -> u64 {
-    let divisor = if ingester.is_binance() { 86_400 } else { 300 };
+    let divisor = ingester.alignment_seconds();
     u64::try_from((range_end - range_start).num_seconds() / divisor).unwrap_or(0)
+}
+
+fn classify_chainlink_error(error: anyhow::Error) -> IngestionExecutionError {
+    let permanent_http_error = error.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .and_then(reqwest::Error::status)
+            .filter(|status| {
+                status.is_client_error()
+                    && *status != reqwest::StatusCode::TOO_MANY_REQUESTS
+                    && *status != reqwest::StatusCode::REQUEST_TIMEOUT
+            })
+    });
+    if permanent_http_error.is_some()
+        || error.to_string().contains("credentials are not configured")
+        || error.to_string().contains("invalid Chainlink")
+        || error.to_string().contains("failed to decode Chainlink")
+    {
+        IngestionExecutionError::permanent(error)
+    } else {
+        IngestionExecutionError::transient(error)
+    }
+}
+
+async fn cleanup_archive_cache(
+    repository: &IngestionRepository,
+    claim: &ClaimedJob,
+    path: &std::path::Path,
+) {
+    if let Err(error) = fs::remove_file(path).await {
+        let _ = repository
+            .append_event(
+                claim.job.job_id,
+                super::job::BackfillEventLevel::Warn,
+                "completed archive cache cleanup failed",
+                serde_json::json!({"path": path, "error": error.to_string()}),
+            )
+            .await;
+    }
 }
 
 fn summary_from_progress(progress: &BackfillProgress) -> BackfillJobSummary {
@@ -1422,6 +1793,14 @@ mod tests {
             gamma_base_url: "https://gamma.example".to_string(),
             clob_base_url: "https://clob.example".to_string(),
             binance_archive_base_url: "https://archive.example".to_string(),
+            pmxt_archive_base_url: "https://pmxt.example".to_string(),
+            chainlink: ChainlinkArchiveConfig {
+                rest_url: "https://chainlink.example".to_string(),
+                feed_id: super::super::chainlink_archive::DEFAULT_CHAINLINK_BTCUSD_FEED_ID
+                    .to_string(),
+                page_limit: 1_000,
+                credentials: None,
+            },
             cache_directory: PathBuf::from("/tmp/cache"),
             batch_rows: 4_000,
         };

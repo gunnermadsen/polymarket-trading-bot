@@ -142,11 +142,17 @@ impl ControlApi for FakeControlApi {
             official_outcomes: 284,
             aggregate_trade_covered_markets: 283,
             one_second_kline_covered_markets: 282,
-            usable_markets: 281,
+            chainlink_covered_markets: 281,
+            orderbook_covered_markets: 280,
+            usable_markets: 279,
             aggregate_trade_min_timestamp: Some(request.range_start),
             aggregate_trade_max_timestamp: Some(request.range_end),
             one_second_kline_min_timestamp: Some(request.range_start),
             one_second_kline_max_timestamp: Some(request.range_end),
+            chainlink_min_timestamp: Some(request.range_start),
+            chainlink_max_timestamp: Some(request.range_end),
+            orderbook_min_timestamp: Some(request.range_start),
+            orderbook_max_timestamp: Some(request.range_end),
             missing_by_reason: BTreeMap::from([("missing_final_price".to_string(), 3)]),
             artifact_status_counts: BTreeMap::from([("completed".to_string(), 2)]),
         })
@@ -725,6 +731,16 @@ async fn authenticated_admin_can_list_generic_ingesters() {
                     "key": "binance_btcusdt_one_second_klines",
                     "request_version": 1,
                     "range_alignment_seconds": 86400
+                },
+                {
+                    "key": "polymarket_btc_five_minute_orderbooks",
+                    "request_version": 1,
+                    "range_alignment_seconds": 3600
+                },
+                {
+                    "key": "chainlink_btcusd_reference_ticks",
+                    "request_version": 1,
+                    "range_alignment_seconds": 86400
                 }
             ]
         })
@@ -894,7 +910,7 @@ async fn authenticated_admin_can_inspect_cancel_and_check_generic_backfills() {
     assert_eq!(json["range_start"], "2026-01-01T00:00:00Z");
     assert_eq!(json["range_end"], "2026-01-02T00:00:00Z");
     assert_eq!(json["expected_markets"], 288);
-    assert_eq!(json["usable_markets"], 281);
+    assert_eq!(json["usable_markets"], 279);
     assert_eq!(json["missing_by_reason"]["missing_final_price"], 3);
     assert_eq!(json["artifact_status_counts"]["completed"], 2);
 }
