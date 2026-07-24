@@ -138,6 +138,19 @@ pub struct BtcPaperVenueResumeState {
     pub credited_settlement_ids: Vec<Uuid>,
 }
 
+fn ensure_unambiguous_order_run_identity(
+    process_id: Uuid,
+    run_id: Uuid,
+    has_identity_conflict: bool,
+) -> Result<()> {
+    if has_identity_conflict {
+        bail!(
+            "BTC process {process_id} run {run_id} has an order with conflicting current and legacy run identity"
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct BtcPaperSettlementRecord {
     pub process_id: Uuid,
@@ -496,19 +509,32 @@ VALUES (
 "#;
 
 const PAPER_VENUE_RESUME_STATE_SQL: &str = r#"
-WITH run_orders AS (
-  SELECT o.order_id
+WITH order_identity AS MATERIALIZED (
+  SELECT
+    o.order_id,
+    o.raw_payload #>> '{request,metadata,run_id}' AS metadata_run_id,
+    o.raw_payload #>> '{request,metadata,experiment_id}'
+      AS legacy_experiment_id
   FROM polymarket.orders o
   WHERE o.process_id = $1
-    AND NOT COALESCE(
-      o.raw_payload #>> '{request,metadata,run_id}'
-        <> o.raw_payload #>> '{request,metadata,experiment_id}',
-      false
+    AND (
+      o.raw_payload #>> '{request,metadata,run_id}' = $2::text
+      OR o.raw_payload #>> '{request,metadata,experiment_id}' = $2::text
     )
-    AND COALESCE(
-      o.raw_payload #>> '{request,metadata,run_id}',
-      o.raw_payload #>> '{request,metadata,experiment_id}'
-    ) = $2::text
+), identity_state AS (
+  SELECT COALESCE(
+    BOOL_OR(
+      metadata_run_id IS NOT NULL
+      AND legacy_experiment_id IS NOT NULL
+      AND metadata_run_id <> legacy_experiment_id
+    ),
+    false
+  ) AS has_identity_conflict
+  FROM order_identity
+), run_orders AS (
+  SELECT order_id
+  FROM order_identity
+  WHERE NOT COALESCE(metadata_run_id <> legacy_experiment_id, false)
 ), fill_totals AS (
   SELECT
     COALESCE(SUM(f.price * f.size + f.fee), 0)::numeric AS entry_debits,
@@ -535,10 +561,12 @@ WITH run_orders AS (
     AND run_id = $2
 )
 SELECT f.entry_debits, s.settlement_credits,
-       o.order_count, f.fill_count, s.settlement_ids
+       o.order_count, f.fill_count, s.settlement_ids,
+       i.has_identity_conflict
 FROM fill_totals f
 CROSS JOIN order_totals o
 CROSS JOIN settlement_totals s
+CROSS JOIN identity_state i
 "#;
 
 const INSERT_STRATEGY_DECISION_SQL: &str = r#"
@@ -568,7 +596,32 @@ WHERE process_id = $1
 "#;
 
 const DISCOVER_PENDING_PAPER_SETTLEMENTS_SQL: &str = r#"
-WITH entered AS (
+WITH order_identity AS MATERIALIZED (
+  SELECT
+    o.process_id,
+    o.order_id,
+    o.market_id,
+    o.token_id,
+    o.raw_payload #>> '{request,metadata,run_id}' AS metadata_run_id,
+    o.raw_payload #>> '{request,metadata,experiment_id}'
+      AS legacy_experiment_id
+  FROM polymarket.orders o
+  WHERE o.process_id = $1
+    AND (
+      o.raw_payload #>> '{request,metadata,run_id}' = $2::text
+      OR o.raw_payload #>> '{request,metadata,experiment_id}' = $2::text
+    )
+), identity_state AS (
+  SELECT COALESCE(
+    BOOL_OR(
+      metadata_run_id IS NOT NULL
+      AND legacy_experiment_id IS NOT NULL
+      AND metadata_run_id <> legacy_experiment_id
+    ),
+    false
+  ) AS has_identity_conflict
+  FROM order_identity
+), entered AS (
   SELECT
     o.process_id,
     $2::uuid AS run_id,
@@ -579,21 +632,15 @@ WITH entered AS (
     round(sum(f.size), 10)::numeric(30,10) AS filled_size,
     round(sum(f.price * f.size), 10)::numeric(30,10) AS entry_notional,
     round(sum(f.fee), 10)::numeric(30,10) AS entry_fees
-  FROM polymarket.orders o
+  FROM order_identity o
   JOIN polymarket.fills f
     ON f.process_id = $1
    AND f.order_id = o.order_id
    AND f.source = 'paper'
-  WHERE o.process_id = $1
-    AND NOT COALESCE(
-      o.raw_payload #>> '{request,metadata,run_id}'
-        <> o.raw_payload #>> '{request,metadata,experiment_id}',
-      false
-    )
-    AND COALESCE(
-      o.raw_payload #>> '{request,metadata,run_id}',
-      o.raw_payload #>> '{request,metadata,experiment_id}'
-    ) = $2::text
+  WHERE NOT COALESCE(
+    o.metadata_run_id <> o.legacy_experiment_id,
+    false
+  )
   GROUP BY o.process_id, o.order_id, o.market_id, o.token_id
 ), eligible AS (
   SELECT
@@ -621,21 +668,27 @@ WITH entered AS (
     AND w.status IN ('resolved', 'resolved_late')
     AND w.resolution_received_at = m.official_resolution_received_at
     AND w.resolution_source = m.official_resolution_source
-)
-INSERT INTO polymarket.btc_paper_settlement_ledger (
-  process_id, run_id, order_id, market_id, token_id, fill_ids,
-  official_outcome, official_winning_token_id,
-  official_resolution_received_at, official_resolution_source,
-  filled_size, entry_notional, entry_fees, payout, net_pnl
+), inserted AS (
+  INSERT INTO polymarket.btc_paper_settlement_ledger (
+    process_id, run_id, order_id, market_id, token_id, fill_ids,
+    official_outcome, official_winning_token_id,
+    official_resolution_received_at, official_resolution_source,
+    filled_size, entry_notional, entry_fees, payout, net_pnl
+  )
+  SELECT
+    process_id, run_id, order_id, market_id, token_id, fill_ids,
+    official_outcome, official_winning_token_id,
+    official_resolution_received_at, official_resolution_source,
+    filled_size, entry_notional, entry_fees, payout,
+    (payout - entry_notional - entry_fees)::numeric(30,10)
+  FROM eligible
+  WHERE NOT (SELECT has_identity_conflict FROM identity_state)
+  ON CONFLICT (run_id, order_id) DO NOTHING
+  RETURNING 1 AS inserted
 )
 SELECT
-  process_id, run_id, order_id, market_id, token_id, fill_ids,
-  official_outcome, official_winning_token_id,
-  official_resolution_received_at, official_resolution_source,
-  filled_size, entry_notional, entry_fees, payout,
-  (payout - entry_notional - entry_fees)::numeric(30,10)
-FROM eligible
-ON CONFLICT (run_id, order_id) DO NOTHING
+  (SELECT has_identity_conflict FROM identity_state) AS has_identity_conflict,
+  (SELECT COUNT(*)::bigint FROM inserted) AS inserted_count
 "#;
 
 const LOAD_PENDING_PAPER_SETTLEMENTS_SQL: &str = r#"
@@ -2496,15 +2549,22 @@ impl BtcRepository {
         process_id: Uuid,
         run_id: Uuid,
     ) -> Result<BtcPaperVenueResumeState> {
-        let (entry_debits, settlement_credits, order_count, fill_count, settlement_ids) =
-            sqlx::query_as::<_, (Decimal, Decimal, i64, i64, Vec<Uuid>)>(
-                PAPER_VENUE_RESUME_STATE_SQL,
-            )
-            .bind(process_id)
-            .bind(run_id)
-            .fetch_one(&self.pool)
-            .await
-            .context("failed to load BTC paper venue resume state")?;
+        let (
+            entry_debits,
+            settlement_credits,
+            order_count,
+            fill_count,
+            settlement_ids,
+            has_identity_conflict,
+        ) = sqlx::query_as::<_, (Decimal, Decimal, i64, i64, Vec<Uuid>, bool)>(
+            PAPER_VENUE_RESUME_STATE_SQL,
+        )
+        .bind(process_id)
+        .bind(run_id)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to load BTC paper venue resume state")?;
+        ensure_unambiguous_order_run_identity(process_id, run_id, has_identity_conflict)?;
         Ok(BtcPaperVenueResumeState {
             entry_debits_usd: entry_debits,
             settlement_credits_usd: settlement_credits,
@@ -2922,12 +2982,14 @@ impl BtcRepository {
         process_id: Uuid,
         run_id: Uuid,
     ) -> Result<Vec<BtcPaperSettlementRecord>> {
-        sqlx::query(DISCOVER_PENDING_PAPER_SETTLEMENTS_SQL)
-            .bind(process_id)
-            .bind(run_id)
-            .execute(&self.pool)
-            .await
-            .context("failed to discover durable BTC paper settlements")?;
+        let (has_identity_conflict, _inserted_count) =
+            sqlx::query_as::<_, (bool, i64)>(DISCOVER_PENDING_PAPER_SETTLEMENTS_SQL)
+                .bind(process_id)
+                .bind(run_id)
+                .fetch_one(&self.pool)
+                .await
+                .context("failed to discover durable BTC paper settlements")?;
+        ensure_unambiguous_order_run_identity(process_id, run_id, has_identity_conflict)?;
 
         let records =
             sqlx::query_as::<_, BtcPaperSettlementRecord>(LOAD_PENDING_PAPER_SETTLEMENTS_SQL)
@@ -4597,13 +4659,15 @@ mod tests {
     #[test]
     fn run_child_queries_are_process_first_with_historical_order_metadata_fallback() {
         let resume = PAPER_VENUE_RESUME_STATE_SQL.to_ascii_lowercase();
+        assert!(resume.contains("with order_identity as materialized"));
         assert!(resume.contains("where o.process_id = $1"));
+        assert!(resume.contains("bool_or("));
+        assert!(resume.contains("as has_identity_conflict"));
+        assert!(resume.contains("i.has_identity_conflict"));
         assert!(resume.contains("f.process_id = $1"));
         assert!(resume.contains("where process_id = $1\n    and run_id = $2"));
-        assert!(resume.contains("and not coalesce("));
-        assert!(resume.contains("<> o.raw_payload #>> '{request,metadata,experiment_id}'"));
-        assert_eq!(resume.matches("metadata,run_id").count(), 2);
-        assert_eq!(resume.matches("experiment_id").count(), 2);
+        assert!(resume.matches("metadata,run_id").count() >= 2);
+        assert!(resume.matches("experiment_id").count() >= 2);
         assert!(!resume.contains("btc_paper_experiments"));
 
         let decision_insert = INSERT_STRATEGY_DECISION_SQL.to_ascii_lowercase();
@@ -4616,14 +4680,19 @@ mod tests {
         assert!(decision_update.contains("and run_id = $2"));
 
         let discovery = DISCOVER_PENDING_PAPER_SETTLEMENTS_SQL.to_ascii_lowercase();
+        assert!(discovery.contains("with order_identity as materialized"));
         assert!(discovery.contains("where o.process_id = $1"));
+        assert!(discovery.contains("bool_or("));
+        assert!(discovery.contains("as has_identity_conflict"));
         assert!(discovery.contains("on f.process_id = $1"));
         assert!(discovery.contains("$2::uuid as run_id"));
         assert!(discovery.contains("on conflict (run_id, order_id) do nothing"));
-        assert!(discovery.contains("and not coalesce("));
-        assert!(discovery.contains("<> o.raw_payload #>> '{request,metadata,experiment_id}'"));
-        assert_eq!(discovery.matches("metadata,run_id").count(), 2);
-        assert_eq!(discovery.matches("experiment_id").count(), 2);
+        assert!(discovery.contains("where not (select has_identity_conflict from identity_state)"));
+        assert!(discovery.contains(
+            "(select has_identity_conflict from identity_state) as has_identity_conflict"
+        ));
+        assert!(discovery.matches("metadata,run_id").count() >= 2);
+        assert!(discovery.matches("experiment_id").count() >= 2);
         assert!(!discovery.contains("btc_paper_experiments"));
 
         for query in [
@@ -4635,6 +4704,19 @@ mod tests {
             assert!(normalized.contains("run_id = $2"));
             assert!(!normalized.contains("experiment_id"));
         }
+    }
+
+    #[test]
+    fn conflicting_current_and_legacy_order_identity_fails_closed() {
+        let process_id = Uuid::from_u128(101);
+        let run_id = Uuid::from_u128(202);
+
+        ensure_unambiguous_order_run_identity(process_id, run_id, false).unwrap();
+        let error = ensure_unambiguous_order_run_identity(process_id, run_id, true).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains(&process_id.to_string()));
+        assert!(message.contains(&run_id.to_string()));
+        assert!(message.contains("conflicting current and legacy run identity"));
     }
 
     #[test]
