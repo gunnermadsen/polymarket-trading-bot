@@ -65,7 +65,7 @@ export class RetirePolymarketNegativeRiskConversions1784846090000
             AND constraint_record.contype = 'p'
             AND constraint_record.conname = 'pk_polymarket_conversions'
             AND ARRAY(
-              SELECT attribute.attname
+              SELECT attribute.attname::text
               FROM unnest(constraint_record.conkey)
                 WITH ORDINALITY AS key_column(attnum, position)
               JOIN pg_attribute attribute
@@ -90,7 +90,7 @@ export class RetirePolymarketNegativeRiskConversions1784846090000
             AND index_record.indnkeyatts = 2
             AND index_record.indnatts = 2
             AND ARRAY(
-              SELECT attribute.attname
+              SELECT attribute.attname::text
               FROM unnest(index_record.indkey::smallint[])
                 WITH ORDINALITY AS key_column(attnum, position)
               JOIN pg_attribute attribute
