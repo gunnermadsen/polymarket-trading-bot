@@ -64,16 +64,18 @@ pub enum IngesterKey {
     BinanceBtcusdtAggTrades,
     BinanceBtcusdtOneSecondKlines,
     PolymarketBtcFiveMinuteOrderbooks,
+    PolymarketBtcFiveMinuteExecutionSnapshots,
     ChainlinkBtcusdReferenceTicks,
 }
 
 impl IngesterKey {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::BtcFiveMinuteMarkets,
         Self::BtcFiveMinuteResolutions,
         Self::BinanceBtcusdtAggTrades,
         Self::BinanceBtcusdtOneSecondKlines,
         Self::PolymarketBtcFiveMinuteOrderbooks,
+        Self::PolymarketBtcFiveMinuteExecutionSnapshots,
         Self::ChainlinkBtcusdReferenceTicks,
     ];
 
@@ -84,6 +86,9 @@ impl IngesterKey {
             Self::BinanceBtcusdtAggTrades => "binance_btcusdt_agg_trades",
             Self::BinanceBtcusdtOneSecondKlines => "binance_btcusdt_one_second_klines",
             Self::PolymarketBtcFiveMinuteOrderbooks => "polymarket_btc_five_minute_orderbooks",
+            Self::PolymarketBtcFiveMinuteExecutionSnapshots => {
+                "polymarket_btc_five_minute_execution_snapshots"
+            }
             Self::ChainlinkBtcusdReferenceTicks => "chainlink_btcusd_reference_ticks",
         }
     }
@@ -92,10 +97,15 @@ impl IngesterKey {
         BACKFILL_REQUEST_VERSION
     }
 
+    pub const fn accepts_new_requests(self) -> bool {
+        !matches!(self, Self::PolymarketBtcFiveMinuteOrderbooks)
+    }
+
     pub const fn alignment_seconds(self) -> i64 {
         match self {
             Self::BtcFiveMinuteMarkets | Self::BtcFiveMinuteResolutions => 300,
-            Self::PolymarketBtcFiveMinuteOrderbooks => 3_600,
+            Self::PolymarketBtcFiveMinuteOrderbooks
+            | Self::PolymarketBtcFiveMinuteExecutionSnapshots => 3_600,
             Self::BinanceBtcusdtAggTrades
             | Self::BinanceBtcusdtOneSecondKlines
             | Self::ChainlinkBtcusdReferenceTicks => 86_400,
@@ -105,7 +115,8 @@ impl IngesterKey {
     pub fn latest_complete_end(self, now: DateTime<Utc>) -> DateTime<Utc> {
         let alignment = self.alignment_seconds();
         let source_lag_seconds = match self {
-            Self::PolymarketBtcFiveMinuteOrderbooks => 10 * 60,
+            Self::PolymarketBtcFiveMinuteOrderbooks
+            | Self::PolymarketBtcFiveMinuteExecutionSnapshots => 10 * 60,
             _ => 0,
         };
         let safe_now = now - chrono::Duration::seconds(source_lag_seconds);
@@ -130,6 +141,9 @@ impl FromStr for IngesterKey {
             "binance_btcusdt_agg_trades" => Ok(Self::BinanceBtcusdtAggTrades),
             "binance_btcusdt_one_second_klines" => Ok(Self::BinanceBtcusdtOneSecondKlines),
             "polymarket_btc_five_minute_orderbooks" => Ok(Self::PolymarketBtcFiveMinuteOrderbooks),
+            "polymarket_btc_five_minute_execution_snapshots" => {
+                Ok(Self::PolymarketBtcFiveMinuteExecutionSnapshots)
+            }
             "chainlink_btcusd_reference_ticks" => Ok(Self::ChainlinkBtcusdReferenceTicks),
             other => Err(BackfillRequestValidationError::new(format!(
                 "unsupported ingester {other}"
@@ -153,6 +167,11 @@ pub struct BackfillRequest {
 
 impl BackfillRequest {
     pub fn validate(self) -> Result<ValidatedBackfillRequest, BackfillRequestValidationError> {
+        if !self.ingester.accepts_new_requests() {
+            return Err(BackfillRequestValidationError::new(
+                "raw PMXT orderbook ingestion is deprecated; use polymarket_btc_five_minute_execution_snapshots",
+            ));
+        }
         if self.request_version != self.ingester.supported_request_version() {
             return Err(BackfillRequestValidationError::new(format!(
                 "ingester {} supports request_version {}, received {}",
@@ -639,10 +658,12 @@ pub struct BinanceOneSecondKlineRecord {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BtcOrderbookMarketScope {
+    pub market_id: String,
     pub condition_id: String,
     pub up_token_id: String,
     pub down_token_id: String,
     pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -664,6 +685,39 @@ pub struct BtcOrderbookArchiveEvent {
     pub transaction_hash: Option<String>,
     pub old_tick_size: Option<Decimal>,
     pub new_tick_size: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BtcExecutionSnapshot {
+    pub market_id: String,
+    pub sampled_at: DateTime<Utc>,
+    pub up_source_row_number: Option<i64>,
+    pub up_source_timestamp: Option<DateTime<Utc>>,
+    pub up_provider_received_at: Option<DateTime<Utc>>,
+    pub up_best_bid: Option<Decimal>,
+    pub up_best_ask: Option<Decimal>,
+    pub up_best_bid_size: Option<Decimal>,
+    pub up_best_ask_size: Option<Decimal>,
+    pub up_bid_depth: Option<Decimal>,
+    pub up_ask_depth: Option<Decimal>,
+    pub up_ask_vwap_1: Option<Decimal>,
+    pub up_ask_vwap_5: Option<Decimal>,
+    pub up_ask_vwap_10: Option<Decimal>,
+    pub up_imbalance: Option<Decimal>,
+    pub down_source_row_number: Option<i64>,
+    pub down_source_timestamp: Option<DateTime<Utc>>,
+    pub down_provider_received_at: Option<DateTime<Utc>>,
+    pub down_best_bid: Option<Decimal>,
+    pub down_best_ask: Option<Decimal>,
+    pub down_best_bid_size: Option<Decimal>,
+    pub down_best_ask_size: Option<Decimal>,
+    pub down_bid_depth: Option<Decimal>,
+    pub down_ask_depth: Option<Decimal>,
+    pub down_ask_vwap_1: Option<Decimal>,
+    pub down_ask_vwap_5: Option<Decimal>,
+    pub down_ask_vwap_10: Option<Decimal>,
+    pub down_imbalance: Option<Decimal>,
+    pub quality_flags: i32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -780,7 +834,7 @@ mod tests {
     #[test]
     fn source_work_units_use_their_native_archive_cadence() {
         let pmxt = request(
-            IngesterKey::PolymarketBtcFiveMinuteOrderbooks,
+            IngesterKey::PolymarketBtcFiveMinuteExecutionSnapshots,
             1_783_382_400,
             1_783_386_000,
         )
@@ -798,8 +852,15 @@ mod tests {
         assert_eq!(chainlink.expected_work_units, 1);
 
         assert!(request(
-            IngesterKey::PolymarketBtcFiveMinuteOrderbooks,
+            IngesterKey::PolymarketBtcFiveMinuteExecutionSnapshots,
             1_783_382_700,
+            1_783_386_000,
+        )
+        .validate()
+        .is_err());
+        assert!(request(
+            IngesterKey::PolymarketBtcFiveMinuteOrderbooks,
+            1_783_382_400,
             1_783_386_000,
         )
         .validate()

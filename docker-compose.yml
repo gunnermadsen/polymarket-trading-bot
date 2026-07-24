@@ -192,8 +192,10 @@ services:
       POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
       POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "2"
       POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
+      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "21474836480"
+      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "172800"
     volumes:
-      - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
+      - /Volumes/docker-data/polymarket-bot/backfill-cache:/var/lib/polymarket/backfill-cache
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -246,8 +248,10 @@ services:
       POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
       POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "2"
       POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
+      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "21474836480"
+      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "172800"
     volumes:
-      - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
+      - /Volumes/docker-data/polymarket-bot/backfill-cache:/var/lib/polymarket/backfill-cache
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -300,8 +304,10 @@ services:
       POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
       POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "2"
       POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
+      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "21474836480"
+      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "172800"
     volumes:
-      - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
+      - /Volumes/docker-data/polymarket-bot/backfill-cache:/var/lib/polymarket/backfill-cache
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -345,4 +351,3 @@ services:
 volumes:
   timescaledb-0-data:
   grafana-data:
-  polymarket-backfill-cache:

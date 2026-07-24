@@ -360,6 +360,7 @@ async fn list_ingesters() -> Json<IngesterListResponse> {
                 key,
                 request_version: key.supported_request_version(),
                 range_alignment_seconds: key.alignment_seconds(),
+                accepts_new_requests: key.accepts_new_requests(),
             })
             .collect(),
     })
@@ -757,6 +758,7 @@ pub struct IngesterDescription {
     pub key: IngesterKey,
     pub request_version: i32,
     pub range_alignment_seconds: i64,
+    pub accepts_new_requests: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

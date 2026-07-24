@@ -13,8 +13,12 @@ execution; backfill jobs are durable operational jobs that prepare training inpu
 | `btc_five_minute_resolutions` | five minutes | official CLOB outcomes on the existing market identities |
 | `binance_btcusdt_agg_trades` | UTC day | checksummed BTCUSDT aggregate trades |
 | `binance_btcusdt_one_second_klines` | UTC day | checksummed BTCUSDT one-second candles |
-| `polymarket_btc_five_minute_orderbooks` | UTC hour | PMXT v2 CLOB events filtered to validated BTC five-minute condition and token IDs |
+| `polymarket_btc_five_minute_execution_snapshots` | UTC hour | causal 250 ms executable-book snapshots for validated BTC five-minute markets |
 | `chainlink_btcusd_reference_ticks` | UTC day | decoded, signed Chainlink BTC/USD Data Streams v3 reports |
+
+`polymarket_btc_five_minute_orderbooks` is retained only so already-queued jobs and historical
+artifact identities remain readable. The API reports `accepts_new_requests: false` for it and
+rejects new raw-materialization requests.
 
 Requests use half-open ranges: `range_start` is included and `range_end` is excluded. Version 1
 accepts an empty `parameters` object. An idempotency key is required and remains reserved after a
@@ -58,20 +62,28 @@ as `polymarket-bot`. It runs one job, one archive parser, and one database write
 Postgres lease carries a random fencing token; progress, artifact transitions, batch writes, and
 terminal job transitions reject a stale worker.
 
-Binance archives are downloaded incrementally to the persistent cache volume, limited by byte
+Binance archives are downloaded incrementally to the persistent cache directory, limited by byte
 count, hashed while streaming, fsynced, and atomically published only after their official SHA-256
 checksum matches. ZIP CSV rows are decoded on one blocking thread and passed through a
 single-capacity channel in batches of at most 4,000 rows. The worker does not accumulate a day of
 trades in memory. Completed artifacts and BTC reference facts are immutable, and repeated writes
 must match the original values.
 
-PMXT files use the same bounded, atomic cache path but are Parquet rather than ZIP CSV. A blocking
-streaming reader rejects schema drift, retains the global source row number, and sends only events
-for validated BTC five-minute condition and outcome-token IDs through the bounded batch channel.
-The database stores native events (`book`, `price_change`, `last_trade_price`, and
-`tick_size_change`) without sampling. PMXT must run after the market-identity ingester; an empty
-identity scope fails instead of creating an incomplete completed artifact. Include the UTC hour
-before a study range when initial full-book seed coverage is needed. The source is the
+PMXT files use the same bounded, atomic cache path but are Parquet rather than ZIP CSV. The cache is
+bound to `/Volumes/docker-data/polymarket-bot/backfill-cache`, separated by worker, capped at 20 GiB
+per worker, and removes partial or stale files on worker startup. A blocking streaming reader
+rejects schema drift and sends only events for validated BTC five-minute condition and
+outcome-token IDs through the bounded batch channel.
+
+The compact ingester reconstructs each token book using only events whose provider receipt time is
+at or before the sample. It persists one row per market every 250 ms with both outcomes: best
+bid/ask and sizes, total depth, executable ask VWAP for 1, 5, and 10 shares, imbalance, source
+timestamps, and explicit missing, stale, crossed-book, and insufficient-depth flags. It does not
+fabricate a book. Each five-minute market therefore has exactly 1,200 rows and a full UTC day has
+345,600 rows. The preceding UTC hour is read for full-book seeds. When a completed raw
+materialization exists, it is reprocessed without downloading the source again; otherwise the
+worker streams the PMXT files directly to compact rows and removes the hourly cache as it advances.
+The source is the
 [PMXT Polymarket Orderbook Archive v2](https://archive.pmxt.dev/docs/v2-data-overview), provided by
 [pmxt](https://pmxt.dev) under CC BY 4.0.
 
@@ -98,14 +110,16 @@ ticks, outcomes, or prices.
 
 The readiness endpoint reports coverage rather than claiming model quality. A market is usable
 only when it has a valid five-minute identity, an opening boundary, an official outcome, completed
-all-300-second Binance candle coverage, Chainlink reports at both window boundaries, full-book
-seeds for both outcome tokens, and orderbook events during the market window. Aggregate trades and
-final-price coverage are reported separately but are not required for the current strategy
-hypothesis. Missing counts and source timestamp bounds make incomplete ranges explicit before
-dataset construction or training begins. Readiness establishes data completeness only; the pilot
-still has to validate Chainlink overlap against the realtime RTDS feed and orderbook reconstruction
-against live checkpoints before a larger backfill is approved.
+all-300-second Binance candle coverage, Chainlink reports at both window boundaries, and exactly
+1,200 compact execution snapshots. Aggregate trades and final-price coverage are reported
+separately but are not required for the current strategy hypothesis. Quality flags remain in the
+dataset so a strategy or later model can learn or abstain under poor liquidity without treating a
+missing book as a valid price. Missing counts and source timestamp bounds make incomplete ranges
+explicit before dataset construction or training begins. Readiness establishes data completeness
+only; the pilot still has to validate Chainlink overlap against the realtime RTDS feed and compact
+reconstruction against retained raw events before a larger backfill is approved.
 
 The intended pilot order is market identities, official outcomes, one-second Binance candles,
-Chainlink reports, then PMXT orderbooks with the preceding seed hour. No ingester is automatically
-executed by deployment or migration.
+Chainlink reports, then compact PMXT execution snapshots. Binance aggregate trades are optional for
+separate research and do not gate strategy readiness. No ingester is automatically executed by
+deployment or migration.

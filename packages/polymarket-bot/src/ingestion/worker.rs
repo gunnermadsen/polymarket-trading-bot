@@ -1,4 +1,8 @@
-use std::{env, path::PathBuf, time::Duration};
+use std::{
+    env,
+    path::PathBuf,
+    time::{Duration, SystemTime},
+};
 
 use anyhow::{bail, Context, Result};
 use sqlx::postgres::PgPoolOptions;
@@ -30,6 +34,8 @@ pub struct BackfillWorkerConfig {
     pub heartbeat_interval: Duration,
     pub database_pool_connections: u32,
     pub batch_rows: usize,
+    pub maximum_cache_bytes: u64,
+    pub stale_cache_age: Duration,
 }
 
 impl BackfillWorkerConfig {
@@ -54,6 +60,14 @@ impl BackfillWorkerConfig {
             )?),
             database_pool_connections: env_u32("POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS", 4)?,
             batch_rows: env_usize("POLYMARKET_BACKFILL_BATCH_ROWS", 4_000)?,
+            maximum_cache_bytes: env_u64(
+                "POLYMARKET_BACKFILL_CACHE_MAX_BYTES",
+                20 * 1024 * 1024 * 1024,
+            )?,
+            stale_cache_age: Duration::from_secs(env_u64(
+                "POLYMARKET_BACKFILL_CACHE_STALE_SECS",
+                48 * 60 * 60,
+            )?),
         };
         config.validate()?;
         Ok(config)
@@ -81,6 +95,12 @@ impl BackfillWorkerConfig {
         if !(1..=4_000).contains(&self.batch_rows) {
             bail!("POLYMARKET_BACKFILL_BATCH_ROWS must be between 1 and 4000");
         }
+        if self.maximum_cache_bytes < 4 * 1024 * 1024 * 1024 {
+            bail!("POLYMARKET_BACKFILL_CACHE_MAX_BYTES must be at least 4 GiB");
+        }
+        if self.stale_cache_age < Duration::from_secs(60 * 60) {
+            bail!("POLYMARKET_BACKFILL_CACHE_STALE_SECS must be at least one hour");
+        }
         Ok(())
     }
 }
@@ -95,6 +115,7 @@ impl BackfillWorker {
     pub async fn from_env() -> Result<Self> {
         let app = AppConfig::from_env()?;
         let config = BackfillWorkerConfig::from_env()?;
+        prepare_cache_directory(&config).await?;
         let pool = PgPoolOptions::new()
             .max_connections(config.database_pool_connections)
             .connect(&app.postgres.database_url())
@@ -274,6 +295,65 @@ impl BackfillWorker {
     }
 }
 
+async fn prepare_cache_directory(config: &BackfillWorkerConfig) -> Result<()> {
+    tokio::fs::create_dir_all(&config.cache_directory)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to create backfill cache directory {}",
+                config.cache_directory.display()
+            )
+        })?;
+    let now = SystemTime::now();
+    let mut directory = tokio::fs::read_dir(&config.cache_directory)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to inspect backfill cache directory {}",
+                config.cache_directory.display()
+            )
+        })?;
+    let mut retained = Vec::new();
+    while let Some(entry) = directory.next_entry().await? {
+        let metadata = entry.metadata().await?;
+        if !metadata.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let stale = now
+            .duration_since(modified)
+            .is_ok_and(|age| age >= config.stale_cache_age);
+        let partial = path
+            .extension()
+            .is_some_and(|extension| extension == "part");
+        if stale || partial {
+            tokio::fs::remove_file(&path).await.with_context(|| {
+                format!("failed to remove stale backfill cache {}", path.display())
+            })?;
+            continue;
+        }
+        retained.push((modified, metadata.len(), path));
+    }
+    retained.sort_by_key(|(modified, _, _)| *modified);
+    let mut retained_bytes = retained
+        .iter()
+        .fold(0u64, |total, (_, size, _)| total.saturating_add(*size));
+    for (_, size, path) in retained {
+        if retained_bytes <= config.maximum_cache_bytes {
+            break;
+        }
+        tokio::fs::remove_file(&path).await.with_context(|| {
+            format!(
+                "failed to enforce backfill cache quota for {}",
+                path.display()
+            )
+        })?;
+        retained_bytes = retained_bytes.saturating_sub(size);
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HeartbeatOutcome {
     Stopped,
@@ -412,6 +492,8 @@ mod tests {
             heartbeat_interval: Duration::from_secs(15),
             database_pool_connections: 4,
             batch_rows: 4_000,
+            maximum_cache_bytes: 20 * 1024 * 1024 * 1024,
+            stale_cache_age: Duration::from_secs(48 * 60 * 60),
         }
     }
 

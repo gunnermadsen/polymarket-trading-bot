@@ -15,11 +15,12 @@ use super::{
         BinanceArchiveSpec, BINANCE_ARCHIVE_PROVIDER,
     },
     chainlink_archive::{ChainlinkArchiveConfig, CHAINLINK_ARCHIVE_PROVIDER},
+    execution_snapshots::{ExecutionSnapshotReconstructor, EXECUTION_SNAPSHOT_SCHEMA_VERSION},
     job::{
         ArtifactCompletion, ArtifactDisposition, ArtifactSpec, BackfillArtifactStatus,
         BackfillCheckpoint, BackfillFailureKind, BackfillJobSummary, BackfillProgress,
-        BtcIntervalMarket, BtcOutcome, BtcReferenceFact, BtcReferenceFactType, ClaimedJob,
-        IngesterKey, WorkerControl,
+        BtcExecutionSnapshot, BtcIntervalMarket, BtcOutcome, BtcReferenceFact,
+        BtcReferenceFactType, ClaimedJob, IngesterKey, WorkerControl,
     },
     pmxt_archive::{
         download_archive as download_pmxt_archive, spawn_parser as spawn_pmxt_parser,
@@ -167,6 +168,16 @@ impl IngestionExecutor {
             IngesterKey::PolymarketBtcFiveMinuteOrderbooks => {
                 self.ingest_pmxt_orderbooks(claim, range_start, range_end, progress, cancellation)
                     .await
+            }
+            IngesterKey::PolymarketBtcFiveMinuteExecutionSnapshots => {
+                self.ingest_pmxt_execution_snapshots(
+                    claim,
+                    range_start,
+                    range_end,
+                    progress,
+                    cancellation,
+                )
+                .await
             }
             IngesterKey::ChainlinkBtcusdReferenceTicks => {
                 self.ingest_chainlink(claim, range_start, range_end, progress, &cancellation)
@@ -878,6 +889,378 @@ impl IngestionExecutor {
         }
         summary.completed_work_units = progress.completed_work_units;
         Ok(summary)
+    }
+
+    async fn ingest_pmxt_execution_snapshots(
+        &self,
+        claim: &ClaimedJob,
+        range_start: DateTime<Utc>,
+        range_end: DateTime<Utc>,
+        mut progress: BackfillProgress,
+        cancellation: ArchiveCancellation,
+    ) -> std::result::Result<BackfillJobSummary, IngestionExecutionError> {
+        if range_start.timestamp() < PMXT_COVERAGE_START_EPOCH + 3_600 {
+            return Err(IngestionExecutionError::permanent(
+                "compact PMXT reconstruction requires the preceding seed hour",
+            ));
+        }
+        let mut summary = summary_from_progress(&progress);
+        let mut hour = checkpoint_window_start(claim, range_start, 3_600);
+        let mut retained_direct_cache = None;
+        while hour < range_end {
+            self.ensure_continue(claim, &cancellation).await?;
+            let next_hour = hour + ChronoDuration::hours(1);
+            let previous_spec = PmxtArchiveSpec::new(
+                &self.config.pmxt_archive_base_url,
+                hour - ChronoDuration::hours(1),
+            )
+            .map_err(IngestionExecutionError::permanent)?;
+            let current_spec = PmxtArchiveSpec::new(&self.config.pmxt_archive_base_url, hour)
+                .map_err(IngestionExecutionError::permanent)?;
+            let source_specs = [previous_spec, current_spec];
+            let logical_keys = source_specs
+                .iter()
+                .map(|spec| spec.logical_key.clone())
+                .collect::<Vec<_>>();
+            let source_artifacts = self
+                .repository
+                .completed_raw_orderbook_artifacts(&logical_keys)
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            let reuse_raw_materialization = source_artifacts.len() == source_specs.len();
+            let scope = self
+                .repository
+                .execution_snapshot_market_scope(hour, next_hour)
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            if scope.len() != 12 {
+                return Err(IngestionExecutionError::permanent(format!(
+                    "expected 12 valid BTC five-minute markets for compact PMXT hour {hour}, found {}",
+                    scope.len()
+                )));
+            }
+            let stamp = hour.format("%Y-%m-%dT%H");
+            let logical_key = format!("pmxt:v2:btc5m_execution_snapshots:250ms:{stamp}");
+            progress.current_logical_key = Some(logical_key.clone());
+            let prepared = self
+                .repository
+                .prepare_artifact(
+                    claim,
+                    &ArtifactSpec {
+                        job_id: claim.job.job_id,
+                        ingester: IngesterKey::PolymarketBtcFiveMinuteExecutionSnapshots,
+                        logical_key,
+                        provider: "pmxt_v2_execution_snapshots".to_string(),
+                        source_uri: format!("{}#btc5m-250ms", source_specs[1].source_uri),
+                        source_date: Some(hour.date_naive()),
+                        expected_checksum: None,
+                        metadata: serde_json::json!({
+                            "schema_version": EXECUTION_SNAPSHOT_SCHEMA_VERSION,
+                            "sample_interval_milliseconds": 250,
+                            "source_logical_keys": logical_keys,
+                            "source_mode": if reuse_raw_materialization {
+                                "existing_raw_materialization"
+                            } else {
+                                "direct_pmxt_archive"
+                            },
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            if prepared.disposition == ArtifactDisposition::AlreadyCompleted {
+                if reuse_raw_materialization {
+                    self.repository
+                        .record_raw_orderbook_replacements(
+                            claim,
+                            prepared.artifact.artifact_id,
+                            &source_artifacts,
+                        )
+                        .await
+                        .map_err(IngestionExecutionError::transient)?;
+                }
+                observe_reused_artifact(&mut progress, &mut summary, &prepared.artifact);
+                hour = next_hour;
+                self.finish_work_unit(claim, &mut progress, hour, None)
+                    .await?;
+                continue;
+            }
+
+            let mut reconstructor = ExecutionSnapshotReconstructor::new(scope.clone())
+                .map_err(IngestionExecutionError::permanent)?;
+            let mut output = Vec::with_capacity(self.config.batch_rows);
+            let mut digest = Sha256::new();
+            let mut reconstructed_records = 0u64;
+            let mut source_events = 0u64;
+            let compressed_bytes;
+
+            if reuse_raw_materialization {
+                self.set_artifact_status(
+                    claim,
+                    prepared.artifact.artifact_id,
+                    BackfillArtifactStatus::Ingesting,
+                )
+                .await?;
+                compressed_bytes = source_artifacts.iter().try_fold(0u64, |total, artifact| {
+                    let bytes = artifact.compressed_bytes.unwrap_or_default();
+                    u64::try_from(bytes)
+                        .map(|bytes| total.saturating_add(bytes))
+                        .map_err(IngestionExecutionError::permanent)
+                })?;
+                let condition_ids = scope
+                    .iter()
+                    .map(|market| market.condition_id.clone())
+                    .collect::<Vec<_>>();
+                for source_artifact in &source_artifacts {
+                    let mut cursor = None;
+                    loop {
+                        self.ensure_continue(claim, &cancellation).await?;
+                        let page = self
+                            .repository
+                            .raw_orderbook_event_page(
+                                &[source_artifact.artifact_id],
+                                &condition_ids,
+                                cursor.as_ref(),
+                                20_000,
+                            )
+                            .await
+                            .map_err(IngestionExecutionError::transient)?;
+                        if page.events.is_empty() {
+                            break;
+                        }
+                        source_events = source_events.saturating_add(
+                            u64::try_from(page.events.len())
+                                .map_err(IngestionExecutionError::permanent)?,
+                        );
+                        for event in &page.events {
+                            reconstructor
+                                .apply(event, &mut output)
+                                .map_err(IngestionExecutionError::permanent)?;
+                        }
+                        self.persist_execution_snapshot_output(
+                            claim,
+                            prepared.artifact.artifact_id,
+                            &mut output,
+                            &mut digest,
+                            &mut reconstructed_records,
+                            &mut progress,
+                            &mut summary,
+                        )
+                        .await?;
+                        cursor = page.next_cursor;
+                    }
+                }
+            } else {
+                self.set_artifact_status(
+                    claim,
+                    prepared.artifact.artifact_id,
+                    BackfillArtifactStatus::Downloading,
+                )
+                .await?;
+                let mut source_bytes = 0u64;
+                let mut direct_ready = false;
+                for spec in &source_specs {
+                    let archive = download_pmxt_archive(
+                        &self.client,
+                        spec,
+                        &self.config.cache_directory,
+                        &ArchiveDownloadLimits {
+                            maximum_compressed_bytes: 2 * 1024 * 1024 * 1024,
+                            chunk_idle_timeout: std::time::Duration::from_secs(60),
+                        },
+                        &cancellation,
+                    )
+                    .await
+                    .map_err(IngestionExecutionError::transient)?
+                    .ok_or_else(|| {
+                        IngestionExecutionError::permanent(format!(
+                            "PMXT archive object was absent for {}",
+                            spec.hour
+                        ))
+                    })?;
+                    if !archive.reused_cache {
+                        progress.bytes_downloaded = progress
+                            .bytes_downloaded
+                            .saturating_add(archive.compressed_bytes);
+                    }
+                    source_bytes = source_bytes.saturating_add(archive.compressed_bytes);
+                    if !direct_ready {
+                        self.set_artifact_status(
+                            claim,
+                            prepared.artifact.artifact_id,
+                            BackfillArtifactStatus::Downloaded,
+                        )
+                        .await?;
+                        self.set_artifact_status(
+                            claim,
+                            prepared.artifact.artifact_id,
+                            BackfillArtifactStatus::Verified,
+                        )
+                        .await?;
+                        self.set_artifact_status(
+                            claim,
+                            prepared.artifact.artifact_id,
+                            BackfillArtifactStatus::Ingesting,
+                        )
+                        .await?;
+                        direct_ready = true;
+                    }
+                    let (mut receiver, handle) = spawn_pmxt_parser(
+                        archive.path.clone(),
+                        scope.clone(),
+                        self.config.batch_rows,
+                        cancellation.clone(),
+                    );
+                    while let Some(batch) = receiver.recv().await {
+                        self.ensure_continue(claim, &cancellation).await?;
+                        let batch = batch.map_err(IngestionExecutionError::permanent)?;
+                        source_events = source_events.saturating_add(
+                            u64::try_from(batch.len())
+                                .map_err(IngestionExecutionError::permanent)?,
+                        );
+                        for event in &batch {
+                            reconstructor
+                                .apply(event, &mut output)
+                                .map_err(IngestionExecutionError::permanent)?;
+                        }
+                        self.persist_execution_snapshot_output(
+                            claim,
+                            prepared.artifact.artifact_id,
+                            &mut output,
+                            &mut digest,
+                            &mut reconstructed_records,
+                            &mut progress,
+                            &mut summary,
+                        )
+                        .await?;
+                    }
+                    handle
+                        .await
+                        .map_err(IngestionExecutionError::transient)?
+                        .map_err(IngestionExecutionError::permanent)?;
+                    retained_direct_cache = Some(archive.path);
+                }
+                compressed_bytes = source_bytes;
+                cleanup_archive_cache(
+                    &self.repository,
+                    claim,
+                    &self.config.cache_directory.join(&source_specs[0].file_name),
+                )
+                .await;
+            }
+
+            reconstructor.finish(next_hour, &mut output);
+            self.persist_execution_snapshot_output(
+                claim,
+                prepared.artifact.artifact_id,
+                &mut output,
+                &mut digest,
+                &mut reconstructed_records,
+                &mut progress,
+                &mut summary,
+            )
+            .await?;
+            let expected_records = u64::try_from(scope.len())
+                .map_err(IngestionExecutionError::permanent)?
+                .saturating_mul(1_200);
+            if reconstructed_records != expected_records {
+                let message = format!(
+                    "compact PMXT hour {hour} produced {reconstructed_records} snapshots; expected {expected_records}"
+                );
+                let _ = self
+                    .repository
+                    .fail_artifact(claim, prepared.artifact.artifact_id, &message)
+                    .await;
+                return Err(IngestionExecutionError::permanent(message));
+            }
+            let actual_checksum = format!("{:x}", digest.finalize());
+            self.repository
+                .complete_artifact(
+                    claim,
+                    prepared.artifact.artifact_id,
+                    &ArtifactCompletion {
+                        actual_checksum,
+                        compressed_bytes,
+                        record_count: reconstructed_records,
+                        minimum_source_timestamp: Some(hour),
+                        maximum_source_timestamp: Some(
+                            next_hour - ChronoDuration::milliseconds(250),
+                        ),
+                        metadata: serde_json::json!({
+                            "schema_version": EXECUTION_SNAPSHOT_SCHEMA_VERSION,
+                            "sample_interval_milliseconds": 250,
+                            "source_events_consumed": source_events,
+                            "source_artifact_ids": source_artifacts
+                                .iter()
+                                .map(|artifact| artifact.artifact_id)
+                                .collect::<Vec<_>>(),
+                            "quality_flags_are_observations": true,
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            if reuse_raw_materialization {
+                self.repository
+                    .record_raw_orderbook_replacements(
+                        claim,
+                        prepared.artifact.artifact_id,
+                        &source_artifacts,
+                    )
+                    .await
+                    .map_err(IngestionExecutionError::transient)?;
+            }
+            summary.artifacts_completed = summary.artifacts_completed.saturating_add(1);
+            hour = next_hour;
+            self.finish_work_unit(claim, &mut progress, hour, None)
+                .await?;
+        }
+        if let Some(path) = retained_direct_cache {
+            cleanup_archive_cache(&self.repository, claim, &path).await;
+        }
+        summary.completed_work_units = progress.completed_work_units;
+        Ok(summary)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn persist_execution_snapshot_output(
+        &self,
+        claim: &ClaimedJob,
+        artifact_id: uuid::Uuid,
+        output: &mut Vec<BtcExecutionSnapshot>,
+        digest: &mut Sha256,
+        reconstructed_records: &mut u64,
+        progress: &mut BackfillProgress,
+        summary: &mut BackfillJobSummary,
+    ) -> std::result::Result<(), IngestionExecutionError> {
+        if output.is_empty() {
+            return Ok(());
+        }
+        for record in output.iter() {
+            let encoded = serde_json::to_vec(record).map_err(IngestionExecutionError::permanent)?;
+            digest.update(
+                u64::try_from(encoded.len())
+                    .map_err(IngestionExecutionError::permanent)?
+                    .to_be_bytes(),
+            );
+            digest.update(encoded);
+        }
+        for batch in output.chunks(self.config.batch_rows) {
+            let result = self
+                .repository
+                .insert_execution_snapshot_batch(
+                    claim,
+                    artifact_id,
+                    EXECUTION_SNAPSHOT_SCHEMA_VERSION,
+                    batch,
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            *reconstructed_records = reconstructed_records.saturating_add(result.input_records);
+            observe_batch(progress, summary, result);
+        }
+        output.clear();
+        Ok(())
     }
 
     async fn ingest_chainlink(
