@@ -14,6 +14,7 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use futures_util::{stream, FutureExt, SinkExt, StreamExt};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::{
@@ -296,6 +297,8 @@ pub struct BtcRuntimeMetrics {
     pub feed_events_applied: u64,
     pub checkpoints_queued: u64,
     pub labels_created: u64,
+    pub finalized_boundary_ticks_quarantined: u64,
+    pub finalized_boundary_outcome_conflicts: u64,
     pub persistence_items_written: u64,
     pub persistence_errors: u64,
     pub strategy_errors: u64,
@@ -5559,15 +5562,51 @@ async fn run_rtds_supervisor(
                                                     if tick.source == ReferencePriceSource::RtdsChainlink {
                                                         let max_delay =
                                                             chrono_duration(config.boundary_tick_max_delay);
-                                                        let observed = boundaries
+                                                        let observation = boundaries
                                                             .write()
                                                             .await
                                                             .observe_chainlink(&tick, max_delay);
-                                                        if let Err(error) = observed {
-                                                            disconnect_reason = ReferenceDisconnectReason::CriticalBoundaryIntegrity;
-                                                            disconnect_detail = Some(bounded_reference_detail(&error));
-                                                            fatal_persistence_error = Some(error);
-                                                            break 'connection;
+                                                        if !observation.finalized_late_ticks.is_empty() {
+                                                            let quarantined = observation
+                                                                .finalized_late_ticks
+                                                                .len() as u64;
+                                                            let outcome_conflicts = observation
+                                                                .finalized_late_ticks
+                                                                .iter()
+                                                                .filter(|anomaly| {
+                                                                    anomaly.changes_label_outcome
+                                                                })
+                                                                .count() as u64;
+                                                            {
+                                                                let mut runtime_metrics =
+                                                                    metrics.write().await;
+                                                                runtime_metrics
+                                                                    .finalized_boundary_ticks_quarantined =
+                                                                    runtime_metrics
+                                                                        .finalized_boundary_ticks_quarantined
+                                                                        .saturating_add(quarantined);
+                                                                runtime_metrics
+                                                                    .finalized_boundary_outcome_conflicts =
+                                                                    runtime_metrics
+                                                                        .finalized_boundary_outcome_conflicts
+                                                                        .saturating_add(outcome_conflicts);
+                                                            }
+                                                            for anomaly in
+                                                                observation.finalized_late_ticks
+                                                            {
+                                                                tracing::warn!(
+                                                                    market_id = %anomaly.market_id,
+                                                                    boundary = anomaly.boundary.as_str(),
+                                                                    tick_id = %tick.tick_id,
+                                                                    tick_source_timestamp =
+                                                                        %tick.source_timestamp,
+                                                                    acknowledged_source_timestamp =
+                                                                        %anomaly.acknowledged_source_timestamp,
+                                                                    changes_label_outcome =
+                                                                        anomaly.changes_label_outcome,
+                                                                    "late Chainlink boundary tick quarantined after immutable finalization"
+                                                                );
+                                                            }
                                                         }
                                                         if let Err(error) = flush_pending_boundaries(
                                                             &repository,
@@ -6239,7 +6278,10 @@ async fn flush_pending_boundaries(
     max_delay: Duration,
 ) -> Result<()> {
     loop {
-        let candidates = boundaries.read().await.pending_candidates()?;
+        let candidates = boundaries
+            .read()
+            .await
+            .pending_candidates(Utc::now(), max_delay)?;
         if candidates.is_empty() {
             return Ok(());
         }
@@ -6428,6 +6470,34 @@ enum BoundaryCandidate {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinalizedBoundaryKind {
+    Open,
+    Close,
+}
+
+impl FinalizedBoundaryKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Close => "close",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FinalizedBoundaryLateTick {
+    market_id: String,
+    boundary: FinalizedBoundaryKind,
+    acknowledged_source_timestamp: DateTime<Utc>,
+    changes_label_outcome: bool,
+}
+
+#[derive(Debug, Default)]
+struct BoundaryObservation {
+    finalized_late_ticks: Vec<FinalizedBoundaryLateTick>,
+}
+
 #[derive(Debug, Default)]
 struct BoundaryTracker {
     markets: HashMap<String, BoundaryState>,
@@ -6568,9 +6638,14 @@ impl BoundaryTracker {
         Ok(())
     }
 
-    fn observe_chainlink(&mut self, tick: &ReferencePriceTick, max_delay: Duration) -> Result<()> {
+    fn observe_chainlink(
+        &mut self,
+        tick: &ReferencePriceTick,
+        max_delay: Duration,
+    ) -> BoundaryObservation {
+        let mut observation = BoundaryObservation::default();
         if tick.source != ReferencePriceSource::RtdsChainlink {
-            return Ok(());
+            return observation;
         }
         for boundary in self.markets.values_mut() {
             if tick.source_timestamp >= boundary.market.window_start
@@ -6578,10 +6653,23 @@ impl BoundaryTracker {
             {
                 if let Some(open) = boundary.open_tick.as_ref() {
                     if tick_precedes(tick, open) && !same_tracker_tick(tick, open) {
-                        bail!(
-                            "an earlier BTC opening tick arrived after immutable acknowledgment for market {}",
-                            boundary.market.market_id
-                        );
+                        // The durable opening reference remains authoritative. Retain the late
+                        // source tick for audit without invalidating current or future runtimes.
+                        let changes_label_outcome = boundary
+                            .close_tick
+                            .as_ref()
+                            .zip(boundary.label.as_ref())
+                            .is_some_and(|(close, label)| {
+                                boundary_outcome(tick.price, close.price) != label.outcome
+                            });
+                        observation
+                            .finalized_late_ticks
+                            .push(FinalizedBoundaryLateTick {
+                                market_id: boundary.market.market_id.clone(),
+                                boundary: FinalizedBoundaryKind::Open,
+                                acknowledged_source_timestamp: open.source_timestamp,
+                                changes_label_outcome,
+                            });
                     }
                 } else if match boundary.pending_open_tick.as_ref() {
                     None => true,
@@ -6596,10 +6684,24 @@ impl BoundaryTracker {
                 match boundary.close_tick.as_ref() {
                     Some(close) if tick_precedes(tick, close) => {
                         if boundary.label.is_some() {
-                            bail!(
-                                "an earlier BTC closing tick arrived after immutable label acknowledgment for market {}",
-                                boundary.market.market_id
-                            );
+                            // Once the label is durable, provider reordering is an auditable
+                            // anomaly rather than permission to rewrite immutable market history.
+                            let changes_label_outcome = boundary
+                                .open_tick
+                                .as_ref()
+                                .zip(boundary.label.as_ref())
+                                .is_some_and(|(open, label)| {
+                                    boundary_outcome(open.price, tick.price) != label.outcome
+                                });
+                            observation
+                                .finalized_late_ticks
+                                .push(FinalizedBoundaryLateTick {
+                                    market_id: boundary.market.market_id.clone(),
+                                    boundary: FinalizedBoundaryKind::Close,
+                                    acknowledged_source_timestamp: close.source_timestamp,
+                                    changes_label_outcome,
+                                });
+                            continue;
                         }
                         boundary.close_tick = Some(tick.clone());
                         boundary.close_tick_durable = false;
@@ -6612,10 +6714,14 @@ impl BoundaryTracker {
                 }
             }
         }
-        Ok(())
+        observation
     }
 
-    fn pending_candidates(&self) -> Result<Vec<BoundaryCandidate>> {
+    fn pending_candidates(
+        &self,
+        observed_at: DateTime<Utc>,
+        max_delay: Duration,
+    ) -> Result<Vec<BoundaryCandidate>> {
         let mut candidates = Vec::new();
         for boundary in self.markets.values() {
             if let Some(tick) = boundary.pending_open_tick.as_ref() {
@@ -6634,12 +6740,17 @@ impl BoundaryTracker {
                     tick: tick.clone(),
                 });
             }
-            if boundary.label.is_none() && boundary.close_tick_durable {
+            if boundary.label.is_none()
+                && boundary.close_tick_durable
+                // Wait through the complete eligible source-timestamp window so reordered
+                // close ticks can converge before the market label becomes immutable.
+                && observed_at >= boundary.market.window_end + max_delay
+            {
                 if let (Some(open), Some(close)) =
                     (boundary.open_tick.as_ref(), boundary.close_tick.as_ref())
                 {
                     candidates.push(BoundaryCandidate::Label {
-                        label: boundary_label(&boundary.market, open, close),
+                        label: boundary_label(&boundary.market, open, close, observed_at),
                         close_tick: close.clone(),
                     });
                 }
@@ -6763,12 +6874,9 @@ fn boundary_label(
     market: &BtcIntervalMarket,
     open_tick: &ReferencePriceTick,
     close_tick: &ReferencePriceTick,
+    label_available_at: DateTime<Utc>,
 ) -> BtcMarketLabel {
-    let outcome = if close_tick.price >= open_tick.price {
-        BtcOutcome::Up
-    } else {
-        BtcOutcome::Down
-    };
+    let outcome = boundary_outcome(open_tick.price, close_tick.price);
     BtcMarketLabel {
         market_id: market.market_id.clone(),
         window_start: market.window_start,
@@ -6780,14 +6888,23 @@ fn boundary_label(
         label_version: BOUNDARY_LABEL_VERSION.to_string(),
         source_open_timestamp: open_tick.source_timestamp,
         source_close_timestamp: close_tick.source_timestamp,
-        label_available_at: close_tick.received_at,
+        label_available_at,
         evidence: serde_json::json!({
             "open_tick_id": open_tick.tick_id,
             "close_tick_id": close_tick.tick_id,
             "open_received_at": open_tick.received_at,
             "close_received_at": close_tick.received_at,
+            "finalized_at": label_available_at,
             "rule": "up_when_close_greater_than_or_equal_to_open"
         }),
+    }
+}
+
+fn boundary_outcome(open_price: Decimal, close_price: Decimal) -> BtcOutcome {
+    if close_price >= open_price {
+        BtcOutcome::Up
+    } else {
+        BtcOutcome::Down
     }
 }
 
@@ -10197,49 +10314,63 @@ mod tests {
     #[test]
     fn boundary_tracker_uses_first_ticks_at_or_after_boundaries() {
         let market = market();
+        let max_delay = Duration::seconds(5);
         let mut tracker = BoundaryTracker::default();
         tracker.update_markets(std::slice::from_ref(&market));
-        tracker
-            .observe_chainlink(
-                &tick(market.window_start - Duration::milliseconds(1), dec!(100)),
-                Duration::seconds(5),
-            )
+        tracker.observe_chainlink(
+            &tick(market.window_start - Duration::milliseconds(1), dec!(100)),
+            max_delay,
+        );
+        assert!(tracker
+            .pending_candidates(market.window_start, max_delay)
+            .unwrap()
+            .is_empty());
+        tracker.observe_chainlink(
+            &tick(market.window_start + Duration::milliseconds(100), dec!(100)),
+            max_delay,
+        );
+        let open = tracker
+            .pending_candidates(market.window_start, max_delay)
             .unwrap();
-        assert!(tracker.pending_candidates().unwrap().is_empty());
-        tracker
-            .observe_chainlink(
-                &tick(market.window_start + Duration::milliseconds(100), dec!(100)),
-                Duration::seconds(5),
-            )
-            .unwrap();
-        let open = tracker.pending_candidates().unwrap();
         assert!(matches!(open.as_slice(), [BoundaryCandidate::Open { .. }]));
         tracker.acknowledge(&open[0]).unwrap();
-        tracker
-            .observe_chainlink(
-                &tick(market.window_end + Duration::milliseconds(100), dec!(100)),
-                Duration::seconds(5),
-            )
+        tracker.observe_chainlink(
+            &tick(market.window_end + Duration::milliseconds(100), dec!(100)),
+            max_delay,
+        );
+        let close = tracker
+            .pending_candidates(market.window_end + Duration::milliseconds(100), max_delay)
             .unwrap();
-        let close = tracker.pending_candidates().unwrap();
         assert!(matches!(
             close.as_slice(),
             [BoundaryCandidate::Close { .. }]
         ));
         tracker.acknowledge(&close[0]).unwrap();
-        let label = tracker.pending_candidates().unwrap();
+        assert!(tracker
+            .pending_candidates(
+                market.window_end + max_delay - Duration::milliseconds(1),
+                max_delay,
+            )
+            .unwrap()
+            .is_empty());
+        let finalized_at = market.window_end + max_delay;
+        let label = tracker.pending_candidates(finalized_at, max_delay).unwrap();
         assert!(matches!(
             label.as_slice(),
             [BoundaryCandidate::Label {
                 label: BtcMarketLabel {
                     outcome: BtcOutcome::Up,
+                    label_available_at,
                     ..
                 },
                 ..
-            }]
+            }] if *label_available_at == finalized_at
         ));
         tracker.acknowledge(&label[0]).unwrap();
-        assert!(tracker.pending_candidates().unwrap().is_empty());
+        assert!(tracker
+            .pending_candidates(finalized_at, max_delay)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -10247,13 +10378,14 @@ mod tests {
         let market = market();
         let mut tracker = BoundaryTracker::default();
         tracker.update_markets(std::slice::from_ref(&market));
-        tracker
-            .observe_chainlink(
-                &tick(market.window_start + Duration::seconds(6), dec!(100)),
-                Duration::seconds(5),
-            )
-            .unwrap();
-        assert!(tracker.pending_candidates().unwrap().is_empty());
+        tracker.observe_chainlink(
+            &tick(market.window_start + Duration::seconds(6), dec!(100)),
+            Duration::seconds(5),
+        );
+        assert!(tracker
+            .pending_candidates(market.window_end, Duration::seconds(5))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -10272,7 +10404,10 @@ mod tests {
         tracker
             .hydrate_close_references(&[(market.market_id.clone(), close)], Duration::seconds(5))
             .unwrap();
-        let items = tracker.pending_candidates().unwrap();
+        let max_delay = Duration::seconds(5);
+        let items = tracker
+            .pending_candidates(market.window_end + max_delay, max_delay)
+            .unwrap();
         assert!(matches!(
             items.as_slice(),
             [BoundaryCandidate::Label { label: BtcMarketLabel {
@@ -10294,9 +10429,7 @@ mod tests {
 
         let mut tracker = BoundaryTracker::default();
         tracker.update_markets(std::slice::from_ref(&market));
-        tracker
-            .observe_chainlink(&pending, Duration::seconds(5))
-            .unwrap();
+        tracker.observe_chainlink(&pending, Duration::seconds(5));
         tracker
             .hydrate_open_references(
                 &[(market.market_id.clone(), durable.clone())],
@@ -10315,19 +10448,78 @@ mod tests {
         let open = tick(market.window_start + Duration::milliseconds(50), dec!(100));
         let mut tracker = BoundaryTracker::default();
         tracker.update_markets(std::slice::from_ref(&market));
-        tracker
-            .observe_chainlink(&open, Duration::seconds(5))
-            .unwrap();
+        let max_delay = Duration::seconds(5);
+        tracker.observe_chainlink(&open, max_delay);
 
-        let first = tracker.pending_candidates().unwrap();
-        let second = tracker.pending_candidates().unwrap();
+        let first = tracker
+            .pending_candidates(market.window_start, max_delay)
+            .unwrap();
+        let second = tracker
+            .pending_candidates(market.window_start, max_delay)
+            .unwrap();
         assert!(matches!(first.as_slice(), [BoundaryCandidate::Open { .. }]));
         assert!(matches!(
             second.as_slice(),
             [BoundaryCandidate::Open { .. }]
         ));
         tracker.acknowledge(&first[0]).unwrap();
-        assert!(tracker.pending_candidates().unwrap().is_empty());
+        assert!(tracker
+            .pending_candidates(market.window_start, max_delay)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn boundary_tracker_selects_earlier_close_before_label_finalization() {
+        let market = market();
+        let max_delay = Duration::seconds(5);
+        let open = tick(market.window_start + Duration::milliseconds(50), dec!(100));
+        let later_close = tick(market.window_end + Duration::milliseconds(200), dec!(101));
+        let earlier_close = tick(market.window_end + Duration::milliseconds(100), dec!(99));
+        let mut tracker = BoundaryTracker::default();
+        tracker.update_markets(std::slice::from_ref(&market));
+        tracker
+            .hydrate_open_references(&[(market.market_id.clone(), open)], max_delay)
+            .unwrap();
+
+        tracker.observe_chainlink(&later_close, max_delay);
+        let later_candidate = tracker
+            .pending_candidates(market.window_end + Duration::milliseconds(200), max_delay)
+            .unwrap();
+        assert!(matches!(
+            later_candidate.as_slice(),
+            [BoundaryCandidate::Close { tick, .. }]
+                if tick.source_timestamp == later_close.source_timestamp
+        ));
+        tracker.acknowledge(&later_candidate[0]).unwrap();
+
+        let observation = tracker.observe_chainlink(&earlier_close, max_delay);
+        assert!(observation.finalized_late_ticks.is_empty());
+        let earlier_candidate = tracker
+            .pending_candidates(market.window_end + Duration::milliseconds(300), max_delay)
+            .unwrap();
+        assert!(matches!(
+            earlier_candidate.as_slice(),
+            [BoundaryCandidate::Close { tick, .. }]
+                if tick.source_timestamp == earlier_close.source_timestamp
+        ));
+        tracker.acknowledge(&earlier_candidate[0]).unwrap();
+
+        let finalized_at = market.window_end + max_delay;
+        let label_candidate = tracker.pending_candidates(finalized_at, max_delay).unwrap();
+        assert!(matches!(
+            label_candidate.as_slice(),
+            [BoundaryCandidate::Label {
+                label: BtcMarketLabel {
+                    close_price,
+                    source_close_timestamp,
+                    outcome: BtcOutcome::Down,
+                    ..
+                },
+                ..
+            }] if *close_price == earlier_close.price
+                && *source_close_timestamp == earlier_close.source_timestamp
+        ));
     }
 
     #[test]
@@ -10335,7 +10527,9 @@ mod tests {
         let market = market();
         let open = tick(market.window_start + Duration::milliseconds(50), dec!(100));
         let close = tick(market.window_end + Duration::milliseconds(50), dec!(99));
-        let label = boundary_label(&market, &open, &close);
+        let max_delay = Duration::seconds(5);
+        let finalized_at = market.window_end + max_delay;
+        let label = boundary_label(&market, &open, &close, finalized_at);
         let mut tracker = BoundaryTracker::default();
         tracker.update_markets(std::slice::from_ref(&market));
         tracker
@@ -10348,7 +10542,10 @@ mod tests {
             .hydrate_labels(std::slice::from_ref(&label))
             .unwrap();
 
-        assert!(tracker.pending_candidates().unwrap().is_empty());
+        assert!(tracker
+            .pending_candidates(finalized_at, max_delay)
+            .unwrap()
+            .is_empty());
         assert_eq!(
             tracker.markets[&market.market_id].label.as_ref(),
             Some(&label)
@@ -10360,7 +10557,12 @@ mod tests {
         let market = market();
         let open = tick(market.window_start + Duration::milliseconds(50), dec!(100));
         let close = tick(market.window_end + Duration::milliseconds(50), dec!(99));
-        let durable = boundary_label(&market, &open, &close);
+        let durable = boundary_label(
+            &market,
+            &open,
+            &close,
+            market.window_end + Duration::seconds(5),
+        );
         let mut process_local = durable.clone();
         process_local.label_available_at += Duration::milliseconds(25);
         process_local.evidence["close_received_at"] =
@@ -10386,24 +10588,80 @@ mod tests {
     }
 
     #[test]
-    fn boundary_tracker_rejects_earlier_close_after_label_ack() {
+    fn boundary_tracker_quarantines_earlier_close_after_label_ack() {
         let market = market();
         let open = tick(market.window_start + Duration::milliseconds(50), dec!(100));
         let close = tick(market.window_end + Duration::milliseconds(200), dec!(101));
-        let label = boundary_label(&market, &open, &close);
+        let label = boundary_label(
+            &market,
+            &open,
+            &close,
+            market.window_end + Duration::seconds(5),
+        );
         let mut tracker = BoundaryTracker::default();
         tracker.update_markets(std::slice::from_ref(&market));
         tracker
-            .hydrate_open_references(&[(market.market_id.clone(), open)], Duration::seconds(5))
+            .hydrate_open_references(
+                &[(market.market_id.clone(), open.clone())],
+                Duration::seconds(5),
+            )
             .unwrap();
         tracker
-            .hydrate_close_references(&[(market.market_id.clone(), close)], Duration::seconds(5))
+            .hydrate_close_references(
+                &[(market.market_id.clone(), close.clone())],
+                Duration::seconds(5),
+            )
             .unwrap();
-        tracker.hydrate_labels(&[label]).unwrap();
+        tracker
+            .hydrate_labels(std::slice::from_ref(&label))
+            .unwrap();
 
-        let earlier = tick(market.window_end + Duration::milliseconds(100), dec!(101));
-        assert!(tracker
-            .observe_chainlink(&earlier, Duration::seconds(5))
-            .is_err());
+        let earlier = tick(market.window_end + Duration::milliseconds(100), dec!(99));
+        let observation = tracker.observe_chainlink(&earlier, Duration::seconds(5));
+
+        assert_eq!(
+            observation.finalized_late_ticks,
+            vec![FinalizedBoundaryLateTick {
+                market_id: market.market_id.clone(),
+                boundary: FinalizedBoundaryKind::Close,
+                acknowledged_source_timestamp: close.source_timestamp,
+                changes_label_outcome: true,
+            }]
+        );
+        let boundary = &tracker.markets[&market.market_id];
+        assert_eq!(boundary.open_tick.as_ref(), Some(&open));
+        assert_eq!(boundary.close_tick.as_ref(), Some(&close));
+        assert_eq!(boundary.label.as_ref(), Some(&label));
+    }
+
+    #[test]
+    fn boundary_tracker_quarantines_earlier_open_after_ack() {
+        let market = market();
+        let open = tick(market.window_start + Duration::milliseconds(200), dec!(100));
+        let mut tracker = BoundaryTracker::default();
+        tracker.update_markets(std::slice::from_ref(&market));
+        tracker
+            .hydrate_open_references(
+                &[(market.market_id.clone(), open.clone())],
+                Duration::seconds(5),
+            )
+            .unwrap();
+
+        let earlier = tick(market.window_start + Duration::milliseconds(100), dec!(99));
+        let observation = tracker.observe_chainlink(&earlier, Duration::seconds(5));
+
+        assert_eq!(
+            observation.finalized_late_ticks,
+            vec![FinalizedBoundaryLateTick {
+                market_id: market.market_id.clone(),
+                boundary: FinalizedBoundaryKind::Open,
+                acknowledged_source_timestamp: open.source_timestamp,
+                changes_label_outcome: false,
+            }]
+        );
+        assert_eq!(
+            tracker.markets[&market.market_id].open_tick.as_ref(),
+            Some(&open)
+        );
     }
 }
