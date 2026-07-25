@@ -715,32 +715,44 @@ async fn authenticated_admin_can_list_generic_ingesters() {
                 {
                     "key": "btc_five_minute_markets",
                     "request_version": 1,
-                    "range_alignment_seconds": 300
+                    "range_alignment_seconds": 300,
+                    "accepts_new_requests": true
                 },
                 {
                     "key": "btc_five_minute_resolutions",
                     "request_version": 1,
-                    "range_alignment_seconds": 300
+                    "range_alignment_seconds": 300,
+                    "accepts_new_requests": true
                 },
                 {
                     "key": "binance_btcusdt_agg_trades",
                     "request_version": 1,
-                    "range_alignment_seconds": 86400
+                    "range_alignment_seconds": 86400,
+                    "accepts_new_requests": true
                 },
                 {
                     "key": "binance_btcusdt_one_second_klines",
                     "request_version": 1,
-                    "range_alignment_seconds": 86400
+                    "range_alignment_seconds": 86400,
+                    "accepts_new_requests": true
                 },
                 {
                     "key": "polymarket_btc_five_minute_orderbooks",
                     "request_version": 1,
-                    "range_alignment_seconds": 3600
+                    "range_alignment_seconds": 3600,
+                    "accepts_new_requests": false
+                },
+                {
+                    "key": "polymarket_btc_five_minute_execution_snapshots",
+                    "request_version": 1,
+                    "range_alignment_seconds": 3600,
+                    "accepts_new_requests": true
                 },
                 {
                     "key": "chainlink_btcusd_reference_ticks",
                     "request_version": 1,
-                    "range_alignment_seconds": 86400
+                    "range_alignment_seconds": 86400,
+                    "accepts_new_requests": true
                 }
             ]
         })

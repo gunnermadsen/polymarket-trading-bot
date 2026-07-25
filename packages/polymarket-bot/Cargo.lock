@@ -3274,6 +3274,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac",
+ "md-5",
  "parquet",
  "polymarket_client_sdk_v2",
  "pretty_assertions",

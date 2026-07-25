@@ -765,10 +765,13 @@ fn parse_decimal(record: &csv::ByteRecord, index: usize, name: &str) -> Result<D
 }
 
 fn parse_bool(record: &csv::ByteRecord, index: usize, name: &str) -> Result<bool> {
-    match field(record, index, name)? {
-        "true" => Ok(true),
-        "false" => Ok(false),
-        _ => bail!("CSV {name} was not a lowercase boolean"),
+    let value = field(record, index, name)?;
+    if value.eq_ignore_ascii_case("true") {
+        Ok(true)
+    } else if value.eq_ignore_ascii_case("false") {
+        Ok(false)
+    } else {
+        bail!("CSV {name} was not a boolean")
     }
 }
 
@@ -936,7 +939,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn aggregate_trade_parser_accepts_official_header_name() {
+    async fn aggregate_trade_parser_accepts_official_header_and_boolean_casing() {
         let directory = TempDir::new().unwrap();
         let spec = BinanceArchiveSpec::new(
             "https://example.test",
@@ -944,7 +947,7 @@ mod tests {
             date(),
         );
         let csv = format!(
-            "agg_trade_id,price,quantity,first_trade_id,last_trade_id,transact_time,is_buyer_maker,is_best_match\n1,60000,0.01,1,1,{},false,true\n",
+            "agg_trade_id,price,quantity,first_trade_id,last_trade_id,transact_time,is_buyer_maker,is_best_match\n1,60000,0.01,1,1,{},False,True\n",
             micros(0, 0)
         );
         let path = write_zip(&directory, &spec.entry_name, &csv);

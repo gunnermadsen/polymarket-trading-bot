@@ -11,17 +11,36 @@ use crate::ingestion::job::{
     ArtifactCompletion, ArtifactDisposition, ArtifactSpec, BackfillArtifact,
     BackfillArtifactStatus, BackfillCheckpoint, BackfillEventLevel, BackfillFailureKind,
     BackfillJob, BackfillJobEvent, BackfillJobStatus, BackfillJobSummary, BackfillProgress,
-    BatchWriteResult, BinanceAggregateTradeRecord, BinanceOneSecondKlineRecord, BtcIntervalMarket,
-    BtcOrderbookArchiveEvent, BtcOrderbookMarketScope, BtcOutcome, BtcReferenceFact,
-    BtcResolutionCandidate, ChainlinkBtcusdArchiveTick, ClaimedJob, IngesterKey, PreparedArtifact,
-    TrainingReadiness, ValidatedBackfillRequest, WorkerControl,
+    BatchWriteResult, BinanceAggregateTradeRecord, BinanceOneSecondKlineRecord,
+    BtcExecutionSnapshot, BtcIntervalMarket, BtcOrderbookArchiveEvent, BtcOrderbookMarketScope,
+    BtcOutcome, BtcReferenceFact, BtcResolutionCandidate, ChainlinkBtcusdArchiveTick, ClaimedJob,
+    IngesterKey, PreparedArtifact, TrainingReadiness, ValidatedBackfillRequest, WorkerControl,
 };
 
 const MAX_DATABASE_BATCH_ROWS: usize = 4_000;
+const POSTGRES_MAX_BIND_PARAMETERS: usize = 65_535;
+const ORDERBOOK_EVENT_INSERT_COLUMNS: usize = 18;
+const MAX_ORDERBOOK_EVENT_INSERT_ROWS: usize =
+    POSTGRES_MAX_BIND_PARAMETERS / ORDERBOOK_EVENT_INSERT_COLUMNS;
+const EXECUTION_SNAPSHOT_INSERT_COLUMNS: usize = 31;
+const MAX_EXECUTION_SNAPSHOT_INSERT_ROWS: usize =
+    POSTGRES_MAX_BIND_PARAMETERS / EXECUTION_SNAPSHOT_INSERT_COLUMNS;
 
 #[derive(Clone)]
 pub struct IngestionRepository {
     pool: PgPool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrderbookEventCursor {
+    pub provider_received_at: DateTime<Utc>,
+    pub source_row_number: i64,
+}
+
+#[derive(Debug)]
+pub struct RawOrderbookEventPage {
+    pub events: Vec<BtcOrderbookArchiveEvent>,
+    pub next_cursor: Option<OrderbookEventCursor>,
 }
 
 impl IngestionRepository {
@@ -1081,7 +1100,7 @@ impl IngestionRepository {
         }
         sqlx::query_as::<_, BtcOrderbookMarketScopeRow>(
             r#"
-            SELECT condition_id, up_token_id, down_token_id, window_start
+            SELECT market_id, condition_id, up_token_id, down_token_id, window_start, window_end
             FROM polymarket.btc_interval_markets
             WHERE validation_status = 'valid'
               AND window_start >= $1 AND window_start <= $2
@@ -1094,6 +1113,233 @@ impl IngestionRepository {
         .await
         .context("failed to load BTC orderbook market scope")
         .map(|rows| rows.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn execution_snapshot_market_scope(
+        &self,
+        window_start: DateTime<Utc>,
+        window_end: DateTime<Utc>,
+    ) -> Result<Vec<BtcOrderbookMarketScope>> {
+        if window_end <= window_start {
+            bail!("execution snapshot market scope range must be non-empty");
+        }
+        sqlx::query_as::<_, BtcOrderbookMarketScopeRow>(
+            r#"
+            SELECT market_id, condition_id, up_token_id, down_token_id, window_start, window_end
+            FROM polymarket.btc_interval_markets
+            WHERE validation_status = 'valid'
+              AND window_start >= $1 AND window_start < $2
+            ORDER BY window_start, market_id
+            "#,
+        )
+        .bind(window_start)
+        .bind(window_end)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to load BTC execution snapshot market scope")
+        .map(|rows| rows.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn completed_raw_orderbook_artifacts(
+        &self,
+        logical_keys: &[String],
+    ) -> Result<Vec<BackfillArtifact>> {
+        if logical_keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as::<_, BackfillArtifactRow>(
+            r#"
+            SELECT a.artifact_id, a.job_id, a.ingester_key, a.logical_key, a.provider,
+              a.source_uri, a.source_date, a.checksum_algorithm, a.expected_checksum,
+              a.actual_checksum, a.compressed_bytes, a.record_count,
+              a.minimum_source_timestamp, a.maximum_source_timestamp, a.status, a.metadata,
+              a.created_at, a.updated_at, a.completed_at
+            FROM polymarket.backfill_artifacts a
+            WHERE a.ingester_key = 'polymarket_btc_five_minute_orderbooks'
+              AND a.provider = 'pmxt_v2'
+              AND a.logical_key = ANY($1)
+              AND a.status = 'completed'
+              AND EXISTS (
+                SELECT 1
+                FROM polymarket.btc_orderbook_archive_events e
+                WHERE e.artifact_id = a.artifact_id
+                LIMIT 1
+              )
+            ORDER BY a.logical_key
+            "#,
+        )
+        .bind(logical_keys)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to load completed raw PMXT artifacts")?
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect()
+    }
+
+    pub async fn raw_orderbook_event_page(
+        &self,
+        artifact_id: Uuid,
+        condition_ids: &[String],
+        cursor: Option<&OrderbookEventCursor>,
+        limit: i64,
+    ) -> Result<RawOrderbookEventPage> {
+        if condition_ids.is_empty() {
+            return Ok(RawOrderbookEventPage {
+                events: Vec::new(),
+                next_cursor: None,
+            });
+        }
+        let cursor_received_at = cursor.map(|value| value.provider_received_at);
+        let cursor_row_number = cursor.map(|value| value.source_row_number);
+        let rows = sqlx::query_as::<_, ExistingOrderbookEventRow>(
+            r#"
+            SELECT artifact_id, source_row_number, provider_received_at, source_timestamp,
+              condition_id, asset_id, event_type, bids, asks, price, size, side, best_bid,
+              best_ask, fee_rate_bps, transaction_hash, old_tick_size, new_tick_size
+            FROM polymarket.btc_orderbook_archive_events
+            WHERE artifact_id = $1
+              AND condition_id = ANY($2)
+              AND (
+                $3::timestamptz IS NULL
+                OR (provider_received_at, source_row_number) > ($3, $4::bigint)
+              )
+            ORDER BY provider_received_at, source_row_number
+            LIMIT $5
+            "#,
+        )
+        .bind(artifact_id)
+        .bind(condition_ids)
+        .bind(cursor_received_at)
+        .bind(cursor_row_number)
+        .bind(limit.clamp(1, 20_000))
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to page raw PMXT events for compact reconstruction")?;
+        let next_cursor = rows.last().map(|row| OrderbookEventCursor {
+            provider_received_at: row.provider_received_at,
+            source_row_number: row.source_row_number,
+        });
+        Ok(RawOrderbookEventPage {
+            events: rows.into_iter().map(Into::into).collect(),
+            next_cursor,
+        })
+    }
+
+    pub async fn insert_execution_snapshot_batch(
+        &self,
+        claim: &ClaimedJob,
+        artifact_id: Uuid,
+        schema_version: &str,
+        records: &[BtcExecutionSnapshot],
+    ) -> Result<BatchWriteResult> {
+        if records.is_empty() {
+            return Ok(BatchWriteResult::default());
+        }
+        if records.len() > MAX_DATABASE_BATCH_ROWS {
+            bail!("execution-snapshot batch exceeds {MAX_DATABASE_BATCH_ROWS} rows");
+        }
+        if schema_version.trim().is_empty() {
+            bail!("execution-snapshot schema version must not be empty");
+        }
+        validate_execution_snapshot_batch(records)?;
+        let mut tx = self.pool.begin().await?;
+        require_active_lease(&mut tx, claim).await?;
+        require_writable_artifact(&mut tx, claim, artifact_id).await?;
+        let mut inserted = 0u64;
+        for chunk in records.chunks(MAX_EXECUTION_SNAPSHOT_INSERT_ROWS) {
+            let mut query = QueryBuilder::<Postgres>::new(
+                "INSERT INTO polymarket.btc_market_execution_snapshots (market_id, sampled_at, \
+                 artifact_id, schema_version, up_source_row_number, up_source_timestamp, \
+                 up_provider_received_at, up_best_bid, up_best_ask, up_best_bid_size, \
+                 up_best_ask_size, up_bid_depth, up_ask_depth, up_ask_vwap_1, up_ask_vwap_5, \
+                 up_ask_vwap_10, up_imbalance, down_source_row_number, down_source_timestamp, \
+                 down_provider_received_at, down_best_bid, down_best_ask, down_best_bid_size, \
+                 down_best_ask_size, down_bid_depth, down_ask_depth, down_ask_vwap_1, \
+                 down_ask_vwap_5, down_ask_vwap_10, down_imbalance, quality_flags) ",
+            );
+            query.push_values(chunk, |mut row, record| {
+                row.push_bind(&record.market_id)
+                    .push_bind(record.sampled_at)
+                    .push_bind(artifact_id)
+                    .push_bind(schema_version)
+                    .push_bind(record.up_source_row_number)
+                    .push_bind(record.up_source_timestamp)
+                    .push_bind(record.up_provider_received_at)
+                    .push_bind(record.up_best_bid)
+                    .push_bind(record.up_best_ask)
+                    .push_bind(record.up_best_bid_size)
+                    .push_bind(record.up_best_ask_size)
+                    .push_bind(record.up_bid_depth)
+                    .push_bind(record.up_ask_depth)
+                    .push_bind(record.up_ask_vwap_1)
+                    .push_bind(record.up_ask_vwap_5)
+                    .push_bind(record.up_ask_vwap_10)
+                    .push_bind(record.up_imbalance)
+                    .push_bind(record.down_source_row_number)
+                    .push_bind(record.down_source_timestamp)
+                    .push_bind(record.down_provider_received_at)
+                    .push_bind(record.down_best_bid)
+                    .push_bind(record.down_best_ask)
+                    .push_bind(record.down_best_bid_size)
+                    .push_bind(record.down_best_ask_size)
+                    .push_bind(record.down_bid_depth)
+                    .push_bind(record.down_ask_depth)
+                    .push_bind(record.down_ask_vwap_1)
+                    .push_bind(record.down_ask_vwap_5)
+                    .push_bind(record.down_ask_vwap_10)
+                    .push_bind(record.down_imbalance)
+                    .push_bind(record.quality_flags);
+            });
+            query.push(" ON CONFLICT (market_id, sampled_at) DO NOTHING");
+            inserted = inserted.saturating_add(
+                query
+                    .build()
+                    .execute(&mut *tx)
+                    .await
+                    .context("failed to persist compact execution snapshots")?
+                    .rows_affected(),
+            );
+        }
+        tx.commit().await?;
+        batch_write_result(records.len(), inserted, "execution-snapshot")
+    }
+
+    pub async fn record_raw_orderbook_replacements(
+        &self,
+        claim: &ClaimedJob,
+        replacement_artifact_id: Uuid,
+        source_artifacts: &[BackfillArtifact],
+    ) -> Result<()> {
+        if source_artifacts.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await?;
+        require_active_lease(&mut tx, claim).await?;
+        for source in source_artifacts {
+            sqlx::query(
+                r#"
+                INSERT INTO polymarket.backfill_materialization_retention_events (
+                  source_artifact_id, replacement_artifact_id, materialization, action,
+                  source_record_count, metadata
+                )
+                VALUES ($1, $2, 'polymarket.btc_orderbook_archive_events', 'replaced', $3, $4)
+                ON CONFLICT (source_artifact_id, materialization, action) DO NOTHING
+                "#,
+            )
+            .bind(source.artifact_id)
+            .bind(replacement_artifact_id)
+            .bind(source.record_count.unwrap_or_default())
+            .bind(serde_json::json!({
+                "replacement_schema": "btc5m-book-250ms-v1",
+                "replacement_ingester": IngesterKey::PolymarketBtcFiveMinuteExecutionSnapshots,
+            }))
+            .execute(&mut *tx)
+            .await
+            .context("failed to record raw PMXT replacement lineage")?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn insert_orderbook_event_batch(
@@ -1144,40 +1390,46 @@ impl IngestionRepository {
             }
         }
 
-        let mut query = QueryBuilder::<Postgres>::new(
-            "INSERT INTO polymarket.btc_orderbook_archive_events (artifact_id, \
-             source_row_number, provider_received_at, source_timestamp, condition_id, asset_id, \
-             event_type, bids, asks, price, size, side, best_bid, best_ask, fee_rate_bps, \
-             transaction_hash, old_tick_size, new_tick_size) ",
-        );
-        query.push_values(records, |mut row, record| {
-            row.push_bind(artifact_id)
-                .push_bind(record.source_row_number)
-                .push_bind(record.provider_received_at)
-                .push_bind(record.source_timestamp)
-                .push_bind(&record.condition_id)
-                .push_bind(&record.asset_id)
-                .push_bind(&record.event_type)
-                .push_bind(&record.bids)
-                .push_bind(&record.asks)
-                .push_bind(record.price)
-                .push_bind(record.size)
-                .push_bind(&record.side)
-                .push_bind(record.best_bid)
-                .push_bind(record.best_ask)
-                .push_bind(record.fee_rate_bps)
-                .push_bind(&record.transaction_hash)
-                .push_bind(record.old_tick_size)
-                .push_bind(record.new_tick_size);
-        });
-        query
-            .push(" ON CONFLICT (artifact_id, source_row_number, provider_received_at) DO NOTHING");
-        let inserted = query
-            .build()
-            .execute(&mut *tx)
-            .await
-            .context("failed to persist PMXT orderbook-event batch")?
-            .rows_affected();
+        let mut inserted = 0u64;
+        for chunk in records.chunks(MAX_ORDERBOOK_EVENT_INSERT_ROWS) {
+            let mut query = QueryBuilder::<Postgres>::new(
+                "INSERT INTO polymarket.btc_orderbook_archive_events (artifact_id, \
+                 source_row_number, provider_received_at, source_timestamp, condition_id, asset_id, \
+                 event_type, bids, asks, price, size, side, best_bid, best_ask, fee_rate_bps, \
+                 transaction_hash, old_tick_size, new_tick_size) ",
+            );
+            query.push_values(chunk, |mut row, record| {
+                row.push_bind(artifact_id)
+                    .push_bind(record.source_row_number)
+                    .push_bind(record.provider_received_at)
+                    .push_bind(record.source_timestamp)
+                    .push_bind(&record.condition_id)
+                    .push_bind(&record.asset_id)
+                    .push_bind(&record.event_type)
+                    .push_bind(&record.bids)
+                    .push_bind(&record.asks)
+                    .push_bind(record.price)
+                    .push_bind(record.size)
+                    .push_bind(&record.side)
+                    .push_bind(record.best_bid)
+                    .push_bind(record.best_ask)
+                    .push_bind(record.fee_rate_bps)
+                    .push_bind(&record.transaction_hash)
+                    .push_bind(record.old_tick_size)
+                    .push_bind(record.new_tick_size);
+            });
+            query.push(
+                " ON CONFLICT (artifact_id, source_row_number, provider_received_at) DO NOTHING",
+            );
+            inserted = inserted.saturating_add(
+                query
+                    .build()
+                    .execute(&mut *tx)
+                    .await
+                    .context("failed to persist PMXT orderbook-event batch")?
+                    .rows_affected(),
+            );
+        }
         tx.commit().await?;
         batch_write_result(records.len(), inserted, "orderbook-event")
     }
@@ -1481,38 +1733,17 @@ impl IngestionRepository {
                     AND c.source_timestamp < m.window_end
                     AND a.status = 'completed'
                 ) AS chainlink_covered,
-                EXISTS (
-                  SELECT 1
-                  FROM polymarket.btc_orderbook_archive_events e
+                COALESCE((
+                  SELECT count(*) = 1200
+                    AND min(s.sampled_at) = m.window_start
+                    AND max(s.sampled_at) = m.window_end - interval '250 milliseconds'
+                  FROM polymarket.btc_market_execution_snapshots s
                   JOIN polymarket.backfill_artifacts a USING (artifact_id)
-                  WHERE e.condition_id = m.condition_id
-                    AND e.asset_id = m.up_token_id
-                    AND e.event_type = 'book'
-                    AND e.source_timestamp >= m.window_start - interval '1 hour'
-                    AND e.source_timestamp <= m.window_start
+                  WHERE s.market_id = m.market_id
+                    AND s.sampled_at >= m.window_start
+                    AND s.sampled_at < m.window_end
                     AND a.status = 'completed'
-                ) AND EXISTS (
-                  SELECT 1
-                  FROM polymarket.btc_orderbook_archive_events e
-                  JOIN polymarket.backfill_artifacts a USING (artifact_id)
-                  WHERE e.condition_id = m.condition_id
-                    AND e.asset_id = m.down_token_id
-                    AND e.event_type = 'book'
-                    AND e.source_timestamp >= m.window_start - interval '1 hour'
-                    AND e.source_timestamp <= m.window_start
-                    AND a.status = 'completed'
-                ) AND EXISTS (
-                  SELECT 1
-                  FROM polymarket.btc_orderbook_archive_events e
-                  JOIN polymarket.backfill_artifacts a USING (artifact_id)
-                  WHERE e.condition_id = m.condition_id
-                    AND e.asset_id IN (m.up_token_id, m.down_token_id)
-                    AND e.source_timestamp >= m.window_start
-                    AND e.source_timestamp < m.window_end
-                    AND a.status = 'completed'
-                  GROUP BY e.condition_id
-                  HAVING count(DISTINCT e.asset_id) = 2
-                ) AS orderbook_covered
+                ), false) AS orderbook_covered
               FROM markets m
             )
             SELECT
@@ -1527,7 +1758,8 @@ impl IngestionRepository {
               count(*) FILTER (
                 WHERE m.validation_status = 'valid' AND m.official_outcome IS NOT NULL
                   AND COALESCE(f.opening_boundary, false)
-                  AND c.kline_covered AND c.chainlink_covered AND c.orderbook_covered
+                  AND COALESCE(f.final_price, false)
+                  AND c.kline_covered AND c.orderbook_covered
               )::bigint AS usable_markets,
               (SELECT min(trade_timestamp) FROM polymarket.binance_aggregate_trades
                 WHERE symbol = 'BTCUSDT' AND trade_timestamp >= $1 AND trade_timestamp < $2)
@@ -1547,11 +1779,11 @@ impl IngestionRepository {
               (SELECT max(source_timestamp) FROM polymarket.chainlink_btcusd_archive_ticks
                 WHERE source_timestamp >= $1 AND source_timestamp < $2)
                 AS chainlink_max_timestamp,
-              (SELECT min(source_timestamp) FROM polymarket.btc_orderbook_archive_events
-                WHERE source_timestamp >= $1 AND source_timestamp < $2)
+              (SELECT min(sampled_at) FROM polymarket.btc_market_execution_snapshots
+                WHERE sampled_at >= $1 AND sampled_at < $2)
                 AS orderbook_min_timestamp,
-              (SELECT max(source_timestamp) FROM polymarket.btc_orderbook_archive_events
-                WHERE source_timestamp >= $1 AND source_timestamp < $2)
+              (SELECT max(sampled_at) FROM polymarket.btc_market_execution_snapshots
+                WHERE sampled_at >= $1 AND sampled_at < $2)
                 AS orderbook_max_timestamp
             FROM markets m
             LEFT JOIN facts f USING (market_id)
@@ -1574,23 +1806,19 @@ impl IngestionRepository {
             expected_markets.saturating_sub(row.opening_boundaries),
         );
         missing_by_reason.insert(
-            "missing_official_outcome".to_string(),
-            expected_markets.saturating_sub(row.official_outcomes),
+            "missing_final_price".to_string(),
+            expected_markets.saturating_sub(row.final_prices),
         );
         missing_by_reason.insert(
-            "missing_aggregate_trades".to_string(),
-            expected_markets.saturating_sub(row.aggregate_trade_covered_markets),
+            "missing_official_outcome".to_string(),
+            expected_markets.saturating_sub(row.official_outcomes),
         );
         missing_by_reason.insert(
             "missing_one_second_klines".to_string(),
             expected_markets.saturating_sub(row.one_second_kline_covered_markets),
         );
         missing_by_reason.insert(
-            "missing_chainlink_reference_ticks".to_string(),
-            expected_markets.saturating_sub(row.chainlink_covered_markets),
-        );
-        missing_by_reason.insert(
-            "missing_orderbook_seed_or_events".to_string(),
+            "missing_compact_execution_snapshots".to_string(),
             expected_markets.saturating_sub(row.orderbook_covered_markets),
         );
         let artifact_rows = sqlx::query(
@@ -1919,19 +2147,23 @@ impl ExistingKlineRow {
 
 #[derive(Debug, FromRow)]
 struct BtcOrderbookMarketScopeRow {
+    market_id: String,
     condition_id: String,
     up_token_id: String,
     down_token_id: String,
     window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
 }
 
 impl From<BtcOrderbookMarketScopeRow> for BtcOrderbookMarketScope {
     fn from(row: BtcOrderbookMarketScopeRow) -> Self {
         Self {
+            market_id: row.market_id,
             condition_id: row.condition_id,
             up_token_id: row.up_token_id,
             down_token_id: row.down_token_id,
             window_start: row.window_start,
+            window_end: row.window_end,
         }
     }
 }
@@ -1978,6 +2210,30 @@ impl ExistingOrderbookEventRow {
             && self.transaction_hash == row.transaction_hash
             && self.old_tick_size == row.old_tick_size
             && self.new_tick_size == row.new_tick_size
+    }
+}
+
+impl From<ExistingOrderbookEventRow> for BtcOrderbookArchiveEvent {
+    fn from(row: ExistingOrderbookEventRow) -> Self {
+        Self {
+            source_row_number: row.source_row_number,
+            provider_received_at: row.provider_received_at,
+            source_timestamp: row.source_timestamp,
+            condition_id: row.condition_id,
+            asset_id: row.asset_id,
+            event_type: row.event_type,
+            bids: row.bids,
+            asks: row.asks,
+            price: row.price,
+            size: row.size,
+            side: row.side,
+            best_bid: row.best_bid,
+            best_ask: row.best_ask,
+            fee_rate_bps: row.fee_rate_bps,
+            transaction_hash: row.transaction_hash,
+            old_tick_size: row.old_tick_size,
+            new_tick_size: row.new_tick_size,
+        }
     }
 }
 
@@ -2185,6 +2441,46 @@ fn validate_orderbook_event_batch(records: &[BtcOrderbookArchiveEvent]) -> Resul
             bail!("PMXT source row numbers must be strictly increasing within a batch");
         }
         previous = Some(record.source_row_number);
+    }
+    Ok(())
+}
+
+fn validate_execution_snapshot_batch(records: &[BtcExecutionSnapshot]) -> Result<()> {
+    for record in records {
+        let valid_price = |value: Option<Decimal>| {
+            value.is_none_or(|value| value >= Decimal::ZERO && value <= Decimal::ONE)
+        };
+        let valid_size = |value: Option<Decimal>| value.is_none_or(|value| value >= Decimal::ZERO);
+        if record.market_id.trim().is_empty()
+            || record.sampled_at.timestamp_subsec_millis().rem_euclid(250) != 0
+            || record.quality_flags < 0
+            || record
+                .up_provider_received_at
+                .is_some_and(|value| value > record.sampled_at)
+            || record
+                .down_provider_received_at
+                .is_some_and(|value| value > record.sampled_at)
+            || !valid_price(record.up_best_bid)
+            || !valid_price(record.up_best_ask)
+            || !valid_price(record.down_best_bid)
+            || !valid_price(record.down_best_ask)
+            || !valid_price(record.up_ask_vwap_1)
+            || !valid_price(record.up_ask_vwap_5)
+            || !valid_price(record.up_ask_vwap_10)
+            || !valid_price(record.down_ask_vwap_1)
+            || !valid_price(record.down_ask_vwap_5)
+            || !valid_price(record.down_ask_vwap_10)
+            || !valid_size(record.up_best_bid_size)
+            || !valid_size(record.up_best_ask_size)
+            || !valid_size(record.up_bid_depth)
+            || !valid_size(record.up_ask_depth)
+            || !valid_size(record.down_best_bid_size)
+            || !valid_size(record.down_best_ask_size)
+            || !valid_size(record.down_bid_depth)
+            || !valid_size(record.down_ask_depth)
+        {
+            bail!("invalid compact execution-snapshot record");
+        }
     }
     Ok(())
 }
