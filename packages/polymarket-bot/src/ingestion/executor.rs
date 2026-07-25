@@ -978,14 +978,19 @@ impl IngestionExecutor {
                     output_scope.len()
                 )));
             }
-            let reconstruction_scope = self
-                .repository
-                .orderbook_market_scope(hour, next_hour)
-                .await
-                .map_err(IngestionExecutionError::transient)?;
-            if reconstruction_scope.len() != 13 {
+            let needs_next_hour_seed = compact_reconstruction_needs_seed(next_hour, range_end);
+            let reconstruction_scope = if needs_next_hour_seed {
+                self.repository
+                    .orderbook_market_scope(hour, next_hour)
+                    .await
+                    .map_err(IngestionExecutionError::transient)?
+            } else {
+                output_scope.clone()
+            };
+            let expected_reconstruction_markets = 12 + usize::from(needs_next_hour_seed);
+            if reconstruction_scope.len() != expected_reconstruction_markets {
                 return Err(IngestionExecutionError::permanent(format!(
-                    "expected 13 BTC market identities including the next-hour seed for compact PMXT hour {hour}, found {}",
+                    "expected {expected_reconstruction_markets} BTC market identities for compact PMXT hour {hour}, found {}",
                     reconstruction_scope.len()
                 )));
             }
@@ -1208,16 +1213,20 @@ impl IngestionExecutor {
             }
 
             reconstructor.finish_before(next_hour, &mut output);
-            let next_market_id = reconstruction_scope
-                .last()
-                .filter(|market| market.window_start == next_hour)
-                .map(|market| market.market_id.as_str())
-                .ok_or_else(|| {
-                    IngestionExecutionError::permanent(
-                        "compact PMXT reconstruction scope is missing its next-hour seed market",
-                    )
-                })?;
-            carry_seed = reconstructor.market_seed(next_market_id);
+            carry_seed = if needs_next_hour_seed {
+                let next_market_id = reconstruction_scope
+                    .last()
+                    .filter(|market| market.window_start == next_hour)
+                    .map(|market| market.market_id.as_str())
+                    .ok_or_else(|| {
+                        IngestionExecutionError::permanent(
+                            "compact PMXT reconstruction scope is missing its next-hour seed market",
+                        )
+                    })?;
+                reconstructor.market_seed(next_market_id)
+            } else {
+                None
+            };
             self.persist_execution_snapshot_output(
                 claim,
                 prepared.artifact.artifact_id,
@@ -1655,6 +1664,10 @@ fn expected_units(
 ) -> u64 {
     let divisor = ingester.alignment_seconds();
     u64::try_from((range_end - range_start).num_seconds() / divisor).unwrap_or(0)
+}
+
+fn compact_reconstruction_needs_seed(next_hour: DateTime<Utc>, range_end: DateTime<Utc>) -> bool {
+    next_hour < range_end
 }
 
 fn classify_chainlink_error(error: anyhow::Error) -> IngestionExecutionError {
@@ -2268,6 +2281,15 @@ mod tests {
         assert!(config.validate().is_err());
         config.pmxt_prefetch_archives = 257;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn final_compact_hour_excludes_an_out_of_range_seed_market() {
+        let final_hour = Utc.with_ymd_and_hms(2026, 4, 27, 23, 0, 0).unwrap();
+        let range_end = final_hour + ChronoDuration::hours(1);
+
+        assert!(compact_reconstruction_needs_seed(final_hour, range_end));
+        assert!(!compact_reconstruction_needs_seed(range_end, range_end));
     }
 
     #[test]
