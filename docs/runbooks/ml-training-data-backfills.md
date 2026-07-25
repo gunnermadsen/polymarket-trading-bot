@@ -14,7 +14,7 @@ execution; backfill jobs are durable operational jobs that prepare training inpu
 | `binance_btcusdt_agg_trades` | UTC day | checksummed BTCUSDT aggregate trades |
 | `binance_btcusdt_one_second_klines` | UTC day | checksummed BTCUSDT one-second candles |
 | `polymarket_btc_five_minute_execution_snapshots` | UTC hour | causal 250 ms executable-book snapshots for validated BTC five-minute markets |
-| `chainlink_btcusd_reference_ticks` | UTC day | decoded, signed Chainlink BTC/USD Data Streams v3 reports |
+| `chainlink_btcusd_reference_ticks` | UTC day | optional decoded, signed Chainlink BTC/USD Data Streams v3 reports |
 
 `polymarket_btc_five_minute_orderbooks` is retained only so already-queued jobs and historical
 artifact identities remain readable. The API reports `accepts_new_requests: false` for it and
@@ -91,10 +91,18 @@ The source is the
 [PMXT Polymarket Orderbook Archive v2](https://archive.pmxt.dev/docs/v2-data-overview), provided by
 [pmxt](https://pmxt.dev) under CC BY 4.0.
 
-Chainlink reports are requested from the authenticated sequential-report API, HMAC-verified at
-transport authentication, and decoded from their signed v3 report envelope. Envelope and payload
-feed IDs and timestamps must agree, prices retain 18 decimal places, and bid/benchmark/ask ordering
-must be valid. Set both secrets in `.env`:
+The Gamma market ingester persists `priceToBeat` as the opening boundary and `finalPrice` as the
+final boundary. These exact market facts and the official CLOB outcome form the training target.
+The final boundary is label-only and must never be used in features available before resolution.
+Binance one-second BTCUSDT candles provide the historical intra-window path used for predictive
+features; they must retain Binance provenance and must not be represented as historical Chainlink
+ticks.
+
+The optional Chainlink ingester requests reports from the authenticated sequential-report API,
+HMAC-verifies transport authentication, and decodes the signed v3 report envelope. Envelope and
+payload feed IDs and timestamps must agree, prices retain 18 decimal places, and
+bid/benchmark/ask ordering must be valid. Set both secrets in `.env` only when this optional source
+is available:
 
 ```dotenv
 POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY=
@@ -103,7 +111,8 @@ POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET=
 
 The official BTC/USD feed ID, REST endpoint, PMXT endpoint, and bounded page size are non-sensitive
 worker configuration in Docker Compose. If credentials are absent, workers remain available for
-all other ingesters and Chainlink jobs fail permanently with a configuration error.
+all other ingesters and Chainlink jobs fail permanently with a configuration error. Historical
+Chainlink coverage does not gate the free-source training dataset.
 
 Market definitions reuse the same strict Gamma identity parser as realtime execution. Official
 outcomes reuse the same strict CLOB resolution parser and persistence path. Missing or ambiguous
@@ -113,17 +122,17 @@ ticks, outcomes, or prices.
 ## Readiness
 
 The readiness endpoint reports coverage rather than claiming model quality. A market is usable
-only when it has a valid five-minute identity, an opening boundary, an official outcome, completed
-all-300-second Binance candle coverage, Chainlink reports at both window boundaries, and exactly
-1,200 compact execution snapshots. Aggregate trades and final-price coverage are reported
-separately but are not required for the current strategy hypothesis. Quality flags remain in the
-dataset so a strategy or later model can learn or abstain under poor liquidity without treating a
-missing book as a valid price. Missing counts and source timestamp bounds make incomplete ranges
-explicit before dataset construction or training begins. Readiness establishes data completeness
-only; the pilot still has to validate Chainlink overlap against the realtime RTDS feed and compact
-reconstruction against retained raw events before a larger backfill is approved.
+only when it has a valid five-minute identity, Gamma opening and final boundaries, an official
+outcome, complete all-300-second Binance candle coverage, and exactly 1,200 compact execution
+snapshots. Aggregate trades and historical Chainlink ticks are optional and do not gate readiness.
+Chainlink coverage remains visible for ranges where authenticated reports are available. Quality
+flags remain in the dataset so a strategy or later model can learn or abstain under poor liquidity
+without treating a missing book as a valid price. Missing counts and source timestamp bounds make
+incomplete ranges explicit before dataset construction or training begins. Readiness establishes
+data completeness only; the pilot still has to validate label consistency and compact
+reconstruction before a larger backfill is approved.
 
 The intended pilot order is market identities, official outcomes, one-second Binance candles,
-Chainlink reports, then compact PMXT execution snapshots. Binance aggregate trades are optional for
-separate research and do not gate strategy readiness. No ingester is automatically executed by
-deployment or migration.
+then compact PMXT execution snapshots. Binance aggregate trades and authenticated Chainlink
+reports are optional for separate research and do not gate strategy readiness. No ingester is
+automatically executed by deployment or migration.

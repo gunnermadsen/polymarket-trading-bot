@@ -1758,7 +1758,8 @@ impl IngestionRepository {
               count(*) FILTER (
                 WHERE m.validation_status = 'valid' AND m.official_outcome IS NOT NULL
                   AND COALESCE(f.opening_boundary, false)
-                  AND c.kline_covered AND c.chainlink_covered AND c.orderbook_covered
+                  AND COALESCE(f.final_price, false)
+                  AND c.kline_covered AND c.orderbook_covered
               )::bigint AS usable_markets,
               (SELECT min(trade_timestamp) FROM polymarket.binance_aggregate_trades
                 WHERE symbol = 'BTCUSDT' AND trade_timestamp >= $1 AND trade_timestamp < $2)
@@ -1805,16 +1806,16 @@ impl IngestionRepository {
             expected_markets.saturating_sub(row.opening_boundaries),
         );
         missing_by_reason.insert(
+            "missing_final_price".to_string(),
+            expected_markets.saturating_sub(row.final_prices),
+        );
+        missing_by_reason.insert(
             "missing_official_outcome".to_string(),
             expected_markets.saturating_sub(row.official_outcomes),
         );
         missing_by_reason.insert(
             "missing_one_second_klines".to_string(),
             expected_markets.saturating_sub(row.one_second_kline_covered_markets),
-        );
-        missing_by_reason.insert(
-            "missing_chainlink_reference_ticks".to_string(),
-            expected_markets.saturating_sub(row.chainlink_covered_markets),
         );
         missing_by_reason.insert(
             "missing_compact_execution_snapshots".to_string(),
