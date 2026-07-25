@@ -25,7 +25,9 @@ use super::{
         BtcReferenceFactType, ClaimedJob, IngesterKey, WorkerControl,
     },
     pmxt_archive::{
-        download_archive as download_pmxt_archive, spawn_parser as spawn_pmxt_parser,
+        download_archive as download_pmxt_archive,
+        spawn_archive_prefetch as spawn_pmxt_archive_prefetch,
+        spawn_execution_parser as spawn_pmxt_execution_parser, spawn_parser as spawn_pmxt_parser,
         PmxtArchiveSpec, PMXT_ARCHIVE_PROVIDER, PMXT_COVERAGE_START_EPOCH,
     },
     repository::IngestionRepository,
@@ -44,6 +46,8 @@ pub struct IngestionExecutorConfig {
     pub chainlink: ChainlinkArchiveConfig,
     pub cache_directory: PathBuf,
     pub batch_rows: usize,
+    pub pmxt_prefetch_concurrency: usize,
+    pub pmxt_prefetch_archives: usize,
 }
 
 impl IngestionExecutorConfig {
@@ -58,6 +62,12 @@ impl IngestionExecutorConfig {
         self.chainlink.validate()?;
         if !(1..=4_000).contains(&self.batch_rows) {
             bail!("POLYMARKET_BACKFILL_BATCH_ROWS must be between 1 and 4000");
+        }
+        if !(1..=16).contains(&self.pmxt_prefetch_concurrency) {
+            bail!("PMXT prefetch concurrency must be between 1 and 16");
+        }
+        if !(self.pmxt_prefetch_concurrency..=256).contains(&self.pmxt_prefetch_archives) {
+            bail!("PMXT prefetch archives must cover concurrency and be at most 256");
         }
         Ok(())
     }
@@ -910,6 +920,27 @@ impl IngestionExecutor {
         let mut hour = checkpoint_window_start(claim, range_start, 3_600);
         let mut retained_direct_cache: Option<PathBuf> = None;
         let mut carry_seed: Option<ExecutionMarketSeed> = None;
+        let mut prefetch_specs = Vec::new();
+        let mut prefetch_hour = hour - ChronoDuration::hours(1);
+        while prefetch_hour < range_end {
+            prefetch_specs.push(
+                PmxtArchiveSpec::new(&self.config.pmxt_archive_base_url, prefetch_hour)
+                    .map_err(IngestionExecutionError::permanent)?,
+            );
+            prefetch_hour += ChronoDuration::hours(1);
+        }
+        let mut prefetch = spawn_pmxt_archive_prefetch(
+            self.client.clone(),
+            prefetch_specs,
+            self.config.cache_directory.clone(),
+            ArchiveDownloadLimits {
+                maximum_compressed_bytes: 2 * 1024 * 1024 * 1024,
+                chunk_idle_timeout: std::time::Duration::from_secs(60),
+            },
+            cancellation.clone(),
+            self.config.pmxt_prefetch_concurrency,
+            self.config.pmxt_prefetch_archives,
+        );
         while hour < range_end {
             self.ensure_continue(claim, &cancellation).await?;
             let next_hour = hour + ChronoDuration::hours(1);
@@ -1093,24 +1124,16 @@ impl IngestionExecutor {
                 let mut source_bytes = 0u64;
                 let mut direct_ready = false;
                 for spec in &source_specs {
-                    let archive = download_pmxt_archive(
-                        &self.client,
-                        spec,
-                        &self.config.cache_directory,
-                        &ArchiveDownloadLimits {
-                            maximum_compressed_bytes: 2 * 1024 * 1024 * 1024,
-                            chunk_idle_timeout: std::time::Duration::from_secs(60),
-                        },
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(IngestionExecutionError::transient)?
-                    .ok_or_else(|| {
-                        IngestionExecutionError::permanent(format!(
-                            "PMXT archive object was absent for {}",
-                            spec.hour
-                        ))
-                    })?;
+                    let archive = prefetch
+                        .take(spec)
+                        .await
+                        .map_err(IngestionExecutionError::transient)?
+                        .ok_or_else(|| {
+                            IngestionExecutionError::permanent(format!(
+                                "PMXT archive object was absent for {}",
+                                spec.hour
+                            ))
+                        })?;
                     if !archive.reused_cache {
                         progress.bytes_downloaded = progress
                             .bytes_downloaded
@@ -1138,7 +1161,7 @@ impl IngestionExecutor {
                         .await?;
                         direct_ready = true;
                     }
-                    let (mut receiver, handle) = spawn_pmxt_parser(
+                    let (mut receiver, handle) = spawn_pmxt_execution_parser(
                         archive.path.clone(),
                         reconstruction_scope.clone(),
                         self.config.batch_rows,
@@ -2216,7 +2239,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_config_enforces_database_batch_bound() {
+    fn executor_config_enforces_resource_bounds() {
         let mut config = IngestionExecutorConfig {
             gamma_base_url: "https://gamma.example".to_string(),
             clob_base_url: "https://clob.example".to_string(),
@@ -2231,9 +2254,19 @@ mod tests {
             },
             cache_directory: PathBuf::from("/tmp/cache"),
             batch_rows: 4_000,
+            pmxt_prefetch_concurrency: 4,
+            pmxt_prefetch_archives: 48,
         };
         assert!(config.validate().is_ok());
         config.batch_rows = 4_001;
+        assert!(config.validate().is_err());
+        config.batch_rows = 4_000;
+        config.pmxt_prefetch_concurrency = 17;
+        assert!(config.validate().is_err());
+        config.pmxt_prefetch_concurrency = 4;
+        config.pmxt_prefetch_archives = 3;
+        assert!(config.validate().is_err());
+        config.pmxt_prefetch_archives = 257;
         assert!(config.validate().is_err());
     }
 

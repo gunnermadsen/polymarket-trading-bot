@@ -70,10 +70,16 @@ trades in memory. Completed artifacts and BTC reference facts are immutable, and
 must match the original values.
 
 PMXT files use the same bounded, atomic cache path but are Parquet rather than ZIP CSV. The cache is
-bound to `/Volumes/docker-data/polymarket-bot/backfill-cache`, separated by worker, capped at 20 GiB
-per worker, and removes partial or stale files on worker startup. A blocking streaming reader
-rejects schema drift and sends only events for validated BTC five-minute condition and
-outcome-token IDs through the bounded batch channel.
+bound to `/Volumes/docker-data/polymarket-bot/backfill-cache`, separated by worker, capped at 40 GiB
+per worker, and removes partial or stale files on worker startup. Each transfer is checked against
+the source object's content length and ETag before it is atomically published; invalid cached or
+new transfers are removed and downloaded again. Each worker prefetches up to four archives
+concurrently and bounds its ready queue to 48 archives so network transfer can overlap Parquet
+decoding and database writes without unbounded disk growth. A blocking streaming reader prunes
+Parquet row groups whose exact market ranges cannot contain the requested BTC conditions, projects
+only the columns required to reconstruct the compact book, rejects schema drift, and sends only
+events for validated BTC five-minute condition and outcome-token IDs through the bounded batch
+channel.
 
 The compact ingester reconstructs each token book using only events whose provider receipt time is
 at or before the sample. It persists one row per market every 250 ms with both outcomes: best

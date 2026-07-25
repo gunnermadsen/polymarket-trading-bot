@@ -152,6 +152,8 @@ impl BackfillWorker {
                 },
                 cache_directory: config.cache_directory.clone(),
                 batch_rows: config.batch_rows,
+                pmxt_prefetch_concurrency: env_usize("POLYMARKET_PMXT_PREFETCH_CONCURRENCY", 4)?,
+                pmxt_prefetch_archives: env_usize("POLYMARKET_PMXT_PREFETCH_ARCHIVES", 48)?,
             },
         )?;
         Ok(Self {
