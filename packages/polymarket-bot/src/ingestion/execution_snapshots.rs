@@ -64,12 +64,59 @@ impl BookState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct MarketState {
     scope: BtcOrderbookMarketScope,
+    up: OutcomeState,
+    down: OutcomeState,
+    emitted_samples: usize,
+}
+
+#[derive(Debug)]
+struct OutcomeState {
+    book: BookState,
     next_sample: DateTime<Utc>,
-    up: BookState,
-    down: BookState,
+    samples: Vec<BookMeasures>,
+    last_event_received_at: Option<DateTime<Utc>>,
+}
+
+impl OutcomeState {
+    fn new(next_sample: DateTime<Utc>, book: BookState) -> Self {
+        Self {
+            book,
+            next_sample,
+            samples: Vec::with_capacity(1_200),
+            last_event_received_at: None,
+        }
+    }
+
+    fn apply(&mut self, event: &BtcOrderbookArchiveEvent, window_end: DateTime<Utc>) -> Result<()> {
+        if self
+            .last_event_received_at
+            .is_some_and(|previous| event.provider_received_at < previous)
+        {
+            bail!("PMXT events for one outcome token are not ordered by provider receipt time");
+        }
+        if self.last_event_received_at != Some(event.provider_received_at) {
+            self.emit_before(event.provider_received_at, window_end);
+            self.last_event_received_at = Some(event.provider_received_at);
+        }
+        self.book.apply(event)
+    }
+
+    fn emit_through(&mut self, through: DateTime<Utc>, window_end: DateTime<Utc>) {
+        while self.next_sample <= through && self.next_sample < window_end {
+            self.samples.push(measure(&self.book, self.next_sample));
+            self.next_sample += Duration::milliseconds(EXECUTION_SNAPSHOT_INTERVAL_MILLIS);
+        }
+    }
+
+    fn emit_before(&mut self, boundary: DateTime<Utc>, window_end: DateTime<Utc>) {
+        while self.next_sample < boundary && self.next_sample < window_end {
+            self.samples.push(measure(&self.book, self.next_sample));
+            self.next_sample += Duration::milliseconds(EXECUTION_SNAPSHOT_INTERVAL_MILLIS);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -83,7 +130,6 @@ pub struct ExecutionMarketSeed {
 pub struct ExecutionSnapshotReconstructor {
     markets: Vec<MarketState>,
     asset_index: HashMap<String, (usize, BtcOutcome)>,
-    pending_provider_timestamp: Option<DateTime<Utc>>,
 }
 
 impl ExecutionSnapshotReconstructor {
@@ -120,48 +166,42 @@ impl ExecutionSnapshotReconstructor {
                 .map(|seed| (seed.up.clone(), seed.down.clone()))
                 .unwrap_or_default();
             states.push(MarketState {
-                next_sample: scope.window_start,
+                up: OutcomeState::new(scope.window_start, seeded_books.0),
+                down: OutcomeState::new(scope.window_start, seeded_books.1),
                 scope,
-                up: seeded_books.0,
-                down: seeded_books.1,
+                emitted_samples: 0,
             });
         }
         Ok(Self {
             markets: states,
             asset_index,
-            pending_provider_timestamp: None,
         })
     }
 
     pub fn apply(
         &mut self,
         event: &BtcOrderbookArchiveEvent,
-        output: &mut Vec<BtcExecutionSnapshot>,
+        _output: &mut Vec<BtcExecutionSnapshot>,
     ) -> Result<()> {
-        if let Some(previous) = self.pending_provider_timestamp {
-            if event.provider_received_at < previous {
-                bail!("PMXT events are not ordered by provider receipt time");
-            }
-        }
-        if self.pending_provider_timestamp != Some(event.provider_received_at) {
-            self.emit_before(event.provider_received_at, output);
-            self.pending_provider_timestamp = Some(event.provider_received_at);
-        }
         if let Some((market_index, outcome)) = self.asset_index.get(&event.asset_id).copied() {
             let market = &mut self.markets[market_index];
             if event.condition_id != market.scope.condition_id {
                 bail!("PMXT token was associated with an unexpected condition");
             }
             match outcome {
-                BtcOutcome::Up => market.up.apply(event)?,
-                BtcOutcome::Down => market.down.apply(event)?,
+                BtcOutcome::Up => market.up.apply(event, market.scope.window_end)?,
+                BtcOutcome::Down => market.down.apply(event, market.scope.window_end)?,
             }
         }
         Ok(())
     }
 
     pub fn finish(&mut self, through: DateTime<Utc>, output: &mut Vec<BtcExecutionSnapshot>) {
-        self.emit_through(through, output);
+        for market in &mut self.markets {
+            market.up.emit_through(through, market.scope.window_end);
+            market.down.emit_through(through, market.scope.window_end);
+            emit_joined_snapshots(market, output);
+        }
     }
 
     pub fn finish_before(
@@ -169,7 +209,11 @@ impl ExecutionSnapshotReconstructor {
         boundary: DateTime<Utc>,
         output: &mut Vec<BtcExecutionSnapshot>,
     ) {
-        self.emit_before(boundary, output);
+        for market in &mut self.markets {
+            market.up.emit_before(boundary, market.scope.window_end);
+            market.down.emit_before(boundary, market.scope.window_end);
+            emit_joined_snapshots(market, output);
+        }
     }
 
     pub fn market_seed(&self, market_id: &str) -> Option<ExecutionMarketSeed> {
@@ -178,27 +222,27 @@ impl ExecutionSnapshotReconstructor {
             .find(|market| market.scope.market_id == market_id)
             .map(|market| ExecutionMarketSeed {
                 market_id: market.scope.market_id.clone(),
-                up: market.up.clone(),
-                down: market.down.clone(),
+                up: market.up.book.clone(),
+                down: market.down.book.clone(),
             })
     }
+}
 
-    fn emit_through(&mut self, through: DateTime<Utc>, output: &mut Vec<BtcExecutionSnapshot>) {
-        for market in &mut self.markets {
-            while market.next_sample <= through && market.next_sample < market.scope.window_end {
-                output.push(snapshot(market, market.next_sample));
-                market.next_sample += Duration::milliseconds(EXECUTION_SNAPSHOT_INTERVAL_MILLIS);
-            }
-        }
-    }
-
-    fn emit_before(&mut self, boundary: DateTime<Utc>, output: &mut Vec<BtcExecutionSnapshot>) {
-        for market in &mut self.markets {
-            while market.next_sample < boundary && market.next_sample < market.scope.window_end {
-                output.push(snapshot(market, market.next_sample));
-                market.next_sample += Duration::milliseconds(EXECUTION_SNAPSHOT_INTERVAL_MILLIS);
-            }
-        }
+fn emit_joined_snapshots(market: &mut MarketState, output: &mut Vec<BtcExecutionSnapshot>) {
+    let available_samples = market.up.samples.len().min(market.down.samples.len());
+    while market.emitted_samples < available_samples {
+        let index = market.emitted_samples;
+        let offset_millis = i64::try_from(index)
+            .unwrap_or(i64::MAX)
+            .saturating_mul(EXECUTION_SNAPSHOT_INTERVAL_MILLIS);
+        let sampled_at = market.scope.window_start + Duration::milliseconds(offset_millis);
+        output.push(snapshot(
+            &market.scope,
+            sampled_at,
+            &market.up.samples[index],
+            &market.down.samples[index],
+        ));
+        market.emitted_samples += 1;
     }
 }
 
@@ -223,9 +267,12 @@ struct BookMeasures {
     insufficient_depth: bool,
 }
 
-fn snapshot(market: &MarketState, sampled_at: DateTime<Utc>) -> BtcExecutionSnapshot {
-    let up = measure(&market.up, sampled_at);
-    let down = measure(&market.down, sampled_at);
+fn snapshot(
+    scope: &BtcOrderbookMarketScope,
+    sampled_at: DateTime<Utc>,
+    up: &BookMeasures,
+    down: &BookMeasures,
+) -> BtcExecutionSnapshot {
     let mut quality_flags = 0;
     if up.missing {
         quality_flags |= QUALITY_UP_MISSING;
@@ -252,7 +299,7 @@ fn snapshot(market: &MarketState, sampled_at: DateTime<Utc>) -> BtcExecutionSnap
         quality_flags |= QUALITY_DOWN_INSUFFICIENT_DEPTH;
     }
     BtcExecutionSnapshot {
-        market_id: market.scope.market_id.clone(),
+        market_id: scope.market_id.clone(),
         sampled_at,
         up_source_row_number: up.source_row_number,
         up_source_timestamp: up.source_timestamp,
@@ -472,6 +519,40 @@ mod tests {
         assert_ne!(snapshots[0].quality_flags & QUALITY_UP_MISSING, 0);
         assert_ne!(snapshots[0].quality_flags & QUALITY_DOWN_MISSING, 0);
         assert_eq!(snapshots[1].up_provider_received_at, Some(time(1_100)));
+    }
+
+    #[test]
+    fn accepts_provider_ordering_within_each_outcome_stream() {
+        let mut reconstructor = ExecutionSnapshotReconstructor::new(vec![scope()]).unwrap();
+        let mut snapshots = Vec::new();
+        reconstructor
+            .apply(&book("up", 1_100, 1), &mut snapshots)
+            .unwrap();
+        reconstructor
+            .apply(&book("down", 900, 2), &mut snapshots)
+            .unwrap();
+        reconstructor.finish(time(2_000), &mut snapshots);
+
+        assert_eq!(snapshots.len(), 4);
+        assert_ne!(snapshots[0].quality_flags & QUALITY_UP_MISSING, 0);
+        assert_eq!(snapshots[0].quality_flags & QUALITY_DOWN_MISSING, 0);
+        assert_eq!(snapshots[1].quality_flags, 0);
+    }
+
+    #[test]
+    fn rejects_receipt_time_regression_within_one_outcome_stream() {
+        let mut reconstructor = ExecutionSnapshotReconstructor::new(vec![scope()]).unwrap();
+        let mut snapshots = Vec::new();
+        reconstructor
+            .apply(&book("up", 1_100, 1), &mut snapshots)
+            .unwrap();
+        let error = reconstructor
+            .apply(&book("up", 1_000, 2), &mut snapshots)
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("one outcome token are not ordered"));
     }
 
     #[test]
