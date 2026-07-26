@@ -67,7 +67,11 @@ def render_document(metrics: dict[str, Any], plots: list[str]) -> str:
     selected = metrics["candidates"][selected_name]
     holdout = metrics.get("holdout")
     status = metrics["status"]
-    status_class = "pass" if status == "prediction_qualified" else "fail"
+    status_class = (
+        "pass"
+        if status in {"candidate_ready_for_freeze", "prediction_qualified"}
+        else "fail"
+    )
     if holdout is None:
         primary = selected["out_of_fold"]
         paired = selected["paired"]
@@ -83,6 +87,7 @@ def render_document(metrics: dict[str, Any], plots: list[str]) -> str:
     cards = "".join(
         [
             card("Status", status.replace("_", " "), status_class),
+            card("Prediction role", "selective path persistence"),
             card("Selected model", selected_name),
             card(f"{evaluation_label} accuracy", percent(primary["accuracy"])),
             card("Balanced accuracy", percent(primary["balanced_accuracy"])),
@@ -187,7 +192,7 @@ def fold_uplift_figure(selected: dict[str, Any]) -> go.Figure:
             x=[f"Fold {row['fold_index'] + 1}" for row in folds],
             y=[row["paired"]["accuracy_uplift"] for row in folds],
             marker_color=[
-                "#5ee6a8" if row["paired"]["accuracy_uplift"] > 0 else "#ff7b8d"
+                "#5ee6a8" if row["paired"]["accuracy_uplift"] >= 0 else "#ff7b8d"
                 for row in folds
             ],
         )
@@ -312,13 +317,16 @@ def styled(figure: go.Figure, title: str, y_title: str) -> go.Figure:
 
 def pre_holdout_checks(metrics: dict[str, Any]) -> str:
     selected = metrics["candidates"][metrics["selected_candidate"]]
+    required_folds = metrics["configuration"]["gates"][
+        "minimum_nonnegative_uplift_folds"
+    ]
     checks = [
         {
-            "name": "Positive-uplift walk-forward folds",
-            "observed": selected["positive_uplift_folds"],
+            "name": "Nonnegative same-time path-uplift folds",
+            "observed": selected["nonnegative_uplift_folds"],
             "operator": ">=",
-            "target": 4,
-            "passed": selected["positive_uplift_folds"] >= 4,
+            "target": required_folds,
+            "passed": selected["nonnegative_uplift_folds"] >= required_folds,
         },
         {
             "name": "Walk-forward development contract",

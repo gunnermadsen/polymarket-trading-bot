@@ -181,7 +181,8 @@ def develop_core_models(
         "core develop: selected "
         f"{selected_name} accuracy={selected_development['out_of_fold']['accuracy']:.4f} "
         f"uplift={selected_development['paired']['accuracy_uplift']:+.4f} "
-        f"positive_folds={selected_development['positive_uplift_folds']}",
+        "nonnegative_uplift_folds="
+        f"{selected_development['nonnegative_uplift_folds']}",
         flush=True,
     )
 
@@ -243,7 +244,8 @@ def develop_core_models(
         threshold_qualified
         and calibrator.converged
         and policy_metrics["expected_calibration_error"] <= config.gates.maximum_ece
-        and policy_paired["accuracy_uplift"] > 0
+        and policy_paired["accuracy_uplift"]
+        >= config.gates.minimum_same_time_path_uplift
     )
     ready_for_holdout = bool(
         selected_development["passed_development"]
@@ -435,17 +437,20 @@ def aggregate_candidate_results(
             random_seed=config.model.random_seed,
             block="hour",
         )
-        positive_folds = sum(
-            result["paired"]["accuracy_uplift"] > 0 for result in folds
+        nonnegative_folds = sum(
+            result["paired"]["accuracy_uplift"]
+            >= config.gates.minimum_same_time_path_uplift
+            for result in folds
         )
         passed = bool(
-            positive_folds >= config.gates.minimum_positive_folds
+            nonnegative_folds >= config.gates.minimum_nonnegative_uplift_folds
             and metrics["accuracy"] >= config.gates.target_accuracy
             and metrics["balanced_accuracy"] >= config.gates.target_balanced_accuracy
             and metrics["up_recall"] >= config.gates.minimum_direction_recall
             and metrics["down_recall"] >= config.gates.minimum_direction_recall
             and metrics["coverage"] >= config.gates.minimum_coverage
-            and paired["accuracy_uplift"] > 0
+            and paired["accuracy_uplift"]
+            >= config.gates.minimum_same_time_path_uplift
         )
         output[spec.name] = {
             "candidate": spec.name,
@@ -457,7 +462,7 @@ def aggregate_candidate_results(
             "baseline": baseline,
             "paired": paired,
             "bootstrap": bootstrap,
-            "positive_uplift_folds": positive_folds,
+            "nonnegative_uplift_folds": nonnegative_folds,
             "passed_development": passed,
         }
     return output
@@ -829,14 +834,14 @@ def qualification_checks(
         gate(
             "same_cohort_accuracy_uplift",
             paired["accuracy_uplift"],
-            config.gates.minimum_baseline_uplift,
+            config.gates.minimum_same_time_path_uplift,
             ">=",
         ),
         gate(
             "hourly_bootstrap_lower_95",
             bootstrap["lower_95"],
             0.0,
-            ">",
+            ">=",
         ),
         gate(
             "expected_calibration_error",

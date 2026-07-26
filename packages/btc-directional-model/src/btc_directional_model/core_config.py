@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, time
 from pathlib import Path
 from typing import Any
@@ -59,8 +59,8 @@ class CoreGateConfig:
     minimum_coverage: float
     minimum_holdout_markets: int
     maximum_walk_forward_holdout_gap: float
-    minimum_baseline_uplift: float
-    minimum_positive_folds: int
+    minimum_same_time_path_uplift: float
+    minimum_nonnegative_uplift_folds: int
     maximum_ece: float
     bootstrap_resamples: int
 
@@ -159,8 +159,12 @@ def load_core_config(path: Path) -> CoreTrainingConfig:
         maximum_walk_forward_holdout_gap=float(
             gates_raw["maximum_walk_forward_holdout_gap"]
         ),
-        minimum_baseline_uplift=float(gates_raw["minimum_baseline_uplift"]),
-        minimum_positive_folds=int(gates_raw["minimum_positive_folds"]),
+        minimum_same_time_path_uplift=float(
+            gates_raw["minimum_same_time_path_uplift"]
+        ),
+        minimum_nonnegative_uplift_folds=int(
+            gates_raw["minimum_nonnegative_uplift_folds"]
+        ),
         maximum_ece=float(gates_raw["maximum_ece"]),
         bootstrap_resamples=int(gates_raw["bootstrap_resamples"]),
     )
@@ -259,15 +263,21 @@ def validate_core_config(config: CoreTrainingConfig) -> None:
         config.gates.minimum_direction_recall,
         config.gates.minimum_coverage,
         config.gates.maximum_walk_forward_holdout_gap,
-        config.gates.minimum_baseline_uplift,
+        config.gates.minimum_same_time_path_uplift,
         config.gates.maximum_ece,
     )
     if any(value < 0 or value > 1 for value in probability_gates):
         raise ValueError("probability and accuracy gates must be within [0, 1]")
     if config.gates.minimum_holdout_markets <= 0:
         raise ValueError("minimum holdout markets must be positive")
-    if not 1 <= config.gates.minimum_positive_folds <= len(split.validation_windows):
-        raise ValueError("minimum positive folds is incompatible with validation windows")
+    if not (
+        1
+        <= config.gates.minimum_nonnegative_uplift_folds
+        <= len(split.validation_windows)
+    ):
+        raise ValueError(
+            "minimum nonnegative-uplift folds is incompatible with validation windows"
+        )
     if config.gates.bootstrap_resamples < 100:
         raise ValueError("bootstrap resamples must be at least 100")
     if config.compute.max_parallel_fits <= 0 or config.compute.threads_per_fit <= 0:
@@ -320,4 +330,6 @@ def config_to_dict(config: CoreTrainingConfig) -> dict[str, Any]:
                 for start, end in config.split.validation_windows
             ],
         },
+        "gates": asdict(config.gates),
+        "compute": asdict(config.compute),
     }

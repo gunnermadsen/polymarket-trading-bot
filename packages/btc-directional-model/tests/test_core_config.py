@@ -25,6 +25,8 @@ def test_expanded_core_config_has_frozen_contiguous_cohorts() -> None:
     assert config.split.policy_selection_end == config.split.holdout_start
     assert config.split.holdout_end == config.data.range_end
     assert len(config.split.validation_windows) == 5
+    assert config.gates.minimum_same_time_path_uplift == 0
+    assert config.gates.minimum_nonnegative_uplift_folds == 5
     assert config.paths.development_feature_data != config.paths.holdout_feature_data
 
 
