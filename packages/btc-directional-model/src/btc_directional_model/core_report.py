@@ -90,7 +90,7 @@ def render_document(metrics: dict[str, Any], plots: list[str]) -> str:
             card("DOWN recall", percent(primary["down_recall"])),
             card("Accepted coverage", percent(primary["coverage"])),
             card("Accepted markets", f"{primary['markets']:,}"),
-            card("Boundary-sign uplift", signed_percent(paired["accuracy_uplift"])),
+            card("Binance path-sign uplift", signed_percent(paired["accuracy_uplift"])),
             card("Maximum loss streak", str(primary["maximum_consecutive_losses"])),
         ]
     )
@@ -167,7 +167,7 @@ def candidate_comparison(metrics: dict[str, Any]) -> go.Figure:
         ],
     )
     figure.add_bar(
-        name="Boundary sign",
+        name="Binance path sign",
         x=names,
         y=[
             metrics["candidates"][name]["baseline"]["accuracy"] for name in names
@@ -250,7 +250,7 @@ def daily_figure(holdout: dict[str, Any]) -> go.Figure:
     figure.add_scatter(
         x=[row["date"] for row in rows],
         y=[row["baseline_accuracy"] for row in rows],
-        name="Boundary sign",
+        name="Binance path sign",
         mode="lines+markers",
     )
     return styled(figure, "Daily holdout accuracy", "Accuracy")
@@ -290,7 +290,7 @@ def time_figure(holdout: dict[str, Any]) -> go.Figure:
         x=[row["seconds_elapsed"] for row in rows],
         y=[row["baseline_accuracy"] for row in rows],
         mode="lines",
-        name="Boundary sign",
+        name="Binance path sign",
     )
     return styled(figure, "Accuracy by first accepted prediction time", "Accuracy")
 

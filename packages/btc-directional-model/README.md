@@ -100,7 +100,9 @@ For the expanded BTC core, candidate selection is likewise chronological but com
 of orderbook quality. The qualification contract requires at least 65% accuracy and balanced
 accuracy, at least 60% recall in both directions, at least 50% coverage, a 60% Wilson lower bound,
 positive hourly block-bootstrap uplift, and at least two percentage points of same-cohort uplift
-over the sign of the Binance boundary gap. Passing these gates qualifies only the prediction
+over the sign of the Binance price path since the market opened. The raw Gamma-boundary/Binance
+price difference is retained only for source audit and is excluded from every model allowlist
+because cross-venue basis drift is not BTC direction. Passing these gates qualifies only the prediction
 model. Trading deployment remains blocked until executable 10-share prices, fees, slippage, and
 net expectancy are evaluated in a later, explicitly separate integration effort.
 

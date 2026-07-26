@@ -17,12 +17,12 @@ from .core_extract import (
 )
 
 CoreFeatureScope = Literal["pre_holdout", "holdout"]
-CORE_FEATURE_SCHEMA_VERSION = "btc-5m-directional-core-features-v1"
+CORE_FEATURE_SCHEMA_VERSION = "btc-5m-directional-core-features-v2"
 
 CORE_BASELINE_FEATURES = [
     "seconds_elapsed_scaled",
     "seconds_remaining_scaled",
-    "btc_gap_from_open_bps",
+    "btc_path_from_window_open_bps",
     "btc_return_1s_bps",
     "btc_return_5s_bps",
     "btc_return_15s_bps",
@@ -56,12 +56,12 @@ CORE_BASELINE_FEATURES = [
 ]
 
 CORE_ENRICHMENT_FEATURES = [
-    "btc_gap_terminal_volatility_z",
-    "btc_gap_abs_terminal_volatility_z",
-    "btc_boundary_cross_count",
-    "btc_seconds_since_boundary_cross",
-    "btc_fraction_time_above_boundary",
-    "btc_fraction_time_below_boundary",
+    "btc_path_terminal_volatility_z",
+    "btc_path_abs_terminal_volatility_z",
+    "btc_path_cross_count",
+    "btc_seconds_since_path_cross",
+    "btc_fraction_time_path_positive",
+    "btc_fraction_time_path_negative",
     "btc_momentum_agreement_5_15",
     "btc_momentum_agreement_15_30",
     "btc_momentum_multihorizon_score",
@@ -171,9 +171,9 @@ def build_core_features(
         .drop(
             "official_outcome",
             "final_price",
-            "btc_gap_positive",
-            "btc_boundary_crossed",
-            "btc_last_boundary_cross_second",
+            "btc_path_positive",
+            "btc_path_crossed",
+            "btc_last_path_cross_second",
             strict=False,
         )
         .sort(["window_start", "seconds_elapsed"])
@@ -243,24 +243,34 @@ def build_core_features(
 def derive_core_point_in_time_features(frame: pl.DataFrame) -> pl.DataFrame:
     frame = frame.with_columns(
         pl.col("btc_close").log().alias("btc_log_close"),
+        pl.first("btc_close").over("market_id").alias("btc_window_open_close"),
+    ).with_columns(
         (pl.col("btc_close") / pl.col("opening_boundary"))
         .log()
         .mul(10_000)
-        .alias("btc_gap_from_open_bps"),
+        .alias("btc_cross_venue_boundary_gap_bps"),
+        (pl.col("btc_window_open_close") / pl.col("opening_boundary"))
+        .log()
+        .mul(10_000)
+        .alias("btc_window_open_cross_venue_basis_bps"),
+        (pl.col("btc_close") / pl.col("btc_window_open_close"))
+        .log()
+        .mul(10_000)
+        .alias("btc_path_from_window_open_bps"),
         (pl.col("seconds_elapsed") / 300.0).alias("seconds_elapsed_scaled"),
         ((300 - pl.col("seconds_elapsed")) / 300.0).alias(
             "seconds_remaining_scaled"
         ),
     ).with_columns(
-        (pl.col("btc_gap_from_open_bps") >= 0).alias("btc_gap_positive"),
+        (pl.col("btc_path_from_window_open_bps") >= 0).alias("btc_path_positive"),
     )
     frame = frame.with_columns(
         (
-            pl.col("btc_gap_positive")
-            != pl.col("btc_gap_positive").shift(1).over("market_id")
+            pl.col("btc_path_positive")
+            != pl.col("btc_path_positive").shift(1).over("market_id")
         )
         .fill_null(False)
-        .alias("btc_boundary_crossed"),
+        .alias("btc_path_crossed"),
     )
     for seconds in (1, 5, 15, 30, 60):
         frame = frame.with_columns(
@@ -392,33 +402,33 @@ def derive_core_point_in_time_features(frame: pl.DataFrame) -> pl.DataFrame:
             .alias(f"btc_signed_flow_{seconds}s"),
         )
     frame = frame.with_columns(
-        pl.when(pl.col("btc_boundary_crossed"))
+        pl.when(pl.col("btc_path_crossed"))
         .then(pl.col("seconds_elapsed"))
         .otherwise(None)
         .forward_fill()
         .over("market_id")
-        .alias("btc_last_boundary_cross_second"),
-        pl.col("btc_boundary_crossed")
+        .alias("btc_last_path_cross_second"),
+        pl.col("btc_path_crossed")
         .cast(pl.Int32)
         .cum_sum()
         .over("market_id")
         .cast(pl.Float64)
-        .alias("btc_boundary_cross_count"),
+        .alias("btc_path_cross_count"),
         (
-            pl.col("btc_gap_positive").cast(pl.Int32).cum_sum().over("market_id")
+            pl.col("btc_path_positive").cast(pl.Int32).cum_sum().over("market_id")
             / (pl.col("seconds_elapsed") + 1)
-        ).alias("btc_fraction_time_above_boundary"),
+        ).alias("btc_fraction_time_path_positive"),
     )
     frame = frame.with_columns(
         (
             pl.col("seconds_elapsed")
-            - pl.col("btc_last_boundary_cross_second")
+            - pl.col("btc_last_path_cross_second")
             .fill_null(pl.col("seconds_elapsed"))
         )
         .cast(pl.Float64)
-        .alias("btc_seconds_since_boundary_cross"),
-        (1.0 - pl.col("btc_fraction_time_above_boundary")).alias(
-            "btc_fraction_time_below_boundary"
+        .alias("btc_seconds_since_path_cross"),
+        (1.0 - pl.col("btc_fraction_time_path_positive")).alias(
+            "btc_fraction_time_path_negative"
         ),
         (
             pl.col("btc_realized_volatility_60s_bps").cum_sum().over("market_id")
@@ -432,21 +442,21 @@ def derive_core_point_in_time_features(frame: pl.DataFrame) -> pl.DataFrame:
     )
     frame = frame.with_columns(
         (
-            pl.col("btc_gap_from_open_bps")
+            pl.col("btc_path_from_window_open_bps")
             / (
                 pl.col("btc_realized_volatility_60s_bps")
                 * (300 - pl.col("seconds_elapsed")).clip(lower_bound=1).sqrt()
                 + 1e-9
             )
-        ).alias("btc_gap_terminal_volatility_z"),
+        ).alias("btc_path_terminal_volatility_z"),
         (
-            pl.col("btc_gap_from_open_bps").abs()
+            pl.col("btc_path_from_window_open_bps").abs()
             / (
                 pl.col("btc_realized_volatility_60s_bps")
                 * (300 - pl.col("seconds_elapsed")).clip(lower_bound=1).sqrt()
                 + 1e-9
             )
-        ).alias("btc_gap_abs_terminal_volatility_z"),
+        ).alias("btc_path_abs_terminal_volatility_z"),
         (
             pl.col("btc_return_5s_bps").sign()
             * pl.col("btc_return_15s_bps").sign()
@@ -550,7 +560,7 @@ def derive_core_point_in_time_features(frame: pl.DataFrame) -> pl.DataFrame:
         ((pl.col("observed_at").dt.weekday() * 2 * math.pi / 7).cos()).alias(
             "weekday_cos"
         ),
-        (pl.col("btc_gap_from_open_bps") >= 0)
+        (pl.col("btc_path_from_window_open_bps") >= 0)
         .cast(pl.Int8)
         .alias("binance_sign_up"),
     )

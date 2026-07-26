@@ -51,7 +51,7 @@ def test_enriched_core_features_need_no_book_columns() -> None:
     assert features.filter(pl.col("seconds_elapsed") == 240).height == 2
     assert (
         features.filter(pl.col("seconds_elapsed") == 240)[
-            "btc_gap_terminal_volatility_z"
+            "btc_path_terminal_volatility_z"
         ].null_count()
         == 0
     )
@@ -86,4 +86,22 @@ def test_core_lags_and_cross_counts_do_not_cross_markets() -> None:
     )
 
     assert first_b["btc_return_1s_bps"][0] is None
-    assert first_b["btc_boundary_cross_count"][0] == 0
+    assert first_b["btc_path_cross_count"][0] == 0
+
+
+def test_model_features_ignore_cross_venue_opening_basis() -> None:
+    original = core_source_frame()
+    shifted_boundary = original.with_columns(
+        (pl.col("opening_boundary") * 1.02).alias("opening_boundary")
+    )
+    original_features = derive_core_point_in_time_features(original)
+    shifted_features = derive_core_point_in_time_features(shifted_boundary)
+
+    for allowlist in CORE_MODEL_FEATURES.values():
+        assert original_features.select(allowlist).equals(
+            shifted_features.select(allowlist),
+            null_equal=True,
+        )
+    assert original_features["binance_sign_up"].equals(
+        shifted_features["binance_sign_up"]
+    )
