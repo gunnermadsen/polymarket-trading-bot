@@ -6,7 +6,7 @@ extraction, feature engineering, fitting, calibration, and reporting on the loca
 The eventual trading container consumes only a verified model artifact and performs inference
 natively in Rust.
 
-The v1 data contract uses only the confirmed backfill sources:
+The original four-table data contract uses the confirmed backfill sources:
 
 - `polymarket.btc_interval_markets` for market identity and official outcome labels;
 - `polymarket.btc_market_reference_facts` for the opening boundary and final-price audit;
@@ -19,6 +19,13 @@ history through the last candidate decision, leaving 8,508 training markets. Fin
 availability never selects the training cohort, and final prices are never model inputs. Live-only
 feature tables, strategy decisions, retired ML tables, and `experiment_id` are not part of the
 contract.
+
+The expanded universal BTC-core contract is intentionally narrower. It uses only interval-market
+labels, reference facts, one-second Binance klines, and completed-artifact lineage. It does not
+read PMXT snapshots, raw orderbook events, aggregate trades, Chainlink ticks, or any live trading
+process data. Its locked source interval is `[2026-04-21, 2026-06-21)`, covering the maximum
+contiguous backfill currently verified with dense one-second BTC history. June 14-20 is isolated
+from feature building and model selection as the untouched final holdout.
 
 ## Local environment
 
@@ -41,6 +48,21 @@ Run the complete April 21-May 20 workflow:
 .venv/bin/btc-directional-model run \
   --config configs/btc-5m-directional-logistic-v1.toml
 ```
+
+Run the expanded BTC-core workflow:
+
+```bash
+export POLARS_MAX_THREADS=6
+.venv/bin/btc-directional-model core-run \
+  --config configs/btc-5m-directional-core-20260421-20260620.toml
+```
+
+The core workflow first extracts and builds only the pre-holdout features. It evaluates two
+logistic candidates and a bounded histogram-gradient-boosting challenger over five chronological
+walk-forward folds, calibrates probability on June 7-9, and selects the confidence policy on June
+10-13. The June 14-20 holdout is extracted and evaluated only if the selected candidate passes the
+pre-holdout gates. A persistent access record prevents a different frozen candidate from reusing
+the consumed holdout.
 
 Generated source data, features, runs, reports, and model artifacts are package-local and ignored
 by Git for this implementation pass.
@@ -74,6 +96,14 @@ dates for the next untouched evaluation. The checked-in configuration therefore 
 blocked. Change that flag only when the configured final chronological split contains genuinely
 unseen, complete four-table coverage.
 
+For the expanded BTC core, candidate selection is likewise chronological but completely independent
+of orderbook quality. The qualification contract requires at least 65% accuracy and balanced
+accuracy, at least 60% recall in both directions, at least 50% coverage, a 60% Wilson lower bound,
+positive hourly block-bootstrap uplift, and at least two percentage points of same-cohort uplift
+over the sign of the Binance boundary gap. Passing these gates qualifies only the prediction
+model. Trading deployment remains blocked until executable 10-share prices, fees, slippage, and
+net expectancy are evaluated in a later, explicitly separate integration effort.
+
 ## Apple Silicon
 
 The canonical model is L2 logistic regression because it is transparent, compact, and directly
@@ -85,9 +115,12 @@ dependency versions, source hash, and convergence state.
 
 ## Evidence
 
-Each run writes strict JSON metrics, a checksummed nonbinary model artifact, golden inference
-vectors, holdout predictions, a confusion-matrix CSV, and a self-contained Plotly report. Open the
-report in a local browser with:
+The original workflow writes strict JSON metrics, a checksummed nonbinary model artifact, golden
+inference vectors, holdout predictions, a confusion-matrix CSV, and a self-contained Plotly report.
+The expanded BTC-core workflow writes a training-only joblib artifact, a portable JSON summary when
+the selected family is logistic, source and feature hashes, walk-forward/policy predictions,
+holdout access evidence, and the same style of self-contained report. It does not install or mount
+anything in the Rust container. Open a report in a local browser with:
 
 ```bash
 .venv/bin/btc-directional-model serve --run runs/<run-id> --port 8765
