@@ -34,7 +34,7 @@ use super::{
     directional_features::{build_directional_features, DirectionalFeatureVector},
     directional_model::{
         directional_model_input_sha256, runtime_model, BtcDirectionalModelFeatureSnapshot,
-        RuntimeModelSelection, RuntimePredictionPolicy,
+        RuntimeModelSelection, RuntimePredictionPolicy, BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
     },
     execution_guard::BtcReferenceExecutionGuard,
     paper::{PaperPreviewConfig, PaperVenue, PAPER_DYNAMIC_FEE_RATE_METADATA_KEY},
@@ -47,9 +47,9 @@ use super::{
     repository::{BtcPointInTimeInputs, BtcRepository},
     runtime::{BtcStrategyRunner, StrategyObservation},
     strategy::{
-        BtcDecision, BtcDecisionAction, BtcDecisionStrategyConfig, BtcFeatureLineage,
-        BtcFeatureSnapshot, BtcInputWindowLineage, BtcOutcomeBookFeatures, BtcRejectReason,
-        BtcStrategyConfig, BtcStrategyPrediction, DeterministicBtcStrategy,
+        BtcDecision, BtcDecisionAction, BtcDecisionStrategyConfig, BtcDirectionalModelEntryPolicy,
+        BtcFeatureLineage, BtcFeatureSnapshot, BtcInputWindowLineage, BtcOutcomeBookFeatures,
+        BtcRejectReason, BtcStrategyConfig, BtcStrategyPrediction, DeterministicBtcStrategy,
         BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_LINEAGE_VERSION,
         BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
         BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION,
@@ -82,6 +82,11 @@ pub struct BtcPaperProcessConfig {
     pub strategy: BtcStrategyConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_admission: Option<BtcEntryAdmissionConfig>,
+    #[serde(
+        default,
+        skip_serializing_if = "BtcDirectionalModelEntryPolicy::is_default"
+    )]
+    pub directional_model_entry_policy: BtcDirectionalModelEntryPolicy,
     pub execution_enabled: bool,
     pub paper_stress_previews: Vec<PaperPreviewConfig>,
 }
@@ -525,6 +530,11 @@ impl BtcPaperProcessRunner {
         if config.strategy.attribution().is_none() {
             anyhow::bail!("BTC paper run strategy attribution is invalid");
         }
+        validate_directional_model_entry_policy(
+            &config.strategy,
+            config.directional_model_entry_policy,
+            config.execution_enabled,
+        )?;
         if let Some(entry_admission) = config.entry_admission.as_ref() {
             entry_admission.validate()?;
         }
@@ -1515,7 +1525,11 @@ impl BtcPaperProcessRunner {
             snapshot_identity_at,
             directional_model,
         );
-        let mut decision = DeterministicBtcStrategy::evaluate(&self.config.strategy, &snapshot);
+        let mut decision = DeterministicBtcStrategy::evaluate_with_directional_model_entry_policy(
+            &self.config.strategy,
+            &snapshot,
+            self.config.directional_model_entry_policy,
+        );
         enforce_runtime_readiness(&mut decision, &observation.readiness, &self.config.strategy);
         if decision.approved_intent.is_some()
             && self
@@ -2169,7 +2183,12 @@ fn btc_entry_order_metadata(
         metadata.insert("profile_sha256".to_string(), profile_sha256.into());
     }
     if let Some(prediction) = prediction {
-        let BtcStrategyPrediction::DirectionalPrediction { outcome, .. } = prediction else {
+        let BtcStrategyPrediction::DirectionalPrediction {
+            outcome,
+            entry_policy,
+            ..
+        } = prediction
+        else {
             anyhow::bail!("BTC entry order cannot carry a no-prediction result");
         };
         ensure!(
@@ -2180,6 +2199,13 @@ fn btc_entry_order_metadata(
             ) && *outcome == intent.outcome,
             "BTC directional prediction attribution does not match its entry intent"
         );
+        if *entry_policy == BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction {
+            ensure!(
+                attribution.family == BTC_DIRECTIONAL_MODEL_STRATEGY_FAMILY
+                    && intent.strategy_version == BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
+                "BTC directional prediction execution policy requires directional-model attribution"
+            );
+        }
         let metadata = metadata
             .as_object_mut()
             .context("BTC order strategy metadata must be an object")?;
@@ -2392,6 +2418,21 @@ fn directional_model_configured(config: &BtcStrategyConfig) -> bool {
         config.decision_strategy.as_ref(),
         Some(BtcDecisionStrategyConfig::BtcDirectionalModel { .. })
     )
+}
+
+fn validate_directional_model_entry_policy(
+    strategy: &BtcStrategyConfig,
+    entry_policy: BtcDirectionalModelEntryPolicy,
+    execution_enabled: bool,
+) -> Result<()> {
+    if entry_policy == BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction
+        && (!directional_model_configured(strategy) || !execution_enabled)
+    {
+        anyhow::bail!(
+            "BTC directional prediction execution policy requires an executing directional-model paper process"
+        );
+    }
+    Ok(())
 }
 
 fn latest_directional_model_candidate(
@@ -3246,6 +3287,7 @@ mod tests {
             executable_price: Some(dec!(0.72)),
             direct_taker_fee_per_share: Some(dec!(0.01)),
             direct_net_edge_per_share: Some(dec!(0.09)),
+            entry_policy: BtcDirectionalModelEntryPolicy::default(),
         };
 
         let metadata = btc_entry_order_metadata(
@@ -3284,6 +3326,72 @@ mod tests {
         assert_eq!(
             metadata["profile_id"],
             BTC_MARKET_ANCHORED_RESEARCH_PROFILE_ID
+        );
+
+        let mut invalid_validation_prediction = prediction;
+        let BtcStrategyPrediction::DirectionalPrediction { entry_policy, .. } =
+            &mut invalid_validation_prediction
+        else {
+            unreachable!("test prediction is directional")
+        };
+        *entry_policy = BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction;
+        assert!(btc_entry_order_metadata(
+            &config,
+            &metadata_intent(&config.strategy_version),
+            Some(&invalid_validation_prediction),
+            Uuid::from_u128(204),
+            Uuid::from_u128(202),
+            Uuid::from_u128(205),
+            dec!(0.03),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn order_metadata_binds_validation_policy_to_directional_model() {
+        let config = BtcStrategyConfig {
+            strategy_version: BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION.to_string(),
+            feature_schema_version: BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION.to_string(),
+            decision_strategy: Some(BtcDecisionStrategyConfig::BtcDirectionalModel {
+                model_key: BTC_DIRECTIONAL_MODEL_V1_KEY.to_string(),
+                artifact_sha256: BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256.to_string(),
+                feature_schema_sha256: BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256.to_string(),
+            }),
+            ..BtcStrategyConfig::default()
+        };
+        let prediction = BtcStrategyPrediction::DirectionalPrediction {
+            outcome: BtcOutcome::Down,
+            probability: dec!(0.92),
+            conservative_probability: dec!(0.92),
+            minimum_conservative_probability: dec!(0.89),
+            probability_uncertainty: Decimal::ZERO,
+            executable_price: Some(dec!(0.95)),
+            direct_taker_fee_per_share: Some(dec!(0.002)),
+            direct_net_edge_per_share: Some(dec!(-0.032)),
+            entry_policy: BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction,
+        };
+        let mut intent = metadata_intent(&config.strategy_version);
+        intent.outcome = BtcOutcome::Down;
+
+        let metadata = btc_entry_order_metadata(
+            &config,
+            &intent,
+            Some(&prediction),
+            Uuid::from_u128(204),
+            Uuid::from_u128(202),
+            Uuid::from_u128(205),
+            dec!(0.03),
+        )
+        .unwrap();
+
+        assert_eq!(metadata["strategy"], BTC_DIRECTIONAL_MODEL_STRATEGY_FAMILY);
+        assert_eq!(
+            metadata["strategy_version"],
+            BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION
+        );
+        assert_eq!(
+            metadata["prediction"]["entry_policy"],
+            "execute_directional_prediction"
         );
     }
 
@@ -4470,6 +4578,7 @@ mod tests {
             executable_price: Some(dec!(0.72)),
             direct_taker_fee_per_share: Some(dec!(0.01)),
             direct_net_edge_per_share: Some(dec!(0.09)),
+            entry_policy: BtcDirectionalModelEntryPolicy::default(),
         };
         let mut decision = BtcDecision {
             decision_id: Uuid::new_v4(),
@@ -4525,6 +4634,7 @@ mod tests {
             executable_price: Some(dec!(0.80)),
             direct_taker_fee_per_share: Some(dec!(0.01)),
             direct_net_edge_per_share: Some(dec!(0.11)),
+            entry_policy: BtcDirectionalModelEntryPolicy::default(),
         };
         let approved = BtcDecision {
             decision_id: Uuid::new_v4(),
@@ -4604,6 +4714,42 @@ mod tests {
             );
             assert!(decision.approved_intent.is_none());
         }
+    }
+
+    #[test]
+    fn directional_model_validation_entry_policy_requires_executing_model_runner() {
+        let model_config = BtcStrategyConfig {
+            decision_strategy: Some(BtcDecisionStrategyConfig::BtcDirectionalModel {
+                model_key: BTC_DIRECTIONAL_MODEL_V1_KEY.to_string(),
+                artifact_sha256: BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256.to_string(),
+                feature_schema_sha256: BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256.to_string(),
+            }),
+            ..BtcStrategyConfig::default()
+        };
+        assert!(validate_directional_model_entry_policy(
+            &model_config,
+            BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction,
+            true,
+        )
+        .is_ok());
+        assert!(validate_directional_model_entry_policy(
+            &model_config,
+            BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction,
+            false,
+        )
+        .is_err());
+        assert!(validate_directional_model_entry_policy(
+            &BtcStrategyConfig::default(),
+            BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction,
+            true,
+        )
+        .is_err());
+        assert!(validate_directional_model_entry_policy(
+            &BtcStrategyConfig::default(),
+            BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge,
+            true,
+        )
+        .is_ok());
     }
 
     #[test]

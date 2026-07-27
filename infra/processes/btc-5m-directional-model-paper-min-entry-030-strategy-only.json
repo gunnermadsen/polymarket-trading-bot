@@ -14,8 +14,8 @@
     "raw": {
       "btc_realtime_paper": {
         "schema_version": "btc_realtime_paper_process_v3",
-        "next_experiment_key": "btc-5m-directional-model-20260727-strategy-only-v1",
-        "preregistration_sha256": "66f23a0daa9a7439f641006b979d88106abfbb911797941e8287906a0b311ac3",
+        "next_experiment_key": "btc-5m-directional-model-20260727-strategy-only-validation-v1",
+        "preregistration_sha256": "77bfa9102751a1bd6c26891421bda1b9b1a26ff6c27aa6a307dc36de09b787c5",
         "strategy": {
           "decision_strategy": {
             "type": "btc_directional_model",
@@ -61,6 +61,7 @@
           "arrival_latency_ms": 150,
           "visible_depth_haircut": "0.80",
           "starting_collateral_usd": "1000",
+          "directional_model_entry_policy": "execute_directional_prediction",
           "stress_previews": [
             {
               "scenario_key": "latency_300ms_depth_65pct",
@@ -79,13 +80,14 @@
   },
   "metadata": {
     "source_process_id": "39183e9d-6af4-4671-b985-e6d1284ba28d",
-    "comparison_cohort": "btc5m-directional-model-v1-20260727",
+    "comparison_cohort": "btc5m-directional-model-paper-validation-v1-20260727",
     "comparison_arm": "strategy_only",
     "strategy_family": "btc_5m_directional_model",
     "model_key": "btc-5m-directional-histogram-enriched-20260421-20260620-v1",
     "model_artifact_sha256": "e07160295cac3df02d9bec631e96ce34fa66a71a72d04e79e4bcf0fd0f8336b7",
     "entry_admission_policy": "none",
-    "evidence_objective": "measure_model_prediction_accuracy_activity_latency_and_net_expectancy_without_entry_admission",
-    "preregistration": "2026-07-27|btc5m-directional-model-histogram-enriched-20260421-20260620-v1|strategy-only-no-entry-admission|first-confidence-crossing-60-240-5|confidence-0.89|target-size-5|min-entry-0.30|paper-only"
+    "directional_model_entry_policy": "execute_directional_prediction",
+    "evidence_objective": "validate_native_model_decision_order_fill_settlement_and_paper_pnl_without_entry_admission",
+    "preregistration": "2026-07-27|btc5m-directional-model-histogram-enriched-20260421-20260620-v1|strategy-only-no-entry-admission|first-confidence-crossing-60-240-5|confidence-0.89|target-size-5|min-entry-0.30|paper-only|entry-policy-execute-directional-prediction"
   }
 }

@@ -82,6 +82,20 @@ impl Default for BtcDirectionalPredictionConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BtcDirectionalModelEntryPolicy {
+    #[default]
+    RequirePositiveDirectEdge,
+    ExecuteDirectionalPrediction,
+}
+
+impl BtcDirectionalModelEntryPolicy {
+    pub(crate) fn is_default(&self) -> bool {
+        *self == Self::RequirePositiveDirectEdge
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BtcVolatilityContinuationConfig {
@@ -669,6 +683,11 @@ pub enum BtcStrategyPrediction {
         executable_price: Option<Decimal>,
         direct_taker_fee_per_share: Option<Decimal>,
         direct_net_edge_per_share: Option<Decimal>,
+        #[serde(
+            default,
+            skip_serializing_if = "BtcDirectionalModelEntryPolicy::is_default"
+        )]
+        entry_policy: BtcDirectionalModelEntryPolicy,
     },
 }
 
@@ -937,6 +956,18 @@ pub struct DeterministicBtcStrategy;
 
 impl DeterministicBtcStrategy {
     pub fn evaluate(config: &BtcStrategyConfig, snapshot: &BtcFeatureSnapshot) -> BtcDecision {
+        Self::evaluate_with_directional_model_entry_policy(
+            config,
+            snapshot,
+            BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge,
+        )
+    }
+
+    pub(crate) fn evaluate_with_directional_model_entry_policy(
+        config: &BtcStrategyConfig,
+        snapshot: &BtcFeatureSnapshot,
+        directional_model_entry_policy: BtcDirectionalModelEntryPolicy,
+    ) -> BtcDecision {
         let decision_id = deterministic_decision_id(config, snapshot);
         if let Err(reason) = validate_config(config) {
             return rejected(decision_id, snapshot, reason, None, None, None);
@@ -977,6 +1008,7 @@ impl DeterministicBtcStrategy {
                 snapshot,
                 decision_id,
                 estimate.fair_value,
+                directional_model_entry_policy,
             );
             if matches!(
                 decision.prediction,
@@ -1023,6 +1055,7 @@ impl DeterministicBtcStrategy {
                 snapshot,
                 decision_id,
                 estimate.fair_value,
+                BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge,
             ),
             ResolvedBtcDecisionStrategy::BtcDirectionalModel { .. } => {
                 unreachable!("BTC directional model is evaluated before execution validation")
@@ -1038,6 +1071,7 @@ fn build_directional_prediction_decision(
     snapshot: &BtcFeatureSnapshot,
     decision_id: Uuid,
     fair_value: FairValueEstimate,
+    entry_policy: BtcDirectionalModelEntryPolicy,
 ) -> BtcDecision {
     let (outcome, probability, conservative_probability, book) =
         if fair_value.up_probability > fair_value.down_probability {
@@ -1113,6 +1147,7 @@ fn build_directional_prediction_decision(
         executable_price,
         direct_taker_fee_per_share,
         direct_net_edge_per_share,
+        entry_policy,
     };
 
     let selected = match quote_outcome_edge(
@@ -1140,7 +1175,9 @@ fn build_directional_prediction_decision(
         BtcOutcome::Up => (Some(selected.clone()), None),
         BtcOutcome::Down => (None, Some(selected.clone())),
     };
-    if direct_net_edge_per_share <= Decimal::ZERO {
+    if entry_policy == BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge
+        && direct_net_edge_per_share <= Decimal::ZERO
+    {
         return rejected_with_prediction(
             decision_id,
             snapshot,
@@ -2848,18 +2885,92 @@ mod tests {
         let config = directional_model_config();
         let snapshot = directional_model_snapshot("no_trade");
 
-        let decision = DeterministicBtcStrategy::evaluate(&config, &snapshot);
+        for entry_policy in [
+            BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge,
+            BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction,
+        ] {
+            let decision = DeterministicBtcStrategy::evaluate_with_directional_model_entry_policy(
+                &config,
+                &snapshot,
+                entry_policy,
+            );
 
-        assert_eq!(decision.action, BtcDecisionAction::NoTrade);
-        assert_eq!(
-            decision.reject_reason,
-            Some(BtcRejectReason::PredictionConfidenceBelowThreshold)
-        );
-        assert!(matches!(
-            decision.prediction,
-            Some(BtcStrategyPrediction::NoPrediction { .. })
-        ));
-        assert!(decision.approved_intent.is_none());
+            assert_eq!(decision.action, BtcDecisionAction::NoTrade);
+            assert_eq!(
+                decision.reject_reason,
+                Some(BtcRejectReason::PredictionConfidenceBelowThreshold)
+            );
+            assert!(matches!(
+                decision.prediction,
+                Some(BtcStrategyPrediction::NoPrediction { .. })
+            ));
+            assert!(decision.approved_intent.is_none());
+        }
+    }
+
+    #[test]
+    fn directional_model_paper_validation_executes_real_prediction_with_signed_negative_edge() {
+        for (action, expected_outcome, expected_action) in [
+            ("up", BtcOutcome::Up, BtcDecisionAction::BuyUp),
+            ("down", BtcOutcome::Down, BtcDecisionAction::BuyDown),
+        ] {
+            let mut config = directional_model_config();
+            config.max_entry_price = dec!(0.995);
+            let mut snapshot = directional_model_snapshot(action);
+            match expected_outcome {
+                BtcOutcome::Up => {
+                    snapshot.up_book = book(BtcOutcome::Up, "up", dec!(0.98), dec!(0.99));
+                }
+                BtcOutcome::Down => {
+                    snapshot.down_book = book(BtcOutcome::Down, "down", dec!(0.98), dec!(0.99));
+                }
+            }
+
+            let default_decision = DeterministicBtcStrategy::evaluate(&config, &snapshot);
+            assert_eq!(default_decision.action, BtcDecisionAction::NoTrade);
+            assert_eq!(
+                default_decision.reject_reason,
+                Some(BtcRejectReason::PredictionDirectEdgeNonPositive)
+            );
+            let default_prediction = default_decision.prediction.as_ref().unwrap();
+            assert!(
+                serde_json::to_value(default_prediction)
+                    .unwrap()
+                    .get("entry_policy")
+                    .is_none(),
+                "the default policy must preserve the historical prediction contract"
+            );
+
+            let validation_decision =
+                DeterministicBtcStrategy::evaluate_with_directional_model_entry_policy(
+                    &config,
+                    &snapshot,
+                    BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction,
+                );
+            assert_eq!(validation_decision.action, expected_action);
+            assert_eq!(validation_decision.reject_reason, None);
+            assert!(validation_decision
+                .approved_intent
+                .as_ref()
+                .is_some_and(|intent| intent.outcome == expected_outcome
+                    && intent.expected_net_edge_per_share < Decimal::ZERO
+                    && intent.expected_net_edge < Decimal::ZERO));
+            assert!(matches!(
+                validation_decision.prediction,
+                Some(BtcStrategyPrediction::DirectionalPrediction {
+                    outcome,
+                    direct_net_edge_per_share: Some(edge),
+                    entry_policy:
+                        BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction,
+                    ..
+                }) if outcome == expected_outcome && edge < Decimal::ZERO
+            ));
+            assert_eq!(
+                serde_json::to_value(validation_decision.prediction.as_ref().unwrap()).unwrap()
+                    ["entry_policy"],
+                serde_json::json!("execute_directional_prediction")
+            );
+        }
     }
 
     #[test]
@@ -3440,6 +3551,7 @@ mod tests {
             &snapshot,
             deterministic_decision_id(&config, &snapshot),
             fair_value,
+            BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge,
         );
 
         assert_eq!(decision.action, BtcDecisionAction::BuyUp);

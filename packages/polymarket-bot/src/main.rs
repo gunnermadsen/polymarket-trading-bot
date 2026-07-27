@@ -13,9 +13,10 @@ use chrono::Utc;
 use polymarket_bot::{
     btc::{
         runtime_status_from_inputs, BookRegistry, BtcDecisionStrategyConfig,
-        BtcEntryAdmissionConfig, BtcPaperProcessConfig, BtcPaperProcessRunner,
-        BtcPlaybookRuntimeHandle, BtcRepository, BtcRuntime, BtcRuntimeConfig, BtcRuntimeHandle,
-        BtcStrategyConfig, PaperPreviewConfig, PaperVenue as BtcPaperVenue, PaperVenueConfig,
+        BtcDirectionalModelEntryPolicy, BtcEntryAdmissionConfig, BtcPaperProcessConfig,
+        BtcPaperProcessRunner, BtcPlaybookRuntimeHandle, BtcRepository, BtcRuntime,
+        BtcRuntimeConfig, BtcRuntimeHandle, BtcStrategyConfig, PaperPreviewConfig,
+        PaperVenue as BtcPaperVenue, PaperVenueConfig,
         BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
         BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION,
         BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION,
@@ -417,6 +418,23 @@ fn resolve_btc_strategy(
     Ok(strategy)
 }
 
+fn validate_directional_model_entry_policy(
+    strategy: &BtcStrategyConfig,
+    entry_policy: BtcDirectionalModelEntryPolicy,
+) -> Result<(), HttpError> {
+    if entry_policy == BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction
+        && !matches!(
+            strategy.decision_strategy.as_ref(),
+            Some(BtcDecisionStrategyConfig::BtcDirectionalModel { .. })
+        )
+    {
+        return Err(HttpError::bad_request(
+            "paper.directional_model_entry_policy execute_directional_prediction requires the BTC directional-model strategy",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct BtcProcessRuntimeControl {
@@ -441,6 +459,7 @@ struct BtcProcessPaperControl {
     arrival_latency_ms: u64,
     visible_depth_haircut: rust_decimal::Decimal,
     starting_collateral_usd: rust_decimal::Decimal,
+    directional_model_entry_policy: BtcDirectionalModelEntryPolicy,
     stress_previews: Vec<BtcProcessPaperPreviewControl>,
 }
 
@@ -450,6 +469,8 @@ impl Default for BtcProcessPaperControl {
             arrival_latency_ms: 150,
             visible_depth_haircut: dec!(0.80),
             starting_collateral_usd: dec!(1000),
+            directional_model_entry_policy:
+                BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge,
             stress_previews: vec![
                 BtcProcessPaperPreviewControl {
                     scenario_key: "latency_300ms_depth_65pct".to_string(),
@@ -490,6 +511,7 @@ struct PreparedBtcStartDefinition {
     preregistration_sha256: String,
     strategy: BtcStrategyConfig,
     entry_admission: Option<BtcEntryAdmissionConfig>,
+    directional_model_entry_policy: BtcDirectionalModelEntryPolicy,
     runtime: BtcRuntimeConfig,
     paper_venue: PaperVenueConfig,
     paper_stress_previews: Vec<PaperPreviewConfig>,
@@ -565,6 +587,7 @@ fn prepare_btc_start_definition(
         paper_venue,
         paper_stress_previews,
     } = resolved;
+    let directional_model_entry_policy = control.paper.directional_model_entry_policy;
     let (pipeline_version, process_schema_version) = match control.schema_version.as_str() {
         BTC_PROCESS_SCHEMA_VERSION => (BTC_PIPELINE_VERSION, BTC_PROCESS_SCHEMA_VERSION),
         SELECTABLE_BTC_PROCESS_SCHEMA_VERSION => (
@@ -599,6 +622,16 @@ fn prepare_btc_start_definition(
             "stress_previews": &paper_stress_previews,
         }
     });
+    if directional_model_entry_policy != BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge {
+        frozen_raw["paper"]
+            .as_object_mut()
+            .expect("BTC frozen paper config is an object")
+            .insert(
+                "directional_model_entry_policy".to_string(),
+                serde_json::to_value(directional_model_entry_policy)
+                    .map_err(|error| HttpError::internal(error.to_string()))?,
+            );
+    }
     if let Some(entry_admission) = entry_admission.as_ref() {
         frozen_raw
             .as_object_mut()
@@ -626,6 +659,7 @@ fn prepare_btc_start_definition(
         preregistration_sha256,
         strategy,
         entry_admission,
+        directional_model_entry_policy,
         runtime,
         paper_venue,
         paper_stress_previews,
@@ -963,6 +997,10 @@ impl BtcProcessManager {
             ));
         }
         let strategy = resolve_btc_strategy(&control)?;
+        validate_directional_model_entry_policy(
+            &strategy,
+            control.paper.directional_model_entry_policy,
+        )?;
         if let Some(entry_admission) = control.entry_admission.as_ref() {
             entry_admission
                 .validate()
@@ -1262,6 +1300,7 @@ impl BtcProcessManager {
             preregistration_sha256,
             strategy,
             entry_admission,
+            directional_model_entry_policy,
             runtime: runtime_config,
             paper_venue: paper_venue_config,
             paper_stress_previews,
@@ -1308,6 +1347,7 @@ impl BtcProcessManager {
                     frozen_process_config: frozen_process_config_value,
                     strategy,
                     entry_admission,
+                    directional_model_entry_policy,
                     execution_enabled: true,
                     paper_stress_previews,
                 },
@@ -1378,6 +1418,7 @@ impl BtcProcessManager {
             preregistration_sha256,
             strategy,
             entry_admission,
+            directional_model_entry_policy,
             runtime: runtime_config,
             paper_venue: paper_venue_config,
             paper_stress_previews,
@@ -1459,6 +1500,7 @@ impl BtcProcessManager {
                     frozen_process_config: frozen_process_config_value,
                     strategy: strategy.clone(),
                     entry_admission: entry_admission.clone(),
+                    directional_model_entry_policy,
                     execution_enabled: true,
                     paper_stress_previews: paper_stress_previews.clone(),
                 },
@@ -3119,6 +3161,10 @@ mod lifecycle_tests {
         assert_eq!(control.runtime.strategy_interval_ms, 1_000);
         assert_eq!(control.paper.arrival_latency_ms, 150);
         assert_eq!(control.paper.visible_depth_haircut, dec!(0.80));
+        assert_eq!(
+            control.paper.directional_model_entry_policy,
+            BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge
+        );
         assert!(control.entry_admission.is_none());
     }
 
@@ -3237,6 +3283,78 @@ mod lifecycle_tests {
             Some(BtcDecisionStrategyConfig::BtcDirectionalModel { .. })
         ));
         assert!(strategy.volatility_continuation.is_none());
+    }
+
+    #[test]
+    fn directional_model_validation_entry_policy_is_paper_only_and_frozen() {
+        let mut control = BtcRealtimePaperControlConfig {
+            schema_version: SELECTABLE_BTC_PROCESS_SCHEMA_VERSION.to_string(),
+            next_experiment_key: "btc-5m-directional-model-validation-test".to_string(),
+            preregistration_sha256: "e".repeat(64),
+            strategy: serde_json::json!({
+                "decision_strategy": {
+                    "type": "btc_directional_model",
+                    "model_key": polymarket_bot::btc::BTC_DIRECTIONAL_MODEL_V1_KEY,
+                    "artifact_sha256":
+                        polymarket_bot::btc::BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256,
+                    "feature_schema_sha256":
+                        polymarket_bot::btc::BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256
+                },
+                "min_seconds_after_open": 60,
+                "min_seconds_before_close": 60
+            }),
+            ..BtcRealtimePaperControlConfig::default()
+        };
+        control.paper.directional_model_entry_policy =
+            BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction;
+        let strategy = resolve_btc_strategy(&control).unwrap();
+        validate_directional_model_entry_policy(
+            &strategy,
+            BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction,
+        )
+        .unwrap();
+        assert!(validate_directional_model_entry_policy(
+            &BtcStrategyConfig::default(),
+            BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction,
+        )
+        .is_err());
+
+        let resolved = |control: BtcRealtimePaperControlConfig| ResolvedBtcProcessDefinition {
+            control,
+            strategy: strategy.clone(),
+            entry_admission: None,
+            runtime: BtcRuntimeConfig {
+                enabled: true,
+                ..BtcRuntimeConfig::default()
+            },
+            paper_venue: PaperVenueConfig::default(),
+            paper_stress_previews: Vec::new(),
+        };
+        let prepared = prepare_btc_start_definition(resolved(control.clone())).unwrap();
+        assert_eq!(
+            prepared.directional_model_entry_policy,
+            BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction
+        );
+        assert_eq!(
+            prepared.frozen_process_config.raw["paper"]["directional_model_entry_policy"],
+            serde_json::json!("execute_directional_prediction")
+        );
+
+        control.paper.directional_model_entry_policy =
+            BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge;
+        let default_prepared = prepare_btc_start_definition(resolved(control)).unwrap();
+        assert!(default_prepared.frozen_process_config.raw["paper"]
+            .get("directional_model_entry_policy")
+            .is_none());
+        assert_ne!(prepared.config_hash, default_prepared.config_hash);
+
+        let mut live_capital = eligible_btc_process();
+        live_capital.config.execution.as_mut().unwrap().live_capital = true;
+        assert!(validate_btc_process_capability(&live_capital, true, true).is_err());
+
+        let mut live_mode = eligible_btc_process();
+        live_mode.config.execution.as_mut().unwrap().mode = Some("live".to_string());
+        assert!(validate_btc_process_capability(&live_mode, true, true).is_err());
     }
 
     #[test]

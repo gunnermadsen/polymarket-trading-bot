@@ -19,6 +19,7 @@ use super::{
         LossRegimeCandidate, ShadowPredictiveRegimeCandidate, ShadowPredictiveRegimeEvaluation,
         ShadowPredictiveRegimeState, UnsettledEntryExposure,
     },
+    directional_model::BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
     execution_guard::reference_execution_guard,
     predictive_regime_v2::{
         ShadowPredictiveRegimeV2Candidate, ShadowPredictiveRegimeV2CandidateSource,
@@ -26,8 +27,8 @@ use super::{
         SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_V2_SCHEMA_VERSION,
     },
     strategy::{
-        BtcDecision, BtcDecisionAction, BtcFeatureSnapshot, BtcStrategyPrediction,
-        FairValueEstimate,
+        BtcDecision, BtcDecisionAction, BtcDirectionalModelEntryPolicy, BtcFeatureSnapshot,
+        BtcStrategyPrediction, FairValueEstimate,
     },
     types::{
         BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, MarketFeedEvent, OrderbookCheckpoint,
@@ -3566,6 +3567,7 @@ fn decision_edge_projection(decision: &BtcDecision) -> Result<BtcDecisionEdgePro
             executable_price,
             direct_taker_fee_per_share,
             direct_net_edge_per_share,
+            entry_policy,
             ..
         }) => {
             let intent = decision
@@ -3586,7 +3588,10 @@ fn decision_edge_projection(decision: &BtcDecision) -> Result<BtcDecisionEdgePro
                 || executable_price != edge.executable_price
                 || fee_per_share < Decimal::ZERO
                 || *conservative_probability < *minimum_conservative_probability
-                || net_edge_per_share <= Decimal::ZERO
+                || (*entry_policy == BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge
+                    && net_edge_per_share <= Decimal::ZERO)
+                || (*entry_policy == BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction
+                    && intent.strategy_version != BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION)
                 || gross_edge_per_share - fee_per_share != net_edge_per_share
                 || intent.expected_net_edge_per_share != net_edge_per_share
                 || intent.expected_net_edge != net_edge_per_share * edge.size
@@ -5703,6 +5708,7 @@ mod tests {
                 executable_price: Some(dec!(0.72)),
                 direct_taker_fee_per_share: Some(dec!(0.01)),
                 direct_net_edge_per_share: Some(dec!(0.09)),
+                entry_policy: Default::default(),
             };
             let decision = approved_decision(outcome, Some(prediction), dec!(0.09));
 
@@ -5719,6 +5725,65 @@ mod tests {
                     - projection.reserve_per_share.unwrap(),
                 projection.net_edge_per_share.unwrap()
             );
+        }
+    }
+
+    #[test]
+    fn decision_edge_projection_accepts_signed_validation_edge_only_with_explicit_policy() {
+        for outcome in [BtcOutcome::Up, BtcOutcome::Down] {
+            let prediction = BtcStrategyPrediction::DirectionalPrediction {
+                outcome,
+                probability: dec!(0.92),
+                conservative_probability: dec!(0.92),
+                minimum_conservative_probability: dec!(0.89),
+                probability_uncertainty: Decimal::ZERO,
+                executable_price: Some(dec!(0.95)),
+                direct_taker_fee_per_share: Some(dec!(0.002)),
+                direct_net_edge_per_share: Some(dec!(-0.032)),
+                entry_policy: BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction,
+            };
+            let mut decision = approved_decision(outcome, Some(prediction), dec!(-0.032));
+            decision.approved_intent.as_mut().unwrap().strategy_version =
+                BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION.to_string();
+            let selected_edge = match outcome {
+                BtcOutcome::Up => decision.up_edge.as_mut().unwrap(),
+                BtcOutcome::Down => decision.down_edge.as_mut().unwrap(),
+            };
+            selected_edge.executable_price = dec!(0.95);
+
+            let projection = decision_edge_projection(&decision).unwrap();
+            assert_eq!(projection.fair_probability, Some(dec!(0.92)));
+            assert_eq!(projection.gross_edge_per_share, Some(dec!(-0.03)));
+            assert_eq!(projection.fee_per_share, Some(dec!(0.002)));
+            assert_eq!(projection.net_edge_per_share, Some(dec!(-0.032)));
+
+            let mut default_policy = decision.clone();
+            let Some(BtcStrategyPrediction::DirectionalPrediction { entry_policy, .. }) =
+                default_policy.prediction.as_mut()
+            else {
+                unreachable!("test decision has a directional prediction")
+            };
+            *entry_policy = BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge;
+            assert!(decision_edge_projection(&default_policy).is_err());
+
+            let mut non_model_strategy = decision.clone();
+            non_model_strategy
+                .approved_intent
+                .as_mut()
+                .unwrap()
+                .strategy_version = "non-model-strategy".to_string();
+            assert!(decision_edge_projection(&non_model_strategy).is_err());
+
+            let mut tampered_edge = decision;
+            let Some(BtcStrategyPrediction::DirectionalPrediction {
+                direct_net_edge_per_share,
+                ..
+            }) = tampered_edge.prediction.as_mut()
+            else {
+                unreachable!("test decision has a directional prediction")
+            };
+            *direct_net_edge_per_share = Some(dec!(-0.031));
+            assert!(decision_edge_projection(&tampered_edge).is_err());
         }
     }
 
