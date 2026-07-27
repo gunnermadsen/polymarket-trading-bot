@@ -6,6 +6,7 @@ DST_DIR="${GRAFANA_PROVISIONING_DIR:-/tmp/grafana-provisioning}"
 POSTGRES_PASSWORD_VALUE="${POSTGRES_PASSWORD:-}"
 GRAFANA_ADMIN_USER_VALUE="${GRAFANA_ADMIN_USER:-${GF_SECURITY_ADMIN_USER:-}}"
 GRAFANA_ADMIN_PASSWORD_VALUE="${GRAFANA_ADMIN_PASSWORD:-${GF_SECURITY_ADMIN_PASSWORD:-}}"
+POLYMARKET_HTTP_ADMIN_TOKEN_VALUE="${POLYMARKET_HTTP_ADMIN_TOKEN:-}"
 
 require_env() {
   name="$1"
@@ -26,6 +27,7 @@ require_env GRAFANA_POSTGRES_PORT
 require_env GRAFANA_POSTGRES_DATABASE
 require_env GRAFANA_POSTGRES_USER
 require_env GRAFANA_POSTGRES_SSL_MODE
+require_env POLYMARKET_HTTP_ADMIN_TOKEN
 
 export GF_SECURITY_ADMIN_USER="$GRAFANA_ADMIN_USER_VALUE"
 export GF_SECURITY_ADMIN_PASSWORD="$GRAFANA_ADMIN_PASSWORD_VALUE"
@@ -64,6 +66,24 @@ datasources:
       connMaxLifetime: 14400
     secureJsonData:
       password: ${POSTGRES_PASSWORD_VALUE}
+EOF
+
+cat > "${DST_DIR}/datasources/polymarket-bot-runtime.yml" <<EOF
+apiVersion: 1
+datasources:
+  - name: Polymarket Bot Runtime
+    type: yesoreyeram-infinity-datasource
+    uid: polymarket-bot-runtime
+    access: proxy
+    editable: false
+    jsonData:
+      auth_method: bearerToken
+      allowedHosts:
+        - http://polymarket-bot:8097
+      timeoutInSeconds: 2
+      allowDangerousHTTPMethods: false
+    secureJsonData:
+      bearerToken: ${POLYMARKET_HTTP_ADMIN_TOKEN_VALUE}
 EOF
 
 export GF_PATHS_PROVISIONING="${DST_DIR}"

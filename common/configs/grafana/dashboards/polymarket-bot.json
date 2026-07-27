@@ -2204,6 +2204,303 @@
     },
     {
       "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "polymarket-bot-runtime"
+      },
+  "description": "Live status of the shared Polymarket CLOB websocket. A positive active connection epoch maps to Connected; zero or no value means there is no current active connection. This is a global shared-feed signal, independent of the selected trading process.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [
+        {
+          "type": "range",
+          "options": {
+            "from": 0,
+            "to": 0,
+            "result": {
+              "color": "red",
+              "index": 0,
+              "text": "Disconnected"
+            }
+          }
+        },
+        {
+          "type": "range",
+          "options": {
+            "from": 1,
+            "to": 2147483647,
+            "result": {
+              "color": "green",
+              "index": 1,
+              "text": "Connected"
+            }
+          }
+        }
+          ],
+          "noValue": "Unavailable",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 0,
+        "y": 21
+      },
+      "id": 21,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "polymarket-bot-runtime"
+          },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+      "parser": "backend",
+      "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
+      "url_options": {
+        "method": "GET",
+        "data": ""
+      },
+      "root_selector": "",
+          "columns": [
+            {
+          "selector": "shared_market_data.metrics.clob_active_connection_epoch",
+          "text": "CLOB Active Connection Epoch",
+          "type": "number"
+            }
+          ],
+          "json_options": {
+            "root_is_not_array": true
+          }
+        }
+      ],
+  "title": "CLOB Active Connection",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "polymarket-bot-runtime"
+      },
+      "description": "Most recent ping/pong round-trip time for the active Polymarket CLOB websocket. This is a live transport-latency signal; a missing value means there is no active socket to measure.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "noValue": "No active socket",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "orange",
+                "value": 500
+              },
+              {
+                "color": "red",
+                "value": 1000
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 0,
+        "y": 25
+      },
+      "id": 22,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "polymarket-bot-runtime"
+          },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+      "parser": "backend",
+      "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
+      "url_options": {
+        "method": "GET",
+        "data": ""
+      },
+      "root_selector": "",
+          "columns": [
+            {
+              "selector": "shared_market_data.metrics.clob_active_last_pong_round_trip_milliseconds",
+              "text": "CLOB Pong RTT",
+              "type": "number"
+            }
+          ],
+          "json_options": {
+            "root_is_not_array": true
+          }
+        }
+      ],
+      "title": "CLOB Pong RTT",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "polymarket-bot-runtime"
+      },
+      "description": "Current consecutive CLOB websocket connection failures. Zero is normal; a non-zero value indicates the active connection/recovery cycle is failing repeatedly.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "noValue": "Unavailable",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 0,
+        "y": 29
+      },
+      "id": 23,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "polymarket-bot-runtime"
+          },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+      "parser": "backend",
+      "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
+      "url_options": {
+        "method": "GET",
+        "data": ""
+      },
+      "root_selector": "",
+          "columns": [
+            {
+              "selector": "shared_market_data.metrics.clob_consecutive_failures",
+              "text": "CLOB Consecutive Failures",
+              "type": "number"
+            }
+          ],
+          "json_options": {
+            "root_is_not_array": true
+          }
+        }
+      ],
+      "title": "CLOB Consecutive Failures",
+      "type": "stat"
+    },
+    {
+      "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgres"
       },

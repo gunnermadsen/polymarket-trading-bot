@@ -343,6 +343,8 @@ services:
       GF_DATE_FORMATS_DEFAULT_TIMEZONE: "browser"
       GF_LIVE_MAX_CONNECTIONS: "100"
       GF_LIVE_ALLOWED_ORIGINS: "http://localhost:3030,http://127.0.0.1:3030"
+      GF_PLUGINS_PREINSTALL_SYNC: "yesoreyeram-infinity-datasource@3.11.1"
+      POLYMARKET_HTTP_ADMIN_TOKEN: "${POLYMARKET_HTTP_ADMIN_TOKEN:-dev-polymarket-admin}"
     ports:
       - "127.0.0.1:3030:3000"
     volumes:
