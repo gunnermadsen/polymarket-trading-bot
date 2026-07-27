@@ -47,8 +47,9 @@ use super::{
         PersistedOfficialResolution,
     },
     types::{
-        BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, MarketFeedEvent, MarketFeedEventType,
-        OrderbookCheckpoint, Readiness, RealtimeState, ReferencePriceSource, ReferencePriceTick,
+        BinanceAggregateTrade, BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, MarketFeedEvent,
+        MarketFeedEventType, OrderbookCheckpoint, Readiness, RealtimeState, ReferencePriceSource,
+        ReferencePriceTick,
     },
 };
 
@@ -4962,6 +4963,32 @@ fn update_reference_state_and_check_progress(
     state.update_reference_price(tick) && required_progress
 }
 
+fn update_binance_reference_and_model_window(
+    state: &mut RealtimeState,
+    tick: ReferencePriceTick,
+    trade: &BinanceAggregateTrade,
+    received_at: DateTime<Utc>,
+    max_reference_age: Duration,
+) -> (bool, Option<anyhow::Error>) {
+    let health_progress = update_reference_state_and_check_progress(
+        state,
+        tick,
+        ReferenceFeedKind::Binance,
+        received_at,
+        max_reference_age,
+    );
+    let aggregation_error = state
+        .binance_one_second_window
+        .update(trade, received_at)
+        .err();
+    if aggregation_error.is_some() {
+        // A malformed, regressing or discontinuous accumulator must fail closed for
+        // model inference without degrading the canonical live price feed.
+        state.binance_one_second_window.clear();
+    }
+    (health_progress, aggregation_error)
+}
+
 struct BoundedReferenceDetail {
     value: String,
     remaining_bytes: usize,
@@ -6023,29 +6050,13 @@ async fn run_binance_supervisor(
                                         Ok((tick, trade)) => {
                                             let (health_progress, aggregation_error) = {
                                                 let mut realtime = state.write().await;
-                                                let health_progress =
-                                                    update_reference_state_and_check_progress(
+                                                update_binance_reference_and_model_window(
                                                     &mut realtime,
                                                     tick.clone(),
-                                                    kind,
+                                                    &trade,
                                                     received_at,
                                                     chrono_duration(config.max_reference_age),
-                                                );
-                                                let aggregation_error = if health_progress {
-                                                    realtime
-                                                        .binance_one_second_window
-                                                        .update(&trade, received_at)
-                                                        .err()
-                                                } else {
-                                                    None
-                                                };
-                                                if aggregation_error.is_some() {
-                                                    // A malformed or discontinuous accumulator
-                                                    // must fail closed for the model without
-                                                    // degrading the canonical live price feed.
-                                                    realtime.binance_one_second_window.clear();
-                                                }
-                                                (health_progress, aggregation_error)
+                                                )
                                             };
                                             if let Some(error) = aggregation_error {
                                                 tracing::warn!(
@@ -9917,6 +9928,104 @@ mod tests {
                 .reference_prices
                 .get(&ReferencePriceSource::DirectBinance),
             Some(&current)
+        );
+    }
+
+    #[test]
+    fn stale_sequential_binance_burst_still_completes_model_candles() {
+        fn inputs(
+            base: DateTime<Utc>,
+            aggregate_trade_id: u64,
+            source_offset_ms: i64,
+            received_offset_ms: i64,
+            ingest_sequence: u64,
+        ) -> (ReferencePriceTick, BinanceAggregateTrade, DateTime<Utc>) {
+            let source_timestamp = base + Duration::milliseconds(source_offset_ms);
+            let received_at = base + Duration::milliseconds(received_offset_ms);
+            let source_event_id = aggregate_trade_id.to_string();
+            (
+                reference_test_tick(
+                    ReferencePriceSource::DirectBinance,
+                    source_timestamp,
+                    received_at,
+                    Some(&source_event_id),
+                    ingest_sequence,
+                ),
+                BinanceAggregateTrade {
+                    aggregate_trade_id,
+                    price: dec!(67_000),
+                    quantity: dec!(0.1),
+                    first_trade_id: aggregate_trade_id,
+                    last_trade_id: aggregate_trade_id,
+                    transact_time: source_timestamp,
+                    is_buyer_maker: false,
+                },
+                received_at,
+            )
+        }
+
+        let base = Utc.timestamp_opt(1_783_902_700, 0).unwrap();
+        let max_reference_age = Duration::seconds(2);
+        let mut state = RealtimeState::default();
+        for (aggregate_trade_id, source_offset_ms, received_offset_ms, expected_progress) in [
+            (100, 100, 150, true),
+            (101, 1_100, 1_150, true),
+            // These sequential trades arrived in a transport-buffered burst. They are too
+            // old to replace the authoritative current price, but remain required history.
+            (102, 2_100, 4_250, false),
+            (103, 2_200, 4_260, false),
+            (104, 4_300, 4_350, true),
+        ] {
+            let (tick, trade, received_at) = inputs(
+                base,
+                aggregate_trade_id,
+                source_offset_ms,
+                received_offset_ms,
+                aggregate_trade_id,
+            );
+            let (health_progress, aggregation_error) = update_binance_reference_and_model_window(
+                &mut state,
+                tick,
+                &trade,
+                received_at,
+                max_reference_age,
+            );
+            assert_eq!(health_progress, expected_progress);
+            assert!(aggregation_error.is_none());
+            if matches!(aggregate_trade_id, 102 | 103) {
+                assert_eq!(
+                    state
+                        .reference_prices
+                        .get(&ReferencePriceSource::DirectBinance)
+                        .and_then(|tick| tick.source_event_id.as_deref()),
+                    Some("101")
+                );
+            }
+        }
+
+        assert_eq!(
+            state
+                .reference_prices
+                .get(&ReferencePriceSource::DirectBinance)
+                .and_then(|tick| tick.source_event_id.as_deref()),
+            Some("104")
+        );
+        for open_offset_seconds in [1, 2, 3] {
+            let open_timestamp = base + Duration::seconds(open_offset_seconds);
+            let candle = state
+                .binance_one_second_window
+                .completed()
+                .iter()
+                .find(|candle| candle.open_timestamp == open_timestamp)
+                .expect("expected completed Binance model candle");
+            assert!(candle.source_complete);
+        }
+        assert!(
+            state
+                .binance_one_second_window
+                .current()
+                .expect("expected current Binance model candle")
+                .source_complete
         );
     }
 
