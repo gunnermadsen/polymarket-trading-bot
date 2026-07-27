@@ -13,6 +13,8 @@ COPY packages/polymarket-bot/tests ./tests
 COPY packages/btc-directional-model/runtime-models /opt/polymarket-models
 COPY README.md /README.md
 
+ENV POLYMARKET_BTC_MODEL_DIR=/opt/polymarket-models
+
 RUN cargo test --locked --all-targets -- --include-ignored \
     && cargo build --locked --release
 
