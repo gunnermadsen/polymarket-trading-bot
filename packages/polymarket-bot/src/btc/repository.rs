@@ -19,6 +19,7 @@ use super::{
         LossRegimeCandidate, ShadowPredictiveRegimeCandidate, ShadowPredictiveRegimeEvaluation,
         ShadowPredictiveRegimeState, UnsettledEntryExposure,
     },
+    directional_model::BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
     execution_guard::reference_execution_guard,
     predictive_regime_v2::{
         ShadowPredictiveRegimeV2Candidate, ShadowPredictiveRegimeV2CandidateSource,
@@ -26,8 +27,8 @@ use super::{
         SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_V2_SCHEMA_VERSION,
     },
     strategy::{
-        BtcDecision, BtcDecisionAction, BtcFeatureSnapshot, BtcStrategyPrediction,
-        FairValueEstimate,
+        BtcDecision, BtcDecisionAction, BtcDirectionalModelEntryPolicy, BtcFeatureSnapshot,
+        BtcStrategyPrediction, FairValueEstimate,
     },
     types::{
         BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, MarketFeedEvent, OrderbookCheckpoint,
@@ -119,6 +120,22 @@ pub struct BtcPointInTimeInputs {
     pub fee_rate: Option<Decimal>,
     pub fee_observed_at: Option<DateTime<Utc>>,
 }
+
+const LOAD_DIRECTIONAL_MODEL_BINANCE_TICK_SQL: &str = r#"
+    SELECT tick_id, source_timestamp, received_at, source, symbol, price,
+      envelope_timestamp, connection_id, ingest_sequence, source_event_id,
+      dedup_key, raw_payload
+    FROM polymarket.reference_price_ticks
+    WHERE source = 'direct_binance'
+      AND symbol = 'BTCUSD'
+      AND integrity_status = 'ok'
+      AND source_timestamp >= $1
+      AND source_timestamp <= $2
+      AND received_at >= $1
+      AND received_at <= $2
+    ORDER BY source_timestamp DESC, received_at DESC, ingest_sequence DESC, tick_id DESC
+    LIMIT 1
+    "#;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
 pub struct BtcRunManifest {
@@ -459,6 +476,18 @@ SELECT EXISTS (
     AND market_id = $2
     AND action = 'buy'
     AND status IN ('approved','submitted','filled')
+)
+"#;
+
+const PROCESS_HAS_DIRECTIONAL_PREDICTION_SQL: &str = r#"
+SELECT EXISTS (
+  SELECT 1
+  FROM polymarket.btc_strategy_decisions
+  WHERE process_id = $1
+    AND run_id = $2
+    AND market_id = $3
+    AND strategy_version = $4
+    AND metadata #>> '{prediction,status}' = 'directional_prediction'
 )
 "#;
 
@@ -2369,19 +2398,7 @@ impl BtcRepository {
             )?,
             None => (None, None),
         };
-        let fee = sqlx::query_as::<_, (Option<Decimal>, DateTime<Utc>)>(
-            r#"
-            SELECT fee_rate, last_refreshed_at
-            FROM polymarket.btc_interval_markets
-            WHERE market_id = $1
-              AND last_refreshed_at <= $2
-            "#,
-        )
-        .bind(&market.market_id)
-        .bind(as_of)
-        .fetch_optional(&self.pool)
-        .await
-        .context("failed to load BTC market fee schedule")?;
+        let fee = self.load_market_fee_as_of(&market.market_id, as_of).await?;
 
         Ok(BtcPointInTimeInputs {
             chainlink_open,
@@ -2393,6 +2410,101 @@ impl BtcRepository {
             fee_rate: fee.as_ref().and_then(|(rate, _)| *rate),
             fee_observed_at: fee.map(|(_, observed_at)| observed_at),
         })
+    }
+
+    /// Loads only the immutable execution evidence needed after native directional-model
+    /// inference. Model features come from the runtime's bounded one-second Binance window, so
+    /// this path deliberately avoids rebuilding unused reference histories from Postgres.
+    pub(crate) async fn load_directional_model_execution_inputs(
+        &self,
+        market: &BtcIntervalMarket,
+        as_of: DateTime<Utc>,
+        max_reference_age: chrono::Duration,
+        max_book_age: chrono::Duration,
+        clob_connection_id: Option<Uuid>,
+    ) -> Result<BtcPointInTimeInputs> {
+        if max_reference_age <= Duration::zero() || max_book_age <= Duration::zero() {
+            bail!("directional-model execution input freshness bounds must be positive");
+        }
+        let reference_fresh_since = as_of.checked_sub_signed(max_reference_age).context(
+            "directional-model reference freshness bound is outside the timestamp range",
+        )?;
+        let book_fresh_since = as_of
+            .checked_sub_signed(max_book_age)
+            .context("directional-model book freshness bound is outside the timestamp range")?;
+
+        let (binance_current, up_book, down_book, fee) =
+            if let Some(connection_id) = clob_connection_id {
+                let (binance, up, down, fee) = tokio::try_join!(
+                    self.load_directional_model_binance_tick(reference_fresh_since, as_of),
+                    self.load_checkpoint_as_of(
+                        &market.up_token_id,
+                        connection_id,
+                        book_fresh_since,
+                        as_of,
+                    ),
+                    self.load_checkpoint_as_of(
+                        &market.down_token_id,
+                        connection_id,
+                        book_fresh_since,
+                        as_of,
+                    ),
+                    self.load_market_fee_as_of(&market.market_id, as_of),
+                )?;
+                (binance, up, down, fee)
+            } else {
+                let (binance, fee) = tokio::try_join!(
+                    self.load_directional_model_binance_tick(reference_fresh_since, as_of),
+                    self.load_market_fee_as_of(&market.market_id, as_of),
+                )?;
+                (binance, None, None, fee)
+            };
+
+        Ok(BtcPointInTimeInputs {
+            chainlink_open: None,
+            chainlink_current: None,
+            chainlink_history: Vec::new(),
+            binance_history: binance_current.into_iter().collect(),
+            up_book,
+            down_book,
+            fee_rate: fee.as_ref().and_then(|(rate, _)| *rate),
+            fee_observed_at: fee.map(|(_, observed_at)| observed_at),
+        })
+    }
+
+    async fn load_directional_model_binance_tick(
+        &self,
+        fresh_since: DateTime<Utc>,
+        as_of: DateTime<Utc>,
+    ) -> Result<Option<ReferencePriceTick>> {
+        sqlx::query_as::<_, ReferenceTickRow>(LOAD_DIRECTIONAL_MODEL_BINANCE_TICK_SQL)
+            .bind(fresh_since)
+            .bind(as_of)
+            .fetch_optional(&self.pool)
+            .await
+            .context("failed to load directional-model point-in-time Binance tick")?
+            .map(reference_tick_from_row)
+            .transpose()
+    }
+
+    async fn load_market_fee_as_of(
+        &self,
+        market_id: &str,
+        as_of: DateTime<Utc>,
+    ) -> Result<Option<(Option<Decimal>, DateTime<Utc>)>> {
+        sqlx::query_as::<_, (Option<Decimal>, DateTime<Utc>)>(
+            r#"
+            SELECT fee_rate, last_refreshed_at
+            FROM polymarket.btc_interval_markets
+            WHERE market_id = $1
+              AND last_refreshed_at <= $2
+            "#,
+        )
+        .bind(market_id)
+        .bind(as_of)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to load BTC market fee schedule")
     }
 
     async fn load_checkpoint_as_of(
@@ -2583,6 +2695,23 @@ impl BtcRepository {
             .fetch_one(&self.pool)
             .await
             .context("failed to check existing BTC process entry")
+    }
+
+    pub async fn process_has_directional_prediction(
+        &self,
+        process_id: Uuid,
+        run_id: Uuid,
+        market_id: &str,
+        strategy_version: &str,
+    ) -> Result<bool> {
+        sqlx::query_scalar::<_, bool>(PROCESS_HAS_DIRECTIONAL_PREDICTION_SQL)
+            .bind(process_id)
+            .bind(run_id)
+            .bind(market_id)
+            .bind(strategy_version)
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to check existing BTC directional prediction")
     }
 
     pub async fn load_resolved_loss_regime_candidates(
@@ -3438,6 +3567,7 @@ fn decision_edge_projection(decision: &BtcDecision) -> Result<BtcDecisionEdgePro
             executable_price,
             direct_taker_fee_per_share,
             direct_net_edge_per_share,
+            entry_policy,
             ..
         }) => {
             let intent = decision
@@ -3458,7 +3588,10 @@ fn decision_edge_projection(decision: &BtcDecision) -> Result<BtcDecisionEdgePro
                 || executable_price != edge.executable_price
                 || fee_per_share < Decimal::ZERO
                 || *conservative_probability < *minimum_conservative_probability
-                || net_edge_per_share <= Decimal::ZERO
+                || (*entry_policy == BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge
+                    && net_edge_per_share <= Decimal::ZERO)
+                || (*entry_policy == BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction
+                    && intent.strategy_version != BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION)
                 || gross_edge_per_share - fee_per_share != net_edge_per_share
                 || intent.expected_net_edge_per_share != net_edge_per_share
                 || intent.expected_net_edge != net_edge_per_share * edge.size
@@ -4553,6 +4686,30 @@ mod tests {
     }
 
     #[test]
+    fn directional_model_binance_query_is_causal_fresh_and_single_row() {
+        let normalized = LOAD_DIRECTIONAL_MODEL_BINANCE_TICK_SQL
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+
+        assert!(normalized.contains("source = 'direct_binance'"));
+        assert!(normalized.contains("symbol = 'btcusd'"));
+        assert!(normalized.contains("integrity_status = 'ok'"));
+        assert!(normalized.contains("source_timestamp >= $1"));
+        assert!(normalized.contains("source_timestamp <= $2"));
+        assert!(normalized.contains("received_at >= $1"));
+        assert!(normalized.contains("received_at <= $2"));
+        assert!(normalized.contains(
+            "order by source_timestamp desc, received_at desc, ingest_sequence desc, tick_id desc"
+        ));
+        assert!(normalized.contains("limit 1"));
+        assert!(!normalized.contains("rtds_chainlink"));
+        assert!(!normalized.contains("limit 2000"));
+        assert!(!normalized.contains("limit 20000"));
+    }
+
+    #[test]
     fn history_endpoint_is_truncated_to_the_fresh_canonical_tick() {
         let at = Utc.with_ymd_and_hms(2026, 7, 21, 12, 0, 0).unwrap();
         let mut history = vec![
@@ -4744,6 +4901,19 @@ mod tests {
     fn existing_entry_guard_is_process_owned() {
         let normalized = PROCESS_HAS_ENTRY_SQL.to_ascii_lowercase();
         assert!(normalized.contains("where process_id = $1"));
+        assert!(!normalized.contains("experiment_id"));
+    }
+
+    #[test]
+    fn directional_prediction_resume_is_process_and_run_owned() {
+        let normalized = PROCESS_HAS_DIRECTIONAL_PREDICTION_SQL.to_ascii_lowercase();
+        assert!(normalized.contains("where process_id = $1"));
+        assert!(normalized.contains("and run_id = $2"));
+        assert!(normalized.contains("and market_id = $3"));
+        assert!(normalized.contains("and strategy_version = $4"));
+        assert!(
+            normalized.contains("metadata #>> '{prediction,status}' = 'directional_prediction'")
+        );
         assert!(!normalized.contains("experiment_id"));
     }
 
@@ -5538,6 +5708,7 @@ mod tests {
                 executable_price: Some(dec!(0.72)),
                 direct_taker_fee_per_share: Some(dec!(0.01)),
                 direct_net_edge_per_share: Some(dec!(0.09)),
+                entry_policy: Default::default(),
             };
             let decision = approved_decision(outcome, Some(prediction), dec!(0.09));
 
@@ -5554,6 +5725,65 @@ mod tests {
                     - projection.reserve_per_share.unwrap(),
                 projection.net_edge_per_share.unwrap()
             );
+        }
+    }
+
+    #[test]
+    fn decision_edge_projection_accepts_signed_validation_edge_only_with_explicit_policy() {
+        for outcome in [BtcOutcome::Up, BtcOutcome::Down] {
+            let prediction = BtcStrategyPrediction::DirectionalPrediction {
+                outcome,
+                probability: dec!(0.92),
+                conservative_probability: dec!(0.92),
+                minimum_conservative_probability: dec!(0.89),
+                probability_uncertainty: Decimal::ZERO,
+                executable_price: Some(dec!(0.95)),
+                direct_taker_fee_per_share: Some(dec!(0.002)),
+                direct_net_edge_per_share: Some(dec!(-0.032)),
+                entry_policy: BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction,
+            };
+            let mut decision = approved_decision(outcome, Some(prediction), dec!(-0.032));
+            decision.approved_intent.as_mut().unwrap().strategy_version =
+                BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION.to_string();
+            let selected_edge = match outcome {
+                BtcOutcome::Up => decision.up_edge.as_mut().unwrap(),
+                BtcOutcome::Down => decision.down_edge.as_mut().unwrap(),
+            };
+            selected_edge.executable_price = dec!(0.95);
+
+            let projection = decision_edge_projection(&decision).unwrap();
+            assert_eq!(projection.fair_probability, Some(dec!(0.92)));
+            assert_eq!(projection.gross_edge_per_share, Some(dec!(-0.03)));
+            assert_eq!(projection.fee_per_share, Some(dec!(0.002)));
+            assert_eq!(projection.net_edge_per_share, Some(dec!(-0.032)));
+
+            let mut default_policy = decision.clone();
+            let Some(BtcStrategyPrediction::DirectionalPrediction { entry_policy, .. }) =
+                default_policy.prediction.as_mut()
+            else {
+                unreachable!("test decision has a directional prediction")
+            };
+            *entry_policy = BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge;
+            assert!(decision_edge_projection(&default_policy).is_err());
+
+            let mut non_model_strategy = decision.clone();
+            non_model_strategy
+                .approved_intent
+                .as_mut()
+                .unwrap()
+                .strategy_version = "non-model-strategy".to_string();
+            assert!(decision_edge_projection(&non_model_strategy).is_err());
+
+            let mut tampered_edge = decision;
+            let Some(BtcStrategyPrediction::DirectionalPrediction {
+                direct_net_edge_per_share,
+                ..
+            }) = tampered_edge.prediction.as_mut()
+            else {
+                unreachable!("test decision has a directional prediction")
+            };
+            *direct_net_edge_per_share = Some(dec!(-0.031));
+            assert!(decision_edge_projection(&tampered_edge).is_err());
         }
     }
 

@@ -10,9 +10,13 @@ COPY packages/polymarket-bot/Cargo.toml packages/polymarket-bot/Cargo.lock ./
 COPY packages/polymarket-bot/build.rs ./build.rs
 COPY packages/polymarket-bot/src ./src
 COPY packages/polymarket-bot/tests ./tests
+COPY packages/btc-directional-model/runtime-models /opt/polymarket-models
 COPY README.md /README.md
 
-RUN cargo test --locked --all-targets -- --include-ignored \
+ENV POLYMARKET_BTC_MODEL_DIR=/opt/polymarket-models
+
+RUN chmod -R u=rwX,go=rX /opt/polymarket-models \
+    && cargo test --locked --all-targets -- --include-ignored \
     && cargo build --locked --release
 
 FROM debian:bookworm-slim
@@ -45,6 +49,7 @@ LABEL org.opencontainers.image.source="https://github.com/gunnermadsen/polymarke
 COPY --from=builder /app/target/release/polymarket-bot /usr/local/bin/polymarket-bot
 COPY --from=builder /app/target/release/polymarket-backfill-worker /usr/local/bin/polymarket-backfill-worker
 COPY --from=builder /app/target/release/derive-clob-creds /usr/local/bin/derive-clob-creds
+COPY --from=builder /opt/polymarket-models /usr/local/share/polymarket-bot/models
 
 USER polymarket
 ENV RUST_LOG=info

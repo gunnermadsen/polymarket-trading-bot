@@ -1,0 +1,599 @@
+from __future__ import annotations
+
+import html
+import json
+from pathlib import Path
+from typing import Any
+
+try:
+    import plotly.graph_objects as go
+except ImportError:  # pragma: no cover - Plotly is an optional report enhancement.
+    go = None
+
+from .core_benchmark import BENCHMARK_SCHEMA_VERSION
+
+
+def generate_benchmark_report(benchmark: dict[str, Any], destination: Path) -> Path:
+    document = render_benchmark_report(benchmark)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(f"{destination.suffix}.partial")
+    temporary.write_text(document)
+    temporary.replace(destination)
+    return destination
+
+
+def render_benchmark_report(benchmark: dict[str, Any]) -> str:
+    if benchmark.get("schema_version") != BENCHMARK_SCHEMA_VERSION:
+        raise ValueError("unsupported benchmark schema")
+    evidence = benchmark["evaluation"]
+    control_name = benchmark["control_candidate"]
+    candidate_order = benchmark["candidate_order"]
+    evidence_status = _evidence_status(evidence)
+    cards = "".join(
+        (
+            _card("Evidence", evidence_status, _evidence_css(evidence)),
+            _card("Control", control_name),
+            _card("Eligible markets", f"{benchmark['eligible_markets']:,}"),
+            _card("Quantity", f"{benchmark['quantity']:.0f} shares"),
+            _card(
+                "Benchmark pass",
+                str(len(benchmark["benchmark_passed_candidates"])),
+                (
+                    "pass"
+                    if benchmark["benchmark_passed_candidates"]
+                    else "blocked"
+                ),
+            ),
+            _card(
+                "Deployment-qualified",
+                str(len(benchmark["deployment_qualified_candidates"])),
+                (
+                    "pass"
+                    if benchmark["deployment_qualified_candidates"]
+                    else "blocked"
+                ),
+            ),
+        )
+    )
+    warning = (
+        "This is non-independent development evidence. It can compare candidates, "
+        "but it cannot qualify a model for deployment."
+        if evidence["development_only"]
+        else (
+            "This report is based on an independent holdout. Qualification still "
+            "requires every pre-registered benchmark gate to pass."
+        )
+    )
+    figures = _benchmark_figures(benchmark)
+    plot_html = []
+    for index, figure in enumerate(figures):
+        plot_html.append(
+            figure.to_html(
+                full_html=False,
+                include_plotlyjs=index == 0,
+                config={"displaylogo": False, "responsive": True},
+                div_id=f"btc-benchmark-chart-{index + 1}",
+            )
+        )
+    plots = "".join(
+        f'<section class="panel plot">{figure}</section>' for figure in plot_html
+    )
+    details_json = html.escape(
+        json.dumps(benchmark, indent=2, sort_keys=True, allow_nan=False)
+    )
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Capitonic BTC Model Benchmark</title>
+<style>
+:root {{ color-scheme:dark;--bg:#0b1020;--panel:#141c30;--line:#27324c;
+  --text:#e9eefc;--muted:#9ca9c7;--accent:#67d5ff;--pass:#5ee6a8;
+  --blocked:#ff7b8d;--warn:#ffd166 }}
+* {{ box-sizing:border-box }} body {{ margin:0;background:var(--bg);color:var(--text);
+  font:14px/1.5 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif }}
+main {{ max-width:1600px;margin:auto;padding:24px }} h1 {{ margin:0;font-size:28px }}
+h2 {{ margin:0 0 12px;font-size:18px }} h3 {{ margin:18px 0 8px;font-size:15px }}
+.subtitle {{ color:var(--muted);margin:6px 0 20px }} .cards {{ display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px }}
+.card,.panel {{ background:var(--panel);border:1px solid var(--line);
+  border-radius:12px;padding:16px }} .label {{ color:var(--muted);font-size:12px;
+  text-transform:uppercase;letter-spacing:.06em }} .value {{ font-size:20px;
+  font-weight:700;margin-top:5px }} .pass {{ color:var(--pass) }}
+.blocked {{ color:var(--blocked) }} .warning {{ border-color:var(--warn);
+  color:#fff4c4;margin-bottom:14px }} .grid {{ display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));gap:14px }}
+.plot {{ min-height:390px }} .table-wrap {{ overflow-x:auto }} table {{
+  width:100%;border-collapse:collapse;white-space:nowrap }} th,td {{
+  padding:8px;border-bottom:1px solid var(--line);text-align:right }} th:first-child,
+td:first-child {{ text-align:left }} th {{ color:var(--muted);font-weight:600 }}
+code {{ color:var(--accent) }} details {{ margin-top:14px }} pre {{ white-space:pre-wrap;
+  overflow-wrap:anywhere;color:var(--muted) }}
+@media(max-width:900px) {{ .grid {{ grid-template-columns:1fr }} }}
+</style></head><body><main>
+<h1>BTC five-minute real-model benchmark</h1>
+<div class="subtitle">{html.escape(evidence['label'])} · own confidence policies ·
+same-market, exact-timestamp checkpoint comparisons · fixed five-share economics</div>
+<div class="cards">{cards}</div>
+<section class="panel warning">{html.escape(warning)}</section>
+<section class="panel"><h2>Own-policy outcomes</h2><div class="table-wrap">
+{_candidate_table(benchmark, candidate_order)}</div></section>
+{_training_evidence_panel(benchmark)}
+{_data_evidence_panel(benchmark)}
+<div class="grid" style="margin-top:14px">{plots}</div>
+<section class="panel" style="margin-top:14px"><h2>Advance gates</h2>
+{_advance_tables(benchmark, candidate_order)}</section>
+<section class="panel" style="margin-top:14px"><h2>Accepted prediction time bands</h2>
+<div class="table-wrap">{_time_band_table(benchmark, candidate_order)}</div></section>
+<section class="panel" style="margin-top:14px"><h2>Common exact-timestamp comparisons
+(unfiltered predictions)</h2>
+<div class="table-wrap">{_common_comparison_table(benchmark)}</div></section>
+{_deployment_panel(benchmark)}
+<details class="panel"><summary>Deterministic benchmark record</summary>
+<pre>{details_json}</pre></details>
+</main></body></html>"""
+
+
+def _training_evidence_panel(benchmark: dict[str, Any]) -> str:
+    evidence = benchmark.get("training_evidence")
+    if not isinstance(evidence, dict):
+        return ""
+    rows = []
+    for name, candidate in evidence.get("core_candidates", {}).items():
+        rows.append(
+            _training_evidence_row(
+                name,
+                "five-fold walk-forward",
+                candidate["out_of_fold"],
+                candidate["timing"],
+                candidate.get("passed_development"),
+            )
+        )
+    preopen = evidence.get("preopen_candidate")
+    if isinstance(preopen, dict):
+        rows.append(
+            _training_evidence_row(
+                str(preopen["candidate"]),
+                "five-fold walk-forward / pre-open BTC",
+                preopen["out_of_fold"],
+                preopen["timing"],
+                preopen.get("passed_development"),
+            )
+        )
+    book = evidence.get("strict_book_candidate")
+    if isinstance(book, dict):
+        rows.append(
+            _training_evidence_row(
+                str(book["candidate"]),
+                "clean-book chronological policy",
+                book["metrics"],
+                book["timing"],
+                bool(book.get("threshold_qualified")),
+            )
+        )
+    headings = (
+        "Candidate",
+        "Cohort",
+        "Accepted",
+        "Coverage",
+        "Accuracy",
+        "Balanced",
+        "UP recall",
+        "DOWN recall",
+        "Wilson lower",
+        "Median sec",
+        "Early coverage",
+        "Training gate",
+    )
+    return (
+        '<section class="panel" style="margin-top:14px">'
+        "<h2>Chronological training evidence</h2>"
+        '<div class="table-wrap">'
+        + _table(headings, rows)
+        + "</div></section>"
+    )
+
+
+def _training_evidence_row(
+    name: str,
+    cohort: str,
+    metrics: dict[str, Any],
+    timing: dict[str, Any],
+    passed: bool | None,
+) -> tuple[str, ...]:
+    return (
+        name,
+        cohort,
+        f"{metrics['markets']:,}",
+        _percent(metrics["coverage"]),
+        _percent(metrics["accuracy"]),
+        _percent(metrics["balanced_accuracy"]),
+        _percent(metrics["up_recall"]),
+        _percent(metrics["down_recall"]),
+        _percent(metrics["wilson_lower_95"]),
+        _number(timing["median_first_crossing_seconds"], 0),
+        _percent(timing["early_entry_coverage"]),
+        "PASS" if passed else "BLOCKED",
+    )
+
+
+def _data_evidence_panel(benchmark: dict[str, Any]) -> str:
+    evidence = benchmark.get("data_evidence")
+    if not isinstance(evidence, dict):
+        return ""
+    execution = evidence.get("execution", {}).get("totals", {})
+    preopen = evidence.get("preopen", {})
+    if not execution:
+        return ""
+    rows = [
+        ("Execution-evidence rows", f"{execution['rows']:,}"),
+        ("Execution-evidence markets", f"{execution['markets']:,}"),
+        (
+            "Strict fresh two-sided rows",
+            f"{execution['strict_both_side_eligible_rows']:,}",
+        ),
+        ("Fresh UP rows", f"{execution['up_side_fresh_rows']:,}"),
+        ("Fresh DOWN rows", f"{execution['down_side_fresh_rows']:,}"),
+        (
+            "Complete pre-open markets",
+            f"{preopen.get('complete_feature_markets', 0):,}",
+        ),
+        (
+            "Book quality role",
+            "eligibility/routing only; never a directional feature",
+        ),
+        ("Raw PMXT archive", "not read; compact execution snapshots only"),
+    ]
+    return (
+        '<section class="panel" style="margin-top:14px">'
+        "<h2>Data-quality and execution evidence</h2>"
+        + _table(("Evidence", "Observed"), rows)
+        + "</section>"
+    )
+
+
+def _deployment_panel(benchmark: dict[str, Any]) -> str:
+    deployment = benchmark.get("deployment")
+    if not isinstance(deployment, dict):
+        return ""
+    reasons = "".join(
+        f"<li>{html.escape(str(reason))}</li>"
+        for reason in deployment.get("reasons", [])
+    )
+    return (
+        '<section class="panel warning" style="margin-top:14px">'
+        "<h2>Deployment decision</h2>"
+        f"<p><strong>{html.escape(str(deployment['status']))}</strong> — "
+        f"{html.escape(str(deployment['action']))}</p>"
+        f"<ul>{reasons}</ul>"
+        "</section>"
+    )
+
+
+def _candidate_table(
+    benchmark: dict[str, Any],
+    candidate_order: list[str],
+) -> str:
+    headings = (
+        "Candidate",
+        "Threshold",
+        "Accepted",
+        "Coverage",
+        "Total NoTrade",
+        "Confidence NoTrade",
+        "Unavailable",
+        "Accuracy",
+        "Balanced",
+        "UP recall",
+        "DOWN recall",
+        "Wilson lower",
+        "ECE",
+        "Median sec",
+        "P90 sec",
+        "Exec coverage",
+        "Median VWAP",
+        "Fee/share",
+        "Direct edge",
+        "Net expectancy",
+        "Loss streak",
+        "Drawdown",
+        "Gate",
+    )
+    rows = []
+    for name in candidate_order:
+        candidate = benchmark["candidates"][name]
+        metrics = candidate["own_policy"]
+        execution = metrics["execution"]
+        advance = candidate["advance"]
+        gate = (
+            "CONTROL"
+            if advance["is_control"]
+            else ("PASS" if advance["benchmark_passed"] else "BLOCKED")
+        )
+        rows.append(
+            (
+                name,
+                _decimal(candidate["policy"]["confidence_threshold"], 2),
+                f"{metrics['markets']:,}",
+                _percent(metrics["coverage"]),
+                f"{metrics['no_trade_markets']:,}",
+                f"{metrics['confidence_no_trade_markets']:,}",
+                f"{metrics['data_unavailable_markets']:,}",
+                _percent(metrics["accuracy"]),
+                _percent(metrics["balanced_accuracy"]),
+                _percent(metrics["up_recall"]),
+                _percent(metrics["down_recall"]),
+                _percent(metrics["wilson_lower_95"]),
+                _percent(metrics["expected_calibration_error"]),
+                _number(metrics["median_seconds_elapsed"], 0),
+                _number(metrics["p90_seconds_elapsed"], 0),
+                _percent(execution["executable_coverage"]),
+                _currency(execution["median_selected_ask_vwap_5"], 4),
+                _currency(execution["mean_fee_per_share"], 5),
+                _signed_currency(execution["mean_direct_edge_per_share"], 5),
+                _signed_currency(
+                    execution["realized_net_expectancy_per_trade"],
+                    4,
+                ),
+                _number(execution["maximum_net_loss_streak"], 0),
+                _currency(execution["maximum_drawdown"], 4),
+                gate,
+            )
+        )
+    return _table(headings, rows)
+
+
+def _advance_tables(
+    benchmark: dict[str, Any],
+    candidate_order: list[str],
+) -> str:
+    sections = []
+    for name in candidate_order:
+        advance = benchmark["candidates"][name]["advance"]
+        if advance["is_control"]:
+            continue
+        status = "PASS" if advance["benchmark_passed"] else "BLOCKED"
+        deployment = (
+            "deployment-qualified"
+            if advance["deployment_qualified"]
+            else "not deployment-qualified"
+        )
+        rows = [
+            (
+                check["name"],
+                _format_value(check["observed"]),
+                f"{check['operator']} {_format_value(check['required'])}",
+                "PASS" if check["passed"] else "BLOCKED",
+            )
+            for check in advance["checks"]
+        ]
+        sections.append(
+            f"<h3>{html.escape(name)} · {status} · {deployment}</h3>"
+            + '<div class="table-wrap">'
+            + _table(("Gate", "Observed", "Required", "Status"), rows)
+            + "</div>"
+        )
+    return "".join(sections) or "<p>No challenger candidates were supplied.</p>"
+
+
+def _time_band_table(
+    benchmark: dict[str, Any],
+    candidate_order: list[str],
+) -> str:
+    rows = []
+    for name in candidate_order:
+        for band in benchmark["candidates"][name]["time_bands"]:
+            rows.append(
+                (
+                    name,
+                    band["band"],
+                    f"{band['markets']:,}",
+                    _percent(band["coverage"]),
+                    _percent(band["accuracy"]),
+                    _percent(band["balanced_accuracy"]),
+                    _percent(band["up_recall"]),
+                    _percent(band["down_recall"]),
+                    _percent(band["wilson_lower_95"]),
+                )
+            )
+    return _table(
+        (
+            "Candidate",
+            "Seconds",
+            "Accepted",
+            "Eligible coverage",
+            "Accuracy",
+            "Balanced",
+            "UP recall",
+            "DOWN recall",
+            "Wilson lower",
+        ),
+        rows,
+    )
+
+
+def _common_comparison_table(benchmark: dict[str, Any]) -> str:
+    rows = []
+    for name in sorted(benchmark["common_comparisons"]):
+        comparison = benchmark["common_comparisons"][name]
+        for checkpoint in comparison["checkpoints"]:
+            rows.append(
+                (
+                    name,
+                    str(checkpoint["seconds_elapsed"]),
+                    f"{checkpoint['common_markets']:,}",
+                    _percent(checkpoint["control"]["accuracy"]),
+                    _percent(checkpoint["candidate"]["accuracy"]),
+                    _signed_percent_points(checkpoint["accuracy_delta"]),
+                    _signed_percent_points(checkpoint["balanced_accuracy_delta"]),
+                    _signed_percent_points(checkpoint["up_recall_delta"]),
+                    _signed_percent_points(checkpoint["down_recall_delta"]),
+                )
+            )
+    return _table(
+        (
+            "Candidate",
+            "Checkpoint",
+            "Common markets",
+            "Control accuracy",
+            "Candidate accuracy",
+            "Accuracy delta",
+            "Balanced delta",
+            "UP recall delta",
+            "DOWN recall delta",
+        ),
+        rows,
+    )
+
+
+def _benchmark_figures(benchmark: dict[str, Any]) -> list[Any]:
+    if go is None:
+        return []
+    names = benchmark["candidate_order"]
+    candidates = benchmark["candidates"]
+    accuracy = go.Figure()
+    accuracy.add_bar(
+        name="Accuracy",
+        x=names,
+        y=[candidates[name]["own_policy"]["accuracy"] for name in names],
+    )
+    accuracy.add_bar(
+        name="Coverage",
+        x=names,
+        y=[candidates[name]["own_policy"]["coverage"] for name in names],
+    )
+    _style(accuracy, "Own-policy accuracy and eligible-market coverage", "Rate")
+
+    timing = go.Figure()
+    timing.add_bar(
+        name="Median",
+        x=names,
+        y=[candidates[name]["own_policy"]["median_seconds_elapsed"] for name in names],
+    )
+    timing.add_bar(
+        name="P90",
+        x=names,
+        y=[candidates[name]["own_policy"]["p90_seconds_elapsed"] for name in names],
+    )
+    _style(timing, "First accepted prediction timing", "Seconds elapsed")
+
+    economics = go.Figure()
+    economics.add_bar(
+        name="Net expectancy / executable trade",
+        x=names,
+        y=[
+            candidates[name]["own_policy"]["execution"][
+                "realized_net_expectancy_per_trade"
+            ]
+            for name in names
+        ],
+    )
+    economics.add_bar(
+        name="Mean direct edge / share",
+        x=names,
+        y=[
+            candidates[name]["own_policy"]["execution"][
+                "mean_direct_edge_per_share"
+            ]
+            for name in names
+        ],
+    )
+    economics.add_hline(y=0, line_color="#9ca9c7")
+    _style(economics, "Five-share execution economics", "USD")
+
+    checkpoints = go.Figure()
+    for name in sorted(benchmark["common_comparisons"]):
+        rows = benchmark["common_comparisons"][name]["checkpoints"]
+        checkpoints.add_scatter(
+            x=[row["seconds_elapsed"] for row in rows],
+            y=[row["accuracy_delta"] for row in rows],
+            name=name,
+            mode="lines+markers",
+        )
+    checkpoints.add_hline(y=0, line_color="#9ca9c7")
+    _style(
+        checkpoints,
+        "Accuracy delta on common exact-timestamp cohorts",
+        "Candidate minus control",
+    )
+    return [accuracy, timing, economics, checkpoints]
+
+
+def _style(figure: Any, title: str, y_title: str) -> None:
+    figure.update_layout(
+        title=title,
+        template="plotly_dark",
+        paper_bgcolor="#141c30",
+        plot_bgcolor="#141c30",
+        font={"color": "#e9eefc"},
+        margin={"l": 50, "r": 30, "t": 60, "b": 50},
+        legend={"orientation": "h"},
+    )
+    figure.update_yaxes(title=y_title)
+
+
+def _table(headings: tuple[str, ...], rows: list[tuple[str, ...]]) -> str:
+    header = "".join(f"<th>{html.escape(heading)}</th>" for heading in headings)
+    body = "".join(
+        "<tr>"
+        + "".join(f"<td>{html.escape(str(value))}</td>" for value in row)
+        + "</tr>"
+        for row in rows
+    )
+    return f"<table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table>"
+
+
+def _card(label: str, value: str, css_class: str = "") -> str:
+    return (
+        f'<div class="card"><div class="label">{html.escape(label)}</div>'
+        f'<div class="value {css_class}">{html.escape(value)}</div></div>'
+    )
+
+
+def _evidence_status(evidence: dict[str, Any]) -> str:
+    if evidence["kind"] == "holdout" and evidence["independent"]:
+        return "independent holdout"
+    if evidence["kind"] == "holdout":
+        return "non-independent holdout"
+    return "development only"
+
+
+def _evidence_css(evidence: dict[str, Any]) -> str:
+    return (
+        "pass"
+        if evidence["kind"] == "holdout" and evidence["independent"]
+        else "blocked"
+    )
+
+
+def _percent(value: float | None) -> str:
+    return "N/A" if value is None else f"{value * 100:.2f}%"
+
+
+def _signed_percent_points(value: float | None) -> str:
+    return "N/A" if value is None else f"{value * 100:+.2f} pp"
+
+
+def _decimal(value: float | None, places: int) -> str:
+    return "N/A" if value is None else f"{value:.{places}f}"
+
+
+def _number(value: float | None, places: int) -> str:
+    return "N/A" if value is None else f"{value:.{places}f}"
+
+
+def _currency(value: float | None, places: int) -> str:
+    return "N/A" if value is None else f"${value:.{places}f}"
+
+
+def _signed_currency(value: float | None, places: int) -> str:
+    return "N/A" if value is None else f"${value:+.{places}f}"
+
+
+def _format_value(value: Any) -> str:
+    if value is None:
+        return "N/A"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return f"{value:.6f}"
+    return str(value)

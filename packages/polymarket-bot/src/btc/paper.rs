@@ -1243,12 +1243,18 @@ mod tests {
     use super::*;
     use crate::{
         btc::{
+            directional_model::{
+                BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION,
+                BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION, BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256,
+                BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256, BTC_DIRECTIONAL_MODEL_V1_KEY,
+            },
             execution_guard::{
                 BtcReferenceExecutionGuard, BtcReferenceTickEvidence,
+                BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION,
                 BTC_REFERENCE_EXECUTION_GUARD_VERSION,
             },
             feeds::ClobMessage,
-            strategy::BTC_FEATURE_LINEAGE_VERSION,
+            strategy::{BTC_DIRECTIONAL_MODEL_STRATEGY_FAMILY, BTC_FEATURE_LINEAGE_VERSION},
             types::{BtcIntervalMarket, BtcOutcome, OrderbookLevel},
         },
         models::{OrderRequest, OrderSide, OrderState, OrderType},
@@ -1423,6 +1429,84 @@ mod tests {
         request
     }
 
+    fn directional_model_guarded_request(
+        at: DateTime<Utc>,
+        max_reference_age: ChronoDuration,
+    ) -> OrderRequest {
+        let mut request = request(dec!(2), dec!(0.40));
+        let tick = BtcReferenceTickEvidence {
+            tick_id: Uuid::from_u128(406),
+            source_timestamp: at - ChronoDuration::milliseconds(5),
+            received_at: at - ChronoDuration::milliseconds(4),
+            ingest_sequence: 406,
+        };
+        let mut guard: BtcReferenceExecutionGuard = serde_json::from_value(serde_json::json!({
+            "guard_version": BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION,
+            "process_id": request.process_id.unwrap(),
+            "intent_id": Uuid::from_u128(401),
+            "decision_id": Uuid::from_u128(402),
+            "decision_at": at,
+            "snapshot_id": Uuid::from_u128(403),
+            "feature_as_of": at,
+            "market_id": request.market_id,
+            "token_id": request.token_id,
+            "outcome": BtcOutcome::Up,
+            "strategy_version": BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
+            "feature_schema_version": BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION,
+            "lineage_version": BTC_FEATURE_LINEAGE_VERSION,
+            "feature_sha256": "b".repeat(64),
+            "client_order_id": request.client_order_id,
+            "side": request.side,
+            "order_type": request.order_type,
+            "limit_price": request.price,
+            "size": request.size,
+            "signal_id": null,
+            "dynamic_fee_rate": dec!(0.25),
+            "binance": tick,
+            "directional_model": {
+                "model_key": BTC_DIRECTIONAL_MODEL_V1_KEY,
+                "artifact_sha256": BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256,
+                "feature_schema_sha256": BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256,
+                "input_sha256": "c".repeat(64),
+                "window_start": at - ChronoDuration::seconds(180),
+                "feature_as_of": at,
+                "seconds_elapsed": 180,
+            },
+            "selected_book": {
+                "market_id": request.market_id,
+                "token_id": request.token_id,
+                "checkpoint_id": Uuid::from_u128(407),
+                "connection_id": Uuid::from_u128(408),
+                "source_timestamp": at - ChronoDuration::milliseconds(3),
+                "received_at": at - ChronoDuration::milliseconds(2),
+                "ingest_sequence": 409,
+            },
+            "max_reference_age_ms": max_reference_age.num_milliseconds(),
+            "evidence_sha256": "",
+        }))
+        .unwrap();
+        guard.reseal_for_test();
+        request.metadata = serde_json::json!({
+            "execution_intent": "entry",
+            "strategy": BTC_DIRECTIONAL_MODEL_STRATEGY_FAMILY,
+            "process_id": guard.process_id,
+            "decision_id": guard.decision_id,
+            "feature_snapshot_id": guard.snapshot_id,
+            "strategy_version": guard.strategy_version,
+            "feature_schema_version": guard.feature_schema_version,
+            "profile_id": BTC_DIRECTIONAL_MODEL_V1_KEY,
+            "profile_sha256": BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256,
+            "prediction": {
+                "status": "directional_prediction",
+                "outcome": "up",
+            },
+            "outcome": guard.outcome,
+            "dynamic_fee_rate": guard.dynamic_fee_rate,
+        });
+        guard.insert_into_metadata(&mut request.metadata).unwrap();
+        request
+    }
+
     #[tokio::test]
     async fn production_venue_rejects_missing_reference_guard_without_accounting_mutation() {
         let venue = guarded_venue(
@@ -1452,6 +1536,50 @@ mod tests {
         assert_eq!(status.entry_debits_usd, Decimal::ZERO);
         assert_eq!(status.fill_count, 0);
         assert_eq!(status.order_count, 1);
+    }
+
+    #[tokio::test]
+    async fn production_venue_fills_directional_model_guard_without_chainlink() {
+        let max_reference_age = ChronoDuration::seconds(2);
+        let venue = guarded_venue(
+            registry_with_book(
+                Utc::now(),
+                vec![OrderbookLevel {
+                    price: dec!(0.40),
+                    size: dec!(10),
+                }],
+            ),
+            Duration::ZERO,
+            max_reference_age,
+        );
+
+        let order = venue
+            .submit_order(directional_model_guarded_request(
+                Utc::now(),
+                max_reference_age,
+            ))
+            .await
+            .unwrap();
+        let status = venue.status().await;
+
+        assert_eq!(order.state, OrderState::Filled);
+        assert_eq!(status.order_count, 1);
+        assert_eq!(status.fill_count, 1);
+        assert!(status.entry_debits_usd > Decimal::ZERO);
+        assert_eq!(
+            order.request.metadata["reference_execution_submit"]["assessment"]["guard_version"],
+            BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
+        );
+        assert!(
+            order.request.metadata["reference_execution_submit"]["assessment"]
+                .get("chainlink_source_age_ms")
+                .is_none()
+        );
+        assert!(
+            order.request.metadata["reference_execution_submit"]["assessment"]
+                .get("directional_model_feature_age_ms")
+                .is_some()
+        );
     }
 
     #[tokio::test]

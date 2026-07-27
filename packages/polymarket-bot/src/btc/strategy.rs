@@ -5,7 +5,14 @@ use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::types::{BtcOutcome, FeedIntegrityStatus};
+use super::{
+    directional_model::{
+        directional_model_input_sha256, runtime_model, BtcDirectionalModelFeatureSnapshot,
+        RuntimeModelSelection, BTC_DIRECTIONAL_MODEL_FAMILY,
+        BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION, BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
+    },
+    types::{BtcOutcome, FeedIntegrityStatus},
+};
 
 mod chainlink_path_conditioned;
 mod chainlink_persistence_calibrated;
@@ -59,6 +66,7 @@ pub const BTC_MARKET_ANCHORED_FAIR_VALUE_STRATEGY_FAMILY: &str =
     "btc_5m_market_anchored_fair_value";
 pub const BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_FAMILY: &str =
     "btc_5m_market_anchored_directional_prediction";
+pub const BTC_DIRECTIONAL_MODEL_STRATEGY_FAMILY: &str = BTC_DIRECTIONAL_MODEL_FAMILY;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,6 +79,20 @@ impl Default for BtcDirectionalPredictionConfig {
         Self {
             min_conservative_probability: dec!(0.75),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BtcDirectionalModelEntryPolicy {
+    #[default]
+    RequirePositiveDirectEdge,
+    ExecuteDirectionalPrediction,
+}
+
+impl BtcDirectionalModelEntryPolicy {
+    pub(crate) fn is_default(&self) -> bool {
+        *self == Self::RequirePositiveDirectEdge
     }
 }
 
@@ -127,6 +149,11 @@ pub enum BtcDecisionStrategyConfig {
         profile_id: String,
         profile_sha256: String,
         config: BtcDirectionalPredictionConfig,
+    },
+    BtcDirectionalModel {
+        model_key: String,
+        artifact_sha256: String,
+        feature_schema_sha256: String,
     },
 }
 
@@ -241,6 +268,9 @@ impl BtcStrategyConfig {
             ResolvedBtcDecisionStrategy::MarketAnchoredDirectionalPrediction { .. } => {
                 BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_FAMILY
             }
+            ResolvedBtcDecisionStrategy::BtcDirectionalModel { .. } => {
+                BTC_DIRECTIONAL_MODEL_STRATEGY_FAMILY
+            }
         };
         let (profile_id, profile_sha256) = match self.decision_strategy.as_ref() {
             Some(BtcDecisionStrategyConfig::ChainlinkPersistenceCalibratedFairValue {
@@ -266,6 +296,11 @@ impl BtcStrategyConfig {
                 profile_sha256,
                 ..
             }) => (Some(profile_id.as_str()), Some(profile_sha256.as_str())),
+            Some(BtcDecisionStrategyConfig::BtcDirectionalModel {
+                model_key,
+                artifact_sha256,
+                ..
+            }) => (Some(model_key.as_str()), Some(artifact_sha256.as_str())),
             _ => (None, None),
         };
         Some(BtcStrategyAttribution {
@@ -420,6 +455,8 @@ pub struct BtcFeatureSnapshot {
     pub fee_rate: Option<Decimal>,
     pub fee_rate_observed_at: Option<DateTime<Utc>>,
     pub lineage: BtcFeatureLineage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directional_model: Option<BtcDirectionalModelFeatureSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -646,6 +683,11 @@ pub enum BtcStrategyPrediction {
         executable_price: Option<Decimal>,
         direct_taker_fee_per_share: Option<Decimal>,
         direct_net_edge_per_share: Option<Decimal>,
+        #[serde(
+            default,
+            skip_serializing_if = "BtcDirectionalModelEntryPolicy::is_default"
+        )]
+        entry_policy: BtcDirectionalModelEntryPolicy,
     },
 }
 
@@ -695,6 +737,11 @@ enum ResolvedBtcDecisionStrategy<'a> {
     MarketAnchoredDirectionalPrediction {
         profile: &'static market_anchored::MarketAnchoredProfile,
         config: &'a BtcDirectionalPredictionConfig,
+    },
+    BtcDirectionalModel {
+        model_key: &'a str,
+        artifact_sha256: &'a str,
+        feature_schema_sha256: &'a str,
     },
 }
 
@@ -798,6 +845,28 @@ impl<'a> ResolvedBtcDecisionStrategy<'a> {
                         config: prediction_config,
                     })
                 }
+                BtcDecisionStrategyConfig::BtcDirectionalModel {
+                    model_key,
+                    artifact_sha256,
+                    feature_schema_sha256,
+                } if config.strategy_version == BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION
+                    && config.feature_schema_version
+                        == BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION
+                    && config.volatility_continuation.is_none() =>
+                {
+                    let selection = RuntimeModelSelection {
+                        model_key: model_key.clone(),
+                        artifact_sha256: artifact_sha256.clone(),
+                        feature_schema_sha256: feature_schema_sha256.clone(),
+                    };
+                    runtime_model(&selection)
+                        .map(|_| Self::BtcDirectionalModel {
+                            model_key,
+                            artifact_sha256,
+                            feature_schema_sha256,
+                        })
+                        .map_err(|_| BtcRejectReason::InvalidConfiguration)
+                }
                 _ => Err(BtcRejectReason::InvalidConfiguration),
             };
         }
@@ -865,6 +934,20 @@ impl<'a> ResolvedBtcDecisionStrategy<'a> {
                 outcome_scope: BtcOutcomeScope::Both,
                 executable_price_bounds: None,
             }),
+            Self::BtcDirectionalModel {
+                model_key,
+                artifact_sha256,
+                feature_schema_sha256,
+            } => Ok(BtcStrategyEstimate {
+                fair_value: estimate_btc_directional_model(
+                    snapshot,
+                    model_key,
+                    artifact_sha256,
+                    feature_schema_sha256,
+                )?,
+                outcome_scope: BtcOutcomeScope::Both,
+                executable_price_bounds: None,
+            }),
         }
     }
 }
@@ -873,11 +956,20 @@ pub struct DeterministicBtcStrategy;
 
 impl DeterministicBtcStrategy {
     pub fn evaluate(config: &BtcStrategyConfig, snapshot: &BtcFeatureSnapshot) -> BtcDecision {
+        Self::evaluate_with_directional_model_entry_policy(
+            config,
+            snapshot,
+            BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge,
+        )
+    }
+
+    pub(crate) fn evaluate_with_directional_model_entry_policy(
+        config: &BtcStrategyConfig,
+        snapshot: &BtcFeatureSnapshot,
+        directional_model_entry_policy: BtcDirectionalModelEntryPolicy,
+    ) -> BtcDecision {
         let decision_id = deterministic_decision_id(config, snapshot);
         if let Err(reason) = validate_config(config) {
-            return rejected(decision_id, snapshot, reason, None, None, None);
-        }
-        if let Err(reason) = validate_snapshot(config, snapshot) {
             return rejected(decision_id, snapshot, reason, None, None, None);
         }
 
@@ -885,6 +977,70 @@ impl DeterministicBtcStrategy {
             Ok(strategy) => strategy,
             Err(reason) => return rejected(decision_id, snapshot, reason, None, None, None),
         };
+        if let ResolvedBtcDecisionStrategy::BtcDirectionalModel {
+            model_key,
+            artifact_sha256,
+            feature_schema_sha256,
+        } = strategy
+        {
+            if let Err(reason) = validate_btc_directional_model_snapshot(
+                config,
+                snapshot,
+                model_key,
+                artifact_sha256,
+                feature_schema_sha256,
+            ) {
+                return rejected(decision_id, snapshot, reason, None, None, None);
+            }
+            let estimate = match strategy.estimate(config, snapshot) {
+                Ok(value) => value,
+                Err(reason) => return rejected(decision_id, snapshot, reason, None, None, None),
+            };
+            let minimum = btc_directional_model_confidence_threshold(
+                model_key,
+                artifact_sha256,
+                feature_schema_sha256,
+            )
+            .unwrap_or(Decimal::ONE);
+            let mut decision = build_directional_prediction_decision(
+                config,
+                minimum,
+                snapshot,
+                decision_id,
+                estimate.fair_value,
+                directional_model_entry_policy,
+            );
+            if matches!(
+                decision.prediction,
+                Some(BtcStrategyPrediction::DirectionalPrediction { .. })
+            ) {
+                if let Err(reason) = validate_snapshot(config, snapshot, true) {
+                    if let Some(prediction) = decision.prediction.take() {
+                        return rejected_with_prediction(
+                            decision_id,
+                            snapshot,
+                            reason,
+                            decision.fair_value,
+                            decision.up_edge,
+                            decision.down_edge,
+                            prediction,
+                        );
+                    }
+                    return rejected(
+                        decision_id,
+                        snapshot,
+                        BtcRejectReason::InvalidFeatureValue,
+                        decision.fair_value,
+                        decision.up_edge,
+                        decision.down_edge,
+                    );
+                }
+            }
+            return decision;
+        }
+        if let Err(reason) = validate_snapshot(config, snapshot, false) {
+            return rejected(decision_id, snapshot, reason, None, None, None);
+        }
         let estimate = match strategy.estimate(config, snapshot) {
             Ok(value) => value,
             Err(reason) => return rejected(decision_id, snapshot, reason, None, None, None),
@@ -895,11 +1051,15 @@ impl DeterministicBtcStrategy {
                 ..
             } => build_directional_prediction_decision(
                 config,
-                prediction_config,
+                prediction_config.min_conservative_probability,
                 snapshot,
                 decision_id,
                 estimate.fair_value,
+                BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge,
             ),
+            ResolvedBtcDecisionStrategy::BtcDirectionalModel { .. } => {
+                unreachable!("BTC directional model is evaluated before execution validation")
+            }
             _ => build_decision_from_estimate(config, snapshot, decision_id, estimate),
         }
     }
@@ -907,12 +1067,12 @@ impl DeterministicBtcStrategy {
 
 fn build_directional_prediction_decision(
     config: &BtcStrategyConfig,
-    prediction_config: &BtcDirectionalPredictionConfig,
+    minimum: Decimal,
     snapshot: &BtcFeatureSnapshot,
     decision_id: Uuid,
     fair_value: FairValueEstimate,
+    entry_policy: BtcDirectionalModelEntryPolicy,
 ) -> BtcDecision {
-    let minimum = prediction_config.min_conservative_probability;
     let (outcome, probability, conservative_probability, book) =
         if fair_value.up_probability > fair_value.down_probability {
             (
@@ -987,6 +1147,7 @@ fn build_directional_prediction_decision(
         executable_price,
         direct_taker_fee_per_share,
         direct_net_edge_per_share,
+        entry_policy,
     };
 
     let selected = match quote_outcome_edge(
@@ -1014,7 +1175,9 @@ fn build_directional_prediction_decision(
         BtcOutcome::Up => (Some(selected.clone()), None),
         BtcOutcome::Down => (None, Some(selected.clone())),
     };
-    if direct_net_edge_per_share <= Decimal::ZERO {
+    if entry_policy == BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge
+        && direct_net_edge_per_share <= Decimal::ZERO
+    {
         return rejected_with_prediction(
             decision_id,
             snapshot,
@@ -1241,7 +1404,97 @@ pub fn estimate_fair_value(
         ResolvedBtcDecisionStrategy::MarketAnchoredDirectionalPrediction { profile, .. } => {
             Ok(market_anchored::estimate(config, snapshot, profile)?.fair_value)
         }
+        ResolvedBtcDecisionStrategy::BtcDirectionalModel {
+            model_key,
+            artifact_sha256,
+            feature_schema_sha256,
+        } => estimate_btc_directional_model(
+            snapshot,
+            model_key,
+            artifact_sha256,
+            feature_schema_sha256,
+        ),
     }
+}
+
+fn btc_directional_model_selection(
+    model_key: &str,
+    artifact_sha256: &str,
+    feature_schema_sha256: &str,
+) -> RuntimeModelSelection {
+    RuntimeModelSelection {
+        model_key: model_key.to_string(),
+        artifact_sha256: artifact_sha256.to_string(),
+        feature_schema_sha256: feature_schema_sha256.to_string(),
+    }
+}
+
+fn btc_directional_model_confidence_threshold(
+    model_key: &str,
+    artifact_sha256: &str,
+    feature_schema_sha256: &str,
+) -> Result<Decimal, BtcRejectReason> {
+    let selection =
+        btc_directional_model_selection(model_key, artifact_sha256, feature_schema_sha256);
+    let model = runtime_model(&selection).map_err(|_| BtcRejectReason::InvalidConfiguration)?;
+    decimal_from_f64(model.confidence_threshold())
+}
+
+fn estimate_btc_directional_model(
+    snapshot: &BtcFeatureSnapshot,
+    model_key: &str,
+    artifact_sha256: &str,
+    feature_schema_sha256: &str,
+) -> Result<FairValueEstimate, BtcRejectReason> {
+    let selection =
+        btc_directional_model_selection(model_key, artifact_sha256, feature_schema_sha256);
+    let model = runtime_model(&selection).map_err(|_| BtcRejectReason::InvalidConfiguration)?;
+    let features = snapshot
+        .directional_model
+        .as_ref()
+        .ok_or(BtcRejectReason::MissingBinanceReturns)?;
+    let score = model
+        .score_snapshot(features)
+        .map_err(|_| BtcRejectReason::InvalidFeatureValue)?;
+    let up_probability = decimal_from_f64(score.probability_up)?;
+    let down_probability = Decimal::ONE - up_probability;
+    let raw_logit = decimal_from_f64(score.raw_logit)?;
+    Ok(FairValueEstimate {
+        up_probability,
+        down_probability,
+        up_lower_bound: up_probability,
+        up_upper_bound: up_probability,
+        down_lower_bound: down_probability,
+        down_upper_bound: down_probability,
+        z_score: raw_logit,
+        chainlink_log_gap: Decimal::ZERO,
+        lead_adjustment: Decimal::ZERO,
+        terminal_volatility: snapshot.realized_volatility.unwrap_or(Decimal::ZERO),
+        probability_uncertainty: Decimal::ZERO,
+        market_up_prior: None,
+        signed_logit_adjustment: Some(raw_logit),
+        chainlink_persistence_score: None,
+        binance_confirmation_score: None,
+        confirmation_deficiency_score: None,
+        evidence_reliability: None,
+        uncalibrated_up_probability: None,
+        path_recent_log_return_30s: None,
+        path_prior_log_gap_30s: None,
+        path_mature_gap_support: None,
+        path_fresh_aligned_impulse: None,
+        path_fresh_impulse_concentration: None,
+        path_efficiency_score: None,
+        path_choppiness_score: None,
+        path_volatility_expansion_score: None,
+        projected_terminal_gap: None,
+        open_crossing_score: None,
+        pre_path_up_probability: None,
+        path_probability_delta: None,
+        path_uncertainty_increment: None,
+        estimator_id: Some(BTC_DIRECTIONAL_MODEL_STRATEGY_FAMILY.to_string()),
+        estimator_profile_id: Some(model_key.to_string()),
+        estimator_profile_sha256: Some(artifact_sha256.to_string()),
+    })
 }
 
 fn estimate_chainlink_fair_value(
@@ -1591,6 +1844,24 @@ fn validate_config(config: &BtcStrategyConfig) -> Result<(), BtcRejectReason> {
             market_anchored::validate_strategy_config(config, profile).is_ok()
                 && prediction_config == &BtcDirectionalPredictionConfig::default()
         }
+        Ok(ResolvedBtcDecisionStrategy::BtcDirectionalModel {
+            model_key,
+            artifact_sha256,
+            feature_schema_sha256,
+        }) => {
+            let selection =
+                btc_directional_model_selection(model_key, artifact_sha256, feature_schema_sha256);
+            runtime_model(&selection).is_ok_and(|model| {
+                let policy = model.prediction_policy();
+                policy.minimum_seconds_after_open == config.min_seconds_after_open
+                    && 300 - policy.maximum_seconds_after_open == config.min_seconds_before_close
+                    && policy.cadence_seconds > 0
+                    && config.max_reference_age_ms == config.max_book_age_ms
+                    && model.probability_up_threshold() == 0.5
+                    && model.confidence_threshold() > 0.5
+                    && model.confidence_threshold() < 1.0
+            })
+        }
         Err(_) => false,
     };
     let valid = !config.strategy_version.trim().is_empty()
@@ -1638,6 +1909,7 @@ fn validate_config(config: &BtcStrategyConfig) -> Result<(), BtcRejectReason> {
 fn validate_snapshot(
     config: &BtcStrategyConfig,
     snapshot: &BtcFeatureSnapshot,
+    directional_model_input_validated: bool,
 ) -> Result<(), BtcRejectReason> {
     if snapshot.feature_schema_version != config.feature_schema_version {
         return Err(BtcRejectReason::FeatureSchemaMismatch);
@@ -1651,12 +1923,34 @@ fn validate_snapshot(
     if !snapshot.accepting_orders {
         return Err(BtcRejectReason::OrdersNotAccepted);
     }
-    let earliest_entry =
-        snapshot.window_start + chrono::Duration::seconds(config.min_seconds_after_open);
-    let latest_entry =
-        snapshot.window_end - chrono::Duration::seconds(config.min_seconds_before_close);
-    if snapshot.observed_at < earliest_entry || snapshot.observed_at >= latest_entry {
-        return Err(BtcRejectReason::OutsideEntryWindow);
+    let resolved = ResolvedBtcDecisionStrategy::resolve(config)?;
+    let directional_model_strategy = matches!(
+        resolved,
+        ResolvedBtcDecisionStrategy::BtcDirectionalModel { .. }
+    );
+    if let ResolvedBtcDecisionStrategy::BtcDirectionalModel {
+        model_key,
+        artifact_sha256,
+        feature_schema_sha256,
+    } = resolved
+    {
+        if !directional_model_input_validated {
+            validate_btc_directional_model_snapshot(
+                config,
+                snapshot,
+                model_key,
+                artifact_sha256,
+                feature_schema_sha256,
+            )?;
+        }
+    } else {
+        let earliest_entry =
+            snapshot.window_start + chrono::Duration::seconds(config.min_seconds_after_open);
+        let latest_entry =
+            snapshot.window_end - chrono::Duration::seconds(config.min_seconds_before_close);
+        if snapshot.observed_at < earliest_entry || snapshot.observed_at >= latest_entry {
+            return Err(BtcRejectReason::OutsideEntryWindow);
+        }
     }
     if let Ok(ResolvedBtcDecisionStrategy::VolatilityContinuation(continuation)) =
         ResolvedBtcDecisionStrategy::resolve(config)
@@ -1697,81 +1991,91 @@ fn validate_snapshot(
     if !resolution_source.contains("chainlink") && !resolution_source.contains("chain.link") {
         return Err(BtcRejectReason::InvalidResolutionSource);
     }
-    positive(
-        snapshot.chainlink_open_price,
-        BtcRejectReason::MissingChainlinkOpen,
-    )?;
-    positive(
-        snapshot.chainlink_price,
-        BtcRejectReason::MissingChainlinkPrice,
-    )?;
-    if snapshot.chainlink_gap_bps.is_none() {
-        return Err(BtcRejectReason::MissingChainlinkGap);
-    }
-    if matches!(
-        ResolvedBtcDecisionStrategy::resolve(config),
-        Ok(
+    if directional_model_strategy {
+        positive(snapshot.binance_price, BtcRejectReason::MissingBinancePrice)?;
+        if !snapshot.binance_quality_ok {
+            return Err(BtcRejectReason::BinanceFeedUnhealthy);
+        }
+        validate_age(
+            snapshot.binance_age_ms,
+            config.max_reference_age_ms,
+            BtcRejectReason::StaleBinanceFeed,
+        )?;
+    } else {
+        positive(
+            snapshot.chainlink_open_price,
+            BtcRejectReason::MissingChainlinkOpen,
+        )?;
+        positive(
+            snapshot.chainlink_price,
+            BtcRejectReason::MissingChainlinkPrice,
+        )?;
+        if snapshot.chainlink_gap_bps.is_none() {
+            return Err(BtcRejectReason::MissingChainlinkGap);
+        }
+        if matches!(
+            resolved,
             ResolvedBtcDecisionStrategy::ChainlinkPersistenceCalibratedFairValue(_)
                 | ResolvedBtcDecisionStrategy::ChainlinkPersistenceReliabilityCalibratedFairValue(
                     _
                 )
                 | ResolvedBtcDecisionStrategy::ChainlinkPathConditionedFairValue(_)
-        )
-    ) && snapshot.chainlink_return_5s.is_none()
-    {
-        return Err(BtcRejectReason::MissingChainlinkReturns);
-    }
-    if matches!(
-        ResolvedBtcDecisionStrategy::resolve(config),
-        Ok(ResolvedBtcDecisionStrategy::ChainlinkPathConditionedFairValue(_))
-    ) && (snapshot.chainlink_return_15s.is_none()
-        || snapshot.chainlink_return_30s.is_none()
-        || snapshot.chainlink_path_efficiency_30s.is_none()
-        || snapshot.chainlink_path_tick_count_30s.is_none()
-        || snapshot.chainlink_realized_volatility_5s.is_none()
-        || snapshot.chainlink_realized_volatility_30s.is_none())
-    {
-        return Err(BtcRejectReason::MissingChainlinkReturns);
-    }
-    positive(snapshot.binance_price, BtcRejectReason::MissingBinancePrice)?;
-    if snapshot.binance_return_1s.is_none()
-        || snapshot.binance_return_5s.is_none()
-        || snapshot.binance_return_30s.is_none()
-    {
-        return Err(BtcRejectReason::MissingBinanceReturns);
-    }
-    positive(
-        snapshot.realized_volatility,
-        BtcRejectReason::MissingRealizedVolatility,
-    )?;
-    if snapshot.binance_chainlink_basis_bps.is_none() {
-        return Err(BtcRejectReason::MissingBasis);
-    }
-    if !snapshot.chainlink_quality_ok {
-        return Err(BtcRejectReason::ChainlinkFeedUnhealthy);
-    }
-    if !snapshot.binance_quality_ok {
-        return Err(BtcRejectReason::BinanceFeedUnhealthy);
-    }
-    validate_reference_lineage(snapshot)?;
-    validate_age(
-        snapshot.chainlink_age_ms,
-        config.max_reference_age_ms,
-        BtcRejectReason::StaleChainlinkFeed,
-    )?;
-    validate_age(
-        snapshot.binance_age_ms,
-        config.max_reference_age_ms,
-        BtcRejectReason::StaleBinanceFeed,
-    )?;
-    let skew = snapshot
-        .source_skew_ms
-        .ok_or(BtcRejectReason::MissingLineage)?;
-    if skew < 0 {
-        return Err(BtcRejectReason::InvalidFeatureValue);
-    }
-    if skew > config.max_source_skew_ms {
-        return Err(BtcRejectReason::SourceTimestampSkew);
+        ) && snapshot.chainlink_return_5s.is_none()
+        {
+            return Err(BtcRejectReason::MissingChainlinkReturns);
+        }
+        if matches!(
+            resolved,
+            ResolvedBtcDecisionStrategy::ChainlinkPathConditionedFairValue(_)
+        ) && (snapshot.chainlink_return_15s.is_none()
+            || snapshot.chainlink_return_30s.is_none()
+            || snapshot.chainlink_path_efficiency_30s.is_none()
+            || snapshot.chainlink_path_tick_count_30s.is_none()
+            || snapshot.chainlink_realized_volatility_5s.is_none()
+            || snapshot.chainlink_realized_volatility_30s.is_none())
+        {
+            return Err(BtcRejectReason::MissingChainlinkReturns);
+        }
+        positive(snapshot.binance_price, BtcRejectReason::MissingBinancePrice)?;
+        if snapshot.binance_return_1s.is_none()
+            || snapshot.binance_return_5s.is_none()
+            || snapshot.binance_return_30s.is_none()
+        {
+            return Err(BtcRejectReason::MissingBinanceReturns);
+        }
+        positive(
+            snapshot.realized_volatility,
+            BtcRejectReason::MissingRealizedVolatility,
+        )?;
+        if snapshot.binance_chainlink_basis_bps.is_none() {
+            return Err(BtcRejectReason::MissingBasis);
+        }
+        if !snapshot.chainlink_quality_ok {
+            return Err(BtcRejectReason::ChainlinkFeedUnhealthy);
+        }
+        if !snapshot.binance_quality_ok {
+            return Err(BtcRejectReason::BinanceFeedUnhealthy);
+        }
+        validate_reference_lineage(snapshot)?;
+        validate_age(
+            snapshot.chainlink_age_ms,
+            config.max_reference_age_ms,
+            BtcRejectReason::StaleChainlinkFeed,
+        )?;
+        validate_age(
+            snapshot.binance_age_ms,
+            config.max_reference_age_ms,
+            BtcRejectReason::StaleBinanceFeed,
+        )?;
+        let skew = snapshot
+            .source_skew_ms
+            .ok_or(BtcRejectReason::MissingLineage)?;
+        if skew < 0 {
+            return Err(BtcRejectReason::InvalidFeatureValue);
+        }
+        if skew > config.max_source_skew_ms {
+            return Err(BtcRejectReason::SourceTimestampSkew);
+        }
     }
     validate_book(
         config,
@@ -1785,7 +2089,125 @@ fn validate_snapshot(
         &snapshot.down_book,
         BtcRejectReason::MissingDownBook,
     )?;
+    if directional_model_strategy {
+        validate_btc_directional_model_execution_lineage(snapshot)?;
+    }
     validate_fee(config, snapshot)?;
+    Ok(())
+}
+
+fn validate_btc_directional_model_snapshot(
+    config: &BtcStrategyConfig,
+    snapshot: &BtcFeatureSnapshot,
+    model_key: &str,
+    artifact_sha256: &str,
+    feature_schema_sha256: &str,
+) -> Result<(), BtcRejectReason> {
+    if snapshot.feature_schema_version != config.feature_schema_version {
+        return Err(BtcRejectReason::FeatureSchemaMismatch);
+    }
+    let features = snapshot
+        .directional_model
+        .as_ref()
+        .ok_or(BtcRejectReason::MissingBinanceReturns)?;
+    if features.model_key != model_key
+        || features.model_artifact_sha256 != artifact_sha256
+        || features.feature_schema_version != config.feature_schema_version
+        || features.feature_schema_sha256 != feature_schema_sha256
+    {
+        return Err(BtcRejectReason::FeatureSchemaMismatch);
+    }
+    let selection =
+        btc_directional_model_selection(model_key, artifact_sha256, feature_schema_sha256);
+    let model = runtime_model(&selection).map_err(|_| BtcRejectReason::InvalidConfiguration)?;
+    if !model.prediction_policy().accepts(features.seconds_elapsed) {
+        return Err(BtcRejectReason::OutsideEntryWindow);
+    }
+    let expected_feature_as_of =
+        snapshot.window_start + chrono::Duration::seconds(features.seconds_elapsed);
+    let feature_age_ms = (snapshot.observed_at - features.feature_as_of).num_milliseconds();
+    if features.feature_as_of != expected_feature_as_of
+        || feature_age_ms < 0
+        || feature_age_ms > config.max_reference_age_ms
+    {
+        return Err(BtcRejectReason::FutureInputTimestamp);
+    }
+    let input_sha256 = directional_model_input_sha256(
+        &selection,
+        &features.feature_schema_version,
+        &snapshot.market_id,
+        snapshot.window_start,
+        features.feature_as_of,
+        features.seconds_elapsed,
+        &features.feature_values,
+    )
+    .map_err(|_| BtcRejectReason::InvalidFeatureValue)?;
+    if input_sha256 != features.input_sha256 {
+        return Err(BtcRejectReason::InvalidFeatureValue);
+    }
+    Ok(())
+}
+
+fn validate_btc_directional_model_execution_lineage(
+    snapshot: &BtcFeatureSnapshot,
+) -> Result<(), BtcRejectReason> {
+    let binance_tick_id = snapshot
+        .lineage
+        .binance_tick_id
+        .ok_or(BtcRejectReason::MissingLineage)?;
+    let binance_source_timestamp = snapshot
+        .lineage
+        .binance_source_timestamp
+        .ok_or(BtcRejectReason::MissingLineage)?;
+    let binance_received_at = snapshot
+        .lineage
+        .binance_received_at
+        .ok_or(BtcRejectReason::MissingLineage)?;
+    let binance_ingest_sequence = snapshot
+        .lineage
+        .binance_ingest_sequence
+        .ok_or(BtcRejectReason::MissingLineage)?;
+    let up_checkpoint_id = snapshot
+        .lineage
+        .up_book_checkpoint_id
+        .ok_or(BtcRejectReason::MissingLineage)?;
+    let down_checkpoint_id = snapshot
+        .lineage
+        .down_book_checkpoint_id
+        .ok_or(BtcRejectReason::MissingLineage)?;
+    let up_ingest_sequence = snapshot
+        .lineage
+        .up_book_ingest_sequence
+        .ok_or(BtcRejectReason::MissingLineage)?;
+    let down_ingest_sequence = snapshot
+        .lineage
+        .down_book_ingest_sequence
+        .ok_or(BtcRejectReason::MissingLineage)?;
+    let up_connection_id = snapshot
+        .lineage
+        .up_book_connection_id
+        .ok_or(BtcRejectReason::MissingLineage)?;
+    let down_connection_id = snapshot
+        .lineage
+        .down_book_connection_id
+        .ok_or(BtcRejectReason::MissingLineage)?;
+    if binance_tick_id.is_nil()
+        || up_checkpoint_id.is_nil()
+        || down_checkpoint_id.is_nil()
+        || binance_ingest_sequence == 0
+        || up_ingest_sequence == 0
+        || down_ingest_sequence == 0
+        || up_connection_id.is_nil()
+        || up_connection_id != down_connection_id
+        || snapshot.up_book.connection_id != Some(up_connection_id)
+        || snapshot.down_book.connection_id != Some(down_connection_id)
+    {
+        return Err(BtcRejectReason::MissingLineage);
+    }
+    if binance_source_timestamp > snapshot.observed_at || binance_received_at > snapshot.observed_at
+    {
+        return Err(BtcRejectReason::FutureInputTimestamp);
+    }
     Ok(())
 }
 
@@ -2169,10 +2591,22 @@ fn preferred_execution_reject(left: BtcRejectReason, right: BtcRejectReason) -> 
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::Path};
+
     use chrono::{Duration, TimeZone};
     use sha2::{Digest, Sha256};
 
+    use super::super::directional_model::{
+        BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256, BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256,
+        BTC_DIRECTIONAL_MODEL_V1_KEY,
+    };
     use super::*;
+    use crate::{
+        btc::execution_guard::{
+            BtcReferenceExecutionGuard, BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION,
+        },
+        models::{OrderRequest, OrderSide, OrderType},
+    };
 
     fn snapshot() -> BtcFeatureSnapshot {
         let window_start = Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap();
@@ -2219,6 +2653,7 @@ mod tests {
             fees_enabled: true,
             fee_rate: Some(dec!(0.03)),
             fee_rate_observed_at: Some(observed_at - Duration::minutes(1)),
+            directional_model: None,
             lineage: BtcFeatureLineage {
                 lineage_version: BTC_FEATURE_LINEAGE_VERSION.to_string(),
                 chainlink_open_tick_id: Some(Uuid::from_u128(3)),
@@ -2369,6 +2804,314 @@ mod tests {
         snapshot.up_book = book(BtcOutcome::Up, "up", dec!(0.55), dec!(0.56));
         snapshot.down_book = book(BtcOutcome::Down, "down", dec!(0.44), dec!(0.45));
         snapshot
+    }
+
+    fn directional_model_config() -> BtcStrategyConfig {
+        BtcStrategyConfig {
+            strategy_version: BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION.to_string(),
+            feature_schema_version: BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION.to_string(),
+            decision_strategy: Some(BtcDecisionStrategyConfig::BtcDirectionalModel {
+                model_key: BTC_DIRECTIONAL_MODEL_V1_KEY.to_string(),
+                artifact_sha256: BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256.to_string(),
+                feature_schema_sha256: BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256.to_string(),
+            }),
+            min_seconds_after_open: 60,
+            min_seconds_before_close: 60,
+            ..BtcStrategyConfig::default()
+        }
+    }
+
+    fn packaged_directional_model_vector(action: &str) -> Vec<f64> {
+        let workspace_models = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("btc-directional-model/runtime-models");
+        let root = if workspace_models.is_dir() {
+            workspace_models
+        } else {
+            Path::new("/opt/polymarket-models").to_path_buf()
+        };
+        let path = root
+            .join(BTC_DIRECTIONAL_MODEL_V1_KEY)
+            .join("golden-vectors.json");
+        let payload: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        payload["vectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|vector| vector["expected"]["action"].as_str() == Some(action))
+            .unwrap()["feature_values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_f64().unwrap_or(f64::NAN))
+            .collect()
+    }
+
+    fn directional_model_snapshot(action: &str) -> BtcFeatureSnapshot {
+        let mut snapshot = snapshot();
+        snapshot.feature_schema_version = BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION.to_string();
+        let mut features = BtcDirectionalModelFeatureSnapshot {
+            model_key: BTC_DIRECTIONAL_MODEL_V1_KEY.to_string(),
+            model_artifact_sha256: BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256.to_string(),
+            feature_schema_version: BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION.to_string(),
+            feature_schema_sha256: BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256.to_string(),
+            feature_as_of: snapshot.observed_at,
+            seconds_elapsed: 180,
+            feature_values: packaged_directional_model_vector(action),
+            input_sha256: String::new(),
+        };
+        let selection = btc_directional_model_selection(
+            BTC_DIRECTIONAL_MODEL_V1_KEY,
+            BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256,
+            BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256,
+        );
+        features.input_sha256 = directional_model_input_sha256(
+            &selection,
+            &features.feature_schema_version,
+            &snapshot.market_id,
+            snapshot.window_start,
+            features.feature_as_of,
+            features.seconds_elapsed,
+            &features.feature_values,
+        )
+        .unwrap();
+        snapshot.directional_model = Some(features);
+        snapshot
+    }
+
+    #[test]
+    fn directional_model_abstain_maps_to_existing_no_trade_contract() {
+        let config = directional_model_config();
+        let snapshot = directional_model_snapshot("no_trade");
+
+        for entry_policy in [
+            BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge,
+            BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction,
+        ] {
+            let decision = DeterministicBtcStrategy::evaluate_with_directional_model_entry_policy(
+                &config,
+                &snapshot,
+                entry_policy,
+            );
+
+            assert_eq!(decision.action, BtcDecisionAction::NoTrade);
+            assert_eq!(
+                decision.reject_reason,
+                Some(BtcRejectReason::PredictionConfidenceBelowThreshold)
+            );
+            assert!(matches!(
+                decision.prediction,
+                Some(BtcStrategyPrediction::NoPrediction { .. })
+            ));
+            assert!(decision.approved_intent.is_none());
+        }
+    }
+
+    #[test]
+    fn directional_model_paper_validation_executes_real_prediction_with_signed_negative_edge() {
+        for (action, expected_outcome, expected_action) in [
+            ("up", BtcOutcome::Up, BtcDecisionAction::BuyUp),
+            ("down", BtcOutcome::Down, BtcDecisionAction::BuyDown),
+        ] {
+            let mut config = directional_model_config();
+            config.max_entry_price = dec!(0.995);
+            let mut snapshot = directional_model_snapshot(action);
+            match expected_outcome {
+                BtcOutcome::Up => {
+                    snapshot.up_book = book(BtcOutcome::Up, "up", dec!(0.98), dec!(0.99));
+                }
+                BtcOutcome::Down => {
+                    snapshot.down_book = book(BtcOutcome::Down, "down", dec!(0.98), dec!(0.99));
+                }
+            }
+
+            let default_decision = DeterministicBtcStrategy::evaluate(&config, &snapshot);
+            assert_eq!(default_decision.action, BtcDecisionAction::NoTrade);
+            assert_eq!(
+                default_decision.reject_reason,
+                Some(BtcRejectReason::PredictionDirectEdgeNonPositive)
+            );
+            let default_prediction = default_decision.prediction.as_ref().unwrap();
+            assert!(
+                serde_json::to_value(default_prediction)
+                    .unwrap()
+                    .get("entry_policy")
+                    .is_none(),
+                "the default policy must preserve the historical prediction contract"
+            );
+
+            let validation_decision =
+                DeterministicBtcStrategy::evaluate_with_directional_model_entry_policy(
+                    &config,
+                    &snapshot,
+                    BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction,
+                );
+            assert_eq!(validation_decision.action, expected_action);
+            assert_eq!(validation_decision.reject_reason, None);
+            assert!(validation_decision
+                .approved_intent
+                .as_ref()
+                .is_some_and(|intent| intent.outcome == expected_outcome
+                    && intent.expected_net_edge_per_share < Decimal::ZERO
+                    && intent.expected_net_edge < Decimal::ZERO));
+            assert!(matches!(
+                validation_decision.prediction,
+                Some(BtcStrategyPrediction::DirectionalPrediction {
+                    outcome,
+                    direct_net_edge_per_share: Some(edge),
+                    entry_policy:
+                        BtcDirectionalModelEntryPolicy::ExecuteDirectionalPrediction,
+                    ..
+                }) if outcome == expected_outcome && edge < Decimal::ZERO
+            ));
+            assert_eq!(
+                serde_json::to_value(validation_decision.prediction.as_ref().unwrap()).unwrap()
+                    ["entry_policy"],
+                serde_json::json!("execute_directional_prediction")
+            );
+        }
+    }
+
+    #[test]
+    fn directional_model_confidence_crossing_survives_execution_gate_rejection() {
+        let config = directional_model_config();
+        let mut snapshot = directional_model_snapshot("up");
+        snapshot.up_book.best_bid = snapshot.up_book.best_ask;
+
+        let decision = DeterministicBtcStrategy::evaluate(&config, &snapshot);
+
+        assert_eq!(decision.action, BtcDecisionAction::NoTrade);
+        assert_eq!(decision.reject_reason, Some(BtcRejectReason::CrossedBook));
+        assert!(matches!(
+            decision.prediction,
+            Some(BtcStrategyPrediction::DirectionalPrediction {
+                outcome: BtcOutcome::Up,
+                ..
+            })
+        ));
+        assert!(decision.approved_intent.is_none());
+    }
+
+    #[test]
+    fn directional_model_real_artifact_trades_without_live_chainlink_features() {
+        for (action, expected_outcome, expected_action) in [
+            ("up", BtcOutcome::Up, BtcDecisionAction::BuyUp),
+            ("down", BtcOutcome::Down, BtcDecisionAction::BuyDown),
+        ] {
+            let config = directional_model_config();
+            let mut snapshot = directional_model_snapshot(action);
+            snapshot.chainlink_open_price = None;
+            snapshot.chainlink_price = None;
+            snapshot.chainlink_gap_bps = None;
+            snapshot.chainlink_return_5s = None;
+            snapshot.chainlink_return_15s = None;
+            snapshot.chainlink_return_30s = None;
+            snapshot.chainlink_path_efficiency_30s = None;
+            snapshot.chainlink_path_tick_count_30s = None;
+            snapshot.chainlink_realized_volatility_5s = None;
+            snapshot.chainlink_realized_volatility_30s = None;
+            snapshot.binance_return_1s = None;
+            snapshot.binance_return_5s = None;
+            snapshot.binance_return_30s = None;
+            snapshot.realized_volatility = None;
+            snapshot.binance_chainlink_basis_bps = None;
+            snapshot.chainlink_age_ms = None;
+            snapshot.source_skew_ms = None;
+            snapshot.chainlink_quality_ok = false;
+            snapshot.lineage.chainlink_open_tick_id = None;
+            snapshot.lineage.chainlink_tick_id = None;
+            snapshot.lineage.chainlink_open_source_timestamp = None;
+            snapshot.lineage.chainlink_open_received_at = None;
+            snapshot.lineage.chainlink_source_timestamp = None;
+            snapshot.lineage.chainlink_received_at = None;
+            snapshot.lineage.chainlink_open_ingest_sequence = None;
+            snapshot.lineage.chainlink_ingest_sequence = None;
+
+            let decision = DeterministicBtcStrategy::evaluate(&config, &snapshot);
+
+            assert_eq!(decision.action, expected_action);
+            assert_eq!(
+                decision
+                    .approved_intent
+                    .as_ref()
+                    .map(|intent| (intent.outcome, intent.process_id)),
+                Some((expected_outcome, snapshot.process_id))
+            );
+            assert!(matches!(
+                decision.prediction.as_ref(),
+                Some(BtcStrategyPrediction::DirectionalPrediction { outcome, .. })
+                    if *outcome == expected_outcome
+            ));
+            let intent = decision.approved_intent.as_ref().unwrap();
+            let request = OrderRequest {
+                client_order_id: Uuid::new_v4(),
+                process_id: Some(snapshot.process_id),
+                market_id: snapshot.market_id.clone(),
+                token_id: intent.token_id.clone(),
+                side: OrderSide::Buy,
+                order_type: OrderType::Fok,
+                price: intent.limit_price,
+                size: intent.size,
+                metadata: serde_json::json!({}),
+            };
+            let guard = BtcReferenceExecutionGuard::from_snapshot(
+                &snapshot,
+                &decision,
+                intent,
+                &request,
+                &"a".repeat(64),
+                snapshot.fee_rate.unwrap(),
+                config.max_reference_age_ms,
+            )
+            .unwrap();
+            assert_eq!(
+                guard.guard_version,
+                BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
+            );
+            assert!(guard.chainlink_open.is_none());
+            assert!(guard.chainlink.is_none());
+            assert!(guard.directional_model.is_some());
+            assert!(guard.selected_book.is_some());
+
+            let mut missing_model_snapshot = snapshot.clone();
+            missing_model_snapshot.directional_model = None;
+            assert!(BtcReferenceExecutionGuard::from_snapshot(
+                &missing_model_snapshot,
+                &decision,
+                intent,
+                &request,
+                &"a".repeat(64),
+                snapshot.fee_rate.unwrap(),
+                config.max_reference_age_ms,
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn directional_model_rejects_a_feature_vector_with_a_mismatched_input_hash() {
+        let config = directional_model_config();
+        let mut snapshot = directional_model_snapshot("up");
+        snapshot.directional_model.as_mut().unwrap().feature_values[0] += 1.0;
+
+        let decision = DeterministicBtcStrategy::evaluate(&config, &snapshot);
+
+        assert_eq!(decision.action, BtcDecisionAction::NoTrade);
+        assert_eq!(
+            decision.reject_reason,
+            Some(BtcRejectReason::InvalidFeatureValue)
+        );
+        assert!(decision.approved_intent.is_none());
+    }
+
+    #[test]
+    fn directional_model_uses_one_frozen_freshness_bound_for_input_and_book_evidence() {
+        let mut config = directional_model_config();
+        config.validate().unwrap();
+        config.max_book_age_ms += 1;
+
+        assert!(config.validate().is_err());
     }
 
     fn decision_sha256(decision: &BtcDecision) -> String {
@@ -2804,10 +3547,11 @@ mod tests {
 
         let decision = build_directional_prediction_decision(
             &config,
-            &BtcDirectionalPredictionConfig::default(),
+            BtcDirectionalPredictionConfig::default().min_conservative_probability,
             &snapshot,
             deterministic_decision_id(&config, &snapshot),
             fair_value,
+            BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge,
         );
 
         assert_eq!(decision.action, BtcDecisionAction::BuyUp);
