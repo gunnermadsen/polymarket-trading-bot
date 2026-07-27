@@ -188,7 +188,7 @@
             "axisCenteredZero": true,
             "axisColorMode": "text",
             "axisLabel": "DOWN ← confidence → UP",
-            "axisPlacement": "bottom",
+            "axisPlacement": "auto",
             "fillOpacity": 100,
             "gradientMode": "none",
             "hideFrom": {
@@ -226,8 +226,8 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 14,
-        "w": 9,
+        "h": 13,
+        "w": 19,
         "x": 5,
         "y": 1
       },
@@ -246,13 +246,14 @@
         "orientation": "horizontal",
         "showValue": "always",
         "stacking": "none",
+        "text": {},
         "tooltip": {
           "hideZeros": false,
           "mode": "single",
           "sort": "none"
         },
         "xTickLabelRotation": 0,
-        "xTickLabelSpacing": 0
+        "xTickLabelSpacing": 100
       },
       "pluginVersion": "12.4.2",
       "targets": [
@@ -287,126 +288,6 @@
       ],
       "title": "Resolved Entry Forecasts vs Official Outcome",
       "type": "barchart"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgres"
-      },
-      "description": "Cumulative lifetime net realized PnL for the current PnL scope, derived from process-owned paper fills and official outcomes. Selected process uses the Trading process selection; All processes renders one series per process.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "decimals": 2,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "currencyUSD"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 14,
-        "w": 10,
-        "x": 14,
-        "y": 1
-      },
-      "id": 1,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgres"
-          },
-          "editorMode": "code",
-          "format": "time_series",
-          "rawQuery": true,
-          "rawSql": "WITH bounds AS MATERIALIZED (\n  SELECT $__timeFrom()::timestamptz AS from_ts,$__timeTo()::timestamptz AS to_ts\n), buckets AS MATERIALIZED (\n  SELECT generate_series(\n    date_bin('5 minutes',from_ts,timestamptz '1970-01-01'),\n    to_ts,interval '5 minutes'\n  ) AS time FROM bounds\n  UNION SELECT to_ts FROM bounds\n), selected_process AS MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at\n  FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m'\n    AND p.process_scope='realtime_paper'\n  AND p.status <> 'completed'\n), realized AS MATERIALIZED (\n  SELECT f.process_id,m.official_resolution_received_at AS realized_at,\n         (CASE WHEN o.token_id=m.official_winning_token_id THEN f.size ELSE 0::numeric END\n          -f.price*f.size-f.fee)::numeric AS net_pnl\n  FROM polymarket.fills f\n  JOIN polymarket.orders o\n    ON o.order_id=f.order_id AND o.process_id=f.process_id\n  JOIN selected_process p ON p.process_id=f.process_id\n  JOIN polymarket.btc_interval_markets m ON m.market_id=o.market_id\n  CROSS JOIN bounds b\n  WHERE f.source='paper'\n    AND m.official_outcome IS NOT NULL\n    AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n    AND m.official_resolution_received_at<=b.to_ts\n)\nSELECT b.time,p.name||' ['||left(p.process_id::text,8)||']' AS metric,\n       COALESCE(SUM(r.net_pnl) FILTER(WHERE r.realized_at<=b.time),0)::double precision AS value\nFROM selected_process p\nJOIN buckets b ON b.time>=p.created_at\nLEFT JOIN realized r ON r.process_id=p.process_id AND r.realized_at<=b.time\nGROUP BY b.time,p.process_id,p.name\nORDER BY b.time,metric;",
-          "refId": "A",
-          "sql": {
-            "columns": [
-              {
-                "parameters": [],
-                "type": "function"
-              }
-            ],
-            "groupBy": [
-              {
-                "property": {
-                  "type": "string"
-                },
-                "type": "groupBy"
-              }
-            ],
-            "limit": 50
-          }
-        }
-      ],
-      "title": "Cumulative Net Realized PnL by Process",
-      "type": "timeseries"
     },
     {
       "datasource": {
@@ -2118,6 +1999,214 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgres"
       },
+      "description": "Cumulative lifetime net realized PnL for the current PnL scope, derived from process-owned paper fills and official outcomes. Selected process uses the Trading process selection; All processes renders one series per process.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 13,
+        "w": 19,
+        "x": 5,
+        "y": 14
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH bounds AS MATERIALIZED (\n  SELECT $__timeFrom()::timestamptz AS from_ts,$__timeTo()::timestamptz AS to_ts\n), buckets AS MATERIALIZED (\n  SELECT generate_series(\n    date_bin('5 minutes',from_ts,timestamptz '1970-01-01'),\n    to_ts,interval '5 minutes'\n  ) AS time FROM bounds\n  UNION SELECT to_ts FROM bounds\n), selected_process AS MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at\n  FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m'\n    AND p.process_scope='realtime_paper'\n  AND p.status <> 'completed'\n), realized AS MATERIALIZED (\n  SELECT f.process_id,m.official_resolution_received_at AS realized_at,\n         (CASE WHEN o.token_id=m.official_winning_token_id THEN f.size ELSE 0::numeric END\n          -f.price*f.size-f.fee)::numeric AS net_pnl\n  FROM polymarket.fills f\n  JOIN polymarket.orders o\n    ON o.order_id=f.order_id AND o.process_id=f.process_id\n  JOIN selected_process p ON p.process_id=f.process_id\n  JOIN polymarket.btc_interval_markets m ON m.market_id=o.market_id\n  CROSS JOIN bounds b\n  WHERE f.source='paper'\n    AND m.official_outcome IS NOT NULL\n    AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n    AND m.official_resolution_received_at<=b.to_ts\n)\nSELECT b.time,p.name||' ['||left(p.process_id::text,8)||']' AS metric,\n       COALESCE(SUM(r.net_pnl) FILTER(WHERE r.realized_at<=b.time),0)::double precision AS value\nFROM selected_process p\nJOIN buckets b ON b.time>=p.created_at\nLEFT JOIN realized r ON r.process_id=p.process_id AND r.realized_at<=b.time\nGROUP BY b.time,p.process_id,p.name\nORDER BY b.time,metric;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Cumulative Net Realized PnL by Process",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "description": "Aggregate lifetime net realized PnL for the current PnL scope. All processes sums across processes; processes without resolved fills contribute zero. Values use process-owned paper fills and official outcomes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 5,
+        "x": 0,
+        "y": 16
+      },
+      "id": 5,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  COALESCE(\n    SUM(\n      CASE\n        WHEN m.market_id IS NULL THEN 0::numeric\n        ELSE\n          CASE WHEN o.token_id=m.official_winning_token_id THEN f.size ELSE 0::numeric END\n          -f.price*f.size-f.fee\n      END\n    ),\n    0::numeric\n  )::double precision AS \"Lifetime Net Realized PnL\"\nFROM polymarket.trading_processes p\nLEFT JOIN polymarket.fills f\n  ON f.process_id=p.process_id\n AND f.source='paper'\nLEFT JOIN polymarket.orders o\n  ON o.order_id=f.order_id\n AND o.process_id=f.process_id\nLEFT JOIN polymarket.btc_interval_markets m\n  ON m.market_id=o.market_id\n AND m.official_outcome IS NOT NULL\n AND m.official_winning_token_id IS NOT NULL\n AND m.official_resolution_received_at IS NOT NULL\nWHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n  AND p.process_type='btc_5m'\n  AND p.process_scope='realtime_paper'\n  AND p.status <> 'completed';",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Lifetime Net Realized PnL",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "description": "PnL, runtime, and settlement status for the current PnL scope, with one row per process. Selected process uses the Trading process selection. Current-market entries and entries awaiting official settlement are intentionally separate; only current-market entries contribute to fresh unrealized PnL. Total PnL is unavailable while an entry is unpriced or awaits official settlement.",
       "fieldConfig": {
         "defaults": {
@@ -2330,10 +2419,10 @@
         ]
       },
       "gridPos": {
-        "h": 6,
+        "h": 8,
         "w": 19,
         "x": 5,
-        "y": 15
+        "y": 27
       },
       "id": 2,
       "options": {
@@ -2379,94 +2468,6 @@
       ],
       "title": "Process PnL, Runtime, and Settlement Status",
       "type": "table"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgres"
-      },
-      "description": "Aggregate lifetime net realized PnL for the current PnL scope. All processes sums across processes; processes without resolved fills contribute zero. Values use process-owned paper fills and official outcomes.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 2,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "currencyUSD"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 5,
-        "x": 0,
-        "y": 16
-      },
-      "id": 5,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgres"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT\n  COALESCE(\n    SUM(\n      CASE\n        WHEN m.market_id IS NULL THEN 0::numeric\n        ELSE\n          CASE WHEN o.token_id=m.official_winning_token_id THEN f.size ELSE 0::numeric END\n          -f.price*f.size-f.fee\n      END\n    ),\n    0::numeric\n  )::double precision AS \"Lifetime Net Realized PnL\"\nFROM polymarket.trading_processes p\nLEFT JOIN polymarket.fills f\n  ON f.process_id=p.process_id\n AND f.source='paper'\nLEFT JOIN polymarket.orders o\n  ON o.order_id=f.order_id\n AND o.process_id=f.process_id\nLEFT JOIN polymarket.btc_interval_markets m\n  ON m.market_id=o.market_id\n AND m.official_outcome IS NOT NULL\n AND m.official_winning_token_id IS NOT NULL\n AND m.official_resolution_received_at IS NOT NULL\nWHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n  AND p.process_type='btc_5m'\n  AND p.process_scope='realtime_paper'\n  AND p.status <> 'completed';",
-          "refId": "A",
-          "sql": {
-            "columns": [
-              {
-                "parameters": [],
-                "type": "function"
-              }
-            ],
-            "groupBy": [
-              {
-                "property": {
-                  "type": "string"
-                },
-                "type": "groupBy"
-              }
-            ],
-            "limit": 50
-          }
-        }
-      ],
-      "title": "Lifetime Net Realized PnL",
-      "type": "stat"
     },
     {
       "datasource": {
@@ -2523,7 +2524,7 @@
         "h": 15,
         "w": 24,
         "x": 0,
-        "y": 21
+        "y": 35
       },
       "id": 20,
       "options": {
@@ -2588,7 +2589,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 36
+        "y": 50
       },
       "id": 18,
       "panels": [],
@@ -2601,7 +2602,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 37
+        "y": 51
       },
       "id": 15,
       "panels": [],
@@ -2825,7 +2826,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 38
+        "y": 52
       },
       "id": 16,
       "options": {
@@ -3002,7 +3003,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 50
+        "y": 64
       },
       "id": 17,
       "options": {
@@ -3117,6 +3118,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 115,
+  "version": 118,
   "weekStart": ""
 }
