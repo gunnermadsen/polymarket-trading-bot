@@ -28,10 +28,40 @@ pub const DEFAULT_BTC_DIRECTIONAL_MODEL_DIR: &str = "/usr/local/share/polymarket
 pub const RUNTIME_MODEL_SCHEMA_VERSION: &str = "capitonic-btc-directional-runtime-model-v1";
 pub const RUNTIME_MANIFEST_SCHEMA_VERSION: &str = "capitonic-btc-directional-runtime-manifest-v1";
 pub const GOLDEN_VECTORS_SCHEMA_VERSION: &str = "capitonic-btc-directional-golden-vectors-v1";
+pub const BTC_DIRECTIONAL_MODEL_INPUT_CONTRACT: &str = "btc_directional_model_input_v1";
 
 const MODEL_FILE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const GOLDEN_VECTORS_FILE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const SHA256_HEX_LENGTH: usize = 64;
+
+#[allow(clippy::too_many_arguments)]
+pub fn directional_model_input_sha256(
+    selection: &RuntimeModelSelection,
+    feature_schema_version: &str,
+    market_id: &str,
+    window_start: DateTime<Utc>,
+    feature_as_of: DateTime<Utc>,
+    seconds_elapsed: i64,
+    feature_values: &[f64],
+) -> Result<String> {
+    let payload = serde_json::json!({
+        "contract": BTC_DIRECTIONAL_MODEL_INPUT_CONTRACT,
+        "model_key": selection.model_key,
+        "model_artifact_sha256": selection.artifact_sha256,
+        "feature_schema_version": feature_schema_version,
+        "feature_schema_sha256": selection.feature_schema_sha256,
+        "feature_names": BTC_DIRECTIONAL_FEATURE_NAMES.as_slice(),
+        "market_id": market_id,
+        "window_start": window_start,
+        "feature_as_of": feature_as_of,
+        "seconds_elapsed": seconds_elapsed,
+        "feature_values": feature_values,
+    });
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&payload)?)
+    ))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

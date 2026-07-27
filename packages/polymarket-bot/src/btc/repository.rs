@@ -120,6 +120,22 @@ pub struct BtcPointInTimeInputs {
     pub fee_observed_at: Option<DateTime<Utc>>,
 }
 
+const LOAD_DIRECTIONAL_MODEL_BINANCE_TICK_SQL: &str = r#"
+    SELECT tick_id, source_timestamp, received_at, source, symbol, price,
+      envelope_timestamp, connection_id, ingest_sequence, source_event_id,
+      dedup_key, raw_payload
+    FROM polymarket.reference_price_ticks
+    WHERE source = 'direct_binance'
+      AND symbol = 'BTCUSD'
+      AND integrity_status = 'ok'
+      AND source_timestamp >= $1
+      AND source_timestamp <= $2
+      AND received_at >= $1
+      AND received_at <= $2
+    ORDER BY source_timestamp DESC, received_at DESC, ingest_sequence DESC, tick_id DESC
+    LIMIT 1
+    "#;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
 pub struct BtcRunManifest {
     pub process_id: Uuid,
@@ -2381,19 +2397,7 @@ impl BtcRepository {
             )?,
             None => (None, None),
         };
-        let fee = sqlx::query_as::<_, (Option<Decimal>, DateTime<Utc>)>(
-            r#"
-            SELECT fee_rate, last_refreshed_at
-            FROM polymarket.btc_interval_markets
-            WHERE market_id = $1
-              AND last_refreshed_at <= $2
-            "#,
-        )
-        .bind(&market.market_id)
-        .bind(as_of)
-        .fetch_optional(&self.pool)
-        .await
-        .context("failed to load BTC market fee schedule")?;
+        let fee = self.load_market_fee_as_of(&market.market_id, as_of).await?;
 
         Ok(BtcPointInTimeInputs {
             chainlink_open,
@@ -2405,6 +2409,101 @@ impl BtcRepository {
             fee_rate: fee.as_ref().and_then(|(rate, _)| *rate),
             fee_observed_at: fee.map(|(_, observed_at)| observed_at),
         })
+    }
+
+    /// Loads only the immutable execution evidence needed after native directional-model
+    /// inference. Model features come from the runtime's bounded one-second Binance window, so
+    /// this path deliberately avoids rebuilding unused reference histories from Postgres.
+    pub(crate) async fn load_directional_model_execution_inputs(
+        &self,
+        market: &BtcIntervalMarket,
+        as_of: DateTime<Utc>,
+        max_reference_age: chrono::Duration,
+        max_book_age: chrono::Duration,
+        clob_connection_id: Option<Uuid>,
+    ) -> Result<BtcPointInTimeInputs> {
+        if max_reference_age <= Duration::zero() || max_book_age <= Duration::zero() {
+            bail!("directional-model execution input freshness bounds must be positive");
+        }
+        let reference_fresh_since = as_of.checked_sub_signed(max_reference_age).context(
+            "directional-model reference freshness bound is outside the timestamp range",
+        )?;
+        let book_fresh_since = as_of
+            .checked_sub_signed(max_book_age)
+            .context("directional-model book freshness bound is outside the timestamp range")?;
+
+        let (binance_current, up_book, down_book, fee) =
+            if let Some(connection_id) = clob_connection_id {
+                let (binance, up, down, fee) = tokio::try_join!(
+                    self.load_directional_model_binance_tick(reference_fresh_since, as_of),
+                    self.load_checkpoint_as_of(
+                        &market.up_token_id,
+                        connection_id,
+                        book_fresh_since,
+                        as_of,
+                    ),
+                    self.load_checkpoint_as_of(
+                        &market.down_token_id,
+                        connection_id,
+                        book_fresh_since,
+                        as_of,
+                    ),
+                    self.load_market_fee_as_of(&market.market_id, as_of),
+                )?;
+                (binance, up, down, fee)
+            } else {
+                let (binance, fee) = tokio::try_join!(
+                    self.load_directional_model_binance_tick(reference_fresh_since, as_of),
+                    self.load_market_fee_as_of(&market.market_id, as_of),
+                )?;
+                (binance, None, None, fee)
+            };
+
+        Ok(BtcPointInTimeInputs {
+            chainlink_open: None,
+            chainlink_current: None,
+            chainlink_history: Vec::new(),
+            binance_history: binance_current.into_iter().collect(),
+            up_book,
+            down_book,
+            fee_rate: fee.as_ref().and_then(|(rate, _)| *rate),
+            fee_observed_at: fee.map(|(_, observed_at)| observed_at),
+        })
+    }
+
+    async fn load_directional_model_binance_tick(
+        &self,
+        fresh_since: DateTime<Utc>,
+        as_of: DateTime<Utc>,
+    ) -> Result<Option<ReferencePriceTick>> {
+        sqlx::query_as::<_, ReferenceTickRow>(LOAD_DIRECTIONAL_MODEL_BINANCE_TICK_SQL)
+            .bind(fresh_since)
+            .bind(as_of)
+            .fetch_optional(&self.pool)
+            .await
+            .context("failed to load directional-model point-in-time Binance tick")?
+            .map(reference_tick_from_row)
+            .transpose()
+    }
+
+    async fn load_market_fee_as_of(
+        &self,
+        market_id: &str,
+        as_of: DateTime<Utc>,
+    ) -> Result<Option<(Option<Decimal>, DateTime<Utc>)>> {
+        sqlx::query_as::<_, (Option<Decimal>, DateTime<Utc>)>(
+            r#"
+            SELECT fee_rate, last_refreshed_at
+            FROM polymarket.btc_interval_markets
+            WHERE market_id = $1
+              AND last_refreshed_at <= $2
+            "#,
+        )
+        .bind(market_id)
+        .bind(as_of)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to load BTC market fee schedule")
     }
 
     async fn load_checkpoint_as_of(
@@ -4579,6 +4678,30 @@ mod tests {
 
         assert!(normalized.contains("values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17), ($18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)"));
         assert!(!normalized.contains("on conflict"));
+    }
+
+    #[test]
+    fn directional_model_binance_query_is_causal_fresh_and_single_row() {
+        let normalized = LOAD_DIRECTIONAL_MODEL_BINANCE_TICK_SQL
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+
+        assert!(normalized.contains("source = 'direct_binance'"));
+        assert!(normalized.contains("symbol = 'btcusd'"));
+        assert!(normalized.contains("integrity_status = 'ok'"));
+        assert!(normalized.contains("source_timestamp >= $1"));
+        assert!(normalized.contains("source_timestamp <= $2"));
+        assert!(normalized.contains("received_at >= $1"));
+        assert!(normalized.contains("received_at <= $2"));
+        assert!(normalized.contains(
+            "order by source_timestamp desc, received_at desc, ingest_sequence desc, tick_id desc"
+        ));
+        assert!(normalized.contains("limit 1"));
+        assert!(!normalized.contains("rtds_chainlink"));
+        assert!(!normalized.contains("limit 2000"));
+        assert!(!normalized.contains("limit 20000"));
     }
 
     #[test]

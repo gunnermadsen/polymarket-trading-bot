@@ -41,8 +41,10 @@ pub use directional_model::{
     BTC_DIRECTIONAL_MODEL_V1_KEY, DEFAULT_BTC_DIRECTIONAL_MODEL_DIR,
 };
 pub use execution_guard::{
+    BtcDirectionalModelExecutionEvidence, BtcExecutionBookEvidence,
     BtcReferenceExecutionAssessment, BtcReferenceExecutionGuard, BtcReferenceExecutionRejectReason,
-    BTC_REFERENCE_EXECUTION_GUARD_METADATA_KEY, BTC_REFERENCE_EXECUTION_GUARD_VERSION,
+    BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION, BTC_REFERENCE_EXECUTION_GUARD_METADATA_KEY,
+    BTC_REFERENCE_EXECUTION_GUARD_VERSION,
 };
 pub use feeds::{
     parse_binance_agg_trade, parse_binance_agg_trade_with_details, parse_binance_aggregate_trade,

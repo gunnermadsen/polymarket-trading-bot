@@ -33,8 +33,8 @@ use super::{
     },
     directional_features::{build_directional_features, DirectionalFeatureVector},
     directional_model::{
-        runtime_model, BtcDirectionalModelFeatureSnapshot, RuntimeModelSelection,
-        RuntimePredictionPolicy,
+        directional_model_input_sha256, runtime_model, BtcDirectionalModelFeatureSnapshot,
+        RuntimeModelSelection, RuntimePredictionPolicy,
     },
     execution_guard::BtcReferenceExecutionGuard,
     paper::{PaperPreviewConfig, PaperVenue, PAPER_DYNAMIC_FEE_RATE_METADATA_KEY},
@@ -57,7 +57,8 @@ use super::{
         BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_FAMILY,
     },
     types::{
-        BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, OrderbookCheckpoint, ReferencePriceTick,
+        BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, OrderbookCheckpoint,
+        ReferencePriceSource, ReferencePriceTick,
     },
 };
 
@@ -1480,17 +1481,30 @@ impl BtcPaperProcessRunner {
             };
         self.schedule_shadow_predictive_regime_refresh(&market.market_id, observed_at);
         let clob_connection_id = observation_clob_connection_id(market, &observation.readiness);
-        let inputs = self
-            .repository
-            .load_point_in_time_inputs(
-                market,
-                observed_at,
-                chrono::Duration::milliseconds(self.config.strategy.max_chainlink_open_delay_ms),
-                chrono::Duration::milliseconds(self.config.strategy.max_reference_age_ms),
-                chrono::Duration::milliseconds(self.config.strategy.max_book_age_ms),
-                clob_connection_id,
-            )
-            .await?;
+        let inputs = if directional_selection.is_some() {
+            self.repository
+                .load_directional_model_execution_inputs(
+                    market,
+                    observed_at,
+                    chrono::Duration::milliseconds(self.config.strategy.max_reference_age_ms),
+                    chrono::Duration::milliseconds(self.config.strategy.max_book_age_ms),
+                    clob_connection_id,
+                )
+                .await?
+        } else {
+            self.repository
+                .load_point_in_time_inputs(
+                    market,
+                    observed_at,
+                    chrono::Duration::milliseconds(
+                        self.config.strategy.max_chainlink_open_delay_ms,
+                    ),
+                    chrono::Duration::milliseconds(self.config.strategy.max_reference_age_ms),
+                    chrono::Duration::milliseconds(self.config.strategy.max_book_age_ms),
+                    clob_connection_id,
+                )
+                .await?
+        };
         let snapshot = build_snapshot(
             self.config.process_id,
             market,
@@ -1502,7 +1516,7 @@ impl BtcPaperProcessRunner {
             directional_model,
         );
         let mut decision = DeterministicBtcStrategy::evaluate(&self.config.strategy, &snapshot);
-        enforce_runtime_readiness(&mut decision, &observation.readiness);
+        enforce_runtime_readiness(&mut decision, &observation.readiness, &self.config.strategy);
         if decision.approved_intent.is_some()
             && self
                 .repository
@@ -2200,23 +2214,31 @@ fn snapshot_quality_flags(
     config: &BtcStrategyConfig,
 ) -> Vec<String> {
     let mut flags = Vec::new();
-    if !readiness.ready {
+    let directional_model = directional_model_configured(config);
+    if !runtime_readiness_satisfied(config, readiness) {
         flags.push("runtime_not_ready".to_string());
         flags.extend(
             readiness
                 .reasons
                 .iter()
+                .filter(|reason| {
+                    !directional_model || !chainlink_reference_readiness_reason(reason)
+                })
                 .map(|reason| format!("runtime:{reason}")),
         );
     }
-    if directional_model_selection(config).is_some() && snapshot.directional_model.is_none() {
+    if directional_model && snapshot.directional_model.is_none() {
         flags.push("missing_directional_model_features".to_string());
     }
-    match snapshot.chainlink_age_ms {
-        None => flags.push("missing_chainlink".to_string()),
-        Some(age) if age < 0 => flags.push("future_chainlink_receipt".to_string()),
-        Some(age) if age > config.max_reference_age_ms => flags.push("stale_chainlink".to_string()),
-        Some(_) => {}
+    if !directional_model {
+        match snapshot.chainlink_age_ms {
+            None => flags.push("missing_chainlink".to_string()),
+            Some(age) if age < 0 => flags.push("future_chainlink_receipt".to_string()),
+            Some(age) if age > config.max_reference_age_ms => {
+                flags.push("stale_chainlink".to_string())
+            }
+            Some(_) => {}
+        }
     }
     match snapshot.binance_age_ms {
         None => flags.push("missing_binance".to_string()),
@@ -2224,9 +2246,10 @@ fn snapshot_quality_flags(
         Some(age) if age > config.max_reference_age_ms => flags.push("stale_binance".to_string()),
         Some(_) => {}
     }
-    if snapshot
-        .source_skew_ms
-        .is_none_or(|skew| skew > config.max_source_skew_ms)
+    if !directional_model
+        && snapshot
+            .source_skew_ms
+            .is_none_or(|skew| skew > config.max_source_skew_ms)
     {
         flags.push("source_timestamp_skew".to_string());
     }
@@ -2299,12 +2322,39 @@ fn snapshot_quality_flags(
     flags
 }
 
-fn enforce_runtime_readiness(decision: &mut BtcDecision, readiness: &super::types::Readiness) {
-    if !readiness.ready {
+fn enforce_runtime_readiness(
+    decision: &mut BtcDecision,
+    readiness: &super::types::Readiness,
+    config: &BtcStrategyConfig,
+) {
+    if !runtime_readiness_satisfied(config, readiness) {
         decision.action = BtcDecisionAction::NoTrade;
         decision.reject_reason = Some(BtcRejectReason::RuntimeNotReady);
         decision.approved_intent = None;
     }
+}
+
+fn runtime_readiness_satisfied(
+    config: &BtcStrategyConfig,
+    readiness: &super::types::Readiness,
+) -> bool {
+    readiness.ready
+        || (directional_model_configured(config)
+            && !readiness.reasons.is_empty()
+            && readiness
+                .reasons
+                .iter()
+                .all(|reason| chainlink_reference_readiness_reason(reason)))
+}
+
+fn chainlink_reference_readiness_reason(reason: &str) -> bool {
+    let Some((kind, source)) = reason.split_once(':') else {
+        return false;
+    };
+    matches!(
+        kind,
+        "missing_reference" | "future_reference" | "stale_reference"
+    ) && source == ReferencePriceSource::RtdsChainlink.as_str()
 }
 
 fn observation_clob_connection_id(
@@ -2337,6 +2387,13 @@ fn directional_model_selection(config: &BtcStrategyConfig) -> Option<RuntimeMode
     }
 }
 
+fn directional_model_configured(config: &BtcStrategyConfig) -> bool {
+    matches!(
+        config.decision_strategy.as_ref(),
+        Some(BtcDecisionStrategyConfig::BtcDirectionalModel { .. })
+    )
+}
+
 fn latest_directional_model_candidate(
     policy: RuntimePredictionPolicy,
     window_start: DateTime<Utc>,
@@ -2363,19 +2420,15 @@ fn build_directional_model_feature_snapshot(
     market: &BtcIntervalMarket,
     features: DirectionalFeatureVector,
 ) -> Result<BtcDirectionalModelFeatureSnapshot> {
-    let input_sha256 = sha256_json(&serde_json::json!({
-        "contract": "btc_directional_model_input_v1",
-        "model_key": selection.model_key,
-        "model_artifact_sha256": selection.artifact_sha256,
-        "feature_schema_version": features.schema_version(),
-        "feature_schema_sha256": selection.feature_schema_sha256,
-        "feature_names": features.names().as_slice(),
-        "market_id": market.market_id,
-        "window_start": market.window_start,
-        "feature_as_of": features.feature_as_of,
-        "seconds_elapsed": features.seconds_elapsed,
-        "feature_values": &features.values,
-    }))?;
+    let input_sha256 = directional_model_input_sha256(
+        selection,
+        features.schema_version(),
+        &market.market_id,
+        market.window_start,
+        features.feature_as_of,
+        i64::from(features.seconds_elapsed),
+        &features.values,
+    )?;
     Ok(BtcDirectionalModelFeatureSnapshot {
         model_key: selection.model_key.clone(),
         model_artifact_sha256: selection.artifact_sha256.clone(),
@@ -2880,6 +2933,10 @@ mod tests {
             SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE,
             SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION,
         },
+        directional_model::{
+            BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION, BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256,
+            BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256, BTC_DIRECTIONAL_MODEL_V1_KEY,
+        },
         predictive_regime_v2::ShadowPredictiveRegimeV2CandidateSource,
         strategy::{
             ApprovedIntent, BtcDecisionStrategyConfig, BtcDirectionalPredictionConfig,
@@ -2964,6 +3021,28 @@ mod tests {
             None
         );
         assert_eq!(runtime.claim("market-b", first), Some((first, true)));
+    }
+
+    #[test]
+    fn directional_model_runtime_state_is_isolated_per_trading_process_runner() {
+        let first = Utc.with_ymd_and_hms(2026, 7, 27, 12, 1, 0).unwrap();
+        let mut strategy_only = DirectionalModelProcessRuntime::default();
+        let mut loss_floor = DirectionalModelProcessRuntime::default();
+
+        assert_eq!(
+            strategy_only.claim("shared-market", first),
+            Some((first, true))
+        );
+        assert_eq!(
+            loss_floor.claim("shared-market", first),
+            Some((first, true))
+        );
+        assert!(strategy_only.complete("shared-market", first, true));
+        assert!(loss_floor.complete("shared-market", first, false));
+
+        let next = first + chrono::Duration::seconds(5);
+        assert_eq!(strategy_only.claim("shared-market", next), None);
+        assert_eq!(loss_floor.claim("shared-market", next), Some((next, false)));
     }
 
     fn shadow_predictive_regime_v2_config() -> ShadowPredictiveRegimeCircuitBreakerV2Config {
@@ -4203,6 +4282,139 @@ mod tests {
     }
 
     #[test]
+    fn directional_model_execution_inputs_preserve_only_required_point_in_time_lineage() {
+        let window_start = Utc.with_ymd_and_hms(2026, 7, 27, 12, 0, 0).unwrap();
+        let observed_at = window_start + chrono::Duration::seconds(180);
+        let connection_id = Uuid::from_u128(501);
+        let market = BtcIntervalMarket {
+            event_id: "event".to_string(),
+            event_slug: "btc-updown-5m-1785153600".to_string(),
+            series_slug: "btc-up-or-down-5m".to_string(),
+            market_id: "model-market".to_string(),
+            condition_id: "condition".to_string(),
+            window_start,
+            window_end: window_start + chrono::Duration::seconds(300),
+            up_token_id: "up".to_string(),
+            down_token_id: "down".to_string(),
+            tick_size: dec!(0.01),
+            minimum_order_size: Some(dec!(1)),
+            resolution_source: "chainlink".to_string(),
+            active: true,
+            closed: false,
+            accepting_orders: true,
+            fees_enabled: true,
+            fee_schedule: serde_json::json!({}),
+            raw_payload: serde_json::json!({}),
+        };
+        let binance = ReferencePriceTick {
+            tick_id: Uuid::from_u128(502),
+            dedup_key: "binance-current".to_string(),
+            source: super::super::types::ReferencePriceSource::DirectBinance,
+            symbol: "BTCUSD".to_string(),
+            price: dec!(118000),
+            source_timestamp: observed_at - chrono::Duration::milliseconds(10),
+            envelope_timestamp: None,
+            received_at: observed_at - chrono::Duration::milliseconds(8),
+            connection_id: Uuid::from_u128(503),
+            ingest_sequence: 504,
+            source_event_id: None,
+            raw_payload: serde_json::json!({}),
+        };
+        let checkpoint = |outcome: &str, checkpoint_id: u128, sequence| OrderbookCheckpoint {
+            checkpoint_id: Uuid::from_u128(checkpoint_id),
+            market_id: market.market_id.clone(),
+            token_id: outcome.to_string(),
+            source_timestamp: observed_at - chrono::Duration::milliseconds(6),
+            received_at: observed_at - chrono::Duration::milliseconds(4),
+            connection_id,
+            ingest_sequence: sequence,
+            source_hash: None,
+            tick_size: dec!(0.01),
+            best_bid: Some(dec!(0.39)),
+            best_ask: Some(dec!(0.40)),
+            bids: vec![super::super::types::OrderbookLevel {
+                price: dec!(0.39),
+                size: dec!(10),
+            }],
+            asks: vec![super::super::types::OrderbookLevel {
+                price: dec!(0.40),
+                size: dec!(10),
+            }],
+            integrity_status: FeedIntegrityStatus::Ok,
+        };
+        let inputs = BtcPointInTimeInputs {
+            chainlink_open: None,
+            chainlink_current: None,
+            chainlink_history: Vec::new(),
+            binance_history: vec![binance.clone()],
+            up_book: Some(checkpoint("up", 505, 506)),
+            down_book: Some(checkpoint("down", 507, 508)),
+            fee_rate: Some(dec!(0.25)),
+            fee_observed_at: Some(observed_at - chrono::Duration::milliseconds(2)),
+        };
+        let directional_model = BtcDirectionalModelFeatureSnapshot {
+            model_key: BTC_DIRECTIONAL_MODEL_V1_KEY.to_string(),
+            model_artifact_sha256: BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256.to_string(),
+            feature_schema_version: BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION.to_string(),
+            feature_schema_sha256: BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256.to_string(),
+            feature_as_of: observed_at,
+            seconds_elapsed: 180,
+            feature_values: Vec::new(),
+            input_sha256: "a".repeat(64),
+        };
+
+        let snapshot = build_snapshot(
+            Uuid::from_u128(509),
+            &market,
+            observed_at,
+            &inputs,
+            dec!(5),
+            BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION,
+            observed_at,
+            Some(directional_model),
+        );
+
+        assert_eq!(snapshot.chainlink_open_price, None);
+        assert_eq!(snapshot.chainlink_price, None);
+        assert_eq!(snapshot.chainlink_age_ms, None);
+        assert_eq!(snapshot.binance_price, Some(binance.price));
+        assert_eq!(snapshot.binance_return_1s, None);
+        assert_eq!(snapshot.binance_return_5s, None);
+        assert_eq!(snapshot.binance_return_30s, None);
+        assert_eq!(snapshot.realized_volatility, None);
+        assert_eq!(snapshot.binance_chainlink_basis_bps, None);
+        assert_eq!(snapshot.lineage.binance_tick_id, Some(binance.tick_id));
+        assert_eq!(
+            snapshot.lineage.binance_source_timestamp,
+            Some(binance.source_timestamp)
+        );
+        assert_eq!(
+            snapshot.lineage.binance_received_at,
+            Some(binance.received_at)
+        );
+        assert_eq!(
+            snapshot.lineage.binance_ingest_sequence,
+            Some(binance.ingest_sequence)
+        );
+        assert_eq!(
+            snapshot.lineage.up_book_checkpoint_id,
+            Some(Uuid::from_u128(505))
+        );
+        assert_eq!(
+            snapshot.lineage.down_book_checkpoint_id,
+            Some(Uuid::from_u128(507))
+        );
+        assert_eq!(snapshot.lineage.up_book_connection_id, Some(connection_id));
+        assert_eq!(
+            snapshot.lineage.down_book_connection_id,
+            Some(connection_id)
+        );
+        assert_eq!(snapshot.up_book.executable_ask_vwap, Some(dec!(0.40)));
+        assert_eq!(snapshot.down_book.executable_ask_vwap, Some(dec!(0.40)));
+        assert_eq!(snapshot.fee_rate, Some(dec!(0.25)));
+    }
+
+    #[test]
     fn book_walk_records_full_target_limit() {
         let now = Utc::now();
         let checkpoint = OrderbookCheckpoint {
@@ -4287,7 +4499,11 @@ mod tests {
             }),
             prediction: Some(prediction.clone()),
         };
-        enforce_runtime_readiness(&mut decision, &Readiness::default());
+        enforce_runtime_readiness(
+            &mut decision,
+            &Readiness::default(),
+            &BtcStrategyConfig::default(),
+        );
         assert_eq!(decision.action, BtcDecisionAction::NoTrade);
         assert_eq!(
             decision.reject_reason,
@@ -4295,6 +4511,99 @@ mod tests {
         );
         assert!(decision.approved_intent.is_none());
         assert_eq!(decision.prediction, Some(prediction));
+    }
+
+    #[test]
+    fn directional_model_runtime_readiness_ignores_only_chainlink_reference_failures() {
+        let now = Utc::now();
+        let prediction = BtcStrategyPrediction::DirectionalPrediction {
+            outcome: BtcOutcome::Up,
+            probability: dec!(0.92),
+            conservative_probability: dec!(0.92),
+            minimum_conservative_probability: dec!(0.89),
+            probability_uncertainty: Decimal::ZERO,
+            executable_price: Some(dec!(0.80)),
+            direct_taker_fee_per_share: Some(dec!(0.01)),
+            direct_net_edge_per_share: Some(dec!(0.11)),
+        };
+        let approved = BtcDecision {
+            decision_id: Uuid::new_v4(),
+            process_id: Uuid::new_v4(),
+            feature_snapshot_id: Uuid::new_v4(),
+            evaluated_at: now,
+            action: BtcDecisionAction::BuyUp,
+            reject_reason: None,
+            fair_value: None,
+            up_edge: None,
+            down_edge: None,
+            approved_intent: Some(ApprovedIntent {
+                intent_id: Uuid::new_v4(),
+                process_id: Uuid::new_v4(),
+                feature_snapshot_id: Uuid::new_v4(),
+                market_id: "market".to_string(),
+                window_start: now,
+                outcome: BtcOutcome::Up,
+                token_id: "up".to_string(),
+                limit_price: dec!(0.80),
+                size: dec!(5),
+                expected_net_edge: dec!(0.55),
+                expected_net_edge_per_share: dec!(0.11),
+                strategy_version: "test".to_string(),
+                feature_schema_version: BTC_FEATURE_SCHEMA_VERSION.to_string(),
+            }),
+            prediction: Some(prediction),
+        };
+        let model_config = BtcStrategyConfig {
+            decision_strategy: Some(BtcDecisionStrategyConfig::BtcDirectionalModel {
+                model_key: BTC_DIRECTIONAL_MODEL_V1_KEY.to_string(),
+                artifact_sha256: BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256.to_string(),
+                feature_schema_sha256: BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256.to_string(),
+            }),
+            ..BtcStrategyConfig::default()
+        };
+        for reason in [
+            "missing_reference:rtds_chainlink",
+            "future_reference:rtds_chainlink",
+            "stale_reference:rtds_chainlink",
+        ] {
+            let readiness = Readiness {
+                ready: false,
+                checked_at: now,
+                reasons: vec![reason.to_string()],
+                ..Readiness::default()
+            };
+            let mut decision = approved.clone();
+            enforce_runtime_readiness(&mut decision, &readiness, &model_config);
+            assert_eq!(decision.action, BtcDecisionAction::BuyUp);
+            assert!(decision.approved_intent.is_some());
+
+            let mut legacy = approved.clone();
+            enforce_runtime_readiness(&mut legacy, &readiness, &BtcStrategyConfig::default());
+            assert_eq!(legacy.action, BtcDecisionAction::NoTrade);
+            assert_eq!(legacy.reject_reason, Some(BtcRejectReason::RuntimeNotReady));
+        }
+        for reason in [
+            "missing_reference:direct_binance",
+            "stale_reference:direct_binance",
+            "missing_book:up",
+            "book_integrity:up",
+            "market_not_in_trade_window",
+        ] {
+            let readiness = Readiness {
+                ready: false,
+                checked_at: now,
+                reasons: vec![reason.to_string()],
+                ..Readiness::default()
+            };
+            let mut decision = approved.clone();
+            enforce_runtime_readiness(&mut decision, &readiness, &model_config);
+            assert_eq!(decision.action, BtcDecisionAction::NoTrade);
+            assert_eq!(
+                decision.reject_reason,
+                Some(BtcRejectReason::RuntimeNotReady)
+            );
+            assert!(decision.approved_intent.is_none());
+        }
     }
 
     #[test]
