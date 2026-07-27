@@ -158,14 +158,14 @@ services:
       dockerfile: packages/polymarket-bot/Dockerfile
       args:
         POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: polymarket/polymarket-bot:btc-paper
+    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:pmxt-saturation}
     container_name: polymarket-backfill-worker
     hostname: polymarket-backfill-worker
     entrypoint:
       - /usr/local/bin/polymarket-backfill-worker
     init: true
     mem_limit: 1536m
-    cpus: "1.5"
+    cpus: "1.0"
     pids_limit: 128
     logging: *default-logging
     env_file:
@@ -193,10 +193,10 @@ services:
       POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
       POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "2"
       POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
-      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "42949672960"
-      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "172800"
+      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "8589934592"
+      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "21600"
       POLYMARKET_PMXT_PREFETCH_CONCURRENCY: "4"
-      POLYMARKET_PMXT_PREFETCH_ARCHIVES: "48"
+      POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
     volumes:
       - /Volumes/docker-data/polymarket-bot/backfill-cache:/var/lib/polymarket/backfill-cache
     depends_on:
@@ -216,14 +216,14 @@ services:
       dockerfile: packages/polymarket-bot/Dockerfile
       args:
         POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: polymarket/polymarket-bot:btc-paper
+    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:pmxt-saturation}
     container_name: polymarket-backfill-worker-2
     hostname: polymarket-backfill-worker-2
     entrypoint:
       - /usr/local/bin/polymarket-backfill-worker
     init: true
     mem_limit: 1536m
-    cpus: "1.5"
+    cpus: "1.0"
     pids_limit: 128
     logging: *default-logging
     env_file:
@@ -251,10 +251,10 @@ services:
       POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
       POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "2"
       POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
-      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "42949672960"
-      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "172800"
+      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "8589934592"
+      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "21600"
       POLYMARKET_PMXT_PREFETCH_CONCURRENCY: "4"
-      POLYMARKET_PMXT_PREFETCH_ARCHIVES: "48"
+      POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
     volumes:
       - /Volumes/docker-data/polymarket-bot/backfill-cache:/var/lib/polymarket/backfill-cache
     depends_on:
@@ -274,14 +274,14 @@ services:
       dockerfile: packages/polymarket-bot/Dockerfile
       args:
         POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: polymarket/polymarket-bot:btc-paper
+    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:pmxt-saturation}
     container_name: polymarket-backfill-worker-3
     hostname: polymarket-backfill-worker-3
     entrypoint:
       - /usr/local/bin/polymarket-backfill-worker
     init: true
     mem_limit: 1536m
-    cpus: "1.5"
+    cpus: "1.0"
     pids_limit: 128
     logging: *default-logging
     env_file:
@@ -309,10 +309,184 @@ services:
       POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
       POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "2"
       POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
-      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "42949672960"
-      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "172800"
+      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "8589934592"
+      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "21600"
       POLYMARKET_PMXT_PREFETCH_CONCURRENCY: "4"
-      POLYMARKET_PMXT_PREFETCH_ARCHIVES: "48"
+      POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
+    volumes:
+      - /Volumes/docker-data/polymarket-bot/backfill-cache:/var/lib/polymarket/backfill-cache
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      timescaledb-0:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+  polymarket-backfill-worker-4:
+    build:
+      context: .
+      dockerfile: packages/polymarket-bot/Dockerfile
+      args:
+        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
+    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:pmxt-saturation}
+    container_name: polymarket-backfill-worker-4
+    hostname: polymarket-backfill-worker-4
+    entrypoint:
+      - /usr/local/bin/polymarket-backfill-worker
+    init: true
+    mem_limit: 1536m
+    cpus: "1.0"
+    pids_limit: 128
+    logging: *default-logging
+    env_file:
+      - *postgres-env-file
+    environment:
+      RUST_LOG: "info"
+      POSTGRES_HOST: "timescaledb-0"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "polymarket"
+      POSTGRES_SSL_MODE: "disable"
+      POSTGRES_SSL_CA_FILE: ""
+      POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
+      POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
+      POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://r2v2.pmxt.dev"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_REST_URL: "https://api.dataengine.chain.link"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_FEED_ID: "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "1000"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY:-}"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET:-}"
+      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-4"
+      POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-4"
+      POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
+      POLYMARKET_BACKFILL_LEASE_SECS: "120"
+      POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
+      POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "2"
+      POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
+      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "8589934592"
+      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "21600"
+      POLYMARKET_PMXT_PREFETCH_CONCURRENCY: "4"
+      POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
+    volumes:
+      - /Volumes/docker-data/polymarket-bot/backfill-cache:/var/lib/polymarket/backfill-cache
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      timescaledb-0:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+  polymarket-backfill-worker-5:
+    build:
+      context: .
+      dockerfile: packages/polymarket-bot/Dockerfile
+      args:
+        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
+    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:pmxt-saturation}
+    container_name: polymarket-backfill-worker-5
+    hostname: polymarket-backfill-worker-5
+    entrypoint:
+      - /usr/local/bin/polymarket-backfill-worker
+    init: true
+    mem_limit: 1536m
+    cpus: "1.0"
+    pids_limit: 128
+    logging: *default-logging
+    env_file:
+      - *postgres-env-file
+    environment:
+      RUST_LOG: "info"
+      POSTGRES_HOST: "timescaledb-0"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "polymarket"
+      POSTGRES_SSL_MODE: "disable"
+      POSTGRES_SSL_CA_FILE: ""
+      POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
+      POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
+      POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://r2v2.pmxt.dev"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_REST_URL: "https://api.dataengine.chain.link"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_FEED_ID: "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "1000"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY:-}"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET:-}"
+      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-5"
+      POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-5"
+      POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
+      POLYMARKET_BACKFILL_LEASE_SECS: "120"
+      POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
+      POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "2"
+      POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
+      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "8589934592"
+      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "21600"
+      POLYMARKET_PMXT_PREFETCH_CONCURRENCY: "4"
+      POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
+    volumes:
+      - /Volumes/docker-data/polymarket-bot/backfill-cache:/var/lib/polymarket/backfill-cache
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      timescaledb-0:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+  polymarket-backfill-worker-6:
+    build:
+      context: .
+      dockerfile: packages/polymarket-bot/Dockerfile
+      args:
+        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
+    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:pmxt-saturation}
+    container_name: polymarket-backfill-worker-6
+    hostname: polymarket-backfill-worker-6
+    entrypoint:
+      - /usr/local/bin/polymarket-backfill-worker
+    init: true
+    mem_limit: 1536m
+    cpus: "1.0"
+    pids_limit: 128
+    logging: *default-logging
+    env_file:
+      - *postgres-env-file
+    environment:
+      RUST_LOG: "info"
+      POSTGRES_HOST: "timescaledb-0"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "polymarket"
+      POSTGRES_SSL_MODE: "disable"
+      POSTGRES_SSL_CA_FILE: ""
+      POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
+      POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
+      POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://r2v2.pmxt.dev"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_REST_URL: "https://api.dataengine.chain.link"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_FEED_ID: "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "1000"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY:-}"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET:-}"
+      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-6"
+      POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-6"
+      POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
+      POLYMARKET_BACKFILL_LEASE_SECS: "120"
+      POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
+      POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "2"
+      POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
+      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "8589934592"
+      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "21600"
+      POLYMARKET_PMXT_PREFETCH_CONCURRENCY: "4"
+      POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
     volumes:
       - /Volumes/docker-data/polymarket-bot/backfill-cache:/var/lib/polymarket/backfill-cache
     depends_on:
