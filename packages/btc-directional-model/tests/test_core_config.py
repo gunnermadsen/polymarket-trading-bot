@@ -39,6 +39,14 @@ def balanced_coverage_config() -> Path:
     )
 
 
+def conservative_coverage_config() -> Path:
+    return (
+        Path(__file__).parent.parent
+        / "configs"
+        / "btc-5m-directional-core-coverage-089-20260421-20260720.toml"
+    )
+
+
 def test_expanded_core_config_has_frozen_contiguous_cohorts() -> None:
     config = load_core_config(repository_config())
 
@@ -73,6 +81,18 @@ def test_balanced_coverage_challenger_uses_next_fixed_policy() -> None:
     assert config.gates.minimum_coverage == 0.55
     assert config.paths.artifacts == load_core_config(extended_config()).paths.artifacts
     assert config.paths.runs != load_core_config(coverage_config()).paths.runs
+
+
+def test_conservative_coverage_challenger_preserves_accuracy_gates() -> None:
+    config = load_core_config(conservative_coverage_config())
+
+    assert config.model.confidence_min == 0.89
+    assert config.model.confidence_max == 0.89
+    assert config.gates.target_accuracy == 0.875
+    assert config.gates.target_wilson_lower == 0.865
+    assert config.gates.minimum_coverage == 0.55
+    assert config.paths.artifacts == load_core_config(extended_config()).paths.artifacts
+    assert config.paths.runs != load_core_config(balanced_coverage_config()).paths.runs
 
 
 def test_core_config_rejects_holdout_overlap(tmp_path: Path) -> None:
