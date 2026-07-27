@@ -2267,7 +2267,7 @@
       "id": 21,
       "options": {
         "colorMode": "value",
-        "graphMode": "none",
+        "graphMode": "area",
         "justifyMode": "center",
         "orientation": "horizontal",
         "percentChangeColorMode": "standard",
@@ -2359,7 +2359,7 @@
       "id": 22,
       "options": {
         "colorMode": "value",
-        "graphMode": "none",
+        "graphMode": "area",
         "justifyMode": "center",
         "orientation": "horizontal",
         "percentChangeColorMode": "standard",
@@ -2451,7 +2451,7 @@
       "id": 23,
       "options": {
         "colorMode": "value",
-        "graphMode": "none",
+        "graphMode": "area",
         "justifyMode": "center",
         "orientation": "horizontal",
         "percentChangeColorMode": "standard",
