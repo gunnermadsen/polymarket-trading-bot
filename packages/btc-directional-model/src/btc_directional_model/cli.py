@@ -15,6 +15,7 @@ from .core_training import develop_core_models, evaluate_core_holdout
 from .extract import extract_source
 from .features import build_features
 from .report import generate_report
+from .runtime_export import export_runtime_model
 from .train import train_models
 
 
@@ -43,6 +44,11 @@ def main() -> None:
     core_evaluate = subparsers.add_parser("core-evaluate-holdout")
     core_evaluate.add_argument("--config", type=Path, required=True)
     core_evaluate.add_argument("--freeze", type=Path, required=True)
+    core_export = subparsers.add_parser("core-export-runtime")
+    core_export.add_argument("--freeze", type=Path, required=True)
+    core_export.add_argument("--golden-features", type=Path, required=True)
+    core_export.add_argument("--output-root", type=Path, required=True)
+    core_export.add_argument("--model-key", required=True)
     core_run = subparsers.add_parser("core-run")
     core_run.add_argument("--config", type=Path, required=True)
     core_run.add_argument("--force", action="store_true")
@@ -61,6 +67,15 @@ def main() -> None:
     if args.command == "core-report":
         destination = generate_core_report(args.run.resolve())
         print(destination)
+        return
+    if args.command == "core-export-runtime":
+        destination = export_runtime_model(
+            freeze_dir=args.freeze,
+            golden_features=args.golden_features,
+            output_root=args.output_root,
+            model_key=args.model_key,
+        )
+        print(f"runtime model: {destination}")
         return
     if args.command.startswith("core-"):
         run_core_command(args)

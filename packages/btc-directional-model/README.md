@@ -72,6 +72,39 @@ cached partitions against the SQL/configuration provenance manifest. Feature con
 only the partitions named in that manifest. Use `--force` only when intentionally replacing a
 changed extraction or feature contract.
 
+## Native runtime export
+
+The standardized runtime export converts a checksummed frozen histogram candidate into immutable,
+Python-free JSON for native inference. It verifies the freeze-manifest checksum, training-joblib
+checksum, model-summary checksum, feature order, calibrator, confidence policy, and golden-feature
+cache before reading estimator internals. It does not reevaluate or access holdout labels.
+
+Export the selected model:
+
+```bash
+.venv/bin/btc-directional-model core-export-runtime \
+  --freeze artifacts/btc-core-20260421-20260620/20260726T234955Z-histogram_enriched \
+  --golden-features data/btc-core-20260421-20260620/features/holdout.parquet \
+  --output-root runtime-models \
+  --model-key btc-5m-directional-histogram-enriched-20260421-20260620-v1
+```
+
+Each model key owns exactly three files:
+
+- `model.json` contains the ordered feature and median-imputation contract, baseline logit, numeric
+  histogram trees, probability calibration, `no_trade` confidence behavior, prediction timing,
+  and immutable training provenance;
+- `golden-vectors.json` covers Up, Down, `no_trade`, confidence boundaries, and non-finite
+  imputation with exact expected raw logits and calibrated probabilities;
+- `manifest.json` binds the model and golden vectors by SHA-256 and repeats the feature-schema
+  identity needed at container startup.
+
+The feature-schema SHA-256 is calculated from the UTF-8 compact, key-sorted JSON object
+`{"names":[...],"schema_version":"..."}`. Feature order is therefore part of the identity.
+Exporting the same key from the same inputs is idempotent. A key that already exists with different
+bytes is rejected; a newly trained replacement must use a new immutable model key. This keeps model
+replacement repeatable without permitting a running process's model identity to change in place.
+
 ## Training contract
 
 Markets are split chronologically and kept disjoint across fitting, calibration, and holdout
@@ -123,8 +156,9 @@ The original workflow writes strict JSON metrics, a checksummed nonbinary model 
 inference vectors, holdout predictions, a confusion-matrix CSV, and a self-contained Plotly report.
 The expanded BTC-core workflow writes a training-only joblib artifact, a portable JSON summary when
 the selected family is logistic, source and feature hashes, walk-forward/policy predictions,
-holdout access evidence, and the same style of self-contained report. It does not install or mount
-anything in the Rust container. Open a report in a local browser with:
+holdout access evidence, and the same style of self-contained report. The explicit runtime-export
+command is the only path from that training artifact to a checked-in native model bundle. Open a
+report in a local browser with:
 
 ```bash
 .venv/bin/btc-directional-model serve --run runs/<run-id> --port 8765

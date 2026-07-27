@@ -1,0 +1,12 @@
+{
+  "feature_schema_sha256": "392aac87ecbc6704929b0ab91aed5de90dff26daf40edfa4e22d2c78a9d03dfc",
+  "feature_schema_version": "btc-5m-directional-core-features-v2",
+  "golden_vectors_file": "golden-vectors.json",
+  "golden_vectors_sha256": "6f35cbf96b6d305e89fdc234f46926727df6d882a68213410d09d97810a12024",
+  "model_file": "model.json",
+  "model_key": "btc-5m-directional-histogram-enriched-20260421-20260620-v1",
+  "model_sha256": "e07160295cac3df02d9bec631e96ce34fa66a71a72d04e79e4bcf0fd0f8336b7",
+  "schema_version": "capitonic-btc-directional-runtime-manifest-v1",
+  "source_freeze_manifest_sha256": "19b8f8d08be19f4a69838310aadd2ead889ec7db6f16886487d00a4e376ef385",
+  "source_training_model_sha256": "e7562b15b65032d14de6b1259ab6651e0a43c25e5e67539a752aa557619ca128"
+}
