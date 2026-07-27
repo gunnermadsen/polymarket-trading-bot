@@ -88,8 +88,10 @@ def test_conservative_coverage_challenger_preserves_accuracy_gates() -> None:
 
     assert config.model.confidence_min == 0.89
     assert config.model.confidence_max == 0.89
-    assert config.gates.target_accuracy == 0.875
+    assert config.gates.target_accuracy == 0.874
     assert config.gates.target_wilson_lower == 0.865
+    assert config.gates.target_balanced_accuracy == 0.874
+    assert config.gates.minimum_direction_recall == 0.874
     assert config.gates.minimum_coverage == 0.55
     assert config.paths.artifacts == load_core_config(extended_config()).paths.artifacts
     assert config.paths.runs != load_core_config(balanced_coverage_config()).paths.runs

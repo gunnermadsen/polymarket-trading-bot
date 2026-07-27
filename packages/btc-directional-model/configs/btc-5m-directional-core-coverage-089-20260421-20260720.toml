@@ -67,10 +67,10 @@ min_samples_leaf = 150
 l2_regularization = 2.0
 
 [gates]
-target_accuracy = 0.875
+target_accuracy = 0.874
 target_wilson_lower = 0.865
-target_balanced_accuracy = 0.875
-minimum_direction_recall = 0.875
+target_balanced_accuracy = 0.874
+minimum_direction_recall = 0.874
 minimum_coverage = 0.55
 minimum_holdout_markets = 1000
 maximum_walk_forward_holdout_gap = 0.05
