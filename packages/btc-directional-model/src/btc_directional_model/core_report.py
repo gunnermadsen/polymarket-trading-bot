@@ -110,11 +110,7 @@ def render_document(metrics: dict[str, Any], plots: list[str]) -> str:
             + "</ul></section>"
         )
     plots_html = "".join(f'<section class="panel plot">{plot}</section>' for plot in plots)
-    holdout_note = (
-        "The frozen candidate was evaluated exactly once on the isolated holdout."
-        if holdout is not None
-        else "The holdout was not opened because pre-holdout qualification did not pass."
-    )
+    holdout_note = holdout_handling_note(metrics)
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -138,7 +134,7 @@ code {{ color:var(--accent);word-break:break-all }} ul {{ margin:0;padding-left:
 </style></head><body><main>
 <h1>BTC five-minute universal core</h1>
 <div class="subtitle">{html.escape(evaluation_label)} · first confidence crossing ·
-no orderbook features · trading deployment remains blocked pending execution economics</div>
+no orderbook features · live-capital deployment remains blocked pending forward paper economics</div>
 <div class="cards">{cards}</div>
 <section class="panel" style="margin-bottom:14px"><h2>Qualification contract</h2>
 <table><thead><tr><th>Gate</th><th>Observed</th><th>Required</th><th>Status</th></tr></thead>
@@ -160,6 +156,17 @@ no orderbook features · trading deployment remains blocked pending execution ec
 <section class="panel" style="margin-top:14px"><h2>Runtime provenance</h2>
 {runtime_table(metrics)}</section>
 </main></body></html>"""
+
+
+def holdout_handling_note(metrics: dict[str, Any]) -> str:
+    if metrics.get("holdout") is not None:
+        return "The frozen candidate was evaluated exactly once on the isolated holdout."
+    if metrics.get("ready_for_holdout") is True:
+        return (
+            "The candidate passed every pre-holdout gate; the isolated holdout "
+            "was deliberately not opened during this development-only run."
+        )
+    return "The holdout was not opened because pre-holdout qualification did not pass."
 
 
 def holdout_evaluation_label(metrics: dict[str, Any]) -> str:
