@@ -5,6 +5,7 @@ pub mod market;
 pub mod paper;
 pub mod predictive_regime_v2;
 pub mod process_runner;
+pub mod reliability_calibration;
 pub mod repository;
 pub mod runtime;
 pub mod strategy;

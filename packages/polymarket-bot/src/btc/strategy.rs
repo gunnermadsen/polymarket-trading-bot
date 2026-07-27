@@ -9,16 +9,21 @@ use super::types::{BtcOutcome, FeedIntegrityStatus};
 
 mod chainlink_path_conditioned;
 mod chainlink_persistence_calibrated;
+mod chainlink_persistence_reliability_calibrated;
 mod market_anchored;
 
 pub const BTC_FEATURE_SCHEMA_VERSION: &str = "btc_5m_features_v2";
 pub const BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION: &str =
     chainlink_persistence_calibrated::FEATURE_SCHEMA_VERSION;
+pub const BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_FEATURE_SCHEMA_VERSION: &str =
+    chainlink_persistence_reliability_calibrated::FEATURE_SCHEMA_VERSION;
 pub const BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION: &str =
     chainlink_path_conditioned::FEATURE_SCHEMA_VERSION;
 pub const BTC_STRATEGY_VERSION: &str = "btc_5m_chainlink_fair_value_v1";
 pub const BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION: &str =
     chainlink_persistence_calibrated::STRATEGY_VERSION;
+pub const BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_STRATEGY_VERSION: &str =
+    chainlink_persistence_reliability_calibrated::STRATEGY_VERSION;
 pub const BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION: &str =
     chainlink_path_conditioned::STRATEGY_VERSION;
 pub const BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION: &str = "btc_5m_volatility_continuation_v1";
@@ -32,6 +37,10 @@ pub const BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_ID: &str =
     chainlink_persistence_calibrated::PROFILE_ID;
 pub const BTC_CHAINLINK_PERSISTENCE_CALIBRATED_PROFILE_SHA256: &str =
     chainlink_persistence_calibrated::PROFILE_SHA256;
+pub const BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_PROFILE_ID: &str =
+    chainlink_persistence_reliability_calibrated::PROFILE_ID;
+pub const BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_PROFILE_SHA256: &str =
+    chainlink_persistence_reliability_calibrated::PROFILE_SHA256;
 pub const BTC_CHAINLINK_PATH_CONDITIONED_PROFILE_ID: &str = chainlink_path_conditioned::PROFILE_ID;
 pub const BTC_CHAINLINK_PATH_CONDITIONED_PROFILE_SHA256: &str =
     chainlink_path_conditioned::PROFILE_SHA256;
@@ -41,6 +50,8 @@ pub const BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_LINEAGE_VERSION: &str =
 pub const BTC_CHAINLINK_FAIR_VALUE_STRATEGY_FAMILY: &str = "btc_5m_chainlink_fair_value";
 pub const BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_FAMILY: &str =
     "btc_5m_chainlink_persistence_calibrated_fair_value";
+pub const BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_STRATEGY_FAMILY: &str =
+    "btc_5m_chainlink_persistence_reliability_calibrated_fair_value";
 pub const BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_FAMILY: &str =
     "btc_5m_chainlink_path_conditioned_fair_value";
 pub const BTC_VOLATILITY_CONTINUATION_STRATEGY_FAMILY: &str = "btc_5m_volatility_continuation";
@@ -94,6 +105,10 @@ impl Default for BtcVolatilityContinuationConfig {
 pub enum BtcDecisionStrategyConfig {
     ChainlinkFairValue {},
     ChainlinkPersistenceCalibratedFairValue {
+        profile_id: String,
+        profile_sha256: String,
+    },
+    ChainlinkPersistenceReliabilityCalibratedFairValue {
         profile_id: String,
         profile_sha256: String,
     },
@@ -211,6 +226,9 @@ impl BtcStrategyConfig {
             ResolvedBtcDecisionStrategy::ChainlinkPersistenceCalibratedFairValue(_) => {
                 BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_FAMILY
             }
+            ResolvedBtcDecisionStrategy::ChainlinkPersistenceReliabilityCalibratedFairValue(_) => {
+                BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_STRATEGY_FAMILY
+            }
             ResolvedBtcDecisionStrategy::ChainlinkPathConditionedFairValue(_) => {
                 BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_FAMILY
             }
@@ -229,6 +247,12 @@ impl BtcStrategyConfig {
                 profile_id,
                 profile_sha256,
             })
+            | Some(
+                BtcDecisionStrategyConfig::ChainlinkPersistenceReliabilityCalibratedFairValue {
+                    profile_id,
+                    profile_sha256,
+                },
+            )
             | Some(BtcDecisionStrategyConfig::ChainlinkPathConditionedFairValue {
                 profile_id,
                 profile_sha256,
@@ -660,6 +684,9 @@ enum ResolvedBtcDecisionStrategy<'a> {
     ChainlinkPersistenceCalibratedFairValue(
         &'static chainlink_persistence_calibrated::ChainlinkPersistenceCalibratedProfile,
     ),
+    ChainlinkPersistenceReliabilityCalibratedFairValue(
+        &'static chainlink_persistence_reliability_calibrated::ChainlinkPersistenceReliabilityCalibratedProfile,
+    ),
     ChainlinkPathConditionedFairValue(
         &'static chainlink_path_conditioned::ChainlinkPathConditionedProfile,
     ),
@@ -697,6 +724,23 @@ impl<'a> ResolvedBtcDecisionStrategy<'a> {
                         ),
                     )
                     .map(Self::ChainlinkPersistenceCalibratedFairValue)
+                }
+                BtcDecisionStrategyConfig::ChainlinkPersistenceReliabilityCalibratedFairValue {
+                    profile_id,
+                    profile_sha256,
+                } if config.strategy_version
+                    == BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_STRATEGY_VERSION
+                    && config.feature_schema_version
+                        == BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_FEATURE_SCHEMA_VERSION
+                    && config.volatility_continuation.is_none() =>
+                {
+                    chainlink_persistence_reliability_calibrated::resolve_profile(
+                        &chainlink_persistence_reliability_calibrated::ProfileSelection::new(
+                            profile_id,
+                            profile_sha256,
+                        ),
+                    )
+                    .map(Self::ChainlinkPersistenceReliabilityCalibratedFairValue)
                 }
                 BtcDecisionStrategyConfig::ChainlinkPathConditionedFairValue {
                     profile_id,
@@ -786,6 +830,15 @@ impl<'a> ResolvedBtcDecisionStrategy<'a> {
                 outcome_scope: BtcOutcomeScope::Both,
                 executable_price_bounds: None,
             }),
+            Self::ChainlinkPersistenceReliabilityCalibratedFairValue(profile) => {
+                Ok(BtcStrategyEstimate {
+                    fair_value: chainlink_persistence_reliability_calibrated::estimate(
+                        config, snapshot, profile,
+                    )?,
+                    outcome_scope: BtcOutcomeScope::Both,
+                    executable_price_bounds: None,
+                })
+            }
             Self::ChainlinkPathConditionedFairValue(profile) => Ok(BtcStrategyEstimate {
                 fair_value: chainlink_path_conditioned::estimate(config, snapshot, profile)?,
                 outcome_scope: BtcOutcomeScope::Both,
@@ -1173,6 +1226,9 @@ pub fn estimate_fair_value(
         ResolvedBtcDecisionStrategy::ChainlinkPersistenceCalibratedFairValue(profile) => {
             chainlink_persistence_calibrated::estimate(config, snapshot, profile)
         }
+        ResolvedBtcDecisionStrategy::ChainlinkPersistenceReliabilityCalibratedFairValue(
+            profile,
+        ) => chainlink_persistence_reliability_calibrated::estimate(config, snapshot, profile),
         ResolvedBtcDecisionStrategy::ChainlinkPathConditionedFairValue(profile) => {
             chainlink_path_conditioned::estimate(config, snapshot, profile)
         }
@@ -1501,6 +1557,12 @@ fn validate_config(config: &BtcStrategyConfig) -> Result<(), BtcRejectReason> {
         Ok(ResolvedBtcDecisionStrategy::ChainlinkPersistenceCalibratedFairValue(profile)) => {
             chainlink_persistence_calibrated::validate_strategy_config(config, profile).is_ok()
         }
+        Ok(ResolvedBtcDecisionStrategy::ChainlinkPersistenceReliabilityCalibratedFairValue(
+            profile,
+        )) => {
+            chainlink_persistence_reliability_calibrated::validate_strategy_config(config, profile)
+                .is_ok()
+        }
         Ok(ResolvedBtcDecisionStrategy::ChainlinkPathConditionedFairValue(profile)) => {
             chainlink_path_conditioned::validate_strategy_config(config, profile).is_ok()
         }
@@ -1650,6 +1712,9 @@ fn validate_snapshot(
         ResolvedBtcDecisionStrategy::resolve(config),
         Ok(
             ResolvedBtcDecisionStrategy::ChainlinkPersistenceCalibratedFairValue(_)
+                | ResolvedBtcDecisionStrategy::ChainlinkPersistenceReliabilityCalibratedFairValue(
+                    _
+                )
                 | ResolvedBtcDecisionStrategy::ChainlinkPathConditionedFairValue(_)
         )
     ) && snapshot.chainlink_return_5s.is_none()

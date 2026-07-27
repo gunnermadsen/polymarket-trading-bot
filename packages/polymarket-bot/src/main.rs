@@ -19,8 +19,10 @@ use polymarket_bot::{
         BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
         BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION,
         BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION,
-        BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION, BTC_FEATURE_SCHEMA_VERSION,
-        BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION,
+        BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION,
+        BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_FEATURE_SCHEMA_VERSION,
+        BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_STRATEGY_VERSION,
+        BTC_FEATURE_SCHEMA_VERSION, BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION,
         BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION, BTC_STRATEGY_VERSION,
         BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION,
     },
@@ -328,6 +330,12 @@ fn resolve_btc_strategy(
                 BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION,
                 BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION,
             ),
+            BtcDecisionStrategyConfig::ChainlinkPersistenceReliabilityCalibratedFairValue {
+                ..
+            } => (
+                BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_STRATEGY_VERSION,
+                BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_FEATURE_SCHEMA_VERSION,
+            ),
             BtcDecisionStrategyConfig::ChainlinkPathConditionedFairValue { .. } => (
                 BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION,
                 BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
@@ -382,6 +390,10 @@ fn resolve_btc_strategy(
             | (
                 BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION,
                 BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION
+            )
+            | (
+                BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_STRATEGY_VERSION,
+                BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_FEATURE_SCHEMA_VERSION
             )
             | (
                 BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION,
@@ -3346,6 +3358,63 @@ mod lifecycle_tests {
             ..BtcRealtimePaperControlConfig::default()
         };
         assert!(resolve_btc_strategy(&bad_control).is_err());
+    }
+
+    #[test]
+    fn selectable_v3_resolves_and_freezes_chainlink_reliability_profile() {
+        let profile_id =
+            polymarket_bot::btc::BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_PROFILE_ID;
+        let profile_sha256 =
+            polymarket_bot::btc::BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_PROFILE_SHA256;
+        let control = BtcRealtimePaperControlConfig {
+            schema_version: SELECTABLE_BTC_PROCESS_SCHEMA_VERSION.to_string(),
+            next_experiment_key: "btc-5m-chainlink-reliability-preview".to_string(),
+            preregistration_sha256: "8".repeat(64),
+            strategy: serde_json::json!({
+                "decision_strategy": {
+                    "type": "chainlink_persistence_reliability_calibrated_fair_value",
+                    "profile_id": profile_id,
+                    "profile_sha256": profile_sha256
+                },
+                "min_entry_price": "0.30"
+            }),
+            ..BtcRealtimePaperControlConfig::default()
+        };
+        let strategy = resolve_btc_strategy(&control).unwrap();
+        assert_eq!(
+            strategy.strategy_version,
+            BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_STRATEGY_VERSION
+        );
+        assert_eq!(
+            strategy.feature_schema_version,
+            BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_FEATURE_SCHEMA_VERSION
+        );
+        assert!(matches!(
+            strategy.decision_strategy,
+            Some(
+                BtcDecisionStrategyConfig::ChainlinkPersistenceReliabilityCalibratedFairValue { .. }
+            )
+        ));
+        let prepared = prepare_btc_start_definition(ResolvedBtcProcessDefinition {
+            control,
+            strategy,
+            entry_admission: None,
+            runtime: BtcRuntimeConfig {
+                enabled: true,
+                ..BtcRuntimeConfig::default()
+            },
+            paper_venue: PaperVenueConfig::default(),
+            paper_stress_previews: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(
+            prepared.frozen_process_config.raw["strategy"]["decision_strategy"],
+            serde_json::json!({
+                "type": "chainlink_persistence_reliability_calibrated_fair_value",
+                "profile_id": profile_id,
+                "profile_sha256": profile_sha256
+            })
+        );
     }
 
     #[test]
