@@ -31,6 +31,8 @@ GOLDEN_VECTORS_FILENAME = "golden-vectors.json"
 MODEL_KEY_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?")
 RAW_PROBABILITY_CLIP = (1e-9, 1.0 - 1e-9)
 CALIBRATION_LOGIT_CLIP = (-40.0, 40.0)
+RUNTIME_DIRECTORY_MODE = 0o755
+RUNTIME_FILE_MODE = 0o644
 
 
 def export_runtime_model(
@@ -602,6 +604,7 @@ def write_immutable_directory(
 ) -> None:
     if destination.exists():
         validate_immutable_directory(destination, files)
+        normalize_runtime_permissions(destination, files)
         return
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(
@@ -613,12 +616,14 @@ def write_immutable_directory(
     try:
         for name, payload in files.items():
             (staging / name).write_bytes(payload)
+        normalize_runtime_permissions(staging, files)
         try:
             staging.rename(destination)
         except OSError:
             if not destination.exists():
                 raise
             validate_immutable_directory(destination, files)
+            normalize_runtime_permissions(destination, files)
     finally:
         if staging.exists():
             shutil.rmtree(staging)
@@ -638,3 +643,12 @@ def validate_immutable_directory(
             raise RuntimeError(
                 f"immutable model key already exists with different content: {destination}"
             )
+
+
+def normalize_runtime_permissions(
+    destination: Path,
+    files: dict[str, bytes],
+) -> None:
+    destination.chmod(RUNTIME_DIRECTORY_MODE)
+    for name in files:
+        (destination / name).chmod(RUNTIME_FILE_MODE)

@@ -25,7 +25,8 @@ RUN cargo build --locked --release
 COPY packages/polymarket-bot/src ./src
 COPY packages/btc-directional-model/runtime-models /opt/polymarket-models
 
-RUN cargo clean --release -p polymarket-bot \
+RUN chmod -R u=rwX,go=rX /opt/polymarket-models \
+    && cargo clean --release -p polymarket-bot \
     && cargo build --locked --release \
     && cp /app/target/release/polymarket-bot /usr/local/bin/polymarket-bot \
     && cp /app/target/release/polymarket-backfill-worker /usr/local/bin/polymarket-backfill-worker \

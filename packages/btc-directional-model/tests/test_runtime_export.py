@@ -159,6 +159,13 @@ def test_runtime_export_is_deterministic_and_reconstructable(tmp_path: Path) -> 
         name: (destination / name).read_bytes()
         for name in (MODEL_FILENAME, MANIFEST_FILENAME, GOLDEN_VECTORS_FILENAME)
     }
+    assert destination.stat().st_mode & 0o777 == 0o755
+    assert {
+        (destination / name).stat().st_mode & 0o777 for name in original
+    } == {0o644}
+    destination.chmod(0o700)
+    for name in original:
+        (destination / name).chmod(0o600)
     repeated = export_runtime_model(
         freeze_dir=freeze_dir,
         golden_features=feature_path,
@@ -170,6 +177,10 @@ def test_runtime_export_is_deterministic_and_reconstructable(tmp_path: Path) -> 
     assert {
         name: (destination / name).read_bytes() for name in original
     } == original
+    assert destination.stat().st_mode & 0o777 == 0o755
+    assert {
+        (destination / name).stat().st_mode & 0o777 for name in original
+    } == {0o644}
     model = json.loads((destination / MODEL_FILENAME).read_text())
     manifest = json.loads((destination / MANIFEST_FILENAME).read_text())
     golden = json.loads((destination / GOLDEN_VECTORS_FILENAME).read_text())

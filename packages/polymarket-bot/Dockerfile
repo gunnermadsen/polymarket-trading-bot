@@ -15,7 +15,8 @@ COPY README.md /README.md
 
 ENV POLYMARKET_BTC_MODEL_DIR=/opt/polymarket-models
 
-RUN cargo test --locked --all-targets -- --include-ignored \
+RUN chmod -R u=rwX,go=rX /opt/polymarket-models \
+    && cargo test --locked --all-targets -- --include-ignored \
     && cargo build --locked --release
 
 FROM debian:bookworm-slim
