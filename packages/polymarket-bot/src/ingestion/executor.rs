@@ -28,7 +28,7 @@ use super::{
         download_archive as download_pmxt_archive,
         spawn_archive_prefetch as spawn_pmxt_archive_prefetch,
         spawn_execution_parser as spawn_pmxt_execution_parser, spawn_parser as spawn_pmxt_parser,
-        PmxtArchiveSpec, PMXT_ARCHIVE_PROVIDER, PMXT_COVERAGE_START_EPOCH,
+        PmxtArchivePrefetch, PmxtArchiveSpec, PMXT_ARCHIVE_PROVIDER, PMXT_COVERAGE_START_EPOCH,
     },
     repository::IngestionRepository,
 };
@@ -36,6 +36,7 @@ use super::{
 const MAX_SOURCE_BODY_BYTES: usize = 4 * 1024 * 1024;
 const SOURCE_CHUNK_TIMEOUT_SECS: u64 = 30;
 const MAX_UNCOMPRESSED_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024 * 1024;
+const MAX_CONSECUTIVE_UNHEALTHY_PMXT_HOURS: u64 = 6;
 
 #[derive(Debug, Clone)]
 pub struct IngestionExecutorConfig {
@@ -903,6 +904,35 @@ impl IngestionExecutor {
         Ok(summary)
     }
 
+    fn start_pmxt_execution_prefetch(
+        &self,
+        range_start: DateTime<Utc>,
+        range_end: DateTime<Utc>,
+        cancellation: ArchiveCancellation,
+    ) -> std::result::Result<PmxtArchivePrefetch, IngestionExecutionError> {
+        let mut specs = Vec::new();
+        let mut hour = range_start - ChronoDuration::hours(1);
+        while hour < range_end {
+            specs.push(
+                PmxtArchiveSpec::new(&self.config.pmxt_archive_base_url, hour)
+                    .map_err(IngestionExecutionError::permanent)?,
+            );
+            hour += ChronoDuration::hours(1);
+        }
+        Ok(spawn_pmxt_archive_prefetch(
+            self.client.clone(),
+            specs,
+            self.config.cache_directory.clone(),
+            ArchiveDownloadLimits {
+                maximum_compressed_bytes: 2 * 1024 * 1024 * 1024,
+                chunk_idle_timeout: std::time::Duration::from_secs(60),
+            },
+            cancellation,
+            self.config.pmxt_prefetch_concurrency,
+            self.config.pmxt_prefetch_archives,
+        ))
+    }
+
     async fn ingest_pmxt_execution_snapshots(
         &self,
         claim: &ClaimedJob,
@@ -920,27 +950,9 @@ impl IngestionExecutor {
         let mut hour = checkpoint_window_start(claim, range_start, 3_600);
         let mut retained_direct_cache: Option<PathBuf> = None;
         let mut carry_seed: Option<ExecutionMarketSeed> = None;
-        let mut prefetch_specs = Vec::new();
-        let mut prefetch_hour = hour - ChronoDuration::hours(1);
-        while prefetch_hour < range_end {
-            prefetch_specs.push(
-                PmxtArchiveSpec::new(&self.config.pmxt_archive_base_url, prefetch_hour)
-                    .map_err(IngestionExecutionError::permanent)?,
-            );
-            prefetch_hour += ChronoDuration::hours(1);
-        }
-        let mut prefetch = spawn_pmxt_archive_prefetch(
-            self.client.clone(),
-            prefetch_specs,
-            self.config.cache_directory.clone(),
-            ArchiveDownloadLimits {
-                maximum_compressed_bytes: 2 * 1024 * 1024 * 1024,
-                chunk_idle_timeout: std::time::Duration::from_secs(60),
-            },
-            cancellation.clone(),
-            self.config.pmxt_prefetch_concurrency,
-            self.config.pmxt_prefetch_archives,
-        );
+        let mut consecutive_unhealthy_hours = 0u64;
+        let mut prefetch =
+            self.start_pmxt_execution_prefetch(hour, range_end, cancellation.clone())?;
         while hour < range_end {
             self.ensure_continue(claim, &cancellation).await?;
             let next_hour = hour + ChronoDuration::hours(1);
@@ -1041,6 +1053,7 @@ impl IngestionExecutor {
                         .map_err(IngestionExecutionError::transient)?;
                 }
                 observe_reused_artifact(&mut progress, &mut summary, &prepared.artifact);
+                consecutive_unhealthy_hours = 0;
                 hour = next_hour;
                 self.finish_work_unit(claim, &mut progress, hour, None)
                     .await?;
@@ -1056,6 +1069,7 @@ impl IngestionExecutor {
             let mut digest = Sha256::new();
             let mut reconstructed_records = 0u64;
             let mut source_events = 0u64;
+            let mut source_failure: Option<(&'static str, String)> = None;
             let compressed_bytes;
 
             if reuse_raw_materialization {
@@ -1128,17 +1142,18 @@ impl IngestionExecutor {
                 }
                 let mut source_bytes = 0u64;
                 let mut direct_ready = false;
-                for spec in &source_specs {
-                    let archive = prefetch
+                'source_archives: for spec in &source_specs {
+                    let Some(archive) = prefetch
                         .take(spec)
                         .await
                         .map_err(IngestionExecutionError::transient)?
-                        .ok_or_else(|| {
-                            IngestionExecutionError::permanent(format!(
-                                "PMXT archive object was absent for {}",
-                                spec.hour
-                            ))
-                        })?;
+                    else {
+                        source_failure = Some((
+                            "missing_pmxt_archive",
+                            format!("PMXT archive object was absent for {}", spec.hour),
+                        ));
+                        break;
+                    };
                     if !archive.reused_cache {
                         progress.bytes_downloaded = progress
                             .bytes_downloaded
@@ -1174,15 +1189,27 @@ impl IngestionExecutor {
                     );
                     while let Some(batch) = receiver.recv().await {
                         self.ensure_continue(claim, &cancellation).await?;
-                        let batch = batch.map_err(IngestionExecutionError::permanent)?;
+                        let batch = match batch {
+                            Ok(batch) => batch,
+                            Err(error) => {
+                                source_failure =
+                                    Some(("unhealthy_pmxt_archive", format!("{error:#}")));
+                                break;
+                            }
+                        };
                         source_events = source_events.saturating_add(
                             u64::try_from(batch.len())
                                 .map_err(IngestionExecutionError::permanent)?,
                         );
                         for event in &batch {
-                            reconstructor
-                                .apply(event, &mut output)
-                                .map_err(IngestionExecutionError::permanent)?;
+                            if let Err(error) = reconstructor.apply(event, &mut output) {
+                                source_failure =
+                                    Some(("unhealthy_pmxt_archive", format!("{error:#}")));
+                                break;
+                            }
+                        }
+                        if source_failure.is_some() {
+                            break;
                         }
                         self.persist_execution_snapshot_output(
                             claim,
@@ -1195,14 +1222,20 @@ impl IngestionExecutor {
                         )
                         .await?;
                     }
-                    handle
-                        .await
-                        .map_err(IngestionExecutionError::transient)?
-                        .map_err(IngestionExecutionError::permanent)?;
+                    drop(receiver);
+                    let parser_result = handle.await.map_err(IngestionExecutionError::transient)?;
+                    if source_failure.is_none() {
+                        if let Err(error) = parser_result {
+                            source_failure = Some(("unhealthy_pmxt_archive", format!("{error:#}")));
+                        }
+                    }
                     retained_direct_cache = Some(archive.path);
+                    if source_failure.is_some() {
+                        break 'source_archives;
+                    }
                 }
                 compressed_bytes = source_bytes;
-                if source_specs.len() == 2 {
+                if source_failure.is_none() && source_specs.len() == 2 {
                     cleanup_archive_cache(
                         &self.repository,
                         claim,
@@ -1210,6 +1243,49 @@ impl IngestionExecutor {
                     )
                     .await;
                 }
+            }
+
+            if let Some((reason, message)) = source_failure {
+                self.ensure_continue(claim, &cancellation).await?;
+                if reconstructed_records != 0 {
+                    return Err(IngestionExecutionError::permanent(format!(
+                        "refusing to quarantine PMXT hour {hour} after \
+                         {reconstructed_records} snapshots were committed: {message}"
+                    )));
+                }
+                self.repository
+                    .fail_artifact(claim, prepared.artifact.artifact_id, &message)
+                    .await
+                    .map_err(IngestionExecutionError::transient)?;
+                let _ = self
+                    .repository
+                    .append_event(
+                        claim.job.job_id,
+                        super::job::BackfillEventLevel::Warn,
+                        "PMXT execution-snapshot hour quarantined",
+                        serde_json::json!({
+                            "hour": hour,
+                            "logical_key": progress.current_logical_key.clone(),
+                            "reason": reason,
+                            "error": message,
+                        }),
+                    )
+                    .await;
+                record_durable_artifact_failure(&mut progress, &mut summary, reason);
+                consecutive_unhealthy_hours = consecutive_unhealthy_hours.saturating_add(1);
+                if consecutive_unhealthy_hours > MAX_CONSECUTIVE_UNHEALTHY_PMXT_HOURS {
+                    return Err(IngestionExecutionError::permanent(format!(
+                        "PMXT unhealthy-hour circuit breaker opened after \
+                         {consecutive_unhealthy_hours} consecutive hours"
+                    )));
+                }
+                carry_seed = None;
+                hour = next_hour;
+                self.finish_work_unit(claim, &mut progress, hour, None)
+                    .await?;
+                prefetch =
+                    self.start_pmxt_execution_prefetch(hour, range_end, cancellation.clone())?;
+                continue;
             }
 
             reconstructor.finish_before(next_hour, &mut output);
@@ -1288,6 +1364,7 @@ impl IngestionExecutor {
                     .map_err(IngestionExecutionError::transient)?;
             }
             summary.artifacts_completed = summary.artifacts_completed.saturating_add(1);
+            consecutive_unhealthy_hours = 0;
             hour = next_hour;
             self.finish_work_unit(claim, &mut progress, hour, None)
                 .await?;
@@ -1710,11 +1787,23 @@ async fn cleanup_archive_cache(
 }
 
 fn summary_from_progress(progress: &BackfillProgress) -> BackfillJobSummary {
+    let missing_by_reason = progress
+        .details
+        .get("missing_by_reason")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
     BackfillJobSummary {
         expected_work_units: progress.expected_work_units,
         completed_work_units: progress.completed_work_units,
         records_read: progress.records_read,
         records_committed: progress.records_committed,
+        artifacts_failed: progress
+            .details
+            .get("artifacts_failed")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+        missing_by_reason,
         ..BackfillJobSummary::default()
     }
 }
@@ -1785,6 +1874,41 @@ fn increment_missing(summary: &mut BackfillJobSummary, reason: &str) {
         .entry(reason.to_string())
         .or_insert(0);
     *count = count.saturating_add(1);
+}
+
+fn record_durable_artifact_failure(
+    progress: &mut BackfillProgress,
+    summary: &mut BackfillJobSummary,
+    reason: &str,
+) {
+    increment_missing(summary, reason);
+    summary.artifacts_failed = summary.artifacts_failed.saturating_add(1);
+    if !progress.details.is_object() {
+        progress.details = serde_json::json!({});
+    }
+    let details = progress
+        .details
+        .as_object_mut()
+        .expect("backfill progress details were normalized to an object");
+    let missing = details
+        .entry("missing_by_reason")
+        .or_insert_with(|| serde_json::json!({}));
+    if !missing.is_object() {
+        *missing = serde_json::json!({});
+    }
+    let missing = missing
+        .as_object_mut()
+        .expect("missing-by-reason progress was normalized to an object");
+    let count = missing
+        .get(reason)
+        .and_then(Value::as_u64)
+        .unwrap_or_default()
+        .saturating_add(1);
+    missing.insert(reason.to_string(), serde_json::json!(count));
+    details.insert(
+        "artifacts_failed".to_string(),
+        serde_json::json!(summary.artifacts_failed),
+    );
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -2301,5 +2425,17 @@ mod tests {
         increment_missing(&mut summary, "missing");
         increment_missing(&mut summary, "missing");
         assert_eq!(summary.missing_by_reason["missing"], 2);
+    }
+
+    #[test]
+    fn unhealthy_artifact_counts_survive_executor_restart() {
+        let mut progress = BackfillProgress::default();
+        let mut summary = summary_from_progress(&progress);
+        record_durable_artifact_failure(&mut progress, &mut summary, "unhealthy_pmxt_archive");
+        record_durable_artifact_failure(&mut progress, &mut summary, "unhealthy_pmxt_archive");
+
+        let resumed = summary_from_progress(&progress);
+        assert_eq!(resumed.artifacts_failed, 2);
+        assert_eq!(resumed.missing_by_reason["unhealthy_pmxt_archive"], 2);
     }
 }
