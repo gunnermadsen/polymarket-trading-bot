@@ -985,7 +985,7 @@ mod tests {
     }
 
     #[test]
-    fn packaged_runtime_model_matches_all_python_golden_vectors() {
+    fn all_packaged_runtime_models_match_python_golden_vectors() {
         let local_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -995,57 +995,79 @@ mod tests {
         } else {
             PathBuf::from("/opt/polymarket-models")
         };
-        let selection = RuntimeModelSelection {
-            model_key: BTC_DIRECTIONAL_MODEL_V1_KEY.to_string(),
-            artifact_sha256: BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256.to_string(),
-            feature_schema_sha256: BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256.to_string(),
-        };
-        let registry = RuntimeModelRegistry::new(&root);
-        let model = registry.load(&selection).unwrap();
-        let vectors_path = root
-            .join(BTC_DIRECTIONAL_MODEL_V1_KEY)
-            .join("golden-vectors.json");
-        let vectors: GoldenVectorsFile =
-            serde_json::from_slice(&fs::read(vectors_path).unwrap()).unwrap();
-        assert_eq!(vectors.schema_version, GOLDEN_VECTORS_SCHEMA_VERSION);
-        assert_eq!(vectors.model_key, BTC_DIRECTIONAL_MODEL_V1_KEY);
-        assert_eq!(
-            vectors.feature_schema_sha256,
-            BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256
+        let mut model_directories = fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
+        model_directories.sort();
+        assert!(
+            !model_directories.is_empty(),
+            "runtime model package must contain at least one model"
         );
 
-        for vector in vectors.vectors {
-            let _source = vector.source;
-            let features = vector
-                .feature_values
-                .into_iter()
-                .map(|value| value.unwrap_or(f64::NAN))
-                .collect::<Vec<_>>();
-            let actual = model.score(&features).unwrap();
-            assert!(
-                (actual.raw_logit - vector.expected.raw_logit).abs() < 1e-12,
-                "{} raw logit mismatch: {actual:?}",
-                vector.id
-            );
-            assert!(
-                (actual.probability_up - vector.expected.probability_up).abs() < 1e-12,
-                "{} probability mismatch: {actual:?}",
-                vector.id
-            );
-            assert!(
-                (actual.confidence - vector.expected.confidence).abs() < 1e-12,
-                "{} confidence mismatch: {actual:?}",
-                vector.id
-            );
+        let registry = RuntimeModelRegistry::new(&root);
+        for directory in model_directories {
+            let manifest: RuntimeManifestFile =
+                serde_json::from_slice(&fs::read(directory.join("manifest.json")).unwrap())
+                    .unwrap();
             assert_eq!(
-                actual.action, vector.expected.action,
-                "{} action mismatch",
-                vector.id
+                directory.file_name().unwrap().to_string_lossy(),
+                manifest.model_key
             );
+            let selection = RuntimeModelSelection {
+                model_key: manifest.model_key.clone(),
+                artifact_sha256: manifest.model_sha256.clone(),
+                feature_schema_sha256: manifest.feature_schema_sha256.clone(),
+            };
+            let model = registry.load(&selection).unwrap();
+            let vectors: GoldenVectorsFile = serde_json::from_slice(
+                &fs::read(directory.join(&manifest.golden_vectors_file)).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(vectors.schema_version, GOLDEN_VECTORS_SCHEMA_VERSION);
+            assert_eq!(vectors.model_key, selection.model_key);
             assert_eq!(
-                actual.accepted,
-                actual.action != RuntimeModelAction::NoTrade
+                vectors.feature_schema_sha256,
+                selection.feature_schema_sha256
             );
+
+            for vector in vectors.vectors {
+                let _source = vector.source;
+                let features = vector
+                    .feature_values
+                    .into_iter()
+                    .map(|value| value.unwrap_or(f64::NAN))
+                    .collect::<Vec<_>>();
+                let actual = model.score(&features).unwrap();
+                assert!(
+                    (actual.raw_logit - vector.expected.raw_logit).abs() < 1e-12,
+                    "{}:{} raw logit mismatch: {actual:?}",
+                    selection.model_key,
+                    vector.id
+                );
+                assert!(
+                    (actual.probability_up - vector.expected.probability_up).abs() < 1e-12,
+                    "{}:{} probability mismatch: {actual:?}",
+                    selection.model_key,
+                    vector.id
+                );
+                assert!(
+                    (actual.confidence - vector.expected.confidence).abs() < 1e-12,
+                    "{}:{} confidence mismatch: {actual:?}",
+                    selection.model_key,
+                    vector.id
+                );
+                assert_eq!(
+                    actual.action, vector.expected.action,
+                    "{}:{} action mismatch",
+                    selection.model_key, vector.id
+                );
+                assert_eq!(
+                    actual.accepted,
+                    actual.action != RuntimeModelAction::NoTrade
+                );
+            }
         }
     }
 }
