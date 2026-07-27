@@ -30,7 +30,9 @@ from .core_evaluation import (
     choose_threshold,
     classification_metrics,
     daily_accuracy,
+    first_crossing_timing,
     first_prediction_rows,
+    fixed_time_prediction_rows,
     paired_uplift,
     reliability_rows,
     sigmoid,
@@ -50,6 +52,11 @@ from .provenance import runtime_provenance
 CORE_TRAINING_SCHEMA_VERSION = "btc-core-training-v1"
 CORE_FREEZE_SCHEMA_VERSION = "btc-core-freeze-v1"
 TRAINING_MODEL_FILENAME = "training-model.joblib"
+MARKET_EQUAL_ROW_WEIGHT_POLICY = "market_equal"
+EARLY_ENTRY_MARKET_EQUAL_ROW_WEIGHT_POLICY = "early_entry_market_equal"
+EARLY_ENTRY_TRAINING_START_SECONDS = 60
+EARLY_ENTRY_TRAINING_END_SECONDS_INCLUSIVE = 120
+EARLY_ENTRY_TRAINING_WEIGHT_MULTIPLIER = 3.0
 
 
 @dataclass(frozen=True)
@@ -57,6 +64,7 @@ class CandidateSpec:
     name: str
     family: str
     feature_names: tuple[str, ...]
+    row_weight_policy: str = MARKET_EQUAL_ROW_WEIGHT_POLICY
 
 
 CANDIDATES = (
@@ -74,6 +82,12 @@ CANDIDATES = (
         "histogram_enriched",
         "histogram",
         tuple(CORE_ENRICHED_FEATURES),
+    ),
+    CandidateSpec(
+        "histogram_early_weighted",
+        "histogram",
+        tuple(CORE_ENRICHED_FEATURES),
+        EARLY_ENTRY_MARKET_EQUAL_ROW_WEIGHT_POLICY,
     ),
 )
 
@@ -133,44 +147,45 @@ def develop_core_models(
     run_dir = config.paths.runs / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     update_progress(run_dir, "walk_forward", 0.05)
-    tasks = [
-        (candidate.name, fold_index)
-        for candidate in CANDIDATES
-        for fold_index in range(len(config.split.validation_windows))
-    ]
+    candidate_names = [candidate.name for candidate in CANDIDATES]
+    total_fits = len(candidate_names) * len(config.split.validation_windows)
     fold_results: list[dict[str, Any]] = []
-    max_workers = min(config.compute.max_parallel_fits, len(tasks))
+    max_workers = min(config.compute.max_parallel_fits, len(candidate_names))
     configure_native_thread_limits(config)
     print(
-        f"core develop: {len(tasks)} candidate/fold fits with {max_workers} workers",
+        f"core develop: {total_fits} candidate/fold fits with {max_workers} workers",
         flush=True,
     )
+    completed = 0
     if max_workers == 1:
-        for completed, (candidate_name, fold_index) in enumerate(tasks, start=1):
-            result = evaluate_fold_task(
+        for candidate_name in candidate_names:
+            candidate_fold_results = evaluate_candidate_task(
                 config.source_path,
                 candidate_name,
-                fold_index,
             )
-            fold_results.append(result)
-            report_fold_completion(result, completed, len(tasks), run_dir)
+            for result in candidate_fold_results:
+                completed += 1
+                fold_results.append(result)
+                report_fold_completion(result, completed, total_fits, run_dir)
     else:
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(
-                    evaluate_fold_task,
+                    evaluate_candidate_task,
                     config.source_path,
                     candidate_name,
-                    fold_index,
-                ): (candidate_name, fold_index)
-                for candidate_name, fold_index in tasks
+                ): candidate_name
+                for candidate_name in candidate_names
             }
-            for completed, future in enumerate(as_completed(futures), start=1):
-                result = future.result()
-                fold_results.append(result)
-                report_fold_completion(result, completed, len(tasks), run_dir)
+            for future in as_completed(futures):
+                candidate_fold_results = future.result()
+                for result in candidate_fold_results:
+                    completed += 1
+                    fold_results.append(result)
+                    report_fold_completion(result, completed, total_fits, run_dir)
 
     walk_forward_rows = combined_fold_rows(fold_results)
+    fixed_time_rows = combined_fixed_time_rows(fold_results)
     candidate_results = aggregate_candidate_results(config, fold_results)
     selected_name = max(
         candidate_results,
@@ -208,6 +223,7 @@ def develop_core_models(
         final_model,
         probability_calibration,
         config,
+        selected_spec,
     )
     policy_probability = calibrator.probability(
         final_model.raw_logit(policy_selection)
@@ -229,6 +245,8 @@ def develop_core_models(
         policy_selection,
         policy_probability,
         confidence_threshold,
+    ).with_columns(
+        pl.lit(selected_name).alias("candidate"),
     )
     policy_eligible = policy_selection["market_id"].n_unique()
     policy_metrics = classification_metrics(
@@ -270,6 +288,10 @@ def develop_core_models(
             "metrics": policy_metrics,
             "baseline": policy_baseline,
             "paired": policy_paired,
+            "timing": first_crossing_timing(
+                policy_rows,
+                eligible_markets=policy_eligible,
+            ),
             "threshold_history": thresholds,
             "passed": policy_passed,
         },
@@ -282,6 +304,10 @@ def develop_core_models(
     }
     walk_forward_rows.write_parquet(
         run_dir / "walk-forward-predictions.parquet",
+        compression="zstd",
+    )
+    fixed_time_rows.write_parquet(
+        run_dir / "walk-forward-fixed-time-predictions.parquet",
         compression="zstd",
     )
     policy_rows.write_parquet(
@@ -318,6 +344,21 @@ def develop_core_models(
             {"blocking_reasons": metrics["blocking_reasons"]},
         )
     return run_dir, freeze_dir, metrics
+
+
+def evaluate_candidate_task(
+    config_path: Path,
+    candidate_name: str,
+) -> list[dict[str, Any]]:
+    config = load_core_config(config_path)
+    configure_native_thread_limits(config)
+    with threadpool_limits(limits=config.compute.threads_per_fit):
+        frame = load_core_feature_frame(config, "pre_holdout")
+        spec = candidate_spec(candidate_name)
+        return [
+            evaluate_fold(frame, spec, fold_index, config)
+            for fold_index in range(len(config.split.validation_windows))
+        ]
 
 
 def evaluate_fold_task(
@@ -357,7 +398,12 @@ def evaluate_fold(
     )
     started = time.perf_counter()
     model, tuning = tune_and_fit_model(fit_frame, spec, config)
-    calibrator = fit_probability_calibrator(model, calibration_frame, config)
+    calibrator = fit_probability_calibrator(
+        model,
+        calibration_frame,
+        config,
+        spec,
+    )
     policy_probability = calibrator.probability(model.raw_logit(policy_frame))
     thresholds = threshold_table(policy_frame, policy_probability, config.model)
     minimum_markets = max(
@@ -372,7 +418,21 @@ def evaluate_fold(
         minimum_markets=minimum_markets,
     )
     probability = calibrator.probability(model.raw_logit(validation))
-    selected = first_prediction_rows(validation, probability, threshold)
+    selected = first_prediction_rows(
+        validation,
+        probability,
+        threshold,
+    ).with_columns(
+        pl.lit(spec.name).alias("candidate"),
+        pl.lit(fold_index).cast(pl.Int32).alias("fold_index"),
+    )
+    fixed_time = fixed_time_prediction_rows(
+        validation,
+        probability,
+    ).with_columns(
+        pl.lit(spec.name).alias("candidate"),
+        pl.lit(fold_index).cast(pl.Int32).alias("fold_index"),
+    )
     eligible = validation["market_id"].n_unique()
     metrics = classification_metrics(selected, eligible_markets=eligible)
     baseline = baseline_metrics(selected, eligible_markets=eligible)
@@ -397,8 +457,13 @@ def evaluate_fold(
         "metrics": metrics,
         "baseline": baseline,
         "paired": paired,
+        "timing": first_crossing_timing(
+            selected,
+            eligible_markets=eligible,
+        ),
         "elapsed_seconds": time.perf_counter() - started,
         "prediction_rows": selected.to_dicts(),
+        "fixed_time_prediction_rows": fixed_time.to_dicts(),
     }
 
 
@@ -424,7 +489,11 @@ def aggregate_candidate_results(
             ]
         )
         summarized_folds = [
-            {key: value for key, value in result.items() if key != "prediction_rows"}
+            {
+                key: value
+                for key, value in result.items()
+                if key not in {"prediction_rows", "fixed_time_prediction_rows"}
+            }
             for result in folds
         ]
         eligible = sum(result["eligible_markets"] for result in folds)
@@ -457,11 +526,16 @@ def aggregate_candidate_results(
             "family": spec.family,
             "feature_count": len(spec.feature_names),
             "features": list(spec.feature_names),
+            "row_weight_policy": spec.row_weight_policy,
             "folds": summarized_folds,
             "out_of_fold": metrics,
             "baseline": baseline,
             "paired": paired,
             "bootstrap": bootstrap,
+            "timing": first_crossing_timing(
+                rows,
+                eligible_markets=eligible,
+            ),
             "nonnegative_uplift_folds": nonnegative_folds,
             "passed_development": passed,
         }
@@ -469,12 +543,20 @@ def aggregate_candidate_results(
 
 
 def candidate_rank(result: dict[str, Any]) -> tuple[Any, ...]:
+    timing = result["timing"]
+    median_crossing = timing["median_first_crossing_seconds"]
+    p90_crossing = timing["p90_first_crossing_seconds"]
     return (
         result["passed_development"],
         result["bootstrap"]["lower_95"],
         result["paired"]["accuracy_uplift"],
+        result["out_of_fold"]["wilson_lower_95"],
         result["out_of_fold"]["balanced_accuracy"],
         result["out_of_fold"]["accuracy"],
+        timing["early_entry_coverage"],
+        -(median_crossing if median_crossing is not None else float("inf")),
+        -(p90_crossing if p90_crossing is not None else float("inf")),
+        result["out_of_fold"]["coverage"],
         -result["feature_count"],
     )
 
@@ -502,7 +584,7 @@ def tune_and_fit_model(
         started = time.perf_counter()
         model = fit_model(train, spec, parameters, config)
         probability = model.raw_probability(validation)
-        weights = market_equal_weights(validation)
+        weights = candidate_training_weights(validation, spec)
         candidate_loss = float(
             log_loss(
                 validation["label_up"].to_numpy(),
@@ -540,7 +622,7 @@ def fit_model(
 ) -> FittedCoreModel:
     matrix = feature_matrix(frame, spec.feature_names)
     labels = frame["label_up"].to_numpy()
-    weights = market_equal_weights(frame)
+    weights = candidate_training_weights(frame, spec)
     medians = finite_medians(matrix)
     filled = np.where(np.isfinite(matrix), matrix, medians)
     if spec.family == "logistic":
@@ -587,10 +669,14 @@ def fit_probability_calibrator(
     model: FittedCoreModel,
     frame: pl.DataFrame,
     config: CoreTrainingConfig,
+    spec: CandidateSpec | None = None,
 ) -> ProbabilityCalibrator:
     logits = model.raw_logit(frame).reshape(-1, 1)
     labels = frame["label_up"].to_numpy()
-    weights = market_equal_weights(frame)
+    weights = candidate_training_weights(
+        frame,
+        spec or candidate_spec(model.candidate_name),
+    )
     calibrator = LogisticRegression(
         C=1_000_000,
         solver="lbfgs",
@@ -638,6 +724,9 @@ def freeze_candidate(
         "model_summary_sha256": file_sha256(freeze_dir / "model-summary.json"),
         "candidate": bundle.model.candidate_name,
         "family": bundle.model.family,
+        "row_weight_policy": candidate_spec(
+            bundle.model.candidate_name
+        ).row_weight_policy,
         "feature_schema_version": CORE_FEATURE_SCHEMA_VERSION,
         "feature_names": list(bundle.model.feature_names),
         "hyperparameters": bundle.model.hyperparameters,
@@ -715,6 +804,8 @@ def evaluate_core_holdout(
         frame,
         probability,
         bundle.confidence_threshold,
+    ).with_columns(
+        pl.lit(bundle.model.candidate_name).alias("candidate"),
     )
     eligible = frame["market_id"].n_unique()
     metrics = classification_metrics(selected, eligible_markets=eligible)
@@ -757,6 +848,10 @@ def evaluate_core_holdout(
         "daily_block_bootstrap": daily_bootstrap,
         "daily_accuracy": daily_accuracy(selected),
         "time_accuracy": time_accuracy(selected),
+        "timing": first_crossing_timing(
+            selected,
+            eligible_markets=eligible,
+        ),
         "reliability": reliability_rows(selected),
         "qualification_checks": checks,
         "qualified": qualified,
@@ -919,6 +1014,7 @@ def model_summary_payload(bundle: FrozenTrainingBundle) -> dict[str, Any]:
         "training_only": True,
         "candidate": model.candidate_name,
         "family": model.family,
+        "row_weight_policy": candidate_spec(model.candidate_name).row_weight_policy,
         "feature_names": list(model.feature_names),
         "hyperparameters": model.hyperparameters,
         "imputation_medians": model.imputation_medians.tolist(),
@@ -1019,6 +1115,42 @@ def market_equal_weights(frame: pl.DataFrame) -> np.ndarray:
     return raw / raw.mean()
 
 
+def candidate_training_weights(
+    frame: pl.DataFrame,
+    spec: CandidateSpec,
+) -> np.ndarray:
+    if spec.row_weight_policy == MARKET_EQUAL_ROW_WEIGHT_POLICY:
+        return market_equal_weights(frame)
+    if spec.row_weight_policy == EARLY_ENTRY_MARKET_EQUAL_ROW_WEIGHT_POLICY:
+        return early_entry_market_equal_weights(frame)
+    raise ValueError(
+        f"unsupported candidate row-weight policy: {spec.row_weight_policy}"
+    )
+
+
+def early_entry_market_equal_weights(frame: pl.DataFrame) -> np.ndarray:
+    weighted = frame.select(
+        "market_id",
+        pl.when(
+            pl.col("seconds_elapsed").is_between(
+                EARLY_ENTRY_TRAINING_START_SECONDS,
+                EARLY_ENTRY_TRAINING_END_SECONDS_INCLUSIVE,
+                closed="both",
+            )
+        )
+        .then(pl.lit(EARLY_ENTRY_TRAINING_WEIGHT_MULTIPLIER))
+        .otherwise(pl.lit(1.0))
+        .alias("time_weight"),
+    ).with_columns(
+        pl.col("time_weight").sum().over("market_id").alias("market_weight_total")
+    )
+    raw = (
+        weighted["time_weight"].to_numpy()
+        / weighted["market_weight_total"].to_numpy()
+    )
+    return raw / raw.mean()
+
+
 def range_frame(
     frame: pl.DataFrame,
     start: datetime,
@@ -1090,7 +1222,24 @@ def combined_fold_rows(fold_results: list[dict[str, Any]]) -> pl.DataFrame:
     ]
     if not rows:
         return pl.DataFrame()
-    return pl.DataFrame(rows).sort(["observed_at", "market_id"])
+    return pl.DataFrame(rows).sort(
+        ["observed_at", "market_id", "candidate", "fold_index"]
+    )
+
+
+def combined_fixed_time_rows(
+    fold_results: list[dict[str, Any]],
+) -> pl.DataFrame:
+    rows = [
+        row
+        for result in fold_results
+        for row in result.get("fixed_time_prediction_rows", [])
+    ]
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(rows).sort(
+        ["observed_at", "market_id", "candidate", "fold_index"]
+    )
 
 
 def report_fold_completion(

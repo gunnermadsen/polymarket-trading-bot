@@ -20,6 +20,14 @@ from sklearn.metrics import (
 
 from .core_config import CoreGateConfig, CoreModelConfig
 
+FIXED_TIME_SCORE_SECONDS = (60, 90, 120, 180, 240)
+FIRST_CROSSING_TIME_BANDS = (
+    ("60-89", 60, 90),
+    ("90-119", 90, 120),
+    ("120-179", 120, 180),
+    ("180-240", 180, 241),
+)
+
 
 def sigmoid(values: np.ndarray) -> np.ndarray:
     clipped = np.clip(values, -40.0, 40.0)
@@ -45,6 +53,30 @@ def first_prediction_rows(
     probabilities: np.ndarray,
     threshold: float,
 ) -> pl.DataFrame:
+    scored = scored_prediction_rows(frame, probabilities)
+    return (
+        scored.filter(pl.col("confidence") >= threshold)
+        .sort(["observed_at", "market_id"])
+        .group_by("market_id", maintain_order=True)
+        .first()
+    )
+
+
+def fixed_time_prediction_rows(
+    frame: pl.DataFrame,
+    probabilities: np.ndarray,
+) -> pl.DataFrame:
+    return (
+        scored_prediction_rows(frame, probabilities)
+        .filter(pl.col("seconds_elapsed").is_in(FIXED_TIME_SCORE_SECONDS))
+        .sort(["observed_at", "market_id"])
+    )
+
+
+def scored_prediction_rows(
+    frame: pl.DataFrame,
+    probabilities: np.ndarray,
+) -> pl.DataFrame:
     if frame.height != len(probabilities):
         raise ValueError("probability count does not match feature rows")
     scored = frame.select(
@@ -64,12 +96,7 @@ def first_prediction_rows(
         (pl.col("predicted_up") == pl.col("label_up")).alias("correct"),
         (pl.col("binance_sign_up") == pl.col("label_up")).alias("baseline_correct"),
     )
-    return (
-        scored.filter(pl.col("confidence") >= threshold)
-        .sort(["observed_at", "market_id"])
-        .group_by("market_id", maintain_order=True)
-        .first()
-    )
+    return scored
 
 
 def classification_metrics(
@@ -377,6 +404,107 @@ def time_accuracy(rows: pl.DataFrame) -> list[dict[str, Any]]:
         .sort("seconds_elapsed")
         .to_dicts()
     )
+
+
+def first_crossing_timing(
+    rows: pl.DataFrame,
+    *,
+    eligible_markets: int | None = None,
+) -> dict[str, Any]:
+    total_eligible = (
+        eligible_markets
+        if eligible_markets is not None
+        else rows["market_id"].n_unique()
+        if not rows.is_empty()
+        else 0
+    )
+    if rows.is_empty():
+        return {
+            "markets": 0,
+            "eligible_markets": total_eligible,
+            "coverage": 0.0,
+            "early_entry_markets": 0,
+            "early_entry_coverage": 0.0,
+            "median_first_crossing_seconds": None,
+            "p90_first_crossing_seconds": None,
+            "time_bands": [
+                empty_time_band(label, start, end, total_eligible)
+                for label, start, end in FIRST_CROSSING_TIME_BANDS
+            ],
+        }
+
+    elapsed = rows["seconds_elapsed"].to_numpy().astype(np.float64)
+    bands = [
+        time_band_metrics(rows, label, start, end, total_eligible)
+        for label, start, end in FIRST_CROSSING_TIME_BANDS
+    ]
+    early_entry_markets = sum(
+        int(band["markets"]) for band in bands if band["end_seconds_exclusive"] <= 120
+    )
+    return {
+        "markets": rows.height,
+        "eligible_markets": total_eligible,
+        "coverage": rows.height / total_eligible if total_eligible else 0.0,
+        "early_entry_markets": early_entry_markets,
+        "early_entry_coverage": (
+            early_entry_markets / total_eligible if total_eligible else 0.0
+        ),
+        "median_first_crossing_seconds": float(np.median(elapsed)),
+        "p90_first_crossing_seconds": float(np.quantile(elapsed, 0.90)),
+        "time_bands": bands,
+    }
+
+
+def time_band_metrics(
+    rows: pl.DataFrame,
+    label: str,
+    start_seconds: int,
+    end_seconds_exclusive: int,
+    eligible_markets: int,
+) -> dict[str, Any]:
+    selected = rows.filter(
+        (pl.col("seconds_elapsed") >= start_seconds)
+        & (pl.col("seconds_elapsed") < end_seconds_exclusive)
+    )
+    if selected.is_empty():
+        return empty_time_band(
+            label,
+            start_seconds,
+            end_seconds_exclusive,
+            eligible_markets,
+        )
+    model_accuracy = float(selected["correct"].mean())
+    baseline_accuracy = float(selected["baseline_correct"].mean())
+    return {
+        "band": label,
+        "start_seconds": start_seconds,
+        "end_seconds_exclusive": end_seconds_exclusive,
+        "markets": selected.height,
+        "coverage": selected.height / eligible_markets if eligible_markets else 0.0,
+        "prediction_share": selected.height / rows.height,
+        "accuracy": model_accuracy,
+        "baseline_accuracy": baseline_accuracy,
+        "accuracy_uplift": model_accuracy - baseline_accuracy,
+    }
+
+
+def empty_time_band(
+    label: str,
+    start_seconds: int,
+    end_seconds_exclusive: int,
+    eligible_markets: int,
+) -> dict[str, Any]:
+    return {
+        "band": label,
+        "start_seconds": start_seconds,
+        "end_seconds_exclusive": end_seconds_exclusive,
+        "markets": 0,
+        "coverage": 0.0,
+        "prediction_share": 0.0,
+        "accuracy": None,
+        "baseline_accuracy": None,
+        "accuracy_uplift": None,
+    }
 
 
 def maximum_consecutive_losses(rows: pl.DataFrame) -> int:

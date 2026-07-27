@@ -6,12 +6,14 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from .benchmark_config import load_entry_benchmark_config
 from .config import load_config
 from .core_config import load_core_config
 from .core_extract import extract_core_source
 from .core_features import build_core_features
 from .core_report import generate_core_report
 from .core_training import develop_core_models, evaluate_core_holdout
+from .entry_benchmark import run_entry_benchmark
 from .extract import extract_source
 from .features import build_features
 from .report import generate_report
@@ -52,6 +54,9 @@ def main() -> None:
     core_run = subparsers.add_parser("core-run")
     core_run.add_argument("--config", type=Path, required=True)
     core_run.add_argument("--force", action="store_true")
+    entry_run = subparsers.add_parser("entry-benchmark-run")
+    entry_run.add_argument("--config", type=Path, required=True)
+    entry_run.add_argument("--force", action="store_true")
     serve_parser = subparsers.add_parser("serve")
     serve_parser.add_argument("--run", type=Path, required=True)
     serve_parser.add_argument("--port", type=int, default=8765)
@@ -76,6 +81,22 @@ def main() -> None:
             model_key=args.model_key,
         )
         print(f"runtime model: {destination}")
+        return
+    if args.command == "entry-benchmark-run":
+        config = load_entry_benchmark_config(args.config)
+        run_dir, benchmark = run_entry_benchmark(
+            config,
+            force=args.force,
+        )
+        print(f"report: {run_dir / 'report.html'}")
+        print(
+            "deployment-qualified: "
+            + (
+                ", ".join(benchmark["deployment_qualified_candidates"])
+                if benchmark["deployment_qualified_candidates"]
+                else "none"
+            )
+        )
         return
     if args.command.startswith("core-"):
         run_core_command(args)

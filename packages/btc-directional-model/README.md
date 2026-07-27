@@ -23,9 +23,10 @@ contract.
 The expanded universal BTC-core contract is intentionally narrower. It uses only interval-market
 labels, reference facts, one-second Binance klines, and completed-artifact lineage. It does not
 read PMXT snapshots, raw orderbook events, aggregate trades, Chainlink ticks, or any live trading
-process data. Its locked source interval is `[2026-04-21, 2026-06-21)`, covering the maximum
-contiguous backfill currently verified with dense one-second BTC history. June 14-20 is isolated
-from feature building and model selection as the untouched final holdout.
+process data. The historical April 21-July 20 labels have already been accessed during model
+development, so results on that interval are development evidence rather than an independent
+deployment holdout. A deployment decision now requires a genuinely unseen, complete interval
+after July 20.
 
 ## Local environment
 
@@ -57,9 +58,7 @@ export POLARS_MAX_THREADS=6
   --config configs/btc-5m-directional-core-20260421-20260620.toml
 ```
 
-After the June 21-July 20 market, resolution, and Binance one-second-kline coverage has
-completed and passed the bounded source checks, develop the extended candidate without accessing
-the holdout:
+Develop the extended April 21-July 20 candidate:
 
 ```bash
 export POLARS_MAX_THREADS=6
@@ -73,30 +72,31 @@ export POLARS_MAX_THREADS=6
   --config configs/btc-5m-directional-core-20260421-20260720.toml
 ```
 
-The extended contract uses `[2026-04-21, 2026-07-21)` and preserves July 14-20 as a new
-untouched holdout. The command must not be run until the dependent resolution job completes and
-the exact range has dense market labels, opening boundaries, and one-second Binance coverage. If
-the pre-holdout gates produce a concrete immutable freeze, review that freeze before accessing the
-holdout exactly once:
+The extended contract uses `[2026-04-21, 2026-07-21)`. Its configured chronological splits remain
+useful for leakage-resistant development comparisons, but they are no longer independent holdout
+evidence. Do not promote a candidate from this range. Freeze the candidate and its policy before
+extracting or evaluating a later complete interval.
+
+The core workflow evaluates two logistic candidates and two real
+histogram-gradient-boosting candidates over five chronological walk-forward folds. The
+`histogram_early_weighted` candidate preserves the existing 58-feature native-runtime contract
+while assigning more fitting weight to decisions 60-120 seconds into each market. It does not
+change live inference inputs or the Rust trading path.
+
+Run the frozen earlier-entry benchmark:
 
 ```bash
-.venv/bin/btc-directional-model core-extract \
-  --config configs/btc-5m-directional-core-20260421-20260720.toml \
-  --scope holdout
-.venv/bin/btc-directional-model core-features \
-  --config configs/btc-5m-directional-core-20260421-20260720.toml \
-  --scope holdout
-.venv/bin/btc-directional-model core-evaluate-holdout \
-  --config configs/btc-5m-directional-core-20260421-20260720.toml \
-  --freeze artifacts/btc-core-20260421-20260720/<freeze-id>
+export POLARS_MAX_THREADS=6
+.venv/bin/btc-directional-model entry-benchmark-run \
+  --config configs/btc-5m-directional-entry-benchmark-20260421-20260720.toml
 ```
 
-The core workflow first extracts and builds only the pre-holdout features. It evaluates two
-logistic candidates and a bounded histogram-gradient-boosting challenger over five chronological
-walk-forward folds, calibrates probability on June 7-9, and selects the confidence policy on June
-10-13. The June 14-20 holdout is extracted and evaluated only if the selected candidate passes the
-pre-holdout gates. A persistent access record prevents a different frozen candidate from reusing
-the consumed holdout.
+This compares the control and deploy-compatible early-weighted model with two additional real
+offline challengers: a pre-open Binance-context model and a strict-valid-book model. It reads the
+compact 250 ms execution snapshots—not raw PMXT archive events—in daily bounded queries, builds
+checksummed exact-five-second evidence, and evaluates all candidates on common market/timestamp
+checkpoints. Book quality fields route and qualify observations; they are never directional model
+features. Offline challengers cannot be deployed through the current 58-feature Rust contract.
 
 Generated source data, features, runs, reports, and model artifacts are package-local and ignored
 by Git for this implementation pass.
@@ -172,8 +172,16 @@ zero uplift means the model is a selective path-persistence predictor—its valu
 confidence and abstention, not reversal identification. The raw Gamma-boundary/Binance price
 difference is retained only for source audit and is excluded from every model allowlist because
 cross-venue basis drift is not BTC direction. Passing these gates qualifies only the prediction
-model. Trading deployment remains blocked until executable 10-share prices, fees, slippage, and
-net expectancy are evaluated in a later, explicitly separate integration effort.
+model. The earlier-entry benchmark separately evaluates executable five-share VWAP, the configured
+dynamic fee, direct edge, realized net expectancy, and drawdown without altering the trading
+runtime.
+
+The earlier-entry benchmark uses its own stricter advancement contract. A candidate must clear the
+absolute accuracy, balanced-accuracy, directional-recall, Wilson, calibration, coverage, and
+fixed-five-share economics gates; it must also improve coverage and entry timing without regressing
+the control's prediction quality. Native p99 latency and serialized runtime-model size evidence are
+also mandatory; missing measurements fail closed. Passing development gates is not deployment
+qualification. A genuinely independent post-July-20 holdout remains mandatory.
 
 ## Apple Silicon
 
@@ -191,8 +199,10 @@ inference vectors, holdout predictions, a confusion-matrix CSV, and a self-conta
 The expanded BTC-core workflow writes a training-only joblib artifact, a portable JSON summary when
 the selected family is logistic, source and feature hashes, walk-forward/policy predictions,
 holdout access evidence, and the same style of self-contained report. The explicit runtime-export
-command is the only path from that training artifact to a checked-in native model bundle. Open a
-report in a local browser with:
+command is the only path from that training artifact to a checked-in native model bundle. The
+earlier-entry benchmark also writes candidate timing bands, exact-checkpoint comparisons,
+execution-economics evidence, data-quality lineage, gate decisions, and a self-contained report.
+Generated reports and extracted data remain ignored by Git. Open a report in a local browser with:
 
 ```bash
 .venv/bin/btc-directional-model serve --run runs/<run-id> --port 8765
