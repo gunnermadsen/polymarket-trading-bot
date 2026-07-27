@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -80,7 +81,7 @@ def render_document(metrics: dict[str, Any], plots: list[str]) -> str:
     else:
         primary = holdout["metrics"]
         paired = holdout["paired"]
-        evaluation_label = "Untouched June 14–20 holdout"
+        evaluation_label = holdout_evaluation_label(metrics)
         qualification_rows = "".join(
             gate_row(check) for check in holdout["qualification_checks"]
         )
@@ -159,6 +160,29 @@ no orderbook features · trading deployment remains blocked pending execution ec
 <section class="panel" style="margin-top:14px"><h2>Runtime provenance</h2>
 {runtime_table(metrics)}</section>
 </main></body></html>"""
+
+
+def holdout_evaluation_label(metrics: dict[str, Any]) -> str:
+    holdout_range = metrics.get("freeze", {}).get("holdout_range")
+    if not isinstance(holdout_range, dict):
+        return "Untouched holdout"
+    try:
+        start = datetime.fromisoformat(holdout_range["start"]).date()
+        end = datetime.fromisoformat(holdout_range["end"]).date() - timedelta(days=1)
+    except (KeyError, TypeError, ValueError):
+        return "Untouched holdout"
+    if end < start:
+        return "Untouched holdout"
+    if start.year == end.year and start.month == end.month:
+        date_span = f"{start:%B} {start.day}–{end.day}"
+    elif start.year == end.year:
+        date_span = f"{start:%B} {start.day}–{end:%B} {end.day}"
+    else:
+        date_span = (
+            f"{start:%B} {start.day}, {start.year}–"
+            f"{end:%B} {end.day}, {end.year}"
+        )
+    return f"Untouched {date_span} holdout"
 
 
 def candidate_comparison(metrics: dict[str, Any]) -> go.Figure:
