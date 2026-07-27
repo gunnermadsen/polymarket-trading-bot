@@ -35,8 +35,8 @@ use uuid::Uuid;
 
 use super::{
     feeds::{
-        parse_binance_agg_trade, parse_clob_messages, parse_rtds_reference_tick, BookRegistry,
-        ClobMessage,
+        parse_binance_agg_trade_with_details, parse_clob_messages, parse_rtds_reference_tick,
+        BookRegistry, ClobMessage,
     },
     market::{
         discovery_windows, parse_clob_rest_official_resolution, parse_gamma_btc_interval_event,
@@ -6011,24 +6011,49 @@ async fn run_binance_supervisor(
                                         session.messages_received.saturating_add(1);
                                     let parsed = serde_json::from_str::<serde_json::Value>(&text)
                                         .context("failed to decode Binance aggregate trade JSON")
-                                        .and_then(|value| parse_binance_agg_trade(
-                                            &value,
-                                            connection_id,
-                                            sequence,
-                                            received_at,
-                                        ));
+                                        .and_then(|value| {
+                                            parse_binance_agg_trade_with_details(
+                                                &value,
+                                                connection_id,
+                                                sequence,
+                                                received_at,
+                                            )
+                                        });
                                     match parsed {
-                                        Ok(tick) => {
-                                            let health_progress = {
+                                        Ok((tick, trade)) => {
+                                            let (health_progress, aggregation_error) = {
                                                 let mut realtime = state.write().await;
-                                                update_reference_state_and_check_progress(
+                                                let health_progress =
+                                                    update_reference_state_and_check_progress(
                                                     &mut realtime,
                                                     tick.clone(),
                                                     kind,
                                                     received_at,
                                                     chrono_duration(config.max_reference_age),
-                                                )
+                                                );
+                                                let aggregation_error = if health_progress {
+                                                    realtime
+                                                        .binance_one_second_window
+                                                        .update(&trade, received_at)
+                                                        .err()
+                                                } else {
+                                                    None
+                                                };
+                                                if aggregation_error.is_some() {
+                                                    // A malformed or discontinuous accumulator
+                                                    // must fail closed for the model without
+                                                    // degrading the canonical live price feed.
+                                                    realtime.binance_one_second_window.clear();
+                                                }
+                                                (health_progress, aggregation_error)
                                             };
+                                            if let Some(error) = aggregation_error {
+                                                tracing::warn!(
+                                                    error = %error,
+                                                    aggregate_trade_id = trade.aggregate_trade_id,
+                                                    "reset invalid Binance one-second model input window"
+                                                );
+                                            }
                                             let first_healthy_transition =
                                                 health_progress && !stats.healthy_epoch;
                                             let unavailable_milliseconds =

@@ -462,6 +462,18 @@ SELECT EXISTS (
 )
 "#;
 
+const PROCESS_HAS_DIRECTIONAL_PREDICTION_SQL: &str = r#"
+SELECT EXISTS (
+  SELECT 1
+  FROM polymarket.btc_strategy_decisions
+  WHERE process_id = $1
+    AND run_id = $2
+    AND market_id = $3
+    AND strategy_version = $4
+    AND metadata #>> '{prediction,status}' = 'directional_prediction'
+)
+"#;
+
 const RUN_MANIFEST_EXISTS_SQL: &str = r#"
 SELECT EXISTS (
   SELECT 1
@@ -2583,6 +2595,23 @@ impl BtcRepository {
             .fetch_one(&self.pool)
             .await
             .context("failed to check existing BTC process entry")
+    }
+
+    pub async fn process_has_directional_prediction(
+        &self,
+        process_id: Uuid,
+        run_id: Uuid,
+        market_id: &str,
+        strategy_version: &str,
+    ) -> Result<bool> {
+        sqlx::query_scalar::<_, bool>(PROCESS_HAS_DIRECTIONAL_PREDICTION_SQL)
+            .bind(process_id)
+            .bind(run_id)
+            .bind(market_id)
+            .bind(strategy_version)
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to check existing BTC directional prediction")
     }
 
     pub async fn load_resolved_loss_regime_candidates(
@@ -4744,6 +4773,19 @@ mod tests {
     fn existing_entry_guard_is_process_owned() {
         let normalized = PROCESS_HAS_ENTRY_SQL.to_ascii_lowercase();
         assert!(normalized.contains("where process_id = $1"));
+        assert!(!normalized.contains("experiment_id"));
+    }
+
+    #[test]
+    fn directional_prediction_resume_is_process_and_run_owned() {
+        let normalized = PROCESS_HAS_DIRECTIONAL_PREDICTION_SQL.to_ascii_lowercase();
+        assert!(normalized.contains("where process_id = $1"));
+        assert!(normalized.contains("and run_id = $2"));
+        assert!(normalized.contains("and market_id = $3"));
+        assert!(normalized.contains("and strategy_version = $4"));
+        assert!(
+            normalized.contains("metadata #>> '{prediction,status}' = 'directional_prediction'")
+        );
         assert!(!normalized.contains("experiment_id"));
     }
 

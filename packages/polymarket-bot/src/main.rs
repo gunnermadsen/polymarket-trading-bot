@@ -22,6 +22,7 @@ use polymarket_bot::{
         BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION,
         BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_FEATURE_SCHEMA_VERSION,
         BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_STRATEGY_VERSION,
+        BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION, BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
         BTC_FEATURE_SCHEMA_VERSION, BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION,
         BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION, BTC_STRATEGY_VERSION,
         BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION,
@@ -352,6 +353,10 @@ fn resolve_btc_strategy(
                 BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION,
                 BTC_FEATURE_SCHEMA_VERSION,
             ),
+            BtcDecisionStrategyConfig::BtcDirectionalModel { .. } => (
+                BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
+                BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION,
+            ),
         };
         strategy_object.insert(
             "strategy_version".to_string(),
@@ -398,6 +403,10 @@ fn resolve_btc_strategy(
             | (
                 BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION,
                 BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION
+            )
+            | (
+                BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
+                BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION
             )
     );
     if !compiled_identity_valid {
@@ -3192,6 +3201,42 @@ mod lifecycle_tests {
             ..BtcRealtimePaperControlConfig::default()
         };
         assert!(resolve_btc_strategy(&missing).is_err());
+    }
+
+    #[test]
+    fn selectable_v3_resolves_native_directional_model_as_the_only_strategy() {
+        let control = BtcRealtimePaperControlConfig {
+            schema_version: SELECTABLE_BTC_PROCESS_SCHEMA_VERSION.to_string(),
+            strategy: serde_json::json!({
+                "decision_strategy": {
+                    "type": "btc_directional_model",
+                    "model_key": polymarket_bot::btc::BTC_DIRECTIONAL_MODEL_V1_KEY,
+                    "artifact_sha256":
+                        polymarket_bot::btc::BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256,
+                    "feature_schema_sha256":
+                        polymarket_bot::btc::BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256
+                },
+                "min_seconds_after_open": 60,
+                "min_seconds_before_close": 60
+            }),
+            ..BtcRealtimePaperControlConfig::default()
+        };
+
+        let strategy = resolve_btc_strategy(&control).unwrap();
+
+        assert_eq!(
+            strategy.strategy_version,
+            BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION
+        );
+        assert_eq!(
+            strategy.feature_schema_version,
+            BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION
+        );
+        assert!(matches!(
+            strategy.decision_strategy,
+            Some(BtcDecisionStrategyConfig::BtcDirectionalModel { .. })
+        ));
+        assert!(strategy.volatility_continuation.is_none());
     }
 
     #[test]

@@ -678,6 +678,7 @@ mod tests {
             fees_enabled: true,
             fee_rate: Some(dec!(0.03)),
             fee_rate_observed_at: Some(observed_at - Duration::minutes(1)),
+            directional_model: None,
             lineage: BtcFeatureLineage {
                 lineage_version: BTC_FEATURE_LINEAGE_VERSION.to_string(),
                 chainlink_open_tick_id: Some(Uuid::from_u128(303)),

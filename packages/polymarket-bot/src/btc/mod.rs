@@ -1,4 +1,6 @@
 pub mod admission;
+pub mod directional_features;
+pub mod directional_model;
 pub mod execution_guard;
 pub mod feeds;
 pub mod market;
@@ -23,13 +25,29 @@ pub use admission::{
     SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE,
     SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION,
 };
+pub use directional_features::{
+    build_directional_features, DirectionalFeatureError, DirectionalFeatureTimingReason,
+    DirectionalFeatureVector, BTC_DIRECTIONAL_CANDIDATE_CADENCE_SECONDS,
+    BTC_DIRECTIONAL_FEATURE_COUNT, BTC_DIRECTIONAL_FEATURE_NAMES,
+    BTC_DIRECTIONAL_FEATURE_SCHEMA_VERSION, BTC_DIRECTIONAL_FIRST_CANDIDATE_SECOND,
+    BTC_DIRECTIONAL_LAST_CANDIDATE_SECOND,
+};
+pub use directional_model::{
+    runtime_model, BtcDirectionalModelFeatureSnapshot, RuntimeDirectionalModel, RuntimeModelAction,
+    RuntimeModelRegistry, RuntimeModelScore, RuntimeModelSelection, RuntimePredictionPolicy,
+    BTC_DIRECTIONAL_MODEL_DIR_ENV, BTC_DIRECTIONAL_MODEL_FAMILY,
+    BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION, BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
+    BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256, BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256,
+    BTC_DIRECTIONAL_MODEL_V1_KEY, DEFAULT_BTC_DIRECTIONAL_MODEL_DIR,
+};
 pub use execution_guard::{
     BtcReferenceExecutionAssessment, BtcReferenceExecutionGuard, BtcReferenceExecutionRejectReason,
     BTC_REFERENCE_EXECUTION_GUARD_METADATA_KEY, BTC_REFERENCE_EXECUTION_GUARD_VERSION,
 };
 pub use feeds::{
-    parse_binance_agg_trade, parse_clob_messages, parse_rtds_reference_tick, BookRegistry,
-    BookUpdateSide, ClobMessage, PriceChange,
+    parse_binance_agg_trade, parse_binance_agg_trade_with_details, parse_binance_aggregate_trade,
+    parse_clob_messages, parse_rtds_reference_tick, BookRegistry, BookUpdateSide, ClobMessage,
+    PriceChange,
 };
 pub use market::{
     aligned_window_start, discovery_windows, parse_gamma_btc_interval_event, slug_for_window,

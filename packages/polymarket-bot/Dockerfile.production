@@ -23,6 +23,7 @@ RUN mkdir -p src/bin \
 RUN cargo build --locked --release
 
 COPY packages/polymarket-bot/src ./src
+COPY packages/btc-directional-model/runtime-models /opt/polymarket-models
 
 RUN cargo clean --release -p polymarket-bot \
     && cargo build --locked --release \
@@ -60,6 +61,7 @@ LABEL org.opencontainers.image.source="https://github.com/gunnermadsen/polymarke
 COPY --from=builder /usr/local/bin/polymarket-bot /usr/local/bin/polymarket-bot
 COPY --from=builder /usr/local/bin/polymarket-backfill-worker /usr/local/bin/polymarket-backfill-worker
 COPY --from=builder /usr/local/bin/derive-clob-creds /usr/local/bin/derive-clob-creds
+COPY --from=builder /opt/polymarket-models /usr/local/share/polymarket-bot/models
 
 USER polymarket
 ENV RUST_LOG=info

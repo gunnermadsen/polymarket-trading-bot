@@ -31,6 +31,11 @@ use super::{
         ShadowPredictiveRegimeEvaluation, ShadowPredictiveRegimeState,
         ShadowPredictiveRegimeTransition,
     },
+    directional_features::{build_directional_features, DirectionalFeatureVector},
+    directional_model::{
+        runtime_model, BtcDirectionalModelFeatureSnapshot, RuntimeModelSelection,
+        RuntimePredictionPolicy,
+    },
     execution_guard::BtcReferenceExecutionGuard,
     paper::{PaperPreviewConfig, PaperVenue, PAPER_DYNAMIC_FEE_RATE_METADATA_KEY},
     predictive_regime_v2::{
@@ -42,12 +47,13 @@ use super::{
     repository::{BtcPointInTimeInputs, BtcRepository},
     runtime::{BtcStrategyRunner, StrategyObservation},
     strategy::{
-        BtcDecision, BtcDecisionAction, BtcFeatureLineage, BtcFeatureSnapshot,
-        BtcInputWindowLineage, BtcOutcomeBookFeatures, BtcRejectReason, BtcStrategyConfig,
-        BtcStrategyPrediction, DeterministicBtcStrategy,
+        BtcDecision, BtcDecisionAction, BtcDecisionStrategyConfig, BtcFeatureLineage,
+        BtcFeatureSnapshot, BtcInputWindowLineage, BtcOutcomeBookFeatures, BtcRejectReason,
+        BtcStrategyConfig, BtcStrategyPrediction, DeterministicBtcStrategy,
         BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_LINEAGE_VERSION,
         BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
-        BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION, BTC_FEATURE_LINEAGE_VERSION,
+        BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION,
+        BTC_DIRECTIONAL_MODEL_STRATEGY_FAMILY, BTC_FEATURE_LINEAGE_VERSION,
         BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_FAMILY,
     },
     types::{
@@ -83,6 +89,151 @@ pub struct BtcPaperProcessConfig {
 struct LossRegimeAdmissionRuntime {
     state: LossRegimeConfidenceFloorState,
     evaluated_market_id: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct DirectionalModelProcessRuntime {
+    market_id: Option<String>,
+    last_candidate_at: Option<DateTime<Utc>>,
+    pending_candidate_at: Option<DateTime<Utc>>,
+    in_flight_candidate_at: Option<DateTime<Utc>>,
+    confidence_crossed: bool,
+    rehydrated: bool,
+}
+
+impl DirectionalModelProcessRuntime {
+    fn claim(
+        &mut self,
+        market_id: &str,
+        latest_feature_as_of: DateTime<Utc>,
+    ) -> Option<(DateTime<Utc>, bool)> {
+        if self.market_id.as_deref() != Some(market_id) {
+            self.market_id = Some(market_id.to_string());
+            self.last_candidate_at = None;
+            self.pending_candidate_at = None;
+            self.in_flight_candidate_at = None;
+            self.confidence_crossed = false;
+            self.rehydrated = false;
+        }
+        if self.confidence_crossed
+            || self
+                .last_candidate_at
+                .is_some_and(|last_candidate_at| last_candidate_at >= latest_feature_as_of)
+            || self.in_flight_candidate_at.is_some()
+        {
+            return None;
+        }
+        let feature_as_of = *self
+            .pending_candidate_at
+            .get_or_insert(latest_feature_as_of);
+        self.in_flight_candidate_at = Some(feature_as_of);
+        let requires_rehydration = !self.rehydrated;
+        Some((feature_as_of, requires_rehydration))
+    }
+
+    fn mark_rehydrated(&mut self, market_id: &str, feature_as_of: DateTime<Utc>) {
+        if self.market_id.as_deref() == Some(market_id)
+            && self.in_flight_candidate_at == Some(feature_as_of)
+        {
+            self.rehydrated = true;
+        }
+    }
+
+    fn complete(
+        &mut self,
+        market_id: &str,
+        feature_as_of: DateTime<Utc>,
+        confidence_crossed: bool,
+    ) -> bool {
+        if self.market_id.as_deref() != Some(market_id)
+            || self.in_flight_candidate_at != Some(feature_as_of)
+        {
+            return false;
+        }
+        self.last_candidate_at = Some(feature_as_of);
+        self.pending_candidate_at = None;
+        self.in_flight_candidate_at = None;
+        self.rehydrated = true;
+        if confidence_crossed {
+            self.confidence_crossed = true;
+        }
+        true
+    }
+
+    fn release(&mut self, market_id: &str, feature_as_of: DateTime<Utc>) {
+        if self.market_id.as_deref() == Some(market_id)
+            && self.in_flight_candidate_at == Some(feature_as_of)
+        {
+            self.in_flight_candidate_at = None;
+        }
+    }
+}
+
+struct DirectionalModelCandidateLease<'a> {
+    runtime: &'a StdMutex<DirectionalModelProcessRuntime>,
+    market_id: String,
+    feature_as_of: DateTime<Utc>,
+    requires_rehydration: bool,
+    completed: bool,
+}
+
+impl DirectionalModelCandidateLease<'_> {
+    fn feature_as_of(&self) -> DateTime<Utc> {
+        self.feature_as_of
+    }
+
+    fn requires_rehydration(&self) -> bool {
+        self.requires_rehydration
+    }
+
+    fn mark_rehydrated(&self) -> Result<()> {
+        let mut runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("BTC directional model process lock was poisoned"))?;
+        runtime.mark_rehydrated(&self.market_id, self.feature_as_of);
+        Ok(())
+    }
+
+    fn complete(mut self, confidence_crossed: bool) -> Result<()> {
+        let completed = {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| anyhow::anyhow!("BTC directional model process lock was poisoned"))?;
+            runtime.complete(&self.market_id, self.feature_as_of, confidence_crossed)
+        };
+        anyhow::ensure!(
+            completed,
+            "BTC directional model candidate lease no longer owns its runtime candidate"
+        );
+        self.completed = true;
+        Ok(())
+    }
+}
+
+impl Drop for DirectionalModelCandidateLease<'_> {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.release(&self.market_id, self.feature_as_of);
+        }
+    }
+}
+
+fn complete_directional_model_candidate(
+    candidate: &mut Option<DirectionalModelCandidateLease<'_>>,
+    decision: &BtcDecision,
+) -> Result<()> {
+    let Some(candidate) = candidate.take() else {
+        return Ok(());
+    };
+    candidate.complete(matches!(
+        decision.prediction,
+        Some(BtcStrategyPrediction::DirectionalPrediction { .. })
+    ))
 }
 
 struct ShadowPredictiveRegimeAdmissionRuntime {
@@ -353,6 +504,7 @@ pub struct BtcPaperProcessRunner {
     shadow_predictive_regime_refresh_tasks: StdMutex<ShadowPredictiveRegimeRefreshTasks>,
     high_water_mark_entry_submission: Mutex<()>,
     paper_capital_reconcile_started_at: Mutex<Option<Instant>>,
+    directional_model_runtime: StdMutex<DirectionalModelProcessRuntime>,
 }
 
 impl BtcPaperProcessRunner {
@@ -424,7 +576,54 @@ impl BtcPaperProcessRunner {
             config,
             initialized: OnceCell::new(),
             paper_capital_reconcile_started_at: Mutex::new(None),
+            directional_model_runtime: StdMutex::new(DirectionalModelProcessRuntime::default()),
         })
+    }
+
+    fn claim_directional_model_candidate(
+        &self,
+        market_id: &str,
+        feature_as_of: DateTime<Utc>,
+    ) -> Result<Option<DirectionalModelCandidateLease<'_>>> {
+        let claim = self
+            .directional_model_runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("BTC directional model process lock was poisoned"))?
+            .claim(market_id, feature_as_of);
+        Ok(claim.map(
+            |(feature_as_of, requires_rehydration)| DirectionalModelCandidateLease {
+                runtime: &self.directional_model_runtime,
+                market_id: market_id.to_string(),
+                feature_as_of,
+                requires_rehydration,
+                completed: false,
+            },
+        ))
+    }
+
+    async fn insert_process_strategy_decision(
+        &self,
+        market_id: &str,
+        decision: &BtcDecision,
+        entry_admission_evidence: Option<&serde_json::Value>,
+        order_plan_id: Option<Uuid>,
+        status: &str,
+    ) -> Result<bool> {
+        let inserted = self
+            .repository
+            .insert_strategy_decision(
+                self.config.process_id,
+                self.config.run_id,
+                &self.config.config_hash,
+                market_id,
+                &self.config.strategy.strategy_version,
+                decision,
+                entry_admission_evidence,
+                order_plan_id,
+                status,
+            )
+            .await?;
+        Ok(inserted)
     }
 
     /// Claims the immutable execution-run identity before feeds begin.
@@ -1198,6 +1397,87 @@ impl BtcPaperProcessRunner {
         // runtime readiness. Initialization, reconciliation and admission must not move the
         // feature timestamp forward while feeds continue advancing.
         let observed_at = observation.readiness.checked_at;
+        let directional_selection = directional_model_selection(&self.config.strategy);
+        let mut directional_candidate = None;
+        let (snapshot_identity_at, directional_model, directional_model_feature_error) =
+            if let Some(selection) = directional_selection.as_ref() {
+                let Some(latest_feature_as_of) = observation
+                    .state
+                    .binance_one_second_window
+                    .completed()
+                    .back()
+                    .map(|candle| candle.close_timestamp)
+                else {
+                    return Ok(());
+                };
+                let model = runtime_model(selection)
+                    .context("failed to resolve configured BTC directional model")?;
+                let policy = model.prediction_policy();
+                let Some((feature_as_of, candidate_seconds_elapsed)) =
+                    latest_directional_model_candidate(
+                        policy,
+                        market.window_start,
+                        latest_feature_as_of,
+                    )
+                else {
+                    return Ok(());
+                };
+                if feature_as_of > observed_at {
+                    return Ok(());
+                }
+                if !policy.accepts(candidate_seconds_elapsed) {
+                    return Ok(());
+                }
+                let Some(candidate) =
+                    self.claim_directional_model_candidate(&market.market_id, feature_as_of)?
+                else {
+                    return Ok(());
+                };
+                let feature_as_of = candidate.feature_as_of();
+                let candidate_seconds_elapsed = (feature_as_of - market.window_start).num_seconds();
+                if !policy.accepts(candidate_seconds_elapsed) {
+                    return Ok(());
+                }
+                if candidate.requires_rehydration() {
+                    let has_prediction = self
+                        .repository
+                        .process_has_directional_prediction(
+                            self.config.process_id,
+                            self.config.run_id,
+                            &market.market_id,
+                            &self.config.strategy.strategy_version,
+                        )
+                        .await?;
+                    candidate.mark_rehydrated()?;
+                    if has_prediction {
+                        candidate.complete(true)?;
+                        return Ok(());
+                    }
+                }
+                let features = match build_directional_features(
+                    &observation.state.binance_one_second_window,
+                    market.window_start,
+                    feature_as_of,
+                ) {
+                    Ok(features) => {
+                        directional_candidate = Some(candidate);
+                        (
+                            feature_as_of,
+                            Some(build_directional_model_feature_snapshot(
+                                selection, market, features,
+                            )?),
+                            None,
+                        )
+                    }
+                    Err(error) => {
+                        directional_candidate = Some(candidate);
+                        (feature_as_of, None, Some(error.to_string()))
+                    }
+                };
+                features
+            } else {
+                (observed_at, None, None)
+            };
         self.schedule_shadow_predictive_regime_refresh(&market.market_id, observed_at);
         let clob_connection_id = observation_clob_connection_id(market, &observation.readiness);
         let inputs = self
@@ -1218,6 +1498,8 @@ impl BtcPaperProcessRunner {
             &inputs,
             self.config.strategy.target_size,
             &self.config.strategy.feature_schema_version,
+            snapshot_identity_at,
+            directional_model,
         );
         let mut decision = DeterministicBtcStrategy::evaluate(&self.config.strategy, &snapshot);
         enforce_runtime_readiness(&mut decision, &observation.readiness);
@@ -1239,7 +1521,7 @@ impl BtcPaperProcessRunner {
         } else {
             "not_ready"
         };
-        if !self
+        let feature_inserted = self
             .repository
             .insert_feature_snapshot(
                 &snapshot,
@@ -1250,45 +1532,38 @@ impl BtcPaperProcessRunner {
                     "runtime_readiness": observation.readiness,
                     "chainlink_quality_ok": snapshot.chainlink_quality_ok,
                     "binance_quality_ok": snapshot.binance_quality_ok,
+                    "directional_model_feature_error": directional_model_feature_error,
                     "quality_flags": quality_flags,
                 }),
             )
-            .await?
-        {
+            .await?;
+        if !feature_inserted && directional_selection.is_none() {
             return Ok(());
         }
 
         let Some(intent) = decision.approved_intent.clone() else {
-            self.repository
-                .insert_strategy_decision(
-                    self.config.process_id,
-                    self.config.run_id,
-                    &self.config.config_hash,
-                    &snapshot.market_id,
-                    &self.config.strategy.strategy_version,
-                    &decision,
-                    None,
-                    None,
-                    "rejected",
-                )
-                .await?;
+            self.insert_process_strategy_decision(
+                &snapshot.market_id,
+                &decision,
+                None,
+                None,
+                "rejected",
+            )
+            .await?;
+            complete_directional_model_candidate(&mut directional_candidate, &decision)?;
             return Ok(());
         };
 
         if !self.config.execution_enabled {
-            self.repository
-                .insert_strategy_decision(
-                    self.config.process_id,
-                    self.config.run_id,
-                    &self.config.config_hash,
-                    &snapshot.market_id,
-                    &self.config.strategy.strategy_version,
-                    &decision,
-                    None,
-                    None,
-                    "shadow_only",
-                )
-                .await?;
+            self.insert_process_strategy_decision(
+                &snapshot.market_id,
+                &decision,
+                None,
+                None,
+                "shadow_only",
+            )
+            .await?;
+            complete_directional_model_candidate(&mut directional_candidate, &decision)?;
             return Ok(());
         }
 
@@ -1306,19 +1581,15 @@ impl BtcPaperProcessRunner {
             .as_ref()
             .is_some_and(|evaluation| evaluation.disposition == AdmissionDisposition::Defer)
         {
-            self.repository
-                .insert_strategy_decision(
-                    self.config.process_id,
-                    self.config.run_id,
-                    &self.config.config_hash,
-                    &snapshot.market_id,
-                    &self.config.strategy.strategy_version,
-                    &decision,
-                    entry_admission_evidence,
-                    None,
-                    "admission_blocked",
-                )
-                .await?;
+            self.insert_process_strategy_decision(
+                &snapshot.market_id,
+                &decision,
+                entry_admission_evidence,
+                None,
+                "admission_blocked",
+            )
+            .await?;
+            complete_directional_model_candidate(&mut directional_candidate, &decision)?;
             return Ok(());
         }
 
@@ -1361,19 +1632,15 @@ impl BtcPaperProcessRunner {
             self.config.strategy.max_reference_age_ms,
         )?;
         reference_execution_guard.insert_into_metadata(&mut request.metadata)?;
-        self.repository
-            .insert_strategy_decision(
-                self.config.process_id,
-                self.config.run_id,
-                &self.config.config_hash,
-                &snapshot.market_id,
-                &self.config.strategy.strategy_version,
-                &decision,
-                entry_admission_evidence,
-                Some(plan_id),
-                "approved",
-            )
-            .await?;
+        self.insert_process_strategy_decision(
+            &snapshot.market_id,
+            &decision,
+            entry_admission_evidence,
+            Some(plan_id),
+            "approved",
+        )
+        .await?;
+        complete_directional_model_candidate(&mut directional_candidate, &decision)?;
         let preview_futures = self
             .config
             .paper_stress_previews
@@ -1892,8 +2159,11 @@ fn btc_entry_order_metadata(
             anyhow::bail!("BTC entry order cannot carry a no-prediction result");
         };
         ensure!(
-            attribution.family == BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_FAMILY
-                && *outcome == intent.outcome,
+            matches!(
+                attribution.family,
+                BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_FAMILY
+                    | BTC_DIRECTIONAL_MODEL_STRATEGY_FAMILY
+            ) && *outcome == intent.outcome,
             "BTC directional prediction attribution does not match its entry intent"
         );
         let metadata = metadata
@@ -1938,6 +2208,9 @@ fn snapshot_quality_flags(
                 .iter()
                 .map(|reason| format!("runtime:{reason}")),
         );
+    }
+    if directional_model_selection(config).is_some() && snapshot.directional_model.is_none() {
+        flags.push("missing_directional_model_features".to_string());
     }
     match snapshot.chainlink_age_ms {
         None => flags.push("missing_chainlink".to_string()),
@@ -2049,6 +2322,72 @@ fn observation_clob_connection_id(
     (up.connection_id == down.connection_id).then_some(up.connection_id)
 }
 
+fn directional_model_selection(config: &BtcStrategyConfig) -> Option<RuntimeModelSelection> {
+    match config.decision_strategy.as_ref()? {
+        BtcDecisionStrategyConfig::BtcDirectionalModel {
+            model_key,
+            artifact_sha256,
+            feature_schema_sha256,
+        } => Some(RuntimeModelSelection {
+            model_key: model_key.clone(),
+            artifact_sha256: artifact_sha256.clone(),
+            feature_schema_sha256: feature_schema_sha256.clone(),
+        }),
+        _ => None,
+    }
+}
+
+fn latest_directional_model_candidate(
+    policy: RuntimePredictionPolicy,
+    window_start: DateTime<Utc>,
+    latest_feature_as_of: DateTime<Utc>,
+) -> Option<(DateTime<Utc>, i64)> {
+    let latest_seconds_elapsed = (latest_feature_as_of - window_start).num_seconds();
+    if latest_seconds_elapsed < policy.minimum_seconds_after_open || policy.cadence_seconds <= 0 {
+        return None;
+    }
+    let seconds_elapsed = (policy.minimum_seconds_after_open
+        + ((latest_seconds_elapsed - policy.minimum_seconds_after_open) / policy.cadence_seconds)
+            * policy.cadence_seconds)
+        .min(policy.maximum_seconds_after_open);
+    policy.accepts(seconds_elapsed).then(|| {
+        (
+            window_start + chrono::Duration::seconds(seconds_elapsed),
+            seconds_elapsed,
+        )
+    })
+}
+
+fn build_directional_model_feature_snapshot(
+    selection: &RuntimeModelSelection,
+    market: &BtcIntervalMarket,
+    features: DirectionalFeatureVector,
+) -> Result<BtcDirectionalModelFeatureSnapshot> {
+    let input_sha256 = sha256_json(&serde_json::json!({
+        "contract": "btc_directional_model_input_v1",
+        "model_key": selection.model_key,
+        "model_artifact_sha256": selection.artifact_sha256,
+        "feature_schema_version": features.schema_version(),
+        "feature_schema_sha256": selection.feature_schema_sha256,
+        "feature_names": features.names().as_slice(),
+        "market_id": market.market_id,
+        "window_start": market.window_start,
+        "feature_as_of": features.feature_as_of,
+        "seconds_elapsed": features.seconds_elapsed,
+        "feature_values": &features.values,
+    }))?;
+    Ok(BtcDirectionalModelFeatureSnapshot {
+        model_key: selection.model_key.clone(),
+        model_artifact_sha256: selection.artifact_sha256.clone(),
+        feature_schema_version: features.schema_version().to_string(),
+        feature_schema_sha256: selection.feature_schema_sha256.clone(),
+        feature_as_of: features.feature_as_of,
+        seconds_elapsed: i64::from(features.seconds_elapsed),
+        feature_values: features.values,
+        input_sha256,
+    })
+}
+
 #[async_trait]
 impl BtcStrategyRunner for BtcPaperProcessRunner {
     async fn on_observation(&self, observation: StrategyObservation) -> Result<()> {
@@ -2067,6 +2406,8 @@ fn build_snapshot(
     inputs: &BtcPointInTimeInputs,
     target_size: Decimal,
     feature_schema_version: &str,
+    snapshot_identity_at: DateTime<Utc>,
+    directional_model: Option<BtcDirectionalModelFeatureSnapshot>,
 ) -> BtcFeatureSnapshot {
     let chainlink_open = inputs.chainlink_open.as_ref();
     let chainlink = inputs.chainlink_current.as_ref();
@@ -2077,7 +2418,7 @@ fn build_snapshot(
             "btc-feature:{}:{}:{}",
             process_id,
             market.market_id,
-            observed_at.timestamp_micros()
+            snapshot_identity_at.timestamp_micros()
         )
         .as_bytes(),
     );
@@ -2192,6 +2533,7 @@ fn build_snapshot(
         fees_enabled: market.fees_enabled,
         fee_rate: inputs.fee_rate,
         fee_rate_observed_at: inputs.fee_observed_at,
+        directional_model,
         lineage: BtcFeatureLineage {
             lineage_version: if path_conditioned {
                 BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_LINEAGE_VERSION.to_string()
@@ -2557,6 +2899,72 @@ mod tests {
         },
         types::{BookReadiness, Readiness},
     };
+
+    #[test]
+    fn directional_model_candidate_recovers_latest_eligible_cadence() {
+        let window_start = Utc.with_ymd_and_hms(2026, 7, 27, 12, 0, 0).unwrap();
+        let policy = RuntimePredictionPolicy {
+            minimum_seconds_after_open: 60,
+            maximum_seconds_after_open: 240,
+            cadence_seconds: 5,
+        };
+
+        assert_eq!(
+            latest_directional_model_candidate(
+                policy,
+                window_start,
+                window_start + chrono::Duration::seconds(67),
+            ),
+            Some((window_start + chrono::Duration::seconds(65), 65))
+        );
+        assert_eq!(
+            latest_directional_model_candidate(
+                policy,
+                window_start,
+                window_start + chrono::Duration::seconds(300),
+            ),
+            Some((window_start + chrono::Duration::seconds(240), 240))
+        );
+        assert_eq!(
+            latest_directional_model_candidate(
+                policy,
+                window_start,
+                window_start + chrono::Duration::seconds(59),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn directional_model_process_runtime_deduplicates_and_latches_crossing() {
+        let first = Utc.with_ymd_and_hms(2026, 7, 27, 12, 1, 0).unwrap();
+        let mut runtime = DirectionalModelProcessRuntime::default();
+
+        assert_eq!(runtime.claim("market-a", first), Some((first, true)));
+        assert_eq!(runtime.claim("market-a", first), None);
+        runtime.release("market-a", first);
+        assert_eq!(
+            runtime.claim("market-a", first + chrono::Duration::seconds(5)),
+            Some((first, true))
+        );
+        runtime.mark_rehydrated("market-a", first);
+        runtime.release("market-a", first);
+        assert_eq!(
+            runtime.claim("market-a", first + chrono::Duration::seconds(5)),
+            Some((first, false))
+        );
+        assert!(runtime.complete("market-a", first, false));
+        assert_eq!(
+            runtime.claim("market-a", first + chrono::Duration::seconds(10)),
+            Some((first + chrono::Duration::seconds(10), false))
+        );
+        assert!(runtime.complete("market-a", first + chrono::Duration::seconds(10), true));
+        assert_eq!(
+            runtime.claim("market-a", first + chrono::Duration::seconds(15)),
+            None
+        );
+        assert_eq!(runtime.claim("market-b", first), Some((first, true)));
+    }
 
     fn shadow_predictive_regime_v2_config() -> ShadowPredictiveRegimeCircuitBreakerV2Config {
         ShadowPredictiveRegimeCircuitBreakerV2Config {
@@ -3626,6 +4034,8 @@ mod tests {
             &inputs,
             dec!(5),
             super::super::strategy::BTC_FEATURE_SCHEMA_VERSION,
+            observed_at,
+            None,
         );
         assert_eq!(v2.chainlink_return_5s, None);
         assert!(serde_json::to_value(&v2)
@@ -3640,6 +4050,8 @@ mod tests {
             &inputs,
             dec!(5),
             BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION,
+            observed_at,
+            None,
         );
         assert_eq!(v3.chainlink_return_5s, Some(dec!(0.01)));
         assert_eq!(
@@ -3658,6 +4070,8 @@ mod tests {
             &inputs,
             dec!(5),
             BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
+            observed_at,
+            None,
         );
         let v4_repeat = build_snapshot(
             Uuid::from_u128(412),
@@ -3666,6 +4080,8 @@ mod tests {
             &inputs,
             dec!(5),
             BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
+            observed_at,
+            None,
         );
         assert_eq!(v4, v4_repeat);
         assert_eq!(v4.process_id, Uuid::from_u128(412));
