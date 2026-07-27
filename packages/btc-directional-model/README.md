@@ -57,6 +57,19 @@ export POLARS_MAX_THREADS=6
   --config configs/btc-5m-directional-core-20260421-20260620.toml
 ```
 
+After the June 21-July 20 market, resolution, and Binance one-second-kline coverage has
+completed and passed the bounded source checks, run the extended BTC-core workflow:
+
+```bash
+export POLARS_MAX_THREADS=6
+.venv/bin/btc-directional-model core-run \
+  --config configs/btc-5m-directional-core-20260421-20260720.toml
+```
+
+The extended contract uses `[2026-04-21, 2026-07-21)` and preserves July 14-20 as a new
+untouched holdout. The command must not be run until the dependent resolution job completes and
+the exact range has dense market labels, opening boundaries, and one-second Binance coverage.
+
 The core workflow first extracts and builds only the pre-holdout features. It evaluates two
 logistic candidates and a bounded histogram-gradient-boosting challenger over five chronological
 walk-forward folds, calibrates probability on June 7-9, and selects the confidence policy on June
