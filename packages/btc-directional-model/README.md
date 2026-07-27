@@ -58,17 +58,38 @@ export POLARS_MAX_THREADS=6
 ```
 
 After the June 21-July 20 market, resolution, and Binance one-second-kline coverage has
-completed and passed the bounded source checks, run the extended BTC-core workflow:
+completed and passed the bounded source checks, develop the extended candidate without accessing
+the holdout:
 
 ```bash
 export POLARS_MAX_THREADS=6
-.venv/bin/btc-directional-model core-run \
+.venv/bin/btc-directional-model core-extract \
+  --config configs/btc-5m-directional-core-20260421-20260720.toml \
+  --scope pre_holdout
+.venv/bin/btc-directional-model core-features \
+  --config configs/btc-5m-directional-core-20260421-20260720.toml \
+  --scope pre_holdout
+.venv/bin/btc-directional-model core-develop \
   --config configs/btc-5m-directional-core-20260421-20260720.toml
 ```
 
 The extended contract uses `[2026-04-21, 2026-07-21)` and preserves July 14-20 as a new
 untouched holdout. The command must not be run until the dependent resolution job completes and
-the exact range has dense market labels, opening boundaries, and one-second Binance coverage.
+the exact range has dense market labels, opening boundaries, and one-second Binance coverage. If
+the pre-holdout gates produce a concrete immutable freeze, review that freeze before accessing the
+holdout exactly once:
+
+```bash
+.venv/bin/btc-directional-model core-extract \
+  --config configs/btc-5m-directional-core-20260421-20260720.toml \
+  --scope holdout
+.venv/bin/btc-directional-model core-features \
+  --config configs/btc-5m-directional-core-20260421-20260720.toml \
+  --scope holdout
+.venv/bin/btc-directional-model core-evaluate-holdout \
+  --config configs/btc-5m-directional-core-20260421-20260720.toml \
+  --freeze artifacts/btc-core-20260421-20260720/<freeze-id>
+```
 
 The core workflow first extracts and builds only the pre-holdout features. It evaluates two
 logistic candidates and a bounded histogram-gradient-boosting challenger over five chronological
