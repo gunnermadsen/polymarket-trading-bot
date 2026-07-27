@@ -838,6 +838,7 @@ impl BtcProcessManager {
             })?;
         info!(
             clob_heartbeat_interval_secs = heartbeat.clob_interval.as_secs(),
+            clob_pong_timeout_secs = heartbeat.clob_pong_timeout.as_secs(),
             rtds_heartbeat_interval_secs = heartbeat.rtds_interval.as_secs(),
             binance_heartbeat_interval_secs = heartbeat.binance_interval.as_secs(),
             "BTC shared market-data runtime started with global heartbeat configuration"
@@ -2882,6 +2883,7 @@ async fn main() -> Result<()> {
         btc_realtime_enabled = config.btc.realtime_enabled,
         btc_paper_enabled = config.btc.paper_enabled,
         btc_clob_heartbeat_interval_secs = config.btc.data_source_heartbeat.clob_interval.as_secs(),
+        btc_clob_pong_timeout_secs = config.btc.data_source_heartbeat.clob_pong_timeout.as_secs(),
         btc_rtds_heartbeat_interval_secs = config.btc.data_source_heartbeat.rtds_interval.as_secs(),
         btc_binance_heartbeat_interval_secs =
             config.btc.data_source_heartbeat.binance_interval.as_secs(),
@@ -2907,6 +2909,7 @@ async fn main() -> Result<()> {
                 "btc_realtime_enabled": config.btc.realtime_enabled,
                 "btc_paper_enabled": config.btc.paper_enabled,
                 "btc_clob_heartbeat_interval_secs": config.btc.data_source_heartbeat.clob_interval.as_secs(),
+                "btc_clob_pong_timeout_secs": config.btc.data_source_heartbeat.clob_pong_timeout.as_secs(),
                 "btc_rtds_heartbeat_interval_secs": config.btc.data_source_heartbeat.rtds_interval.as_secs(),
                 "btc_binance_heartbeat_interval_secs": config.btc.data_source_heartbeat.binance_interval.as_secs(),
                 "grafana_live_enabled": config.grafana_live.enabled,

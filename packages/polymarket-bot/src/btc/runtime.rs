@@ -60,7 +60,6 @@ const RTDS_HEARTBEAT_MESSAGE: &str = "ping";
 const CLOB_CONNECT_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const CLOB_SEND_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const CLOB_BOOTSTRAP_TIMEOUT: StdDuration = StdDuration::from_secs(5);
-const CLOB_PONG_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 const CLOB_READ_IDLE_TIMEOUT: StdDuration = StdDuration::from_secs(40);
 const CLOB_GRACEFUL_CLOSE_TIMEOUT: StdDuration = StdDuration::from_millis(100);
 const CLOB_PROVENANCE_VALUE_MAX_BYTES: usize = 128;
@@ -81,6 +80,7 @@ type ClobSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BtcHeartbeatConfig {
     pub clob_interval: StdDuration,
+    pub clob_pong_timeout: StdDuration,
     pub rtds_interval: StdDuration,
     pub binance_interval: StdDuration,
 }
@@ -88,7 +88,10 @@ pub struct BtcHeartbeatConfig {
 impl Default for BtcHeartbeatConfig {
     fn default() -> Self {
         Self {
-            clob_interval: StdDuration::from_secs(5),
+            // Polymarket's market channel requires a text PING every ten seconds.
+            clob_interval: StdDuration::from_secs(10),
+            // Permit two venue heartbeat periods plus bounded scheduling/network jitter.
+            clob_pong_timeout: StdDuration::from_secs(25),
             rtds_interval: StdDuration::from_secs(5),
             binance_interval: StdDuration::from_secs(20),
         }
@@ -97,6 +100,7 @@ impl Default for BtcHeartbeatConfig {
 
 impl BtcHeartbeatConfig {
     pub const MAX_INTERVAL_SECS: u64 = 30;
+    pub const MAX_CLOB_PONG_TIMEOUT_SECS: u64 = 60;
 
     pub fn validate(self) -> Result<()> {
         for (name, interval) in [
@@ -110,6 +114,14 @@ impl BtcHeartbeatConfig {
                     Self::MAX_INTERVAL_SECS
                 );
             }
+        }
+        if self.clob_pong_timeout <= self.clob_interval
+            || self.clob_pong_timeout > StdDuration::from_secs(Self::MAX_CLOB_PONG_TIMEOUT_SECS)
+        {
+            bail!(
+                "BTC CLOB PONG timeout must exceed its heartbeat interval and be at most {} seconds",
+                Self::MAX_CLOB_PONG_TIMEOUT_SECS
+            );
         }
         Ok(())
     }
@@ -457,7 +469,6 @@ struct ClobFeedWatchdog {
     bootstrap_deadline: Option<Instant>,
     read_idle_deadline: Instant,
     pong_deadline: Option<Instant>,
-    awaiting_text_pong: bool,
 }
 
 impl ClobFeedWatchdog {
@@ -472,7 +483,6 @@ impl ClobFeedWatchdog {
             bootstrap_deadline: None,
             read_idle_deadline: now + CLOB_READ_IDLE_TIMEOUT,
             pong_deadline: None,
-            awaiting_text_pong: false,
         };
         watchdog.refresh_bootstrap(now, registry, markets, checked_at);
         watchdog
@@ -482,14 +492,14 @@ impl ClobFeedWatchdog {
         self.read_idle_deadline = now + CLOB_READ_IDLE_TIMEOUT;
     }
 
-    fn arm_text_pong(&mut self, now: Instant) {
-        self.awaiting_text_pong = true;
-        self.pong_deadline = Some(now + CLOB_PONG_TIMEOUT);
+    fn record_text_ping(&mut self, now: Instant, pong_timeout: StdDuration) {
+        // Preserve the deadline of the oldest unacknowledged probe. Continuing the
+        // documented PING cadence must not turn one missing PONG into an unbounded wait.
+        self.pong_deadline.get_or_insert(now + pong_timeout);
     }
 
     fn acknowledge_text_pong(&mut self, text: &str) -> bool {
-        if self.awaiting_text_pong && is_clob_text_pong(text) {
-            self.awaiting_text_pong = false;
+        if self.pong_deadline.is_some() && is_clob_text_pong(text) {
             self.pong_deadline = None;
             true
         } else {
@@ -1457,6 +1467,7 @@ impl BtcRuntime {
                 run_clob_supervisor(
                     self.config.clone(),
                     self.heartbeat.clob_interval,
+                    self.heartbeat.clob_pong_timeout,
                     self.repository.clone(),
                     market_rx,
                     writer_tx.clone(),
@@ -3087,6 +3098,7 @@ async fn promote_clob_epoch_if_ready(
 async fn run_clob_supervisor(
     config: BtcRuntimeConfig,
     heartbeat_interval: StdDuration,
+    pong_timeout: StdDuration,
     repository: BtcRepository,
     mut markets: watch::Receiver<Vec<BtcIntervalMarket>>,
     writer: mpsc::Sender<PersistItem>,
@@ -3882,11 +3894,10 @@ async fn run_clob_supervisor(
             scheduled_at = heartbeat.tick() => {
                 let mut active_probe = None;
                 if let Some(epoch) = active.as_mut() {
-                    if !epoch.watchdog.awaiting_text_pong {
-                        match send_clob_text(&mut epoch.socket, "PING".to_string(), &mut shutdown).await {
+                    match send_clob_text(&mut epoch.socket, "PING".to_string(), &mut shutdown).await {
                             Ok(()) => {
                                 let sent_instant = Instant::now();
-                                epoch.watchdog.arm_text_pong(sent_instant);
+                                epoch.watchdog.record_text_ping(sent_instant, pong_timeout);
                                 active_probe = Some(epoch.telemetry.record_heartbeat_probe(
                                     Utc::now(),
                                     sent_instant,
@@ -3911,15 +3922,13 @@ async fn run_clob_supervisor(
                                     None,
                                 ));
                             }
-                        }
                     }
                 }
                 if let Some(epoch) = successor.as_mut() {
-                    if !epoch.watchdog.awaiting_text_pong {
-                        match send_clob_text(&mut epoch.socket, "PING".to_string(), &mut shutdown).await {
+                    match send_clob_text(&mut epoch.socket, "PING".to_string(), &mut shutdown).await {
                             Ok(()) => {
                                 let sent_instant = Instant::now();
-                                epoch.watchdog.arm_text_pong(sent_instant);
+                                epoch.watchdog.record_text_ping(sent_instant, pong_timeout);
                                 epoch.telemetry.record_heartbeat_probe(
                                     Utc::now(),
                                     sent_instant,
@@ -3942,7 +3951,6 @@ async fn run_clob_supervisor(
                                     ClobDisconnectCause::TransportFailure,
                                 ));
                             }
-                        }
                     }
                 }
                 if let Some(sample) = active_probe {
@@ -8405,8 +8413,9 @@ mod tests {
         assert_eq!(watchdog.pong_deadline, None);
 
         let ping_at = now + StdDuration::from_secs(1);
-        watchdog.arm_text_pong(ping_at);
-        let pong_deadline = ping_at + CLOB_PONG_TIMEOUT;
+        let pong_timeout = StdDuration::from_secs(25);
+        watchdog.record_text_ping(ping_at, pong_timeout);
+        let pong_deadline = ping_at + pong_timeout;
         assert_eq!(watchdog.read_idle_deadline, initial_read_deadline);
         assert_eq!(watchdog.pong_deadline, Some(pong_deadline));
 
@@ -8417,11 +8426,13 @@ mod tests {
             frame_at + CLOB_READ_IDLE_TIMEOUT
         );
         assert_eq!(watchdog.pong_deadline, Some(pong_deadline));
-        assert!(watchdog.awaiting_text_pong);
+        // A later probe preserves the oldest outstanding PONG deadline, preventing
+        // repeated PINGs from masking a genuine missing acknowledgement.
+        watchdog.record_text_ping(ping_at + StdDuration::from_secs(10), pong_timeout);
+        assert_eq!(watchdog.pong_deadline, Some(pong_deadline));
 
         assert!(watchdog.acknowledge_text_pong(" pong \n"));
         assert_eq!(watchdog.pong_deadline, None);
-        assert!(!watchdog.awaiting_text_pong);
         assert_eq!(
             watchdog.read_idle_deadline,
             frame_at + CLOB_READ_IDLE_TIMEOUT
@@ -9456,7 +9467,8 @@ mod tests {
     #[test]
     fn heartbeat_configuration_is_system_owned_and_validated() {
         let heartbeat = BtcHeartbeatConfig::default();
-        assert_eq!(heartbeat.clob_interval, StdDuration::from_secs(5));
+        assert_eq!(heartbeat.clob_interval, StdDuration::from_secs(10));
+        assert_eq!(heartbeat.clob_pong_timeout, StdDuration::from_secs(25));
         assert_eq!(heartbeat.rtds_interval, StdDuration::from_secs(5));
         assert_eq!(heartbeat.binance_interval, StdDuration::from_secs(20));
         heartbeat.validate().unwrap();
@@ -9471,7 +9483,11 @@ mod tests {
             ..heartbeat
         };
         assert!(excessive.validate().is_err());
-        assert_eq!(CLOB_PONG_TIMEOUT, StdDuration::from_secs(10));
+        let invalid_pong_timeout = BtcHeartbeatConfig {
+            clob_pong_timeout: heartbeat.clob_interval,
+            ..heartbeat
+        };
+        assert!(invalid_pong_timeout.validate().is_err());
         assert_eq!(REFERENCE_PONG_TIMEOUT, StdDuration::from_secs(10));
     }
 

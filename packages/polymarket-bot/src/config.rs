@@ -164,6 +164,10 @@ impl AppConfig {
                     "POLYMARKET_BTC_CLOB_HEARTBEAT_INTERVAL_SECS",
                     heartbeat_defaults.clob_interval.as_secs(),
                 )?,
+                clob_pong_timeout: parse_clob_pong_timeout_secs(
+                    "POLYMARKET_BTC_CLOB_PONG_TIMEOUT_SECS",
+                    heartbeat_defaults.clob_pong_timeout.as_secs(),
+                )?,
                 rtds_interval: parse_positive_duration_secs(
                     "POLYMARKET_BTC_RTDS_HEARTBEAT_INTERVAL_SECS",
                     heartbeat_defaults.rtds_interval.as_secs(),
@@ -441,6 +445,24 @@ fn parse_positive_duration_secs(key: &str, default: u64) -> Result<Duration> {
 }
 
 fn positive_duration_secs(key: &str, value: Option<&str>, default: u64) -> Result<Duration> {
+    bounded_positive_duration_secs(key, value, default, BtcHeartbeatConfig::MAX_INTERVAL_SECS)
+}
+
+fn parse_clob_pong_timeout_secs(key: &str, default: u64) -> Result<Duration> {
+    bounded_positive_duration_secs(
+        key,
+        env::var(key).ok().as_deref(),
+        default,
+        BtcHeartbeatConfig::MAX_CLOB_PONG_TIMEOUT_SECS,
+    )
+}
+
+fn bounded_positive_duration_secs(
+    key: &str,
+    value: Option<&str>,
+    default: u64,
+    maximum: u64,
+) -> Result<Duration> {
     let seconds = match value {
         Some(value) => match value.parse::<u64>() {
             Ok(seconds) => seconds,
@@ -448,11 +470,8 @@ fn positive_duration_secs(key: &str, value: Option<&str>, default: u64) -> Resul
         },
         None => default,
     };
-    if seconds == 0 || seconds > BtcHeartbeatConfig::MAX_INTERVAL_SECS {
-        bail!(
-            "{key} must be an integer between 1 and {} seconds",
-            BtcHeartbeatConfig::MAX_INTERVAL_SECS
-        );
+    if seconds == 0 || seconds > maximum {
+        bail!("{key} must be an integer between 1 and {maximum} seconds");
     }
     Ok(Duration::from_secs(seconds))
 }
@@ -492,5 +511,16 @@ mod tests {
         assert!(
             positive_duration_secs(key, Some("31"), BtcHeartbeatConfig::MAX_INTERVAL_SECS).is_err()
         );
+        assert_eq!(
+            parse_clob_pong_timeout_secs("POLYMARKET_BTC_CLOB_PONG_TIMEOUT_SECS", 25).unwrap(),
+            Duration::from_secs(25)
+        );
+        assert!(bounded_positive_duration_secs(
+            "POLYMARKET_BTC_CLOB_PONG_TIMEOUT_SECS",
+            Some("61"),
+            25,
+            BtcHeartbeatConfig::MAX_CLOB_PONG_TIMEOUT_SECS,
+        )
+        .is_err());
     }
 }
