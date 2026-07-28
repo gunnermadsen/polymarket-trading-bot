@@ -98,7 +98,7 @@ h2 {{ margin:0 0 12px;font-size:18px }} h3 {{ margin:18px 0 8px;font-size:15px }
 .card,.panel {{ background:var(--panel);border:1px solid var(--line);
   border-radius:12px;padding:16px }} .label {{ color:var(--muted);font-size:12px;
   text-transform:uppercase;letter-spacing:.06em }} .value {{ font-size:20px;
-  font-weight:700;margin-top:5px }} .pass {{ color:var(--pass) }}
+  font-weight:700;margin-top:5px;overflow-wrap:anywhere }} .pass {{ color:var(--pass) }}
 .blocked {{ color:var(--blocked) }} .warning {{ border-color:var(--warn);
   color:#fff4c4;margin-bottom:14px }} .grid {{ display:grid;
   grid-template-columns:repeat(2,minmax(0,1fr));gap:14px }}
@@ -119,6 +119,7 @@ same-market, exact-timestamp checkpoint comparisons · fixed five-share economic
 {_candidate_table(benchmark, candidate_order)}</div></section>
 {_training_evidence_panel(benchmark)}
 {_strict_book_chronology_panel(benchmark)}
+{_book_residual_panel(benchmark)}
 {_persistence_analysis_panel(benchmark)}
 {_training_selection_panel(benchmark)}
 {_data_evidence_panel(benchmark)}
@@ -214,6 +215,135 @@ def _strict_book_chronology_panel(benchmark: dict[str, Any]) -> str:
         f"</strong>; winner: <strong>{html.escape(str(winner))}</strong>. "
         f"{html.escape(failed_label)}. Runtime evidence is deferred and no "
         "deployment artifact was exported.</p></section>"
+    )
+
+
+def _book_residual_panel(benchmark: dict[str, Any]) -> str:
+    selection = benchmark.get("book_residual_selection")
+    evidence = benchmark.get("training_evidence", {}).get("book_residual")
+    data = benchmark.get("data_evidence", {})
+    if not isinstance(selection, dict) or not isinstance(evidence, dict):
+        return ""
+
+    final_residual = evidence["final_residual"]
+    model = final_residual["model"]
+    coefficients = [model["gamma"], *model["beta"]]
+    scales: list[float | None] = [None, *model["feature_scales"]]
+    coefficient_rows = [
+        (
+            feature,
+            _number(coefficient, 6),
+            "unscaled" if scale is None else _number(scale, 6),
+        )
+        for feature, coefficient, scale in zip(
+            model["feature_names"],
+            coefficients,
+            scales,
+            strict=True,
+        )
+    ]
+    cohort_rows = []
+    for name, cohort in data.get("cohorts", {}).items():
+        if "universal_rows" in cohort:
+            cohort_rows.append(
+                (
+                    name,
+                    f"{cohort['universal_rows']:,}",
+                    f"{cohort['universal_markets']:,}",
+                    f"{cohort['strict_rows']:,}",
+                    f"{cohort['strict_markets']:,}",
+                    _percent(cohort["strict_market_coverage"]),
+                )
+            )
+        else:
+            cohort_rows.append(
+                (
+                    name,
+                    "OOF strict only",
+                    "OOF strict only",
+                    f"{cohort['rows']:,}",
+                    f"{cohort['markets']:,}",
+                    "100.00%",
+                )
+            )
+
+    calibration_rows = []
+    for candidate, diagnostic in evidence[
+        "direction_time_calibration"
+    ].items():
+        for cell in diagnostic["cells"]:
+            calibration_rows.append(
+                (
+                    candidate,
+                    cell["band"],
+                    cell["raw_direction"],
+                    f"{cell['markets']:,}",
+                    f"{cell['positives']:,}",
+                    _number(cell["slope"], 4),
+                    _number(cell["intercept"], 4),
+                    "PASS" if cell["converged"] else "BLOCKED",
+                )
+            )
+
+    threshold_rows = [
+        (
+            candidate,
+            _number(record["threshold"], 2),
+            "PASS" if record["qualified"] else "BLOCKED",
+            f"{max(row['markets'] for row in record['history']):,}",
+        )
+        for candidate, record in evidence["threshold_selection"].items()
+    ]
+    holdout = data["sealed_holdout"]
+    winner = selection.get("winner") or "none"
+    return (
+        '<section class="panel" style="margin-top:14px">'
+        "<h2>Compact orderbook residual challenge</h2>"
+        "<p>The challenger adds one small L2-regularized book correction to "
+        "the universal BTC-core logit. It routes only on simultaneous strict "
+        "10-share books with an exact prior five-second row; every other row "
+        "is the unchanged BTC-core fallback. Quality flags and provider age "
+        "never predict direction.</p>"
+        "<h3>Chronological cohorts</h3>"
+        + _table(
+            (
+                "Cohort",
+                "Universal rows",
+                "Universal markets",
+                "Strict rows",
+                "Strict markets",
+                "Strict coverage",
+            ),
+            cohort_rows,
+        )
+        + "<h3>Frozen residual coefficients</h3>"
+        + _table(("Feature", "Coefficient", "RMS scale"), coefficient_rows)
+        + "<h3>Direction/time calibration cells</h3>"
+        + _table(
+            (
+                "Candidate",
+                "Band",
+                "Raw direction",
+                "Markets",
+                "Positive rows",
+                "Slope",
+                "Intercept",
+                "Converged",
+            ),
+            calibration_rows,
+        )
+        + "<h3>Frozen confidence policies</h3>"
+        + _table(
+            ("Candidate", "Threshold", "Qualified", "Max accepted"),
+            threshold_rows,
+        )
+        + f"<p>Development selection: <strong>{html.escape(str(selection['status']))}"
+        f"</strong>; winner: <strong>{html.escape(str(winner))}</strong>. "
+        f"Sealed holdout {html.escape(str(holdout['range_start']))} to "
+        f"{html.escape(str(holdout['range_end']))}: "
+        f"<strong>{html.escape(str(holdout['status']))}</strong>; "
+        f"{html.escape(str(holdout['reason']))}. No runtime artifact was "
+        "exported.</p></section>"
     )
 
 
@@ -324,6 +454,8 @@ def _training_evidence_panel(benchmark: dict[str, Any]) -> str:
                 bool(book.get("threshold_qualified")),
             )
         )
+    if not rows:
+        return ""
     headings = (
         "Candidate",
         "Cohort",

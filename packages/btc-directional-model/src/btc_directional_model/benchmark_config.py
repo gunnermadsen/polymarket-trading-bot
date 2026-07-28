@@ -11,6 +11,7 @@ from .core_config import parse_utc_day
 LEGACY_OFFLINE_BENCHMARK_MODE = "legacy_offline_challengers"
 CORE_ONLY_REUSE_DIAGNOSTICS_MODE = "core_only_reuse_diagnostics"
 STRICT_BOOK_CHRONOLOGICAL_MODE = "strict_book_chronological"
+STRICT_BOOK_RESIDUAL_MODE = "strict_book_residual_chronological"
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,41 @@ class BenchmarkBookEvaluationConfig:
 
 
 @dataclass(frozen=True)
+class BenchmarkResidualSplitConfig:
+    core_fit_start: datetime
+    core_fit_end: datetime
+    core_calibration_start: datetime
+    core_calibration_end: datetime
+    residual_fit_start: datetime
+    residual_fit_end: datetime
+    lambda_selection_start: datetime
+    lambda_selection_end: datetime
+    stability_start: datetime
+    stability_end: datetime
+    direction_time_calibration_start: datetime
+    direction_time_calibration_end: datetime
+    threshold_selection_start: datetime
+    threshold_selection_end: datetime
+    policy_diagnostic_start: datetime
+    policy_diagnostic_end: datetime
+    sealed_holdout_start: datetime
+    sealed_holdout_end: datetime
+
+
+@dataclass(frozen=True)
+class BenchmarkResidualModelConfig:
+    oof_probability_path: Path
+    oof_probability_sha256: str
+    oof_benchmark_path: Path
+    oof_benchmark_sha256: str
+    oof_run_id: str
+    oof_candidate: str
+    l2_candidates: tuple[float, ...]
+    calibration_l2: float
+    minimum_calibration_cell_markets: int
+
+
+@dataclass(frozen=True)
 class BenchmarkGateConfig:
     minimum_accuracy: float
     minimum_balanced_accuracy: float
@@ -117,6 +153,8 @@ class EntryBenchmarkConfig:
     paths: BenchmarkPathConfig
     prior_diagnostics: PriorDiagnosticsConfig | None
     book_evaluation: BenchmarkBookEvaluationConfig | None
+    residual_split: BenchmarkResidualSplitConfig | None
+    residual_model: BenchmarkResidualModelConfig | None
 
 
 def load_entry_benchmark_config(path: Path) -> EntryBenchmarkConfig:
@@ -134,6 +172,8 @@ def load_entry_benchmark_config(path: Path) -> EntryBenchmarkConfig:
     paths_raw = raw["paths"]
     prior_raw = raw.get("prior_diagnostics")
     book_evaluation_raw = raw.get("book_evaluation")
+    residual_split_raw = raw.get("residual_split")
+    residual_model_raw = raw.get("residual_model")
     control_candidate = str(benchmark_raw["control_candidate"])
     early_candidate = str(benchmark_raw["early_candidate"])
     config = EntryBenchmarkConfig(
@@ -269,6 +309,42 @@ def load_entry_benchmark_config(path: Path) -> EntryBenchmarkConfig:
             if book_evaluation_raw is not None
             else None
         ),
+        residual_split=(
+            BenchmarkResidualSplitConfig(
+                **{
+                    key: parse_utc_day(value)
+                    for key, value in residual_split_raw.items()
+                }
+            )
+            if residual_split_raw is not None
+            else None
+        ),
+        residual_model=(
+            BenchmarkResidualModelConfig(
+                oof_probability_path=package_root
+                / str(residual_model_raw["oof_probability_path"]),
+                oof_probability_sha256=str(
+                    residual_model_raw["oof_probability_sha256"]
+                ).lower(),
+                oof_benchmark_path=package_root
+                / str(residual_model_raw["oof_benchmark_path"]),
+                oof_benchmark_sha256=str(
+                    residual_model_raw["oof_benchmark_sha256"]
+                ).lower(),
+                oof_run_id=str(residual_model_raw["oof_run_id"]),
+                oof_candidate=str(residual_model_raw["oof_candidate"]),
+                l2_candidates=tuple(
+                    float(value)
+                    for value in residual_model_raw["l2_candidates"]
+                ),
+                calibration_l2=float(residual_model_raw["calibration_l2"]),
+                minimum_calibration_cell_markets=int(
+                    residual_model_raw["minimum_calibration_cell_markets"]
+                ),
+            )
+            if residual_model_raw is not None
+            else None
+        ),
     )
     validate_entry_benchmark_config(config)
     return config
@@ -284,6 +360,7 @@ def validate_entry_benchmark_config(config: EntryBenchmarkConfig) -> None:
         LEGACY_OFFLINE_BENCHMARK_MODE,
         CORE_ONLY_REUSE_DIAGNOSTICS_MODE,
         STRICT_BOOK_CHRONOLOGICAL_MODE,
+        STRICT_BOOK_RESIDUAL_MODE,
     }:
         raise ValueError(f"unsupported benchmark mode: {identity.mode}")
     candidates = (
@@ -321,6 +398,15 @@ def validate_entry_benchmark_config(config: EntryBenchmarkConfig) -> None:
             "the BTC-only control plus strict-book challenger"
         )
     if (
+        identity.mode == STRICT_BOOK_RESIDUAL_MODE
+        and identity.candidate_names
+        != (identity.control_candidate, identity.strict_book_candidate)
+    ):
+        raise ValueError(
+            "strict-book residual benchmark candidates must be "
+            "the universal BTC control plus book-residual challenger"
+        )
+    if (
         identity.mode == STRICT_BOOK_CHRONOLOGICAL_MODE
         and config.book_evaluation is None
     ):
@@ -333,6 +419,18 @@ def validate_entry_benchmark_config(config: EntryBenchmarkConfig) -> None:
     ):
         raise ValueError(
             "book_evaluation is only valid for strict-book chronological mode"
+        )
+    if identity.mode == STRICT_BOOK_RESIDUAL_MODE:
+        if config.residual_split is None or config.residual_model is None:
+            raise ValueError(
+                "strict-book residual mode requires residual_split and "
+                "residual_model"
+            )
+        _validate_residual_config(config)
+    elif config.residual_split is not None or config.residual_model is not None:
+        raise ValueError(
+            "residual_split and residual_model are only valid for "
+            "strict-book residual mode"
         )
     if (
         identity.mode == CORE_ONLY_REUSE_DIAGNOSTICS_MODE
@@ -500,4 +598,126 @@ def benchmark_config_to_dict(config: EntryBenchmarkConfig) -> dict[str, Any]:
             if config.book_evaluation is not None
             else None
         ),
+        "residual_split": (
+            {
+                key: value.isoformat()
+                for key, value in asdict(config.residual_split).items()
+            }
+            if config.residual_split is not None
+            else None
+        ),
+        "residual_model": (
+            {
+                **asdict(config.residual_model),
+                "oof_probability_path": str(
+                    config.residual_model.oof_probability_path
+                ),
+                "oof_benchmark_path": str(
+                    config.residual_model.oof_benchmark_path
+                ),
+            }
+            if config.residual_model is not None
+            else None
+        ),
     }
+
+
+def _validate_residual_config(config: EntryBenchmarkConfig) -> None:
+    split = config.residual_split
+    model = config.residual_model
+    if split is None or model is None:
+        raise AssertionError("residual config validation lost its mode contract")
+    for label, checksum in (
+        ("probability", model.oof_probability_sha256),
+        ("benchmark", model.oof_benchmark_sha256),
+    ):
+        if (
+            len(checksum) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in checksum
+            )
+        ):
+            raise ValueError(
+                f"residual OOF {label} sha256 must be 64 lowercase hex digits"
+            )
+    if not model.oof_run_id.strip():
+        raise ValueError("residual OOF run id must be non-empty")
+    if not model.oof_candidate.strip():
+        raise ValueError("residual OOF candidate must be non-empty")
+    if (
+        not model.l2_candidates
+        or tuple(sorted(set(model.l2_candidates))) != model.l2_candidates
+        or any(value <= 0 for value in model.l2_candidates)
+    ):
+        raise ValueError(
+            "residual L2 candidates must be positive, unique, and sorted"
+        )
+    if model.calibration_l2 <= 0:
+        raise ValueError("residual calibration L2 must be positive")
+    if model.minimum_calibration_cell_markets <= 0:
+        raise ValueError(
+            "residual calibration-cell market minimum must be positive"
+        )
+
+    core_boundaries = (
+        split.core_fit_start,
+        split.core_fit_end,
+        split.core_calibration_start,
+        split.core_calibration_end,
+        split.direction_time_calibration_start,
+        split.direction_time_calibration_end,
+        split.threshold_selection_start,
+        split.threshold_selection_end,
+        split.policy_diagnostic_start,
+        split.policy_diagnostic_end,
+        split.sealed_holdout_start,
+        split.sealed_holdout_end,
+    )
+    if core_boundaries != tuple(sorted(core_boundaries)):
+        raise ValueError(
+            "residual core/calibration/policy/holdout ranges must be chronological"
+        )
+    if (
+        split.core_fit_end != split.core_calibration_start
+        or split.core_calibration_end
+        != split.direction_time_calibration_start
+        or split.threshold_selection_end
+        != split.policy_diagnostic_start
+    ):
+        raise ValueError(
+            "residual core calibration and policy boundaries must be contiguous"
+        )
+    residual_boundaries = (
+        split.residual_fit_start,
+        split.residual_fit_end,
+        split.lambda_selection_start,
+        split.lambda_selection_end,
+        split.stability_start,
+        split.stability_end,
+    )
+    if residual_boundaries != tuple(sorted(residual_boundaries)):
+        raise ValueError(
+            "residual fit, L2 selection, and stability ranges must be chronological"
+        )
+    if split.residual_fit_end > split.lambda_selection_start:
+        raise ValueError("residual L2 selection must follow residual fitting")
+    if split.lambda_selection_end != split.stability_start:
+        raise ValueError(
+            "residual L2 selection and stability ranges must be contiguous"
+        )
+    if split.stability_end > split.core_calibration_end:
+        raise ValueError(
+            "residual OOF stability evidence must end before final calibration"
+        )
+    if (
+        split.residual_fit_start < config.execution.range_start
+        or split.policy_diagnostic_end > config.execution.range_end
+    ):
+        raise ValueError(
+            "residual book cohorts must remain within execution evidence"
+        )
+    if split.sealed_holdout_start < config.execution.range_end:
+        raise ValueError(
+            "sealed residual holdout must begin after development evidence"
+        )

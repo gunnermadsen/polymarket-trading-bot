@@ -243,3 +243,89 @@ def test_report_renders_strict_book_chronology_without_runtime_claim() -> None:
     assert "identical strict-valid rows" in document
     assert "strict-book" in document
     assert "no deployment artifact was exported" in document
+
+
+def test_report_renders_compact_residual_and_sealed_holdout() -> None:
+    record = report_record()
+    calibration_cell = {
+        "band": "60-89",
+        "raw_direction": "UP",
+        "markets": 120,
+        "positives": 80,
+        "slope": 0.9,
+        "intercept": 0.1,
+        "converged": True,
+    }
+    record["training_evidence"] = {
+        "book_residual": {
+            "final_residual": {
+                "model": {
+                    "gamma": 0.4,
+                    "beta": [0.1] * 7,
+                    "feature_scales": [1.0] * 7,
+                    "feature_names": [
+                        "book_core_mid_logit_disagreement",
+                        "book_vwap10_logit_minus_mid",
+                        "book_imbalance_difference",
+                        "book_log_bid_depth_difference",
+                        "book_log_ask_depth_difference",
+                        "book_spread_difference",
+                        "book_mid_logit_delta_5s",
+                        "book_imbalance_difference_delta_5s",
+                    ],
+                }
+            },
+            "direction_time_calibration": {
+                "control": {"cells": [calibration_cell]},
+                "residual": {"cells": [calibration_cell]},
+            },
+            "threshold_selection": {
+                "control": {
+                    "threshold": 0.87,
+                    "qualified": False,
+                    "history": [{"markets": 300}],
+                },
+                "residual": {
+                    "threshold": 0.87,
+                    "qualified": False,
+                    "history": [{"markets": 320}],
+                },
+            },
+        }
+    }
+    record["data_evidence"] = {
+        "cohorts": {
+            "residual_fit": {
+                "rows": 1000,
+                "markets": 200,
+            },
+            "policy_diagnostic": {
+                "universal_rows": 2000,
+                "universal_markets": 300,
+                "strict_rows": 1800,
+                "strict_markets": 280,
+                "strict_market_coverage": 280 / 300,
+            },
+        },
+        "sealed_holdout": {
+            "range_start": "2026-07-22T00:00:00+00:00",
+            "range_end": "2026-07-23T00:00:00+00:00",
+            "status": "sealed_not_accessed",
+            "reason": "below the unchanged minimum",
+        },
+    }
+    record["book_residual_selection"] = {
+        "status": "blocked_by_frozen_development_gates",
+        "winner": None,
+    }
+
+    document = render_benchmark_report(record)
+
+    assert "Compact orderbook residual challenge" in document
+    assert "strict 10-share books with an exact prior five-second row" in document
+    assert "unchanged BTC-core fallback" in document
+    assert "book_core_mid_logit_disagreement" in document
+    assert "sealed_not_accessed" in document
+    assert "winner: <strong>none</strong>" in document
+    assert "No runtime artifact was exported" in document
+    assert "Chronological training evidence" not in document

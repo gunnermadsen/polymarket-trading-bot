@@ -15,6 +15,7 @@ from threadpoolctl import threadpool_limits
 from .benchmark_config import (
     CORE_ONLY_REUSE_DIAGNOSTICS_MODE,
     STRICT_BOOK_CHRONOLOGICAL_MODE,
+    STRICT_BOOK_RESIDUAL_MODE,
     EntryBenchmarkConfig,
     benchmark_config_to_dict,
 )
@@ -82,6 +83,18 @@ def run_entry_benchmark(
     core_config = load_core_config(config.benchmark.core_config)
     if config.benchmark.mode == CORE_ONLY_REUSE_DIAGNOSTICS_MODE:
         return _run_core_only_benchmark(
+            config,
+            core_config,
+            run_id,
+            run_dir,
+            force=force,
+        )
+    if config.benchmark.mode == STRICT_BOOK_RESIDUAL_MODE:
+        from .book_residual_benchmark import (
+            run_book_residual_benchmark,
+        )
+
+        return run_book_residual_benchmark(
             config,
             core_config,
             run_id,

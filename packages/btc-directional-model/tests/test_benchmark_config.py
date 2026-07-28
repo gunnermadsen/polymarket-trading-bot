@@ -5,6 +5,7 @@ import pytest
 from btc_directional_model.benchmark_config import (
     CORE_ONLY_REUSE_DIAGNOSTICS_MODE,
     STRICT_BOOK_CHRONOLOGICAL_MODE,
+    STRICT_BOOK_RESIDUAL_MODE,
     load_entry_benchmark_config,
     validate_entry_benchmark_config,
 )
@@ -31,6 +32,14 @@ def strict_book_chronology_config() -> Path:
         Path(__file__).parent.parent
         / "configs"
         / "btc-5m-directional-strict-book-chronology-20260527-20260720.toml"
+    )
+
+
+def book_residual_config() -> Path:
+    return (
+        Path(__file__).parent.parent
+        / "configs"
+        / "btc-5m-directional-book-residual-20260527-20260720.toml"
     )
 
 
@@ -114,3 +123,71 @@ def test_book_evaluation_is_rejected_outside_strict_chronology_mode() -> None:
 
     with pytest.raises(ValueError, match="only valid"):
         validate_entry_benchmark_config(config)
+
+
+def test_book_residual_config_freezes_chronology_gates_and_sealed_holdout() -> None:
+    config = load_entry_benchmark_config(book_residual_config())
+    split = config.residual_split
+    model = config.residual_model
+
+    assert config.benchmark.mode == STRICT_BOOK_RESIDUAL_MODE
+    assert config.benchmark.candidate_names == (
+        "histogram_universal_btc_core",
+        "logistic_book_residual_routed",
+    )
+    assert split is not None
+    assert model is not None
+    assert split.core_fit_end == split.core_calibration_start
+    assert split.core_calibration_end == (
+        split.direction_time_calibration_start
+    )
+    assert split.threshold_selection_end == split.policy_diagnostic_start
+    assert split.policy_diagnostic_end.isoformat() == (
+        "2026-07-20T00:00:00+00:00"
+    )
+    assert split.sealed_holdout_start.isoformat() == (
+        "2026-07-22T00:00:00+00:00"
+    )
+    assert split.sealed_holdout_start > split.policy_diagnostic_end
+    assert config.book_evaluation is None
+    assert model.l2_candidates == (0.01, 0.1, 1.0, 10.0, 100.0)
+    assert model.minimum_calibration_cell_markets == 50
+    assert model.oof_run_id == "20260728T151930Z"
+    assert model.oof_benchmark_sha256 == (
+        "40d3d0ef610b97bd286126998d6d30b6b97af0597f82511200fd5f7baafcef19"
+    )
+    assert config.gates.minimum_accuracy == 0.874
+    assert config.gates.minimum_direction_recall == 0.874
+    assert config.gates.minimum_common_time_markets == 500
+    assert config.gates.minimum_executable_markets == 500
+    assert config.gates.maximum_median_entry_seconds_regression == -5.0
+
+
+def test_book_residual_sections_are_rejected_in_other_modes() -> None:
+    config = load_entry_benchmark_config(repository_config())
+    residual = load_entry_benchmark_config(book_residual_config())
+    object.__setattr__(config, "residual_split", residual.residual_split)
+    object.__setattr__(config, "residual_model", residual.residual_model)
+
+    with pytest.raises(ValueError, match="only valid"):
+        validate_entry_benchmark_config(config)
+
+
+def test_book_residual_config_validation_does_not_require_generated_files(
+    tmp_path: Path,
+) -> None:
+    config = load_entry_benchmark_config(book_residual_config())
+    model = config.residual_model
+    assert model is not None
+    object.__setattr__(
+        model,
+        "oof_probability_path",
+        tmp_path / "not-generated-yet.parquet",
+    )
+    object.__setattr__(
+        model,
+        "oof_benchmark_path",
+        tmp_path / "not-generated-yet.json",
+    )
+
+    validate_entry_benchmark_config(config)

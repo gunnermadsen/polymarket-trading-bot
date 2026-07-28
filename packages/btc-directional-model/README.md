@@ -119,6 +119,34 @@ calibration, and policy partitions. Its separate consumed evaluation cohort is
 `[2026-07-16, 2026-07-20)`. Extraction starts at second 55 solely to seed exact 60-second causal
 book deltas; reported decision checkpoints remain 60, 90, 120, 180, and 240 seconds.
 
+Run the compact orderbook-residual challenge:
+
+The checked-in residual configuration intentionally pins the generated
+`20260728T151930Z` accuracy/timing benchmark and probability Parquet under the ignored `runs/`
+directory. A clean checkout must either restore those exact checksum-matched artifacts or first
+run the accuracy/timing workflow, then update the residual config's OOF run id, paths, and both
+SHA-256 values as one reviewed provenance change. The runner fails closed when either artifact is
+missing, changed, or not a valid chronological walk-forward source.
+
+```bash
+export POLARS_MAX_THREADS=6
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+.venv/bin/btc-directional-model entry-benchmark-run \
+  --config configs/btc-5m-directional-book-residual-20260527-20260720.toml
+```
+
+This workflow keeps the universal BTC model as the prediction source on every eligible market and
+adds a compact L2-regularized correction only when both Polymarket books have strict ten-share
+validity and an exact prior five-second observation. Non-strict rows preserve the calibrated BTC
+core probability bit-for-bit. Residual fitting uses pinned out-of-fold BTC-core probabilities;
+regularization selection, stability, direction/time calibration, confidence selection, and the
+consumed policy diagnostic remain chronological and disjoint. The post-July-20 cohort remains
+sealed and no runtime model, Rust contract, container image, trading process, or database state is
+changed by this command.
+
 The accuracy/timing workflow evaluates four real histogram-gradient-boosting candidates over five
 chronological walk-forward folds. Every market contributes equal total fitting weight. The two new
 challengers apply 1.5x weight at 60-120 seconds and 2x weight at 90-120 seconds respectively,
