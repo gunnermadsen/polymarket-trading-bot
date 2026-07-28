@@ -10,6 +10,7 @@ from .core_config import parse_utc_day
 
 LEGACY_OFFLINE_BENCHMARK_MODE = "legacy_offline_challengers"
 CORE_ONLY_REUSE_DIAGNOSTICS_MODE = "core_only_reuse_diagnostics"
+STRICT_BOOK_CHRONOLOGICAL_MODE = "strict_book_chronological"
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,13 @@ class BenchmarkBookModelConfig:
 
 
 @dataclass(frozen=True)
+class BenchmarkBookEvaluationConfig:
+    range_start: datetime
+    range_end: datetime
+    output_dir: Path
+
+
+@dataclass(frozen=True)
 class BenchmarkGateConfig:
     minimum_accuracy: float
     minimum_balanced_accuracy: float
@@ -108,6 +116,7 @@ class EntryBenchmarkConfig:
     compute: BenchmarkComputeConfig
     paths: BenchmarkPathConfig
     prior_diagnostics: PriorDiagnosticsConfig | None
+    book_evaluation: BenchmarkBookEvaluationConfig | None
 
 
 def load_entry_benchmark_config(path: Path) -> EntryBenchmarkConfig:
@@ -124,6 +133,7 @@ def load_entry_benchmark_config(path: Path) -> EntryBenchmarkConfig:
     compute_raw = raw["compute"]
     paths_raw = raw["paths"]
     prior_raw = raw.get("prior_diagnostics")
+    book_evaluation_raw = raw.get("book_evaluation")
     control_candidate = str(benchmark_raw["control_candidate"])
     early_candidate = str(benchmark_raw["early_candidate"])
     config = EntryBenchmarkConfig(
@@ -249,6 +259,16 @@ def load_entry_benchmark_config(path: Path) -> EntryBenchmarkConfig:
             if prior_raw is not None
             else None
         ),
+        book_evaluation=(
+            BenchmarkBookEvaluationConfig(
+                range_start=parse_utc_day(book_evaluation_raw["range_start"]),
+                range_end=parse_utc_day(book_evaluation_raw["range_end"]),
+                output_dir=package_root
+                / str(book_evaluation_raw["output_dir"]),
+            )
+            if book_evaluation_raw is not None
+            else None
+        ),
     )
     validate_entry_benchmark_config(config)
     return config
@@ -263,6 +283,7 @@ def validate_entry_benchmark_config(config: EntryBenchmarkConfig) -> None:
     if identity.mode not in {
         LEGACY_OFFLINE_BENCHMARK_MODE,
         CORE_ONLY_REUSE_DIAGNOSTICS_MODE,
+        STRICT_BOOK_CHRONOLOGICAL_MODE,
     }:
         raise ValueError(f"unsupported benchmark mode: {identity.mode}")
     candidates = (
@@ -289,6 +310,29 @@ def validate_entry_benchmark_config(config: EntryBenchmarkConfig) -> None:
     ):
         raise ValueError(
             "legacy benchmark candidate_names must remain control plus early"
+        )
+    if (
+        identity.mode == STRICT_BOOK_CHRONOLOGICAL_MODE
+        and identity.candidate_names
+        != (identity.control_candidate, identity.strict_book_candidate)
+    ):
+        raise ValueError(
+            "strict-book chronological benchmark candidates must be "
+            "the BTC-only control plus strict-book challenger"
+        )
+    if (
+        identity.mode == STRICT_BOOK_CHRONOLOGICAL_MODE
+        and config.book_evaluation is None
+    ):
+        raise ValueError(
+            "strict-book chronological benchmark requires book_evaluation"
+        )
+    if (
+        identity.mode != STRICT_BOOK_CHRONOLOGICAL_MODE
+        and config.book_evaluation is not None
+    ):
+        raise ValueError(
+            "book_evaluation is only valid for strict-book chronological mode"
         )
     if (
         identity.mode == CORE_ONLY_REUSE_DIAGNOSTICS_MODE
@@ -349,6 +393,23 @@ def validate_entry_benchmark_config(config: EntryBenchmarkConfig) -> None:
         or split.policy_end != execution.range_end
     ):
         raise ValueError("book splits must be contiguous and span execution evidence")
+    if config.book_evaluation is not None:
+        evaluation = config.book_evaluation
+        if evaluation.range_start >= evaluation.range_end:
+            raise ValueError("book evaluation range must be positive")
+        if evaluation.range_start < execution.range_end:
+            raise ValueError(
+                "book evaluation must begin after the training evidence range"
+            )
+        if evaluation.output_dir in {
+            execution.output_dir,
+            config.paths.preopen_features,
+            config.paths.runs,
+            config.paths.artifacts,
+        }:
+            raise ValueError(
+                "book evaluation output must use an isolated generated path"
+            )
     if not (
         0.5
         <= config.book_model.confidence_min
@@ -428,6 +489,15 @@ def benchmark_config_to_dict(config: EntryBenchmarkConfig) -> dict[str, Any]:
                 "record": str(config.prior_diagnostics.record),
             }
             if config.prior_diagnostics is not None
+            else None
+        ),
+        "book_evaluation": (
+            {
+                "range_start": config.book_evaluation.range_start.isoformat(),
+                "range_end": config.book_evaluation.range_end.isoformat(),
+                "output_dir": str(config.book_evaluation.output_dir),
+            }
+            if config.book_evaluation is not None
             else None
         ),
     }

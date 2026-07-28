@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -7,16 +8,22 @@ import pytest
 
 from btc_directional_model.core_execution import (
     DEFAULT_EXECUTION_QUANTITY,
+    EXECUTION_EVIDENCE_CONTRACT,
     EXECUTION_EVIDENCE_SCHEMA,
+    EXECUTION_EVIDENCE_SCHEMA_VERSION,
+    LEGACY_EXECUTION_EVIDENCE_CONTRACT,
+    LEGACY_EXECUTION_EVIDENCE_SCHEMA_VERSION,
     QUALITY_DOWN_INSUFFICIENT_DEPTH,
     QUALITY_UP_CROSSED,
     QUALITY_UP_STALE,
     ExecutionEvidenceConfig,
     classify_side_eligibility,
     expected_net_per_share,
+    load_execution_evidence_manifest,
     realized_pnl,
     selected_side_eligibility,
     strict_both_side_eligible,
+    strict_both_side_eligible_10,
     taker_fee_per_share,
 )
 
@@ -33,6 +40,7 @@ def complete_side(
     observed_at: datetime,
     provider_received_at: datetime | None,
     quality_flags: int = 0,
+    ask_vwap_10: float | None = None,
 ):
     return classify_side_eligibility(
         side=side,  # type: ignore[arg-type]
@@ -45,6 +53,7 @@ def complete_side(
         bid_depth=100.0,
         ask_depth=100.0,
         ask_vwap_5=0.42,
+        ask_vwap_10=ask_vwap_10,
         imbalance=0.0,
         quality_flags=quality_flags,
     )
@@ -73,6 +82,9 @@ def test_execution_sql_uses_exact_configured_candidate_timestamps() -> None:
     assert "%(max_seconds_after_open)s" in sql
     assert "%(sample_interval_milliseconds)s" in sql
     assert "snapshot.schema_version = %(snapshot_schema_version)s" in sql
+    assert "snapshot.up_ask_vwap_10" in sql
+    assert "snapshot.down_ask_vwap_10" in sql
+    assert "(cohort.quality_flags & 255) = 0" in sql
 
 
 def test_execution_schema_keeps_quality_as_eligibility_evidence() -> None:
@@ -90,6 +102,11 @@ def test_execution_schema_keeps_quality_as_eligibility_evidence() -> None:
     } <= names
     assert "up_ask_vwap_5" in names
     assert "down_ask_vwap_5" in names
+    assert "up_ask_vwap_10" in names
+    assert "down_ask_vwap_10" in names
+    assert "strict_both_side_eligible_10" in names
+    assert EXECUTION_EVIDENCE_CONTRACT == "btc_execution_evidence_v2"
+    assert EXECUTION_EVIDENCE_SCHEMA_VERSION == "btc-execution-evidence-v2"
 
 
 def test_side_quality_cohorts_require_causal_complete_books() -> None:
@@ -138,6 +155,56 @@ def test_strict_both_side_uses_quality_bits_zero_through_five_only() -> None:
         down=down,
         quality_flags=QUALITY_DOWN_INSUFFICIENT_DEPTH,
     )
+    assert not strict_both_side_eligible_10(
+        up=up,
+        down=down,
+        quality_flags=QUALITY_DOWN_INSUFFICIENT_DEPTH,
+    )
+
+
+def test_ten_share_eligibility_is_explicit_and_preserves_five_share_route() -> None:
+    observed_at = datetime(2026, 7, 1, 12, 0, 0, tzinfo=UTC)
+    up = complete_side(
+        observed_at=observed_at,
+        provider_received_at=observed_at,
+        ask_vwap_10=0.43,
+    )
+    down = complete_side(
+        side="down",
+        observed_at=observed_at,
+        provider_received_at=observed_at,
+        ask_vwap_10=0.59,
+    )
+
+    assert strict_both_side_eligible(up=up, down=down, quality_flags=0)
+    assert strict_both_side_eligible_10(up=up, down=down, quality_flags=0)
+
+
+def test_v1_execution_manifest_remains_loadable(tmp_path: Path) -> None:
+    start = datetime(2026, 5, 27, tzinfo=UTC)
+    config = ExecutionEvidenceConfig(
+        range_start=start,
+        range_end=start + timedelta(days=1),
+        output_dir=tmp_path,
+    )
+    legacy_manifest = {
+        "source_contract": LEGACY_EXECUTION_EVIDENCE_CONTRACT,
+        "source_schema_version": LEGACY_EXECUTION_EVIDENCE_SCHEMA_VERSION,
+        "range_start": config.range_start.isoformat(),
+        "range_end": config.range_end.isoformat(),
+        "sample_interval_seconds": config.sample_interval_seconds,
+        "min_seconds_after_open": config.min_seconds_after_open,
+        "max_seconds_after_open": config.max_seconds_after_open,
+        "freshness_seconds": config.freshness_seconds,
+        "quantity": config.quantity,
+        "primary_key": ["market_id", "observed_at"],
+        "partitions": [],
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(legacy_manifest))
+
+    loaded = load_execution_evidence_manifest(config)
+
+    assert loaded["source_contract"] == LEGACY_EXECUTION_EVIDENCE_CONTRACT
 
 
 def test_execution_config_is_fixed_to_five_share_vwap() -> None:

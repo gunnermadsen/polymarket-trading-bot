@@ -1,0 +1,70 @@
+[benchmark]
+mode = "strict_book_chronological"
+core_config = "configs/btc-5m-directional-core-accuracy-timing-20260421-20260720.toml"
+control_candidate = "histogram_strict_cohort_btc_core"
+early_candidate = "histogram_early_90_120"
+strict_book_candidate = "histogram_strict_book_early_weighted"
+candidate_names = [
+  "histogram_strict_cohort_btc_core",
+  "histogram_strict_book_early_weighted",
+]
+evaluation_is_independent = false
+evaluation_note = "July 16-19 is a consumed, label-visible development cohort used only to measure whether strict-valid compact-book features generalize beyond the May-June fitting vintage. No future data is assumed and no runtime model is exported."
+fixed_evaluation_seconds = [60, 90, 120, 180, 240]
+quantity = 5.0
+
+[execution]
+range_start = "2026-05-27T00:00:00Z"
+range_end = "2026-06-12T00:00:00Z"
+sample_interval_seconds = 5
+min_seconds_after_open = 55
+max_seconds_after_open = 240
+stale_after_seconds = 2
+output_dir = "data/btc-execution-evidence-v2-20260527-20260611"
+
+[book_split]
+fit_start = "2026-05-27T00:00:00Z"
+fit_end = "2026-06-05T00:00:00Z"
+calibration_start = "2026-06-05T00:00:00Z"
+calibration_end = "2026-06-08T00:00:00Z"
+policy_start = "2026-06-08T00:00:00Z"
+policy_end = "2026-06-12T00:00:00Z"
+
+[book_evaluation]
+range_start = "2026-07-16T00:00:00Z"
+range_end = "2026-07-20T00:00:00Z"
+output_dir = "data/btc-execution-evidence-v2-20260716-20260719"
+
+[book_model]
+confidence_min = 0.80
+confidence_max = 0.95
+confidence_step = 0.01
+
+[advancement_gates]
+minimum_accuracy = 0.874
+minimum_balanced_accuracy = 0.874
+minimum_direction_recall = 0.874
+minimum_wilson_lower_95 = 0.865
+maximum_expected_calibration_error = 0.05
+minimum_coverage = 0.55
+minimum_coverage_uplift = 0.0
+maximum_accuracy_regression = 0.0
+maximum_balanced_accuracy_regression = 0.0
+maximum_direction_recall_regression = 0.0
+maximum_median_entry_seconds_regression = -5.0
+minimum_executable_markets = 500
+minimum_mean_direct_edge_per_share = 0.0
+minimum_realized_net_per_share = 0.0
+minimum_common_time_markets = 500
+maximum_native_p99_milliseconds = 1.0
+maximum_runtime_model_bytes = 33554432
+
+[compute]
+max_parallel_candidates = 2
+threads_per_fit = 1
+polars_threads = 6
+
+[paths]
+preopen_features = "data/btc-strict-book-chronology-unused-preopen.parquet"
+runs = "runs/btc-strict-book-chronology-20260527-20260720"
+artifacts = "artifacts/btc-strict-book-chronology-20260527-20260720"

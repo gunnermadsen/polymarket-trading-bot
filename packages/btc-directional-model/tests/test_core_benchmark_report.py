@@ -199,3 +199,47 @@ def test_report_labels_chronological_policy_and_reused_diagnostics() -> None:
     assert "prior diagnostic — reused, not retrained, not eligible" in document
     assert "Frozen training selection" in document
     assert "no runtime freeze created" in document
+
+
+def test_report_renders_strict_book_chronology_without_runtime_claim() -> None:
+    record = report_record()
+    metrics = record["candidates"]["control"]["own_policy"]
+    timing = {
+        "median_first_crossing_seconds": 90,
+        "early_entry_coverage": 0.60,
+    }
+    candidate_record = {
+        "training": {
+            "confidence_threshold": 0.89,
+            "threshold_qualified": True,
+        },
+        "policy_diagnostic": {
+            "metrics": metrics,
+            "timing": timing,
+        },
+        "later_vintage_evaluation": {
+            "metrics": metrics,
+            "timing": timing,
+        },
+    }
+    record["training_evidence"] = {
+        "strict_book_chronology": {
+            "exact_row_ablation": True,
+            "candidates": {
+                "control": candidate_record,
+                "strict-book": candidate_record,
+            },
+        }
+    }
+    record["strict_book_selection"] = {
+        "status": "selected_for_future_independent_validation",
+        "winner": "strict-book",
+        "statistical_checks": [],
+    }
+
+    document = render_benchmark_report(record)
+
+    assert "Strict-book chronological challenge" in document
+    assert "identical strict-valid rows" in document
+    assert "strict-book" in document
+    assert "no deployment artifact was exported" in document

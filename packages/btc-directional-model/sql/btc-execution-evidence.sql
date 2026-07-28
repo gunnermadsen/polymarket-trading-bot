@@ -37,6 +37,7 @@ candidate_snapshots AS MATERIALIZED (
     snapshot.up_bid_depth::double precision AS up_bid_depth,
     snapshot.up_ask_depth::double precision AS up_ask_depth,
     snapshot.up_ask_vwap_5::double precision AS up_ask_vwap_5,
+    snapshot.up_ask_vwap_10::double precision AS up_ask_vwap_10,
     snapshot.up_imbalance::double precision AS up_imbalance,
     snapshot.down_provider_received_at,
     snapshot.down_best_bid::double precision AS down_best_bid,
@@ -46,6 +47,7 @@ candidate_snapshots AS MATERIALIZED (
     snapshot.down_bid_depth::double precision AS down_bid_depth,
     snapshot.down_ask_depth::double precision AS down_ask_depth,
     snapshot.down_ask_vwap_5::double precision AS down_ask_vwap_5,
+    snapshot.down_ask_vwap_10::double precision AS down_ask_vwap_10,
     snapshot.down_imbalance::double precision AS down_imbalance,
     snapshot.quality_flags
   FROM eligible_markets market
@@ -139,6 +141,7 @@ SELECT
   cohort.up_bid_depth,
   cohort.up_ask_depth,
   cohort.up_ask_vwap_5,
+  cohort.up_ask_vwap_10,
   cohort.up_imbalance,
   cohort.down_provider_received_at,
   cohort.down_best_bid,
@@ -148,6 +151,7 @@ SELECT
   cohort.down_bid_depth,
   cohort.down_ask_depth,
   cohort.down_ask_vwap_5,
+  cohort.down_ask_vwap_10,
   cohort.down_imbalance,
   cohort.quality_flags,
   cohort.up_provider_causal,
@@ -192,6 +196,17 @@ SELECT
       cohort.observed_at - (%(freshness_seconds)s * interval '1 second')
     AND cohort.down_provider_received_at >=
       cohort.observed_at - (%(freshness_seconds)s * interval '1 second')
-  ) AS strict_both_side_eligible
+  ) AS strict_both_side_eligible,
+  (
+    cohort.up_side_valid
+    AND cohort.down_side_valid
+    AND cohort.up_ask_vwap_10 IS NOT NULL
+    AND cohort.down_ask_vwap_10 IS NOT NULL
+    AND (cohort.quality_flags & 255) = 0
+    AND cohort.up_provider_received_at >=
+      cohort.observed_at - (%(freshness_seconds)s * interval '1 second')
+    AND cohort.down_provider_received_at >=
+      cohort.observed_at - (%(freshness_seconds)s * interval '1 second')
+  ) AS strict_both_side_eligible_10
 FROM side_cohorts cohort
 ORDER BY cohort.market_id, cohort.observed_at;

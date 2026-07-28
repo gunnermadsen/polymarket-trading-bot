@@ -118,6 +118,7 @@ same-market, exact-timestamp checkpoint comparisons · fixed five-share economic
 <section class="panel"><h2>Own-policy outcomes</h2><div class="table-wrap">
 {_candidate_table(benchmark, candidate_order)}</div></section>
 {_training_evidence_panel(benchmark)}
+{_strict_book_chronology_panel(benchmark)}
 {_persistence_analysis_panel(benchmark)}
 {_training_selection_panel(benchmark)}
 {_data_evidence_panel(benchmark)}
@@ -133,6 +134,87 @@ same-market, exact-timestamp checkpoint comparisons · fixed five-share economic
 <details class="panel"><summary>Deterministic benchmark record</summary>
 <pre>{details_json}</pre></details>
 </main></body></html>"""
+
+
+def _strict_book_chronology_panel(benchmark: dict[str, Any]) -> str:
+    selection = benchmark.get("strict_book_selection")
+    evidence = benchmark.get("training_evidence", {}).get(
+        "strict_book_chronology"
+    )
+    if not isinstance(selection, dict) or not isinstance(evidence, dict):
+        return ""
+    candidate_rows = []
+    for name, record in evidence.get("candidates", {}).items():
+        training = record["training"]
+        policy = record["policy_diagnostic"]
+        recent = record["later_vintage_evaluation"]
+        candidate_rows.append(
+            (
+                name,
+                _number(training["confidence_threshold"], 2),
+                "PASS" if training["threshold_qualified"] else "BLOCKED",
+                f"{policy['metrics']['markets']:,}",
+                _percent(policy["metrics"]["accuracy"]),
+                _number(
+                    policy["timing"]["median_first_crossing_seconds"],
+                    0,
+                ),
+                f"{recent['metrics']['markets']:,}",
+                _percent(recent["metrics"]["coverage"]),
+                _percent(recent["metrics"]["accuracy"]),
+                _percent(recent["metrics"]["balanced_accuracy"]),
+                _percent(recent["metrics"]["up_recall"]),
+                _percent(recent["metrics"]["down_recall"]),
+                _percent(recent["metrics"]["wilson_lower_95"]),
+                _number(
+                    recent["timing"]["median_first_crossing_seconds"],
+                    0,
+                ),
+            )
+        )
+    failed = [
+        f"{check['cohort']}: {check['name']}"
+        for check in selection.get("statistical_checks", [])
+        if not check["passed"]
+    ]
+    failed_label = (
+        "; ".join(failed)
+        if failed
+        else "all frozen offline statistical gates passed"
+    )
+    winner = selection.get("winner") or "none"
+    return (
+        '<section class="panel" style="margin-top:14px">'
+        "<h2>Strict-book chronological challenge</h2>"
+        "<p>BTC-only and BTC-plus-book models use identical strict-valid rows. "
+        "Book quality and provider age route rows but never predict direction. "
+        "May–June selects the model policy; July 16–19 is a later, consumed "
+        "development challenge. Ten-share book validity is required while "
+        "economics remain fixed at five shares.</p>"
+        + _table(
+            (
+                "Candidate",
+                "Threshold",
+                "Threshold gate",
+                "June accepted",
+                "June accuracy",
+                "June median sec",
+                "July accepted",
+                "July coverage",
+                "July accuracy",
+                "July balanced",
+                "July UP recall",
+                "July DOWN recall",
+                "July Wilson",
+                "July median sec",
+            ),
+            candidate_rows,
+        )
+        + f"<p>Offline selection: <strong>{html.escape(str(selection['status']))}"
+        f"</strong>; winner: <strong>{html.escape(str(winner))}</strong>. "
+        f"{html.escape(failed_label)}. Runtime evidence is deferred and no "
+        "deployment artifact was exported.</p></section>"
+    )
 
 
 def _persistence_analysis_panel(benchmark: dict[str, Any]) -> str:

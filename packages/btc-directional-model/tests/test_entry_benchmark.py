@@ -3,23 +3,33 @@ from __future__ import annotations
 import inspect
 import json
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import polars as pl
 import pytest
 
+import btc_directional_model.entry_benchmark as entry_benchmark_module
 from btc_directional_model.benchmark_config import (
     PriorDiagnosticsConfig,
     load_entry_benchmark_config,
 )
 from btc_directional_model.core_config import load_core_config
+from btc_directional_model.core_execution import (
+    LEGACY_EXECUTION_EVIDENCE_CONTRACT,
+    LEGACY_EXECUTION_EVIDENCE_SCHEMA_VERSION,
+    ExecutionEvidenceConfig,
+)
 from btc_directional_model.core_extract import file_sha256
 from btc_directional_model.core_training import develop_core_models
 from btc_directional_model.entry_benchmark import (
     EARLY_ENTRY_CORE_CANDIDATES,
+    _chronological_market_halves,
     _chronological_threshold_frame,
     _load_prior_diagnostics,
     _require_exact_policy_threshold,
+    _require_identical_prediction_keys,
+    _reuse_or_extract_execution_evidence,
     _training_finalist_rank,
     _training_selection,
     _validate_core_only_contract,
@@ -151,6 +161,45 @@ def test_execution_benchmark_can_disable_legacy_auto_freeze() -> None:
     assert parameters["fit_final_candidate"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
+def test_non_strict_runner_reuses_supported_v1_execution_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start = datetime(2026, 5, 27, tzinfo=UTC)
+    config = ExecutionEvidenceConfig(
+        range_start=start,
+        range_end=start + timedelta(days=1),
+        output_dir=tmp_path,
+    )
+    legacy_manifest = {
+        "source_contract": LEGACY_EXECUTION_EVIDENCE_CONTRACT,
+        "source_schema_version": LEGACY_EXECUTION_EVIDENCE_SCHEMA_VERSION,
+        "range_start": config.range_start.isoformat(),
+        "range_end": config.range_end.isoformat(),
+        "sample_interval_seconds": config.sample_interval_seconds,
+        "min_seconds_after_open": config.min_seconds_after_open,
+        "max_seconds_after_open": config.max_seconds_after_open,
+        "freshness_seconds": config.freshness_seconds,
+        "quantity": config.quantity,
+        "primary_key": ["market_id", "observed_at"],
+        "partitions": [],
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(legacy_manifest))
+
+    def reject_v2_write(*_args, **_kwargs):
+        raise AssertionError("non-strict runner must not rewrite a supported v1 cache")
+
+    monkeypatch.setattr(
+        entry_benchmark_module,
+        "extract_execution_evidence",
+        reject_v2_write,
+    )
+
+    loaded = _reuse_or_extract_execution_evidence(config, force=False)
+
+    assert loaded["source_contract"] == LEGACY_EXECUTION_EVIDENCE_CONTRACT
+
+
 def test_training_selection_enforces_five_folds_and_bootstrap() -> None:
     config = load_entry_benchmark_config(early_entry_benchmark_config())
     core_config = load_core_config(config.benchmark.core_config)
@@ -268,3 +317,54 @@ def test_training_finalist_rank_is_coverage_then_timing_then_economics() -> None
     assert _training_finalist_rank(better_economics) > _training_finalist_rank(
         earlier
     )
+
+
+def test_strict_calibration_halves_are_causal_and_disjoint() -> None:
+    start = datetime(2026, 6, 5, tzinfo=UTC)
+    frame = pl.DataFrame(
+        {
+            "market_id": [f"market-{index:03d}" for index in range(200)],
+            "window_start": [
+                start + timedelta(minutes=5 * index) for index in range(200)
+            ],
+            "observed_at": [
+                start + timedelta(minutes=5 * index, seconds=60)
+                for index in range(200)
+            ],
+        }
+    )
+
+    calibration, threshold = _chronological_market_halves(frame)
+
+    assert calibration["market_id"].n_unique() == 100
+    assert threshold["market_id"].n_unique() == 100
+    assert calibration["window_start"].max() < threshold["window_start"].min()
+    assert not calibration.join(
+        threshold,
+        on=["market_id", "observed_at"],
+        how="inner",
+    ).height
+
+
+def test_strict_ablation_rejects_different_prediction_keys() -> None:
+    observed = datetime(2026, 7, 16, 0, 1, tzinfo=UTC)
+    control = pl.DataFrame(
+        {
+            "market_id": ["market-a"],
+            "observed_at": [observed],
+            "seconds_elapsed": [60],
+        }
+    )
+    challenger = control.with_columns(
+        (pl.col("observed_at") + pl.duration(seconds=5)).alias(
+            "observed_at"
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="row keys differ"):
+        _require_identical_prediction_keys(
+            {
+                "control": control,
+                "challenger": challenger,
+            }
+        )

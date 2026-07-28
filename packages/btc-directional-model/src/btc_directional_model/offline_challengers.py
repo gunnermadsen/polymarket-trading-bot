@@ -15,7 +15,6 @@ from .core_evaluation import (
     choose_threshold,
     classification_metrics,
     first_crossing_timing,
-    first_prediction_rows,
     paired_uplift,
     scored_prediction_rows,
     threshold_table,
@@ -35,6 +34,9 @@ from .core_training import (
 from .preopen_features import PREOPEN_MODEL_FEATURES
 
 PREOPEN_CANDIDATE = "histogram_preopen_early_weighted"
+# The legacy five-share feature set remains available to old diagnostic
+# wrappers. Quality flags and provider age are deliberately absent: they route
+# rows into a cohort but must never become directional predictors.
 STRICT_BOOK_FEATURES = [
     "book_up_mid",
     "book_down_mid",
@@ -53,9 +55,41 @@ STRICT_BOOK_FEATURES = [
     "book_mid_complement_residual",
     "book_ask_complement_residual",
     "book_mid_difference",
-    "book_up_provider_age_ms",
-    "book_down_provider_age_ms",
-    "book_provider_age_skew_ms",
+]
+STRICT_BOOK_TEN_SHARE_FEATURES = [
+    "book_up_ask_vwap_10",
+    "book_down_ask_vwap_10",
+    "book_up_vwap_slippage_10",
+    "book_down_vwap_slippage_10",
+    "book_vwap_10_complement_residual",
+]
+STRICT_BOOK_DELTA_SOURCE_FEATURES = [
+    "book_up_mid",
+    "book_down_mid",
+    "book_up_spread",
+    "book_down_spread",
+    "book_up_ask_vwap_5",
+    "book_down_ask_vwap_5",
+    "book_up_ask_vwap_10",
+    "book_down_ask_vwap_10",
+    "book_up_imbalance",
+    "book_down_imbalance",
+    "book_up_log_bid_depth",
+    "book_down_log_bid_depth",
+    "book_up_log_ask_depth",
+    "book_down_log_ask_depth",
+    "book_mid_complement_residual",
+    "book_ask_complement_residual",
+    "book_vwap_10_complement_residual",
+    "book_mid_difference",
+]
+STRICT_BOOK_DELTA_FEATURES = [
+    f"{feature}_delta_5s" for feature in STRICT_BOOK_DELTA_SOURCE_FEATURES
+]
+STRICT_BOOK_V2_FEATURES = [
+    *STRICT_BOOK_FEATURES,
+    *STRICT_BOOK_TEN_SHARE_FEATURES,
+    *STRICT_BOOK_DELTA_FEATURES,
 ]
 
 
@@ -69,10 +103,33 @@ def preopen_candidate_spec() -> CandidateSpec:
 
 
 def strict_book_candidate_spec(config: EntryBenchmarkConfig) -> CandidateSpec:
+    """Legacy five-share diagnostic specification."""
+
     return CandidateSpec(
         config.benchmark.strict_book_candidate,
         "histogram",
         tuple(CORE_ENRICHED_FEATURES + STRICT_BOOK_FEATURES),
+        EARLY_ENTRY_MARKET_EQUAL_ROW_WEIGHT_POLICY,
+    )
+
+
+def strict_cohort_candidate_spec(
+    config: EntryBenchmarkConfig,
+    *,
+    candidate_name: str,
+    include_book_features: bool,
+) -> CandidateSpec:
+    """Build an ablation spec for the same quality-qualified row cohort."""
+
+    if not candidate_name.strip():
+        raise ValueError("strict-cohort candidate name must be non-empty")
+    features = list(CORE_ENRICHED_FEATURES)
+    if include_book_features:
+        features.extend(STRICT_BOOK_V2_FEATURES)
+    return CandidateSpec(
+        candidate_name,
+        "histogram",
+        tuple(features),
         EARLY_ENTRY_MARKET_EQUAL_ROW_WEIGHT_POLICY,
     )
 
@@ -147,7 +204,79 @@ def derive_strict_book_frame(
     core_frame: pl.DataFrame,
     execution_evidence: pl.DataFrame,
 ) -> pl.DataFrame:
-    strict = execution_evidence.filter(pl.col("strict_both_side_eligible"))
+    """Preserve the legacy five-share diagnostic-frame behavior."""
+
+    return derive_strict_book_feature_frame(
+        core_frame,
+        execution_evidence,
+        require_ten_share=False,
+        include_deltas=False,
+    )
+
+
+def derive_strict_book_feature_frame(
+    core_frame: pl.DataFrame,
+    execution_evidence: pl.DataFrame,
+    *,
+    require_ten_share: bool = True,
+    include_deltas: bool = True,
+) -> pl.DataFrame:
+    """Derive model features only after strict point-in-time routing.
+
+    Ten-share eligibility is the v2 fitting contract. Five-share prices remain
+    in the frame for the unchanged five-share economic evaluation. Delta rows
+    exist only when the immediately preceding strict observation for the same
+    market is exactly five seconds earlier.
+    """
+
+    if include_deltas and not require_ten_share:
+        raise ValueError("causal book deltas require strict ten-share evidence")
+    eligibility_column = (
+        "strict_both_side_eligible_10"
+        if require_ten_share
+        else "strict_both_side_eligible"
+    )
+    required_columns = {
+        "market_id",
+        "observed_at",
+        eligibility_column,
+        "up_best_bid",
+        "up_best_ask",
+        "up_bid_depth",
+        "up_ask_depth",
+        "up_ask_vwap_5",
+        "up_imbalance",
+        "down_best_bid",
+        "down_best_ask",
+        "down_bid_depth",
+        "down_ask_depth",
+        "down_ask_vwap_5",
+        "down_imbalance",
+    }
+    if require_ten_share:
+        required_columns.update({"up_ask_vwap_10", "down_ask_vwap_10"})
+    missing = sorted(required_columns - set(execution_evidence.columns))
+    if missing:
+        raise ValueError(
+            "execution evidence is missing strict-book columns: "
+            + ", ".join(missing)
+        )
+
+    # Filtering before every derived expression prevents invalid reconstruction
+    # states from influencing levels, complements, or temporal changes.
+    strict = (
+        execution_evidence.filter(pl.col(eligibility_column))
+        .sort(["market_id", "observed_at"])
+    )
+    duplicate_keys = (
+        strict.group_by("market_id", "observed_at")
+        .len()
+        .filter(pl.col("len") > 1)
+        .height
+    )
+    if duplicate_keys:
+        raise RuntimeError("strict book evidence contains duplicate row keys")
+
     strict = strict.with_columns(
         ((pl.col("up_best_bid") + pl.col("up_best_ask")) / 2).alias(
             "book_up_mid"
@@ -175,16 +304,6 @@ def derive_strict_book_frame(
         pl.col("down_bid_depth").log1p().alias("book_down_log_bid_depth"),
         pl.col("up_ask_depth").log1p().alias("book_up_log_ask_depth"),
         pl.col("down_ask_depth").log1p().alias("book_down_log_ask_depth"),
-        (
-            (pl.col("observed_at") - pl.col("up_provider_received_at"))
-            .dt.total_milliseconds()
-            .cast(pl.Float64)
-        ).alias("book_up_provider_age_ms"),
-        (
-            (pl.col("observed_at") - pl.col("down_provider_received_at"))
-            .dt.total_milliseconds()
-            .cast(pl.Float64)
-        ).alias("book_down_provider_age_ms"),
     ).with_columns(
         (pl.col("book_up_mid") + pl.col("book_down_mid") - 1).alias(
             "book_mid_complement_residual"
@@ -195,17 +314,64 @@ def derive_strict_book_frame(
         (pl.col("book_up_mid") - pl.col("book_down_mid")).alias(
             "book_mid_difference"
         ),
-        (
-            pl.col("book_up_provider_age_ms")
-            - pl.col("book_down_provider_age_ms")
-        )
-        .abs()
-        .alias("book_provider_age_skew_ms"),
     )
+    model_features = list(STRICT_BOOK_FEATURES)
+    if require_ten_share:
+        strict = strict.with_columns(
+            pl.col("up_ask_vwap_10").alias("book_up_ask_vwap_10"),
+            pl.col("down_ask_vwap_10").alias("book_down_ask_vwap_10"),
+            (pl.col("up_ask_vwap_10") - pl.col("up_best_ask")).alias(
+                "book_up_vwap_slippage_10"
+            ),
+            (pl.col("down_ask_vwap_10") - pl.col("down_best_ask")).alias(
+                "book_down_vwap_slippage_10"
+            ),
+            (
+                pl.col("up_ask_vwap_10")
+                + pl.col("down_ask_vwap_10")
+                - 1
+            ).alias("book_vwap_10_complement_residual"),
+        )
+        model_features.extend(STRICT_BOOK_TEN_SHARE_FEATURES)
+    if include_deltas:
+        previous_columns = [
+            pl.col("observed_at")
+            .shift(1)
+            .over("market_id")
+            .alias("_previous_observed_at"),
+            *[
+                pl.col(feature)
+                .shift(1)
+                .over("market_id")
+                .alias(f"_previous_{feature}")
+                for feature in STRICT_BOOK_DELTA_SOURCE_FEATURES
+            ],
+        ]
+        strict = strict.with_columns(*previous_columns).with_columns(
+            *[
+                pl.when(
+                    pl.col("_previous_observed_at")
+                    == pl.col("observed_at") - pl.duration(seconds=5)
+                )
+                .then(pl.col(feature) - pl.col(f"_previous_{feature}"))
+                .otherwise(None)
+                .alias(f"{feature}_delta_5s")
+                for feature in STRICT_BOOK_DELTA_SOURCE_FEATURES
+            ]
+        )
+        model_features.extend(STRICT_BOOK_DELTA_FEATURES)
+
     book = strict.select(
         "market_id",
         "observed_at",
-        *STRICT_BOOK_FEATURES,
+        *model_features,
+    ).filter(
+        ~pl.any_horizontal(
+            [
+                pl.col(feature).is_null() | ~pl.col(feature).is_finite()
+                for feature in model_features
+            ]
+        )
     )
     joined = core_frame.join(
         book,
@@ -215,7 +381,10 @@ def derive_strict_book_frame(
     )
     invalid = joined.select(
         pl.any_horizontal(
-            [pl.col(feature).is_null() for feature in STRICT_BOOK_FEATURES]
+            [
+                pl.col(feature).is_null() | ~pl.col(feature).is_finite()
+                for feature in model_features
+            ]
         ).alias("invalid")
     )["invalid"].sum()
     if invalid:
@@ -229,6 +398,8 @@ def train_strict_book_candidate(
     benchmark_config: EntryBenchmarkConfig,
     core_config: CoreTrainingConfig,
 ) -> tuple[dict[str, Any], pl.DataFrame, FrozenTrainingBundle]:
+    """Legacy wrapper around the reusable strict-cohort fit/evaluate APIs."""
+
     spec = strict_book_candidate_spec(benchmark_config)
     split = benchmark_config.book_split
     fit = range_frame(strict_frame, split.fit_start, split.fit_end)
@@ -245,82 +416,21 @@ def train_strict_book_candidate(
         split.policy_end,
     )["market_id"].unique()
     started = time.perf_counter()
-    model, tuning = tune_and_fit_model(fit, spec, core_config)
-    calibrator = fit_probability_calibrator(
-        model,
+    training, bundle = fit_strict_cohort_candidate(
+        fit,
         calibration,
-        core_config,
-        spec,
-    )
-    selection_probability = calibrator.probability(
-        model.raw_logit(threshold_selection)
-    )
-    threshold_model_config = replace(
-        core_config.model,
-        confidence_min=benchmark_config.book_model.confidence_min,
-        confidence_max=benchmark_config.book_model.confidence_max,
-        confidence_step=benchmark_config.book_model.confidence_step,
-    )
-    threshold_core_config = replace(
-        core_config,
-        model=threshold_model_config,
-    )
-    thresholds = threshold_table(
         threshold_selection,
-        selection_probability,
-        threshold_core_config.model,
+        spec,
+        benchmark_config,
+        core_config,
     )
-    minimum_markets = max(
-        100,
-        math.ceil(
-            threshold_selection["market_id"].n_unique()
-            * core_config.gates.minimum_coverage
-        ),
-    )
-    threshold, threshold_qualified = choose_threshold(
-        thresholds,
-        core_config.gates,
-        minimum_markets=minimum_markets,
-    )
-    policy_probability = calibrator.probability(model.raw_logit(policy))
-    scored = scored_prediction_rows(policy, policy_probability).with_columns(
-        pl.lit(spec.name).alias("candidate"),
-        pl.lit(True).alias("model_eligible"),
-    )
-    selected = first_prediction_rows(
+    evaluation, scored = evaluate_strict_cohort_candidate(
         policy,
-        policy_probability,
-        threshold,
-    ).with_columns(pl.lit(spec.name).alias("candidate"))
-    eligible_markets = len(policy_universe)
-    metrics = classification_metrics(
-        selected,
-        eligible_markets=eligible_markets,
-    )
-    timing = first_crossing_timing(
-        selected,
-        eligible_markets=eligible_markets,
-    )
-    latency = _python_batch_latency(
-        FrozenTrainingBundle(
-            model=model,
-            calibrator=calibrator,
-            confidence_threshold=threshold,
-        ),
-        policy,
+        bundle,
+        eligible_markets=len(policy_universe),
     )
     result = {
-        "candidate": spec.name,
-        "family": spec.family,
-        "deployment_compatible": False,
-        "deployment_blocker": (
-            "strict book features are intentionally outside the current Rust "
-            "58-feature runtime contract"
-        ),
-        "feature_count": len(spec.feature_names),
-        "features": list(spec.feature_names),
-        "quality_columns_are_features": False,
-        "row_weight_policy": spec.row_weight_policy,
+        **training,
         "cohort": {
             "fit_start": split.fit_start.isoformat(),
             "fit_end": split.fit_end.isoformat(),
@@ -338,24 +448,207 @@ def train_strict_book_candidate(
             "calibration_markets": calibration["market_id"].n_unique(),
             "threshold_markets": threshold_selection["market_id"].n_unique(),
             "policy_strict_book_markets": policy["market_id"].n_unique(),
-            "policy_universal_markets": eligible_markets,
+            "policy_universal_markets": len(policy_universe),
+        },
+        "metrics": evaluation["metrics"],
+        "timing": evaluation["timing"],
+        "python_scoring": evaluation["python_scoring"],
+        "elapsed_seconds": time.perf_counter() - started,
+    }
+    return result, scored, bundle
+
+
+def fit_strict_cohort_candidate(
+    fit_frame: pl.DataFrame,
+    calibration_frame: pl.DataFrame,
+    threshold_selection_frame: pl.DataFrame,
+    spec: CandidateSpec,
+    benchmark_config: EntryBenchmarkConfig,
+    core_config: CoreTrainingConfig,
+) -> tuple[dict[str, Any], FrozenTrainingBundle]:
+    """Fit one candidate on an already frozen strict-valid row cohort.
+
+    Passing a BTC-only spec and a BTC-plus-book spec with the same three frames
+    gives an exact-row ablation with identical chronology and weighting.
+    """
+
+    for name, frame in (
+        ("fit", fit_frame),
+        ("calibration", calibration_frame),
+        ("threshold selection", threshold_selection_frame),
+    ):
+        _validate_strict_cohort_frame(frame, spec.feature_names, name=name)
+
+    started = time.perf_counter()
+    model, tuning = tune_and_fit_model(fit_frame, spec, core_config)
+    calibrator = fit_probability_calibrator(
+        model,
+        calibration_frame,
+        core_config,
+        spec,
+    )
+    selection_probability = calibrator.probability(
+        model.raw_logit(threshold_selection_frame)
+    )
+    threshold_model_config = replace(
+        core_config.model,
+        confidence_min=benchmark_config.book_model.confidence_min,
+        confidence_max=benchmark_config.book_model.confidence_max,
+        confidence_step=benchmark_config.book_model.confidence_step,
+    )
+    threshold_core_config = replace(
+        core_config,
+        model=threshold_model_config,
+    )
+    thresholds = threshold_table(
+        threshold_selection_frame,
+        selection_probability,
+        threshold_core_config.model,
+    )
+    minimum_markets = max(
+        100,
+        math.ceil(
+            threshold_selection_frame["market_id"].n_unique()
+            * core_config.gates.minimum_coverage
+        ),
+    )
+    threshold, threshold_qualified = choose_threshold(
+        thresholds,
+        core_config.gates,
+        minimum_markets=minimum_markets,
+    )
+    bundle = FrozenTrainingBundle(
+        model=model,
+        calibrator=calibrator,
+        confidence_threshold=threshold,
+    )
+    result = {
+        "candidate": spec.name,
+        "family": spec.family,
+        "deployment_compatible": False,
+        "deployment_blocker": (
+            "strict book features are intentionally outside the current Rust "
+            "58-feature runtime contract"
+        ),
+        "feature_count": len(spec.feature_names),
+        "features": list(spec.feature_names),
+        "quality_columns_are_features": False,
+        "provider_age_columns_are_features": False,
+        "row_weight_policy": spec.row_weight_policy,
+        "training_rows": {
+            "fit": fit_frame.height,
+            "fit_markets": fit_frame["market_id"].n_unique(),
+            "calibration": calibration_frame.height,
+            "calibration_markets": calibration_frame["market_id"].n_unique(),
+            "threshold_selection": threshold_selection_frame.height,
+            "threshold_markets": threshold_selection_frame[
+                "market_id"
+            ].n_unique(),
         },
         "tuning": tuning,
         "calibrator": asdict(calibrator),
         "confidence_threshold": threshold,
         "threshold_qualified": threshold_qualified,
         "threshold_history": thresholds,
-        "metrics": metrics,
-        "timing": timing,
-        "python_scoring": latency,
         "elapsed_seconds": time.perf_counter() - started,
     }
-    bundle = FrozenTrainingBundle(
-        model=model,
-        calibrator=calibrator,
-        confidence_threshold=threshold,
+    return result, bundle
+
+
+def score_strict_cohort_candidate(
+    frame: pl.DataFrame,
+    bundle: FrozenTrainingBundle,
+) -> pl.DataFrame:
+    """Score every supplied row without changing the strict cohort."""
+
+    _validate_strict_cohort_frame(
+        frame,
+        bundle.model.feature_names,
+        name="score",
     )
-    return result, scored, bundle
+    probabilities = bundle.probability(frame)
+    return scored_prediction_rows(frame, probabilities).with_columns(
+        pl.lit(bundle.model.candidate_name).alias("candidate"),
+        pl.lit(True).alias("model_eligible"),
+    )
+
+
+def evaluate_strict_cohort_candidate(
+    frame: pl.DataFrame,
+    bundle: FrozenTrainingBundle,
+    *,
+    eligible_markets: int | None = None,
+) -> tuple[dict[str, Any], pl.DataFrame]:
+    """Evaluate a frozen candidate on development-only strict-valid rows."""
+
+    scored = score_strict_cohort_candidate(frame, bundle)
+    eligible = (
+        eligible_markets
+        if eligible_markets is not None
+        else frame["market_id"].n_unique()
+    )
+    if eligible < frame["market_id"].n_unique():
+        raise ValueError(
+            "eligible_markets cannot be smaller than the scored cohort"
+        )
+    selected = (
+        scored.filter(pl.col("confidence") >= bundle.confidence_threshold)
+        .sort(["observed_at", "market_id"])
+        .group_by("market_id", maintain_order=True)
+        .first()
+    )
+    result = {
+        "candidate": bundle.model.candidate_name,
+        "evidence_kind": "development",
+        "evaluation_is_independent": False,
+        "scored_rows": scored.height,
+        "strict_markets": frame["market_id"].n_unique(),
+        "eligible_markets": eligible,
+        "confidence_threshold": bundle.confidence_threshold,
+        "metrics": classification_metrics(
+            selected,
+            eligible_markets=eligible,
+        ),
+        "timing": first_crossing_timing(
+            selected,
+            eligible_markets=eligible,
+        ),
+        "python_scoring": _python_batch_latency(bundle, frame),
+    }
+    return result, scored
+
+
+def _validate_strict_cohort_frame(
+    frame: pl.DataFrame,
+    feature_names: tuple[str, ...],
+    *,
+    name: str,
+) -> None:
+    if frame.is_empty():
+        raise RuntimeError(f"{name} strict cohort is empty")
+    required = {
+        "market_id",
+        "window_start",
+        "observed_at",
+        "seconds_elapsed",
+        "label_up",
+        "binance_sign_up",
+        *feature_names,
+    }
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError(
+            f"{name} strict cohort is missing model columns: "
+            + ", ".join(missing)
+        )
+    duplicate_keys = (
+        frame.group_by("market_id", "observed_at")
+        .len()
+        .filter(pl.col("len") > 1)
+        .height
+    )
+    if duplicate_keys:
+        raise RuntimeError(f"{name} strict cohort contains duplicate row keys")
 
 
 def _split_markets_in_half(

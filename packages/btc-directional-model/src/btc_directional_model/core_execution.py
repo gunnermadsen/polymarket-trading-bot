@@ -19,8 +19,10 @@ from .core_extract import (
     write_json_atomic,
 )
 
-EXECUTION_EVIDENCE_CONTRACT = "btc_execution_evidence_v1"
-EXECUTION_EVIDENCE_SCHEMA_VERSION = "btc-execution-evidence-v1"
+LEGACY_EXECUTION_EVIDENCE_CONTRACT = "btc_execution_evidence_v1"
+LEGACY_EXECUTION_EVIDENCE_SCHEMA_VERSION = "btc-execution-evidence-v1"
+EXECUTION_EVIDENCE_CONTRACT = "btc_execution_evidence_v2"
+EXECUTION_EVIDENCE_SCHEMA_VERSION = "btc-execution-evidence-v2"
 COMPACT_SNAPSHOT_SCHEMA_VERSION = "btc5m-book-250ms-v1"
 DEFAULT_EXECUTION_QUANTITY = 5.0
 DEFAULT_FRESHNESS_SECONDS = 2
@@ -34,6 +36,7 @@ QUALITY_DOWN_CROSSED = 1 << 5
 QUALITY_UP_INSUFFICIENT_DEPTH = 1 << 6
 QUALITY_DOWN_INSUFFICIENT_DEPTH = 1 << 7
 STRICT_BOTH_SIDE_QUALITY_MASK = (1 << 6) - 1
+STRICT_BOTH_SIDE_TEN_SHARE_QUALITY_MASK = (1 << 8) - 1
 
 EXECUTION_EVIDENCE_SCHEMA = pa.schema(
     [
@@ -57,6 +60,7 @@ EXECUTION_EVIDENCE_SCHEMA = pa.schema(
         ("up_bid_depth", pa.float64()),
         ("up_ask_depth", pa.float64()),
         ("up_ask_vwap_5", pa.float64()),
+        ("up_ask_vwap_10", pa.float64()),
         ("up_imbalance", pa.float64()),
         ("down_provider_received_at", pa.timestamp("us", tz="UTC")),
         ("down_best_bid", pa.float64()),
@@ -66,6 +70,7 @@ EXECUTION_EVIDENCE_SCHEMA = pa.schema(
         ("down_bid_depth", pa.float64()),
         ("down_ask_depth", pa.float64()),
         ("down_ask_vwap_5", pa.float64()),
+        ("down_ask_vwap_10", pa.float64()),
         ("down_imbalance", pa.float64()),
         ("quality_flags", pa.int32()),
         ("up_provider_causal", pa.bool_()),
@@ -79,6 +84,7 @@ EXECUTION_EVIDENCE_SCHEMA = pa.schema(
         ("up_stale_initialized", pa.bool_()),
         ("down_stale_initialized", pa.bool_()),
         ("strict_both_side_eligible", pa.bool_()),
+        ("strict_both_side_eligible_10", pa.bool_()),
     ]
 )
 
@@ -129,6 +135,7 @@ class SideEligibility:
     valid: bool
     fresh: bool
     stale_initialized: bool
+    ten_share_executable: bool = False
 
 
 def classify_side_eligibility(
@@ -145,6 +152,7 @@ def classify_side_eligibility(
     ask_vwap_5: float | None,
     imbalance: float | None,
     quality_flags: int,
+    ask_vwap_10: float | None = None,
     freshness_seconds: int = DEFAULT_FRESHNESS_SECONDS,
 ) -> SideEligibility:
     if quality_flags < 0:
@@ -168,10 +176,20 @@ def classify_side_eligibility(
     provider_causal = (
         provider_received_at is not None and provider_received_at <= observed_at
     )
-    missing_mask, stale_mask, crossed_mask = (
-        (QUALITY_UP_MISSING, QUALITY_UP_STALE, QUALITY_UP_CROSSED)
+    missing_mask, stale_mask, crossed_mask, insufficient_depth_mask = (
+        (
+            QUALITY_UP_MISSING,
+            QUALITY_UP_STALE,
+            QUALITY_UP_CROSSED,
+            QUALITY_UP_INSUFFICIENT_DEPTH,
+        )
         if side == "up"
-        else (QUALITY_DOWN_MISSING, QUALITY_DOWN_STALE, QUALITY_DOWN_CROSSED)
+        else (
+            QUALITY_DOWN_MISSING,
+            QUALITY_DOWN_STALE,
+            QUALITY_DOWN_CROSSED,
+            QUALITY_DOWN_INSUFFICIENT_DEPTH,
+        )
     )
     valid = (
         provider_causal
@@ -188,6 +206,11 @@ def classify_side_eligibility(
         valid=valid,
         fresh=fresh,
         stale_initialized=valid and not fresh,
+        ten_share_executable=(
+            fresh
+            and ask_vwap_10 is not None
+            and quality_flags & insufficient_depth_mask == 0
+        ),
     )
 
 
@@ -212,6 +235,28 @@ def strict_both_side_eligible(
         up.fresh
         and down.fresh
         and quality_flags & STRICT_BOTH_SIDE_QUALITY_MASK == 0
+    )
+
+
+def strict_both_side_eligible_10(
+    *,
+    up: SideEligibility,
+    down: SideEligibility,
+    quality_flags: int,
+) -> bool:
+    """Require a causal, fresh, non-crossed book executable for ten shares.
+
+    The legacy five-share predicate intentionally ignores the two insufficient
+    ten-share-depth bits. This v2 predicate is separate so five-share economic
+    evaluation and existing callers retain their original meaning.
+    """
+
+    if quality_flags < 0:
+        raise ValueError("quality_flags must be nonnegative")
+    return (
+        up.ten_share_executable
+        and down.ten_share_executable
+        and quality_flags & STRICT_BOTH_SIDE_TEN_SHARE_QUALITY_MASK == 0
     )
 
 
@@ -338,9 +383,26 @@ def load_execution_evidence_manifest(
     if not manifest_path.exists():
         raise RuntimeError("execution-evidence manifest is missing")
     manifest = json.loads(manifest_path.read_text())
+    contract_pair = (
+        manifest.get("source_contract"),
+        manifest.get("source_schema_version"),
+    )
+    supported_contracts = {
+        (
+            EXECUTION_EVIDENCE_CONTRACT,
+            EXECUTION_EVIDENCE_SCHEMA_VERSION,
+        ),
+        (
+            LEGACY_EXECUTION_EVIDENCE_CONTRACT,
+            LEGACY_EXECUTION_EVIDENCE_SCHEMA_VERSION,
+        ),
+    }
+    if contract_pair not in supported_contracts:
+        raise RuntimeError(
+            "unsupported execution-evidence manifest contract "
+            f"{contract_pair[0]!r}/{contract_pair[1]!r}"
+        )
     expected = {
-        "source_contract": EXECUTION_EVIDENCE_CONTRACT,
-        "source_schema_version": EXECUTION_EVIDENCE_SCHEMA_VERSION,
         "range_start": config.range_start.isoformat(),
         "range_end": config.range_end.isoformat(),
         "sample_interval_seconds": config.sample_interval_seconds,
@@ -435,6 +497,8 @@ def _extract_execution_partition(
 
 
 def execution_partition_summary(path: Path) -> dict[str, Any]:
+    available_columns = set(pq.read_schema(path).names)
+    ten_share_eligibility_column = "strict_both_side_eligible_10"
     table = pq.read_table(
         path,
         columns=[
@@ -447,6 +511,11 @@ def execution_partition_summary(path: Path) -> dict[str, Any]:
             "up_stale_initialized",
             "down_stale_initialized",
             "strict_both_side_eligible",
+            *(
+                [ten_share_eligibility_column]
+                if ten_share_eligibility_column in available_columns
+                else []
+            ),
         ],
     )
     market_ids = table["market_id"].to_pylist()
@@ -474,6 +543,11 @@ def execution_partition_summary(path: Path) -> dict[str, Any]:
         "strict_both_side_eligible_rows": _true_count(
             table["strict_both_side_eligible"]
         ),
+        "strict_both_side_eligible_10_rows": (
+            _true_count(table[ten_share_eligibility_column])
+            if ten_share_eligibility_column in table.column_names
+            else 0
+        ),
     }
 
 
@@ -494,6 +568,7 @@ def _aggregate_partition_summaries(
         "up_stale_initialized_rows",
         "down_stale_initialized_rows",
         "strict_both_side_eligible_rows",
+        "strict_both_side_eligible_10_rows",
     )
     return {
         key: sum(int(partition[key]) for partition in partitions) for key in keys
@@ -523,6 +598,7 @@ def _load_existing_manifest(
     if mismatches:
         raise RuntimeError(
             "execution-evidence cache contract changed "
-            f"({', '.join(mismatches)}); use a new isolated path or force"
+            f"({', '.join(mismatches)}); write the new contract to an isolated "
+            "output path or use force only for an intentional replacement"
         )
     return existing

@@ -4,6 +4,7 @@ import pytest
 
 from btc_directional_model.benchmark_config import (
     CORE_ONLY_REUSE_DIAGNOSTICS_MODE,
+    STRICT_BOOK_CHRONOLOGICAL_MODE,
     load_entry_benchmark_config,
     validate_entry_benchmark_config,
 )
@@ -22,6 +23,14 @@ def early_entry_config() -> Path:
         Path(__file__).parent.parent
         / "configs"
         / "btc-5m-directional-early-entry-benchmark-20260421-20260720.toml"
+    )
+
+
+def strict_book_chronology_config() -> Path:
+    return (
+        Path(__file__).parent.parent
+        / "configs"
+        / "btc-5m-directional-strict-book-chronology-20260527-20260720.toml"
     )
 
 
@@ -71,3 +80,37 @@ def test_core_only_benchmark_freezes_candidates_paths_and_gates() -> None:
     assert config.prior_diagnostics.sha256 == (
         "c0132d0985c96d7c9c3c9a86c2daba3b75e2e2bce11c27cdccad848277975ba6"
     )
+
+
+def test_strict_book_chronology_uses_disjoint_past_only_evaluation() -> None:
+    config = load_entry_benchmark_config(strict_book_chronology_config())
+
+    assert config.benchmark.mode == STRICT_BOOK_CHRONOLOGICAL_MODE
+    assert config.benchmark.candidate_names == (
+        "histogram_strict_cohort_btc_core",
+        "histogram_strict_book_early_weighted",
+    )
+    assert config.book_evaluation is not None
+    assert config.book_evaluation.range_start.isoformat() == (
+        "2026-07-16T00:00:00+00:00"
+    )
+    assert config.book_evaluation.range_end.isoformat() == (
+        "2026-07-20T00:00:00+00:00"
+    )
+    assert config.book_evaluation.range_start >= config.execution.range_end
+    assert config.execution.min_seconds_after_open == 55
+    assert config.benchmark.fixed_evaluation_seconds[0] == 60
+    assert "future" in config.benchmark.evaluation_note
+    assert not config.benchmark.evaluation_is_independent
+
+
+def test_book_evaluation_is_rejected_outside_strict_chronology_mode() -> None:
+    config = load_entry_benchmark_config(strict_book_chronology_config())
+    object.__setattr__(
+        config.benchmark,
+        "mode",
+        CORE_ONLY_REUSE_DIAGNOSTICS_MODE,
+    )
+
+    with pytest.raises(ValueError, match="only valid"):
+        validate_entry_benchmark_config(config)
