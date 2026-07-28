@@ -10,7 +10,9 @@ probability_manifest = "runs/btc-accuracy-timing-20260421-20260720/__PERSISTENCE
 control_candidate = "histogram_enriched"
 candidate_names = [
   "histogram_enriched",
+  "histogram_path_persistence_time_calibrated",
   "histogram_path_persistence_time_calibrated_60_120",
+  "histogram_path_persistence_time_calibrated_90_120",
 ]
 evaluation_is_independent = false
 evaluation_note = "One four-band confidence policy is selected from the earliest saved policy-selection cohort and applied unchanged to all five later chronological validation folds. This is consumed development evidence. Frequency qualification preserves prediction-quality, exact-checkpoint, fold-stability, coverage, and five-share economics gates; entry timing is reported separately and cannot qualify deployment."

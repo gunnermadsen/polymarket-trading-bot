@@ -15,7 +15,9 @@ FREQUENCY_POLICY_OBJECTIVE = "frequency"
 SINGLE_FROZEN_POLICY_MODE = "single_frozen"
 FREQUENCY_POLICY_CANDIDATES = (
     "histogram_enriched",
+    "histogram_path_persistence_time_calibrated",
     "histogram_path_persistence_time_calibrated_60_120",
+    "histogram_path_persistence_time_calibrated_90_120",
 )
 FIXED_FREQUENCY_CHECKPOINTS = (60, 90, 120, 180, 240)
 
@@ -136,7 +138,9 @@ def validate_frequency_policy_benchmark_config(
     if config.policy_anchor_fold != 0:
         raise ValueError("the earliest chronological fold must anchor the frozen policy")
     if config.candidate_names != FREQUENCY_POLICY_CANDIDATES:
-        raise ValueError("frequency policy requires the frozen control and 60-120 candidate")
+        raise ValueError(
+            "frequency policy requires the frozen accuracy-timing candidate matrix"
+        )
     if config.control_candidate != FREQUENCY_POLICY_CANDIDATES[0]:
         raise ValueError("histogram_enriched must remain the frequency control")
     manifest_candidates = tuple(manifest.get("candidate_names", ()))

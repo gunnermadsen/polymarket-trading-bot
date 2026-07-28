@@ -38,7 +38,9 @@ def frequency_config(tmp_path: Path) -> FrequencyPolicyBenchmarkConfig:
         control_candidate="histogram_enriched",
         candidate_names=(
             "histogram_enriched",
+            "histogram_path_persistence_time_calibrated",
             "histogram_path_persistence_time_calibrated_60_120",
+            "histogram_path_persistence_time_calibrated_90_120",
         ),
         evaluation_note="Consumed chronological development evidence.",
         evaluation_is_independent=False,

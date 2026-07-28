@@ -117,8 +117,8 @@ sed "s/__PERSISTENCE_RUN_ID__/${PERSISTENCE_RUN_ID}/g" \
   --config data/btc-5m-directional-frequency-policy-runtime.toml
 ```
 
-This benchmark narrows the challenger matrix to the enriched control and the
-`histogram_path_persistence_time_calibrated_60_120` frequency candidate. It selects one
+This benchmark applies the frequency qualification contract to the enriched control and all
+three saved time-calibrated path-persistence candidates. It selects one
 deterministic four-band threshold vector from fold zero's policy-selection cohort, verifies that
 the policy predates every validation fold, and applies the same vector unchanged to all five
 validation folds. Validation never performs a threshold search. Qualification preserves the
