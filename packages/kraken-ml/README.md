@@ -43,6 +43,8 @@ python3 -m venv .venv
 .venv/bin/python -m kraken_ml evaluate \
   --config configs/pf_xbtusd_15m_1h.toml \
   --run-id RUN_ID
+.venv/bin/python -m kraken_ml backfill-funding \
+  --config configs/pf_xbtusd_15m_1h.toml
 ```
 
 `develop` materializes deterministic features across the configured range, but
@@ -52,6 +54,18 @@ set, compares price/flow/full feature sets for the selected model, and freezes
 a final candidate only when every development and threshold gate passes.
 `evaluate` refuses an unqualified run and globally seals the market/time-window
 holdout on first access, so a second run cannot reuse the same fixed holdout.
+
+`backfill-funding` downloads Kraken's first-party funding-rate ZIP export and
+the documented `historical-funding-rates` JSON response. It requires exact
+Decimal agreement across their overlap, preserves both source objects and an
+immutable provenance manifest, and fills only absent 15-minute lake buckets
+using the active continuously accrued per-hour rate. Existing rows are never
+overwritten. Existing chart rows must match the relative rate exactly; the
+absolute rate permits at most `1e-12` difference because Kraken's charts source
+truncates that field. Any larger disagreement fails before Parquet publication,
+and the tolerance is recorded in the immutable manifest. For offline or
+repeatable execution, pass `--archive-path` and `--recent-json` with previously
+downloaded first-party files.
 
 ## CPU policy
 

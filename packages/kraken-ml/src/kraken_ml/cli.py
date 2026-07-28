@@ -27,6 +27,21 @@ def _parser() -> argparse.ArgumentParser:
     evaluate = subparsers.add_parser("evaluate")
     evaluate.add_argument("--config", type=Path, required=True)
     evaluate.add_argument("--run-id", required=True)
+    funding = subparsers.add_parser(
+        "backfill-funding",
+        help="Import first-party Kraken funding history into missing lake buckets.",
+    )
+    funding.add_argument("--config", type=Path, required=True)
+    funding.add_argument(
+        "--archive-path",
+        type=Path,
+        help="Use a local Kraken funding export ZIP instead of downloading it.",
+    )
+    funding.add_argument(
+        "--recent-json",
+        type=Path,
+        help="Use a local historical-funding-rates response instead of downloading it.",
+    )
     return parser
 
 
@@ -110,6 +125,17 @@ def _main(argv: list[str] | None = None) -> int:
                 "elapsed_seconds": result["elapsed_seconds"],
             }
         )
+        return 0
+
+    if arguments.command == "backfill-funding":
+        from .funding_backfill import backfill_funding
+
+        result = backfill_funding(
+            config,
+            archive_path=arguments.archive_path,
+            recent_json_path=arguments.recent_json,
+        )
+        _print_summary(result.summary())
         return 0
 
     raise AssertionError(f"unhandled command: {arguments.command}")
