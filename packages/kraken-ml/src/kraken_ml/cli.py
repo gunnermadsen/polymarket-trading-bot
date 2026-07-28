@@ -7,16 +7,21 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .config import BenchmarkConfig, load_config
+from .config import (
+    BenchmarkConfig,
+    ExpectancyConfig,
+    load_config,
+    load_expectancy_config,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="kraken-ml",
-        description="Run the frozen PF_XBTUSD classical-ML qualification benchmark.",
+        description="Run the frozen PF_XBTUSD classical-ML edge benchmarks.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("prepare", "develop"):
+    for name in ("prepare", "develop", "prepare-expectancy", "develop-expectancy"):
         command = subparsers.add_parser(name)
         command.add_argument("--config", type=Path, required=True)
         command.add_argument(
@@ -27,6 +32,9 @@ def _parser() -> argparse.ArgumentParser:
     evaluate = subparsers.add_parser("evaluate")
     evaluate.add_argument("--config", type=Path, required=True)
     evaluate.add_argument("--run-id", required=True)
+    evaluate_expectancy = subparsers.add_parser("evaluate-expectancy")
+    evaluate_expectancy.add_argument("--config", type=Path, required=True)
+    evaluate_expectancy.add_argument("--run-id", required=True)
     funding = subparsers.add_parser(
         "backfill-funding",
         help="Import first-party Kraken funding history into missing lake buckets.",
@@ -45,7 +53,11 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _configure_cpu_environment(config: BenchmarkConfig, *, command: str) -> None:
+def _configure_cpu_environment(
+    config: BenchmarkConfig | ExpectancyConfig,
+    *,
+    command: str,
+) -> None:
     threads = min(
         config.compute.final_refit_threads,
         config.compute.available_cores,
@@ -62,7 +74,9 @@ def _configure_cpu_environment(config: BenchmarkConfig, *, command: str) -> None
         os.environ[variable] = value
     os.environ["LOKY_MAX_CPU_COUNT"] = str(config.compute.available_cores)
     os.environ["POLARS_MAX_THREADS"] = (
-        str(config.compute.comparison_estimator_threads) if command == "develop" else value
+        str(config.compute.comparison_estimator_threads)
+        if command in {"develop", "develop-expectancy"}
+        else value
     )
 
 
@@ -72,7 +86,19 @@ def _print_summary(payload: dict[str, Any]) -> None:
 
 def _main(argv: list[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
-    config = load_config(arguments.config)
+    if arguments.command in {
+        "prepare-expectancy",
+        "develop-expectancy",
+        "evaluate-expectancy",
+    }:
+        config = load_expectancy_config(arguments.config)
+    elif arguments.command == "backfill-funding":
+        try:
+            config = load_expectancy_config(arguments.config)
+        except KeyError:
+            config = load_config(arguments.config)
+    else:
+        config = load_config(arguments.config)
     _configure_cpu_environment(config, command=arguments.command)
 
     if arguments.command == "prepare":
@@ -114,6 +140,71 @@ def _main(argv: list[str] | None = None) -> int:
         from .training import evaluate_holdout
 
         result = evaluate_holdout(config, run_id=arguments.run_id)
+        _print_summary(
+            {
+                "run_id": result["run_id"],
+                "verdict": result["verdict"],
+                "holdout_gates_passed": result["gates"]["pass"],
+                "trades": result["economics"]["trades"],
+                "net_expectancy_bps": result["economics"]["net_expectancy_bps"],
+                "profit_factor": result["economics"]["profit_factor"],
+                "elapsed_seconds": result["elapsed_seconds"],
+            }
+        )
+        return 0
+
+    if arguments.command == "prepare-expectancy":
+        from .regression_training import prepare_expectancy_benchmark
+
+        raw, features = prepare_expectancy_benchmark(
+            config,
+            refresh=arguments.refresh,
+        )
+        _print_summary(
+            {
+                "raw_snapshot": str(raw.path),
+                "raw_sha256": raw.sha256,
+                "raw_rows": raw.row_count,
+                "feature_snapshots": {
+                    str(horizon): {
+                        "path": str(snapshot.path),
+                        "sha256": snapshot.sha256,
+                        "rows": snapshot.row_count,
+                    }
+                    for horizon, snapshot in features.items()
+                },
+                "parallel_fits": config.compute.available_cores,
+                "reserved_cores": config.compute.reserve_cores,
+            }
+        )
+        return 0
+
+    if arguments.command == "develop-expectancy":
+        from .regression_training import run_regression_development
+
+        result = run_regression_development(
+            config,
+            refresh=arguments.refresh,
+        )
+        selected = result["selected"]
+        _print_summary(
+            {
+                "run_id": result["run_id"],
+                "verdict": result["verdict"],
+                "candidate_id": selected["candidate_id"],
+                "diagnostic_only": selected["diagnostic_only"],
+                "development_gates_passed": selected["gates"]["pass"],
+                "final_confirmation": result["final_confirmation"]["status"],
+                "holdout_status": result["holdout"]["status"],
+                "elapsed_seconds": result["elapsed_seconds"],
+            }
+        )
+        return 0
+
+    if arguments.command == "evaluate-expectancy":
+        from .regression_training import evaluate_regression_holdout
+
+        result = evaluate_regression_holdout(config, run_id=arguments.run_id)
         _print_summary(
             {
                 "run_id": result["run_id"],

@@ -11,7 +11,7 @@ from typing import Any
 
 import polars as pl
 
-from .config import BenchmarkConfig
+from .config import BenchmarkConfig, ExpectancyConfig
 from .dataset import Snapshot, _atomic_json, _immutable_json, _sha256
 
 PRICE_FEATURES = [
@@ -83,6 +83,19 @@ FULL_FEATURES = FLOW_FEATURES + [
     "liquidity_10_imbalance",
 ]
 
+OI_FEATURES = [
+    "oi_change_1_bps",
+    "oi_change_4_bps",
+    "oi_change_16_bps",
+    "oi_z96",
+]
+
+REGRESSION_FEATURE_SETS = {
+    "price": PRICE_FEATURES,
+    "oi": OI_FEATURES,
+    "price_oi": PRICE_FEATURES + OI_FEATURES,
+}
+
 FEATURE_SETS = {
     "price": PRICE_FEATURES,
     "flow": FLOW_FEATURES,
@@ -128,8 +141,13 @@ def _imbalance(bid: str, ask: str, alias: str) -> pl.Expr:
     return ((pl.col(bid) - pl.col(ask)) / denominator.clip(lower_bound=1e-12)).alias(alias)
 
 
-def build_feature_frame(raw: pl.DataFrame, config: BenchmarkConfig) -> pl.DataFrame:
-    horizon = config.dataset.horizon_bars
+def build_feature_frame(
+    raw: pl.DataFrame,
+    config: BenchmarkConfig | ExpectancyConfig,
+    *,
+    horizon_bars: int | None = None,
+) -> pl.DataFrame:
+    horizon = horizon_bars or config.dataset.horizon_bars
     exit_shift = horizon + 1
     fee_bps = config.dataset.taker_fee_bps_per_side * 2.0
     interval = config.dataset.interval_seconds
@@ -230,16 +248,17 @@ def build_feature_frame(raw: pl.DataFrame, config: BenchmarkConfig) -> pl.DataFr
             .otherwise(pl.lit(0))
             .cast(pl.Int8)
             .alias("label"),
-            (10_000.0 * (pl.col("trade_close") / pl.col("trade_close").shift(horizon)).log()).alias(
-                "trailing_return_4_bps"
-            ),
+            (
+                10_000.0
+                * (pl.col("trade_close") / pl.col("trade_close").shift(horizon)).log()
+            ).alias("trailing_return_horizon_bps"),
         ]
     )
     baseline_hurdle = fee_bps + buffer
     frame = frame.with_columns(
-        pl.when(pl.col("trailing_return_4_bps") > baseline_hurdle)
+        pl.when(pl.col("trailing_return_horizon_bps") > baseline_hurdle)
         .then(pl.lit(1))
-        .when(pl.col("trailing_return_4_bps") < -baseline_hurdle)
+        .when(pl.col("trailing_return_horizon_bps") < -baseline_hurdle)
         .then(pl.lit(-1))
         .otherwise(pl.lit(0))
         .cast(pl.Int8)
@@ -355,11 +374,16 @@ def build_feature_frame(raw: pl.DataFrame, config: BenchmarkConfig) -> pl.DataFr
         *FULL_FEATURES,
     ]
     result = frame.select(selected)
-    validate_feature_frame(result, config)
+    validate_feature_frame(result, config, horizon_bars=horizon)
     return result
 
 
-def validate_feature_frame(frame: pl.DataFrame, config: BenchmarkConfig) -> None:
+def validate_feature_frame(
+    frame: pl.DataFrame,
+    config: BenchmarkConfig | ExpectancyConfig,
+    *,
+    horizon_bars: int | None = None,
+) -> None:
     if not frame.height:
         raise RuntimeError("feature engineering produced no rows")
     if frame["bucket_start"].n_unique() != frame.height:
@@ -370,9 +394,8 @@ def validate_feature_frame(frame: pl.DataFrame, config: BenchmarkConfig) -> None
     if unexpected:
         raise RuntimeError(f"feature frame contains {unexpected} non-contiguous intervals")
     expected_first = config.dataset.start + timedelta(seconds=96 * expected_interval)
-    expected_last = config.dataset.end - timedelta(
-        seconds=(config.dataset.horizon_bars + 2) * expected_interval
-    )
+    horizon = horizon_bars or config.dataset.horizon_bars
+    expected_last = config.dataset.end - timedelta(seconds=(horizon + 2) * expected_interval)
     expected_rows = int((expected_last - expected_first).total_seconds() // expected_interval) + 1
     if frame.height != expected_rows:
         raise RuntimeError(
@@ -388,13 +411,20 @@ def validate_feature_frame(frame: pl.DataFrame, config: BenchmarkConfig) -> None
     missing = {column: count for column, count in nulls.items() if count}
     if missing:
         raise RuntimeError(f"feature columns contain nulls: {missing}")
+    finite_columns = [*FULL_FEATURES, "long_net_bps", "short_net_bps"]
+    non_finite = {
+        column: frame.filter(~pl.col(column).is_finite()).height for column in finite_columns
+    }
+    non_finite = {column: count for column, count in non_finite.items() if count}
+    if non_finite:
+        raise RuntimeError(f"feature frame contains non-finite values: {non_finite}")
     classes = set(frame["label"].unique().to_list())
     if classes != {-1, 0, 1}:
         raise RuntimeError(f"expected three target classes, received {classes}")
     invalid_availability = frame.filter(pl.col("feature_available_at") > pl.col("entry_at")).height
     if invalid_availability:
         raise RuntimeError("feature availability occurs after entry")
-    expected_exit_seconds = config.dataset.interval_seconds * config.dataset.horizon_bars
+    expected_exit_seconds = config.dataset.interval_seconds * horizon
     invalid_horizon = frame.filter(
         (pl.col("label_exit_at") - pl.col("entry_at")).dt.total_seconds() != expected_exit_seconds
     ).height
@@ -403,11 +433,19 @@ def validate_feature_frame(frame: pl.DataFrame, config: BenchmarkConfig) -> None
 
 
 def prepare_feature_snapshot(
-    config: BenchmarkConfig, raw_snapshot: Snapshot, *, refresh: bool = False
+    config: BenchmarkConfig | ExpectancyConfig,
+    raw_snapshot: Snapshot,
+    *,
+    horizon_bars: int | None = None,
+    refresh: bool = False,
 ) -> FeatureSnapshot:
+    horizon = horizon_bars or config.dataset.horizon_bars
     feature_root = config.artifacts.root / "features"
     identity = hashlib.sha256(
-        (f"{raw_snapshot.sha256}:{config.fingerprint}:features-v{FEATURE_SCHEMA_VERSION}").encode()
+        (
+            f"{raw_snapshot.sha256}:{config.fingerprint}:"
+            f"features-v{FEATURE_SCHEMA_VERSION}:horizon-{horizon}"
+        ).encode()
     ).hexdigest()
     index_path = feature_root / f"index-{identity}.json"
     if index_path.exists() and not refresh:
@@ -419,7 +457,7 @@ def prepare_feature_snapshot(
             if sha256 != payload["sha256"]:
                 raise RuntimeError(f"feature snapshot checksum mismatch: {path}")
             cached = pl.read_parquet(path)
-            validate_feature_frame(cached, config)
+            validate_feature_frame(cached, config, horizon_bars=horizon)
             return FeatureSnapshot(
                 path=path,
                 sha256=sha256,
@@ -428,7 +466,7 @@ def prepare_feature_snapshot(
             )
 
     raw = pl.read_parquet(raw_snapshot.path)
-    features = build_feature_frame(raw, config)
+    features = build_feature_frame(raw, config, horizon_bars=horizon)
     staging = feature_root / ".staging"
     staging.mkdir(parents=True, exist_ok=True)
     temporary = staging / f"{identity}-{os.getpid()}.parquet"
@@ -463,6 +501,13 @@ def prepare_feature_snapshot(
         "first_timestamp": features.item(0, "bucket_start").isoformat(),
         "last_timestamp": features.item(features.height - 1, "bucket_start").isoformat(),
         "feature_sets": FEATURE_SETS,
+        "regression_feature_sets": REGRESSION_FEATURE_SETS,
+        "horizon_bars": horizon,
+        "target_specification": {
+            "entry": "next 15-minute trade-price candle open",
+            "exit": f"trade-price candle open {horizon} bars after entry",
+            "targets": ["long_net_bps", "short_net_bps"],
+        },
         "class_counts": class_counts,
         "null_counts": features.null_count().row(0, named=True),
     }

@@ -142,6 +142,7 @@ def trade_ledger(
     actions: np.ndarray,
     *,
     execution_cost_multiplier: float = 1.0,
+    fee_cost_bps_override: float | None = None,
 ) -> list[dict[str, Any]]:
     if frame.height != len(actions):
         raise ValueError("action count does not match frame")
@@ -172,7 +173,12 @@ def trade_ledger(
         )
         market_cost = directional_cost * execution_cost_multiplier
         funding = -float(action) * row["funding_horizon_bps"]
-        net = gross - row["fee_cost_bps"] - market_cost + funding
+        fee_cost = (
+            float(row["fee_cost_bps"])
+            if fee_cost_bps_override is None
+            else float(fee_cost_bps_override)
+        )
+        net = gross - fee_cost - market_cost + funding
         ledger.append(
             {
                 "decision_time": row["bucket_start"],
@@ -180,7 +186,7 @@ def trade_ledger(
                 "exit_at": row["label_exit_at"],
                 "direction": int(action),
                 "gross_bps": float(gross),
-                "fee_bps": float(row["fee_cost_bps"]),
+                "fee_bps": fee_cost,
                 "market_execution_bps": float(market_cost),
                 "funding_bps": float(funding),
                 "net_bps": float(net),

@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kraken-ml"
-version = "0.1.0"
-description = "Reproducible PF_XBTUSD classical-ML qualification benchmark"
+version = "0.2.0"
+description = "Reproducible PF_XBTUSD classical-ML edge qualification benchmarks"
 requires-python = ">=3.11,<3.14"
 license = { text = "UNLICENSED" }
 dependencies = [

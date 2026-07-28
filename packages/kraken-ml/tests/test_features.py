@@ -7,12 +7,17 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from kraken_ml.config import load_config
+from kraken_ml.config import load_config, load_expectancy_config
+from kraken_ml.dataset import Snapshot, _sha256
 from kraken_ml.features import (
     FEATURE_SETS,
     FULL_FEATURES,
+    OI_FEATURES,
+    PRICE_FEATURES,
+    REGRESSION_FEATURE_SETS,
     TARGET_COLUMNS,
     build_feature_frame,
+    prepare_feature_snapshot,
 )
 
 
@@ -61,6 +66,23 @@ def test_next_open_label_offsets_and_cost_accounting(
     assert row["short_net_bps"] == pytest.approx(-expected_gross - 12.0)
 
 
+def test_four_hour_target_uses_sixteen_bar_next_open_horizon(
+    config_path: Path, raw_market_frame: pl.DataFrame
+) -> None:
+    config = _frame_config(config_path, raw_market_frame)
+    features = build_feature_frame(raw_market_frame, config, horizon_bars=16)
+    row = features.row(0, named=True)
+    entry_price = raw_market_frame.item(97, "trade_open")
+    exit_price = raw_market_frame.item(113, "trade_open")
+    expected_gross = 10_000.0 * (exit_price / entry_price - 1.0)
+
+    assert row["entry_at"] == raw_market_frame.item(97, "bucket_start")
+    assert row["label_exit_at"] == raw_market_frame.item(113, "bucket_start")
+    assert row["label_exit_at"] - row["entry_at"] == timedelta(hours=4)
+    assert row["gross_forward_bps"] == pytest.approx(expected_gross)
+    assert features.height == raw_market_frame.height - 96 - 17
+
+
 def test_future_funding_changes_target_but_never_feature_vector(
     config_path: Path, raw_market_frame: pl.DataFrame
 ) -> None:
@@ -99,6 +121,20 @@ def test_funding_and_target_columns_are_excluded_from_every_feature_set() -> Non
         assert not forbidden.intersection(names)
         assert len(names) == len(set(names))
 
+    assert REGRESSION_FEATURE_SETS["oi"] == OI_FEATURES
+    assert REGRESSION_FEATURE_SETS["price"] == PRICE_FEATURES
+    assert REGRESSION_FEATURE_SETS["price_oi"] == PRICE_FEATURES + OI_FEATURES
+    assert set(OI_FEATURES) == {
+        "oi_change_1_bps",
+        "oi_change_4_bps",
+        "oi_change_16_bps",
+        "oi_z96",
+    }
+    for names in REGRESSION_FEATURE_SETS.values():
+        assert not forbidden.intersection(names)
+        assert "oi_log" not in names
+        assert len(names) == len(set(names))
+
 
 def test_cvd_features_derive_from_bar_flow_not_resetting_archive_level(
     config_path: Path, raw_market_frame: pl.DataFrame
@@ -111,3 +147,39 @@ def test_cvd_features_derive_from_bar_flow_not_resetting_archive_level(
 
     assert features.item(0, "cvd_delta_1") == pytest.approx(20.0)
     assert features.item(0, "cvd_delta_4") == pytest.approx(80.0)
+
+
+def test_horizons_have_distinct_content_addressed_feature_snapshots(
+    raw_market_frame: pl.DataFrame,
+    tmp_path: Path,
+) -> None:
+    path = Path(__file__).resolve().parents[1] / "configs" / "pf_xbtusd_15m_expectancy.toml"
+    config = load_expectancy_config(path)
+    interval = timedelta(seconds=config.dataset.interval_seconds)
+    config = replace(
+        config,
+        dataset=replace(
+            config.dataset,
+            start=raw_market_frame.item(0, "bucket_start"),
+            end=raw_market_frame.item(raw_market_frame.height - 1, "bucket_start") + interval,
+        ),
+        artifacts=replace(config.artifacts, root=tmp_path / "artifacts"),
+    )
+    raw_path = tmp_path / "raw.parquet"
+    raw_market_frame.write_parquet(raw_path)
+    raw = Snapshot(
+        path=raw_path,
+        sha256=_sha256(raw_path),
+        row_count=raw_market_frame.height,
+        first_timestamp=raw_market_frame.item(0, "bucket_start"),
+        last_timestamp=raw_market_frame.item(raw_market_frame.height - 1, "bucket_start"),
+        manifest_path=tmp_path / "raw-manifest.json",
+    )
+
+    one_hour = prepare_feature_snapshot(config, raw, horizon_bars=4)
+    four_hour = prepare_feature_snapshot(config, raw, horizon_bars=16)
+
+    assert one_hour.path != four_hour.path
+    assert one_hour.sha256 != four_hour.sha256
+    assert one_hour.row_count == 59
+    assert four_hour.row_count == 47

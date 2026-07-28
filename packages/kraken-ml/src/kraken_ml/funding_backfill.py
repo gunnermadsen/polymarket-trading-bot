@@ -401,7 +401,7 @@ def _source_bytes(path: Path | None, url: str) -> tuple[bytes, str]:
         if len(content) > MAX_DOWNLOAD_BYTES:
             raise RuntimeError(f"funding source exceeds {MAX_DOWNLOAD_BYTES} bytes: {resolved}")
         return content, str(resolved)
-    request = urllib.request.Request(url, headers={"User-Agent": "kraken-ml/0.1"})
+    request = urllib.request.Request(url, headers={"User-Agent": "kraken-ml/0.2"})
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
             content = response.read(MAX_DOWNLOAD_BYTES + 1)

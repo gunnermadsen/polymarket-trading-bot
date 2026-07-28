@@ -6,7 +6,7 @@ from datetime import datetime
 
 import polars as pl
 
-from .config import BenchmarkConfig, FoldConfig
+from .config import BenchmarkConfig, ExpectancyConfig, FoldConfig
 
 
 @dataclass(frozen=True)
@@ -58,7 +58,7 @@ def _assert_boundary(left: pl.DataFrame, right: pl.DataFrame, name: str) -> None
 
 def _build_slices(
     frame: pl.DataFrame,
-    config: BenchmarkConfig,
+    config: BenchmarkConfig | ExpectancyConfig,
     *,
     name: str,
     calibration_start: datetime,
@@ -74,6 +74,7 @@ def _build_slices(
     fit = _purge_before(fit, calibration)
     calibration = _purge_before(calibration, threshold)
     threshold = _purge_before(threshold, evaluation)
+    evaluation = evaluation.filter(pl.col("label_exit_at") < evaluation_end)
     _assert_boundary(fit, calibration, f"{name}:fit/calibration")
     _assert_boundary(calibration, threshold, f"{name}:calibration/threshold")
     _assert_boundary(threshold, evaluation, f"{name}:threshold/evaluation")
@@ -86,6 +87,10 @@ def _build_slices(
             f"{name} has only {training_days:.1f} training days; "
             f"minimum is {config.validation.minimum_training_days}"
         )
+    if evaluation.is_empty():
+        raise RuntimeError(f"empty temporal evaluation slice at {name}")
+    if evaluation["label_exit_at"].max() >= evaluation_end:
+        raise RuntimeError(f"evaluation labels cross the {name} boundary")
     return TemporalSlices(
         name=name,
         fit=fit,
@@ -96,7 +101,7 @@ def _build_slices(
 
 
 def development_slices(
-    frame: pl.DataFrame, config: BenchmarkConfig, fold: FoldConfig
+    frame: pl.DataFrame, config: BenchmarkConfig | ExpectancyConfig, fold: FoldConfig
 ) -> TemporalSlices:
     threshold_start = shift_months(fold.start, -1)
     calibration_start = shift_months(fold.start, -2)
@@ -111,7 +116,9 @@ def development_slices(
     )
 
 
-def final_slices(frame: pl.DataFrame, config: BenchmarkConfig) -> TemporalSlices:
+def final_slices(
+    frame: pl.DataFrame, config: BenchmarkConfig | ExpectancyConfig
+) -> TemporalSlices:
     return _build_slices(
         frame,
         config,
@@ -123,7 +130,9 @@ def final_slices(frame: pl.DataFrame, config: BenchmarkConfig) -> TemporalSlices
     )
 
 
-def frozen_training_slices(frame: pl.DataFrame, config: BenchmarkConfig) -> FrozenTrainingSlices:
+def frozen_training_slices(
+    frame: pl.DataFrame, config: BenchmarkConfig | ExpectancyConfig
+) -> FrozenTrainingSlices:
     """Build final pre-holdout slices without reading a holdout observation."""
     fit = frame.filter(pl.col("bucket_start") < config.validation.calibration_start)
     calibration = _time_range(

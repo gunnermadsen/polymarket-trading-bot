@@ -50,7 +50,8 @@ def test_development_slices_are_chronological_and_purged(config_path: Path) -> N
     assert slices.calibration["bucket_start"].min() == datetime(2024, 4, 1, tzinfo=UTC)
     assert slices.threshold["bucket_start"].min() == datetime(2024, 5, 1, tzinfo=UTC)
     assert slices.evaluation["bucket_start"].min() == fold.start
-    assert slices.evaluation["bucket_start"].max() == fold.end - timedelta(minutes=15)
+    assert slices.evaluation["bucket_start"].max() == fold.end - timedelta(minutes=90)
+    assert slices.evaluation["label_exit_at"].max() < fold.end
     _assert_strict_dependencies(slices.fit, slices.calibration)
     _assert_strict_dependencies(slices.calibration, slices.threshold)
     _assert_strict_dependencies(slices.threshold, slices.evaluation)
