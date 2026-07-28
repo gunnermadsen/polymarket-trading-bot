@@ -25,8 +25,8 @@ labels, reference facts, one-second Binance klines, and completed-artifact linea
 read PMXT snapshots, raw orderbook events, aggregate trades, Chainlink ticks, or any live trading
 process data. The historical April 21-July 20 labels have already been accessed during model
 development, so results on that interval are development evidence rather than an independent
-deployment holdout. A deployment decision now requires a genuinely unseen, complete interval
-after July 20.
+deployment holdout. The current training round is clamped to the exact half-open UTC interval
+`[2026-04-21, 2026-07-20)` and makes no deployment decision.
 
 ## Local environment
 
@@ -58,30 +58,72 @@ export POLARS_MAX_THREADS=6
   --config configs/btc-5m-directional-core-20260421-20260620.toml
 ```
 
-Develop the extended April 21-July 20 candidate:
+Validate the frozen source and feature cache for the current April 21-July 20 development round:
 
 ```bash
 export POLARS_MAX_THREADS=6
 .venv/bin/btc-directional-model core-extract \
-  --config configs/btc-5m-directional-core-20260421-20260720.toml \
+  --config configs/btc-5m-directional-core-accuracy-timing-20260421-20260720.toml \
   --scope pre_holdout
 .venv/bin/btc-directional-model core-features \
-  --config configs/btc-5m-directional-core-20260421-20260720.toml \
+  --config configs/btc-5m-directional-core-accuracy-timing-20260421-20260720.toml \
   --scope pre_holdout
-.venv/bin/btc-directional-model core-develop \
-  --config configs/btc-5m-directional-core-20260421-20260720.toml
 ```
 
-The extended contract uses `[2026-04-21, 2026-07-21)`. Its configured chronological splits remain
-useful for leakage-resistant development comparisons, but they are no longer independent holdout
-evidence. Do not promote a candidate from this range. Freeze the candidate and its policy before
-extracting or evaluating a later complete interval.
+The cache covers `[2026-04-21, 2026-07-20)`. Its configured fit, calibration, policy-selection,
+and walk-forward splits provide leakage-resistant development comparisons, but none is an
+independent holdout. The current round does not configure or access data outside that interval.
 
-The core workflow evaluates two logistic candidates and two real
-histogram-gradient-boosting candidates over five chronological walk-forward folds. The
-`histogram_early_weighted` candidate preserves the existing 58-feature native-runtime contract
-while assigning more fitting weight to decisions 60-120 seconds into each market. It does not
-change live inference inputs or the Rust trading path.
+Fit the four real accuracy/timing candidates and persist checksummed causal probability evidence:
+
+```bash
+export POLARS_MAX_THREADS=6
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+.venv/bin/btc-directional-model persistence-benchmark-run \
+  --config configs/btc-5m-directional-accuracy-timing-20260421-20260720.toml
+```
+
+The checked-in saved-policy configuration is deliberately a non-runnable template. After the
+command above finishes, materialize a temporary config under the package's ignored `data/`
+directory and replace
+`__PERSISTENCE_RUN_ID__` with the emitted UTC run identifier. Do not invoke the loader while the
+placeholder remains:
+
+```bash
+PERSISTENCE_RUN_ID="<UTC run identifier>"
+sed "s/__PERSISTENCE_RUN_ID__/${PERSISTENCE_RUN_ID}/g" \
+  configs/btc-5m-directional-saved-policy-20260421-20260720.toml.template \
+  > data/btc-5m-directional-saved-policy-runtime.toml
+.venv/bin/btc-directional-model persistence-policy-benchmark-run \
+  --config data/btc-5m-directional-saved-policy-runtime.toml
+```
+
+This second command does not fit a model. Within each walk-forward fold it selects the four
+time-band confidence thresholds only from the earlier policy-selection probabilities, then scores
+the corresponding chronological validation probabilities once. The manifest and every Parquet
+input are checksum verified.
+
+Run the strict-book chronology diagnostic separately:
+
+```bash
+export POLARS_MAX_THREADS=6
+.venv/bin/btc-directional-model entry-benchmark-run \
+  --config configs/btc-5m-directional-strict-book-chronology-20260527-20260720.toml
+```
+
+Its compact-book fitting evidence spans `[2026-05-27, 2026-06-12)`, with chronological fit,
+calibration, and policy partitions. Its separate consumed evaluation cohort is
+`[2026-07-16, 2026-07-20)`. Extraction starts at second 55 solely to seed exact 60-second causal
+book deltas; reported decision checkpoints remain 60, 90, 120, 180, and 240 seconds.
+
+The accuracy/timing workflow evaluates four real histogram-gradient-boosting candidates over five
+chronological walk-forward folds. Every market contributes equal total fitting weight. The two new
+challengers apply 1.5x weight at 60-120 seconds and 2x weight at 90-120 seconds respectively,
+without changing the existing 58-feature native-runtime contract, live inference inputs, or the
+Rust trading path.
 
 Run the frozen earlier-entry benchmark:
 
@@ -155,13 +197,10 @@ the earliest broad-coverage threshold. A model is deployable only when `qualific
 `deployment_status` is `qualified` in the model artifact. First-executable accuracy is reported as
 a separate timing-policy diagnostic and never overrides the primary qualification contract.
 
-Once a holdout report has been viewed, that date range is consumed. Do not tune against its result
-and then describe a rerun on the same markets as independent evidence. Freeze any revised
-accuracy/coverage/timing policy on training and calibration data, then use newly backfilled later
-dates for the next untouched evaluation. The checked-in configuration therefore sets
-`holdout_is_independent = false`: current v2 reruns are exploratory and their artifacts remain
-blocked. Change that flag only when the configured final chronological split contains genuinely
-unseen, complete four-table coverage.
+Once labels or a report have been viewed, that date range is consumed. Do not tune against its
+result and then describe a rerun on the same markets as independent evidence. The checked-in
+accuracy/timing configurations therefore set `evaluation_is_independent = false`, disable the core
+holdout, and keep every result development-only.
 
 For the expanded BTC core, candidate selection is likewise chronological but completely independent
 of orderbook quality. The qualification contract requires at least 65% accuracy and balanced
@@ -181,7 +220,7 @@ absolute accuracy, balanced-accuracy, directional-recall, Wilson, calibration, c
 fixed-five-share economics gates; it must also improve coverage and entry timing without regressing
 the control's prediction quality. Native p99 latency and serialized runtime-model size evidence are
 also mandatory; missing measurements fail closed. Passing development gates is not deployment
-qualification. A genuinely independent post-July-20 holdout remains mandatory.
+qualification.
 
 ## Apple Silicon
 
