@@ -15,6 +15,16 @@ pub struct ClobRestOfficialResolution {
     pub raw_payload: serde_json::Value,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct GammaRestOfficialResolution {
+    pub market_id: String,
+    pub winning_token_id: String,
+    pub winning_outcome: BtcOutcome,
+    pub source_timestamp: DateTime<Utc>,
+    pub observed_at: DateTime<Utc>,
+    pub raw_payload: serde_json::Value,
+}
+
 pub fn aligned_window_start(now: DateTime<Utc>) -> DateTime<Utc> {
     let epoch = now.timestamp().div_euclid(BTC_INTERVAL_SECONDS) * BTC_INTERVAL_SECONDS;
     DateTime::from_timestamp(epoch, 0).expect("an aligned UTC timestamp is representable")
@@ -185,6 +195,150 @@ pub fn parse_gamma_btc_interval_event(
     })
 }
 
+/// Validates terminal Gamma evidence against the immutable market identity captured at discovery.
+///
+/// Gamma remains non-authoritative while both the event and market are open. Once either claims a
+/// terminal state, every terminal marker must agree and the outcome prices must be an exact binary
+/// payout. This prevents a stale tradable quote or partially updated Gamma response from becoming
+/// an official settlement fact.
+pub fn parse_gamma_rest_official_resolution(
+    value: &serde_json::Value,
+    market: &BtcIntervalMarket,
+    observed_at: DateTime<Utc>,
+) -> Result<Option<GammaRestOfficialResolution>> {
+    let candidate = parse_gamma_btc_interval_event(value, market.window_start)?;
+    validate_gamma_market_identity(&candidate, market)?;
+
+    let event = value
+        .as_object()
+        .context("Gamma event response must be an object")?;
+    let markets = event
+        .get("markets")
+        .and_then(serde_json::Value::as_array)
+        .context("Gamma event is missing its markets array")?;
+    let gamma_market = markets[0]
+        .as_object()
+        .context("Gamma event market must be an object")?;
+    let event_closed =
+        bool_field(event, &["closed"]).context("Gamma event is missing closed status")?;
+    let market_closed =
+        bool_field(gamma_market, &["closed"]).context("Gamma market is missing closed status")?;
+    let resolution_status = string_field(
+        gamma_market,
+        &[
+            "umaResolutionStatus",
+            "uma_resolution_status",
+            "resolutionStatus",
+            "resolution_status",
+        ],
+    );
+    let has_resolution_timestamp = ["umaEndDate", "uma_end_date", "closedTime", "closed_time"]
+        .iter()
+        .any(|key| gamma_market.contains_key(*key))
+        || ["closedTime", "closed_time"]
+            .iter()
+            .any(|key| event.contains_key(*key));
+
+    match (event_closed, market_closed) {
+        (false, false)
+            if resolution_status
+                .as_deref()
+                .is_none_or(|status| !status.eq_ignore_ascii_case("resolved"))
+                && !has_resolution_timestamp =>
+        {
+            return Ok(None);
+        }
+        (false, false) => bail!("open Gamma market contains terminal resolution evidence"),
+        (true, true) => {}
+        _ => bail!("Gamma event and market closed states disagree"),
+    }
+    if bool_field(gamma_market, &["acceptingOrders", "accepting_orders"])
+        .context("closed Gamma market is missing accepting-orders status")?
+    {
+        bail!("closed Gamma market is still accepting orders");
+    }
+
+    let resolution_status =
+        resolution_status.context("closed Gamma market is missing resolution status")?;
+    if !resolution_status.eq_ignore_ascii_case("resolved") {
+        bail!("closed Gamma market has non-terminal resolution status {resolution_status}");
+    }
+
+    let resolution_times = [
+        strict_optional_datetime_field(gamma_market, &["umaEndDate", "uma_end_date"])?,
+        strict_optional_datetime_field(gamma_market, &["closedTime", "closed_time"])?,
+        strict_optional_datetime_field(event, &["closedTime", "closed_time"])?,
+    ];
+    let source_timestamp = resolution_times
+        .iter()
+        .flatten()
+        .next()
+        .copied()
+        .context("resolved Gamma market is missing its resolution timestamp")?;
+    if resolution_times
+        .iter()
+        .flatten()
+        .any(|timestamp| *timestamp != source_timestamp)
+    {
+        bail!("Gamma resolution timestamps disagree");
+    }
+    if source_timestamp < market.window_end || observed_at < market.window_end {
+        bail!("Gamma official resolution predates market close");
+    }
+
+    let outcomes = string_array_field(gamma_market, &["outcomes"])
+        .context("resolved Gamma market is missing outcomes")?;
+    let token_ids = string_array_field(
+        gamma_market,
+        &["clobTokenIds", "clob_token_ids", "tokenIds", "token_ids"],
+    )
+    .context("resolved Gamma market is missing CLOB token IDs")?;
+    let outcome_prices = string_array_field(gamma_market, &["outcomePrices", "outcome_prices"])
+        .context("resolved Gamma market is missing outcome prices")?;
+    if outcomes.len() != 2
+        || token_ids.len() != 2
+        || outcome_prices.len() != 2
+        || outcomes.len() != token_ids.len()
+        || outcomes.len() != outcome_prices.len()
+    {
+        bail!("resolved Gamma market must contain exactly two outcomes, token IDs, and prices");
+    }
+
+    let mut winner = None;
+    for ((outcome, token_id), price) in outcomes.iter().zip(&token_ids).zip(&outcome_prices) {
+        let outcome = normalize_outcome(outcome)?;
+        let expected_token_id = market.token_id(outcome);
+        if token_id != expected_token_id {
+            bail!(
+                "Gamma token {} does not match stored {:?} token {}",
+                token_id,
+                outcome,
+                expected_token_id
+            );
+        }
+        let price = Decimal::from_str(price)
+            .with_context(|| format!("Gamma outcome {outcome:?} has an invalid terminal price"))?;
+        if price == Decimal::ONE {
+            if winner.replace((token_id.clone(), outcome)).is_some() {
+                bail!("resolved Gamma market exposes multiple winning outcomes");
+            }
+        } else if price != Decimal::ZERO {
+            bail!("resolved Gamma outcome {outcome:?} has non-binary terminal price {price}");
+        }
+    }
+    let (winning_token_id, winning_outcome) =
+        winner.context("resolved Gamma market does not expose a winning outcome")?;
+
+    Ok(Some(GammaRestOfficialResolution {
+        market_id: market.market_id.clone(),
+        winning_token_id,
+        winning_outcome,
+        source_timestamp: microsecond_timestamp(source_timestamp),
+        observed_at: microsecond_timestamp(observed_at),
+        raw_payload: value.clone(),
+    }))
+}
+
 /// Validates the public CLOB `GET /markets/{condition_id}` response against the immutable
 /// Gamma-discovered identity. An ended market is authoritative only when CLOB marks it closed,
 /// exposes exactly the two expected tokens, and names exactly one binary winner at its terminal
@@ -281,6 +435,47 @@ pub fn parse_clob_rest_official_resolution(
             .expect("a valid observation timestamp remains valid at microsecond precision"),
         raw_payload: value.clone(),
     }))
+}
+
+fn validate_gamma_market_identity(
+    candidate: &BtcIntervalMarket,
+    stored: &BtcIntervalMarket,
+) -> Result<()> {
+    for (name, candidate, stored) in [
+        ("event id", &candidate.event_id, &stored.event_id),
+        ("event slug", &candidate.event_slug, &stored.event_slug),
+        ("series slug", &candidate.series_slug, &stored.series_slug),
+        ("market id", &candidate.market_id, &stored.market_id),
+        (
+            "condition id",
+            &candidate.condition_id,
+            &stored.condition_id,
+        ),
+        ("Up token id", &candidate.up_token_id, &stored.up_token_id),
+        (
+            "Down token id",
+            &candidate.down_token_id,
+            &stored.down_token_id,
+        ),
+        (
+            "resolution source",
+            &candidate.resolution_source,
+            &stored.resolution_source,
+        ),
+    ] {
+        if candidate != stored {
+            bail!("Gamma {name} {candidate} does not match stored {name} {stored}");
+        }
+    }
+    if candidate.window_start != stored.window_start || candidate.window_end != stored.window_end {
+        bail!("Gamma market window does not match its stored window");
+    }
+    Ok(())
+}
+
+fn microsecond_timestamp(timestamp: DateTime<Utc>) -> DateTime<Utc> {
+    DateTime::from_timestamp_micros(timestamp.timestamp_micros())
+        .expect("a valid timestamp remains valid at microsecond precision")
 }
 
 fn normalize_outcome(value: &str) -> Result<BtcOutcome> {
@@ -380,6 +575,35 @@ fn datetime_field(
         .map(|value| value.with_timezone(&Utc))
 }
 
+fn strict_optional_datetime_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Result<Option<DateTime<Utc>>> {
+    let Some(key) = keys.iter().find(|key| object.contains_key(**key)) else {
+        return Ok(None);
+    };
+    let value = required_string(object, &[*key])?;
+    let normalized = normalize_gamma_datetime_offset(&value);
+    let timestamp = DateTime::parse_from_rfc3339(&normalized)
+        .with_context(|| format!("Gamma field {key} is not a valid RFC3339 timestamp"))?
+        .with_timezone(&Utc);
+    Ok(Some(timestamp))
+}
+
+fn normalize_gamma_datetime_offset(value: &str) -> String {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 3 {
+        let offset = &bytes[bytes.len() - 3..];
+        if matches!(offset[0], b'+' | b'-')
+            && offset[1].is_ascii_digit()
+            && offset[2].is_ascii_digit()
+        {
+            return format!("{value}:00");
+        }
+    }
+    value.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
@@ -416,6 +640,25 @@ mod tests {
                 "orderMinSize": 5
             }]
         })
+    }
+
+    fn resolved_event(up_wins: bool) -> serde_json::Value {
+        let mut event = valid_event();
+        event["closed"] = serde_json::json!(true);
+        event["closedTime"] = serde_json::json!("2026-07-13T00:35:19Z");
+        event["markets"][0]["closed"] = serde_json::json!(true);
+        event["markets"][0]["acceptingOrders"] = serde_json::json!(false);
+        event["markets"][0]["umaResolutionStatus"] = serde_json::json!("resolved");
+        event["markets"][0]["umaEndDate"] = serde_json::json!("2026-07-13T00:35:19Z");
+        // Gamma's market-level timestamp uses a space and `+00`; the event and UMA fields use
+        // the equivalent RFC3339 `T`/`Z` representation.
+        event["markets"][0]["closedTime"] = serde_json::json!("2026-07-13 00:35:19+00");
+        event["markets"][0]["outcomePrices"] = if up_wins {
+            serde_json::json!("[\"0\", \"1\"]")
+        } else {
+            serde_json::json!("[\"1\", \"0\"]")
+        };
+        event
     }
 
     #[test]
@@ -477,6 +720,164 @@ mod tests {
     fn rejects_requested_window_mismatch() {
         let next = start() + Duration::seconds(BTC_INTERVAL_SECONDS);
         assert!(parse_gamma_btc_interval_event(&valid_event(), next).is_err());
+    }
+
+    #[test]
+    fn parses_strict_gamma_resolution_by_outcome_and_token_identity() {
+        let market = parse_gamma_btc_interval_event(&valid_event(), start()).unwrap();
+        let observed_at = market.window_end + Duration::minutes(1);
+
+        let up = parse_gamma_rest_official_resolution(&resolved_event(true), &market, observed_at)
+            .unwrap()
+            .unwrap();
+        assert_eq!(up.market_id, market.market_id);
+        assert_eq!(up.winning_token_id, "up-token");
+        assert_eq!(up.winning_outcome, BtcOutcome::Up);
+        assert_eq!(
+            up.source_timestamp,
+            market.window_end + Duration::seconds(19)
+        );
+        assert_eq!(up.observed_at, observed_at);
+
+        let down =
+            parse_gamma_rest_official_resolution(&resolved_event(false), &market, observed_at)
+                .unwrap()
+                .unwrap();
+        assert_eq!(down.winning_token_id, "down-token");
+        assert_eq!(down.winning_outcome, BtcOutcome::Down);
+    }
+
+    #[test]
+    fn keeps_clearly_open_gamma_market_pending() {
+        let market = parse_gamma_btc_interval_event(&valid_event(), start()).unwrap();
+        let mut event = valid_event();
+        event["markets"][0]["outcomePrices"] = serde_json::json!("[\"0.995\", \"0.005\"]");
+        assert!(
+            parse_gamma_rest_official_resolution(&event, &market, market.window_end)
+                .unwrap()
+                .is_none()
+        );
+
+        event["markets"][0]["acceptingOrders"] = serde_json::json!(false);
+        assert!(
+            parse_gamma_rest_official_resolution(&event, &market, market.window_end)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn rejects_gamma_resolution_identity_conflicts() {
+        let market = parse_gamma_btc_interval_event(&valid_event(), start()).unwrap();
+        let observed_at = market.window_end + Duration::minutes(1);
+        let cases = [
+            {
+                let mut value = resolved_event(true);
+                value["id"] = serde_json::json!("different-event");
+                value
+            },
+            {
+                let mut value = resolved_event(true);
+                value["markets"][0]["id"] = serde_json::json!("different-market");
+                value
+            },
+            {
+                let mut value = resolved_event(true);
+                value["markets"][0]["conditionId"] = serde_json::json!("different-condition");
+                value
+            },
+            {
+                let mut value = resolved_event(true);
+                value["markets"][0]["clobTokenIds"] =
+                    serde_json::json!("[\"down-token\", \"different-up-token\"]");
+                value
+            },
+            {
+                let mut value = resolved_event(true);
+                value["markets"][0]["resolutionSource"] =
+                    serde_json::json!("https://data.chain.link/streams/alternate-btc-usd");
+                value
+            },
+        ];
+        for value in cases {
+            assert!(
+                parse_gamma_rest_official_resolution(&value, &market, observed_at).is_err(),
+                "identity conflict was accepted: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_incomplete_gamma_terminal_evidence() {
+        let market = parse_gamma_btc_interval_event(&valid_event(), start()).unwrap();
+        let observed_at = market.window_end + Duration::minutes(1);
+        let cases = [
+            {
+                let mut value = resolved_event(true);
+                value["closed"] = serde_json::json!(false);
+                value
+            },
+            {
+                let mut value = resolved_event(true);
+                value["markets"][0]["acceptingOrders"] = serde_json::json!(true);
+                value
+            },
+            {
+                let mut value = resolved_event(true);
+                value["markets"][0]["umaResolutionStatus"] = serde_json::json!("proposed");
+                value
+            },
+            {
+                let mut value = resolved_event(true);
+                value["markets"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("umaResolutionStatus");
+                value
+            },
+            {
+                let mut value = resolved_event(true);
+                value["markets"][0]["outcomePrices"] = serde_json::json!("[\"0.50\", \"0.50\"]");
+                value
+            },
+            {
+                let mut value = resolved_event(true);
+                value["markets"][0]["outcomePrices"] = serde_json::json!("[\"1\", \"1\"]");
+                value
+            },
+            {
+                let mut value = resolved_event(true);
+                value["markets"][0]["umaEndDate"] = serde_json::json!("2026-07-13T00:34:59Z");
+                value["markets"][0]["closedTime"] = serde_json::json!("2026-07-13T00:34:59Z");
+                value["closedTime"] = serde_json::json!("2026-07-13T00:34:59Z");
+                value
+            },
+            {
+                let mut value = resolved_event(true);
+                value.as_object_mut().unwrap().remove("closedTime");
+                let gamma_market = value["markets"][0].as_object_mut().unwrap();
+                gamma_market.remove("umaEndDate");
+                gamma_market.remove("closedTime");
+                value
+            },
+            {
+                let mut value = resolved_event(true);
+                value["closedTime"] = serde_json::json!("2026-07-13T00:35:20Z");
+                value
+            },
+            {
+                let mut value = resolved_event(true);
+                value["closed"] = serde_json::json!(false);
+                value["markets"][0]["closed"] = serde_json::json!(false);
+                value
+            },
+        ];
+        for value in cases {
+            assert!(
+                parse_gamma_rest_official_resolution(&value, &market, observed_at).is_err(),
+                "ambiguous Gamma terminal evidence was accepted: {value}"
+            );
+        }
     }
 
     #[test]

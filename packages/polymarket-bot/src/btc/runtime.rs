@@ -40,7 +40,8 @@ use super::{
     },
     market::{
         discovery_windows, parse_clob_rest_official_resolution, parse_gamma_btc_interval_event,
-        slug_for_window, ClobRestOfficialResolution,
+        parse_gamma_rest_official_resolution, slug_for_window, ClobRestOfficialResolution,
+        GammaRestOfficialResolution,
     },
     repository::{
         BtcMarketLabel, BtcOfficialResolutionWatch, BtcRepository, FeedSession,
@@ -56,6 +57,9 @@ use super::{
 const BOUNDARY_LABEL_VERSION: &str = "chainlink_first_tick_at_or_after_boundary_v1";
 const CRITICAL_WRITE_ATTEMPTS: usize = 3;
 const CRITICAL_WRITE_INITIAL_BACKOFF: StdDuration = StdDuration::from_millis(25);
+const GAMMA_RESOLUTION_RETRY_INITIAL_BACKOFF: StdDuration = StdDuration::from_secs(30);
+const GAMMA_RESOLUTION_RETRY_MAX_BACKOFF: StdDuration = StdDuration::from_secs(300);
+const MAX_EXPIRED_RESOLUTION_RECONCILIATIONS_PER_TICK: usize = 4;
 const RTDS_HEARTBEAT_MESSAGE: &str = "ping";
 const CLOB_CONNECT_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const CLOB_SEND_TIMEOUT: StdDuration = StdDuration::from_secs(5);
@@ -1848,6 +1852,7 @@ async fn run_discovery(
     }
     let mut ticker = interval(config.discovery_interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut gamma_resolution_retries = HashMap::new();
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
@@ -1903,6 +1908,7 @@ async fn run_discovery(
                     &watches,
                     state.clone(),
                     &metrics,
+                    &mut gamma_resolution_retries,
                     now,
                 )
                 .await
@@ -1925,6 +1931,10 @@ async fn run_discovery(
                     runtime_metrics.resolution_watches_expired = runtime_metrics
                         .resolution_watches_expired
                         .saturating_add(expired.len() as u64);
+                    tracing::warn!(
+                        market_ids = ?expired,
+                        "BTC official-resolution watches exceeded retention and remain eligible for bounded reconciliation"
+                    );
                 }
                 let watches = match repository
                     .load_unsettled_official_resolution_watches()
@@ -1936,22 +1946,6 @@ async fn run_discovery(
                         return;
                     }
                 };
-                let expired_unresolved = watches
-                    .iter()
-                    .filter(|watch| watch.status == "expired")
-                    .map(|watch| watch.market.market_id.clone())
-                    .collect::<Vec<_>>();
-                if !expired_unresolved.is_empty() {
-                    record_critical_persistence_error(
-                        &metrics,
-                        anyhow::anyhow!(
-                            "expired unresolved BTC official-resolution watches: {}",
-                            expired_unresolved.join(",")
-                        ),
-                    )
-                    .await;
-                    return;
-                }
 
                 let pending_markets = watches
                     .iter()
@@ -2033,6 +2027,51 @@ async fn run_discovery(
     }
 }
 
+#[derive(Debug)]
+enum ReconciledOfficialResolution {
+    Clob(ClobRestOfficialResolution),
+    Gamma(GammaRestOfficialResolution),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GammaResolutionRetry {
+    next_attempt_at: DateTime<Utc>,
+    backoff: StdDuration,
+}
+
+fn gamma_resolution_reconciliation_due(
+    market: &BtcIntervalMarket,
+    audit_grace: StdDuration,
+    retry: Option<GammaResolutionRetry>,
+    now: DateTime<Utc>,
+) -> bool {
+    now >= market.window_end + chrono_duration(audit_grace)
+        && retry.map_or(true, |retry| retry.next_attempt_at <= now)
+}
+
+fn defer_gamma_resolution_retry(
+    retries: &mut HashMap<String, GammaResolutionRetry>,
+    market_id: &str,
+    attempted_at: DateTime<Utc>,
+) {
+    let backoff = retries
+        .get(market_id)
+        .map(|retry| {
+            retry
+                .backoff
+                .saturating_mul(2)
+                .min(GAMMA_RESOLUTION_RETRY_MAX_BACKOFF)
+        })
+        .unwrap_or(GAMMA_RESOLUTION_RETRY_INITIAL_BACKOFF);
+    retries.insert(
+        market_id.to_string(),
+        GammaResolutionRetry {
+            next_attempt_at: attempted_at + chrono_duration(backoff),
+            backoff,
+        },
+    );
+}
+
 async fn reconcile_official_resolution_watches(
     client: &reqwest::Client,
     config: &BtcRuntimeConfig,
@@ -2040,30 +2079,76 @@ async fn reconcile_official_resolution_watches(
     watches: &[BtcOfficialResolutionWatch],
     state: Arc<RwLock<RealtimeState>>,
     metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
+    gamma_retries: &mut HashMap<String, GammaResolutionRetry>,
     now: DateTime<Utc>,
 ) -> Result<()> {
-    let candidates = watches
+    let unsettled_market_ids = watches
+        .iter()
+        .map(|watch| watch.market.market_id.as_str())
+        .collect::<HashSet<_>>();
+    gamma_retries.retain(|market_id, _| unsettled_market_ids.contains(market_id.as_str()));
+
+    let mut candidates = Vec::with_capacity(watches.len());
+    let mut expired_candidates = 0_usize;
+    for watch in watches
         .iter()
         .filter(|watch| watch.market.window_end <= now)
-        .cloned()
-        .collect::<Vec<_>>();
+    {
+        let gamma_due = gamma_resolution_reconciliation_due(
+            &watch.market,
+            config.official_resolution_audit_grace,
+            gamma_retries.get(&watch.market.market_id).copied(),
+            now,
+        );
+        if watch.status == "expired" {
+            if !gamma_due || expired_candidates >= MAX_EXPIRED_RESOLUTION_RECONCILIATIONS_PER_TICK {
+                continue;
+            }
+            expired_candidates = expired_candidates.saturating_add(1);
+        }
+        candidates.push((watch.clone(), gamma_due));
+    }
     let results = stream::iter(candidates)
-        .map(|watch| {
+        .map(|(watch, gamma_due)| {
             let client = client.clone();
-            let base_url = config.clob_rest_base_url.clone();
+            let clob_base_url = config.clob_rest_base_url.clone();
+            let gamma_base_url = config.gamma_base_url.clone();
             async move {
-                let result =
-                    fetch_clob_rest_official_resolution(&client, &base_url, &watch.market).await;
-                (watch, result)
+                let mut gamma_attempted = false;
+                let result = match fetch_clob_rest_official_resolution(
+                    &client,
+                    &clob_base_url,
+                    &watch.market,
+                )
+                .await
+                {
+                    Ok(Some(resolution)) => {
+                        Ok(Some(ReconciledOfficialResolution::Clob(resolution)))
+                    }
+                    Ok(None) if gamma_due => {
+                        gamma_attempted = true;
+                        fetch_gamma_rest_official_resolution(
+                            &client,
+                            &gamma_base_url,
+                            &watch.market,
+                        )
+                        .await
+                        .map(|resolution| resolution.map(ReconciledOfficialResolution::Gamma))
+                    }
+                    Ok(None) => Ok(None),
+                    Err(error) => Err(error),
+                };
+                (watch, gamma_attempted, result)
             }
         })
         .buffer_unordered(4)
         .collect::<Vec<_>>()
         .await;
 
-    for (watch, result) in results {
+    for (watch, gamma_attempted, result) in results {
         match result {
-            Ok(Some(resolution)) => {
+            Ok(Some(ReconciledOfficialResolution::Clob(resolution))) => {
+                gamma_retries.remove(&resolution.market_id);
                 let persisted = persist_official_resolution_fact(
                     repository,
                     &resolution.market_id,
@@ -2088,7 +2173,36 @@ async fn reconcile_official_resolution_watches(
                     .await
                     .apply_market_resolution(&persisted.market_id, &persisted.winning_token_id);
             }
+            Ok(Some(ReconciledOfficialResolution::Gamma(resolution))) => {
+                gamma_retries.remove(&resolution.market_id);
+                let persisted = persist_official_resolution_fact(
+                    repository,
+                    &resolution.market_id,
+                    &resolution.winning_token_id,
+                    outcome_display_name(resolution.winning_outcome),
+                    resolution.source_timestamp,
+                    "gamma_rest_reconciliation",
+                    resolution.observed_at,
+                    &resolution.raw_payload,
+                    metrics,
+                )
+                .await?;
+                repository
+                    .mark_official_resolution_watch_checked(
+                        &persisted.market_id,
+                        resolution.observed_at,
+                        None,
+                    )
+                    .await?;
+                state
+                    .write()
+                    .await
+                    .apply_market_resolution(&persisted.market_id, &persisted.winning_token_id);
+            }
             Ok(None) => {
+                if gamma_attempted || watch.status == "expired" {
+                    defer_gamma_resolution_retry(gamma_retries, &watch.market.market_id, now);
+                }
                 repository
                     .mark_official_resolution_watch_checked(
                         &watch.market.market_id,
@@ -2098,6 +2212,9 @@ async fn reconcile_official_resolution_watches(
                     .await?;
             }
             Err(error) => {
+                if gamma_attempted || watch.status == "expired" {
+                    defer_gamma_resolution_retry(gamma_retries, &watch.market.market_id, now);
+                }
                 let message = format!("{error:#}");
                 repository
                     .mark_official_resolution_watch_checked(
@@ -2141,6 +2258,34 @@ async fn fetch_clob_rest_official_resolution(
         .await
         .with_context(|| format!("failed to decode CLOB market {}", market.market_id))?;
     parse_clob_rest_official_resolution(&value, market, Utc::now())
+}
+
+async fn fetch_gamma_rest_official_resolution(
+    client: &reqwest::Client,
+    base_url: &str,
+    market: &BtcIntervalMarket,
+) -> Result<Option<GammaRestOfficialResolution>> {
+    let url = format!(
+        "{}/events/slug/{}",
+        base_url.trim_end_matches('/'),
+        market.event_slug
+    );
+    let value = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| {
+            format!(
+                "failed to reconcile Gamma event {} for market {}",
+                market.event_slug, market.market_id
+            )
+        })?
+        .error_for_status()
+        .with_context(|| format!("Gamma REST rejected event {}", market.event_slug))?
+        .json::<serde_json::Value>()
+        .await
+        .with_context(|| format!("failed to decode Gamma event {}", market.event_slug))?;
+    parse_gamma_rest_official_resolution(&value, market, Utc::now())
 }
 
 fn resolution_watch_capacity(retention: StdDuration) -> usize {
@@ -6496,7 +6641,7 @@ async fn persist_official_resolution_fact(
                                 .official_resolutions_websocket
                                 .saturating_add(1)
                         }
-                        "clob_rest_reconciliation" => {
+                        "clob_rest_reconciliation" | "gamma_rest_reconciliation" => {
                             runtime_metrics.official_resolutions_rest =
                                 runtime_metrics.official_resolutions_rest.saturating_add(1)
                         }
@@ -9628,6 +9773,50 @@ mod tests {
         let mut config = BtcRuntimeConfig::default();
         config.official_resolution_watch_retention = StdDuration::from_secs(719);
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn gamma_resolution_fallback_honors_audit_grace_and_bounded_backoff() {
+        let market = market();
+        let grace = StdDuration::from_secs(120);
+        let eligible_at = market.window_end + Duration::seconds(120);
+        assert!(!gamma_resolution_reconciliation_due(
+            &market,
+            grace,
+            None,
+            eligible_at - Duration::milliseconds(1),
+        ));
+        assert!(gamma_resolution_reconciliation_due(
+            &market,
+            grace,
+            None,
+            eligible_at,
+        ));
+
+        let mut retries = HashMap::new();
+        defer_gamma_resolution_retry(&mut retries, &market.market_id, eligible_at);
+        let first = retries[&market.market_id];
+        assert_eq!(first.next_attempt_at, eligible_at + Duration::seconds(30));
+        assert!(!gamma_resolution_reconciliation_due(
+            &market,
+            grace,
+            Some(first),
+            first.next_attempt_at - Duration::milliseconds(1),
+        ));
+        assert!(gamma_resolution_reconciliation_due(
+            &market,
+            grace,
+            Some(first),
+            first.next_attempt_at,
+        ));
+
+        defer_gamma_resolution_retry(&mut retries, &market.market_id, first.next_attempt_at);
+        let second = retries[&market.market_id];
+        assert_eq!(second.backoff, StdDuration::from_secs(60));
+        assert_eq!(
+            second.next_attempt_at,
+            first.next_attempt_at + Duration::seconds(60)
+        );
     }
 
     #[test]
