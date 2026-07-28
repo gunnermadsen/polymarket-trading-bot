@@ -24,7 +24,12 @@ export const AppDataSource = new DataSource({
   ssl: getPostgresSslConfig(),
   synchronize: false,
   entities: [],
-  migrations: [join(__dirname, 'migrations/*.{ts,js}')],
+  migrations: [
+    join(
+      __dirname,
+      process.env.DB_MIGRATIONS_PATTERN || 'migrations/*.{ts,js}',
+    ),
+  ],
   extra: {
     application_name: 'polymarket-db-migrate',
   },

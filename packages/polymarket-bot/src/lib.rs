@@ -10,5 +10,6 @@ pub mod grafana_live;
 pub mod http;
 pub mod idempotency;
 pub mod ingestion;
+pub mod kraken_ingestion;
 pub mod models;
 pub mod store;
