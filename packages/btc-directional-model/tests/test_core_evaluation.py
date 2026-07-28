@@ -10,6 +10,7 @@ import pytest
 from btc_directional_model.core_evaluation import (
     block_bootstrap_uplift,
     choose_threshold,
+    classification_metrics,
     first_crossing_timing,
     first_prediction_rows,
     fixed_time_prediction_rows,
@@ -154,6 +155,24 @@ def test_threshold_selection_maximizes_coverage_after_all_gates_pass() -> None:
 
     assert qualified
     assert threshold == 0.87
+
+
+def test_single_class_metrics_are_finite_and_json_safe() -> None:
+    rows = evaluation_frame().filter(
+        (pl.col("label_up") == 1) & (pl.col("seconds_elapsed") == 60)
+    ).with_columns(
+        pl.lit(1, dtype=pl.Int8).alias("predicted_up"),
+        pl.lit(0.90).alias("probability_up"),
+        pl.lit(True).alias("correct"),
+    )
+
+    metrics = classification_metrics(rows, eligible_markets=rows.height)
+
+    assert metrics["roc_auc"] is None
+    assert metrics["balanced_accuracy"] == 0.5
+    assert metrics["up_recall"] == 1.0
+    assert metrics["down_recall"] == 0.0
+    assert metrics["matthews_correlation"] == 0.0
 
 
 @pytest.mark.parametrize(

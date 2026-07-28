@@ -7,7 +7,6 @@ import numpy as np
 import polars as pl
 from sklearn.metrics import (
     accuracy_score,
-    balanced_accuracy_score,
     brier_score_loss,
     confusion_matrix,
     f1_score,
@@ -112,10 +111,21 @@ def classification_metrics(
     total = len(y_true)
     correct = int((y_true == y_pred).sum())
     lower, upper = wilson_interval(correct, total)
-    try:
-        auc = float(roc_auc_score(y_true, probabilities))
-    except ValueError:
+    if np.unique(y_true).size < 2:
         auc = None
+    else:
+        auc = float(roc_auc_score(y_true, probabilities))
+    up_recall = float(
+        recall_score(y_true, y_pred, pos_label=1, zero_division=0)
+    )
+    down_recall = float(
+        recall_score(y_true, y_pred, pos_label=0, zero_division=0)
+    )
+    matthews = (
+        float(matthews_corrcoef(y_true, y_pred))
+        if np.unique(np.concatenate((y_true, y_pred))).size >= 2
+        else 0.0
+    )
     total_eligible = eligible_markets if eligible_markets is not None else total
     return {
         "markets": total,
@@ -125,19 +135,17 @@ def classification_metrics(
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "wilson_lower_95": lower,
         "wilson_upper_95": upper,
-        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
+        "balanced_accuracy": (up_recall + down_recall) / 2.0,
         "up_precision": float(
             precision_score(y_true, y_pred, pos_label=1, zero_division=0)
         ),
-        "up_recall": float(recall_score(y_true, y_pred, pos_label=1, zero_division=0)),
+        "up_recall": up_recall,
         "down_precision": float(
             precision_score(y_true, y_pred, pos_label=0, zero_division=0)
         ),
-        "down_recall": float(
-            recall_score(y_true, y_pred, pos_label=0, zero_division=0)
-        ),
+        "down_recall": down_recall,
         "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-        "matthews_correlation": float(matthews_corrcoef(y_true, y_pred)),
+        "matthews_correlation": matthews,
         "brier_score": float(brier_score_loss(y_true, probabilities)),
         "log_loss": float(log_loss(y_true, probabilities, labels=[0, 1])),
         "roc_auc": auc,
