@@ -8,6 +8,8 @@ publish = false
 
 [dependencies]
 anyhow = "1.0"
+arrow-array = "56.2"
+arrow-schema = "56.2"
 async-trait = "0.1"
 axum = "0.7"
 chainlink-data-streams-report = "1.2.2"
@@ -17,7 +19,7 @@ futures-util = "0.3"
 hmac = "0.12"
 hex = "0.4"
 md-5 = "0.10"
-parquet = { version = "56.2", default-features = false, features = ["zstd"] }
+parquet = { version = "56.2", default-features = false, features = ["arrow", "zstd"] }
 polymarket_client_sdk_v2 = { version = "0.6.0-canary.1", features = ["clob", "ws", "heartbeats"] }
 rust_decimal = { version = "1.36", features = ["serde-with-str"] }
 rust_decimal_macros = "1.36"
