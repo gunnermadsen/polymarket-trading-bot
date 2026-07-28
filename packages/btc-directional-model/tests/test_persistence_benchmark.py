@@ -10,6 +10,7 @@ from btc_directional_model.core_training import ProbabilityCalibrator
 from btc_directional_model.persistence_benchmark import (
     CalibratorSet,
     _add_training_gates,
+    _fold_robust_agreement_probability,
     attach_execution_evidence,
     calibrated_target_probability,
     common_selected_execution_comparison,
@@ -18,6 +19,8 @@ from btc_directional_model.persistence_benchmark import (
     target_probability_to_up,
 )
 from btc_directional_model.persistence_config import (
+    FOLD_ROBUST_FREQUENCY_CANDIDATE,
+    FOLD_ROBUST_FREQUENCY_PROFILE,
     CalibrationBand,
     load_persistence_benchmark_config,
 )
@@ -129,6 +132,35 @@ def test_frozen_persistence_configuration_preserves_holdout_and_gates() -> None:
     assert config.minimum_early_markets == 500
     assert config.maximum_median_entry_seconds_regression == -5.0
     assert config.calibration_bands[-1].end_second_exclusive == 241
+
+
+def test_fold_robust_frequency_configuration_is_training_only() -> None:
+    package_root = Path(__file__).resolve().parents[1]
+    config = load_persistence_benchmark_config(
+        package_root
+        / "configs"
+        / "btc-5m-directional-fold-robust-frequency-20260421-20260720.toml"
+    )
+
+    assert config.profile == FOLD_ROBUST_FREQUENCY_PROFILE
+    assert config.candidate_names == (
+        "histogram_enriched",
+        FOLD_ROBUST_FREQUENCY_CANDIDATE,
+    )
+    assert config.evaluation_is_independent is False
+
+
+def test_fold_robust_agreement_boost_preserves_control_direction() -> None:
+    control = np.array([0.40, 0.60, 0.40, 0.60])
+    auxiliary = np.array([0.10, 0.90, 0.90, 0.10])
+
+    combined = _fold_robust_agreement_probability(control, auxiliary)
+
+    assert np.array_equal(combined >= 0.5, control >= 0.5)
+    assert combined[0] < control[0]
+    assert combined[1] > control[1]
+    assert combined[2] == control[2]
+    assert combined[3] == control[3]
 
 
 def test_execution_attachment_requires_strict_both_side_eligibility() -> None:

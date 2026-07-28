@@ -128,6 +128,34 @@ uplift; and positive five-share execution economics with at least 500 executable
 entry remains visible in every result but is diagnostic-only for this explicitly frequency-focused
 model. The early-entry workflow retains the separate 125-second timing requirement.
 
+Train and qualify the fold-robust frequency challenger only after the saved candidate matrix has
+no qualifier:
+
+```bash
+export POLARS_MAX_THREADS=6
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+.venv/bin/btc-directional-model persistence-benchmark-run \
+  --config configs/btc-5m-directional-fold-robust-frequency-20260421-20260720.toml
+
+FOLD_ROBUST_RUN_ID="<UTC run identifier>"
+sed "s/__FOLD_ROBUST_RUN_ID__/${FOLD_ROBUST_RUN_ID}/g" \
+  configs/btc-5m-directional-fold-robust-frequency-policy-20260421-20260720.toml.template \
+  > data/btc-5m-directional-fold-robust-frequency-policy-runtime.toml
+.venv/bin/btc-directional-model frequency-policy-benchmark-run \
+  --config data/btc-5m-directional-fold-robust-frequency-policy-runtime.toml
+```
+
+The challenger retains the enriched control direction at every timestamp and raises confidence
+only when a separately fitted pre-window outcome model agrees. Auxiliary hyperparameters maximize
+the worst direction metric across exact 60/90/120/180/240-second checkpoints in three expanding
+chronological folds within each outer training cohort; coverage and outer validation do not select
+the model. The exact-checkpoint direction metrics therefore cannot regress from the control on
+common rows. The second command still applies the single anchor-fold policy and all frozen
+frequency gates before any holdout or runtime work.
+
 Run the strict-book chronology diagnostic separately:
 
 ```bash

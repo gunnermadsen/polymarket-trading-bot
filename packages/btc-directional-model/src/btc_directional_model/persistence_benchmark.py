@@ -28,6 +28,7 @@ from .core_evaluation import (
     choose_threshold,
     classification_metrics,
     first_crossing_timing,
+    fixed_time_prediction_rows,
     paired_uplift,
     scored_prediction_rows,
     threshold_table,
@@ -51,12 +52,17 @@ from .core_training import (
     chronological_subsplit,
     configure_native_thread_limits,
     development_gate_passed,
+    estimator_converged,
+    fit_model,
     fit_probability_calibrator,
+    histogram_parameters,
     range_frame,
     tune_and_fit_model,
 )
 from .persistence_config import (
-    ACCURACY_TIMING_PROFILE,
+    FOLD_ROBUST_FREQUENCY_CANDIDATE,
+    FOLD_ROBUST_FREQUENCY_PROFILE,
+    PATH_PERSISTENCE_PROFILE,
     CalibrationBand,
     PersistenceBenchmarkConfig,
     load_persistence_benchmark_config,
@@ -167,6 +173,12 @@ CANDIDATE_PROFILES = {
             "core_prewindow",
             "time_banded_platt",
         ),
+        CandidateProfile(
+            FOLD_ROBUST_FREQUENCY_CANDIDATE,
+            "outcome_up",
+            "core_prewindow",
+            "time_banded_platt",
+        ),
     )
 }
 
@@ -181,7 +193,7 @@ def run_persistence_benchmark(
     feature_metadata = validate_core_feature_cache(core_config, "pre_holdout")
     _assert_locked_development_range(
         core_config,
-        enforce_external_holdout_contract=(config.profile != ACCURACY_TIMING_PROFILE),
+        enforce_external_holdout_contract=(config.profile == PATH_PERSISTENCE_PROFILE),
     )
     prewindow_metadata = build_prewindow_features(
         core_config,
@@ -320,7 +332,7 @@ def run_persistence_benchmark(
         },
         "saved_probability_evidence": probability_evidence,
     }
-    if config.profile != ACCURACY_TIMING_PROFILE:
+    if config.profile == PATH_PERSISTENCE_PROFILE:
         data_evidence["independent_holdout"] = {
             "start": (
                 core_config.split.independent_holdout_start.isoformat()
@@ -344,7 +356,7 @@ def run_persistence_benchmark(
         ),
         "no Rust, image, process, playbook, or adapter change is authorized",
     ]
-    if config.profile != ACCURACY_TIMING_PROFILE:
+    if config.profile == PATH_PERSISTENCE_PROFILE:
         deployment_reasons.insert(
             0,
             ("July 21-August 4 outcome labels and directional features remain untouched"),
@@ -817,6 +829,14 @@ def _evaluate_fold(
     config: PersistenceBenchmarkConfig,
     core_config: CoreTrainingConfig,
 ) -> dict[str, Any]:
+    if profile.name == FOLD_ROBUST_FREQUENCY_CANDIDATE:
+        return _evaluate_fold_robust_agreement(
+            frame,
+            profile,
+            fold_index,
+            config,
+            core_config,
+        )
     validation_start, validation_end = core_config.split.validation_windows[fold_index]
     history = _candidate_eligible_frame(
         range_frame(frame, core_config.split.development_start, validation_start),
@@ -938,6 +958,362 @@ def _evaluate_fold(
         "scored_rows": scored,
         "selected_rows": selected,
     }
+
+
+def _evaluate_fold_robust_agreement(
+    frame: pl.DataFrame,
+    profile: CandidateProfile,
+    fold_index: int,
+    config: PersistenceBenchmarkConfig,
+    core_config: CoreTrainingConfig,
+) -> dict[str, Any]:
+    validation_start, validation_end = core_config.split.validation_windows[fold_index]
+    history_source = range_frame(
+        frame,
+        core_config.split.development_start,
+        validation_start,
+    )
+    validation_source = range_frame(frame, validation_start, validation_end)
+    universal_validation = _path_eligible_frame(validation_source)
+    challenger_history = _candidate_eligible_frame(history_source, profile)
+    challenger_validation = _candidate_eligible_frame(validation_source, profile)
+    challenger_fit, challenger_calibration, challenger_policy = chronological_subsplit(
+        challenger_history,
+        fit_fraction=0.70,
+        calibration_fraction=0.15,
+    )
+
+    control_profile = CANDIDATE_PROFILES["histogram_enriched"]
+    control_history = _candidate_eligible_frame(history_source, control_profile)
+    control_fit, control_calibration, _ = chronological_subsplit(
+        control_history,
+        fit_fraction=0.70,
+        calibration_fraction=0.15,
+    )
+    challenger_spec = _candidate_spec(profile, config)
+    control_spec = _candidate_spec(control_profile, config)
+    started = time.perf_counter()
+    challenger_model, tuning = _tune_and_fit_fold_robust_model(
+        _training_target_frame(challenger_fit, profile),
+        challenger_spec,
+        core_config,
+    )
+    control_model, control_tuning = tune_and_fit_model(
+        _training_target_frame(control_fit, control_profile),
+        control_spec,
+        core_config,
+    )
+    challenger_calibrators, calibration_evidence = _fit_calibrators(
+        challenger_model,
+        challenger_calibration,
+        profile,
+        config,
+        core_config,
+        challenger_spec,
+    )
+    control_calibrators, _ = _fit_calibrators(
+        control_model,
+        control_calibration,
+        control_profile,
+        config,
+        core_config,
+        control_spec,
+    )
+
+    policy_control_probability = calibrated_target_probability(
+        control_model,
+        control_calibrators,
+        challenger_policy,
+    )
+    policy_probability = _fold_robust_agreement_probability(
+        policy_control_probability,
+        calibrated_target_probability(
+            challenger_model, challenger_calibrators, challenger_policy
+        ),
+    )
+    _assert_control_direction_preserved(
+        policy_control_probability,
+        policy_probability,
+        role="policy-selection",
+    )
+    policy_scored = _probability_rows(
+        challenger_policy,
+        policy_probability,
+        policy_probability,
+        profile,
+        fold_index,
+    )
+    thresholds = threshold_table(
+        challenger_policy,
+        policy_probability,
+        core_config.model,
+    )
+    minimum_markets = max(
+        50,
+        math.ceil(
+            challenger_policy["market_id"].n_unique()
+            * core_config.gates.minimum_coverage
+        ),
+    )
+    threshold, threshold_qualified = choose_threshold(
+        thresholds,
+        core_config.gates,
+        minimum_markets=minimum_markets,
+    )
+    validation_control_probability = calibrated_target_probability(
+        control_model,
+        control_calibrators,
+        challenger_validation,
+    )
+    validation_probability = _fold_robust_agreement_probability(
+        validation_control_probability,
+        calibrated_target_probability(
+            challenger_model, challenger_calibrators, challenger_validation
+        ),
+    )
+    _assert_control_direction_preserved(
+        validation_control_probability,
+        validation_probability,
+        role="validation",
+    )
+    validation_probability_rows = _probability_rows(
+        challenger_validation,
+        validation_probability,
+        validation_probability,
+        profile,
+        fold_index,
+    )
+    scored = _apply_threshold_policy(validation_probability_rows, threshold)
+    selected = scored.filter(pl.col("policy_selected"))
+    eligible = universal_validation["market_id"].n_unique()
+    metrics = classification_metrics(selected, eligible_markets=eligible)
+    paired = paired_uplift(selected)
+    bootstrap = block_bootstrap_uplift(
+        selected,
+        resamples=core_config.gates.bootstrap_resamples,
+        random_seed=core_config.model.random_seed + fold_index,
+        block="hour",
+    )
+    return {
+        "candidate": profile.name,
+        "fold_index": fold_index,
+        "fit_range_start": challenger_fit["window_start"].min().isoformat(),
+        "fit_range_end": challenger_fit["window_start"].max().isoformat(),
+        "calibration_range_start": (
+            challenger_calibration["window_start"].min().isoformat()
+        ),
+        "calibration_range_end": (
+            challenger_calibration["window_start"].max().isoformat()
+        ),
+        "policy_range_start": challenger_policy["window_start"].min().isoformat(),
+        "policy_range_end": challenger_policy["window_start"].max().isoformat(),
+        "validation_range_start": validation_start.isoformat(),
+        "validation_range_end": validation_end.isoformat(),
+        "eligible_markets": eligible,
+        "confidence_threshold": threshold,
+        "threshold_qualified": threshold_qualified,
+        "threshold_history": thresholds,
+        "tuning": {
+            **tuning,
+            "control_selected_hyperparameters": control_tuning[
+                "selected_hyperparameters"
+            ],
+            "composition": {
+                "kind": "control_direction_auxiliary_agreement_boost",
+                "agreement_boost": 0.5,
+                "control_direction_preserved": True,
+                "checkpoint_nonregression_by_construction": True,
+            },
+        },
+        "calibration": calibration_evidence,
+        "metrics": metrics,
+        "baseline": baseline_metrics(selected, eligible_markets=eligible),
+        "paired": paired,
+        "bootstrap": bootstrap,
+        "timing": first_crossing_timing(selected, eligible_markets=eligible),
+        "elapsed_seconds": time.perf_counter() - started,
+        "direction_preservation": {
+            "control_candidate": control_profile.name,
+            "all_scored_directions_preserved": True,
+            "agreement_only_confidence_boost": 0.5,
+        },
+        "policy_scored_rows": policy_scored,
+        "validation_probability_rows": validation_probability_rows,
+        "scored_rows": scored,
+        "selected_rows": selected,
+    }
+
+
+def _tune_and_fit_fold_robust_model(
+    frame: pl.DataFrame,
+    spec: CandidateSpec,
+    core_config: CoreTrainingConfig,
+) -> tuple[FittedCoreModel, dict[str, Any]]:
+    splits = _fold_robust_tuning_splits(frame)
+    history: list[dict[str, Any]] = []
+    best_parameters: dict[str, Any] | None = None
+    best_rank: tuple[float, ...] | None = None
+    for histogram_candidate in core_config.model.histogram_candidates:
+        parameters = histogram_parameters(histogram_candidate)
+        started = time.perf_counter()
+        fold_records: list[dict[str, Any]] = []
+        converged = True
+        for robust_fold, (train, validation) in enumerate(splits):
+            model = fit_model(train, spec, parameters, core_config)
+            converged = converged and estimator_converged(model.estimator)
+            probability = model.raw_probability(validation)
+            checkpoint_rows = fixed_time_prediction_rows(validation, probability)
+            checkpoint_metrics = []
+            for second in (60, 90, 120, 180, 240):
+                metrics = classification_metrics(
+                    checkpoint_rows.filter(pl.col("seconds_elapsed") == second)
+                )
+                checkpoint_metrics.append(
+                    {
+                        "seconds_elapsed": second,
+                        "accuracy": metrics["accuracy"],
+                        "balanced_accuracy": metrics["balanced_accuracy"],
+                        "up_recall": metrics["up_recall"],
+                        "down_recall": metrics["down_recall"],
+                    }
+                )
+            direction_quality = [
+                value
+                for metrics in checkpoint_metrics
+                for value in (
+                    metrics["accuracy"],
+                    metrics["balanced_accuracy"],
+                    metrics["up_recall"],
+                    metrics["down_recall"],
+                )
+            ]
+            fold_records.append(
+                {
+                    "fold_index": robust_fold,
+                    "training_markets": train["market_id"].n_unique(),
+                    "validation_markets": validation["market_id"].n_unique(),
+                    "worst_checkpoint_direction_metric": min(direction_quality),
+                    "mean_brier_score": float(
+                        np.mean(
+                            (
+                                probability
+                                - validation["label_up"].cast(pl.Float64).to_numpy()
+                            )
+                            ** 2
+                        )
+                    ),
+                    "checkpoints": checkpoint_metrics,
+                }
+            )
+        rank = (
+            min(
+                record["worst_checkpoint_direction_metric"]
+                for record in fold_records
+            ),
+            -max(record["mean_brier_score"] for record in fold_records),
+            -float(
+                np.mean(
+                    [record["mean_brier_score"] for record in fold_records]
+                )
+            ),
+        )
+        history.append(
+            {
+                "hyperparameters": parameters,
+                "selection_rank": list(rank),
+                "worst_checkpoint_direction_metric": rank[0],
+                "worst_fold_brier_score": -rank[1],
+                "mean_fold_brier_score": -rank[2],
+                "folds": fold_records,
+                "fit_seconds": time.perf_counter() - started,
+                "converged": converged,
+            }
+        )
+        if converged and (best_rank is None or rank > best_rank):
+            best_rank = rank
+            best_parameters = parameters
+    if best_parameters is None or best_rank is None:
+        raise RuntimeError(f"no {spec.name} fold-robust hyperparameter candidate converged")
+    final_model = fit_model(frame, spec, best_parameters, core_config)
+    return final_model, {
+        "selection_objective": (
+            "maximize the worst exact-checkpoint direction metric across three "
+            "expanding chronological training folds; minimize worst and mean "
+            "Brier score only as tie-breakers"
+        ),
+        "selected_hyperparameters": best_parameters,
+        "selection_rank": list(best_rank),
+        "candidates": history,
+        "optimizer_converged": estimator_converged(final_model.estimator),
+        "validation_consumed_for_tuning": False,
+    }
+
+
+def _fold_robust_tuning_splits(
+    frame: pl.DataFrame,
+) -> tuple[tuple[pl.DataFrame, pl.DataFrame], ...]:
+    markets = (
+        frame.select("market_id", "window_start")
+        .unique(subset=["market_id"])
+        .sort("window_start")
+    )
+    boundaries = (
+        (0.55, 0.70),
+        (0.70, 0.85),
+        (0.85, 1.00),
+    )
+    splits = []
+    for training_fraction, validation_fraction in boundaries:
+        training_end = max(1, int(markets.height * training_fraction))
+        validation_end = min(
+            markets.height,
+            max(training_end + 1, int(markets.height * validation_fraction)),
+        )
+        training_ids = markets[:training_end]["market_id"]
+        validation_ids = markets[training_end:validation_end]["market_id"]
+        if validation_ids.is_empty():
+            raise RuntimeError("fold-robust tuning leaves an empty validation fold")
+        splits.append(
+            (
+                frame.filter(pl.col("market_id").is_in(training_ids.implode())),
+                frame.filter(pl.col("market_id").is_in(validation_ids.implode())),
+            )
+        )
+    return tuple(splits)
+
+
+def _fold_robust_agreement_probability(
+    control_probability: np.ndarray,
+    auxiliary_probability: np.ndarray,
+) -> np.ndarray:
+    control = np.asarray(control_probability, dtype=np.float64)
+    auxiliary = np.asarray(auxiliary_probability, dtype=np.float64)
+    if control.shape != auxiliary.shape:
+        raise ValueError("control and auxiliary probabilities must have the same shape")
+    control_up = control >= 0.5
+    auxiliary_up = auxiliary >= 0.5
+    control_strength = np.abs(2.0 * control - 1.0)
+    auxiliary_strength = np.abs(2.0 * auxiliary - 1.0)
+    boosted_strength = control_strength + (
+        0.5 * (1.0 - control_strength) * auxiliary_strength
+    )
+    strength = np.where(control_up == auxiliary_up, boosted_strength, control_strength)
+    combined = np.where(control_up, 0.5 + strength / 2.0, 0.5 - strength / 2.0)
+    return np.clip(combined, 0.0, 1.0)
+
+
+def _assert_control_direction_preserved(
+    control_probability: np.ndarray,
+    candidate_probability: np.ndarray,
+    *,
+    role: str,
+) -> None:
+    control_up = np.asarray(control_probability) >= 0.5
+    candidate_up = np.asarray(candidate_probability) >= 0.5
+    if not np.array_equal(control_up, candidate_up):
+        raise RuntimeError(
+            f"fold-robust agreement candidate changed a {role} control direction"
+        )
 
 
 def _aggregate_candidate(
@@ -1417,6 +1793,8 @@ def _select_finalist(
     candidate_results: dict[str, dict[str, Any]],
     config: PersistenceBenchmarkConfig,
 ) -> str | None:
+    if config.profile == FOLD_ROBUST_FREQUENCY_PROFILE:
+        return None
     passing = benchmark["benchmark_passed_candidates"]
     if not passing:
         return None

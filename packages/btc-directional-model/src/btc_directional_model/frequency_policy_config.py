@@ -8,17 +8,20 @@ from pathlib import Path
 from typing import Any
 
 from .persistence_benchmark import SAVED_POLICY_PROBABILITY_SCHEMA_VERSION
-from .persistence_config import ACCURACY_TIMING_CANDIDATES, ACCURACY_TIMING_PROFILE
+from .persistence_config import (
+    ACCURACY_TIMING_CANDIDATES,
+    ACCURACY_TIMING_PROFILE,
+    FOLD_ROBUST_FREQUENCY_CANDIDATES,
+    FOLD_ROBUST_FREQUENCY_PROFILE,
+)
 from .policy_config import PolicyThresholdBand
 
 FREQUENCY_POLICY_OBJECTIVE = "frequency"
 SINGLE_FROZEN_POLICY_MODE = "single_frozen"
-FREQUENCY_POLICY_CANDIDATES = (
-    "histogram_enriched",
-    "histogram_path_persistence_time_calibrated",
-    "histogram_path_persistence_time_calibrated_60_120",
-    "histogram_path_persistence_time_calibrated_90_120",
-)
+FREQUENCY_POLICY_CANDIDATE_MATRICES = {
+    ACCURACY_TIMING_PROFILE: ACCURACY_TIMING_CANDIDATES,
+    FOLD_ROBUST_FREQUENCY_PROFILE: FOLD_ROBUST_FREQUENCY_CANDIDATES,
+}
 FIXED_FREQUENCY_CHECKPOINTS = (60, 90, 120, 180, 240)
 
 
@@ -129,23 +132,25 @@ def validate_frequency_policy_benchmark_config(
     manifest = json.loads(config.probability_manifest.read_text())
     if manifest.get("schema_version") != SAVED_POLICY_PROBABILITY_SCHEMA_VERSION:
         raise ValueError("saved probability manifest schema is unsupported")
-    if manifest.get("source_benchmark_profile") != ACCURACY_TIMING_PROFILE:
-        raise ValueError("frequency qualification requires accuracy-timing probability evidence")
+    source_profile = manifest.get("source_benchmark_profile")
+    expected_candidates = FREQUENCY_POLICY_CANDIDATE_MATRICES.get(source_profile)
+    if expected_candidates is None:
+        raise ValueError("frequency qualification received unsupported probability evidence")
     if config.qualification_objective != FREQUENCY_POLICY_OBJECTIVE:
         raise ValueError("frequency policy qualification_objective must remain frequency")
     if config.policy_selection_mode != SINGLE_FROZEN_POLICY_MODE:
         raise ValueError("frequency policy selection must remain single_frozen")
     if config.policy_anchor_fold != 0:
         raise ValueError("the earliest chronological fold must anchor the frozen policy")
-    if config.candidate_names != FREQUENCY_POLICY_CANDIDATES:
+    if config.candidate_names != expected_candidates:
         raise ValueError(
-            "frequency policy requires the frozen accuracy-timing candidate matrix"
+            "frequency policy candidate matrix does not match its training evidence"
         )
-    if config.control_candidate != FREQUENCY_POLICY_CANDIDATES[0]:
+    if config.control_candidate != expected_candidates[0]:
         raise ValueError("histogram_enriched must remain the frequency control")
     manifest_candidates = tuple(manifest.get("candidate_names", ()))
-    if manifest_candidates != ACCURACY_TIMING_CANDIDATES:
-        raise ValueError("saved probability evidence lost the frozen accuracy-timing matrix")
+    if manifest_candidates != expected_candidates:
+        raise ValueError("saved probability evidence lost its frozen candidate matrix")
     if any(name not in manifest_candidates for name in config.candidate_names):
         raise ValueError("frequency candidate is missing from saved probability evidence")
     if manifest.get("control_candidate") != config.control_candidate:

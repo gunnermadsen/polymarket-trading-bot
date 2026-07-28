@@ -24,8 +24,14 @@ ACCURACY_TIMING_CANDIDATES = (
     "histogram_path_persistence_time_calibrated_60_120",
     "histogram_path_persistence_time_calibrated_90_120",
 )
+FOLD_ROBUST_FREQUENCY_CANDIDATE = "histogram_outcome_fold_robust_agreement"
+FOLD_ROBUST_FREQUENCY_CANDIDATES = (
+    "histogram_enriched",
+    FOLD_ROBUST_FREQUENCY_CANDIDATE,
+)
 PATH_PERSISTENCE_PROFILE = "path_persistence"
 ACCURACY_TIMING_PROFILE = "accuracy_timing"
+FOLD_ROBUST_FREQUENCY_PROFILE = "fold_robust_frequency"
 
 
 @dataclass(frozen=True)
@@ -154,6 +160,12 @@ def validate_persistence_benchmark_config(
         if config.candidate_names != ACCURACY_TIMING_CANDIDATES:
             raise ValueError("accuracy-timing benchmark requires the frozen four-candidate matrix")
         _validate_accuracy_timing_weights(config)
+    elif config.profile == FOLD_ROBUST_FREQUENCY_PROFILE:
+        if config.candidate_names != FOLD_ROBUST_FREQUENCY_CANDIDATES:
+            raise ValueError(
+                "fold-robust frequency benchmark requires its frozen two-candidate matrix"
+            )
+        _validate_fold_robust_frequency_weights(config)
     else:
         raise ValueError(f"unsupported persistence benchmark profile: {config.profile}")
     if config.control_candidate != config.candidate_names[0]:
@@ -217,7 +229,7 @@ def validate_persistence_benchmark_config(
             raise ValueError("the untouched July 21-August 4 holdout contract changed")
     elif independent_start is not None or independent_end is not None:
         raise ValueError(
-            "accuracy-timing development evidence cannot configure an external holdout"
+            "development-only training evidence cannot configure an external holdout"
         )
     if (
         core.model.confidence_min != 0.87
@@ -270,6 +282,23 @@ def _validate_accuracy_timing_weights(
     if observed != expected:
         raise ValueError(
             "accuracy-timing row weights must preserve the frozen equal-total-per-market schedules"
+        )
+
+
+def _validate_fold_robust_frequency_weights(
+    config: PersistenceBenchmarkConfig,
+) -> None:
+    schedule_candidates = tuple(entry.candidate for entry in config.row_weight_schedules)
+    if len(set(schedule_candidates)) != len(schedule_candidates):
+        raise ValueError("training row-weight candidates must be unique")
+    expected = {
+        candidate: RowWeightScheduleConfig(None, None, 1.0)
+        for candidate in FOLD_ROBUST_FREQUENCY_CANDIDATES
+    }
+    observed = {entry.candidate: entry.schedule for entry in config.row_weight_schedules}
+    if observed != expected:
+        raise ValueError(
+            "fold-robust frequency training must preserve equal total weight per market"
         )
 
 

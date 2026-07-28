@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from btc_directional_model.frequency_policy_benchmark import (
 from btc_directional_model.frequency_policy_config import (
     FrequencyPolicyAdvancementGates,
     FrequencyPolicyBenchmarkConfig,
+    load_frequency_policy_benchmark_config,
 )
 from btc_directional_model.persistence_benchmark import (
     SAVED_POLICY_PROBABILITY_SCHEMA_VERSION,
@@ -268,3 +270,81 @@ def test_frequency_advancement_keeps_quality_fold_checkpoint_and_economics() -> 
     assert "60s common-time accuracy does not regress" in names
     assert "minimum executable evaluation markets" in names
     assert "minimum realized net expectancy per share" in names
+
+
+def test_fold_robust_probability_evidence_uses_its_frozen_candidate_matrix(
+    tmp_path: Path,
+) -> None:
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    manifest = {
+        "schema_version": SAVED_POLICY_PROBABILITY_SCHEMA_VERSION,
+        "source_benchmark_profile": "fold_robust_frequency",
+        "control_candidate": "histogram_enriched",
+        "candidate_names": [
+            "histogram_enriched",
+            "histogram_outcome_fold_robust_agreement",
+        ],
+    }
+    (evidence / "manifest.json").write_text(json.dumps(manifest))
+    execution = tmp_path / "execution"
+    execution.mkdir()
+    (execution / "manifest.json").write_text("{}")
+    config_path = configs / "frequency.toml"
+    config_path.write_text(
+        """
+[benchmark]
+qualification_objective = "frequency"
+policy_selection_mode = "single_frozen"
+policy_anchor_fold = 0
+probability_manifest = "evidence/manifest.json"
+control_candidate = "histogram_enriched"
+candidate_names = [
+  "histogram_enriched",
+  "histogram_outcome_fold_robust_agreement",
+]
+evaluation_is_independent = false
+evaluation_note = "Consumed development evidence."
+quantity = 5.0
+
+[policy]
+threshold_candidates = [0.84, 0.85]
+bands = [
+  { name = "60-89", start_second = 60, end_second_exclusive = 90 },
+  { name = "90-119", start_second = 90, end_second_exclusive = 120 },
+  { name = "120-179", start_second = 120, end_second_exclusive = 180 },
+  { name = "180-240", start_second = 180, end_second_exclusive = 241 },
+]
+
+[advancement_gates]
+minimum_accuracy = 0.874
+minimum_balanced_accuracy = 0.874
+minimum_direction_recall = 0.874
+minimum_wilson_lower_95 = 0.865
+maximum_expected_calibration_error = 0.05
+minimum_coverage = 0.55
+minimum_selected_markets = 500
+minimum_coverage_uplift = 0.000000001
+maximum_accuracy_regression = 0.0
+maximum_balanced_accuracy_regression = 0.0
+maximum_direction_recall_regression = 0.0
+minimum_common_checkpoint_markets = 500
+minimum_executable_markets = 500
+minimum_mean_direct_edge_per_share = 0.0
+minimum_realized_net_per_share = 0.0
+require_every_fold = true
+
+[paths]
+execution_evidence = "execution"
+runs = "runs"
+"""
+    )
+
+    config = load_frequency_policy_benchmark_config(config_path)
+
+    assert config.candidate_names == (
+        "histogram_enriched",
+        "histogram_outcome_fold_robust_agreement",
+    )
