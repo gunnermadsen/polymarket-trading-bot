@@ -7,6 +7,8 @@ from typing import Any
 
 from .policy_benchmark import SAVED_POLICY_BENCHMARK_SCHEMA_VERSION
 
+FREQUENCY_POLICY_BENCHMARK_SCHEMA_VERSION = "btc-frequency-policy-benchmark-v1"
+
 
 def generate_saved_policy_report(
     benchmark: dict[str, Any],
@@ -21,7 +23,10 @@ def generate_saved_policy_report(
 
 
 def render_saved_policy_report(benchmark: dict[str, Any]) -> str:
-    if benchmark.get("schema_version") != SAVED_POLICY_BENCHMARK_SCHEMA_VERSION:
+    if benchmark.get("schema_version") not in {
+        SAVED_POLICY_BENCHMARK_SCHEMA_VERSION,
+        FREQUENCY_POLICY_BENCHMARK_SCHEMA_VERSION,
+    }:
         raise ValueError("unsupported saved-policy benchmark schema")
     independent = bool(benchmark["evaluation_is_independent"])
     evidence_label = (
@@ -34,9 +39,16 @@ def render_saved_policy_report(benchmark: dict[str, Any]) -> str:
     winner = benchmark.get("winner")
     passed = benchmark.get("benchmark_passed_candidates", [])
     evidence = benchmark["probability_evidence"]
+    objective = str(benchmark.get("qualification_objective", "accuracy_timing"))
+    selection_mode = str(
+        benchmark.get("policy_selection_mode", "per_fold")
+    )
+    frequency = objective == "frequency"
     cards = "".join(
         (
             _card("Evidence", evidence_label, "pass" if independent else "warning"),
+            _card("Objective", objective),
+            _card("Policy", selection_mode),
             _card("Candidates", str(len(candidates))),
             _card("Control", control_name),
             _card("Passing challengers", str(len(passed)), "pass" if passed else "blocked"),
@@ -56,13 +68,34 @@ def render_saved_policy_report(benchmark: dict[str, Any]) -> str:
         )
     )
     deployment = benchmark.get("deployment", {})
+    execution = benchmark.get("execution_evidence")
+    title = (
+        "BTC frequency-policy qualification"
+        if frequency
+        else "BTC saved-prediction policy benchmark"
+    )
+    subtitle = (
+        "One anchor-fold threshold vector · unchanged across five later folds · "
+        "timing diagnostic only · no model retraining or runtime export"
+        if frequency
+        else (
+            "Causal time-band threshold selection · first crossing per market · "
+            "real saved model probabilities · no model retraining or runtime export"
+        )
+    )
+    execution_panel = (
+        '<section class="panel"><h2>Five-share execution evidence</h2>'
+        f"{_execution_provenance_table(execution)}</section>"
+        if isinstance(execution, dict)
+        else ""
+    )
     details_json = html.escape(
         json.dumps(benchmark, indent=2, sort_keys=True, allow_nan=False)
     )
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Capitonic BTC Saved-Policy Benchmark</title>
+<title>Capitonic {html.escape(title)}</title>
 <style>
 :root {{ color-scheme:dark;--bg:#0a1020;--panel:#141d31;--line:#2a3652;
   --text:#eaf0ff;--muted:#9eabc8;--accent:#70d7ff;--pass:#62e6aa;
@@ -90,9 +123,8 @@ p {{ margin:8px 0 }} details {{ margin-top:14px }} pre {{ white-space:pre-wrap;
   overflow-wrap:anywhere;color:var(--muted) }}
 @media(max-width:900px) {{ .grid {{ grid-template-columns:1fr }} }}
 </style></head><body><main>
-<h1>BTC saved-prediction policy benchmark</h1>
-<div class="subtitle">Causal time-band threshold selection · first crossing per market ·
-real saved model probabilities · no model retraining or runtime export</div>
+<h1>{html.escape(title)}</h1>
+<div class="subtitle">{html.escape(subtitle)}</div>
 <div class="cards">{cards}</div>
 <section class="panel notice"><strong>{html.escape(evidence_label)}.</strong>
 {html.escape(warning)}</section>
@@ -101,6 +133,7 @@ real saved model probabilities · no model retraining or runtime export</div>
 <div class="grid">
 <section class="panel"><h2>Saved-probability provenance</h2>
 {_provenance_table(evidence)}</section>
+{execution_panel}
 <section class="panel"><h2>Deployment boundary</h2>
 <p>Status: <span class="status blocked">{html.escape(str(deployment.get("status")))}</span></p>
 <p>{html.escape(str(deployment.get("scope", "")))}</p>
@@ -146,6 +179,11 @@ def _candidate_table(benchmark: dict[str, Any]) -> str:
                 f"{candidate['validation_qualified_folds']}/{candidate['fold_count']}",
             )
         )
+    policy_heading = (
+        "Frozen policy applied"
+        if benchmark.get("policy_selection_mode") == "single_frozen"
+        else "Policy folds"
+    )
     return _table(
         (
             "Candidate",
@@ -160,7 +198,7 @@ def _candidate_table(benchmark: dict[str, Any]) -> str:
             "Wilson lower",
             "ECE",
             "Median sec",
-            "Policy folds",
+            policy_heading,
             "Validation folds",
         ),
         rows,
@@ -183,6 +221,7 @@ def _fold_policy_table(benchmark: dict[str, Any]) -> str:
                 (
                     name,
                     str(fold["fold_index"]),
+                    str(selection.get("source_fold_index", fold["fold_index"])),
                     threshold_text,
                     "passed" if selection["qualified"] else "blocked",
                     _percent(selection["metrics"]["coverage"]),
@@ -206,6 +245,7 @@ def _fold_policy_table(benchmark: dict[str, Any]) -> str:
         (
             "Candidate",
             "Fold",
+            "Policy source fold",
             "Frozen thresholds",
             "Policy",
             "Policy coverage",
@@ -219,7 +259,7 @@ def _fold_policy_table(benchmark: dict[str, Any]) -> str:
             "Validation range",
         ),
         rows,
-        status_columns={3, 7},
+        status_columns={4, 8},
     )
 
 
@@ -259,6 +299,20 @@ def _provenance_table(evidence: dict[str, Any]) -> str:
         ("Checksums verified", _yes_no(evidence.get("checksums_verified"))),
         ("Causal contract verified", _yes_no(evidence.get("causal_contract_verified"))),
         ("Causal contract", evidence.get("causal_contract")),
+    )
+    return _table(("Field", "Value"), rows)
+
+
+def _execution_provenance_table(evidence: dict[str, Any]) -> str:
+    rows = (
+        ("Manifest", evidence.get("manifest")),
+        ("Manifest SHA-256", evidence.get("manifest_sha256")),
+        ("Source contract", evidence.get("source_contract")),
+        ("Source schema", evidence.get("source_schema_version")),
+        ("Range start", evidence.get("range_start")),
+        ("Range end", evidence.get("range_end")),
+        ("Quantity", evidence.get("quantity")),
+        ("Checksums verified", _yes_no(evidence.get("checksums_verified"))),
     )
     return _table(("Field", "Value"), rows)
 

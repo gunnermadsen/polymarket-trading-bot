@@ -106,6 +106,28 @@ time-band confidence thresholds only from the earlier policy-selection probabili
 the corresponding chronological validation probabilities once. The manifest and every Parquet
 input are checksum verified.
 
+Run the frequency-only qualification separately:
+
+```bash
+PERSISTENCE_RUN_ID="<UTC run identifier>"
+sed "s/__PERSISTENCE_RUN_ID__/${PERSISTENCE_RUN_ID}/g" \
+  configs/btc-5m-directional-frequency-policy-20260421-20260720.toml.template \
+  > data/btc-5m-directional-frequency-policy-runtime.toml
+.venv/bin/btc-directional-model frequency-policy-benchmark-run \
+  --config data/btc-5m-directional-frequency-policy-runtime.toml
+```
+
+This benchmark narrows the challenger matrix to the enriched control and the
+`histogram_path_persistence_time_calibrated_60_120` frequency candidate. It selects one
+deterministic four-band threshold vector from fold zero's policy-selection cohort, verifies that
+the policy predates every validation fold, and applies the same vector unchanged to all five
+validation folds. Validation never performs a threshold search. Qualification preserves the
+87.4% accuracy, balanced-accuracy, and directional-recall floors; the 86.5% Wilson lower bound;
+the 5% ECE ceiling; five-fold stability; exact 60/90/120/180/240-second non-regression; coverage
+uplift; and positive five-share execution economics with at least 500 executable markets. Median
+entry remains visible in every result but is diagnostic-only for this explicitly frequency-focused
+model. The early-entry workflow retains the separate 125-second timing requirement.
+
 Run the strict-book chronology diagnostic separately:
 
 ```bash

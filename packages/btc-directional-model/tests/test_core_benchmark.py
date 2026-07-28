@@ -10,6 +10,7 @@ from btc_directional_model.core_benchmark import (
     CandidatePolicy,
     benchmark_predictions,
     select_chronological_policy_rows,
+    select_time_band_policy_rows,
 )
 
 
@@ -296,3 +297,69 @@ def test_chronological_policy_rejects_a_marker_that_is_not_first_crossing() -> N
 
     with pytest.raises(ValueError, match="does not match"):
         select_chronological_policy_rows(frame)
+
+
+def test_time_band_policy_accepts_one_immutable_threshold_per_band() -> None:
+    frame = prediction_frame("control", early=True).with_columns(
+        pl.when(pl.col("seconds_elapsed") < 120)
+        .then(0.90)
+        .otherwise(0.85)
+        .alias("selected_confidence_threshold"),
+        pl.when(pl.col("seconds_elapsed") < 120)
+        .then(pl.lit("early"))
+        .otherwise(pl.lit("late"))
+        .alias("policy_threshold_band"),
+    )
+    first_crossings = (
+        frame.filter(
+            pl.col("confidence") >= pl.col("selected_confidence_threshold")
+        )
+        .sort(["market_id", "seconds_elapsed", "observed_at"])
+        .group_by("market_id", maintain_order=True)
+        .first()
+        .select("market_id", "observed_at", "seconds_elapsed")
+        .with_columns(pl.lit(True).alias("policy_selected"))
+    )
+    frame = frame.join(
+        first_crossings,
+        on=["market_id", "observed_at", "seconds_elapsed"],
+        how="left",
+    ).with_columns(pl.col("policy_selected").fill_null(False))
+
+    selected = select_time_band_policy_rows(frame)
+    result = benchmark_predictions(
+        {"control": frame},
+        policies={
+            "control": CandidatePolicy(
+                confidence_threshold=None,
+                deployment_compatible=False,
+                selection_mode="time_band_preselected",
+                confidence_threshold_min=0.85,
+                confidence_threshold_max=0.90,
+            )
+        },
+        control_candidate="control",
+        evidence=BenchmarkEvidence(
+            label="Chronological development",
+            kind="development",
+            independent=False,
+        ),
+        minimum_samples=1,
+    )
+
+    assert selected.height == 12
+    assert result["candidates"]["control"]["own_policy"]["markets"] == 12
+
+
+def test_time_band_policy_rejects_threshold_drift_within_a_band() -> None:
+    frame = prediction_frame("control", early=True).with_columns(
+        pl.when(pl.col("market_id") == "market-00")
+        .then(0.91)
+        .otherwise(0.90)
+        .alias("selected_confidence_threshold"),
+        pl.lit("60-240").alias("policy_threshold_band"),
+        pl.lit(False).alias("policy_selected"),
+    )
+
+    with pytest.raises(ValueError, match="stable per band"):
+        select_time_band_policy_rows(frame)

@@ -38,6 +38,7 @@ class CandidatePolicy:
     selection_mode: Literal[
         "fixed_confidence",
         "chronological_preselected",
+        "time_band_preselected",
     ] = "fixed_confidence"
     confidence_threshold_min: float | None = None
     confidence_threshold_max: float | None = None
@@ -58,10 +59,13 @@ class CandidatePolicy:
                 raise ValueError(
                     "fixed confidence policies cannot configure a threshold range"
                 )
-        elif self.selection_mode == "chronological_preselected":
+        elif self.selection_mode in {
+            "chronological_preselected",
+            "time_band_preselected",
+        }:
             if self.confidence_threshold is not None:
                 raise ValueError(
-                    "chronological preselected policies cannot use one fixed threshold"
+                    "preselected policies cannot use one fixed threshold"
                 )
             if (
                 self.confidence_threshold_min is None
@@ -72,7 +76,7 @@ class CandidatePolicy:
                 <= 1.0
             ):
                 raise ValueError(
-                    "chronological preselected policies require a valid threshold range"
+                    "preselected policies require a valid threshold range"
                 )
         else:
             raise ValueError(f"unsupported policy selection_mode: {self.selection_mode}")
@@ -338,6 +342,47 @@ def select_chronological_policy_rows(frame: pl.DataFrame) -> pl.DataFrame:
         raise ValueError(
             "chronological selected confidence threshold must be stable per market"
         )
+    return _validated_preselected_policy_rows(eligible)
+
+
+def select_time_band_policy_rows(frame: pl.DataFrame) -> pl.DataFrame:
+    required = {
+        "policy_selected",
+        "selected_confidence_threshold",
+        "policy_threshold_band",
+    }
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError(
+            "time-band preselected policy is missing columns: "
+            + ", ".join(missing)
+        )
+    eligible = frame
+    if "model_eligible" in frame.columns:
+        eligible = eligible.filter(pl.col("model_eligible"))
+    if eligible.is_empty():
+        return eligible
+    if eligible["policy_threshold_band"].null_count():
+        raise ValueError("time-band preselected policy cannot contain an unassigned row")
+    unstable_thresholds = (
+        eligible.group_by("policy_threshold_band")
+        .agg(
+            pl.col("selected_confidence_threshold")
+            .n_unique()
+            .alias("thresholds")
+        )
+        .filter(pl.col("thresholds") != 1)
+    )
+    if not unstable_thresholds.is_empty():
+        raise ValueError(
+            "time-band selected confidence threshold must be stable per band"
+        )
+    return _validated_preselected_policy_rows(eligible)
+
+
+def _validated_preselected_policy_rows(
+    eligible: pl.DataFrame,
+) -> pl.DataFrame:
     expected = (
         eligible.filter(
             pl.col("confidence") >= pl.col("selected_confidence_threshold")
@@ -380,6 +425,8 @@ def _select_policy_rows(
 ) -> pl.DataFrame:
     if policy.selection_mode == "chronological_preselected":
         return select_chronological_policy_rows(frame)
+    if policy.selection_mode == "time_band_preselected":
+        return select_time_band_policy_rows(frame)
     if policy.confidence_threshold is None:
         raise RuntimeError("fixed confidence policy lost its confidence threshold")
     return select_own_policy_rows(frame, policy.confidence_threshold)

@@ -315,6 +315,8 @@ def load_probability_evidence(
 def select_causal_time_band_thresholds(
     policy_rows: pl.DataFrame,
     config: SavedPolicyBenchmarkConfig,
+    *,
+    include_timing_gates: bool = True,
 ) -> TimeBandPolicySelection:
     eligible_markets = policy_rows["market_id"].n_unique()
     cache = _build_selection_cache(
@@ -339,7 +341,12 @@ def select_causal_time_band_thresholds(
             selected,
             eligible_markets=eligible_markets,
         )
-        checks = absolute_policy_checks(metrics, timing, config.gates)
+        checks = absolute_policy_checks(
+            metrics,
+            timing,
+            config.gates,
+            include_timing=include_timing_gates,
+        )
         qualified = all(check["passed"] for check in checks)
         qualifying_combinations += int(qualified)
         selection = TimeBandPolicySelection(
@@ -353,7 +360,10 @@ def select_causal_time_band_thresholds(
             timing=timing,
             checks=tuple(checks),
         )
-        rank = _policy_selection_rank(selection)
+        rank = _policy_selection_rank(
+            selection,
+            include_timing=include_timing_gates,
+        )
         if best is None or rank > best[0]:
             best = (rank, selection)
     if best is None:
@@ -498,10 +508,11 @@ def absolute_policy_checks(
     metrics: dict[str, Any],
     timing: dict[str, Any],
     gates: PolicyAdvancementGates,
+    *,
+    include_timing: bool = True,
 ) -> list[dict[str, Any]]:
-    median = timing["median_first_crossing_seconds"]
     ece = metrics["expected_calibration_error"]
-    return [
+    checks = [
         _check(
             "minimum selected markets", metrics["markets"], ">=", gates.minimum_selected_markets
         ),
@@ -532,13 +543,17 @@ def absolute_policy_checks(
             gates.maximum_expected_calibration_error,
         ),
         _check("minimum coverage", metrics["coverage"], ">=", gates.minimum_coverage),
-        _check(
-            "maximum median entry second",
-            median,
-            "<=",
-            gates.maximum_median_entry_second,
-        ),
     ]
+    if include_timing:
+        checks.append(
+            _check(
+                "maximum median entry second",
+                timing["median_first_crossing_seconds"],
+                "<=",
+                gates.maximum_median_entry_second,
+            )
+        )
+    return checks
 
 
 def policy_advancement_checks(
@@ -624,23 +639,32 @@ def policy_advancement_checks(
 
 def _policy_selection_rank(
     selection: TimeBandPolicySelection,
+    *,
+    include_timing: bool = True,
 ) -> tuple[Any, ...]:
     metrics = selection.metrics
     timing = selection.timing
     median = timing["median_first_crossing_seconds"]
     ece = metrics["expected_calibration_error"]
-    return (
+    rank = (
         selection.qualified,
         sum(check["passed"] for check in selection.checks),
         metrics["coverage"],
-        -(median if median is not None else float("inf")),
         metrics["wilson_lower_95"],
         metrics["balanced_accuracy"],
         min(metrics["up_recall"], metrics["down_recall"]),
         metrics["accuracy"],
         -(ece if ece is not None else float("inf")),
-        tuple(value for _, value in selection.thresholds),
     )
+    if include_timing:
+        rank = (
+            rank[0],
+            rank[1],
+            rank[2],
+            -(median if median is not None else float("inf")),
+            *rank[3:],
+        )
+    return (*rank, tuple(value for _, value in selection.thresholds))
 
 
 def _candidate_rank(result: dict[str, Any]) -> tuple[Any, ...]:

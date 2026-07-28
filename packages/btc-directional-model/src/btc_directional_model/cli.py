@@ -16,6 +16,8 @@ from .core_training import develop_core_models, evaluate_core_holdout
 from .entry_benchmark import run_entry_benchmark
 from .extract import extract_source
 from .features import build_features
+from .frequency_policy_benchmark import run_frequency_policy_benchmark
+from .frequency_policy_config import load_frequency_policy_benchmark_config
 from .persistence_benchmark import run_persistence_benchmark
 from .persistence_config import load_persistence_benchmark_config
 from .policy_benchmark import run_saved_policy_benchmark
@@ -68,6 +70,10 @@ def main() -> None:
         "persistence-policy-benchmark-run"
     )
     persistence_policy_run.add_argument("--config", type=Path, required=True)
+    frequency_policy_run = subparsers.add_parser(
+        "frequency-policy-benchmark-run"
+    )
+    frequency_policy_run.add_argument("--config", type=Path, required=True)
     serve_parser = subparsers.add_parser("serve")
     serve_parser.add_argument("--run", type=Path, required=True)
     serve_parser.add_argument("--port", type=int, default=8765)
@@ -137,6 +143,24 @@ def main() -> None:
             )
         )
         print(f"winner: {benchmark['winner'] or 'none'}")
+        print("evidence: non-independent development validation")
+        print("runtime: unchanged")
+        return
+    if args.command == "frequency-policy-benchmark-run":
+        config = load_frequency_policy_benchmark_config(args.config)
+        run_dir, benchmark = run_frequency_policy_benchmark(config)
+        print(f"report: {run_dir / 'report.html'}")
+        print(
+            "frequency-qualified: "
+            + (
+                ", ".join(benchmark["benchmark_passed_candidates"])
+                if benchmark["benchmark_passed_candidates"]
+                else "none"
+            )
+        )
+        print(f"winner: {benchmark['winner'] or 'none'}")
+        print("policy: one anchor-fold threshold vector applied to all validation folds")
+        print("timing: diagnostic only")
         print("evidence: non-independent development validation")
         print("runtime: unchanged")
         return

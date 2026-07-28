@@ -187,6 +187,46 @@ def test_saved_policy_report_is_self_contained_and_explicitly_development_only(
     assert "<script src=" not in contents
 
 
+def test_frequency_policy_report_identifies_single_policy_and_diagnostic_timing(
+    tmp_path: Path,
+) -> None:
+    benchmark = _benchmark()
+    benchmark.update(
+        {
+            "schema_version": "btc-frequency-policy-benchmark-v1",
+            "qualification_objective": "frequency",
+            "policy_selection_mode": "single_frozen",
+            "policy_anchor_fold": 0,
+            "timing_qualification_role": "diagnostic_only",
+            "execution_evidence": {
+                "manifest": "/tmp/execution/manifest.json",
+                "manifest_sha256": "c" * 64,
+                "source_contract": "btc_execution_evidence_v2",
+                "source_schema_version": "btc-execution-evidence-v2",
+                "range_start": "2026-05-27T00:00:00+00:00",
+                "range_end": "2026-06-12T00:00:00+00:00",
+                "quantity": 5.0,
+                "checksums_verified": True,
+            },
+        }
+    )
+    for candidate in benchmark["candidates"].values():
+        for fold in candidate["folds"]:
+            fold["policy_selection"]["source_fold_index"] = 0
+
+    destination = generate_saved_policy_report(
+        benchmark,
+        tmp_path / "report.html",
+    )
+    contents = destination.read_text()
+
+    assert "BTC frequency-policy qualification" in contents
+    assert "One anchor-fold threshold vector" in contents
+    assert "timing diagnostic only" in contents
+    assert "Five-share execution evidence" in contents
+    assert "single_frozen" in contents
+
+
 def test_saved_policy_cli_dispatches_and_reports_runtime_boundary(
     monkeypatch,
     tmp_path: Path,
