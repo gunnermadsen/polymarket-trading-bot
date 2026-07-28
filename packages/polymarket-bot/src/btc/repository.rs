@@ -2093,10 +2093,7 @@ impl BtcRepository {
         received_at: DateTime<Utc>,
         payload: &serde_json::Value,
     ) -> Result<PersistedOfficialResolution> {
-        if !matches!(
-            resolution_source,
-            "clob_websocket" | "clob_rest_reconciliation"
-        ) {
+        if !is_supported_official_resolution_source(resolution_source) {
             bail!("unsupported official BTC resolution source {resolution_source}");
         }
         if !payload.is_object() {
@@ -3195,10 +3192,7 @@ fn validate_paper_settlement_record(record: &BtcPaperSettlementRecord) -> Result
     if !matches!(record.official_outcome.as_str(), "up" | "down") {
         bail!("paper settlement has a nonofficial outcome");
     }
-    if !matches!(
-        record.official_resolution_source.as_str(),
-        "clob_websocket" | "clob_rest_reconciliation"
-    ) {
+    if !is_supported_official_resolution_source(&record.official_resolution_source) {
         bail!("paper settlement has an unsupported official-resolution source");
     }
     if record.official_winning_token_id.trim().is_empty() {
@@ -3230,6 +3224,13 @@ fn validate_paper_settlement_record(record: &BtcPaperSettlementRecord) -> Result
         bail!("paper settlement net PnL conflicts with its payout and entry costs");
     }
     Ok(())
+}
+
+fn is_supported_official_resolution_source(source: &str) -> bool {
+    matches!(
+        source,
+        "clob_websocket" | "clob_rest_reconciliation" | "gamma_rest_reconciliation"
+    )
 }
 
 fn reference_tick_integrity_status(tick: &ReferencePriceTick) -> &'static str {
@@ -5945,6 +5946,10 @@ mod tests {
         let winner = settlement_record();
         validate_paper_settlement_record(&winner).unwrap();
 
+        let mut gamma_winner = winner.clone();
+        gamma_winner.official_resolution_source = "gamma_rest_reconciliation".to_string();
+        validate_paper_settlement_record(&gamma_winner).unwrap();
+
         let mut loser = winner.clone();
         loser.token_id = "down-token".to_string();
         loser.payout = Decimal::ZERO;
@@ -5970,6 +5975,21 @@ mod tests {
         let mut inconsistent_net_pnl = settlement_record();
         inconsistent_net_pnl.net_pnl = Decimal::ZERO;
         assert!(validate_paper_settlement_record(&inconsistent_net_pnl).is_err());
+    }
+
+    #[test]
+    fn official_resolution_source_contract_accepts_exchange_reconciliation_only() {
+        assert!(is_supported_official_resolution_source("clob_websocket"));
+        assert!(is_supported_official_resolution_source(
+            "clob_rest_reconciliation"
+        ));
+        assert!(is_supported_official_resolution_source(
+            "gamma_rest_reconciliation"
+        ));
+        assert!(!is_supported_official_resolution_source(
+            "local_chainlink_label"
+        ));
+        assert!(!is_supported_official_resolution_source("unknown"));
     }
 
     #[test]
