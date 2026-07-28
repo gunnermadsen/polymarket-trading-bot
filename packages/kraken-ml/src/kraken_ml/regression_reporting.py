@@ -115,9 +115,16 @@ def _regression_rows(report: Mapping[str, Any]) -> list[tuple[Any, ...]]:
     return rows
 
 
-def _fee_rows(report: Mapping[str, Any]) -> list[tuple[Any, ...]]:
-    selected = report.get("selected") or {}
-    return _fee_scenario_rows(selected.get("fee_counterfactuals", {}))
+def _candidate_fee_rows(report: Mapping[str, Any]) -> list[tuple[Any, ...]]:
+    rows: list[tuple[Any, ...]] = []
+    for candidate in report.get("candidate_aggregates", []):
+        candidate_id = candidate.get("candidate_id")
+        scenarios = candidate.get("fee_counterfactuals", {})
+        for scenario in _fee_scenario_rows(scenarios):
+            if not scenario[2]:
+                continue
+            rows.append((candidate_id, *scenario))
+    return rows
 
 
 def _fee_scenario_rows(scenarios: Mapping[str, Any]) -> list[tuple[Any, ...]]:
@@ -306,9 +313,10 @@ def render_regression_development_report(report: Mapping[str, Any]) -> str:
             )
         ),
         (
-            "## Fixed-action fee counterfactuals\n\n"
+            "## Active-candidate fixed-action fee counterfactuals\n\n"
             + _table(
                 (
+                    "Candidate",
                     "Scenario",
                     "Round-trip fee bps",
                     "Trades",
@@ -316,7 +324,7 @@ def render_regression_development_report(report: Mapping[str, Any]) -> str:
                     "95% lower",
                     "Profit factor",
                 ),
-                _fee_rows(report),
+                _candidate_fee_rows(report),
             )
         ),
         (

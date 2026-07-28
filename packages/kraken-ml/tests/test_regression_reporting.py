@@ -49,6 +49,15 @@ def _development_report() -> dict:
                 "median_fold_stress_expectancy_bps": 3.5,
                 "pooled_economics": {"net_expectancy_bps": 4.25, "trades": 300},
                 "pooled_stress": {"net_expectancy_bps": 3.5},
+                "fee_counterfactuals": {
+                    "taker_10_bps": {
+                        "round_trip_fee_bps": 10.0,
+                        "trades": 300,
+                        "net_expectancy_bps": 4.25,
+                        "bootstrap_95_lower_bps": 1.0,
+                        "profit_factor": 1.3,
+                    }
+                },
                 "qualified": True,
                 "gates": gates,
             }
@@ -100,7 +109,7 @@ def test_development_report_has_fixed_artifact_names(tmp_path: Path) -> None:
     assert "h4_ridge_price" in markdown
     assert "Pooled expectancy" in markdown
     assert "Training prerequisites" in markdown
-    assert "Fixed-action fee counterfactuals" in markdown
+    assert "Active-candidate fixed-action fee counterfactuals" in markdown
     assert "Open-interest qualification" in markdown
     assert "Historical classifier control" in markdown
 
