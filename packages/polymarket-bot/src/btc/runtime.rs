@@ -2304,6 +2304,38 @@ enum PrivateClobEventDisposition {
     Reject,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PrivateClobSubscriptionMatch {
+    token: bool,
+    market: bool,
+    exact_identity: bool,
+}
+
+fn private_clob_subscription_match(
+    markets: &[BtcIntervalMarket],
+    event: &MarketFeedEvent,
+) -> PrivateClobSubscriptionMatch {
+    let token = event.token_id.as_deref().is_some_and(|token_id| {
+        markets
+            .iter()
+            .any(|market| market.up_token_id == token_id || market.down_token_id == token_id)
+    });
+    let market = markets.iter().any(|market| {
+        market.market_id == event.market_id || market.condition_id == event.market_id
+    });
+    let exact_identity = event.token_id.as_deref().is_some_and(|token_id| {
+        markets.iter().any(|market| {
+            (market.market_id == event.market_id || market.condition_id == event.market_id)
+                && (market.up_token_id == token_id || market.down_token_id == token_id)
+        })
+    });
+    PrivateClobSubscriptionMatch {
+        token,
+        market,
+        exact_identity,
+    }
+}
+
 fn private_clob_event_disposition(
     markets: &[BtcIntervalMarket],
     event: &MarketFeedEvent,
@@ -2312,22 +2344,17 @@ fn private_clob_event_disposition(
         return PrivateClobEventDisposition::Accept;
     }
 
-    let exact_subscription_identity = event.token_id.as_deref().is_some_and(|token_id| {
-        markets.iter().any(|market| {
-            (market.market_id == event.market_id || market.condition_id == event.market_id)
-                && (market.up_token_id == token_id || market.down_token_id == token_id)
-        })
-    });
+    let subscription_match = private_clob_subscription_match(markets, event);
     if !event.applied
         && event.integrity_status == FeedIntegrityStatus::OutOfOrder
-        && exact_subscription_identity
+        && subscription_match.exact_identity
         && event.event_type == MarketFeedEventType::PriceChange
     {
         return PrivateClobEventDisposition::IgnoreSuperseded;
     }
     if !event.applied
         && event.integrity_status == FeedIntegrityStatus::PreSnapshot
-        && exact_subscription_identity
+        && subscription_match.exact_identity
         && matches!(
             event.event_type,
             MarketFeedEventType::PriceChange
@@ -2339,18 +2366,10 @@ fn private_clob_event_disposition(
         return PrivateClobEventDisposition::AwaitSnapshot;
     }
 
-    let expected_token = event.token_id.as_deref().is_some_and(|token_id| {
-        markets
-            .iter()
-            .any(|market| market.up_token_id == token_id || market.down_token_id == token_id)
-    });
-    let expected_market = markets.iter().any(|market| {
-        market.market_id == event.market_id || market.condition_id == event.market_id
-    });
     if !event.applied
         && event.integrity_status == FeedIntegrityStatus::UnknownToken
-        && !expected_token
-        && !expected_market
+        && !subscription_match.token
+        && !subscription_match.market
     {
         return PrivateClobEventDisposition::IgnoreForeign;
     }
@@ -2572,6 +2591,18 @@ fn apply_private_clob_frame(epoch: &mut ClobEpoch, message: Message) -> ClobFram
                                 .saturating_add(1);
                         }
                         PrivateClobEventDisposition::Reject => {
+                            let subscription_match =
+                                private_clob_subscription_match(&epoch.markets, &event);
+                            tracing::warn!(
+                                feed = "polymarket_clob_market",
+                                connection_id = %epoch.connection_id,
+                                connection_epoch = epoch.connection_epoch,
+                                event_type = ?event.event_type,
+                                integrity_status = ?event.integrity_status,
+                                token_matches_subscription = subscription_match.token,
+                                market_matches_subscription = subscription_match.market,
+                                "private CLOB successor integrity gap"
+                            );
                             epoch.session.integrity_gaps =
                                 epoch.session.integrity_gaps.saturating_add(1);
                             epoch.session.disconnect_reason =
@@ -8068,6 +8099,77 @@ mod tests {
         );
     }
 
+    #[test]
+    fn successor_integrity_diagnostic_matches_token_and_market_independently() {
+        let current = market();
+        let mut next = current.clone();
+        next.market_id = "next-market".to_string();
+        next.condition_id = "next-condition".to_string();
+        next.up_token_id = "next-up".to_string();
+        next.down_token_id = "next-down".to_string();
+        let received_at = current.window_start + Duration::minutes(1);
+        let event = |market_id: &str, token_id: &str| MarketFeedEvent {
+            event_id: Uuid::new_v4(),
+            market_id: market_id.to_string(),
+            token_id: Some(token_id.to_string()),
+            event_type: MarketFeedEventType::LastTradePrice,
+            source_timestamp: received_at,
+            received_at,
+            connection_id: Uuid::new_v4(),
+            ingest_sequence: 1,
+            source_hash: None,
+            applied: false,
+            integrity_status: FeedIntegrityStatus::UnknownToken,
+            raw_payload: serde_json::Value::Null,
+        };
+        let markets = std::slice::from_ref(&current);
+
+        assert_eq!(
+            private_clob_subscription_match(
+                markets,
+                &event(&current.condition_id, &current.up_token_id),
+            ),
+            PrivateClobSubscriptionMatch {
+                token: true,
+                market: true,
+                exact_identity: true,
+            }
+        );
+        assert_eq!(
+            private_clob_subscription_match(
+                markets,
+                &event(&current.condition_id, "unexpected-token"),
+            ),
+            PrivateClobSubscriptionMatch {
+                token: false,
+                market: true,
+                exact_identity: false,
+            }
+        );
+        assert_eq!(
+            private_clob_subscription_match(
+                markets,
+                &event("unexpected-market", &current.down_token_id),
+            ),
+            PrivateClobSubscriptionMatch {
+                token: true,
+                market: false,
+                exact_identity: false,
+            }
+        );
+        assert_eq!(
+            private_clob_subscription_match(
+                &[current.clone(), next.clone()],
+                &event(&current.condition_id, &next.up_token_id),
+            ),
+            PrivateClobSubscriptionMatch {
+                token: true,
+                market: true,
+                exact_identity: false,
+            }
+        );
+    }
+
     #[tokio::test]
     async fn private_successor_ignores_only_exact_superseded_price_changes() {
         let current = market();
@@ -9370,7 +9472,7 @@ mod tests {
     async fn clock_aging_revokes_active_clob_usability_without_new_frames() {
         let market = market();
         let ready_at = market.window_start + Duration::minutes(2);
-        let registry = ready_book_registry(&market, ready_at - Duration::milliseconds(10));
+        let mut registry = ready_book_registry(&market, ready_at - Duration::milliseconds(10));
         let connection_id = registry.connection_id();
         let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
         let started = Instant::now();
@@ -9423,6 +9525,35 @@ mod tests {
         let status = metrics.read().await;
         assert!(status.clob_active_connection_epoch.is_none());
         assert_eq!(status.clob_recovery_unavailable_since, Some(stale_at));
+        drop(status);
+
+        let refreshed_at = stale_at + Duration::milliseconds(1);
+        apply_ready_book_snapshot(&mut registry, &market, &market.up_token_id, refreshed_at);
+        apply_ready_book_snapshot(&mut registry, &market, &market.down_token_id, refreshed_at);
+        update_clob_usability(
+            &registry,
+            std::slice::from_ref(&market),
+            refreshed_at + Duration::milliseconds(1),
+            started + StdDuration::from_millis(2_013),
+            Duration::seconds(2),
+            &mut books_usable,
+            &mut healthy_epoch,
+            &metrics,
+            connection_id,
+            8,
+            &mut failures,
+            &mut recovery_window,
+        )
+        .await;
+
+        assert!(books_usable);
+        assert!(healthy_epoch);
+        assert_eq!(registry.connection_id(), connection_id);
+        assert_eq!(failures, 0);
+        let recovered = metrics.read().await;
+        assert_eq!(recovered.clob_active_connection_id, Some(connection_id));
+        assert_eq!(recovered.clob_active_connection_epoch, Some(8));
+        assert!(recovered.clob_recovery_unavailable_since.is_none());
     }
 
     #[tokio::test]
