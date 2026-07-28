@@ -31,14 +31,51 @@ REQUIRED_PREDICTION_COLUMNS = {
 
 @dataclass(frozen=True)
 class CandidatePolicy:
-    confidence_threshold: float
+    confidence_threshold: float | None
     deployment_compatible: bool
     native_p99_milliseconds: float | None = None
     runtime_model_bytes: int | None = None
+    selection_mode: Literal[
+        "fixed_confidence",
+        "chronological_preselected",
+    ] = "fixed_confidence"
+    confidence_threshold_min: float | None = None
+    confidence_threshold_max: float | None = None
 
     def __post_init__(self) -> None:
-        if not 0.5 <= self.confidence_threshold <= 1.0:
-            raise ValueError("confidence_threshold must be between 0.5 and 1.0")
+        if self.selection_mode == "fixed_confidence":
+            if (
+                self.confidence_threshold is None
+                or not 0.5 <= self.confidence_threshold <= 1.0
+            ):
+                raise ValueError(
+                    "fixed confidence_threshold must be between 0.5 and 1.0"
+                )
+            if (
+                self.confidence_threshold_min is not None
+                or self.confidence_threshold_max is not None
+            ):
+                raise ValueError(
+                    "fixed confidence policies cannot configure a threshold range"
+                )
+        elif self.selection_mode == "chronological_preselected":
+            if self.confidence_threshold is not None:
+                raise ValueError(
+                    "chronological preselected policies cannot use one fixed threshold"
+                )
+            if (
+                self.confidence_threshold_min is None
+                or self.confidence_threshold_max is None
+                or not 0.5
+                <= self.confidence_threshold_min
+                <= self.confidence_threshold_max
+                <= 1.0
+            ):
+                raise ValueError(
+                    "chronological preselected policies require a valid threshold range"
+                )
+        else:
+            raise ValueError(f"unsupported policy selection_mode: {self.selection_mode}")
         if (
             self.native_p99_milliseconds is not None
             and self.native_p99_milliseconds <= 0
@@ -152,7 +189,7 @@ def benchmark_predictions(
     for name in candidate_order:
         policy = policies[name]
         frame = normalized[name]
-        selected = select_own_policy_rows(frame, policy.confidence_threshold)
+        selected = _select_policy_rows(frame, policy)
         own_policy = _own_policy_metrics(
             frame,
             selected,
@@ -272,6 +309,79 @@ def select_own_policy_rows(
     )
 
 
+def select_chronological_policy_rows(frame: pl.DataFrame) -> pl.DataFrame:
+    required = {"policy_selected", "selected_confidence_threshold"}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError(
+            "chronological preselected policy is missing columns: "
+            + ", ".join(missing)
+        )
+    eligible = frame
+    if "model_eligible" in frame.columns:
+        eligible = eligible.filter(pl.col("model_eligible"))
+    if eligible.is_empty():
+        return eligible
+    unstable_thresholds = (
+        eligible.group_by("market_id")
+        .agg(
+            pl.col("selected_confidence_threshold")
+            .n_unique()
+            .alias("thresholds")
+        )
+        .filter(pl.col("thresholds") != 1)
+    )
+    if not unstable_thresholds.is_empty():
+        raise ValueError(
+            "chronological selected confidence threshold must be stable per market"
+        )
+    expected = (
+        eligible.filter(
+            pl.col("confidence") >= pl.col("selected_confidence_threshold")
+        )
+        .sort(["market_id", "seconds_elapsed", "observed_at"])
+        .group_by("market_id", maintain_order=True)
+        .first()
+        .sort(["observed_at", "market_id"])
+    )
+    selected = eligible.filter(pl.col("policy_selected")).sort(
+        ["observed_at", "market_id"]
+    )
+    duplicate_markets = (
+        selected.group_by("market_id")
+        .len()
+        .filter(pl.col("len") != 1)
+    )
+    if not duplicate_markets.is_empty():
+        raise ValueError(
+            "chronological preselected policy must select at most one row per market"
+        )
+    keys = ["market_id", "observed_at", "seconds_elapsed"]
+    if (
+        expected.select(keys)
+        .join(selected.select(keys), on=keys, how="anti")
+        .height
+        or selected.select(keys)
+        .join(expected.select(keys), on=keys, how="anti")
+        .height
+    ):
+        raise ValueError(
+            "policy_selected does not match the chronological first confidence crossing"
+        )
+    return selected
+
+
+def _select_policy_rows(
+    frame: pl.DataFrame,
+    policy: CandidatePolicy,
+) -> pl.DataFrame:
+    if policy.selection_mode == "chronological_preselected":
+        return select_chronological_policy_rows(frame)
+    if policy.confidence_threshold is None:
+        raise RuntimeError("fixed confidence policy lost its confidence threshold")
+    return select_own_policy_rows(frame, policy.confidence_threshold)
+
+
 def _coerce_candidate_frames(
     candidate_frames: Mapping[str, pl.DataFrame] | Sequence[pl.DataFrame],
 ) -> dict[str, pl.DataFrame]:
@@ -327,6 +437,14 @@ def _normalize_prediction_frame(frame: pl.DataFrame, candidate: str) -> pl.DataF
         normalized = normalized.with_columns(
             pl.col("model_eligible").fill_null(False).cast(pl.Boolean)
         )
+    if "policy_selected" in normalized.columns:
+        normalized = normalized.with_columns(
+            pl.col("policy_selected").fill_null(False).cast(pl.Boolean)
+        )
+    if "selected_confidence_threshold" in normalized.columns:
+        normalized = normalized.with_columns(
+            pl.col("selected_confidence_threshold").cast(pl.Float64)
+        )
     for column in REQUIRED_PREDICTION_COLUMNS:
         if normalized[column].null_count():
             raise ValueError(f"{candidate}: {column} cannot contain null values")
@@ -361,6 +479,17 @@ def _normalize_prediction_frame(frame: pl.DataFrame, candidate: str) -> pl.DataF
         (confidence < 0.5) | (confidence > 1.0)
     ):
         raise ValueError(f"{candidate}: confidence must be finite and in [0.5, 1]")
+    if "selected_confidence_threshold" in normalized.columns:
+        thresholds = normalized["selected_confidence_threshold"].to_numpy()
+        if (
+            normalized["selected_confidence_threshold"].null_count()
+            or not np.isfinite(thresholds).all()
+            or np.any((thresholds < 0.5) | (thresholds > 1.0))
+        ):
+            raise ValueError(
+                f"{candidate}: selected_confidence_threshold must be finite "
+                "and in [0.5, 1]"
+            )
     expected_prediction = (probabilities >= 0.5).astype(np.int8)
     if not np.array_equal(expected_prediction, normalized["predicted_up"].to_numpy()):
         raise ValueError(f"{candidate}: predicted_up is inconsistent with probability_up")

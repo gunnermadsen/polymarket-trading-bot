@@ -21,7 +21,9 @@ from threadpoolctl import threadpool_limits
 from .core_config import (
     CoreTrainingConfig,
     HistogramCandidate,
+    RowWeightScheduleConfig,
     config_to_dict,
+    evaluation_holdout_range,
     load_core_config,
 )
 from .core_evaluation import (
@@ -35,6 +37,7 @@ from .core_evaluation import (
     fixed_time_prediction_rows,
     paired_uplift,
     reliability_rows,
+    scored_prediction_rows,
     sigmoid,
     threshold_table,
     time_accuracy,
@@ -54,9 +57,39 @@ CORE_FREEZE_SCHEMA_VERSION = "btc-core-freeze-v1"
 TRAINING_MODEL_FILENAME = "training-model.joblib"
 MARKET_EQUAL_ROW_WEIGHT_POLICY = "market_equal"
 EARLY_ENTRY_MARKET_EQUAL_ROW_WEIGHT_POLICY = "early_entry_market_equal"
-EARLY_ENTRY_TRAINING_START_SECONDS = 60
-EARLY_ENTRY_TRAINING_END_SECONDS_INCLUSIVE = 120
-EARLY_ENTRY_TRAINING_WEIGHT_MULTIPLIER = 3.0
+MARKET_EQUAL_ROW_WEIGHT_SCHEDULE = RowWeightScheduleConfig(
+    start_second=None,
+    end_second_inclusive=None,
+    multiplier=1.0,
+)
+EARLY_ENTRY_ROW_WEIGHT_SCHEDULE = RowWeightScheduleConfig(
+    start_second=60,
+    end_second_inclusive=120,
+    multiplier=3.0,
+)
+MODERATE_EARLY_ENTRY_ROW_WEIGHT_SCHEDULE = RowWeightScheduleConfig(
+    start_second=60,
+    end_second_inclusive=120,
+    multiplier=1.5,
+)
+FOCUSED_EARLY_ENTRY_ROW_WEIGHT_SCHEDULE = RowWeightScheduleConfig(
+    start_second=90,
+    end_second_inclusive=120,
+    multiplier=2.0,
+)
+EARLY_ENTRY_TRAINING_START_SECONDS = EARLY_ENTRY_ROW_WEIGHT_SCHEDULE.start_second
+EARLY_ENTRY_TRAINING_END_SECONDS_INCLUSIVE = (
+    EARLY_ENTRY_ROW_WEIGHT_SCHEDULE.end_second_inclusive
+)
+EARLY_ENTRY_TRAINING_WEIGHT_MULTIPLIER = EARLY_ENTRY_ROW_WEIGHT_SCHEDULE.multiplier
+
+
+def legacy_row_weight_schedule(policy: str) -> RowWeightScheduleConfig:
+    if policy == MARKET_EQUAL_ROW_WEIGHT_POLICY:
+        return MARKET_EQUAL_ROW_WEIGHT_SCHEDULE
+    if policy == EARLY_ENTRY_MARKET_EQUAL_ROW_WEIGHT_POLICY:
+        return EARLY_ENTRY_ROW_WEIGHT_SCHEDULE
+    raise ValueError(f"unsupported candidate row-weight policy: {policy}")
 
 
 @dataclass(frozen=True)
@@ -65,6 +98,30 @@ class CandidateSpec:
     family: str
     feature_names: tuple[str, ...]
     row_weight_policy: str = MARKET_EQUAL_ROW_WEIGHT_POLICY
+    row_weight_schedule: RowWeightScheduleConfig | None = None
+
+    def __post_init__(self) -> None:
+        if self.row_weight_policy not in {
+            MARKET_EQUAL_ROW_WEIGHT_POLICY,
+            EARLY_ENTRY_MARKET_EQUAL_ROW_WEIGHT_POLICY,
+        }:
+            raise ValueError(
+                f"unsupported candidate row-weight policy: {self.row_weight_policy}"
+            )
+        schedule = self.row_weight_schedule
+        if schedule is None:
+            schedule = legacy_row_weight_schedule(self.row_weight_policy)
+            object.__setattr__(self, "row_weight_schedule", schedule)
+        if (
+            self.row_weight_policy == MARKET_EQUAL_ROW_WEIGHT_POLICY
+            and schedule != MARKET_EQUAL_ROW_WEIGHT_SCHEDULE
+        ):
+            raise ValueError("market-equal candidates cannot configure a timed multiplier")
+        if (
+            self.row_weight_policy == EARLY_ENTRY_MARKET_EQUAL_ROW_WEIGHT_POLICY
+            and schedule.start_second is None
+        ):
+            raise ValueError("early-entry candidates require a timed multiplier")
 
 
 CANDIDATES = (
@@ -88,6 +145,24 @@ CANDIDATES = (
         "histogram",
         tuple(CORE_ENRICHED_FEATURES),
         EARLY_ENTRY_MARKET_EQUAL_ROW_WEIGHT_POLICY,
+        EARLY_ENTRY_ROW_WEIGHT_SCHEDULE,
+    ),
+)
+
+ADDITIONAL_CANDIDATES = (
+    CandidateSpec(
+        "histogram_early_weighted_moderate",
+        "histogram",
+        tuple(CORE_ENRICHED_FEATURES),
+        EARLY_ENTRY_MARKET_EQUAL_ROW_WEIGHT_POLICY,
+        MODERATE_EARLY_ENTRY_ROW_WEIGHT_SCHEDULE,
+    ),
+    CandidateSpec(
+        "histogram_early_90_120",
+        "histogram",
+        tuple(CORE_ENRICHED_FEATURES),
+        EARLY_ENTRY_MARKET_EQUAL_ROW_WEIGHT_POLICY,
+        FOCUSED_EARLY_ENTRY_ROW_WEIGHT_SCHEDULE,
     ),
 )
 
@@ -102,6 +177,8 @@ class FittedCoreModel:
     standardization_means: np.ndarray | None
     standardization_scales: np.ndarray | None
     estimator: Any
+    row_weight_policy: str | None = None
+    row_weight_schedule: RowWeightScheduleConfig | None = None
 
     def raw_probability(self, frame: pl.DataFrame) -> np.ndarray:
         matrix = feature_matrix(frame, self.feature_names)
@@ -141,13 +218,22 @@ class FrozenTrainingBundle:
 
 def develop_core_models(
     config: CoreTrainingConfig,
+    *,
+    freeze_if_ready: bool = True,
+    fit_final_candidate: bool = True,
 ) -> tuple[Path, Path | None, dict[str, Any]]:
+    if freeze_if_ready and not fit_final_candidate:
+        raise ValueError(
+            "freeze_if_ready requires final candidate fitting to remain enabled"
+        )
     feature_metadata = validate_core_feature_cache(config, "pre_holdout")
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = config.paths.runs / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     update_progress(run_dir, "walk_forward", 0.05)
-    candidate_names = [candidate.name for candidate in CANDIDATES]
+    candidate_names = [
+        candidate.name for candidate in configured_candidate_specs(config)
+    ]
     total_fits = len(candidate_names) * len(config.split.validation_windows)
     fold_results: list[dict[str, Any]] = []
     max_workers = min(config.compute.max_parallel_fits, len(candidate_names))
@@ -186,6 +272,7 @@ def develop_core_models(
 
     walk_forward_rows = combined_fold_rows(fold_results)
     fixed_time_rows = combined_fixed_time_rows(fold_results)
+    walk_forward_probability_rows = combined_scored_probability_rows(fold_results)
     candidate_results = aggregate_candidate_results(config, fold_results)
     selected_name = max(
         candidate_results,
@@ -200,6 +287,55 @@ def develop_core_models(
         f"{selected_development['nonnegative_uplift_folds']}",
         flush=True,
     )
+
+    if not fit_final_candidate:
+        metrics = {
+            "schema_version": CORE_TRAINING_SCHEMA_VERSION,
+            "run_id": run_id,
+            "created_at": datetime.now(UTC).isoformat(),
+            "status": "walk_forward_evidence_ready",
+            "data": feature_metadata,
+            "configuration": config_to_dict(config),
+            "runtime_provenance": runtime_provenance(config.package_root),
+            "selected_candidate": selected_name,
+            "candidates": candidate_results,
+            "final_tuning": None,
+            "probability_calibration": None,
+            "policy": None,
+            "ready_for_holdout": False,
+            "freeze_if_ready": False,
+            "fit_final_candidate": False,
+            "blocking_reasons": [
+                (
+                    "final candidate fitting and calibration are disabled for "
+                    "the execution benchmark"
+                )
+            ],
+        }
+        walk_forward_rows.write_parquet(
+            run_dir / "walk-forward-predictions.parquet",
+            compression="zstd",
+        )
+        fixed_time_rows.write_parquet(
+            run_dir / "walk-forward-fixed-time-predictions.parquet",
+            compression="zstd",
+        )
+        walk_forward_probability_rows.write_parquet(
+            run_dir / "walk-forward-scored-probabilities.parquet",
+            compression="zstd",
+        )
+        write_json_atomic(run_dir / "development-metrics.json", metrics)
+        update_progress(
+            run_dir,
+            "walk_forward_evidence_ready",
+            1.0,
+            {
+                "selected_candidate": selected_name,
+                "fit_final_candidate": False,
+                "freeze_if_ready": False,
+            },
+        )
+        return run_dir, None, metrics
 
     frame = load_core_feature_frame(config, "pre_holdout")
     development = range_frame(
@@ -217,7 +353,7 @@ def develop_core_models(
         config.split.policy_selection_start,
         config.split.policy_selection_end,
     )
-    selected_spec = candidate_spec(selected_name)
+    selected_spec = candidate_spec(selected_name, config)
     final_model, tuning = tune_and_fit_model(development, selected_spec, config)
     calibrator = fit_probability_calibrator(
         final_model,
@@ -274,7 +410,15 @@ def develop_core_models(
         "schema_version": CORE_TRAINING_SCHEMA_VERSION,
         "run_id": run_id,
         "created_at": datetime.now(UTC).isoformat(),
-        "status": "candidate_ready_for_freeze" if ready_for_holdout else "blocked_pre_holdout",
+        "status": (
+            "candidate_ready_for_freeze"
+            if ready_for_holdout and freeze_if_ready
+            else (
+                "candidate_ready_for_execution_benchmark"
+                if ready_for_holdout
+                else "blocked_pre_holdout"
+            )
+        ),
         "data": feature_metadata,
         "configuration": config_to_dict(config),
         "runtime_provenance": runtime,
@@ -296,6 +440,8 @@ def develop_core_models(
             "passed": policy_passed,
         },
         "ready_for_holdout": ready_for_holdout,
+        "freeze_if_ready": freeze_if_ready,
+        "fit_final_candidate": fit_final_candidate,
         "blocking_reasons": pre_holdout_blocking_reasons(
             selected_development,
             policy_passed,
@@ -310,13 +456,17 @@ def develop_core_models(
         run_dir / "walk-forward-fixed-time-predictions.parquet",
         compression="zstd",
     )
+    walk_forward_probability_rows.write_parquet(
+        run_dir / "walk-forward-scored-probabilities.parquet",
+        compression="zstd",
+    )
     policy_rows.write_parquet(
         run_dir / "policy-predictions.parquet",
         compression="zstd",
     )
     write_json_atomic(run_dir / "development-metrics.json", metrics)
     freeze_dir: Path | None = None
-    if ready_for_holdout:
+    if ready_for_holdout and freeze_if_ready:
         bundle = FrozenTrainingBundle(
             model=final_model,
             calibrator=calibrator,
@@ -336,6 +486,16 @@ def develop_core_models(
             0.75,
             {"freeze_dir": str(freeze_dir)},
         )
+    elif ready_for_holdout:
+        update_progress(
+            run_dir,
+            "freeze_deferred_for_execution_benchmark",
+            1.0,
+            {
+                "selected_candidate": selected_name,
+                "freeze_if_ready": False,
+            },
+        )
     else:
         update_progress(
             run_dir,
@@ -354,9 +514,15 @@ def evaluate_candidate_task(
     configure_native_thread_limits(config)
     with threadpool_limits(limits=config.compute.threads_per_fit):
         frame = load_core_feature_frame(config, "pre_holdout")
-        spec = candidate_spec(candidate_name)
+        spec = candidate_spec(candidate_name, config)
         return [
-            evaluate_fold(frame, spec, fold_index, config)
+            evaluate_fold(
+                frame,
+                spec,
+                fold_index,
+                config,
+                include_scored_probabilities=True,
+            )
             for fold_index in range(len(config.split.validation_windows))
         ]
 
@@ -372,9 +538,10 @@ def evaluate_fold_task(
         frame = load_core_feature_frame(config, "pre_holdout")
         return evaluate_fold(
             frame,
-            candidate_spec(candidate_name),
+            candidate_spec(candidate_name, config),
             fold_index,
             config,
+            include_scored_probabilities=True,
         )
 
 
@@ -383,6 +550,8 @@ def evaluate_fold(
     spec: CandidateSpec,
     fold_index: int,
     config: CoreTrainingConfig,
+    *,
+    include_scored_probabilities: bool = False,
 ) -> dict[str, Any]:
     validation_start, validation_end = config.split.validation_windows[fold_index]
     history = range_frame(
@@ -437,7 +606,7 @@ def evaluate_fold(
     metrics = classification_metrics(selected, eligible_markets=eligible)
     baseline = baseline_metrics(selected, eligible_markets=eligible)
     paired = paired_uplift(selected)
-    return {
+    result = {
         "candidate": spec.name,
         "family": spec.family,
         "fold_index": fold_index,
@@ -465,6 +634,14 @@ def evaluate_fold(
         "prediction_rows": selected.to_dicts(),
         "fixed_time_prediction_rows": fixed_time.to_dicts(),
     }
+    if include_scored_probabilities:
+        result["scored_probability_rows"] = scored_fold_probability_rows(
+            validation,
+            probability,
+            spec,
+            fold_index,
+        )
+    return result
 
 
 def aggregate_candidate_results(
@@ -472,7 +649,7 @@ def aggregate_candidate_results(
     fold_results: list[dict[str, Any]],
 ) -> dict[str, Any]:
     output: dict[str, Any] = {}
-    for spec in CANDIDATES:
+    for spec in configured_candidate_specs(config):
         folds = sorted(
             (
                 result
@@ -492,7 +669,12 @@ def aggregate_candidate_results(
             {
                 key: value
                 for key, value in result.items()
-                if key not in {"prediction_rows", "fixed_time_prediction_rows"}
+                if key
+                not in {
+                    "prediction_rows",
+                    "fixed_time_prediction_rows",
+                    "scored_probability_rows",
+                }
             }
             for result in folds
         ]
@@ -511,15 +693,12 @@ def aggregate_candidate_results(
             >= config.gates.minimum_same_time_path_uplift
             for result in folds
         )
-        passed = bool(
-            nonnegative_folds >= config.gates.minimum_nonnegative_uplift_folds
-            and metrics["accuracy"] >= config.gates.target_accuracy
-            and metrics["balanced_accuracy"] >= config.gates.target_balanced_accuracy
-            and metrics["up_recall"] >= config.gates.minimum_direction_recall
-            and metrics["down_recall"] >= config.gates.minimum_direction_recall
-            and metrics["coverage"] >= config.gates.minimum_coverage
-            and paired["accuracy_uplift"]
-            >= config.gates.minimum_same_time_path_uplift
+        passed = development_gate_passed(
+            config,
+            metrics,
+            paired,
+            bootstrap,
+            nonnegative_folds,
         )
         output[spec.name] = {
             "candidate": spec.name,
@@ -527,6 +706,7 @@ def aggregate_candidate_results(
             "feature_count": len(spec.feature_names),
             "features": list(spec.feature_names),
             "row_weight_policy": spec.row_weight_policy,
+            "row_weight_schedule": row_weight_schedule_payload(spec),
             "folds": summarized_folds,
             "out_of_fold": metrics,
             "baseline": baseline,
@@ -540,6 +720,28 @@ def aggregate_candidate_results(
             "passed_development": passed,
         }
     return output
+
+
+def development_gate_passed(
+    config: CoreTrainingConfig,
+    metrics: dict[str, Any],
+    paired: dict[str, Any],
+    bootstrap: dict[str, Any],
+    nonnegative_folds: int,
+) -> bool:
+    return bool(
+        nonnegative_folds >= config.gates.minimum_nonnegative_uplift_folds
+        and metrics["accuracy"] >= config.gates.target_accuracy
+        and metrics["wilson_lower_95"] >= config.gates.target_wilson_lower
+        and metrics["balanced_accuracy"] >= config.gates.target_balanced_accuracy
+        and metrics["up_recall"] >= config.gates.minimum_direction_recall
+        and metrics["down_recall"] >= config.gates.minimum_direction_recall
+        and metrics["coverage"] >= config.gates.minimum_coverage
+        and metrics["expected_calibration_error"] <= config.gates.maximum_ece
+        and paired["accuracy_uplift"]
+        >= config.gates.minimum_same_time_path_uplift
+        and bootstrap["lower_95"] >= 0.0
+    )
 
 
 def candidate_rank(result: dict[str, Any]) -> tuple[Any, ...]:
@@ -662,6 +864,8 @@ def fit_model(
         standardization_means=means,
         standardization_scales=scales,
         estimator=estimator,
+        row_weight_policy=spec.row_weight_policy,
+        row_weight_schedule=resolved_row_weight_schedule(spec),
     )
 
 
@@ -675,7 +879,7 @@ def fit_probability_calibrator(
     labels = frame["label_up"].to_numpy()
     weights = candidate_training_weights(
         frame,
-        spec or candidate_spec(model.candidate_name),
+        spec or model_candidate_spec(model),
     )
     calibrator = LogisticRegression(
         C=1_000_000,
@@ -700,6 +904,9 @@ def freeze_candidate(
     metrics: dict[str, Any],
     bundle: FrozenTrainingBundle,
 ) -> Path:
+    holdout_start, holdout_end = evaluation_holdout_range(config)
+    if holdout_start >= holdout_end:
+        raise RuntimeError("cannot freeze a candidate without a positive holdout range")
     freeze_id = (
         f"{metrics['run_id']}-{bundle.model.candidate_name}"
     )
@@ -708,6 +915,7 @@ def freeze_candidate(
     model_path = freeze_dir / TRAINING_MODEL_FILENAME
     joblib.dump(bundle, model_path, compress=3)
     model_summary = model_summary_payload(bundle)
+    frozen_spec = model_candidate_spec(bundle.model)
     write_json_atomic(freeze_dir / "model-summary.json", model_summary)
     feature_metadata_path = config.paths.development_feature_data.with_suffix(
         ".metadata.json"
@@ -724,9 +932,8 @@ def freeze_candidate(
         "model_summary_sha256": file_sha256(freeze_dir / "model-summary.json"),
         "candidate": bundle.model.candidate_name,
         "family": bundle.model.family,
-        "row_weight_policy": candidate_spec(
-            bundle.model.candidate_name
-        ).row_weight_policy,
+        "row_weight_policy": frozen_spec.row_weight_policy,
+        "row_weight_schedule": row_weight_schedule_payload(frozen_spec),
         "feature_schema_version": CORE_FEATURE_SCHEMA_VERSION,
         "feature_names": list(bundle.model.feature_names),
         "hyperparameters": bundle.model.hyperparameters,
@@ -748,8 +955,8 @@ def freeze_candidate(
         "git": metrics["runtime_provenance"]["git"],
         "random_seed": config.model.random_seed,
         "holdout_range": {
-            "start": config.split.holdout_start.isoformat(),
-            "end": config.split.holdout_end.isoformat(),
+            "start": holdout_start.isoformat(),
+            "end": holdout_end.isoformat(),
         },
         "gates": asdict(config.gates),
         "walk_forward_accuracy": metrics["candidates"][
@@ -771,6 +978,9 @@ def evaluate_core_holdout(
     config: CoreTrainingConfig,
     freeze_dir: Path,
 ) -> tuple[Path, dict[str, Any]]:
+    holdout_start, holdout_end = evaluation_holdout_range(config)
+    if holdout_start >= holdout_end:
+        raise RuntimeError("holdout evaluation requires a positive holdout range")
     manifest_path = freeze_dir / "freeze-manifest.json"
     if not manifest_path.exists():
         raise RuntimeError("freeze manifest is missing")
@@ -795,8 +1005,8 @@ def evaluate_core_holdout(
     bundle: FrozenTrainingBundle = joblib.load(model_path)
     frame = load_core_feature_frame(config, "holdout")
     if (
-        frame["window_start"].min() < config.split.holdout_start
-        or frame["window_start"].max() >= config.split.holdout_end
+        frame["window_start"].min() < holdout_start
+        or frame["window_start"].max() >= holdout_end
     ):
         raise RuntimeError("holdout feature file escapes the frozen holdout range")
     probability = bundle.probability(frame)
@@ -983,10 +1193,11 @@ def establish_holdout_access(
     freeze_hash: str,
     freeze_dir: Path,
 ) -> None:
+    holdout_start, holdout_end = evaluation_holdout_range(config)
     payload = {
         "schema_version": "btc-core-holdout-access-v1",
-        "range_start": config.split.holdout_start.isoformat(),
-        "range_end": config.split.holdout_end.isoformat(),
+        "range_start": holdout_start.isoformat(),
+        "range_end": holdout_end.isoformat(),
         "freeze_manifest_sha256": freeze_hash,
         "freeze_dir": str(freeze_dir),
         "accessed_at": datetime.now(UTC).isoformat(),
@@ -1002,19 +1213,22 @@ def establish_holdout_access(
 
 
 def holdout_access_path(config: CoreTrainingConfig) -> Path:
-    start = config.split.holdout_start.date().isoformat()
-    end = (config.split.holdout_end.date()).isoformat()
+    holdout_start, holdout_end = evaluation_holdout_range(config)
+    start = holdout_start.date().isoformat()
+    end = holdout_end.date().isoformat()
     return config.paths.artifacts / f"holdout-access-{start}-{end}.json"
 
 
 def model_summary_payload(bundle: FrozenTrainingBundle) -> dict[str, Any]:
     model = bundle.model
+    spec = model_candidate_spec(model)
     payload: dict[str, Any] = {
         "schema_version": "btc-core-training-model-summary-v1",
         "training_only": True,
         "candidate": model.candidate_name,
         "family": model.family,
-        "row_weight_policy": candidate_spec(model.candidate_name).row_weight_policy,
+        "row_weight_policy": spec.row_weight_policy,
+        "row_weight_schedule": row_weight_schedule_payload(spec),
         "feature_names": list(model.feature_names),
         "hyperparameters": model.hyperparameters,
         "imputation_medians": model.imputation_medians.tolist(),
@@ -1058,11 +1272,78 @@ def configure_native_thread_limits(config: CoreTrainingConfig) -> None:
     os.environ.setdefault("POLARS_MAX_THREADS", str(config.compute.polars_threads))
 
 
-def candidate_spec(name: str) -> CandidateSpec:
-    for candidate in CANDIDATES:
+def candidate_spec(
+    name: str,
+    config: CoreTrainingConfig | None = None,
+) -> CandidateSpec:
+    base: CandidateSpec | None = None
+    for candidate in CANDIDATES + ADDITIONAL_CANDIDATES:
         if candidate.name == name:
-            return candidate
-    raise ValueError(f"unknown core candidate: {name}")
+            base = candidate
+            break
+    if base is None:
+        raise ValueError(f"unknown core candidate: {name}")
+    if config is None:
+        return base
+    model_config = getattr(config, "model", None)
+    if model_config is None:
+        return base
+    schedules = {
+        entry.candidate: entry.schedule
+        for entry in getattr(model_config, "row_weight_schedules", ())
+    }
+    schedule = schedules.get(name)
+    if schedule is None:
+        return base
+    policy = (
+        MARKET_EQUAL_ROW_WEIGHT_POLICY
+        if schedule.start_second is None
+        else EARLY_ENTRY_MARKET_EQUAL_ROW_WEIGHT_POLICY
+    )
+    return CandidateSpec(
+        base.name,
+        base.family,
+        base.feature_names,
+        policy,
+        schedule,
+    )
+
+
+def configured_candidate_specs(
+    config: CoreTrainingConfig,
+) -> tuple[CandidateSpec, ...]:
+    return tuple(
+        candidate_spec(name, config)
+        for name in config.model.candidate_names
+    )
+
+
+def model_candidate_spec(model: FittedCoreModel) -> CandidateSpec:
+    base = candidate_spec(model.candidate_name)
+    schedule = vars(model).get("row_weight_schedule")
+    policy = vars(model).get("row_weight_policy") or base.row_weight_policy
+    if schedule is None:
+        return base
+    return CandidateSpec(
+        base.name,
+        base.family,
+        base.feature_names,
+        policy,
+        schedule,
+    )
+
+
+def resolved_row_weight_schedule(
+    spec: CandidateSpec,
+) -> RowWeightScheduleConfig:
+    schedule = spec.row_weight_schedule
+    if schedule is None:
+        raise RuntimeError(f"{spec.name} does not have a resolved row-weight schedule")
+    return schedule
+
+
+def row_weight_schedule_payload(spec: CandidateSpec) -> dict[str, Any]:
+    return asdict(resolved_row_weight_schedule(spec))
 
 
 def histogram_parameters(candidate: HistogramCandidate) -> dict[str, Any]:
@@ -1107,40 +1388,46 @@ def transform_for_model(
 
 
 def market_equal_weights(frame: pl.DataFrame) -> np.ndarray:
-    counts = frame.group_by("market_id").len().rename({"len": "market_rows"})
-    market_rows = frame.join(counts, on="market_id", how="left")[
-        "market_rows"
-    ].to_numpy()
-    raw = 1.0 / market_rows
-    return raw / raw.mean()
+    return scheduled_market_equal_weights(frame, MARKET_EQUAL_ROW_WEIGHT_SCHEDULE)
 
 
 def candidate_training_weights(
     frame: pl.DataFrame,
     spec: CandidateSpec,
 ) -> np.ndarray:
-    if spec.row_weight_policy == MARKET_EQUAL_ROW_WEIGHT_POLICY:
-        return market_equal_weights(frame)
-    if spec.row_weight_policy == EARLY_ENTRY_MARKET_EQUAL_ROW_WEIGHT_POLICY:
-        return early_entry_market_equal_weights(frame)
-    raise ValueError(
-        f"unsupported candidate row-weight policy: {spec.row_weight_policy}"
+    return scheduled_market_equal_weights(
+        frame,
+        resolved_row_weight_schedule(spec),
     )
 
 
 def early_entry_market_equal_weights(frame: pl.DataFrame) -> np.ndarray:
+    return scheduled_market_equal_weights(frame, EARLY_ENTRY_ROW_WEIGHT_SCHEDULE)
+
+
+def scheduled_market_equal_weights(
+    frame: pl.DataFrame,
+    schedule: RowWeightScheduleConfig,
+) -> np.ndarray:
+    if frame.is_empty():
+        raise ValueError("cannot calculate row weights for an empty frame")
+    if schedule.start_second is None:
+        time_weight = pl.lit(schedule.multiplier)
+    else:
+        time_weight = (
+            pl.when(
+                pl.col("seconds_elapsed").is_between(
+                    schedule.start_second,
+                    schedule.end_second_inclusive,
+                    closed="both",
+                )
+            )
+            .then(pl.lit(schedule.multiplier))
+            .otherwise(pl.lit(1.0))
+        )
     weighted = frame.select(
         "market_id",
-        pl.when(
-            pl.col("seconds_elapsed").is_between(
-                EARLY_ENTRY_TRAINING_START_SECONDS,
-                EARLY_ENTRY_TRAINING_END_SECONDS_INCLUSIVE,
-                closed="both",
-            )
-        )
-        .then(pl.lit(EARLY_ENTRY_TRAINING_WEIGHT_MULTIPLIER))
-        .otherwise(pl.lit(1.0))
-        .alias("time_weight"),
+        time_weight.alias("time_weight"),
     ).with_columns(
         pl.col("time_weight").sum().over("market_id").alias("market_weight_total")
     )
@@ -1238,6 +1525,35 @@ def combined_fixed_time_rows(
     if not rows:
         return pl.DataFrame()
     return pl.DataFrame(rows).sort(
+        ["observed_at", "market_id", "candidate", "fold_index"]
+    )
+
+
+def scored_fold_probability_rows(
+    validation: pl.DataFrame,
+    probabilities: np.ndarray,
+    spec: CandidateSpec,
+    fold_index: int,
+) -> pl.DataFrame:
+    return scored_prediction_rows(validation, probabilities).with_columns(
+        pl.lit(spec.name).alias("candidate"),
+        pl.lit(fold_index).cast(pl.Int32).alias("fold_index"),
+    )
+
+
+def combined_scored_probability_rows(
+    fold_results: list[dict[str, Any]],
+) -> pl.DataFrame:
+    frames: list[pl.DataFrame] = []
+    for result in fold_results:
+        rows = result.get("scored_probability_rows")
+        if isinstance(rows, pl.DataFrame):
+            frames.append(rows)
+        elif rows:
+            frames.append(pl.DataFrame(rows))
+    if not frames:
+        return pl.DataFrame()
+    return pl.concat(frames, how="vertical_relaxed").sort(
         ["observed_at", "market_id", "candidate", "fold_index"]
     )
 

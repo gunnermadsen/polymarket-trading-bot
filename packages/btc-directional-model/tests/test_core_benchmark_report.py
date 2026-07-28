@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 from btc_directional_model.core_benchmark import BENCHMARK_SCHEMA_VERSION
@@ -146,3 +147,49 @@ def test_generate_report_writes_self_contained_html(tmp_path: Path) -> None:
     assert destination.exists()
     assert "<!doctype html>" in contents
     assert "plotly.js" in contents
+
+
+def test_report_labels_chronological_policy_and_reused_diagnostics() -> None:
+    record = deepcopy(report_record())
+    record["candidates"]["control"]["policy"].update(
+        {
+            "confidence_threshold": None,
+            "selection_mode": "chronological_preselected",
+            "confidence_threshold_min": 0.87,
+            "confidence_threshold_max": 0.91,
+        }
+    )
+    record["training_evidence"] = {
+        "core_candidates": {},
+        "prior_diagnostics": {"reused_without_retraining": True},
+        "preopen_candidate": {
+            "candidate": "preopen",
+            "out_of_fold": record["candidates"]["control"]["own_policy"],
+            "timing": {
+                "median_first_crossing_seconds": 90,
+                "early_entry_coverage": 0.5,
+            },
+            "passed_development": False,
+        },
+    }
+    record["training_selection"] = {
+        "finalist": None,
+        "candidates": {
+            "early-core": {
+                "passed": False,
+                "checks": [
+                    {
+                        "name": "minimum executable economics samples",
+                        "passed": False,
+                    }
+                ],
+            }
+        },
+    }
+
+    document = render_benchmark_report(record)
+
+    assert "chronological 0.87–0.91" in document
+    assert "prior diagnostic — reused, not retrained, not eligible" in document
+    assert "Frozen training selection" in document
+    assert "no runtime freeze created" in document

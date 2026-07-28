@@ -118,6 +118,7 @@ same-market, exact-timestamp checkpoint comparisons · fixed five-share economic
 <section class="panel"><h2>Own-policy outcomes</h2><div class="table-wrap">
 {_candidate_table(benchmark, candidate_order)}</div></section>
 {_training_evidence_panel(benchmark)}
+{_training_selection_panel(benchmark)}
 {_data_evidence_panel(benchmark)}
 <div class="grid" style="margin-top:14px">{plots}</div>
 <section class="panel" style="margin-top:14px"><h2>Advance gates</h2>
@@ -148,12 +149,21 @@ def _training_evidence_panel(benchmark: dict[str, Any]) -> str:
                 candidate.get("passed_development"),
             )
         )
+    prior_diagnostics = evidence.get("prior_diagnostics")
+    reused_prior = (
+        isinstance(prior_diagnostics, dict)
+        and prior_diagnostics.get("reused_without_retraining") is True
+    )
     preopen = evidence.get("preopen_candidate")
     if isinstance(preopen, dict):
         rows.append(
             _training_evidence_row(
                 str(preopen["candidate"]),
-                "five-fold walk-forward / pre-open BTC",
+                (
+                    "prior diagnostic — reused, not retrained, not eligible"
+                    if reused_prior
+                    else "five-fold walk-forward / pre-open BTC"
+                ),
                 preopen["out_of_fold"],
                 preopen["timing"],
                 preopen.get("passed_development"),
@@ -164,7 +174,11 @@ def _training_evidence_panel(benchmark: dict[str, Any]) -> str:
         rows.append(
             _training_evidence_row(
                 str(book["candidate"]),
-                "clean-book chronological policy",
+                (
+                    "prior diagnostic — reused, not retrained, not eligible"
+                    if reused_prior
+                    else "clean-book chronological policy"
+                ),
                 book["metrics"],
                 book["timing"],
                 bool(book.get("threshold_qualified")),
@@ -190,6 +204,40 @@ def _training_evidence_panel(benchmark: dict[str, Any]) -> str:
         '<div class="table-wrap">'
         + _table(headings, rows)
         + "</div></section>"
+    )
+
+
+def _training_selection_panel(benchmark: dict[str, Any]) -> str:
+    selection = benchmark.get("training_selection")
+    if not isinstance(selection, dict):
+        return ""
+    rows = []
+    for name, candidate in selection.get("candidates", {}).items():
+        failed = [
+            check["name"]
+            for check in candidate.get("checks", [])
+            if not check["passed"]
+        ]
+        rows.append(
+            (
+                name,
+                "PASS" if candidate.get("passed") else "BLOCKED",
+                ", ".join(failed) if failed else "all frozen training gates",
+                "deferred; no runtime freeze created",
+            )
+        )
+    finalist = selection.get("finalist") or "none"
+    return (
+        '<section class="panel" style="margin-top:14px">'
+        "<h2>Frozen training selection</h2>"
+        f"<p>Finalist: <strong>{html.escape(str(finalist))}</strong>. "
+        "This selection excludes deferred native runtime evidence and does not "
+        "create a deployment artifact.</p>"
+        + _table(
+            ("Candidate", "Training gate", "Failed checks", "Runtime"),
+            rows,
+        )
+        + "</section>"
     )
 
 
@@ -225,6 +273,14 @@ def _data_evidence_panel(benchmark: dict[str, Any]) -> str:
     if not execution:
         return ""
     rows = [
+        (
+            "Exact training range",
+            _range_label(evidence.get("training_range")),
+        ),
+        (
+            "Execution-economics cohort",
+            _range_label(evidence.get("execution_cohort")),
+        ),
         ("Execution-evidence rows", f"{execution['rows']:,}"),
         ("Execution-evidence markets", f"{execution['markets']:,}"),
         (
@@ -236,6 +292,16 @@ def _data_evidence_panel(benchmark: dict[str, Any]) -> str:
         (
             "Complete pre-open markets",
             f"{preopen.get('complete_feature_markets', 0):,}",
+        ),
+        (
+            "Pre-open/book diagnostics",
+            (
+                "prior run reused by pinned SHA; not retrained or selectable"
+                if evidence.get("prior_diagnostics", {}).get(
+                    "reused_without_retraining"
+                )
+                else "trained in this benchmark run"
+            ),
         ),
         (
             "Book quality role",
@@ -312,7 +378,7 @@ def _candidate_table(
         rows.append(
             (
                 name,
-                _decimal(candidate["policy"]["confidence_threshold"], 2),
+                _policy_threshold_label(candidate["policy"]),
                 f"{metrics['markets']:,}",
                 _percent(metrics["coverage"]),
                 f"{metrics['no_trade_markets']:,}",
@@ -563,6 +629,28 @@ def _evidence_css(evidence: dict[str, Any]) -> str:
         if evidence["kind"] == "holdout" and evidence["independent"]
         else "blocked"
     )
+
+
+def _policy_threshold_label(policy: dict[str, Any]) -> str:
+    if policy.get("selection_mode") == "chronological_preselected":
+        minimum = policy.get("confidence_threshold_min")
+        maximum = policy.get("confidence_threshold_max")
+        if minimum is None or maximum is None:
+            return "chronological"
+        return f"chronological {minimum:.2f}–{maximum:.2f}"
+    return _decimal(policy.get("confidence_threshold"), 2)
+
+
+def _range_label(value: Any) -> str:
+    if not isinstance(value, dict):
+        return "N/A"
+    start = value.get("start")
+    end = value.get("end_exclusive")
+    if start is None or end is None:
+        return "N/A"
+    days = value.get("calendar_days")
+    suffix = f" ({days} calendar days)" if days is not None else ""
+    return f"[{start}, {end}){suffix}"
 
 
 def _percent(value: float | None) -> str:

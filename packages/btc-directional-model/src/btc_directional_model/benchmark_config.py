@@ -8,6 +8,9 @@ from typing import Any
 
 from .core_config import parse_utc_day
 
+LEGACY_OFFLINE_BENCHMARK_MODE = "legacy_offline_challengers"
+CORE_ONLY_REUSE_DIAGNOSTICS_MODE = "core_only_reuse_diagnostics"
+
 
 @dataclass(frozen=True)
 class BenchmarkIdentityConfig:
@@ -19,6 +22,15 @@ class BenchmarkIdentityConfig:
     evaluation_note: str
     fixed_evaluation_seconds: tuple[int, ...]
     quantity: float
+    mode: str
+    candidate_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PriorDiagnosticsConfig:
+    record: Path
+    sha256: str
+    run_id: str
 
 
 @dataclass(frozen=True)
@@ -95,6 +107,7 @@ class EntryBenchmarkConfig:
     gates: BenchmarkGateConfig
     compute: BenchmarkComputeConfig
     paths: BenchmarkPathConfig
+    prior_diagnostics: PriorDiagnosticsConfig | None
 
 
 def load_entry_benchmark_config(path: Path) -> EntryBenchmarkConfig:
@@ -110,13 +123,16 @@ def load_entry_benchmark_config(path: Path) -> EntryBenchmarkConfig:
     gates_raw = raw["advancement_gates"]
     compute_raw = raw["compute"]
     paths_raw = raw["paths"]
+    prior_raw = raw.get("prior_diagnostics")
+    control_candidate = str(benchmark_raw["control_candidate"])
+    early_candidate = str(benchmark_raw["early_candidate"])
     config = EntryBenchmarkConfig(
         source_path=source_path,
         package_root=package_root,
         benchmark=BenchmarkIdentityConfig(
             core_config=package_root / str(benchmark_raw["core_config"]),
-            control_candidate=str(benchmark_raw["control_candidate"]),
-            early_candidate=str(benchmark_raw["early_candidate"]),
+            control_candidate=control_candidate,
+            early_candidate=early_candidate,
             strict_book_candidate=str(benchmark_raw["strict_book_candidate"]),
             evaluation_is_independent=bool(
                 benchmark_raw["evaluation_is_independent"]
@@ -126,6 +142,19 @@ def load_entry_benchmark_config(path: Path) -> EntryBenchmarkConfig:
                 int(value) for value in benchmark_raw["fixed_evaluation_seconds"]
             ),
             quantity=float(benchmark_raw["quantity"]),
+            mode=str(
+                benchmark_raw.get(
+                    "mode",
+                    LEGACY_OFFLINE_BENCHMARK_MODE,
+                )
+            ),
+            candidate_names=tuple(
+                str(value)
+                for value in benchmark_raw.get(
+                    "candidate_names",
+                    (control_candidate, early_candidate),
+                )
+            ),
         ),
         execution=BenchmarkExecutionConfig(
             range_start=parse_utc_day(execution_raw["range_start"]),
@@ -211,6 +240,15 @@ def load_entry_benchmark_config(path: Path) -> EntryBenchmarkConfig:
             runs=package_root / str(paths_raw["runs"]),
             artifacts=package_root / str(paths_raw["artifacts"]),
         ),
+        prior_diagnostics=(
+            PriorDiagnosticsConfig(
+                record=package_root / str(prior_raw["record"]),
+                sha256=str(prior_raw["sha256"]).lower(),
+                run_id=str(prior_raw["run_id"]),
+            )
+            if prior_raw is not None
+            else None
+        ),
     )
     validate_entry_benchmark_config(config)
     return config
@@ -222,6 +260,11 @@ def validate_entry_benchmark_config(config: EntryBenchmarkConfig) -> None:
     split = config.book_split
     if not identity.core_config.is_file():
         raise ValueError(f"core config is missing: {identity.core_config}")
+    if identity.mode not in {
+        LEGACY_OFFLINE_BENCHMARK_MODE,
+        CORE_ONLY_REUSE_DIAGNOSTICS_MODE,
+    }:
+        raise ValueError(f"unsupported benchmark mode: {identity.mode}")
     candidates = (
         identity.control_candidate,
         identity.early_candidate,
@@ -231,6 +274,36 @@ def validate_entry_benchmark_config(config: EntryBenchmarkConfig) -> None:
         raise ValueError("benchmark candidate names must be non-empty")
     if len(set(candidates)) != len(candidates):
         raise ValueError("benchmark candidate names must be unique")
+    if (
+        not identity.candidate_names
+        or any(not candidate.strip() for candidate in identity.candidate_names)
+        or len(set(identity.candidate_names)) != len(identity.candidate_names)
+    ):
+        raise ValueError("active candidate_names must be non-empty and unique")
+    if identity.control_candidate not in identity.candidate_names:
+        raise ValueError("control_candidate must be in active candidate_names")
+    if (
+        identity.mode == LEGACY_OFFLINE_BENCHMARK_MODE
+        and identity.candidate_names
+        != (identity.control_candidate, identity.early_candidate)
+    ):
+        raise ValueError(
+            "legacy benchmark candidate_names must remain control plus early"
+        )
+    if (
+        identity.mode == CORE_ONLY_REUSE_DIAGNOSTICS_MODE
+        and config.prior_diagnostics is None
+    ):
+        raise ValueError("core-only benchmark requires pinned prior diagnostics")
+    if config.prior_diagnostics is not None:
+        diagnostics = config.prior_diagnostics
+        if (
+            len(diagnostics.sha256) != 64
+            or any(character not in "0123456789abcdef" for character in diagnostics.sha256)
+        ):
+            raise ValueError("prior diagnostics sha256 must be 64 lowercase hex digits")
+        if not diagnostics.run_id.strip():
+            raise ValueError("prior diagnostics run_id must be non-empty")
     if not identity.evaluation_note:
         raise ValueError("benchmark evaluation note is required")
     if identity.evaluation_is_independent:
@@ -349,4 +422,12 @@ def benchmark_config_to_dict(config: EntryBenchmarkConfig) -> dict[str, Any]:
             "runs": str(config.paths.runs),
             "artifacts": str(config.paths.artifacts),
         },
+        "prior_diagnostics": (
+            {
+                **asdict(config.prior_diagnostics),
+                "record": str(config.prior_diagnostics.record),
+            }
+            if config.prior_diagnostics is not None
+            else None
+        ),
     }

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import numpy as np
 import polars as pl
+import pytest
 
 from btc_directional_model.core_evaluation import (
     block_bootstrap_uplift,
+    choose_threshold,
     first_crossing_timing,
     first_prediction_rows,
     fixed_time_prediction_rows,
@@ -125,3 +128,100 @@ def test_first_crossing_timing_reports_frozen_bands_and_quantiles() -> None:
         "180-240",
     ]
     assert [band["markets"] for band in timing["time_bands"]] == [6, 6, 6, 6]
+
+
+def test_threshold_selection_maximizes_coverage_after_all_gates_pass() -> None:
+    lower_coverage = qualifying_threshold_row(
+        threshold=0.90,
+        coverage=0.60,
+        wilson_lower=0.92,
+        ece=0.01,
+        uplift=0.04,
+    )
+    higher_coverage_at_boundaries = qualifying_threshold_row(
+        threshold=0.87,
+        coverage=0.70,
+        wilson_lower=0.865,
+        ece=0.05,
+        uplift=0.0,
+    )
+
+    threshold, qualified = choose_threshold(
+        [lower_coverage, higher_coverage_at_boundaries],
+        threshold_gates(),
+        minimum_markets=100,
+    )
+
+    assert qualified
+    assert threshold == 0.87
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("expected_calibration_error", 0.050001),
+        ("accuracy_uplift", -0.000001),
+    ],
+)
+def test_threshold_selection_rejects_calibration_or_uplift_gate_violation(
+    field: str,
+    value: float,
+) -> None:
+    valid = qualifying_threshold_row(
+        threshold=0.89,
+        coverage=0.60,
+        wilson_lower=0.87,
+        ece=0.04,
+        uplift=0.01,
+    )
+    invalid_higher_coverage = qualifying_threshold_row(
+        threshold=0.87,
+        coverage=0.75,
+        wilson_lower=0.90,
+        ece=0.04,
+        uplift=0.01,
+    )
+    invalid_higher_coverage[field] = value
+
+    threshold, qualified = choose_threshold(
+        [invalid_higher_coverage, valid],
+        threshold_gates(),
+        minimum_markets=100,
+    )
+
+    assert qualified
+    assert threshold == 0.89
+
+
+def threshold_gates() -> SimpleNamespace:
+    return SimpleNamespace(
+        minimum_coverage=0.55,
+        target_accuracy=0.874,
+        target_wilson_lower=0.865,
+        target_balanced_accuracy=0.874,
+        minimum_direction_recall=0.874,
+        maximum_ece=0.05,
+        minimum_same_time_path_uplift=0.0,
+    )
+
+
+def qualifying_threshold_row(
+    *,
+    threshold: float,
+    coverage: float,
+    wilson_lower: float,
+    ece: float,
+    uplift: float,
+) -> dict[str, float | int]:
+    return {
+        "threshold": threshold,
+        "markets": round(coverage * 1_000),
+        "coverage": coverage,
+        "accuracy": 0.90,
+        "wilson_lower_95": wilson_lower,
+        "balanced_accuracy": 0.90,
+        "up_recall": 0.90,
+        "down_recall": 0.90,
+        "expected_calibration_error": ece,
+        "accuracy_uplift": uplift,
+    }

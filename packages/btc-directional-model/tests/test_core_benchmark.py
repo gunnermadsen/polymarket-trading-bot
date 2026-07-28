@@ -9,6 +9,7 @@ from btc_directional_model.core_benchmark import (
     BenchmarkEvidence,
     CandidatePolicy,
     benchmark_predictions,
+    select_chronological_policy_rows,
 )
 
 
@@ -194,3 +195,71 @@ def test_missing_native_performance_evidence_blocks_candidate() -> None:
     assert checks["native inference p99 is within budget"]["passed"] is False
     assert checks["runtime model size is within budget"]["passed"] is False
     assert advance["deployment_qualified"] is False
+
+
+def test_chronological_policy_uses_preselected_first_crossing_and_full_scores() -> None:
+    frame = prediction_frame("control", early=True).with_columns(
+        pl.when(pl.col("market_id").is_in(["market-00", "market-01"]))
+        .then(0.91)
+        .otherwise(0.87)
+        .alias("selected_confidence_threshold")
+    )
+    first_crossings = (
+        frame.filter(
+            pl.col("confidence") >= pl.col("selected_confidence_threshold")
+        )
+        .sort(["market_id", "seconds_elapsed", "observed_at"])
+        .group_by("market_id", maintain_order=True)
+        .first()
+        .select("market_id", "observed_at", "seconds_elapsed")
+        .with_columns(pl.lit(True).alias("policy_selected"))
+    )
+    frame = frame.join(
+        first_crossings,
+        on=["market_id", "observed_at", "seconds_elapsed"],
+        how="left",
+    ).with_columns(pl.col("policy_selected").fill_null(False))
+
+    selected = select_chronological_policy_rows(frame)
+    result = benchmark_predictions(
+        {"control": frame},
+        policies={
+            "control": CandidatePolicy(
+                confidence_threshold=None,
+                deployment_compatible=True,
+                selection_mode="chronological_preselected",
+                confidence_threshold_min=0.87,
+                confidence_threshold_max=0.91,
+            )
+        },
+        control_candidate="control",
+        evidence=BenchmarkEvidence(
+            label="Chronological development",
+            kind="development",
+            independent=False,
+        ),
+        minimum_samples=1,
+    )
+
+    assert selected.height == 10
+    assert result["candidates"]["control"]["own_policy"]["markets"] == 10
+    assert result["candidates"]["control"]["own_policy"][
+        "confidence_no_trade_markets"
+    ] == 2
+    assert result["candidates"]["control"]["checkpoints"][1][
+        "seconds_elapsed"
+    ] == 90
+
+
+def test_chronological_policy_rejects_a_marker_that_is_not_first_crossing() -> None:
+    frame = (
+        prediction_frame("control", early=True)
+        .filter(pl.col("market_id") == "market-00")
+        .with_columns(
+            pl.lit(0.80).alias("selected_confidence_threshold"),
+            (pl.col("seconds_elapsed") == 120).alias("policy_selected"),
+        )
+    )
+
+    with pytest.raises(ValueError, match="does not match"):
+        select_chronological_policy_rows(frame)

@@ -6,6 +6,56 @@ from datetime import UTC, datetime, time
 from pathlib import Path
 from typing import Any
 
+EQUAL_TOTAL_PER_MARKET_NORMALIZATION = "equal_total_per_market"
+HISTORICAL_CORE_CANDIDATE_NAMES = (
+    "logistic_baseline",
+    "logistic_enriched",
+    "histogram_enriched",
+    "histogram_early_weighted",
+)
+KNOWN_CORE_CANDIDATE_FAMILIES = {
+    "logistic_baseline": "logistic",
+    "logistic_enriched": "logistic",
+    "histogram_enriched": "histogram",
+    "histogram_early_weighted": "histogram",
+    "histogram_early_weighted_moderate": "histogram",
+    "histogram_early_90_120": "histogram",
+}
+
+
+@dataclass(frozen=True)
+class RowWeightScheduleConfig:
+    start_second: int | None
+    end_second_inclusive: int | None
+    multiplier: float
+    normalization: str = EQUAL_TOTAL_PER_MARKET_NORMALIZATION
+
+    def __post_init__(self) -> None:
+        has_start = self.start_second is not None
+        has_end = self.end_second_inclusive is not None
+        if has_start != has_end:
+            raise ValueError(
+                "row-weight schedule start and end seconds must both be configured"
+            )
+        if has_start and (
+            self.start_second < 0
+            or self.end_second_inclusive < self.start_second
+            or self.end_second_inclusive > 300
+        ):
+            raise ValueError("row-weight schedule interval is invalid")
+        if self.multiplier <= 0:
+            raise ValueError("row-weight schedule multiplier must be positive")
+        if self.normalization != EQUAL_TOTAL_PER_MARKET_NORMALIZATION:
+            raise ValueError(
+                "row-weight schedule must use equal-total-per-market normalization"
+            )
+
+
+@dataclass(frozen=True)
+class CandidateRowWeightScheduleConfig:
+    candidate: str
+    schedule: RowWeightScheduleConfig
+
 
 @dataclass(frozen=True)
 class CoreDataConfig:
@@ -28,6 +78,8 @@ class CoreSplitConfig:
     policy_selection_end: datetime
     holdout_start: datetime
     holdout_end: datetime
+    independent_holdout_start: datetime | None
+    independent_holdout_end: datetime | None
     validation_windows: tuple[tuple[datetime, datetime], ...]
 
 
@@ -48,6 +100,8 @@ class CoreModelConfig:
     confidence_max: float
     confidence_step: float
     random_seed: int
+    candidate_names: tuple[str, ...]
+    row_weight_schedules: tuple[CandidateRowWeightScheduleConfig, ...]
 
 
 @dataclass(frozen=True)
@@ -130,6 +184,16 @@ def load_core_config(path: Path) -> CoreTrainingConfig:
         policy_selection_end=parse_utc_day(split_raw["policy_selection_end"]),
         holdout_start=parse_utc_day(split_raw["holdout_start"]),
         holdout_end=parse_utc_day(split_raw["holdout_end"]),
+        independent_holdout_start=(
+            parse_utc_day(split_raw["independent_holdout_start"])
+            if "independent_holdout_start" in split_raw
+            else None
+        ),
+        independent_holdout_end=(
+            parse_utc_day(split_raw["independent_holdout_end"])
+            if "independent_holdout_end" in split_raw
+            else None
+        ),
         validation_windows=tuple(zip(validation_starts, validation_ends, strict=True)),
     )
     model = CoreModelConfig(
@@ -148,6 +212,38 @@ def load_core_config(path: Path) -> CoreTrainingConfig:
         confidence_max=float(model_raw["confidence_max"]),
         confidence_step=float(model_raw["confidence_step"]),
         random_seed=int(model_raw["random_seed"]),
+        candidate_names=tuple(
+            str(value)
+            for value in model_raw.get(
+                "candidate_names",
+                HISTORICAL_CORE_CANDIDATE_NAMES,
+            )
+        ),
+        row_weight_schedules=tuple(
+            CandidateRowWeightScheduleConfig(
+                candidate=str(schedule["candidate"]),
+                schedule=RowWeightScheduleConfig(
+                    start_second=(
+                        int(schedule["start_second"])
+                        if "start_second" in schedule
+                        else None
+                    ),
+                    end_second_inclusive=(
+                        int(schedule["end_second_inclusive"])
+                        if "end_second_inclusive" in schedule
+                        else None
+                    ),
+                    multiplier=float(schedule["multiplier"]),
+                    normalization=str(
+                        schedule.get(
+                            "normalization",
+                            EQUAL_TOTAL_PER_MARKET_NORMALIZATION,
+                        )
+                    ),
+                ),
+            )
+            for schedule in model_raw.get("row_weight_schedules", ())
+        ),
     )
     gates = CoreGateConfig(
         target_accuracy=float(gates_raw["target_accuracy"]),
@@ -233,6 +329,19 @@ def validate_core_config(config: CoreTrainingConfig) -> None:
         or split.holdout_end != data.range_end
     ):
         raise ValueError("core split boundaries must be contiguous and span the data range")
+    independent_start = split.independent_holdout_start
+    independent_end = split.independent_holdout_end
+    if (independent_start is None) != (independent_end is None):
+        raise ValueError(
+            "independent holdout start and end must both be configured"
+        )
+    if independent_start is not None:
+        if independent_start < data.range_end:
+            raise ValueError(
+                "independent holdout must not overlap the configured training range"
+            )
+        if independent_start >= independent_end:
+            raise ValueError("independent holdout range must be positive")
     if any(start >= end for start, end in split.validation_windows):
         raise ValueError("validation windows must be positive")
     if any(
@@ -252,6 +361,70 @@ def validate_core_config(config: CoreTrainingConfig) -> None:
         raise ValueError("model.c_candidates must be positive")
     if not config.model.histogram_candidates:
         raise ValueError("at least one histogram candidate is required")
+    candidate_names = config.model.candidate_names
+    if not candidate_names:
+        raise ValueError("model.candidate_names must not be empty")
+    if len(set(candidate_names)) != len(candidate_names):
+        raise ValueError("model.candidate_names must be unique")
+    unknown_candidates = sorted(
+        set(candidate_names) - KNOWN_CORE_CANDIDATE_FAMILIES.keys()
+    )
+    if unknown_candidates:
+        raise ValueError(
+            "model.candidate_names contains unknown candidates: "
+            + ", ".join(unknown_candidates)
+        )
+    schedule_candidates = tuple(
+        entry.candidate for entry in config.model.row_weight_schedules
+    )
+    if len(set(schedule_candidates)) != len(schedule_candidates):
+        raise ValueError("model.row_weight_schedules candidates must be unique")
+    if (
+        candidate_names != HISTORICAL_CORE_CANDIDATE_NAMES
+        and not schedule_candidates
+    ):
+        raise ValueError(
+            "non-historical candidate profiles require explicit row-weight schedules"
+        )
+    if schedule_candidates:
+        if set(schedule_candidates) != set(candidate_names):
+            raise ValueError(
+                "model.row_weight_schedules must configure every selected candidate"
+            )
+        non_histogram_candidates = [
+            name
+            for name in candidate_names
+            if KNOWN_CORE_CANDIDATE_FAMILIES[name] != "histogram"
+        ]
+        if non_histogram_candidates:
+            raise ValueError(
+                "configured row-weight candidate profiles must be histogram-only"
+            )
+    scoring_start = data.min_seconds_after_open
+    scoring_end = 300 - data.min_seconds_before_close
+    cadence = data.sample_interval_seconds
+    for entry in config.model.row_weight_schedules:
+        schedule = entry.schedule
+        if schedule.start_second is None:
+            if schedule.multiplier != 1.0:
+                raise ValueError(
+                    "untimed row-weight schedules must use a 1.0 multiplier"
+                )
+            continue
+        if (
+            schedule.start_second < scoring_start
+            or schedule.end_second_inclusive > scoring_end
+        ):
+            raise ValueError(
+                "row-weight schedule must stay inside the configured scoring window"
+            )
+        if (
+            (schedule.start_second - scoring_start) % cadence
+            or (schedule.end_second_inclusive - scoring_start) % cadence
+        ):
+            raise ValueError(
+                "row-weight schedule boundaries must align to the scoring cadence"
+            )
     if not 0.5 <= config.model.confidence_min <= config.model.confidence_max < 1:
         raise ValueError("confidence bounds must satisfy 0.5 <= min <= max < 1")
     if config.model.confidence_step <= 0:
@@ -325,11 +498,51 @@ def config_to_dict(config: CoreTrainingConfig) -> dict[str, Any]:
             "policy_selection_end": config.split.policy_selection_end.isoformat(),
             "holdout_start": config.split.holdout_start.isoformat(),
             "holdout_end": config.split.holdout_end.isoformat(),
+            "independent_holdout_start": (
+                config.split.independent_holdout_start.isoformat()
+                if config.split.independent_holdout_start is not None
+                else None
+            ),
+            "independent_holdout_end": (
+                config.split.independent_holdout_end.isoformat()
+                if config.split.independent_holdout_end is not None
+                else None
+            ),
             "validation_windows": [
                 {"start": start.isoformat(), "end": end.isoformat()}
                 for start, end in config.split.validation_windows
             ],
         },
+        "model": {
+            "candidate_names": list(config.model.candidate_names),
+            "row_weight_schedules": [
+                {
+                    "candidate": entry.candidate,
+                    **asdict(entry.schedule),
+                }
+                for entry in config.model.row_weight_schedules
+            ],
+            "c_candidates": list(config.model.c_candidates),
+            "histogram_candidates": [
+                asdict(candidate)
+                for candidate in config.model.histogram_candidates
+            ],
+            "confidence_min": config.model.confidence_min,
+            "confidence_max": config.model.confidence_max,
+            "confidence_step": config.model.confidence_step,
+            "random_seed": config.model.random_seed,
+        },
         "gates": asdict(config.gates),
         "compute": asdict(config.compute),
     }
+
+
+def evaluation_holdout_range(
+    config: CoreTrainingConfig,
+) -> tuple[datetime, datetime]:
+    split = config.split
+    if split.independent_holdout_start is not None:
+        if split.independent_holdout_end is None:
+            raise RuntimeError("independent holdout end is unavailable")
+        return split.independent_holdout_start, split.independent_holdout_end
+    return split.holdout_start, split.holdout_end

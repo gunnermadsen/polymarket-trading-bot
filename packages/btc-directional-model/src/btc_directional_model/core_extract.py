@@ -12,7 +12,7 @@ import psycopg
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .core_config import CoreTrainingConfig
+from .core_config import CoreTrainingConfig, evaluation_holdout_range
 
 CoreScope = Literal["pre_holdout", "holdout"]
 CORE_SOURCE_SCHEMA_VERSION = "btc-core-source-v1"
@@ -139,7 +139,7 @@ def scope_range(
     if scope == "pre_holdout":
         return config.data.range_start, config.split.holdout_start
     if scope == "holdout":
-        return config.split.holdout_start, config.data.range_end
+        return evaluation_holdout_range(config)
     raise ValueError(f"unsupported core extraction scope: {scope}")
 
 

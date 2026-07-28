@@ -238,6 +238,8 @@ def choose_threshold(
         and row["balanced_accuracy"] >= gates.target_balanced_accuracy
         and row["up_recall"] >= gates.minimum_direction_recall
         and row["down_recall"] >= gates.minimum_direction_recall
+        and row["expected_calibration_error"] <= gates.maximum_ece
+        and row["accuracy_uplift"] >= gates.minimum_same_time_path_uplift
     ]
     candidates = qualifying or [
         row
@@ -250,10 +252,11 @@ def choose_threshold(
     selected = max(
         candidates,
         key=lambda row: (
-            row["wilson_lower_95"],
-            row["accuracy_uplift"],
-            row["balanced_accuracy"],
             row["coverage"],
+            row["wilson_lower_95"],
+            row["balanced_accuracy"],
+            row["accuracy"],
+            row["accuracy_uplift"],
             -row["threshold"],
         ),
     )
