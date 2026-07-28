@@ -5,7 +5,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from .core_config import load_core_config
+from .core_config import (
+    EQUAL_TOTAL_PER_MARKET_NORMALIZATION,
+    CandidateRowWeightScheduleConfig,
+    RowWeightScheduleConfig,
+    load_core_config,
+)
 
 PERSISTENCE_CANDIDATES = (
     "histogram_enriched",
@@ -13,6 +18,14 @@ PERSISTENCE_CANDIDATES = (
     "histogram_path_persistence_prewindow",
     "histogram_path_persistence_time_calibrated",
 )
+ACCURACY_TIMING_CANDIDATES = (
+    "histogram_enriched",
+    "histogram_path_persistence_time_calibrated",
+    "histogram_path_persistence_time_calibrated_60_120",
+    "histogram_path_persistence_time_calibrated_90_120",
+)
+PATH_PERSISTENCE_PROFILE = "path_persistence"
+ACCURACY_TIMING_PROFILE = "accuracy_timing"
 
 
 @dataclass(frozen=True)
@@ -26,9 +39,11 @@ class CalibrationBand:
 class PersistenceBenchmarkConfig:
     source_path: Path
     package_root: Path
+    profile: str
     core_config: Path
     control_candidate: str
     candidate_names: tuple[str, ...]
+    row_weight_schedules: tuple[CandidateRowWeightScheduleConfig, ...]
     evaluation_note: str
     evaluation_is_independent: bool
     quantity: float
@@ -62,9 +77,36 @@ def load_persistence_benchmark_config(path: Path) -> PersistenceBenchmarkConfig:
     config = PersistenceBenchmarkConfig(
         source_path=source_path,
         package_root=package_root,
+        profile=str(benchmark.get("profile", PATH_PERSISTENCE_PROFILE)),
         core_config=package_root / str(benchmark["core_config"]),
         control_candidate=str(benchmark["control_candidate"]),
         candidate_names=tuple(str(value) for value in benchmark["candidate_names"]),
+        row_weight_schedules=tuple(
+            CandidateRowWeightScheduleConfig(
+                candidate=str(schedule["candidate"]),
+                schedule=RowWeightScheduleConfig(
+                    start_second=(
+                        int(schedule["start_second"]) if "start_second" in schedule else None
+                    ),
+                    end_second_inclusive=(
+                        int(schedule["end_second_inclusive"])
+                        if "end_second_inclusive" in schedule
+                        else None
+                    ),
+                    multiplier=float(schedule["multiplier"]),
+                    normalization=str(
+                        schedule.get(
+                            "normalization",
+                            EQUAL_TOTAL_PER_MARKET_NORMALIZATION,
+                        )
+                    ),
+                ),
+            )
+            for schedule in raw.get("training", {}).get(
+                "row_weight_schedules",
+                (),
+            )
+        ),
         evaluation_note=str(benchmark["evaluation_note"]).strip(),
         evaluation_is_independent=bool(benchmark["evaluation_is_independent"]),
         quantity=float(benchmark["quantity"]),
@@ -74,21 +116,13 @@ def load_persistence_benchmark_config(path: Path) -> PersistenceBenchmarkConfig:
         minimum_executable_markets=int(gates["minimum_executable_markets"]),
         minimum_coverage_uplift=float(gates["minimum_coverage_uplift"]),
         maximum_accuracy_regression=float(gates["maximum_accuracy_regression"]),
-        maximum_balanced_accuracy_regression=float(
-            gates["maximum_balanced_accuracy_regression"]
-        ),
-        maximum_direction_recall_regression=float(
-            gates["maximum_direction_recall_regression"]
-        ),
+        maximum_balanced_accuracy_regression=float(gates["maximum_balanced_accuracy_regression"]),
+        maximum_direction_recall_regression=float(gates["maximum_direction_recall_regression"]),
         maximum_median_entry_seconds_regression=float(
             gates["maximum_median_entry_seconds_regression"]
         ),
-        minimum_mean_direct_edge_per_share=float(
-            gates["minimum_mean_direct_edge_per_share"]
-        ),
-        minimum_realized_net_per_share=float(
-            gates["minimum_realized_net_per_share"]
-        ),
+        minimum_mean_direct_edge_per_share=float(gates["minimum_mean_direct_edge_per_share"]),
+        minimum_realized_net_per_share=float(gates["minimum_realized_net_per_share"]),
         calibration_bands=tuple(
             CalibrationBand(
                 name=str(band["name"]),
@@ -97,9 +131,7 @@ def load_persistence_benchmark_config(path: Path) -> PersistenceBenchmarkConfig:
             )
             for band in calibration["bands"]
         ),
-        minimum_calibration_rows_per_band=int(
-            calibration["minimum_rows_per_band"]
-        ),
+        minimum_calibration_rows_per_band=int(calibration["minimum_rows_per_band"]),
         prewindow_features=package_root / str(paths["prewindow_features"]),
         execution_evidence=package_root / str(paths["execution_evidence"]),
         runs=package_root / str(paths["runs"]),
@@ -113,11 +145,18 @@ def validate_persistence_benchmark_config(
 ) -> None:
     if not config.core_config.is_file():
         raise ValueError(f"core config is missing: {config.core_config}")
-    if config.candidate_names != PERSISTENCE_CANDIDATES:
-        raise ValueError(
-            "persistence benchmark requires the frozen four-candidate matrix"
-        )
-    if config.control_candidate != PERSISTENCE_CANDIDATES[0]:
+    if config.profile == PATH_PERSISTENCE_PROFILE:
+        if config.candidate_names != PERSISTENCE_CANDIDATES:
+            raise ValueError("persistence benchmark requires the frozen four-candidate matrix")
+        if config.row_weight_schedules:
+            raise ValueError("the historical path-persistence profile cannot configure row weights")
+    elif config.profile == ACCURACY_TIMING_PROFILE:
+        if config.candidate_names != ACCURACY_TIMING_CANDIDATES:
+            raise ValueError("accuracy-timing benchmark requires the frozen four-candidate matrix")
+        _validate_accuracy_timing_weights(config)
+    else:
+        raise ValueError(f"unsupported persistence benchmark profile: {config.profile}")
+    if config.control_candidate != config.candidate_names[0]:
         raise ValueError("histogram_enriched must remain the control candidate")
     if config.evaluation_is_independent:
         raise ValueError("the consumed development range cannot be independent")
@@ -160,9 +199,7 @@ def validate_persistence_benchmark_config(
         or core.data.range_end.isoformat() != "2026-07-20T00:00:00+00:00"
         or (core.data.range_end - core.data.range_start).days != 90
     ):
-        raise ValueError(
-            "persistence benchmark requires exact [2026-04-21, 2026-07-20)"
-        )
+        raise ValueError("persistence benchmark requires exact [2026-04-21, 2026-07-20)")
     if (
         core.split.holdout_start != core.data.range_end
         or core.split.holdout_end != core.data.range_end
@@ -170,13 +207,18 @@ def validate_persistence_benchmark_config(
         raise ValueError("the in-range holdout must remain disabled")
     independent_start = core.split.independent_holdout_start
     independent_end = core.split.independent_holdout_end
-    if (
-        independent_start is None
-        or independent_end is None
-        or independent_start.isoformat() != "2026-07-21T00:00:00+00:00"
-        or independent_end.isoformat() != "2026-08-04T00:00:00+00:00"
-    ):
-        raise ValueError("the untouched July 21-August 4 holdout contract changed")
+    if config.profile == PATH_PERSISTENCE_PROFILE:
+        if (
+            independent_start is None
+            or independent_end is None
+            or independent_start.isoformat() != "2026-07-21T00:00:00+00:00"
+            or independent_end.isoformat() != "2026-08-04T00:00:00+00:00"
+        ):
+            raise ValueError("the untouched July 21-August 4 holdout contract changed")
+    elif independent_start is not None or independent_end is not None:
+        raise ValueError(
+            "accuracy-timing development evidence cannot configure an external holdout"
+        )
     if (
         core.model.confidence_min != 0.87
         or core.model.confidence_max != 0.91
@@ -186,6 +228,49 @@ def validate_persistence_benchmark_config(
         or len(core.split.validation_windows) != 5
     ):
         raise ValueError("model search, seed, threshold, or fold contract changed")
+
+
+def persistence_row_weight_schedule(
+    config: PersistenceBenchmarkConfig,
+    candidate_name: str,
+) -> RowWeightScheduleConfig:
+    for entry in config.row_weight_schedules:
+        if entry.candidate == candidate_name:
+            return entry.schedule
+    return RowWeightScheduleConfig(
+        start_second=None,
+        end_second_inclusive=None,
+        multiplier=1.0,
+    )
+
+
+def _validate_accuracy_timing_weights(
+    config: PersistenceBenchmarkConfig,
+) -> None:
+    schedule_candidates = tuple(entry.candidate for entry in config.row_weight_schedules)
+    if len(set(schedule_candidates)) != len(schedule_candidates):
+        raise ValueError("training row-weight candidates must be unique")
+    if set(schedule_candidates) != set(ACCURACY_TIMING_CANDIDATES):
+        raise ValueError("accuracy-timing row weights must configure every candidate")
+    expected = {
+        "histogram_enriched": RowWeightScheduleConfig(None, None, 1.0),
+        "histogram_path_persistence_time_calibrated": RowWeightScheduleConfig(
+            None,
+            None,
+            1.0,
+        ),
+        "histogram_path_persistence_time_calibrated_60_120": (
+            RowWeightScheduleConfig(60, 120, 1.5)
+        ),
+        "histogram_path_persistence_time_calibrated_90_120": (
+            RowWeightScheduleConfig(90, 120, 2.0)
+        ),
+    }
+    observed = {entry.candidate: entry.schedule for entry in config.row_weight_schedules}
+    if observed != expected:
+        raise ValueError(
+            "accuracy-timing row weights must preserve the frozen equal-total-per-market schedules"
+        )
 
 
 def persistence_config_to_dict(

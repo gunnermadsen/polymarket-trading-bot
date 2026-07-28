@@ -1,0 +1,64 @@
+[benchmark]
+profile = "accuracy_timing"
+core_config = "configs/btc-5m-directional-core-accuracy-timing-20260421-20260720.toml"
+control_candidate = "histogram_enriched"
+candidate_names = [
+  "histogram_enriched",
+  "histogram_path_persistence_time_calibrated",
+  "histogram_path_persistence_time_calibrated_60_120",
+  "histogram_path_persistence_time_calibrated_90_120",
+]
+evaluation_is_independent = false
+evaluation_note = "The exact half-open UTC interval [2026-04-21, 2026-07-20) is consumed chronological development evidence. This run compares real fitted candidates and saves causal policy-selection and validation probabilities; it does not export or deploy a runtime model."
+quantity = 5.0
+early_cutoff_second = 120
+
+[[training.row_weight_schedules]]
+candidate = "histogram_enriched"
+multiplier = 1.0
+normalization = "equal_total_per_market"
+
+[[training.row_weight_schedules]]
+candidate = "histogram_path_persistence_time_calibrated"
+multiplier = 1.0
+normalization = "equal_total_per_market"
+
+[[training.row_weight_schedules]]
+candidate = "histogram_path_persistence_time_calibrated_60_120"
+start_second = 60
+end_second_inclusive = 120
+multiplier = 1.5
+normalization = "equal_total_per_market"
+
+[[training.row_weight_schedules]]
+candidate = "histogram_path_persistence_time_calibrated_90_120"
+start_second = 90
+end_second_inclusive = 120
+multiplier = 2.0
+normalization = "equal_total_per_market"
+
+[calibration]
+minimum_rows_per_band = 500
+bands = [
+  { name = "60-89", start_second = 60, end_second_exclusive = 90 },
+  { name = "90-119", start_second = 90, end_second_exclusive = 120 },
+  { name = "120-179", start_second = 120, end_second_exclusive = 180 },
+  { name = "180-240", start_second = 180, end_second_exclusive = 241 },
+]
+
+[advancement_gates]
+minimum_early_markets = 500
+minimum_common_markets = 500
+minimum_executable_markets = 500
+minimum_coverage_uplift = 0.000000001
+maximum_accuracy_regression = 0.0
+maximum_balanced_accuracy_regression = 0.0
+maximum_direction_recall_regression = 0.0
+maximum_median_entry_seconds_regression = -5.0
+minimum_mean_direct_edge_per_share = 0.0
+minimum_realized_net_per_share = 0.0
+
+[paths]
+prewindow_features = "data/btc-prewindow-regime-20260421-20260720/features.parquet"
+execution_evidence = "data/btc-execution-evidence-20260527-20260611"
+runs = "runs/btc-accuracy-timing-20260421-20260720"

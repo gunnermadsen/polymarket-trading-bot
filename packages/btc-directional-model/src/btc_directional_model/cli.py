@@ -18,6 +18,8 @@ from .extract import extract_source
 from .features import build_features
 from .persistence_benchmark import run_persistence_benchmark
 from .persistence_config import load_persistence_benchmark_config
+from .policy_benchmark import run_saved_policy_benchmark
+from .policy_config import load_saved_policy_benchmark_config
 from .report import generate_report
 from .runtime_export import export_runtime_model
 from .train import train_models
@@ -62,6 +64,10 @@ def main() -> None:
     persistence_run = subparsers.add_parser("persistence-benchmark-run")
     persistence_run.add_argument("--config", type=Path, required=True)
     persistence_run.add_argument("--force", action="store_true")
+    persistence_policy_run = subparsers.add_parser(
+        "persistence-policy-benchmark-run"
+    )
+    persistence_policy_run.add_argument("--config", type=Path, required=True)
     serve_parser = subparsers.add_parser("serve")
     serve_parser.add_argument("--run", type=Path, required=True)
     serve_parser.add_argument("--port", type=int, default=8765)
@@ -116,6 +122,22 @@ def main() -> None:
         )
         print("holdout labels/features: not accessed")
         print("holdout book quality: only if separately recorded in run evidence")
+        print("runtime: unchanged")
+        return
+    if args.command == "persistence-policy-benchmark-run":
+        config = load_saved_policy_benchmark_config(args.config)
+        run_dir, benchmark = run_saved_policy_benchmark(config)
+        print(f"report: {run_dir / 'report.html'}")
+        print(
+            "benchmark passed: "
+            + (
+                ", ".join(benchmark["benchmark_passed_candidates"])
+                if benchmark["benchmark_passed_candidates"]
+                else "none"
+            )
+        )
+        print(f"winner: {benchmark['winner'] or 'none'}")
+        print("evidence: non-independent development validation")
         print("runtime: unchanged")
         return
     if args.command.startswith("core-"):

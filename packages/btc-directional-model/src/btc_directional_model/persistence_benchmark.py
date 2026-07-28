@@ -43,6 +43,8 @@ from .core_features import (
     validate_core_feature_cache,
 )
 from .core_training import (
+    EARLY_ENTRY_MARKET_EQUAL_ROW_WEIGHT_POLICY,
+    MARKET_EQUAL_ROW_WEIGHT_POLICY,
     CandidateSpec,
     FittedCoreModel,
     ProbabilityCalibrator,
@@ -54,10 +56,12 @@ from .core_training import (
     tune_and_fit_model,
 )
 from .persistence_config import (
+    ACCURACY_TIMING_PROFILE,
     CalibrationBand,
     PersistenceBenchmarkConfig,
     load_persistence_benchmark_config,
     persistence_config_to_dict,
+    persistence_row_weight_schedule,
 )
 from .prewindow_features import (
     PREWINDOW_MODEL_FEATURES,
@@ -67,6 +71,7 @@ from .prewindow_features import (
 from .provenance import runtime_provenance
 
 PERSISTENCE_BENCHMARK_SCHEMA_VERSION = "btc-path-persistence-benchmark-v1"
+SAVED_POLICY_PROBABILITY_SCHEMA_VERSION = "btc-saved-policy-probabilities-v1"
 PATH_ZERO_EPSILON_BPS = 1e-12
 DEFERRED_RUNTIME_CHECKS = {
     "runtime deployment contract is compatible",
@@ -150,6 +155,18 @@ CANDIDATE_PROFILES = {
             "core_prewindow",
             "time_banded_platt",
         ),
+        CandidateProfile(
+            "histogram_path_persistence_time_calibrated_60_120",
+            "path_persistence",
+            "core_prewindow",
+            "time_banded_platt",
+        ),
+        CandidateProfile(
+            "histogram_path_persistence_time_calibrated_90_120",
+            "path_persistence",
+            "core_prewindow",
+            "time_banded_platt",
+        ),
     )
 }
 
@@ -162,7 +179,10 @@ def run_persistence_benchmark(
     _configure_compute(config)
     core_config = load_core_config(config.core_config)
     feature_metadata = validate_core_feature_cache(core_config, "pre_holdout")
-    _assert_locked_development_range(core_config)
+    _assert_locked_development_range(
+        core_config,
+        enforce_external_holdout_contract=(config.profile != ACCURACY_TIMING_PROFILE),
+    )
     prewindow_metadata = build_prewindow_features(
         core_config,
         config.prewindow_features,
@@ -186,10 +206,15 @@ def run_persistence_benchmark(
     )
 
     candidate_results = _train_candidate_matrix(config, run_dir)
-    scored_frames = {
-        name: result.pop("scored_rows")
-        for name, result in candidate_results.items()
-    }
+    probability_evidence = write_saved_probability_manifest(
+        run_dir,
+        candidate_results,
+        config,
+    )
+    scored_frames = {name: result.pop("scored_rows") for name, result in candidate_results.items()}
+    for result in candidate_results.values():
+        result.pop("policy_scored_rows")
+        result.pop("validation_probability_rows")
     execution_frame = load_execution_evidence(execution_config)
     scored_with_execution = {
         name: attach_execution_evidence(frame, execution_frame)
@@ -255,6 +280,75 @@ def run_persistence_benchmark(
         run_dir,
     )
 
+    data_evidence = {
+        "training_range": {
+            "start": core_config.data.range_start.isoformat(),
+            "end_exclusive": core_config.data.range_end.isoformat(),
+            "calendar_days": (core_config.data.range_end - core_config.data.range_start).days,
+        },
+        "core_features": feature_metadata,
+        "preopen": prewindow_metadata,
+        "execution": execution_manifest,
+        "execution_cohort": {
+            "start": execution_manifest["range_start"],
+            "end_exclusive": execution_manifest["range_end"],
+        },
+        "historical_compact_book_use": {
+            "model_feature_role": "excluded",
+            "execution_economics_role": (
+                "strict-both-side cached execution evidence on the "
+                "intersecting May 27-June 11 development cohort"
+            ),
+            "source": "compact 250 ms execution snapshots",
+            "raw_pmxt_archive_read": False,
+        },
+        "recent_backfill_book_use": {
+            "model_fitting_role": "excluded",
+            "probability_calibration_role": "excluded",
+            "policy_selection_role": "excluded",
+            "outcome_scoring_role": "excluded",
+            "execution_economics_role": "none",
+            "diagnostic_role": (
+                "read-only coverage and strict-validity audit only; "
+                "reported separately when an audited cohort is supplied"
+            ),
+            "reason": (
+                "recent clean shards are noncontiguous and below the "
+                "pre-registered independent sample gate"
+            ),
+            "raw_pmxt_archive_read": False,
+        },
+        "saved_probability_evidence": probability_evidence,
+    }
+    if config.profile != ACCURACY_TIMING_PROFILE:
+        data_evidence["independent_holdout"] = {
+            "start": (
+                core_config.split.independent_holdout_start.isoformat()
+                if core_config.split.independent_holdout_start
+                else None
+            ),
+            "end_exclusive": (
+                core_config.split.independent_holdout_end.isoformat()
+                if core_config.split.independent_holdout_end
+                else None
+            ),
+            "outcome_labels_accessed": False,
+            "directional_features_accessed": False,
+            "model_evaluation_accessed": False,
+            "book_quality_diagnostics_accessed": False,
+        }
+    deployment_reasons = [
+        (
+            "path-persistence target conversion, time-banded calibration, "
+            "and pre-window features are not runtime-v1 contracts"
+        ),
+        "no Rust, image, process, playbook, or adapter change is authorized",
+    ]
+    if config.profile != ACCURACY_TIMING_PROFILE:
+        deployment_reasons.insert(
+            0,
+            ("July 21-August 4 outcome labels and directional features remain untouched"),
+        )
     benchmark.update(
         {
             "run_schema_version": PERSISTENCE_BENCHMARK_SCHEMA_VERSION,
@@ -263,63 +357,7 @@ def run_persistence_benchmark(
             "configuration": persistence_config_to_dict(config),
             "evaluation_note": config.evaluation_note,
             "runtime_provenance": runtime_provenance(config.package_root),
-            "data_evidence": {
-                "training_range": {
-                    "start": core_config.data.range_start.isoformat(),
-                    "end_exclusive": core_config.data.range_end.isoformat(),
-                    "calendar_days": (
-                        core_config.data.range_end - core_config.data.range_start
-                    ).days,
-                },
-                "core_features": feature_metadata,
-                "preopen": prewindow_metadata,
-                "execution": execution_manifest,
-                "execution_cohort": {
-                    "start": execution_manifest["range_start"],
-                    "end_exclusive": execution_manifest["range_end"],
-                },
-                "historical_compact_book_use": {
-                    "model_feature_role": "excluded",
-                    "execution_economics_role": (
-                        "strict-both-side cached execution evidence on the "
-                        "intersecting May 27-June 11 development cohort"
-                    ),
-                    "source": "compact 250 ms execution snapshots",
-                    "raw_pmxt_archive_read": False,
-                },
-                "recent_backfill_book_use": {
-                    "model_fitting_role": "excluded",
-                    "probability_calibration_role": "excluded",
-                    "policy_selection_role": "excluded",
-                    "outcome_scoring_role": "excluded",
-                    "execution_economics_role": "none",
-                    "diagnostic_role": (
-                        "read-only coverage and strict-validity audit only; "
-                        "reported separately when an audited cohort is supplied"
-                    ),
-                    "reason": (
-                        "recent clean shards are noncontiguous and below the "
-                        "pre-registered independent sample gate"
-                    ),
-                    "raw_pmxt_archive_read": False,
-                },
-                "independent_holdout": {
-                    "start": (
-                        core_config.split.independent_holdout_start.isoformat()
-                        if core_config.split.independent_holdout_start
-                        else None
-                    ),
-                    "end_exclusive": (
-                        core_config.split.independent_holdout_end.isoformat()
-                        if core_config.split.independent_holdout_end
-                        else None
-                    ),
-                    "outcome_labels_accessed": False,
-                    "directional_features_accessed": False,
-                    "model_evaluation_accessed": False,
-                    "book_quality_diagnostics_accessed": False,
-                },
-            },
+            "data_evidence": data_evidence,
             "training_evidence": {
                 "core_candidates": candidate_results,
             },
@@ -340,9 +378,7 @@ def run_persistence_benchmark(
                 "development_bundle": freeze_record,
                 "candidates": {
                     name: {
-                        "passed": benchmark["candidates"][name]["advance"][
-                            "benchmark_passed"
-                        ],
+                        "passed": benchmark["candidates"][name]["advance"]["benchmark_passed"],
                         "checks": benchmark["candidates"][name]["advance"]["checks"],
                     }
                     for name in config.candidate_names
@@ -352,17 +388,7 @@ def run_persistence_benchmark(
             "deployment": {
                 "status": "blocked",
                 "action": "training evidence only; no runtime export or deployment",
-                "reasons": [
-                    (
-                        "July 21-August 4 outcome labels and directional features "
-                        "remain untouched"
-                    ),
-                    (
-                        "path-persistence target conversion, time-banded calibration, "
-                        "and pre-window features are not runtime-v1 contracts"
-                    ),
-                    "no Rust, image, process, playbook, or adapter change is authorized",
-                ],
+                "reasons": deployment_reasons,
             },
         }
     )
@@ -382,9 +408,7 @@ def run_persistence_benchmark(
         1.0,
         {
             "finalist": finalist,
-            "benchmark_passed_candidates": benchmark[
-                "benchmark_passed_candidates"
-            ],
+            "benchmark_passed_candidates": benchmark["benchmark_passed_candidates"],
             "holdout_accessed": False,
             "holdout_outcome_labels_accessed": False,
             "holdout_directional_features_accessed": False,
@@ -393,6 +417,166 @@ def run_persistence_benchmark(
         },
     )
     return run_dir, benchmark
+
+
+def write_saved_probability_manifest(
+    run_dir: Path,
+    candidate_results: dict[str, dict[str, Any]],
+    config: PersistenceBenchmarkConfig,
+) -> dict[str, Any]:
+    destination = run_dir / "saved-policy-probabilities"
+    destination.mkdir(parents=True, exist_ok=False)
+    candidate_records: dict[str, Any] = {}
+    for candidate_name in config.candidate_names:
+        result = candidate_results[candidate_name]
+        policy_rows = result["policy_scored_rows"]
+        validation_rows = result["validation_probability_rows"]
+        fold_records = []
+        fold_indexes = sorted(
+            set(policy_rows["fold_index"].unique().to_list())
+            | set(validation_rows["fold_index"].unique().to_list())
+        )
+        for fold_index in fold_indexes:
+            policy_fold = policy_rows.filter(pl.col("fold_index") == fold_index)
+            validation_fold = validation_rows.filter(pl.col("fold_index") == fold_index)
+            _validate_probability_evidence_rows(
+                policy_fold,
+                candidate_name,
+                int(fold_index),
+                "policy_selection",
+            )
+            _validate_probability_evidence_rows(
+                validation_fold,
+                candidate_name,
+                int(fold_index),
+                "validation",
+            )
+            policy_end = policy_fold["window_start"].max()
+            validation_start = validation_fold["window_start"].min()
+            if policy_end >= validation_start:
+                raise RuntimeError(
+                    f"{candidate_name} fold {fold_index} policy rows are not "
+                    "strictly earlier than validation"
+                )
+            candidate_dir = destination / candidate_name
+            candidate_dir.mkdir(parents=True, exist_ok=True)
+            policy_path = candidate_dir / f"fold-{int(fold_index):02d}-policy-selection.parquet"
+            validation_path = candidate_dir / f"fold-{int(fold_index):02d}-validation.parquet"
+            _write_parquet_atomic(policy_fold, policy_path)
+            _write_parquet_atomic(validation_fold, validation_path)
+            fold_records.append(
+                {
+                    "fold_index": int(fold_index),
+                    "causal_order_verified": True,
+                    "policy_selection": _probability_file_record(
+                        policy_path,
+                        policy_fold,
+                        destination,
+                    ),
+                    "validation": _probability_file_record(
+                        validation_path,
+                        validation_fold,
+                        destination,
+                    ),
+                }
+            )
+        profile = CANDIDATE_PROFILES[candidate_name]
+        schedule = persistence_row_weight_schedule(config, candidate_name)
+        candidate_records[candidate_name] = {
+            "target_kind": profile.target_kind,
+            "feature_kind": profile.feature_kind,
+            "calibration_kind": profile.calibration_kind,
+            "row_weight_schedule": asdict(schedule),
+            "folds": fold_records,
+        }
+    manifest = {
+        "schema_version": SAVED_POLICY_PROBABILITY_SCHEMA_VERSION,
+        "created_at": datetime.now(UTC).isoformat(),
+        "source_benchmark_profile": config.profile,
+        "source_config": str(config.source_path),
+        "source_config_sha256": file_sha256(config.source_path),
+        "control_candidate": config.control_candidate,
+        "candidate_names": list(config.candidate_names),
+        "fold_count": len(
+            next(iter(candidate_records.values()))["folds"] if candidate_records else ()
+        ),
+        "causal_contract": (
+            "thresholds may be selected only from each fold's policy-selection "
+            "rows; the corresponding validation rows may be scored exactly once"
+        ),
+        "candidates": candidate_records,
+    }
+    manifest_path = destination / "manifest.json"
+    write_json_atomic(manifest_path, manifest)
+    return {
+        "schema_version": SAVED_POLICY_PROBABILITY_SCHEMA_VERSION,
+        "manifest_path": str(manifest_path.relative_to(run_dir)),
+        "manifest_sha256": file_sha256(manifest_path),
+        "candidate_count": len(candidate_records),
+        "fold_count": manifest["fold_count"],
+    }
+
+
+def _validate_probability_evidence_rows(
+    rows: pl.DataFrame,
+    candidate_name: str,
+    fold_index: int,
+    role: str,
+) -> None:
+    required = {
+        "candidate",
+        "fold_index",
+        "market_id",
+        "window_start",
+        "observed_at",
+        "seconds_elapsed",
+        "label_up",
+        "probability_up",
+        "confidence",
+        "predicted_up",
+    }
+    missing = sorted(required - set(rows.columns))
+    if missing:
+        raise RuntimeError(f"{role} probability evidence is missing columns: " + ", ".join(missing))
+    if rows.is_empty():
+        raise RuntimeError(f"{candidate_name} fold {fold_index} has no {role} probability rows")
+    if set(rows["candidate"].unique().to_list()) != {candidate_name}:
+        raise RuntimeError(f"{role} probability candidate identity changed")
+    if set(rows["fold_index"].unique().to_list()) != {fold_index}:
+        raise RuntimeError(f"{role} probability fold identity changed")
+    keys = ["market_id", "observed_at", "seconds_elapsed"]
+    if rows.select(keys).is_duplicated().any():
+        raise RuntimeError(f"{role} probability evidence contains duplicate rows")
+    probability = rows["probability_up"].to_numpy()
+    if not np.isfinite(probability).all() or ((probability < 0.0) | (probability > 1.0)).any():
+        raise RuntimeError(f"{role} probability evidence contains invalid values")
+
+
+def _write_parquet_atomic(frame: pl.DataFrame, destination: Path) -> None:
+    temporary = destination.with_name(destination.name + ".tmp")
+    frame.write_parquet(
+        temporary,
+        compression="zstd",
+        statistics=True,
+    )
+    os.replace(temporary, destination)
+
+
+def _probability_file_record(
+    path: Path,
+    frame: pl.DataFrame,
+    manifest_root: Path,
+) -> dict[str, Any]:
+    return {
+        "path": str(path.relative_to(manifest_root)),
+        "sha256": file_sha256(path),
+        "rows": frame.height,
+        "markets": frame["market_id"].n_unique(),
+        "window_start": frame["window_start"].min().isoformat(),
+        "window_end": frame["window_start"].max().isoformat(),
+        "observed_at_start": frame["observed_at"].min().isoformat(),
+        "observed_at_end": frame["observed_at"].max().isoformat(),
+    }
 
 
 def persistence_target_labels(frame: pl.DataFrame) -> np.ndarray:
@@ -436,12 +620,8 @@ def calibrated_target_probability(
     elapsed = frame["seconds_elapsed"].to_numpy()
     output = np.full(frame.height, np.nan, dtype=np.float64)
     for band in calibrators.bands:
-        mask = (elapsed >= band.start_second) & (
-            elapsed < band.end_second_exclusive
-        )
-        output[mask] = calibrators.calibrators[band.name].probability(
-            raw_logit[mask]
-        )
+        mask = (elapsed >= band.start_second) & (elapsed < band.end_second_exclusive)
+        output[mask] = calibrators.calibrators[band.name].probability(raw_logit[mask])
     if not np.isfinite(output).all():
         raise RuntimeError("time calibration bands do not cover every scored row")
     return output
@@ -449,10 +629,7 @@ def calibrated_target_probability(
 
 def load_execution_evidence(config: ExecutionEvidenceConfig) -> pl.DataFrame:
     manifest = load_execution_evidence_manifest(config)
-    files = [
-        config.output_dir / partition["path"]
-        for partition in manifest["partitions"]
-    ]
+    files = [config.output_dir / partition["path"] for partition in manifest["partitions"]]
     return (
         pl.scan_parquet(files)
         .select(
@@ -488,9 +665,7 @@ def attach_execution_evidence(
         how="left",
         validate="m:1",
     ).with_columns(
-        pl.col("strict_both_side_eligible")
-        .is_not_null()
-        .alias("execution_evidence_available"),
+        pl.col("strict_both_side_eligible").is_not_null().alias("execution_evidence_available"),
         (
             pl.col("strict_both_side_eligible").fill_null(False)
             & pl.col("up_side_fresh").fill_null(False)
@@ -553,10 +728,7 @@ def _strict_selected_execution_rows(
     }
     missing = sorted(required - set(frame.columns))
     if missing:
-        raise ValueError(
-            "selected execution comparison is missing columns: "
-            + ", ".join(missing)
-        )
+        raise ValueError("selected execution comparison is missing columns: " + ", ".join(missing))
     executable = (
         pl.when(pl.col("predicted_up") == 1)
         .then(pl.col("up_executable"))
@@ -645,9 +817,7 @@ def _evaluate_fold(
     config: PersistenceBenchmarkConfig,
     core_config: CoreTrainingConfig,
 ) -> dict[str, Any]:
-    validation_start, validation_end = core_config.split.validation_windows[
-        fold_index
-    ]
+    validation_start, validation_end = core_config.split.validation_windows[fold_index]
     history = _candidate_eligible_frame(
         range_frame(frame, core_config.split.development_start, validation_start),
         profile,
@@ -663,7 +833,7 @@ def _evaluate_fold(
         fit_fraction=0.70,
         calibration_fraction=0.15,
     )
-    spec = _candidate_spec(profile)
+    spec = _candidate_spec(profile, config)
     started = time.perf_counter()
     model, tuning = tune_and_fit_model(
         _training_target_frame(fit_frame, profile),
@@ -678,10 +848,22 @@ def _evaluate_fold(
         core_config,
         spec,
     )
+    policy_target_probability = calibrated_target_probability(
+        model,
+        calibrators,
+        policy_frame,
+    )
     policy_probability = target_probability_to_up(
         policy_frame,
-        calibrated_target_probability(model, calibrators, policy_frame),
+        policy_target_probability,
         profile.target_kind,
+    )
+    policy_scored = _probability_rows(
+        policy_frame,
+        policy_probability,
+        policy_target_probability,
+        profile,
+        fold_index,
     )
     thresholds = threshold_table(
         policy_frame,
@@ -690,10 +872,7 @@ def _evaluate_fold(
     )
     minimum_markets = max(
         50,
-        math.ceil(
-            policy_frame["market_id"].n_unique()
-            * core_config.gates.minimum_coverage
-        ),
+        math.ceil(policy_frame["market_id"].n_unique() * core_config.gates.minimum_coverage),
     )
     threshold, threshold_qualified = choose_threshold(
         thresholds,
@@ -710,12 +889,15 @@ def _evaluate_fold(
         validation_target_probability,
         profile.target_kind,
     )
-    scored = _scored_rows(
+    validation_probability_rows = _probability_rows(
         validation,
         validation_probability_up,
         validation_target_probability,
         profile,
         fold_index,
+    )
+    scored = _apply_threshold_policy(
+        validation_probability_rows,
         threshold,
     )
     selected = scored.filter(pl.col("policy_selected"))
@@ -751,6 +933,8 @@ def _evaluate_fold(
         "bootstrap": bootstrap,
         "timing": first_crossing_timing(selected, eligible_markets=eligible),
         "elapsed_seconds": time.perf_counter() - started,
+        "policy_scored_rows": policy_scored,
+        "validation_probability_rows": validation_probability_rows,
         "scored_rows": scored,
         "selected_rows": selected,
     }
@@ -770,6 +954,14 @@ def _aggregate_candidate(
         [fold["selected_rows"] for fold in folds],
         how="vertical_relaxed",
     ).sort(["observed_at", "market_id"])
+    policy_scored = pl.concat(
+        [fold["policy_scored_rows"] for fold in folds],
+        how="vertical_relaxed",
+    ).sort(["fold_index", "observed_at", "market_id"])
+    validation_probability_rows = pl.concat(
+        [fold["validation_probability_rows"] for fold in folds],
+        how="vertical_relaxed",
+    ).sort(["fold_index", "observed_at", "market_id"])
     eligible = sum(int(fold["eligible_markets"]) for fold in folds)
     metrics = classification_metrics(selected, eligible_markets=eligible)
     paired = paired_uplift(selected)
@@ -780,16 +972,11 @@ def _aggregate_candidate(
         block="hour",
     )
     nonnegative_folds = sum(
-        fold["paired"]["accuracy_uplift"]
-        >= core_config.gates.minimum_same_time_path_uplift
+        fold["paired"]["accuracy_uplift"] >= core_config.gates.minimum_same_time_path_uplift
         for fold in folds
     )
-    qualified_threshold_folds = sum(
-        bool(fold["threshold_qualified"]) for fold in folds
-    )
-    early_rows = selected.filter(
-        pl.col("seconds_elapsed") <= config.early_cutoff_second
-    )
+    qualified_threshold_folds = sum(bool(fold["threshold_qualified"]) for fold in folds)
+    early_rows = selected.filter(pl.col("seconds_elapsed") <= config.early_cutoff_second)
     early = classification_metrics(early_rows, eligible_markets=eligible)
     path_behavior = {
         "followed": _path_behavior_metrics(
@@ -814,17 +1001,27 @@ def _aggregate_candidate(
             {
                 key: value
                 for key, value in fold.items()
-                if key not in {"scored_rows", "selected_rows", "threshold_history"}
+                if key
+                not in {
+                    "policy_scored_rows",
+                    "validation_probability_rows",
+                    "scored_rows",
+                    "selected_rows",
+                    "threshold_history",
+                }
             }
         )
+    spec = _candidate_spec(profile, config)
     return {
         "candidate": profile.name,
         "family": "histogram",
         "target_kind": profile.target_kind,
         "feature_kind": profile.feature_kind,
         "calibration_kind": profile.calibration_kind,
-        "feature_count": len(_candidate_spec(profile).feature_names),
-        "features": list(_candidate_spec(profile).feature_names),
+        "feature_count": len(spec.feature_names),
+        "features": list(spec.feature_names),
+        "row_weight_policy": spec.row_weight_policy,
+        "row_weight_schedule": asdict(spec.row_weight_schedule),
         "folds": fold_summaries,
         "out_of_fold": metrics,
         "baseline": baseline_metrics(selected, eligible_markets=eligible),
@@ -838,18 +1035,31 @@ def _aggregate_candidate(
         "qualified_threshold_folds": qualified_threshold_folds,
         "total_folds": len(folds),
         "passed_development": passed,
+        "policy_scored_rows": policy_scored,
+        "validation_probability_rows": validation_probability_rows,
         "scored_rows": scored,
     }
 
 
-def _candidate_spec(profile: CandidateProfile) -> CandidateSpec:
+def _candidate_spec(
+    profile: CandidateProfile,
+    config: PersistenceBenchmarkConfig,
+) -> CandidateSpec:
     features = tuple(CORE_ENRICHED_FEATURES)
     if profile.feature_kind == "core_prewindow":
         features += tuple(PREWINDOW_MODEL_FEATURES)
+    schedule = persistence_row_weight_schedule(config, profile.name)
+    row_weight_policy = (
+        EARLY_ENTRY_MARKET_EQUAL_ROW_WEIGHT_POLICY
+        if schedule.start_second is not None
+        else MARKET_EQUAL_ROW_WEIGHT_POLICY
+    )
     return CandidateSpec(
         profile.name,
         "histogram",
         features,
+        row_weight_policy,
+        schedule,
     )
 
 
@@ -866,9 +1076,7 @@ def _candidate_eligible_frame(
 
 
 def _path_eligible_frame(frame: pl.DataFrame) -> pl.DataFrame:
-    eligible = frame.filter(
-        pl.Series("_path_eligible", path_is_directionally_eligible(frame))
-    )
+    eligible = frame.filter(pl.Series("_path_eligible", path_is_directionally_eligible(frame)))
     if eligible.is_empty():
         raise RuntimeError("cohort has no directionally eligible BTC path rows")
     return eligible
@@ -943,9 +1151,7 @@ def _validate_calibrator(
     if labels != {0, 1}:
         raise RuntimeError(f"calibration band {name} does not contain both classes")
     if not calibrator.converged or calibrator.slope <= 0.0:
-        raise RuntimeError(
-            f"calibration band {name} failed convergence/monotonicity"
-        )
+        raise RuntimeError(f"calibration band {name} failed convergence/monotonicity")
 
 
 def _calibration_evidence(
@@ -970,20 +1176,44 @@ def _scored_rows(
     fold_index: int,
     threshold: float,
 ) -> pl.DataFrame:
-    scored = scored_prediction_rows(frame, probability_up).with_columns(
-        pl.Series("probability_target", probability_target),
-        pl.lit(profile.name).alias("candidate"),
-        pl.lit(profile.target_kind).alias("target_kind"),
-        pl.lit(profile.calibration_kind).alias("calibration_kind"),
-        pl.lit(fold_index).cast(pl.Int32).alias("fold_index"),
-        pl.lit(threshold).alias("selected_confidence_threshold"),
-        pl.lit(True).alias("model_eligible"),
+    return _apply_threshold_policy(
+        _probability_rows(
+            frame,
+            probability_up,
+            probability_target,
+            profile,
+            fold_index,
+        ),
+        threshold,
     )
-    scored = scored.with_columns(
-        (pl.col("predicted_up") == pl.col("binance_sign_up")).alias(
-            "path_followed"
+
+
+def _probability_rows(
+    frame: pl.DataFrame,
+    probability_up: np.ndarray,
+    probability_target: np.ndarray,
+    profile: CandidateProfile,
+    fold_index: int,
+) -> pl.DataFrame:
+    return (
+        scored_prediction_rows(frame, probability_up)
+        .with_columns(
+            pl.Series("probability_target", probability_target),
+            pl.lit(profile.name).alias("candidate"),
+            pl.lit(profile.target_kind).alias("target_kind"),
+            pl.lit(profile.calibration_kind).alias("calibration_kind"),
+            pl.lit(fold_index).cast(pl.Int32).alias("fold_index"),
+            pl.lit(True).alias("model_eligible"),
         )
+        .with_columns((pl.col("predicted_up") == pl.col("binance_sign_up")).alias("path_followed"))
     )
+
+
+def _apply_threshold_policy(
+    probability_rows: pl.DataFrame,
+    threshold: float,
+) -> pl.DataFrame:
+    scored = probability_rows.with_columns(pl.lit(threshold).alias("selected_confidence_threshold"))
     keys = [
         "candidate",
         "fold_index",
@@ -1038,9 +1268,7 @@ def _add_training_gates(
         result = candidate_results[name]
         advance = benchmark["candidates"][name]["advance"]
         deferred = [
-            check
-            for check in advance["checks"]
-            if check["name"] in DEFERRED_RUNTIME_CHECKS
+            check for check in advance["checks"] if check["name"] in DEFERRED_RUNTIME_CHECKS
         ]
         checks = [
             check
@@ -1199,10 +1427,7 @@ def _select_finalist(
             candidate_results[name]["out_of_fold"]["wilson_lower_95"],
             candidate_results[name]["out_of_fold"]["balanced_accuracy"],
             candidate_results[name]["out_of_fold"]["accuracy"],
-            -(
-                candidate_results[name]["timing"]["median_first_crossing_seconds"]
-                or float("inf")
-            ),
+            -(candidate_results[name]["timing"]["median_first_crossing_seconds"] or float("inf")),
         ),
     )
 
@@ -1248,7 +1473,7 @@ def _fit_development_finalist(
         policy_source,
         profile,
     )
-    spec = _candidate_spec(profile)
+    spec = _candidate_spec(profile, config)
     model, tuning = tune_and_fit_model(
         _training_target_frame(development, profile),
         spec,
@@ -1282,10 +1507,7 @@ def _fit_development_finalist(
         core_config.gates,
         minimum_markets=max(
             100,
-            math.ceil(
-                policy_universe["market_id"].n_unique()
-                * core_config.gates.minimum_coverage
-            ),
+            math.ceil(policy_universe["market_id"].n_unique() * core_config.gates.minimum_coverage),
         ),
     )
     policy_rows = _scored_rows(
@@ -1303,8 +1525,7 @@ def _fit_development_finalist(
     policy_passed = bool(
         threshold_qualified
         and metrics["accuracy"] >= core_config.gates.target_accuracy
-        and metrics["balanced_accuracy"]
-        >= core_config.gates.target_balanced_accuracy
+        and metrics["balanced_accuracy"] >= core_config.gates.target_balanced_accuracy
         and metrics["up_recall"] >= core_config.gates.minimum_direction_recall
         and metrics["down_recall"] >= core_config.gates.minimum_direction_recall
         and metrics["wilson_lower_95"] >= core_config.gates.target_wilson_lower
@@ -1356,18 +1577,10 @@ def _advancement_criteria(
         minimum_coverage=core_config.gates.minimum_coverage,
         minimum_coverage_uplift=config.minimum_coverage_uplift,
         maximum_accuracy_regression=config.maximum_accuracy_regression,
-        maximum_balanced_accuracy_regression=(
-            config.maximum_balanced_accuracy_regression
-        ),
-        maximum_direction_recall_regression=(
-            config.maximum_direction_recall_regression
-        ),
-        maximum_median_entry_seconds_regression=(
-            config.maximum_median_entry_seconds_regression
-        ),
-        minimum_mean_direct_edge_per_share=(
-            config.minimum_mean_direct_edge_per_share
-        ),
+        maximum_balanced_accuracy_regression=(config.maximum_balanced_accuracy_regression),
+        maximum_direction_recall_regression=(config.maximum_direction_recall_regression),
+        maximum_median_entry_seconds_regression=(config.maximum_median_entry_seconds_regression),
+        minimum_mean_direct_edge_per_share=(config.minimum_mean_direct_edge_per_share),
         minimum_realized_net_per_share=config.minimum_realized_net_per_share,
         minimum_common_time_markets=config.minimum_common_markets,
     )
@@ -1392,16 +1605,20 @@ def _execution_config(
     )
 
 
-def _assert_locked_development_range(config: CoreTrainingConfig) -> None:
+def _assert_locked_development_range(
+    config: CoreTrainingConfig,
+    *,
+    enforce_external_holdout_contract: bool = True,
+) -> None:
     metadata = validate_core_feature_cache(config, "pre_holdout")
     contract = metadata.get("build_contract", {})
     if (
-        datetime.fromisoformat(str(contract.get("range_start")))
-        != config.data.range_start
-        or datetime.fromisoformat(str(contract.get("range_end")))
-        != config.data.range_end
+        datetime.fromisoformat(str(contract.get("range_start"))) != config.data.range_start
+        or datetime.fromisoformat(str(contract.get("range_end"))) != config.data.range_end
     ):
         raise RuntimeError("development cache escapes the locked training range")
+    if not enforce_external_holdout_contract:
+        return
     holdout_path = config.paths.holdout_feature_data
     access_parent = config.paths.artifacts
     holdout_access = (
@@ -1412,9 +1629,7 @@ def _assert_locked_development_range(config: CoreTrainingConfig) -> None:
     if holdout_access:
         raise RuntimeError("independent holdout access was already recorded")
     if holdout_path.exists():
-        raise RuntimeError(
-            "independent holdout feature cache exists before candidate freeze"
-        )
+        raise RuntimeError("independent holdout feature cache exists before candidate freeze")
 
 
 def _configure_compute(config: PersistenceBenchmarkConfig) -> None:
