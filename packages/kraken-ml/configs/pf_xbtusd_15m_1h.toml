@@ -1,0 +1,76 @@
+[dataset]
+source = "parquet_lake"
+lake_root = "/Volumes/docker-data/kraken-data/provider=kraken_futures"
+symbol = "PF_XBTUSD"
+interval_seconds = 900
+start = "2023-05-31T12:15:00Z"
+end = "2026-07-28T03:00:00Z"
+horizon_bars = 4
+reference_notional_usd = 1000
+taker_fee_bps_per_side = 5.0
+label_uncertainty_buffer_bps = 2.0
+
+[validation]
+minimum_training_days = 270
+purge_bars = 5
+calibration_start = "2025-12-01T00:00:00Z"
+threshold_start = "2026-01-01T00:00:00Z"
+holdout_start = "2026-02-12T13:00:00Z"
+holdout_end = "2026-07-28T03:00:00Z"
+
+[[validation.folds]]
+name = "2024_summer"
+start = "2024-06-01T00:00:00Z"
+end = "2024-09-01T00:00:00Z"
+
+[[validation.folds]]
+name = "2024_autumn"
+start = "2024-09-01T00:00:00Z"
+end = "2024-12-01T00:00:00Z"
+
+[[validation.folds]]
+name = "2024_winter"
+start = "2024-12-01T00:00:00Z"
+end = "2025-03-01T00:00:00Z"
+
+[[validation.folds]]
+name = "2025_spring"
+start = "2025-03-01T00:00:00Z"
+end = "2025-06-01T00:00:00Z"
+
+[[validation.folds]]
+name = "2025_summer"
+start = "2025-06-01T00:00:00Z"
+end = "2025-09-01T00:00:00Z"
+
+[[validation.folds]]
+name = "2025_autumn"
+start = "2025-09-01T00:00:00Z"
+end = "2025-12-01T00:00:00Z"
+
+[compute]
+reserve_cores = 2
+max_parallel_fits = 10
+comparison_estimator_threads = 1
+final_refit_threads = 10
+random_seed = 20260728
+bootstrap_resamples = 2000
+holdout_bootstrap_resamples = 5000
+
+[selection]
+probability_thresholds = [0.40, 0.45, 0.50, 0.55, 0.60]
+directional_margins = [0.05, 0.10, 0.15, 0.20]
+minimum_calibration_trades = 50
+
+[gates]
+minimum_balanced_accuracy_uplift = 0.03
+minimum_development_positive_folds = 5
+minimum_holdout_trades = 200
+minimum_net_expectancy_bps = 3.0
+minimum_profit_factor = 1.15
+minimum_positive_month_fraction = 0.60
+execution_cost_stress_multiplier = 1.5
+
+[artifacts]
+root = "/Volumes/docker-data/kraken-ml"
+curated_report_directory = "reports/latest"
