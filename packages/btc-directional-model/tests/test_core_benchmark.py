@@ -83,6 +83,8 @@ def test_own_policy_metrics_include_timing_no_trade_and_five_share_economics() -
     assert early["median_seconds_elapsed"] == 90
     assert result["candidates"]["early-core"]["time_bands"][1]["markets"] == 12
     assert early["execution"]["executable_coverage"] == 1
+    assert early["execution"]["executable_coverage_all_selected"] == 1
+    assert early["execution"]["executable_coverage_within_evidence"] == 1
     assert early["execution"]["mean_direct_edge_per_share"] == pytest.approx(0.39)
     assert early["execution"]["realized_net_expectancy_per_trade"] == pytest.approx(
         2.45
@@ -105,12 +107,43 @@ def test_common_comparison_uses_exact_fixed_timestamps() -> None:
     assert all(row["accuracy_delta"] == 0 for row in comparison["checkpoints"])
 
 
+def test_checkpoint_coverage_uses_the_universal_market_denominator() -> None:
+    control = prediction_frame("control", early=False)
+    candidate = prediction_frame("candidate", early=True).filter(
+        ~pl.col("market_id").is_in(["market-10", "market-11"])
+    )
+
+    result = benchmark_predictions(
+        {"control": control, "candidate": candidate},
+        policies={
+            "control": CandidatePolicy(0.8, True, 0.20, 1024),
+            "candidate": CandidatePolicy(0.8, True, 0.18, 2048),
+        },
+        control_candidate="control",
+        evidence=BenchmarkEvidence(
+            label="Chronological development comparison",
+            kind="development",
+            independent=False,
+        ),
+        eligible_market_ids=[f"market-{index:02d}" for index in range(12)],
+        minimum_samples=8,
+        minimum_executable_samples=8,
+    )
+
+    checkpoint = result["candidates"]["candidate"]["checkpoints"][0]
+    assert checkpoint["markets"] == 10
+    assert checkpoint["eligible_markets"] == 12
+    assert checkpoint["coverage"] == pytest.approx(10 / 12)
+
+
 def test_advance_gates_pass_benchmark_but_not_deployment_on_development_data() -> None:
     result = benchmark_result()
     advance = result["candidates"]["early-core"]["advance"]
+    checks = {check["name"]: check for check in advance["checks"]}
 
     assert advance["benchmark_passed"] is True
     assert advance["deployment_qualified"] is False
+    assert checks["minimum realized net per share"]["observed"] == pytest.approx(0.49)
     assert result["benchmark_passed_candidates"] == ["early-core"]
     assert result["deployment_qualified_candidates"] == []
 

@@ -28,6 +28,9 @@ def report_record() -> dict:
         "median_seconds_elapsed": 90.0,
         "p90_seconds_elapsed": 120.0,
         "execution": {
+            "execution_evidence_coverage": 0.80,
+            "executable_coverage_within_evidence": 0.95,
+            "executable_coverage_all_selected": 0.76,
             "executable_coverage": 0.95,
             "median_selected_ask_vwap_5": 0.60,
             "mean_fee_per_share": 0.01,
@@ -137,6 +140,9 @@ def test_report_is_deterministic_and_labels_non_independent_evidence() -> None:
     assert "development only" in first
     assert "non-independent development evidence" in first
     assert "same-market, exact-timestamp checkpoint comparisons" in first
+    assert "Evidence / selected" in first
+    assert "Executable / evidence" in first
+    assert "Executable / all selected" in first
     assert "early-core" in first
 
 

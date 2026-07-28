@@ -200,7 +200,10 @@ def benchmark_predictions(
             "policy": asdict(policy),
             "own_policy": own_policy,
             "time_bands": _time_band_metrics(selected, eligible_markets=len(universe)),
-            "checkpoints": _checkpoint_metrics(frame),
+            "checkpoints": _checkpoint_metrics(
+                frame,
+                eligible_markets=len(universe),
+            ),
         }
 
     control_metrics = candidates[control_candidate]["own_policy"]
@@ -649,6 +652,11 @@ def _execution_metrics(rows: pl.DataFrame, *, quantity: float) -> dict[str, Any]
     selected = _with_execution_columns(rows, quantity=quantity)
     if selected.is_empty():
         return _empty_execution_metrics(quantity)
+    evidence_cohort = (
+        selected.filter(pl.col("execution_evidence_available"))
+        if "execution_evidence_available" in selected.columns
+        else selected
+    )
     executable = selected.filter(pl.col("_execution_available"))
     economic = executable.filter(
         pl.col("_fee_per_share").is_not_null()
@@ -665,8 +673,17 @@ def _execution_metrics(rows: pl.DataFrame, *, quantity: float) -> dict[str, Any]
         {
             "execution_price_source": _execution_price_source(rows),
             "fee_source": _fee_source(rows),
+            "selected_markets": selected.height,
+            "execution_evidence_markets": evidence_cohort.height,
+            "execution_evidence_coverage": evidence_cohort.height / selected.height,
             "executable_markets": executable.height,
             "executable_coverage": executable.height / selected.height,
+            "executable_coverage_all_selected": executable.height / selected.height,
+            "executable_coverage_within_evidence": (
+                executable.height / evidence_cohort.height
+                if evidence_cohort.height
+                else 0.0
+            ),
             "median_selected_ask_vwap_5": (
                 float(np.median(execution_prices)) if len(execution_prices) else None
             ),
@@ -853,8 +870,13 @@ def _empty_execution_metrics(quantity: float) -> dict[str, Any]:
         "quantity": quantity,
         "execution_price_source": None,
         "fee_source": None,
+        "selected_markets": 0,
+        "execution_evidence_markets": 0,
+        "execution_evidence_coverage": 0.0,
         "executable_markets": 0,
         "executable_coverage": 0.0,
+        "executable_coverage_all_selected": 0.0,
+        "executable_coverage_within_evidence": 0.0,
         "median_selected_ask_vwap_5": None,
         "p90_selected_ask_vwap_5": None,
         "economics_available": False,
@@ -893,7 +915,11 @@ def _time_band_metrics(
     return output
 
 
-def _checkpoint_metrics(frame: pl.DataFrame) -> list[dict[str, Any]]:
+def _checkpoint_metrics(
+    frame: pl.DataFrame,
+    *,
+    eligible_markets: int,
+) -> list[dict[str, Any]]:
     output = []
     for checkpoint in FIXED_CHECKPOINTS:
         rows = frame.filter(pl.col("seconds_elapsed") == checkpoint)
@@ -904,7 +930,7 @@ def _checkpoint_metrics(frame: pl.DataFrame) -> list[dict[str, Any]]:
                 "seconds_elapsed": checkpoint,
                 **_classification_metrics(
                     rows,
-                    eligible_markets=frame["market_id"].n_unique(),
+                    eligible_markets=eligible_markets,
                 ),
             }
         )
@@ -1189,12 +1215,18 @@ def _advance_checks(
         ),
         _check(
             "minimum realized net per share",
-            candidate_execution["realized_net_expectancy_per_trade"],
-            ">",
-            criteria.minimum_realized_net_per_share * quantity,
-            _greater_than(
+            _per_share(
                 candidate_execution["realized_net_expectancy_per_trade"],
-                criteria.minimum_realized_net_per_share * quantity,
+                quantity,
+            ),
+            ">",
+            criteria.minimum_realized_net_per_share,
+            _greater_than(
+                _per_share(
+                    candidate_execution["realized_net_expectancy_per_trade"],
+                    quantity,
+                ),
+                criteria.minimum_realized_net_per_share,
             ),
         ),
         _check(
@@ -1347,6 +1379,12 @@ def _difference_at_most(
 ) -> bool:
     difference = _difference_or_none(left, right)
     return difference is not None and difference <= maximum
+
+
+def _per_share(value: float | None, quantity: float) -> float | None:
+    if value is None:
+        return None
+    return value / quantity
 
 
 def _greater_than(value: float | None, minimum: float) -> bool:

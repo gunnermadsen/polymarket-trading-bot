@@ -16,6 +16,8 @@ from .core_training import develop_core_models, evaluate_core_holdout
 from .entry_benchmark import run_entry_benchmark
 from .extract import extract_source
 from .features import build_features
+from .persistence_benchmark import run_persistence_benchmark
+from .persistence_config import load_persistence_benchmark_config
 from .report import generate_report
 from .runtime_export import export_runtime_model
 from .train import train_models
@@ -57,6 +59,9 @@ def main() -> None:
     entry_run = subparsers.add_parser("entry-benchmark-run")
     entry_run.add_argument("--config", type=Path, required=True)
     entry_run.add_argument("--force", action="store_true")
+    persistence_run = subparsers.add_parser("persistence-benchmark-run")
+    persistence_run.add_argument("--config", type=Path, required=True)
+    persistence_run.add_argument("--force", action="store_true")
     serve_parser = subparsers.add_parser("serve")
     serve_parser.add_argument("--run", type=Path, required=True)
     serve_parser.add_argument("--port", type=int, default=8765)
@@ -97,6 +102,21 @@ def main() -> None:
                 else "none"
             )
         )
+        return
+    if args.command == "persistence-benchmark-run":
+        config = load_persistence_benchmark_config(args.config)
+        run_dir, benchmark = run_persistence_benchmark(
+            config,
+            force=args.force,
+        )
+        print(f"report: {run_dir / 'report.html'}")
+        print(
+            "training finalist: "
+            + str(benchmark["training_selection"]["finalist"] or "none")
+        )
+        print("holdout labels/features: not accessed")
+        print("holdout book quality: only if separately recorded in run evidence")
+        print("runtime: unchanged")
         return
     if args.command.startswith("core-"):
         run_core_command(args)

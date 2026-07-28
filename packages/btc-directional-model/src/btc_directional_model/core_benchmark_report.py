@@ -118,6 +118,7 @@ same-market, exact-timestamp checkpoint comparisons · fixed five-share economic
 <section class="panel"><h2>Own-policy outcomes</h2><div class="table-wrap">
 {_candidate_table(benchmark, candidate_order)}</div></section>
 {_training_evidence_panel(benchmark)}
+{_persistence_analysis_panel(benchmark)}
 {_training_selection_panel(benchmark)}
 {_data_evidence_panel(benchmark)}
 <div class="grid" style="margin-top:14px">{plots}</div>
@@ -132,6 +133,63 @@ same-market, exact-timestamp checkpoint comparisons · fixed five-share economic
 <details class="panel"><summary>Deterministic benchmark record</summary>
 <pre>{details_json}</pre></details>
 </main></body></html>"""
+
+
+def _persistence_analysis_panel(benchmark: dict[str, Any]) -> str:
+    analysis = benchmark.get("persistence_analysis")
+    if not isinstance(analysis, dict):
+        return ""
+    rows = []
+    for name in benchmark.get("candidate_order", []):
+        candidate = analysis.get(name)
+        if not isinstance(candidate, dict):
+            continue
+        followed = candidate["path_behavior"]["followed"]
+        reversed_rows = candidate["path_behavior"]["reversed"]
+        early = candidate["early"]
+        rows.append(
+            (
+                name,
+                candidate["target_kind"],
+                candidate["feature_kind"],
+                candidate["calibration_kind"],
+                f"{early['markets']:,}",
+                _percent(early["coverage"]),
+                _percent(early["accuracy"]),
+                f"{followed['markets']:,}",
+                _percent(followed["accuracy"]),
+                f"{reversed_rows['markets']:,}",
+                _percent(reversed_rows["accuracy"]),
+            )
+        )
+    if not rows:
+        return ""
+    return (
+        '<section class="panel" style="margin-top:14px">'
+        "<h2>Path-persistence behavior</h2>"
+        "<p>Every probability below is converted back into outcome-space "
+        "<code>P(UP)</code> before direction, accuracy, confidence, or economics "
+        "are evaluated. A reversal is a real model decision opposite the current "
+        "Binance path, not a second strategy.</p>"
+        '<div class="table-wrap">'
+        + _table(
+            (
+                "Candidate",
+                "Target",
+                "Features",
+                "Calibration",
+                "≤120 sec",
+                "Early coverage",
+                "Early accuracy",
+                "Follow",
+                "Follow accuracy",
+                "Reverse",
+                "Reverse accuracy",
+            ),
+            rows,
+        )
+        + "</div></section>"
+    )
 
 
 def _training_evidence_panel(benchmark: dict[str, Any]) -> str:
@@ -196,7 +254,7 @@ def _training_evidence_panel(benchmark: dict[str, Any]) -> str:
         "Wilson lower",
         "Median sec",
         "Early coverage",
-        "Training gate",
+        "Core statistical gate",
     )
     return (
         '<section class="panel" style="margin-top:14px">'
@@ -309,6 +367,34 @@ def _data_evidence_panel(benchmark: dict[str, Any]) -> str:
         ),
         ("Raw PMXT archive", "not read; compact execution snapshots only"),
     ]
+    recent = evidence.get("recent_backfill_book_quality")
+    if isinstance(recent, dict):
+        for cohort in recent.get("cohorts", []):
+            rows.append(
+                (
+                    f"Recent compact book {cohort['date']}",
+                    (
+                        f"{cohort['markets']:,} markets; "
+                        f"{_percent(cohort['strict_valid_rate'])} strict-valid; "
+                        f"{cohort['completion']}"
+                    ),
+                )
+            )
+        rows.extend(
+            (
+                (
+                    "Recent clean-book total",
+                    (
+                        f"{recent.get('combined_markets', 0):,} noncontiguous markets; "
+                        f"required {recent.get('minimum_holdout_markets', 0):,}"
+                    ),
+                ),
+                (
+                    "Recent book decision",
+                    str(recent.get("decision", "diagnostic only")),
+                ),
+            )
+        )
     return (
         '<section class="panel" style="margin-top:14px">'
         "<h2>Data-quality and execution evidence</h2>"
@@ -355,7 +441,9 @@ def _candidate_table(
         "ECE",
         "Median sec",
         "P90 sec",
-        "Exec coverage",
+        "Evidence / selected",
+        "Executable / evidence",
+        "Executable / all selected",
         "Median VWAP",
         "Fee/share",
         "Direct edge",
@@ -392,7 +480,14 @@ def _candidate_table(
                 _percent(metrics["expected_calibration_error"]),
                 _number(metrics["median_seconds_elapsed"], 0),
                 _number(metrics["p90_seconds_elapsed"], 0),
-                _percent(execution["executable_coverage"]),
+                _percent(execution.get("execution_evidence_coverage")),
+                _percent(execution.get("executable_coverage_within_evidence")),
+                _percent(
+                    execution.get(
+                        "executable_coverage_all_selected",
+                        execution.get("executable_coverage"),
+                    )
+                ),
                 _currency(execution["median_selected_ask_vwap_5"], 4),
                 _currency(execution["mean_fee_per_share"], 5),
                 _signed_currency(execution["mean_direct_edge_per_share"], 5),
