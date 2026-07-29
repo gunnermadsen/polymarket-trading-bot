@@ -209,6 +209,39 @@ trained artifact only; it does not select thresholds, veto individual trades, or
 trading logic. A new forward paper cohort beginning after artifact freeze remains required for
 independent qualification.
 
+Run the narrower March 21-July 28 mature-reversal accuracy session:
+
+```bash
+export POLARS_MAX_THREADS=6
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export MKL_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+.venv/bin/btc-directional-model core-features \
+  --config configs/btc-5m-directional-core-boundary-reversal-20260321-20260729.toml \
+  --scope pre_holdout
+.venv/bin/btc-directional-model persistence-benchmark-run \
+  --config configs/btc-5m-directional-mature-reversal-accuracy-20260321-20260729.toml
+```
+
+This accuracy-focused session compares the current 58-feature direct-outcome model with one
+71-feature direct-outcome challenger under the same five chronological folds, global Platt
+calibration, threshold search, and equal-total-per-market weighting. The 13 added fields use only
+causal Binance path excursion, pullback, recovery, recency, short-horizon return, and signed-flow
+history already present in the compact core dataset. They do not use the official opening
+boundary, final price, a correctness selector, an admission model, or a post-prediction veto.
+
+Advancement requires the existing absolute accuracy standards, at least 0.1 percentage-point
+aggregate improvements in accuracy, balanced accuracy, and Wilson lower confidence, strictly
+positive UP and DOWN recall changes, coverage non-regression, five qualified chronological folds,
+and at least one fewer wrong first-crossing prediction at 95% or greater confidence without a
+worse selected-trade error rate. Early coverage, exact-time comparisons, entry timing,
+path-persistence uplift, and execution economics remain reported diagnostics; this session does
+not claim an earlier-entry or trade-frequency improvement. Because March 21-July 28 has been
+consumed during development, a paper process starting after artifact freeze is still required for
+independent qualification.
+
 Run the rolling correctness-admission benchmark from a completed boundary session:
 
 ```bash

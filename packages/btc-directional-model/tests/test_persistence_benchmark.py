@@ -8,6 +8,7 @@ import polars as pl
 from btc_directional_model.core_config import load_core_config
 from btc_directional_model.core_features import (
     CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES,
+    CORE_MATURE_REVERSAL_ENRICHED_FEATURES,
 )
 from btc_directional_model.core_training import ProbabilityCalibrator
 from btc_directional_model.persistence_benchmark import (
@@ -31,6 +32,8 @@ from btc_directional_model.persistence_config import (
     BOUNDARY_REVERSAL_ACCURACY_PROFILE,
     FOLD_ROBUST_FREQUENCY_CANDIDATE,
     FOLD_ROBUST_FREQUENCY_PROFILE,
+    MATURE_REVERSAL_ACCURACY_CANDIDATE,
+    MATURE_REVERSAL_ACCURACY_PROFILE,
     CalibrationBand,
     load_persistence_benchmark_config,
 )
@@ -222,6 +225,166 @@ def test_boundary_reversal_candidate_uses_full_versioned_feature_contract() -> N
     assert "btc_path_from_window_open_bps" in spec.feature_names
     assert "btc_cross_venue_boundary_gap_bps" in spec.feature_names
     assert "btc_path_sign_normalized_boundary_gap_bps" in spec.feature_names
+
+
+def test_mature_reversal_accuracy_configuration_locks_model_accuracy_contract() -> None:
+    package_root = Path(__file__).resolve().parents[1]
+    config = load_persistence_benchmark_config(
+        package_root
+        / "configs"
+        / "btc-5m-directional-mature-reversal-accuracy-20260321-20260729.toml"
+    )
+    core = load_core_config(config.core_config)
+    profile = CANDIDATE_PROFILES[MATURE_REVERSAL_ACCURACY_CANDIDATE]
+    spec = _candidate_spec(profile, config)
+
+    assert config.profile == MATURE_REVERSAL_ACCURACY_PROFILE
+    assert config.candidate_names == (
+        "histogram_enriched",
+        MATURE_REVERSAL_ACCURACY_CANDIDATE,
+    )
+    assert profile.target_kind == "outcome_up"
+    assert profile.feature_kind == "core_mature_reversal"
+    assert profile.calibration_kind == "global_platt"
+    assert spec.feature_names == tuple(CORE_MATURE_REVERSAL_ENRICHED_FEATURES)
+    assert len(spec.feature_names) == 71
+    assert core.data.range_start == datetime(2026, 3, 21, tzinfo=UTC)
+    assert core.data.range_end == datetime(2026, 7, 29, tzinfo=UTC)
+    assert core.split.development_end == datetime(2026, 7, 14, tzinfo=UTC)
+    assert core.split.probability_calibration_end == datetime(
+        2026, 7, 21, tzinfo=UTC
+    )
+    assert core.split.policy_selection_end == datetime(2026, 7, 29, tzinfo=UTC)
+    assert config.minimum_accuracy_uplift == 0.001
+    assert config.minimum_balanced_accuracy_uplift == 0.001
+    assert config.minimum_direction_recall_uplift == 0.0
+    assert config.minimum_wilson_lower_uplift == 0.001
+    assert config.minimum_coverage_uplift == 0.0
+    assert config.minimum_hard_confident_error_count_reduction == 1
+
+
+def test_mature_reversal_accuracy_gates_isolate_decision_quality() -> None:
+    package_root = Path(__file__).resolve().parents[1]
+    config = load_persistence_benchmark_config(
+        package_root
+        / "configs"
+        / "btc-5m-directional-mature-reversal-accuracy-20260321-20260729.toml"
+    )
+    core = load_core_config(config.core_config)
+
+    def evaluate(
+        *,
+        accuracy: float = 0.902,
+        balanced_accuracy: float = 0.902,
+        up_recall: float = 0.901,
+        down_recall: float = 0.901,
+        coverage: float = 0.60,
+    ) -> tuple[dict[str, bool], dict[str, object]]:
+        benchmark = {
+            "candidates": {
+                "histogram_enriched": {"advance": {"checks": []}},
+                MATURE_REVERSAL_ACCURACY_CANDIDATE: {
+                    "advance": {
+                        "checks": [
+                            {
+                                "name": "runtime deployment contract is compatible",
+                                "passed": False,
+                            }
+                        ]
+                    }
+                },
+            },
+            "common_comparisons": {
+                MATURE_REVERSAL_ACCURACY_CANDIDATE: {
+                    "checkpoints": [
+                        {
+                            "seconds_elapsed": 60,
+                            "accuracy_delta": -0.25,
+                            "balanced_accuracy_delta": -0.25,
+                            "up_recall_delta": -0.25,
+                            "down_recall_delta": -0.25,
+                        }
+                    ]
+                }
+            },
+            "common_selected_execution_comparisons": {
+                MATURE_REVERSAL_ACCURACY_CANDIDATE: {"common_markets": 0}
+            },
+        }
+        candidate_results = {
+            "histogram_enriched": {
+                "out_of_fold": {
+                    "accuracy": 0.900,
+                    "balanced_accuracy": 0.900,
+                    "up_recall": 0.900,
+                    "down_recall": 0.900,
+                    "wilson_lower_95": 0.880,
+                    "coverage": 0.60,
+                },
+                "hard_confident_errors": {
+                    "eligible_markets": 1_000,
+                    "hard_confident_error_markets": 2,
+                    "hard_confident_error_rate_selected": 2 / 800,
+                },
+            },
+            MATURE_REVERSAL_ACCURACY_CANDIDATE: {
+                "out_of_fold": {
+                    "markets": 600,
+                    "accuracy": accuracy,
+                    "balanced_accuracy": balanced_accuracy,
+                    "up_recall": up_recall,
+                    "down_recall": down_recall,
+                    "wilson_lower_95": 0.882,
+                    "expected_calibration_error": 0.02,
+                    "coverage": coverage,
+                },
+                "hard_confident_errors": {
+                    "eligible_markets": 1_000,
+                    "hard_confident_error_markets": 1,
+                    "hard_confident_error_rate_selected": 1 / 600,
+                },
+                "qualified_threshold_folds": 5,
+                "total_folds": 5,
+            },
+        }
+
+        _add_training_gates(
+            benchmark,
+            candidate_results,
+            config,
+            core,
+        )
+
+        advance = benchmark["candidates"][
+            MATURE_REVERSAL_ACCURACY_CANDIDATE
+        ]["advance"]
+        return (
+            {
+                check["name"]: check["passed"]
+                for check in advance["checks"]
+            },
+            advance,
+        )
+
+    passing, passing_advance = evaluate()
+    weak_accuracy, _ = evaluate(accuracy=0.9005)
+    tied_down_recall, _ = evaluate(down_recall=0.900)
+    lower_coverage, _ = evaluate(coverage=0.599)
+
+    assert all(passing.values())
+    assert passing_advance["benchmark_passed"] is True
+    assert passing_advance["diagnostic_only"] == [
+        "early",
+        "timing",
+        "fixed_checkpoints",
+        "path_behavior",
+        "paired_uplift",
+        "bootstrap_uplift",
+        "execution_economics",
+    ]
+    assert weak_accuracy["minimum aggregate accuracy uplift"] is False
+    assert tied_down_recall["positive aggregate DOWN recall uplift"] is False
+    assert lower_coverage["eligible-market coverage does not regress"] is False
 
 
 def test_hard_confident_errors_use_fixed_and_selected_denominators() -> None:

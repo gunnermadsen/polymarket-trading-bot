@@ -12,6 +12,9 @@ from btc_directional_model.core_features import (
     CORE_BOUNDARY_REVERSAL_FEATURE_SCHEMA_VERSION,
     CORE_BOUNDARY_REVERSAL_FEATURES,
     CORE_ENRICHED_FEATURES,
+    CORE_MATURE_REVERSAL_ENRICHED_FEATURES,
+    CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION,
+    CORE_MATURE_REVERSAL_FEATURES,
     CORE_MODEL_FEATURES,
     derive_core_point_in_time_features,
     validate_feature_allowlists,
@@ -226,6 +229,69 @@ def test_boundary_reversal_schema_is_additive_and_allowlisted() -> None:
         "opening_boundary",
     }.intersection(CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES)
     validate_feature_allowlists(features)
+
+
+def test_mature_reversal_schema_is_narrow_boundary_independent_and_allowlisted() -> None:
+    original = core_source_frame()
+    shifted_boundary = original.with_columns(
+        (pl.col("opening_boundary") * 1.02).alias("opening_boundary")
+    )
+    original_features = derive_core_point_in_time_features(original)
+    shifted_features = derive_core_point_in_time_features(shifted_boundary)
+    mature = original_features.filter(pl.col("seconds_elapsed") == 60)
+
+    assert len(CORE_MATURE_REVERSAL_ENRICHED_FEATURES) == 71
+    assert (
+        CORE_MATURE_REVERSAL_ENRICHED_FEATURES[: len(CORE_ENRICHED_FEATURES)]
+        == CORE_ENRICHED_FEATURES
+    )
+    assert (
+        CORE_MATURE_REVERSAL_ENRICHED_FEATURES[len(CORE_ENRICHED_FEATURES) :]
+        == CORE_MATURE_REVERSAL_FEATURES
+    )
+    assert CORE_MATURE_REVERSAL_FEATURES == [
+        "btc_path_max_favorable_excursion_bps",
+        "btc_path_max_adverse_excursion_bps",
+        "btc_path_pullback_from_favorable_extreme_bps",
+        "btc_path_recovery_from_adverse_extreme_bps",
+        "btc_seconds_since_path_high_scaled",
+        "btc_seconds_since_path_low_scaled",
+        "btc_path_sign_normalized_return_5s_bps",
+        "btc_path_sign_normalized_return_15s_bps",
+        "btc_path_sign_normalized_return_30s_bps",
+        "btc_path_sign_normalized_return_60s_bps",
+        "btc_path_sign_normalized_flow_5s",
+        "btc_path_sign_normalized_flow_30s",
+        "btc_path_sign_normalized_flow_60s",
+    ]
+    assert (
+        CORE_MODEL_FEATURES["histogram_mature_reversal"]
+        == CORE_MATURE_REVERSAL_ENRICHED_FEATURES
+    )
+    assert (
+        CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION
+        == "btc-5m-directional-mature-reversal-features-v1"
+    )
+    assert not {
+        "label_up",
+        "official_outcome",
+        "final_price",
+        "window_end",
+        "opening_boundary",
+        "btc_cross_venue_boundary_gap_bps",
+        "btc_path_sign_normalized_boundary_gap_bps",
+    }.intersection(CORE_MATURE_REVERSAL_ENRICHED_FEATURES)
+    assert original_features.select(CORE_MATURE_REVERSAL_ENRICHED_FEATURES).equals(
+        shifted_features.select(CORE_MATURE_REVERSAL_ENRICHED_FEATURES),
+        null_equal=True,
+    )
+    mature_values = mature.select(CORE_MATURE_REVERSAL_FEATURES)
+    assert mature_values.null_count().sum_horizontal()[0] == 0
+    assert all(
+        math.isfinite(float(value))
+        for value in mature_values.row(0)
+    )
+    validate_feature_allowlists(original_features)
 
 
 def test_boundary_reversal_features_are_causal_with_early_history_nulls() -> None:

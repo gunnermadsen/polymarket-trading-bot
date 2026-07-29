@@ -42,6 +42,7 @@ from .core_features import (
     CORE_BOUNDARY_ENRICHED_FEATURES,
     CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES,
     CORE_ENRICHED_FEATURES,
+    CORE_MATURE_REVERSAL_ENRICHED_FEATURES,
     load_core_feature_frame,
     validate_core_feature_cache,
 )
@@ -67,6 +68,8 @@ from .persistence_config import (
     BOUNDARY_REVERSAL_ACCURACY_PROFILE,
     FOLD_ROBUST_FREQUENCY_CANDIDATE,
     FOLD_ROBUST_FREQUENCY_PROFILE,
+    MATURE_REVERSAL_ACCURACY_CANDIDATE,
+    MATURE_REVERSAL_ACCURACY_PROFILE,
     PATH_PERSISTENCE_PROFILE,
     CalibrationBand,
     PersistenceBenchmarkConfig,
@@ -112,6 +115,7 @@ class CandidateProfile:
         "core",
         "core_boundary",
         "core_boundary_reversal",
+        "core_mature_reversal",
         "core_prewindow",
     ]
     calibration_kind: Literal["global_platt", "time_banded_platt"]
@@ -194,6 +198,12 @@ CANDIDATE_PROFILES = {
             "path_persistence",
             "core_boundary_reversal",
             "time_banded_platt",
+        ),
+        CandidateProfile(
+            MATURE_REVERSAL_ACCURACY_CANDIDATE,
+            "outcome_up",
+            "core_mature_reversal",
+            "global_platt",
         ),
         CandidateProfile(
             FOLD_ROBUST_FREQUENCY_CANDIDATE,
@@ -389,6 +399,12 @@ def run_persistence_benchmark(
             "the challenger's path-persistence target conversion, time-banded "
             "calibration, and 106-feature boundary-reversal schema are not "
             "runtime-v1 contracts"
+        )
+    elif config.profile == MATURE_REVERSAL_ACCURACY_PROFILE:
+        runtime_contract_gap = (
+            "the challenger's 71-feature mature-reversal schema is not a "
+            "runtime-v1 contract; its direct outcome target and global Platt "
+            "calibration remain runtime-v1 compatible"
         )
     else:
         runtime_contract_gap = (
@@ -1474,6 +1490,8 @@ def _candidate_spec(
         features = tuple(CORE_BOUNDARY_ENRICHED_FEATURES)
     elif profile.feature_kind == "core_boundary_reversal":
         features = tuple(CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES)
+    elif profile.feature_kind == "core_mature_reversal":
+        features = tuple(CORE_MATURE_REVERSAL_ENRICHED_FEATURES)
     else:
         features = tuple(CORE_ENRICHED_FEATURES)
     if profile.feature_kind == "core_prewindow":
@@ -1732,6 +1750,14 @@ def _add_training_gates(
             continue
         result = candidate_results[name]
         advance = benchmark["candidates"][name]["advance"]
+        if config.profile == MATURE_REVERSAL_ACCURACY_PROFILE:
+            _add_mature_reversal_accuracy_gates(
+                advance,
+                candidate_results,
+                config,
+                core_config,
+            )
+            continue
         deferred = [
             check for check in advance["checks"] if check["name"] in DEFERRED_RUNTIME_CHECKS
         ]
@@ -1892,6 +1918,25 @@ def _add_training_gates(
         advance["deferred_runtime_checks"] = deferred
         advance["benchmark_passed"] = all(check["passed"] for check in checks)
         advance["deployment_qualified"] = False
+    if config.profile == MATURE_REVERSAL_ACCURACY_PROFILE:
+        benchmark["advancement_contract"] = {
+            "profile": MATURE_REVERSAL_ACCURACY_PROFILE,
+            "optimization_target": "model_directional_decision_accuracy",
+            "advancement_only": [
+                "absolute aggregate accuracy standards",
+                "aggregate accuracy, balanced-accuracy, direction-recall, and Wilson uplift",
+                "eligible-market coverage non-regression",
+                "hard-confident error count and selected-rate improvement",
+                "qualified threshold in every chronological fold",
+            ],
+            "diagnostic_only": [
+                "early-entry metrics",
+                "fixed-time checkpoint comparisons",
+                "decision timing",
+                "path-persistence uplift",
+                "execution economics",
+            ],
+        }
     benchmark["benchmark_passed_candidates"] = [
         name
         for name in config.candidate_names
@@ -1899,6 +1944,172 @@ def _add_training_gates(
         and benchmark["candidates"][name]["advance"]["benchmark_passed"]
     ]
     benchmark["deployment_qualified_candidates"] = []
+
+
+def _add_mature_reversal_accuracy_gates(
+    advance: dict[str, Any],
+    candidate_results: dict[str, dict[str, Any]],
+    config: PersistenceBenchmarkConfig,
+    core_config: CoreTrainingConfig,
+) -> None:
+    control = candidate_results[config.control_candidate]
+    candidate = candidate_results[MATURE_REVERSAL_ACCURACY_CANDIDATE]
+    control_metrics = control["out_of_fold"]
+    candidate_metrics = candidate["out_of_fold"]
+    control_tail = control["hard_confident_errors"]
+    candidate_tail = candidate["hard_confident_errors"]
+    deferred = [
+        check for check in advance["checks"] if check["name"] in DEFERRED_RUNTIME_CHECKS
+    ]
+    checks = [
+        _check(
+            "minimum accepted samples",
+            candidate_metrics["markets"],
+            ">=",
+            config.minimum_common_markets,
+        ),
+        _check(
+            "minimum accuracy",
+            candidate_metrics["accuracy"],
+            ">=",
+            core_config.gates.target_accuracy,
+        ),
+        _check(
+            "minimum balanced accuracy",
+            candidate_metrics["balanced_accuracy"],
+            ">=",
+            core_config.gates.target_balanced_accuracy,
+        ),
+        _check(
+            "minimum UP recall",
+            candidate_metrics["up_recall"],
+            ">=",
+            core_config.gates.minimum_direction_recall,
+        ),
+        _check(
+            "minimum DOWN recall",
+            candidate_metrics["down_recall"],
+            ">=",
+            core_config.gates.minimum_direction_recall,
+        ),
+        _check(
+            "minimum Wilson lower bound",
+            candidate_metrics["wilson_lower_95"],
+            ">=",
+            core_config.gates.target_wilson_lower,
+        ),
+        _check(
+            "maximum expected calibration error",
+            candidate_metrics["expected_calibration_error"],
+            "<=",
+            core_config.gates.maximum_ece,
+        ),
+        _check(
+            "minimum eligible-market coverage",
+            candidate_metrics["coverage"],
+            ">=",
+            core_config.gates.minimum_coverage,
+        ),
+        _check(
+            "minimum aggregate accuracy uplift",
+            candidate_metrics["accuracy"] - control_metrics["accuracy"],
+            ">=",
+            config.minimum_accuracy_uplift,
+        ),
+        _check(
+            "minimum aggregate balanced accuracy uplift",
+            candidate_metrics["balanced_accuracy"]
+            - control_metrics["balanced_accuracy"],
+            ">=",
+            config.minimum_balanced_accuracy_uplift,
+        ),
+        _check(
+            "positive aggregate UP recall uplift",
+            candidate_metrics["up_recall"] - control_metrics["up_recall"],
+            ">",
+            config.minimum_direction_recall_uplift,
+        ),
+        _check(
+            "positive aggregate DOWN recall uplift",
+            candidate_metrics["down_recall"] - control_metrics["down_recall"],
+            ">",
+            config.minimum_direction_recall_uplift,
+        ),
+        _check(
+            "minimum aggregate Wilson lower-bound uplift",
+            candidate_metrics["wilson_lower_95"]
+            - control_metrics["wilson_lower_95"],
+            ">=",
+            config.minimum_wilson_lower_uplift,
+        ),
+        _check(
+            "eligible-market coverage does not regress",
+            candidate_metrics["coverage"] - control_metrics["coverage"],
+            ">=",
+            config.minimum_coverage_uplift,
+        ),
+        _check(
+            "hard-confident-error eligible universe matches control",
+            candidate_tail["eligible_markets"],
+            "==",
+            control_tail["eligible_markets"],
+        ),
+    ]
+    if control_tail["hard_confident_error_markets"] > 0:
+        checks.append(
+            _check(
+                "minimum hard-confident error count reduction",
+                control_tail["hard_confident_error_markets"]
+                - candidate_tail["hard_confident_error_markets"],
+                ">=",
+                config.minimum_hard_confident_error_count_reduction,
+            )
+        )
+    else:
+        checks.append(
+            _check(
+                "no hard-confident errors when control has none",
+                candidate_tail["hard_confident_error_markets"],
+                "==",
+                0,
+            )
+        )
+    checks.extend(
+        (
+            _check(
+                "hard-confident error rate per selected trade does not regress",
+                control_tail["hard_confident_error_rate_selected"]
+                - candidate_tail["hard_confident_error_rate_selected"],
+                ">=",
+                -config.maximum_hard_confident_error_selected_rate_regression,
+            ),
+            _check(
+                "frozen chronological fold count",
+                candidate["total_folds"],
+                "==",
+                len(core_config.split.validation_windows),
+            ),
+            _check(
+                "qualified threshold in every fold",
+                candidate["qualified_threshold_folds"],
+                "==",
+                candidate["total_folds"],
+            ),
+        )
+    )
+    advance["checks"] = checks
+    advance["deferred_runtime_checks"] = deferred
+    advance["diagnostic_only"] = [
+        "early",
+        "timing",
+        "fixed_checkpoints",
+        "path_behavior",
+        "paired_uplift",
+        "bootstrap_uplift",
+        "execution_economics",
+    ]
+    advance["benchmark_passed"] = all(check["passed"] for check in checks)
+    advance["deployment_qualified"] = False
 
 
 def _check(
@@ -1909,6 +2120,10 @@ def _check(
 ) -> dict[str, Any]:
     if operator == ">=":
         passed = observed >= required
+    elif operator == ">":
+        passed = observed > required
+    elif operator == "<=":
+        passed = observed <= required
     elif operator == "==":
         passed = observed == required
     else:
@@ -1932,7 +2147,10 @@ def _select_finalist(
     passing = benchmark["benchmark_passed_candidates"]
     if not passing:
         return None
-    if config.profile == BOUNDARY_REVERSAL_ACCURACY_PROFILE:
+    if config.profile in {
+        BOUNDARY_REVERSAL_ACCURACY_PROFILE,
+        MATURE_REVERSAL_ACCURACY_PROFILE,
+    }:
         return max(
             passing,
             key=lambda name: (

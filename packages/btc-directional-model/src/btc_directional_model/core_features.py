@@ -22,6 +22,9 @@ CORE_BOUNDARY_FEATURE_SCHEMA_VERSION = "btc-5m-directional-boundary-features-v1"
 CORE_BOUNDARY_REVERSAL_FEATURE_SCHEMA_VERSION = (
     "btc-5m-directional-boundary-reversal-features-v1"
 )
+CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION = (
+    "btc-5m-directional-mature-reversal-features-v1"
+)
 
 CORE_BASELINE_FEATURES = [
     "seconds_elapsed_scaled",
@@ -144,12 +147,31 @@ CORE_BOUNDARY_REVERSAL_FEATURES = [
 CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES = (
     CORE_BOUNDARY_ENRICHED_FEATURES + CORE_BOUNDARY_REVERSAL_FEATURES
 )
+CORE_MATURE_REVERSAL_FEATURES = [
+    "btc_path_max_favorable_excursion_bps",
+    "btc_path_max_adverse_excursion_bps",
+    "btc_path_pullback_from_favorable_extreme_bps",
+    "btc_path_recovery_from_adverse_extreme_bps",
+    "btc_seconds_since_path_high_scaled",
+    "btc_seconds_since_path_low_scaled",
+    "btc_path_sign_normalized_return_5s_bps",
+    "btc_path_sign_normalized_return_15s_bps",
+    "btc_path_sign_normalized_return_30s_bps",
+    "btc_path_sign_normalized_return_60s_bps",
+    "btc_path_sign_normalized_flow_5s",
+    "btc_path_sign_normalized_flow_30s",
+    "btc_path_sign_normalized_flow_60s",
+]
+CORE_MATURE_REVERSAL_ENRICHED_FEATURES = (
+    CORE_ENRICHED_FEATURES + CORE_MATURE_REVERSAL_FEATURES
+)
 CORE_MODEL_FEATURES = {
     "logistic_baseline": CORE_BASELINE_FEATURES,
     "logistic_enriched": CORE_ENRICHED_FEATURES,
     "histogram_enriched": CORE_ENRICHED_FEATURES,
     "histogram_boundary_enriched": CORE_BOUNDARY_ENRICHED_FEATURES,
     "histogram_boundary_reversal": CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES,
+    "histogram_mature_reversal": CORE_MATURE_REVERSAL_ENRICHED_FEATURES,
 }
 
 
@@ -276,6 +298,9 @@ def build_core_features(
             "histogram_boundary_enriched": CORE_BOUNDARY_FEATURE_SCHEMA_VERSION,
             "histogram_boundary_reversal": (
                 CORE_BOUNDARY_REVERSAL_FEATURE_SCHEMA_VERSION
+            ),
+            "histogram_mature_reversal": (
+                CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION
             ),
         },
         "scope": scope,

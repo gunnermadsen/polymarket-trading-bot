@@ -39,11 +39,17 @@ BOUNDARY_REVERSAL_ACCURACY_CANDIDATES = (
     "histogram_enriched",
     BOUNDARY_REVERSAL_ACCURACY_CANDIDATE,
 )
+MATURE_REVERSAL_ACCURACY_CANDIDATE = "histogram_mature_reversal"
+MATURE_REVERSAL_ACCURACY_CANDIDATES = (
+    "histogram_enriched",
+    MATURE_REVERSAL_ACCURACY_CANDIDATE,
+)
 PATH_PERSISTENCE_PROFILE = "path_persistence"
 ACCURACY_TIMING_PROFILE = "accuracy_timing"
 FOLD_ROBUST_FREQUENCY_PROFILE = "fold_robust_frequency"
 BOUNDARY_ALIGNMENT_PROFILE = "boundary_alignment"
 BOUNDARY_REVERSAL_ACCURACY_PROFILE = "boundary_reversal_accuracy"
+MATURE_REVERSAL_ACCURACY_PROFILE = "mature_reversal_accuracy"
 
 
 @dataclass(frozen=True)
@@ -73,6 +79,10 @@ class PersistenceBenchmarkConfig:
     hard_confidence_floor: float
     minimum_hard_confident_error_count_reduction: int
     maximum_hard_confident_error_selected_rate_regression: float
+    minimum_accuracy_uplift: float
+    minimum_balanced_accuracy_uplift: float
+    minimum_direction_recall_uplift: float
+    minimum_wilson_lower_uplift: float
     maximum_accuracy_regression: float
     maximum_balanced_accuracy_regression: float
     maximum_direction_recall_regression: float
@@ -145,6 +155,16 @@ def load_persistence_benchmark_config(path: Path) -> PersistenceBenchmarkConfig:
                 "maximum_hard_confident_error_selected_rate_regression",
                 0.0,
             )
+        ),
+        minimum_accuracy_uplift=float(gates.get("minimum_accuracy_uplift", 0.0)),
+        minimum_balanced_accuracy_uplift=float(
+            gates.get("minimum_balanced_accuracy_uplift", 0.0)
+        ),
+        minimum_direction_recall_uplift=float(
+            gates.get("minimum_direction_recall_uplift", 0.0)
+        ),
+        minimum_wilson_lower_uplift=float(
+            gates.get("minimum_wilson_lower_uplift", 0.0)
         ),
         maximum_accuracy_regression=float(gates["maximum_accuracy_regression"]),
         maximum_balanced_accuracy_regression=float(gates["maximum_balanced_accuracy_regression"]),
@@ -219,6 +239,34 @@ def validate_persistence_benchmark_config(
                 "boundary-reversal accuracy benchmark requires the frozen "
                 "hard-confident-error contract"
             )
+    elif config.profile == MATURE_REVERSAL_ACCURACY_PROFILE:
+        if config.candidate_names != MATURE_REVERSAL_ACCURACY_CANDIDATES:
+            raise ValueError(
+                "mature-reversal accuracy benchmark requires its frozen "
+                "two-candidate matrix"
+            )
+        if config.row_weight_schedules:
+            raise ValueError(
+                "mature-reversal accuracy benchmark preserves equal market weighting"
+            )
+        if (
+            config.hard_confidence_floor != 0.95
+            or config.minimum_hard_confident_error_count_reduction != 1
+            or config.maximum_hard_confident_error_selected_rate_regression != 0.0
+            or config.minimum_accuracy_uplift != 0.001
+            or config.minimum_balanced_accuracy_uplift != 0.001
+            or config.minimum_direction_recall_uplift != 0.0
+            or config.minimum_wilson_lower_uplift != 0.001
+            or config.minimum_coverage_uplift != 0.0
+            or config.maximum_accuracy_regression != 0.0
+            or config.maximum_balanced_accuracy_regression != 0.0
+            or config.maximum_direction_recall_regression != 0.0
+            or config.maximum_median_entry_seconds_regression != 0.0
+        ):
+            raise ValueError(
+                "mature-reversal accuracy benchmark requires its frozen "
+                "accuracy-uplift and diagnostic-tolerance contract"
+            )
     else:
         raise ValueError(f"unsupported persistence benchmark profile: {config.profile}")
     if config.control_candidate != config.candidate_names[0]:
@@ -237,19 +285,42 @@ def validate_persistence_benchmark_config(
         or config.minimum_executable_markets < 500
     ):
         raise ValueError("sample gates cannot be weakened below 500 markets")
-    if (
-        config.minimum_coverage_uplift <= 0.0
-        or not 0.5 <= config.hard_confidence_floor <= 1.0
-        or config.minimum_hard_confident_error_count_reduction < 0
-        or config.maximum_hard_confident_error_selected_rate_regression < 0.0
-        or config.maximum_accuracy_regression > 0.0
-        or config.maximum_balanced_accuracy_regression > 0.0
-        or config.maximum_direction_recall_regression > 0.0
-        or config.maximum_median_entry_seconds_regression > -5.0
-        or config.minimum_mean_direct_edge_per_share < 0.0
-        or config.minimum_realized_net_per_share < 0.0
-    ):
-        raise ValueError("advancement gates weaken the frozen non-regression contract")
+    if config.profile == MATURE_REVERSAL_ACCURACY_PROFILE:
+        weakens_contract = (
+            config.minimum_coverage_uplift < 0.0
+            or not 0.5 <= config.hard_confidence_floor <= 1.0
+            or config.minimum_hard_confident_error_count_reduction < 1
+            or config.maximum_hard_confident_error_selected_rate_regression < 0.0
+            or config.minimum_accuracy_uplift <= 0.0
+            or config.minimum_balanced_accuracy_uplift <= 0.0
+            or config.minimum_direction_recall_uplift < 0.0
+            or config.minimum_wilson_lower_uplift <= 0.0
+            or config.maximum_accuracy_regression < 0.0
+            or config.maximum_balanced_accuracy_regression < 0.0
+            or config.maximum_direction_recall_regression < 0.0
+            or config.maximum_median_entry_seconds_regression < 0.0
+            or config.minimum_mean_direct_edge_per_share < 0.0
+            or config.minimum_realized_net_per_share < 0.0
+        )
+    else:
+        weakens_contract = (
+            config.minimum_coverage_uplift <= 0.0
+            or not 0.5 <= config.hard_confidence_floor <= 1.0
+            or config.minimum_hard_confident_error_count_reduction < 0
+            or config.maximum_hard_confident_error_selected_rate_regression < 0.0
+            or config.minimum_accuracy_uplift < 0.0
+            or config.minimum_balanced_accuracy_uplift < 0.0
+            or config.minimum_direction_recall_uplift < 0.0
+            or config.minimum_wilson_lower_uplift < 0.0
+            or config.maximum_accuracy_regression > 0.0
+            or config.maximum_balanced_accuracy_regression > 0.0
+            or config.maximum_direction_recall_regression > 0.0
+            or config.maximum_median_entry_seconds_regression > -5.0
+            or config.minimum_mean_direct_edge_per_share < 0.0
+            or config.minimum_realized_net_per_share < 0.0
+        )
+    if weakens_contract:
+        raise ValueError("advancement gates weaken the frozen profile contract")
     expected_bands = (
         CalibrationBand("60-89", 60, 90),
         CalibrationBand("90-119", 90, 120),
@@ -268,7 +339,11 @@ def validate_persistence_benchmark_config(
             "2026-07-29T00:00:00+00:00",
             130,
         )
-        if config.profile == BOUNDARY_REVERSAL_ACCURACY_PROFILE
+        if config.profile
+        in {
+            BOUNDARY_REVERSAL_ACCURACY_PROFILE,
+            MATURE_REVERSAL_ACCURACY_PROFILE,
+        }
         else (
             "2026-04-21T00:00:00+00:00",
             "2026-07-20T00:00:00+00:00",
@@ -283,7 +358,10 @@ def validate_persistence_benchmark_config(
         raise ValueError(
             "persistence benchmark training range does not match its frozen profile"
         )
-    if config.profile == BOUNDARY_REVERSAL_ACCURACY_PROFILE:
+    if config.profile in {
+        BOUNDARY_REVERSAL_ACCURACY_PROFILE,
+        MATURE_REVERSAL_ACCURACY_PROFILE,
+    }:
         expected_split = (
             "2026-03-21T00:00:00+00:00",
             "2026-07-14T00:00:00+00:00",
