@@ -2771,7 +2771,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgres"
       },
-      "description": "Daily net realized PnL for the current PnL scope, grouped by the UTC day an official outcome was received. Green bars are profitable days and red bars are losing days. Selected process uses the Trading process selection; All processes sums across eligible realtime-paper processes.",
+      "description": "Daily net realized PnL for the current PnL scope, grouped by the UTC day an official outcome was received. This panel uses a rolling 30-day range so each bar represents one calendar day. Green bars are profitable days and red bars are losing days. Selected process uses the Trading process selection; All processes sums across eligible realtime-paper processes.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2912,6 +2912,7 @@
           }
         }
       ],
+      "timeFrom": "30d",
       "title": "Daily Net Realized PnL",
       "type": "timeseries"
     },
@@ -3564,6 +3565,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 120,
+  "version": 121,
   "weekStart": ""
 }
