@@ -1,0 +1,43 @@
+# Materialize this template only after the accuracy-timing benchmark completes.
+# Replace __PERSISTENCE_RUN_ID__ with that run's UTC identifier before invoking
+# persistence-policy-benchmark-run. The loader intentionally rejects this placeholder.
+
+[benchmark]
+probability_manifest = "runs/btc-accuracy-timing-20260421-20260720/__PERSISTENCE_RUN_ID__/saved-policy-probabilities/manifest.json"
+control_candidate = "histogram_enriched"
+candidate_names = [
+  "histogram_enriched",
+  "histogram_path_persistence_time_calibrated",
+  "histogram_path_persistence_time_calibrated_60_120",
+  "histogram_path_persistence_time_calibrated_90_120",
+]
+evaluation_is_independent = false
+evaluation_note = "Checksummed policy-selection probabilities choose one causal threshold per time band, then the corresponding chronological validation probabilities are scored once. This is consumed development evidence; no model is refitted, exported, or deployed."
+
+[policy]
+threshold_candidates = [0.87, 0.88, 0.89, 0.90, 0.91]
+bands = [
+  { name = "60-89", start_second = 60, end_second_exclusive = 90 },
+  { name = "90-119", start_second = 90, end_second_exclusive = 120 },
+  { name = "120-179", start_second = 120, end_second_exclusive = 180 },
+  { name = "180-240", start_second = 180, end_second_exclusive = 241 },
+]
+
+[advancement_gates]
+minimum_accuracy = 0.874
+minimum_balanced_accuracy = 0.874
+minimum_direction_recall = 0.874
+minimum_wilson_lower_95 = 0.865
+maximum_expected_calibration_error = 0.05
+minimum_coverage = 0.55
+minimum_selected_markets = 500
+minimum_coverage_uplift = 0.000000001
+maximum_accuracy_regression = 0.0
+maximum_balanced_accuracy_regression = 0.0
+maximum_direction_recall_regression = 0.0
+maximum_median_entry_second = 125.0
+minimum_median_entry_improvement_seconds = 5.0
+require_every_fold = true
+
+[paths]
+runs = "runs/btc-saved-policy-20260421-20260720"
