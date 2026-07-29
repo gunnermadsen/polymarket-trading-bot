@@ -11,7 +11,7 @@ from .admission_config import load_admission_benchmark_config
 from .benchmark_config import load_entry_benchmark_config
 from .config import load_config
 from .core_config import load_core_config
-from .core_extract import extract_core_source
+from .core_extract import extract_core_source, snapshot_residual_admission_source
 from .core_features import build_core_features
 from .core_report import generate_core_report
 from .core_training import develop_core_models, evaluate_core_holdout
@@ -25,6 +25,8 @@ from .persistence_config import load_persistence_benchmark_config
 from .policy_benchmark import run_saved_policy_benchmark
 from .policy_config import load_saved_policy_benchmark_config
 from .report import generate_report
+from .residual_admission_benchmark import run_residual_admission_benchmark
+from .residual_admission_config import load_residual_admission_config
 from .runtime_export import export_runtime_model
 from .train import train_models
 
@@ -49,6 +51,9 @@ def main() -> None:
             required=True,
         )
         command.add_argument("--force", action="store_true")
+    core_snapshot = subparsers.add_parser("core-snapshot-residual-source")
+    core_snapshot.add_argument("--config", type=Path, required=True)
+    core_snapshot.add_argument("--source-dir", type=Path, required=True)
     core_develop = subparsers.add_parser("core-develop")
     core_develop.add_argument("--config", type=Path, required=True)
     core_evaluate = subparsers.add_parser("core-evaluate-holdout")
@@ -78,6 +83,10 @@ def main() -> None:
     frequency_policy_run.add_argument("--config", type=Path, required=True)
     admission_run = subparsers.add_parser("admission-benchmark-run")
     admission_run.add_argument("--config", type=Path, required=True)
+    residual_admission_run = subparsers.add_parser(
+        "residual-admission-benchmark-run"
+    )
+    residual_admission_run.add_argument("--config", type=Path, required=True)
     serve_parser = subparsers.add_parser("serve")
     serve_parser.add_argument("--run", type=Path, required=True)
     serve_parser.add_argument("--port", type=int, default=8765)
@@ -185,6 +194,22 @@ def main() -> None:
         print("deployment: not qualified; only three selector validation folds")
         print("holdout/database/runtime: untouched")
         return
+    if args.command == "residual-admission-benchmark-run":
+        config = load_residual_admission_config(args.config)
+        run_dir, benchmark = run_residual_admission_benchmark(config)
+        print(f"report: {run_dir / 'report.html'}")
+        print(
+            "development benchmark passed: "
+            + (
+                ", ".join(benchmark["benchmark_passed_candidates"])
+                if benchmark["benchmark_passed_candidates"]
+                else "none"
+            )
+        )
+        print(f"winner: {benchmark['winner'] or 'none'}")
+        print("selector evaluation: rolling folds 2 through 6")
+        print("holdout/runtime: unchanged; post-freeze evidence required")
+        return
     if args.command.startswith("core-"):
         run_core_command(args)
         return
@@ -208,7 +233,13 @@ def main() -> None:
 
 def run_core_command(args: argparse.Namespace) -> None:
     config = load_core_config(args.config)
-    if args.command == "core-extract":
+    if args.command == "core-snapshot-residual-source":
+        manifest = snapshot_residual_admission_source(
+            config,
+            args.source_dir,
+        )
+        print(json.dumps(manifest, indent=2))
+    elif args.command == "core-extract":
         manifest = extract_core_source(config, args.scope, force=args.force)
         print(json.dumps(manifest, indent=2))
     elif args.command == "core-features":

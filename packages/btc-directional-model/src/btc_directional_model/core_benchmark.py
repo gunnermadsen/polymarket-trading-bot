@@ -39,6 +39,7 @@ class CandidatePolicy:
         "fixed_confidence",
         "chronological_preselected",
         "time_band_preselected",
+        "explicit_preselected",
     ] = "fixed_confidence"
     confidence_threshold_min: float | None = None
     confidence_threshold_max: float | None = None
@@ -77,6 +78,15 @@ class CandidatePolicy:
             ):
                 raise ValueError(
                     "preselected policies require a valid threshold range"
+                )
+        elif self.selection_mode == "explicit_preselected":
+            if (
+                self.confidence_threshold is not None
+                or self.confidence_threshold_min is not None
+                or self.confidence_threshold_max is not None
+            ):
+                raise ValueError(
+                    "explicit preselected policies cannot configure confidence thresholds"
                 )
         else:
             raise ValueError(f"unsupported policy selection_mode: {self.selection_mode}")
@@ -393,6 +403,33 @@ def select_time_band_policy_rows(frame: pl.DataFrame) -> pl.DataFrame:
     return _validated_preselected_policy_rows(eligible)
 
 
+def select_explicit_policy_rows(frame: pl.DataFrame) -> pl.DataFrame:
+    if "policy_selected" not in frame.columns:
+        raise ValueError(
+            "explicit preselected policy is missing column: policy_selected"
+        )
+    eligible = frame
+    if "model_eligible" in frame.columns:
+        if frame.filter(
+            pl.col("policy_selected") & ~pl.col("model_eligible")
+        ).height:
+            raise ValueError(
+                "explicit preselected policy cannot select a model-ineligible row"
+            )
+        eligible = eligible.filter(pl.col("model_eligible"))
+    selected = eligible.filter(pl.col("policy_selected")).sort(
+        ["observed_at", "market_id"]
+    )
+    duplicate_markets = (
+        selected.group_by("market_id").len().filter(pl.col("len") != 1)
+    )
+    if not duplicate_markets.is_empty():
+        raise ValueError(
+            "explicit preselected policy must select at most one row per market"
+        )
+    return selected
+
+
 def _validated_preselected_policy_rows(
     eligible: pl.DataFrame,
 ) -> pl.DataFrame:
@@ -436,6 +473,8 @@ def _select_policy_rows(
     frame: pl.DataFrame,
     policy: CandidatePolicy,
 ) -> pl.DataFrame:
+    if policy.selection_mode == "explicit_preselected":
+        return select_explicit_policy_rows(frame)
     if policy.selection_mode == "chronological_preselected":
         return select_chronological_policy_rows(frame)
     if policy.selection_mode == "time_band_preselected":

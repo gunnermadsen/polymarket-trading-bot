@@ -39,11 +39,13 @@ BOUNDARY_REVERSAL_ACCURACY_CANDIDATES = (
     "histogram_enriched",
     BOUNDARY_REVERSAL_ACCURACY_CANDIDATE,
 )
+RESIDUAL_ADMISSION_SOURCE_CANDIDATES = BOUNDARY_REVERSAL_ACCURACY_CANDIDATES
 PATH_PERSISTENCE_PROFILE = "path_persistence"
 ACCURACY_TIMING_PROFILE = "accuracy_timing"
 FOLD_ROBUST_FREQUENCY_PROFILE = "fold_robust_frequency"
 BOUNDARY_ALIGNMENT_PROFILE = "boundary_alignment"
 BOUNDARY_REVERSAL_ACCURACY_PROFILE = "boundary_reversal_accuracy"
+RESIDUAL_ADMISSION_SOURCE_PROFILE = "residual_admission_source"
 
 
 @dataclass(frozen=True)
@@ -219,6 +221,25 @@ def validate_persistence_benchmark_config(
                 "boundary-reversal accuracy benchmark requires the frozen "
                 "hard-confident-error contract"
             )
+    elif config.profile == RESIDUAL_ADMISSION_SOURCE_PROFILE:
+        if config.candidate_names != RESIDUAL_ADMISSION_SOURCE_CANDIDATES:
+            raise ValueError(
+                "residual-admission source benchmark requires its frozen "
+                "two-candidate matrix"
+            )
+        if config.row_weight_schedules:
+            raise ValueError(
+                "residual-admission source benchmark preserves equal market weighting"
+            )
+        if (
+            config.hard_confidence_floor != 0.95
+            or config.minimum_hard_confident_error_count_reduction != 1
+            or config.maximum_hard_confident_error_selected_rate_regression != 0.0
+        ):
+            raise ValueError(
+                "residual-admission source benchmark requires the frozen "
+                "hard-confident-error contract"
+            )
     else:
         raise ValueError(f"unsupported persistence benchmark profile: {config.profile}")
     if config.control_candidate != config.candidate_names[0]:
@@ -262,19 +283,24 @@ def validate_persistence_benchmark_config(
         raise ValueError("each calibration band requires at least 500 rows")
 
     core = load_core_config(config.core_config)
-    expected_range = (
-        (
+    if config.profile == BOUNDARY_REVERSAL_ACCURACY_PROFILE:
+        expected_range = (
             "2026-03-21T00:00:00+00:00",
             "2026-07-29T00:00:00+00:00",
             130,
         )
-        if config.profile == BOUNDARY_REVERSAL_ACCURACY_PROFILE
-        else (
+    elif config.profile == RESIDUAL_ADMISSION_SOURCE_PROFILE:
+        expected_range = (
+            "2026-03-21T00:00:00+00:00",
+            "2026-07-21T00:00:00+00:00",
+            122,
+        )
+    else:
+        expected_range = (
             "2026-04-21T00:00:00+00:00",
             "2026-07-20T00:00:00+00:00",
             90,
         )
-    )
     if (
         core.data.range_start.isoformat() != expected_range[0]
         or core.data.range_end.isoformat() != expected_range[1]
@@ -334,6 +360,66 @@ def validate_persistence_benchmark_config(
             raise ValueError(
                 "boundary-reversal accuracy split or source-selection contract changed"
             )
+    elif config.profile == RESIDUAL_ADMISSION_SOURCE_PROFILE:
+        expected_split = (
+            "2026-03-21T00:00:00+00:00",
+            "2026-07-06T00:00:00+00:00",
+            "2026-07-06T00:00:00+00:00",
+            "2026-07-13T00:00:00+00:00",
+            "2026-07-13T00:00:00+00:00",
+            "2026-07-21T00:00:00+00:00",
+        )
+        observed_split = (
+            core.split.development_start.isoformat(),
+            core.split.development_end.isoformat(),
+            core.split.probability_calibration_start.isoformat(),
+            core.split.probability_calibration_end.isoformat(),
+            core.split.policy_selection_start.isoformat(),
+            core.split.policy_selection_end.isoformat(),
+        )
+        expected_validation_windows = (
+            (
+                "2026-05-18T00:00:00+00:00",
+                "2026-05-25T00:00:00+00:00",
+            ),
+            (
+                "2026-05-25T00:00:00+00:00",
+                "2026-06-01T00:00:00+00:00",
+            ),
+            (
+                "2026-06-01T00:00:00+00:00",
+                "2026-06-08T00:00:00+00:00",
+            ),
+            (
+                "2026-06-08T00:00:00+00:00",
+                "2026-06-15T00:00:00+00:00",
+            ),
+            (
+                "2026-06-15T00:00:00+00:00",
+                "2026-06-22T00:00:00+00:00",
+            ),
+            (
+                "2026-06-22T00:00:00+00:00",
+                "2026-06-29T00:00:00+00:00",
+            ),
+            (
+                "2026-06-29T00:00:00+00:00",
+                "2026-07-06T00:00:00+00:00",
+            ),
+        )
+        observed_validation_windows = tuple(
+            (start.isoformat(), end.isoformat())
+            for start, end in core.split.validation_windows
+        )
+        if (
+            observed_split != expected_split
+            or observed_validation_windows != expected_validation_windows
+            or core.data.strict_final_price_audit
+        ):
+            raise ValueError(
+                "residual-admission source split or source-selection contract changed"
+            )
+        _validate_residual_admission_core_contract(core)
     if (
         core.split.holdout_start != core.data.range_end
         or core.split.holdout_end != core.data.range_end
@@ -353,15 +439,85 @@ def validate_persistence_benchmark_config(
         raise ValueError(
             "development-only training evidence cannot configure an external holdout"
         )
+    expected_fold_count = (
+        7 if config.profile == RESIDUAL_ADMISSION_SOURCE_PROFILE else 5
+    )
     if (
         core.model.confidence_min != 0.87
         or core.model.confidence_max != 0.91
         or core.model.confidence_step != 0.01
         or core.model.random_seed != 20260726
         or len(core.model.histogram_candidates) != 4
-        or len(core.split.validation_windows) != 5
+        or len(core.split.validation_windows) != expected_fold_count
     ):
         raise ValueError("model search, seed, threshold, or fold contract changed")
+
+
+def _validate_residual_admission_core_contract(core: Any) -> None:
+    histogram_search = tuple(
+        (
+            candidate.learning_rate,
+            candidate.max_iter,
+            candidate.max_leaf_nodes,
+            candidate.min_samples_leaf,
+            candidate.l2_regularization,
+        )
+        for candidate in core.model.histogram_candidates
+    )
+    expected_histogram_search = (
+        (0.05, 160, 15, 100, 0.10),
+        (0.05, 220, 31, 100, 1.0),
+        (0.08, 160, 15, 150, 1.0),
+        (0.08, 220, 31, 150, 2.0),
+    )
+    gates = core.gates
+    gate_contract = (
+        gates.target_accuracy,
+        gates.target_wilson_lower,
+        gates.target_balanced_accuracy,
+        gates.minimum_direction_recall,
+        gates.minimum_coverage,
+        gates.minimum_holdout_markets,
+        gates.maximum_walk_forward_holdout_gap,
+        gates.minimum_same_time_path_uplift,
+        gates.minimum_nonnegative_uplift_folds,
+        gates.maximum_ece,
+        gates.bootstrap_resamples,
+    )
+    if (
+        core.data.sample_interval_seconds != 5
+        or core.data.min_seconds_after_open != 60
+        or core.data.min_seconds_before_close != 60
+        or core.model.c_candidates != (0.01, 0.1, 1.0, 10.0)
+        or histogram_search != expected_histogram_search
+        or core.model.candidate_names
+        != (
+            "histogram_enriched",
+            "histogram_early_weighted",
+            "histogram_early_weighted_moderate",
+            "histogram_early_90_120",
+        )
+        or gate_contract
+        != (
+            0.874,
+            0.865,
+            0.874,
+            0.874,
+            0.55,
+            1000,
+            0.05,
+            0.0,
+            7,
+            0.05,
+            10000,
+        )
+        or core.compute.max_parallel_fits != 2
+        or core.compute.threads_per_fit != 1
+        or core.compute.polars_threads != 6
+    ):
+        raise ValueError(
+            "residual-admission source search, cadence, gates, or compute contract changed"
+        )
 
 
 def persistence_row_weight_schedule(

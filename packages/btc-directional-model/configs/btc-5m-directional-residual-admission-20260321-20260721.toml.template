@@ -1,0 +1,61 @@
+[benchmark]
+profile = "residual_admission"
+probability_manifest = "runs/btc-residual-admission-source-20260321-20260721/__SOURCE_RUN_ID__/saved-policy-probabilities/manifest.json"
+core_config = "configs/btc-5m-directional-core-residual-admission-20260321-20260721.toml"
+control_candidate = "histogram_enriched"
+proposal_candidate = "histogram_boundary_reversal"
+combined_candidate = "histogram_boundary_residual_combined"
+evaluation_folds = [2, 3, 4, 5, 6]
+evaluation_is_independent = false
+evaluation_note = "Five rolling residual-admission development folds. For each evaluation fold, each head fits only source folds earlier than evaluation minus one; the immediately prior fold is split chronologically 50/50 for proposed-direction calibration and frozen threshold selection. The evaluation fold is scored once. The benchmark never uses eventual control NoTrade status as a feature or fitting target and does not access a post-freeze cohort."
+quantity = 5.0
+
+[selector]
+regularization_c = 1.0
+minimum_calibration_rows_per_direction = 500
+minimum_calibration_markets_per_direction = 100
+agreement_cadences = 2
+base_confidence_threshold = 0.89
+random_seed = 20260728
+
+[early_head]
+name = "early"
+candidate = "histogram_boundary_residual_early"
+start_second = 60
+end_second_exclusive = 120
+threshold_candidates = [0.87, 0.89, 0.91, 0.93]
+
+[rescue_head]
+name = "rescue"
+candidate = "histogram_boundary_residual_rescue"
+start_second = 120
+end_second_exclusive = 241
+threshold_candidates = [0.87, 0.89, 0.91, 0.93]
+
+[advancement_gates]
+minimum_accuracy = 0.874
+minimum_balanced_accuracy = 0.874
+minimum_direction_recall = 0.874
+minimum_wilson_lower_95 = 0.865
+maximum_expected_calibration_error = 0.05
+minimum_selected_markets = 500
+minimum_executable_markets = 500
+maximum_accuracy_regression = 0.0
+maximum_balanced_accuracy_regression = 0.0
+maximum_direction_recall_regression = 0.0
+maximum_median_entry_second = 125.0
+minimum_median_entry_improvement_seconds = 5.0
+minimum_decisions_by_120_uplift = 0.02
+minimum_early_residual_markets = 500
+minimum_median_advancement_seconds = 10.0
+minimum_no_trade_reduction = 0.02
+minimum_rescued_markets = 500
+minimum_residual_accuracy = 0.874
+minimum_mean_direct_edge_per_share = 0.0
+minimum_realized_net_per_share = 0.0
+require_every_fold = true
+required_evaluation_folds = 5
+
+[paths]
+execution_evidence = "data/btc-execution-evidence-v2-book-residual-20260527-20260719"
+runs = "runs/btc-residual-admission-20260321-20260721"

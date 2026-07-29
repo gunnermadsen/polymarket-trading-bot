@@ -1,0 +1,41 @@
+[benchmark]
+profile = "residual_admission_source"
+core_config = "configs/btc-5m-directional-core-residual-admission-20260321-20260721.toml"
+control_candidate = "histogram_enriched"
+candidate_names = [
+  "histogram_enriched",
+  "histogram_boundary_reversal",
+]
+evaluation_is_independent = false
+evaluation_note = "The exact half-open UTC interval [2026-03-21, 2026-07-21) is consumed chronological development evidence for residual-admission source probabilities. The seven source folds provide two strictly earlier selector-history folds and five causal evaluation folds. July 21 and later labels and directional features are excluded. This profile creates no finalist, runtime artifact, or deployment decision."
+quantity = 5.0
+early_cutoff_second = 120
+
+[calibration]
+minimum_rows_per_band = 500
+bands = [
+  { name = "60-89", start_second = 60, end_second_exclusive = 90 },
+  { name = "90-119", start_second = 90, end_second_exclusive = 120 },
+  { name = "120-179", start_second = 120, end_second_exclusive = 180 },
+  { name = "180-240", start_second = 180, end_second_exclusive = 241 },
+]
+
+[advancement_gates]
+minimum_early_markets = 500
+minimum_common_markets = 500
+minimum_executable_markets = 500
+minimum_coverage_uplift = 0.000000001
+hard_confidence_floor = 0.95
+minimum_hard_confident_error_count_reduction = 1
+maximum_hard_confident_error_selected_rate_regression = 0.0
+maximum_accuracy_regression = 0.0
+maximum_balanced_accuracy_regression = 0.0
+maximum_direction_recall_regression = 0.0
+maximum_median_entry_seconds_regression = -5.0
+minimum_mean_direct_edge_per_share = 0.0
+minimum_realized_net_per_share = 0.0
+
+[paths]
+prewindow_features = "data/btc-prewindow-residual-admission-20260321-20260721/features.parquet"
+execution_evidence = "data/btc-execution-evidence-v2-book-residual-20260527-20260719"
+runs = "runs/btc-residual-admission-source-20260321-20260721"

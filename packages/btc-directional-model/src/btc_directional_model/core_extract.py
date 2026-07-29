@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
+import shutil
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -16,6 +18,21 @@ from .core_config import CoreTrainingConfig, evaluation_holdout_range
 
 CoreScope = Literal["pre_holdout", "holdout"]
 CORE_SOURCE_SCHEMA_VERSION = "btc-core-source-v1"
+IMMUTABLE_SOURCE_SNAPSHOT_KEY = "immutable_source_snapshot"
+RESIDUAL_ADMISSION_SOURCE_START = datetime(2026, 3, 21, tzinfo=UTC)
+RESIDUAL_ADMISSION_SOURCE_END = datetime(2026, 7, 21, tzinfo=UTC)
+_COPY_FALLBACK_ERRNOS = frozenset(
+    value
+    for value in (
+        errno.EXDEV,
+        errno.EACCES,
+        errno.EPERM,
+        errno.EMLINK,
+        getattr(errno, "ENOTSUP", None),
+        getattr(errno, "EOPNOTSUPP", None),
+    )
+    if value is not None
+)
 CORE_SOURCE_SCHEMA = pa.schema(
     [
         ("market_id", pa.string()),
@@ -40,6 +57,124 @@ CORE_SOURCE_SCHEMA = pa.schema(
 )
 
 
+def snapshot_residual_admission_source(
+    config: CoreTrainingConfig,
+    source_dir: Path,
+) -> dict[str, Any]:
+    """Create the exact storage-light source snapshot for residual admission.
+
+    The destination is taken from ``config.paths.source_data`` and must not
+    already exist. Every selected partition and the source manifest are
+    checksum verified before a new immutable manifest is written. Partitions
+    are hard linked when possible and copied with exclusive creation only for
+    filesystem errors where hard links are unavailable.
+    """
+
+    range_start, range_end = scope_range(config, "pre_holdout")
+    if (
+        range_start != RESIDUAL_ADMISSION_SOURCE_START
+        or range_end != RESIDUAL_ADMISSION_SOURCE_END
+        or config.data.range_end != RESIDUAL_ADMISSION_SOURCE_END
+    ):
+        raise ValueError(
+            "residual-admission source snapshot requires exact "
+            "[2026-03-21, 2026-07-21)"
+        )
+    if config.data.strict_final_price_audit:
+        raise ValueError(
+            "residual-admission source snapshot requires non-strict final-price audit"
+        )
+
+    source = source_dir.resolve(strict=True)
+    destination = config.paths.source_data.resolve()
+    if (
+        source == destination
+        or source in destination.parents
+        or destination in source.parents
+    ):
+        raise ValueError("source snapshot paths must be isolated")
+    if destination.exists():
+        raise FileExistsError(
+            f"source snapshot destination already exists: {destination}"
+        )
+
+    source_manifest_path = source / "manifest-pre_holdout.json"
+    if not source_manifest_path.is_file():
+        raise FileNotFoundError(
+            f"source snapshot manifest is missing: {source_manifest_path}"
+        )
+    source_manifest_sha256 = file_sha256(source_manifest_path)
+    source_manifest = json.loads(source_manifest_path.read_text())
+    _validate_snapshot_source_contract(
+        config,
+        source_manifest,
+        range_start=range_start,
+        range_end=range_end,
+    )
+    records_by_path = _partition_records_by_path(source_manifest)
+    selected_records = [
+        _validated_snapshot_partition_record(
+            source / partition_name,
+            records_by_path.get(partition_name),
+        )
+        for partition_name in _daily_partition_names(range_start, range_end)
+    ]
+    if file_sha256(source_manifest_path) != source_manifest_sha256:
+        raise RuntimeError("source snapshot manifest changed during validation")
+
+    destination.mkdir(parents=True, exist_ok=False)
+    hard_linked = 0
+    copied = 0
+    for record in selected_records:
+        source_partition = source / record["path"]
+        destination_partition = destination / record["path"]
+        transfer = _snapshot_partition_exclusive(
+            source_partition,
+            destination_partition,
+        )
+        if file_sha256(destination_partition) != record["sha256"]:
+            destination_partition.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"source snapshot checksum mismatch: {record['path']}"
+            )
+        if transfer == "hard_link":
+            hard_linked += 1
+        else:
+            copied += 1
+
+    if file_sha256(source_manifest_path) != source_manifest_sha256:
+        raise RuntimeError("source snapshot manifest changed during transfer")
+
+    query = (config.package_root / "sql" / "btc-core-source.sql").read_text()
+    manifest: dict[str, Any] = {
+        "source_contract": config.data.source_contract,
+        "source_schema_version": CORE_SOURCE_SCHEMA_VERSION,
+        "source_schema_sha256": _core_source_schema_sha256(),
+        "scope": "pre_holdout",
+        "range_start": range_start.isoformat(),
+        "range_end": range_end.isoformat(),
+        "strict_final_price_audit": config.data.strict_final_price_audit,
+        "query_sha256": hashlib.sha256(query.encode()).hexdigest(),
+        "partitions": selected_records,
+        "totals": aggregate_partition_summaries(selected_records),
+        IMMUTABLE_SOURCE_SNAPSHOT_KEY: {
+            "source_manifest": str(source_manifest_path),
+            "source_manifest_sha256": source_manifest_sha256,
+            "source_range_start": source_manifest["range_start"],
+            "source_range_end": source_manifest["range_end"],
+            "snapshot_range_start": range_start.isoformat(),
+            "snapshot_range_end": range_end.isoformat(),
+            "partition_count": len(selected_records),
+            "hard_linked_partitions": hard_linked,
+            "copied_partitions": copied,
+            "partition_checksums_verified": True,
+            "no_overwrite": True,
+        },
+    }
+    write_json_exclusive(destination / "manifest-pre_holdout.json", manifest)
+    return manifest
+
+
 def extract_core_source(
     config: CoreTrainingConfig,
     scope: CoreScope,
@@ -55,9 +190,7 @@ def extract_core_source(
     contract: dict[str, Any] = {
         "source_contract": config.data.source_contract,
         "source_schema_version": CORE_SOURCE_SCHEMA_VERSION,
-        "source_schema_sha256": hashlib.sha256(
-            CORE_SOURCE_SCHEMA.to_string().encode()
-        ).hexdigest(),
+        "source_schema_sha256": _core_source_schema_sha256(),
         "scope": scope,
         "range_start": range_start.isoformat(),
         "range_end": range_end.isoformat(),
@@ -129,6 +262,16 @@ def extract_core_source(
             connection.close()
 
     manifest["totals"] = aggregate_partition_summaries(manifest["partitions"])
+    if (
+        existing_manifest is not None
+        and IMMUTABLE_SOURCE_SNAPSHOT_KEY in existing_manifest
+    ):
+        if (
+            existing_manifest.get("partitions") != manifest["partitions"]
+            or existing_manifest.get("totals") != manifest["totals"]
+        ):
+            raise RuntimeError("immutable source snapshot manifest changed")
+        return existing_manifest
     write_json_atomic(manifest_path, manifest)
     return manifest
 
@@ -250,15 +393,151 @@ def aggregate_partition_summaries(partitions: list[dict[str, Any]]) -> dict[str,
     return {key: sum(int(partition[key]) for partition in partitions) for key in keys}
 
 
+def _core_source_schema_sha256() -> str:
+    return hashlib.sha256(CORE_SOURCE_SCHEMA.to_string().encode()).hexdigest()
+
+
+def _daily_partition_names(
+    range_start: datetime,
+    range_end: datetime,
+) -> tuple[str, ...]:
+    names: list[str] = []
+    cursor = range_start
+    while cursor < range_end:
+        names.append(f"{cursor.date().isoformat()}.parquet")
+        cursor += timedelta(days=1)
+    return tuple(names)
+
+
+def _partition_records_by_path(
+    manifest: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    records = manifest.get("partitions")
+    if not isinstance(records, list):
+        raise TypeError("source snapshot manifest has no partition list")
+    output: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+            raise TypeError("source snapshot manifest has an invalid partition")
+        path = record["path"]
+        if path in output:
+            raise RuntimeError(
+                f"source snapshot manifest has duplicate partition: {path}"
+            )
+        output[path] = record
+    return output
+
+
+def _validate_snapshot_source_contract(
+    config: CoreTrainingConfig,
+    manifest: dict[str, Any],
+    *,
+    range_start: datetime,
+    range_end: datetime,
+) -> None:
+    query = (config.package_root / "sql" / "btc-core-source.sql").read_text()
+    expected = {
+        "source_contract": config.data.source_contract,
+        "source_schema_version": CORE_SOURCE_SCHEMA_VERSION,
+        "source_schema_sha256": _core_source_schema_sha256(),
+        "scope": "pre_holdout",
+        "strict_final_price_audit": config.data.strict_final_price_audit,
+        "query_sha256": hashlib.sha256(query.encode()).hexdigest(),
+    }
+    mismatches = [
+        key for key, expected_value in expected.items()
+        if manifest.get(key) != expected_value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "source snapshot contract mismatch: " + ", ".join(mismatches)
+        )
+    try:
+        source_start = datetime.fromisoformat(str(manifest["range_start"]))
+        source_end = datetime.fromisoformat(str(manifest["range_end"]))
+    except (KeyError, ValueError) as error:
+        raise RuntimeError("source snapshot range is invalid") from error
+    if source_start > range_start or source_end < range_end:
+        raise RuntimeError(
+            "source snapshot does not cover exact [2026-03-21, 2026-07-21)"
+        )
+
+
+def _validated_snapshot_partition_record(
+    path: Path,
+    record: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if record is None:
+        raise RuntimeError(f"source snapshot partition is unrecorded: {path.name}")
+    if not path.is_file():
+        raise FileNotFoundError(f"source snapshot partition is missing: {path}")
+    expected_sha256 = record.get("sha256")
+    if (
+        not isinstance(expected_sha256, str)
+        or len(expected_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in expected_sha256)
+    ):
+        raise RuntimeError(
+            f"source snapshot partition has invalid checksum: {path.name}"
+        )
+    if file_sha256(path) != expected_sha256:
+        raise RuntimeError(f"source snapshot partition checksum mismatch: {path.name}")
+    summary = partition_summary(path)
+    mismatches = [
+        key for key, value in summary.items() if record.get(key) != value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            f"source snapshot partition summary mismatch for {path.name}: "
+            + ", ".join(mismatches)
+        )
+    return {
+        "path": path.name,
+        "sha256": expected_sha256,
+        **summary,
+    }
+
+
+def _hard_link_partition(source: Path, destination: Path) -> None:
+    os.link(source, destination)
+
+
+def _snapshot_partition_exclusive(
+    source: Path,
+    destination: Path,
+) -> Literal["hard_link", "copy"]:
+    try:
+        _hard_link_partition(source, destination)
+        return "hard_link"
+    except OSError as error:
+        if error.errno not in _COPY_FALLBACK_ERRNOS:
+            raise
+    try:
+        with source.open("rb") as source_handle, destination.open("xb") as output:
+            shutil.copyfileobj(source_handle, output, length=1024 * 1024)
+            output.flush()
+            os.fsync(output.fileno())
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
+    return "copy"
+
+
 def load_existing_manifest(
     manifest_path: Path,
     contract: dict[str, Any],
     *,
     force: bool,
 ) -> dict[str, Any] | None:
-    if force or not manifest_path.exists():
+    if not manifest_path.exists():
         return None
     existing = json.loads(manifest_path.read_text())
+    if force:
+        if IMMUTABLE_SOURCE_SNAPSHOT_KEY in existing:
+            raise RuntimeError(
+                "immutable source snapshot cannot be rebuilt or overwritten"
+            )
+        return None
     mismatches = [
         key for key, expected in contract.items() if existing.get(key) != expected
     ]
@@ -300,6 +579,19 @@ def load_core_manifest(
             raise RuntimeError(
                 f"core source partition hash mismatch: {partition_path.name}"
             )
+    if IMMUTABLE_SOURCE_SNAPSHOT_KEY in manifest:
+        expected_paths = set(_daily_partition_names(expected_start, expected_end))
+        partitions = manifest.get("partitions", [])
+        observed_paths = [str(partition.get("path")) for partition in partitions]
+        if (
+            len(observed_paths) != len(expected_paths)
+            or set(observed_paths) != expected_paths
+            or manifest.get("totals")
+            != aggregate_partition_summaries(partitions)
+        ):
+            raise RuntimeError(
+                "immutable source snapshot does not contain the exact daily range"
+            )
     return manifest
 
 
@@ -310,6 +602,16 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
         json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n"
     )
     temporary.replace(path)
+
+
+def write_json_exclusive(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x") as handle:
+        handle.write(
+            json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n"
+        )
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def file_sha256(path: Path) -> str:

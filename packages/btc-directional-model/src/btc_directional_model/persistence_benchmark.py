@@ -68,6 +68,7 @@ from .persistence_config import (
     FOLD_ROBUST_FREQUENCY_CANDIDATE,
     FOLD_ROBUST_FREQUENCY_PROFILE,
     PATH_PERSISTENCE_PROFILE,
+    RESIDUAL_ADMISSION_SOURCE_PROFILE,
     CalibrationBand,
     PersistenceBenchmarkConfig,
     load_persistence_benchmark_config,
@@ -102,6 +103,12 @@ PERSISTENCE_TRAINING_CHECKS = {
     "nonnegative hourly bootstrap lower bound",
     "walk-forward development gates",
 }
+BOUNDARY_REVERSAL_SOURCE_PROFILES = frozenset(
+    (
+        BOUNDARY_REVERSAL_ACCURACY_PROFILE,
+        RESIDUAL_ADMISSION_SOURCE_PROFILE,
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -280,13 +287,18 @@ def run_persistence_benchmark(
         )
         for name in config.candidate_names
     }
+    fold_label = (
+        "Seven-fold"
+        if config.profile == RESIDUAL_ADMISSION_SOURCE_PROFILE
+        else "Five-fold"
+    )
     benchmark = benchmark_predictions(
         scored_with_execution,
         policies=policies,
         control_candidate=config.control_candidate,
         evidence=BenchmarkEvidence(
             label=(
-                "Five-fold chronological "
+                f"{fold_label} chronological "
                 f"{core_config.split.validation_windows[0][0].date().isoformat()} through "
                 f"{core_config.split.validation_windows[-1][1].date().isoformat()} "
                 "development evidence; historical labels consumed; cached compact-book "
@@ -384,7 +396,7 @@ def run_persistence_benchmark(
             "model_evaluation_accessed": False,
             "book_quality_diagnostics_accessed": False,
         }
-    if config.profile == BOUNDARY_REVERSAL_ACCURACY_PROFILE:
+    if config.profile in BOUNDARY_REVERSAL_SOURCE_PROFILES:
         runtime_contract_gap = (
             "the challenger's path-persistence target conversion, time-banded "
             "calibration, and 106-feature boundary-reversal schema are not "
@@ -403,6 +415,11 @@ def run_persistence_benchmark(
         deployment_reasons.insert(
             0,
             ("July 21-August 4 outcome labels and directional features remain untouched"),
+        )
+    elif config.profile == RESIDUAL_ADMISSION_SOURCE_PROFILE:
+        deployment_reasons.insert(
+            0,
+            "July 21 and later labels and directional features are excluded",
         )
     benchmark.update(
         {
@@ -1773,7 +1790,7 @@ def _add_training_gates(
                 )
             )
         common_execution = benchmark["common_selected_execution_comparisons"][name]
-        if config.profile == BOUNDARY_REVERSAL_ACCURACY_PROFILE:
+        if config.profile in BOUNDARY_REVERSAL_SOURCE_PROFILES:
             control_tail = candidate_results[config.control_candidate][
                 "hard_confident_errors"
             ]
@@ -1927,7 +1944,10 @@ def _select_finalist(
     candidate_results: dict[str, dict[str, Any]],
     config: PersistenceBenchmarkConfig,
 ) -> str | None:
-    if config.profile == FOLD_ROBUST_FREQUENCY_PROFILE:
+    if config.profile in {
+        FOLD_ROBUST_FREQUENCY_PROFILE,
+        RESIDUAL_ADMISSION_SOURCE_PROFILE,
+    }:
         return None
     passing = benchmark["benchmark_passed_candidates"]
     if not passing:
@@ -1972,6 +1992,12 @@ def _fit_development_finalist(
     core_config: CoreTrainingConfig,
     run_dir: Path,
 ) -> dict[str, Any] | None:
+    if config.profile == RESIDUAL_ADMISSION_SOURCE_PROFILE:
+        if finalist is not None:
+            raise RuntimeError(
+                "residual-admission source profile cannot create a finalist"
+            )
+        return None
     if finalist is None:
         return None
     profile = CANDIDATE_PROFILES[finalist]

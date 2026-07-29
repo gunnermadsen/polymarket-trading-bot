@@ -10,6 +10,7 @@ from btc_directional_model.core_benchmark import (
     CandidatePolicy,
     benchmark_predictions,
     select_chronological_policy_rows,
+    select_explicit_policy_rows,
     select_time_band_policy_rows,
 )
 
@@ -297,6 +298,61 @@ def test_chronological_policy_rejects_a_marker_that_is_not_first_crossing() -> N
 
     with pytest.raises(ValueError, match="does not match"):
         select_chronological_policy_rows(frame)
+
+
+def test_explicit_policy_accepts_one_control_priority_decision_per_market() -> None:
+    frame = (
+        prediction_frame("control", early=True)
+        .filter(pl.col("seconds_elapsed") == 90)
+        .with_columns(
+            pl.lit(True).alias("model_eligible"),
+            pl.lit(True).alias("policy_selected"),
+        )
+    )
+
+    selected = select_explicit_policy_rows(frame)
+    result = benchmark_predictions(
+        {"control": frame},
+        policies={
+            "control": CandidatePolicy(
+                confidence_threshold=None,
+                deployment_compatible=False,
+                selection_mode="explicit_preselected",
+            )
+        },
+        control_candidate="control",
+        evidence=BenchmarkEvidence(
+            label="Explicit residual decisions",
+            kind="development",
+            independent=False,
+        ),
+        minimum_samples=1,
+    )
+
+    assert selected.height == 12
+    assert result["candidates"]["control"]["own_policy"]["markets"] == 12
+    assert result["candidates"]["control"]["own_policy"][
+        "median_seconds_elapsed"
+    ] == 90
+
+
+def test_explicit_policy_rejects_duplicate_or_ineligible_decisions() -> None:
+    duplicate = (
+        prediction_frame("control", early=True)
+        .filter(pl.col("market_id") == "market-00")
+        .with_columns(
+            pl.lit(True).alias("model_eligible"),
+            pl.lit(True).alias("policy_selected"),
+        )
+    )
+    with pytest.raises(ValueError, match="at most one"):
+        select_explicit_policy_rows(duplicate)
+
+    ineligible = duplicate.head(1).with_columns(
+        pl.lit(False).alias("model_eligible")
+    )
+    with pytest.raises(ValueError, match="model-ineligible"):
+        select_explicit_policy_rows(ineligible)
 
 
 def test_time_band_policy_accepts_one_immutable_threshold_per_band() -> None:

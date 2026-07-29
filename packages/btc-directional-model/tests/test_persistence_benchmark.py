@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
+import pytest
 
 from btc_directional_model.core_config import load_core_config
 from btc_directional_model.core_features import (
@@ -15,7 +16,9 @@ from btc_directional_model.persistence_benchmark import (
     CalibratorSet,
     _add_training_gates,
     _candidate_spec,
+    _fit_development_finalist,
     _fold_robust_agreement_probability,
+    _select_finalist,
     attach_execution_evidence,
     calibrated_target_probability,
     common_selected_execution_comparison,
@@ -31,6 +34,8 @@ from btc_directional_model.persistence_config import (
     BOUNDARY_REVERSAL_ACCURACY_PROFILE,
     FOLD_ROBUST_FREQUENCY_CANDIDATE,
     FOLD_ROBUST_FREQUENCY_PROFILE,
+    RESIDUAL_ADMISSION_SOURCE_CANDIDATES,
+    RESIDUAL_ADMISSION_SOURCE_PROFILE,
     CalibrationBand,
     load_persistence_benchmark_config,
 )
@@ -204,6 +209,79 @@ def test_boundary_reversal_accuracy_configuration_locks_march_july_contract() ->
     assert config.hard_confidence_floor == 0.95
     assert config.minimum_hard_confident_error_count_reduction == 1
     assert config.maximum_hard_confident_error_selected_rate_regression == 0.0
+
+
+def test_residual_admission_source_configuration_locks_seven_causal_folds() -> None:
+    package_root = Path(__file__).resolve().parents[1]
+    config = load_persistence_benchmark_config(
+        package_root
+        / "configs"
+        / "btc-5m-directional-residual-admission-source-20260321-20260721.toml"
+    )
+    core = load_core_config(config.core_config)
+
+    assert config.profile == RESIDUAL_ADMISSION_SOURCE_PROFILE
+    assert config.candidate_names == RESIDUAL_ADMISSION_SOURCE_CANDIDATES
+    assert core.data.range_start == datetime(2026, 3, 21, tzinfo=UTC)
+    assert core.data.range_end == datetime(2026, 7, 21, tzinfo=UTC)
+    assert core.split.development_end == datetime(2026, 7, 6, tzinfo=UTC)
+    assert core.split.probability_calibration_end == datetime(
+        2026, 7, 13, tzinfo=UTC
+    )
+    assert core.split.policy_selection_end == datetime(2026, 7, 21, tzinfo=UTC)
+    assert len(core.split.validation_windows) == 7
+    assert core.split.validation_windows[0] == (
+        datetime(2026, 5, 18, tzinfo=UTC),
+        datetime(2026, 5, 25, tzinfo=UTC),
+    )
+    assert core.split.validation_windows[-1] == (
+        datetime(2026, 6, 29, tzinfo=UTC),
+        datetime(2026, 7, 6, tzinfo=UTC),
+    )
+    assert core.gates.minimum_nonnegative_uplift_folds == 7
+    assert config.quantity == 5.0
+    assert config.evaluation_is_independent is False
+
+
+def test_residual_admission_source_never_selects_or_freezes_a_finalist(
+    tmp_path: Path,
+) -> None:
+    package_root = Path(__file__).resolve().parents[1]
+    config = load_persistence_benchmark_config(
+        package_root
+        / "configs"
+        / "btc-5m-directional-residual-admission-source-20260321-20260721.toml"
+    )
+    benchmark = {
+        "benchmark_passed_candidates": [
+            BOUNDARY_REVERSAL_ACCURACY_CANDIDATE
+        ]
+    }
+
+    assert (
+        _select_finalist(
+            benchmark,
+            {
+                BOUNDARY_REVERSAL_ACCURACY_CANDIDATE: {
+                    "out_of_fold": {"accuracy": 1.0}
+                }
+            },
+            config,
+        )
+        is None
+    )
+    core = load_core_config(config.core_config)
+    assert _fit_development_finalist(None, config, core, tmp_path) is None
+    with pytest.raises(
+        RuntimeError,
+        match="source profile cannot create a finalist",
+    ):
+        _fit_development_finalist(
+            BOUNDARY_REVERSAL_ACCURACY_CANDIDATE,
+            config,
+            core,
+            tmp_path,
+        )
 
 
 def test_boundary_reversal_candidate_uses_full_versioned_feature_contract() -> None:

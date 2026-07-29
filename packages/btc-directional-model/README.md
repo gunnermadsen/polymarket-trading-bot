@@ -209,6 +209,61 @@ trained artifact only; it does not select thresholds, veto individual trades, or
 trading logic. A new forward paper cohort beginning after artifact freeze remains required for
 independent qualification.
 
+Run the causal early-entry and NoTrade residual-admission benchmark:
+
+```bash
+export POLARS_MAX_THREADS=6
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+.venv/bin/btc-directional-model core-extract \
+  --config configs/btc-5m-directional-core-residual-admission-20260321-20260721.toml \
+  --scope pre_holdout
+.venv/bin/btc-directional-model core-features \
+  --config configs/btc-5m-directional-core-residual-admission-20260321-20260721.toml \
+  --scope pre_holdout
+.venv/bin/btc-directional-model persistence-benchmark-run \
+  --config configs/btc-5m-directional-residual-admission-source-20260321-20260721.toml
+
+SOURCE_RUN_ID="<UTC source run identifier>"
+sed "s/__SOURCE_RUN_ID__/${SOURCE_RUN_ID}/g" \
+  configs/btc-5m-directional-residual-admission-20260321-20260721.toml.template \
+  > data/btc-5m-directional-residual-admission-runtime.toml
+.venv/bin/btc-directional-model residual-admission-benchmark-run \
+  --config data/btc-5m-directional-residual-admission-runtime.toml
+```
+
+The source session writes checksum-verified out-of-fold probabilities for the fixed
+`histogram_enriched` control and `histogram_boundary_reversal` proposal across seven chronological
+folds. The residual runner fits independent early `[60,120)` and rescue `[120,241)` correctness
+heads using only older source folds. The immediately prior fold is divided chronologically between
+direction-specific calibration and frozen threshold selection. A proposal is eligible only after
+two exact five-second control/proposal direction agreements and only while the 0.89 control has not
+already crossed. Control decisions always retain timestamp priority.
+
+Both heads use the common frozen q grid `[0.87, 0.89, 0.91, 0.93]` and fail closed to the control
+when no threshold qualifies. Qualification requires all five evaluation folds to preserve the
+87.4% accuracy, balanced-accuracy, and directional-recall floors, the 86.5% Wilson lower bound,
+the 5% calibration ceiling, control non-regression, residual-only quality, and positive
+five-share economics. The early head must also improve median entry by at least five seconds,
+advance decisions by at least ten seconds, and add at least two percentage points of decisions by
+second 120. The rescue head must reduce NoTrade by at least two percentage points. Residual
+economics require at least 500 executable decisions; missing execution evidence fails closed.
+This consumed-development benchmark never exports a runtime model or changes a trading process.
+
+When a checksum-matched March 21-July 21 source cache already exists elsewhere, it can be copied
+without a database read:
+
+```bash
+.venv/bin/btc-directional-model core-snapshot-residual-source \
+  --config configs/btc-5m-directional-core-residual-admission-20260321-20260721.toml \
+  --source-dir <existing-source-cache>
+```
+
+The snapshot operation creates a new no-overwrite cache, verifies every source partition, and uses
+hard links where the filesystem permits them.
+
 Run the rolling correctness-admission benchmark from a completed boundary session:
 
 ```bash
