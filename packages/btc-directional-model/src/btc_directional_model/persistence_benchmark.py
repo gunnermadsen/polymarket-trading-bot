@@ -6,7 +6,7 @@ import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -43,6 +43,7 @@ from .core_features import (
     CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES,
     CORE_ENRICHED_FEATURES,
     CORE_MATURE_REVERSAL_ENRICHED_FEATURES,
+    CORE_REGIME_REVERSAL_ENRICHED_FEATURES,
     load_core_feature_frame,
     validate_core_feature_cache,
 )
@@ -71,11 +72,16 @@ from .persistence_config import (
     MATURE_REVERSAL_ACCURACY_CANDIDATE,
     MATURE_REVERSAL_ACCURACY_PROFILE,
     PATH_PERSISTENCE_PROFILE,
+    REGIME_ROBUST_ACCURACY_PROFILE,
+    REGIME_ROBUST_FEATURE_CANDIDATE,
+    REGIME_ROBUST_RECENCY_CANDIDATE,
+    REGIME_ROBUST_REGULARIZED_CANDIDATE,
     CalibrationBand,
     PersistenceBenchmarkConfig,
     load_persistence_benchmark_config,
     persistence_config_to_dict,
     persistence_row_weight_schedule,
+    walk_forward_validation_windows,
 )
 from .prewindow_features import (
     PREWINDOW_MODEL_FEATURES,
@@ -108,6 +114,15 @@ PERSISTENCE_TRAINING_CHECKS = {
 
 
 @dataclass(frozen=True)
+class FixedHistogramParameters:
+    learning_rate: float
+    max_iter: int
+    max_leaf_nodes: int
+    min_samples_leaf: int
+    l2_regularization: float
+
+
+@dataclass(frozen=True)
 class CandidateProfile:
     name: str
     target_kind: Literal["outcome_up", "path_persistence"]
@@ -116,9 +131,44 @@ class CandidateProfile:
         "core_boundary",
         "core_boundary_reversal",
         "core_mature_reversal",
+        "core_regime_reversal",
         "core_prewindow",
     ]
     calibration_kind: Literal["global_platt", "time_banded_platt"]
+    recency_half_life_days: float | None = None
+    fixed_histogram_parameters: FixedHistogramParameters | None = None
+
+
+@dataclass(frozen=True)
+class WalkForwardFoldRoles:
+    fit_start: datetime
+    fit_end_exclusive: datetime
+    calibration_start: datetime
+    calibration_end_exclusive: datetime
+    policy_start: datetime
+    policy_end_exclusive: datetime
+    validation_start: datetime
+    validation_end_exclusive: datetime
+
+    def as_dict(self) -> dict[str, dict[str, str]]:
+        return {
+            "fit": {
+                "start": self.fit_start.isoformat(),
+                "end_exclusive": self.fit_end_exclusive.isoformat(),
+            },
+            "calibration": {
+                "start": self.calibration_start.isoformat(),
+                "end_exclusive": self.calibration_end_exclusive.isoformat(),
+            },
+            "policy": {
+                "start": self.policy_start.isoformat(),
+                "end_exclusive": self.policy_end_exclusive.isoformat(),
+            },
+            "validation": {
+                "start": self.validation_start.isoformat(),
+                "end_exclusive": self.validation_end_exclusive.isoformat(),
+            },
+        }
 
 
 @dataclass(frozen=True)
@@ -206,6 +256,32 @@ CANDIDATE_PROFILES = {
             "global_platt",
         ),
         CandidateProfile(
+            REGIME_ROBUST_RECENCY_CANDIDATE,
+            "outcome_up",
+            "core_mature_reversal",
+            "global_platt",
+            recency_half_life_days=28.0,
+        ),
+        CandidateProfile(
+            REGIME_ROBUST_FEATURE_CANDIDATE,
+            "outcome_up",
+            "core_regime_reversal",
+            "global_platt",
+        ),
+        CandidateProfile(
+            REGIME_ROBUST_REGULARIZED_CANDIDATE,
+            "outcome_up",
+            "core_mature_reversal",
+            "global_platt",
+            fixed_histogram_parameters=FixedHistogramParameters(
+                learning_rate=0.05,
+                max_iter=160,
+                max_leaf_nodes=15,
+                min_samples_leaf=370,
+                l2_regularization=2.0,
+            ),
+        ),
+        CandidateProfile(
             FOLD_ROBUST_FREQUENCY_CANDIDATE,
             "outcome_up",
             "core_prewindow",
@@ -213,6 +289,77 @@ CANDIDATE_PROFILES = {
         ),
     )
 }
+
+
+def configured_validation_windows(
+    config: PersistenceBenchmarkConfig,
+    core_config: CoreTrainingConfig,
+) -> tuple[tuple[datetime, datetime], ...]:
+    if config.profile == REGIME_ROBUST_ACCURACY_PROFILE:
+        return walk_forward_validation_windows(config)
+    return core_config.split.validation_windows
+
+
+def rolling_walk_forward_fold_roles(
+    config: PersistenceBenchmarkConfig,
+    core_config: CoreTrainingConfig,
+    fold_index: int,
+) -> WalkForwardFoldRoles:
+    if config.profile != REGIME_ROBUST_ACCURACY_PROFILE:
+        raise ValueError("rolling fold roles require the regime-robust accuracy profile")
+    if (
+        config.rolling_calibration_days is None
+        or config.rolling_policy_days is None
+    ):
+        raise ValueError("rolling calibration and policy durations are required")
+    validation_start, validation_end = configured_validation_windows(
+        config,
+        core_config,
+    )[fold_index]
+    policy_start = validation_start - timedelta(days=config.rolling_policy_days)
+    calibration_start = policy_start - timedelta(
+        days=config.rolling_calibration_days
+    )
+    roles = WalkForwardFoldRoles(
+        fit_start=core_config.split.development_start,
+        fit_end_exclusive=calibration_start,
+        calibration_start=calibration_start,
+        calibration_end_exclusive=policy_start,
+        policy_start=policy_start,
+        policy_end_exclusive=validation_start,
+        validation_start=validation_start,
+        validation_end_exclusive=validation_end,
+    )
+    _validate_walk_forward_fold_roles(roles)
+    return roles
+
+
+def _validate_walk_forward_fold_roles(roles: WalkForwardFoldRoles) -> None:
+    ordered = (
+        roles.fit_start,
+        roles.fit_end_exclusive,
+        roles.calibration_start,
+        roles.calibration_end_exclusive,
+        roles.policy_start,
+        roles.policy_end_exclusive,
+        roles.validation_start,
+        roles.validation_end_exclusive,
+    )
+    if ordered != tuple(sorted(ordered)):
+        raise ValueError("rolling walk-forward fold roles must be chronological")
+    if (
+        roles.fit_start >= roles.fit_end_exclusive
+        or roles.calibration_start >= roles.calibration_end_exclusive
+        or roles.policy_start >= roles.policy_end_exclusive
+        or roles.validation_start >= roles.validation_end_exclusive
+    ):
+        raise ValueError("rolling walk-forward fold roles must have positive ranges")
+    if (
+        roles.fit_end_exclusive != roles.calibration_start
+        or roles.calibration_end_exclusive != roles.policy_start
+        or roles.policy_end_exclusive != roles.validation_start
+    ):
+        raise ValueError("rolling walk-forward fold roles must be disjoint and contiguous")
 
 
 def run_persistence_benchmark(
@@ -243,6 +390,7 @@ def run_persistence_benchmark(
         }
     execution_config = _execution_config(config)
     execution_manifest = load_execution_evidence_manifest(execution_config)
+    validation_windows = configured_validation_windows(config, core_config)
 
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = config.runs / run_id
@@ -296,9 +444,9 @@ def run_persistence_benchmark(
         control_candidate=config.control_candidate,
         evidence=BenchmarkEvidence(
             label=(
-                "Five-fold chronological "
-                f"{core_config.split.validation_windows[0][0].date().isoformat()} through "
-                f"{core_config.split.validation_windows[-1][1].date().isoformat()} "
+                f"{len(validation_windows)}-fold chronological "
+                f"{validation_windows[0][0].date().isoformat()} through "
+                f"{validation_windows[-1][1].date().isoformat()} "
                 "development evidence; historical labels consumed; cached compact-book "
                 f"execution evidence intersected over [{execution_manifest['range_start']}, "
                 f"{execution_manifest['range_end']})"
@@ -328,13 +476,31 @@ def run_persistence_benchmark(
         config,
         core_config,
     )
-    finalist = _select_finalist(benchmark, candidate_results, config)
-    freeze_record = _fit_development_finalist(
-        finalist,
-        config,
-        core_config,
-        run_dir,
-    )
+    ranked_candidates: tuple[str, ...] = ()
+    development_attempts: list[dict[str, Any]] = []
+    if config.profile == REGIME_ROBUST_ACCURACY_PROFILE:
+        ranked_candidates = _ranked_regime_robust_candidates(
+            benchmark,
+            candidate_results,
+        )
+        oof_finalist = ranked_candidates[0] if ranked_candidates else None
+        finalist, freeze_record, development_attempts = (
+            _fit_ranked_development_candidates(
+                ranked_candidates,
+                config,
+                core_config,
+                run_dir,
+            )
+        )
+    else:
+        finalist = _select_finalist(benchmark, candidate_results, config)
+        oof_finalist = finalist
+        freeze_record = _fit_development_finalist(
+            finalist,
+            config,
+            core_config,
+            run_dir,
+        )
 
     data_evidence = {
         "training_range": {
@@ -406,6 +572,11 @@ def run_persistence_benchmark(
             "runtime-v1 contract; its direct outcome target and global Platt "
             "calibration remain runtime-v1 compatible"
         )
+    elif config.profile == REGIME_ROBUST_ACCURACY_PROFILE:
+        runtime_contract_gap = (
+            "each regime-robust challenger requires its own runtime feature and "
+            "calibration compatibility review"
+        )
     else:
         runtime_contract_gap = (
             "path-persistence target conversion, time-banded calibration, "
@@ -419,6 +590,29 @@ def run_persistence_benchmark(
         deployment_reasons.insert(
             0,
             ("July 21-August 4 outcome labels and directional features remain untouched"),
+        )
+    training_selection: dict[str, Any] = {
+        "finalist": finalist,
+        "runtime_freeze_created": False,
+        "development_bundle": freeze_record,
+        "candidates": {
+            name: {
+                "passed": benchmark["candidates"][name]["advance"][
+                    "benchmark_passed"
+                ],
+                "checks": benchmark["candidates"][name]["advance"]["checks"],
+            }
+            for name in config.candidate_names
+            if name != config.control_candidate
+        },
+    }
+    if config.profile == REGIME_ROBUST_ACCURACY_PROFILE:
+        training_selection.update(
+            {
+                "oof_finalist": oof_finalist,
+                "oof_qualified_candidates": list(ranked_candidates),
+                "development_attempts": development_attempts,
+            }
         )
     benchmark.update(
         {
@@ -443,19 +637,7 @@ def run_persistence_benchmark(
                 }
                 for name, result in candidate_results.items()
             },
-            "training_selection": {
-                "finalist": finalist,
-                "runtime_freeze_created": False,
-                "development_bundle": freeze_record,
-                "candidates": {
-                    name: {
-                        "passed": benchmark["candidates"][name]["advance"]["benchmark_passed"],
-                        "checks": benchmark["candidates"][name]["advance"]["checks"],
-                    }
-                    for name in config.candidate_names
-                    if name != config.control_candidate
-                },
-            },
+            "training_selection": training_selection,
             "deployment": {
                 "status": "blocked",
                 "action": "training evidence only; no runtime export or deployment",
@@ -876,7 +1058,9 @@ def _evaluate_candidate_task(
     with threadpool_limits(limits=core_config.compute.threads_per_fit):
         folds = [
             _evaluate_fold(frame, profile, fold_index, config, core_config)
-            for fold_index in range(len(core_config.split.validation_windows))
+            for fold_index in range(
+                len(configured_validation_windows(config, core_config))
+            )
         ]
     return _aggregate_candidate(profile, folds, config, core_config)
 
@@ -896,26 +1080,67 @@ def _evaluate_fold(
             config,
             core_config,
         )
-    validation_start, validation_end = core_config.split.validation_windows[fold_index]
-    history = _candidate_eligible_frame(
-        range_frame(frame, core_config.split.development_start, validation_start),
-        profile,
-    )
-    validation_source = range_frame(frame, validation_start, validation_end)
-    universal_validation = _path_eligible_frame(validation_source)
-    validation = _candidate_eligible_frame(
-        validation_source,
-        profile,
-    )
-    fit_frame, calibration_frame, policy_frame = chronological_subsplit(
-        history,
-        fit_fraction=0.70,
-        calibration_fraction=0.15,
-    )
+    fold_roles: WalkForwardFoldRoles | None = None
+    if config.profile == REGIME_ROBUST_ACCURACY_PROFILE:
+        fold_roles = rolling_walk_forward_fold_roles(
+            config,
+            core_config,
+            fold_index,
+        )
+        validation_start = fold_roles.validation_start
+        validation_end = fold_roles.validation_end_exclusive
+        fit_frame = _candidate_eligible_frame(
+            range_frame(
+                frame,
+                fold_roles.fit_start,
+                fold_roles.fit_end_exclusive,
+            ),
+            profile,
+        )
+        calibration_frame = _candidate_eligible_frame(
+            range_frame(
+                frame,
+                fold_roles.calibration_start,
+                fold_roles.calibration_end_exclusive,
+            ),
+            profile,
+        )
+        policy_frame = _candidate_eligible_frame(
+            range_frame(
+                frame,
+                fold_roles.policy_start,
+                fold_roles.policy_end_exclusive,
+            ),
+            profile,
+        )
+        validation_source = range_frame(frame, validation_start, validation_end)
+        universal_validation = _path_eligible_frame(validation_source)
+        validation = _candidate_eligible_frame(
+            validation_source,
+            profile,
+        )
+    else:
+        validation_start, validation_end = core_config.split.validation_windows[fold_index]
+        history = _candidate_eligible_frame(
+            range_frame(frame, core_config.split.development_start, validation_start),
+            profile,
+        )
+        validation_source = range_frame(frame, validation_start, validation_end)
+        universal_validation = _path_eligible_frame(validation_source)
+        validation = _candidate_eligible_frame(
+            validation_source,
+            profile,
+        )
+        fit_frame, calibration_frame, policy_frame = chronological_subsplit(
+            history,
+            fit_fraction=0.70,
+            calibration_fraction=0.15,
+        )
     spec = _candidate_spec(profile, config)
     started = time.perf_counter()
-    model, tuning = tune_and_fit_model(
+    model, tuning = _fit_profile_model(
         _training_target_frame(fit_frame, profile),
+        profile,
         spec,
         core_config,
     )
@@ -989,7 +1214,7 @@ def _evaluate_fold(
         random_seed=core_config.model.random_seed + fold_index,
         block="hour",
     )
-    return {
+    result = {
         "candidate": profile.name,
         "fold_index": fold_index,
         "fit_range_start": fit_frame["window_start"].min().isoformat(),
@@ -1017,6 +1242,9 @@ def _evaluate_fold(
         "scored_rows": scored,
         "selected_rows": selected,
     }
+    if fold_roles is not None:
+        result["fold_role_boundaries"] = fold_roles.as_dict()
+    return result
 
 
 def _evaluate_fold_robust_agreement(
@@ -1026,29 +1254,82 @@ def _evaluate_fold_robust_agreement(
     config: PersistenceBenchmarkConfig,
     core_config: CoreTrainingConfig,
 ) -> dict[str, Any]:
-    validation_start, validation_end = core_config.split.validation_windows[fold_index]
-    history_source = range_frame(
-        frame,
-        core_config.split.development_start,
-        validation_start,
-    )
-    validation_source = range_frame(frame, validation_start, validation_end)
-    universal_validation = _path_eligible_frame(validation_source)
-    challenger_history = _candidate_eligible_frame(history_source, profile)
-    challenger_validation = _candidate_eligible_frame(validation_source, profile)
-    challenger_fit, challenger_calibration, challenger_policy = chronological_subsplit(
-        challenger_history,
-        fit_fraction=0.70,
-        calibration_fraction=0.15,
-    )
-
     control_profile = CANDIDATE_PROFILES["histogram_enriched"]
-    control_history = _candidate_eligible_frame(history_source, control_profile)
-    control_fit, control_calibration, _ = chronological_subsplit(
-        control_history,
-        fit_fraction=0.70,
-        calibration_fraction=0.15,
-    )
+    fold_roles: WalkForwardFoldRoles | None = None
+    if config.profile == REGIME_ROBUST_ACCURACY_PROFILE:
+        fold_roles = rolling_walk_forward_fold_roles(
+            config,
+            core_config,
+            fold_index,
+        )
+        validation_start = fold_roles.validation_start
+        validation_end = fold_roles.validation_end_exclusive
+        validation_source = range_frame(frame, validation_start, validation_end)
+        universal_validation = _path_eligible_frame(validation_source)
+        challenger_validation = _candidate_eligible_frame(validation_source, profile)
+        challenger_fit = _candidate_eligible_frame(
+            range_frame(
+                frame,
+                fold_roles.fit_start,
+                fold_roles.fit_end_exclusive,
+            ),
+            profile,
+        )
+        challenger_calibration = _candidate_eligible_frame(
+            range_frame(
+                frame,
+                fold_roles.calibration_start,
+                fold_roles.calibration_end_exclusive,
+            ),
+            profile,
+        )
+        challenger_policy = _candidate_eligible_frame(
+            range_frame(
+                frame,
+                fold_roles.policy_start,
+                fold_roles.policy_end_exclusive,
+            ),
+            profile,
+        )
+        control_fit = _candidate_eligible_frame(
+            range_frame(
+                frame,
+                fold_roles.fit_start,
+                fold_roles.fit_end_exclusive,
+            ),
+            control_profile,
+        )
+        control_calibration = _candidate_eligible_frame(
+            range_frame(
+                frame,
+                fold_roles.calibration_start,
+                fold_roles.calibration_end_exclusive,
+            ),
+            control_profile,
+        )
+    else:
+        validation_start, validation_end = core_config.split.validation_windows[fold_index]
+        history_source = range_frame(
+            frame,
+            core_config.split.development_start,
+            validation_start,
+        )
+        validation_source = range_frame(frame, validation_start, validation_end)
+        universal_validation = _path_eligible_frame(validation_source)
+        challenger_history = _candidate_eligible_frame(history_source, profile)
+        challenger_validation = _candidate_eligible_frame(validation_source, profile)
+        challenger_fit, challenger_calibration, challenger_policy = chronological_subsplit(
+            challenger_history,
+            fit_fraction=0.70,
+            calibration_fraction=0.15,
+        )
+
+        control_history = _candidate_eligible_frame(history_source, control_profile)
+        control_fit, control_calibration, _ = chronological_subsplit(
+            control_history,
+            fit_fraction=0.70,
+            calibration_fraction=0.15,
+        )
     challenger_spec = _candidate_spec(profile, config)
     control_spec = _candidate_spec(control_profile, config)
     started = time.perf_counter()
@@ -1153,7 +1434,7 @@ def _evaluate_fold_robust_agreement(
         random_seed=core_config.model.random_seed + fold_index,
         block="hour",
     )
-    return {
+    result = {
         "candidate": profile.name,
         "fold_index": fold_index,
         "fit_range_start": challenger_fit["window_start"].min().isoformat(),
@@ -1201,6 +1482,9 @@ def _evaluate_fold_robust_agreement(
         "scored_rows": scored,
         "selected_rows": selected,
     }
+    if fold_roles is not None:
+        result["fold_role_boundaries"] = fold_roles.as_dict()
+    return result
 
 
 def _tune_and_fit_fold_robust_model(
@@ -1411,6 +1695,10 @@ def _aggregate_candidate(
         for fold in folds
     )
     qualified_threshold_folds = sum(bool(fold["threshold_qualified"]) for fold in folds)
+    qualified_validation_folds = sum(
+        _validation_fold_meets_absolute_gates(fold["metrics"], core_config)
+        for fold in folds
+    )
     early_rows = selected.filter(pl.col("seconds_elapsed") <= config.early_cutoff_second)
     early = classification_metrics(early_rows, eligible_markets=eligible)
     path_behavior = {
@@ -1452,7 +1740,7 @@ def _aggregate_candidate(
             }
         )
     spec = _candidate_spec(profile, config)
-    return {
+    result = {
         "candidate": profile.name,
         "family": "histogram",
         "target_kind": profile.target_kind,
@@ -1462,6 +1750,18 @@ def _aggregate_candidate(
         "features": list(spec.feature_names),
         "row_weight_policy": spec.row_weight_policy,
         "row_weight_schedule": asdict(spec.row_weight_schedule),
+        "recency_half_life_days": spec.recency_half_life_days,
+        "estimator_weighting": {
+            "within_market": "equal total scheduled weight per market",
+            "recency_decay_applied": spec.recency_half_life_days is not None,
+            "recency_half_life_days": spec.recency_half_life_days,
+            "probability_calibration_recency_decay_applied": False,
+        },
+        "fixed_histogram_parameters": (
+            asdict(profile.fixed_histogram_parameters)
+            if profile.fixed_histogram_parameters is not None
+            else None
+        ),
         "folds": fold_summaries,
         "out_of_fold": metrics,
         "baseline": baseline_metrics(selected, eligible_markets=eligible),
@@ -1480,6 +1780,25 @@ def _aggregate_candidate(
         "validation_probability_rows": validation_probability_rows,
         "scored_rows": scored,
     }
+    if config.profile == REGIME_ROBUST_ACCURACY_PROFILE:
+        result["qualified_validation_folds"] = qualified_validation_folds
+    return result
+
+
+def _validation_fold_meets_absolute_gates(
+    metrics: dict[str, Any],
+    core_config: CoreTrainingConfig,
+) -> bool:
+    gates = core_config.gates
+    return bool(
+        metrics["accuracy"] >= gates.target_accuracy
+        and metrics["balanced_accuracy"] >= gates.target_balanced_accuracy
+        and metrics["up_recall"] >= gates.minimum_direction_recall
+        and metrics["down_recall"] >= gates.minimum_direction_recall
+        and metrics["wilson_lower_95"] >= gates.target_wilson_lower
+        and metrics["expected_calibration_error"] <= gates.maximum_ece
+        and metrics["coverage"] >= gates.minimum_coverage
+    )
 
 
 def _candidate_spec(
@@ -1492,6 +1811,8 @@ def _candidate_spec(
         features = tuple(CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES)
     elif profile.feature_kind == "core_mature_reversal":
         features = tuple(CORE_MATURE_REVERSAL_ENRICHED_FEATURES)
+    elif profile.feature_kind == "core_regime_reversal":
+        features = tuple(CORE_REGIME_REVERSAL_ENRICHED_FEATURES)
     else:
         features = tuple(CORE_ENRICHED_FEATURES)
     if profile.feature_kind == "core_prewindow":
@@ -1503,12 +1824,50 @@ def _candidate_spec(
         else MARKET_EQUAL_ROW_WEIGHT_POLICY
     )
     return CandidateSpec(
-        profile.name,
-        "histogram",
-        features,
-        row_weight_policy,
-        schedule,
+        name=profile.name,
+        family="histogram",
+        feature_names=features,
+        row_weight_policy=row_weight_policy,
+        row_weight_schedule=schedule,
+        recency_half_life_days=profile.recency_half_life_days,
     )
+
+
+def _fit_profile_model(
+    frame: pl.DataFrame,
+    profile: CandidateProfile,
+    spec: CandidateSpec,
+    core_config: CoreTrainingConfig,
+) -> tuple[FittedCoreModel, dict[str, Any]]:
+    fixed = profile.fixed_histogram_parameters
+    if fixed is None:
+        return tune_and_fit_model(frame, spec, core_config)
+    parameters = asdict(fixed)
+    started = time.perf_counter()
+    model = fit_model(frame, spec, parameters, core_config)
+    converged = estimator_converged(model.estimator)
+    if not converged:
+        raise RuntimeError(
+            f"{profile.name} fixed market-regularized estimator did not converge"
+        )
+    fit_seconds = time.perf_counter() - started
+    return model, {
+        "selection_objective": (
+            "fixed pre-registered market-scale regularization ablation; "
+            "no fold-local hyperparameter search"
+        ),
+        "selected_hyperparameters": parameters,
+        "validation_log_loss": None,
+        "candidates": [
+            {
+                "hyperparameters": parameters,
+                "fit_seconds": fit_seconds,
+                "converged": True,
+            }
+        ],
+        "optimizer_converged": True,
+        "hyperparameter_search_consumed": False,
+    }
 
 
 def _candidate_eligible_frame(
@@ -1750,12 +2109,22 @@ def _add_training_gates(
             continue
         result = candidate_results[name]
         advance = benchmark["candidates"][name]["advance"]
-        if config.profile == MATURE_REVERSAL_ACCURACY_PROFILE:
-            _add_mature_reversal_accuracy_gates(
+        if config.profile in {
+            MATURE_REVERSAL_ACCURACY_PROFILE,
+            REGIME_ROBUST_ACCURACY_PROFILE,
+        }:
+            _add_accuracy_uplift_gates(
                 advance,
                 candidate_results,
                 config,
                 core_config,
+                candidate_name=name,
+                configured_fold_count=len(
+                    configured_validation_windows(config, core_config)
+                ),
+                require_each_validation_fold=(
+                    config.profile == REGIME_ROBUST_ACCURACY_PROFILE
+                ),
             )
             continue
         deferred = [
@@ -1918,9 +2287,12 @@ def _add_training_gates(
         advance["deferred_runtime_checks"] = deferred
         advance["benchmark_passed"] = all(check["passed"] for check in checks)
         advance["deployment_qualified"] = False
-    if config.profile == MATURE_REVERSAL_ACCURACY_PROFILE:
+    if config.profile in {
+        MATURE_REVERSAL_ACCURACY_PROFILE,
+        REGIME_ROBUST_ACCURACY_PROFILE,
+    }:
         benchmark["advancement_contract"] = {
-            "profile": MATURE_REVERSAL_ACCURACY_PROFILE,
+            "profile": config.profile,
             "optimization_target": "model_directional_decision_accuracy",
             "advancement_only": [
                 "absolute aggregate accuracy standards",
@@ -1928,6 +2300,11 @@ def _add_training_gates(
                 "eligible-market coverage non-regression",
                 "hard-confident error count and selected-rate improvement",
                 "qualified threshold in every chronological fold",
+                *(
+                    ["absolute accuracy standards in every validation fold"]
+                    if config.profile == REGIME_ROBUST_ACCURACY_PROFILE
+                    else []
+                ),
             ],
             "diagnostic_only": [
                 "early-entry metrics",
@@ -1946,14 +2323,18 @@ def _add_training_gates(
     benchmark["deployment_qualified_candidates"] = []
 
 
-def _add_mature_reversal_accuracy_gates(
+def _add_accuracy_uplift_gates(
     advance: dict[str, Any],
     candidate_results: dict[str, dict[str, Any]],
     config: PersistenceBenchmarkConfig,
     core_config: CoreTrainingConfig,
+    *,
+    candidate_name: str,
+    configured_fold_count: int,
+    require_each_validation_fold: bool,
 ) -> None:
     control = candidate_results[config.control_candidate]
-    candidate = candidate_results[MATURE_REVERSAL_ACCURACY_CANDIDATE]
+    candidate = candidate_results[candidate_name]
     control_metrics = control["out_of_fold"]
     candidate_metrics = candidate["out_of_fold"]
     control_tail = control["hard_confident_errors"]
@@ -2087,7 +2468,7 @@ def _add_mature_reversal_accuracy_gates(
                 "frozen chronological fold count",
                 candidate["total_folds"],
                 "==",
-                len(core_config.split.validation_windows),
+                configured_fold_count,
             ),
             _check(
                 "qualified threshold in every fold",
@@ -2097,6 +2478,15 @@ def _add_mature_reversal_accuracy_gates(
             ),
         )
     )
+    if require_each_validation_fold:
+        checks.append(
+            _check(
+                "absolute accuracy standards in every validation fold",
+                candidate["qualified_validation_folds"],
+                "==",
+                configured_fold_count,
+            )
+        )
     advance["checks"] = checks
     advance["deferred_runtime_checks"] = deferred
     advance["diagnostic_only"] = [
@@ -2150,28 +2540,9 @@ def _select_finalist(
     if config.profile in {
         BOUNDARY_REVERSAL_ACCURACY_PROFILE,
         MATURE_REVERSAL_ACCURACY_PROFILE,
+        REGIME_ROBUST_ACCURACY_PROFILE,
     }:
-        return max(
-            passing,
-            key=lambda name: (
-                -candidate_results[name]["hard_confident_errors"][
-                    "hard_confident_error_exposure_rate"
-                ],
-                -candidate_results[name]["hard_confident_errors"][
-                    "hard_confident_error_rate_selected"
-                ],
-                candidate_results[name]["out_of_fold"]["accuracy"],
-                candidate_results[name]["out_of_fold"]["balanced_accuracy"],
-                candidate_results[name]["out_of_fold"]["wilson_lower_95"],
-                candidate_results[name]["out_of_fold"]["coverage"],
-                -(
-                    candidate_results[name]["timing"][
-                        "median_first_crossing_seconds"
-                    ]
-                    or float("inf")
-                ),
-            ),
-        )
+        return max(passing, key=lambda name: _accuracy_finalist_rank(candidate_results[name]))
     return max(
         passing,
         key=lambda name: (
@@ -2182,6 +2553,57 @@ def _select_finalist(
             -(candidate_results[name]["timing"]["median_first_crossing_seconds"] or float("inf")),
         ),
     )
+
+
+def _accuracy_finalist_rank(result: dict[str, Any]) -> tuple[float, ...]:
+    median_crossing = result["timing"]["median_first_crossing_seconds"]
+    return (
+        -result["hard_confident_errors"]["hard_confident_error_exposure_rate"],
+        -result["hard_confident_errors"]["hard_confident_error_rate_selected"],
+        result["out_of_fold"]["accuracy"],
+        result["out_of_fold"]["balanced_accuracy"],
+        result["out_of_fold"]["wilson_lower_95"],
+        result["out_of_fold"]["coverage"],
+        -(median_crossing if median_crossing is not None else float("inf")),
+    )
+
+
+def _ranked_regime_robust_candidates(
+    benchmark: dict[str, Any],
+    candidate_results: dict[str, dict[str, Any]],
+) -> tuple[str, ...]:
+    passing = benchmark["benchmark_passed_candidates"]
+    return tuple(
+        sorted(
+            passing,
+            key=lambda name: _accuracy_finalist_rank(candidate_results[name]),
+            reverse=True,
+        )
+    )
+
+
+def _fit_ranked_development_candidates(
+    ranked_candidates: tuple[str, ...],
+    config: PersistenceBenchmarkConfig,
+    core_config: CoreTrainingConfig,
+    run_dir: Path,
+) -> tuple[str | None, dict[str, Any] | None, list[dict[str, Any]]]:
+    attempts: list[dict[str, Any]] = []
+    for rank, candidate_name in enumerate(ranked_candidates, start=1):
+        record = _fit_development_finalist(
+            candidate_name,
+            config,
+            core_config,
+            run_dir,
+        )
+        if record is None:
+            raise RuntimeError(
+                f"ranked development candidate {candidate_name} produced no fit record"
+            )
+        attempts.append({"rank": rank, **record})
+        if record["bundle_created"]:
+            return candidate_name, record, attempts
+    return None, None, attempts
 
 
 def _fit_development_finalist(
@@ -2226,8 +2648,9 @@ def _fit_development_finalist(
         profile,
     )
     spec = _candidate_spec(profile, config)
-    model, tuning = tune_and_fit_model(
+    model, tuning = _fit_profile_model(
         _training_target_frame(development, profile),
+        profile,
         spec,
         core_config,
     )
@@ -2289,7 +2712,10 @@ def _fit_development_finalist(
             "candidate": finalist,
             "threshold": threshold,
             "threshold_qualified": threshold_qualified,
+            "policy_passed": False,
             "metrics": metrics,
+            "tuning": tuning,
+            "calibration": calibration_evidence,
             "bundle_created": False,
         }
     bundle = PersistenceTrainingBundle(
@@ -2309,6 +2735,7 @@ def _fit_development_finalist(
         "model_sha256": file_sha256(destination),
         "threshold": threshold,
         "threshold_qualified": threshold_qualified,
+        "policy_passed": True,
         "metrics": metrics,
         "tuning": tuning,
         "calibration": calibration_evidence,

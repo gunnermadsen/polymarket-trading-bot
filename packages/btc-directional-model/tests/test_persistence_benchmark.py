@@ -1,14 +1,19 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import polars as pl
+import pytest
 
+from btc_directional_model import persistence_benchmark
 from btc_directional_model.core_config import load_core_config
 from btc_directional_model.core_features import (
     CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES,
+    CORE_ENRICHED_FEATURES,
     CORE_MATURE_REVERSAL_ENRICHED_FEATURES,
+    CORE_REGIME_REVERSAL_ENRICHED_FEATURES,
 )
 from btc_directional_model.core_training import ProbabilityCalibrator
 from btc_directional_model.persistence_benchmark import (
@@ -16,13 +21,19 @@ from btc_directional_model.persistence_benchmark import (
     CalibratorSet,
     _add_training_gates,
     _candidate_spec,
+    _fit_profile_model,
+    _fit_ranked_development_candidates,
     _fold_robust_agreement_probability,
+    _ranked_regime_robust_candidates,
+    _validation_fold_meets_absolute_gates,
     attach_execution_evidence,
     calibrated_target_probability,
     common_selected_execution_comparison,
+    configured_validation_windows,
     hard_confident_error_metrics,
     path_is_directionally_eligible,
     persistence_target_labels,
+    rolling_walk_forward_fold_roles,
     target_probability_to_up,
 )
 from btc_directional_model.persistence_config import (
@@ -34,8 +45,15 @@ from btc_directional_model.persistence_config import (
     FOLD_ROBUST_FREQUENCY_PROFILE,
     MATURE_REVERSAL_ACCURACY_CANDIDATE,
     MATURE_REVERSAL_ACCURACY_PROFILE,
+    REGIME_ROBUST_ACCURACY_CANDIDATES,
+    REGIME_ROBUST_FEATURE_CANDIDATE,
+    REGIME_ROBUST_RECENCY_CANDIDATE,
+    REGIME_ROBUST_REGULARIZED_CANDIDATE,
+    REGIME_ROBUST_VALIDATION_ENDS,
+    REGIME_ROBUST_VALIDATION_STARTS,
     CalibrationBand,
     load_persistence_benchmark_config,
+    validate_persistence_benchmark_config,
 )
 
 
@@ -52,6 +70,15 @@ def probability_frame() -> pl.DataFrame:
             "binance_sign_up": [1, 0, 1, 0],
             "btc_path_from_window_open_bps": [2.0, -2.0, 3.0, -3.0],
         }
+    )
+
+
+def regime_robust_config():
+    package_root = Path(__file__).resolve().parents[1]
+    return load_persistence_benchmark_config(
+        package_root
+        / "configs"
+        / "btc-5m-directional-regime-robust-accuracy-20260321-20260729.toml"
     )
 
 
@@ -263,6 +290,140 @@ def test_mature_reversal_accuracy_configuration_locks_model_accuracy_contract() 
     assert config.minimum_hard_confident_error_count_reduction == 1
 
 
+def test_regime_robust_configuration_locks_seven_validation_windows() -> None:
+    config = regime_robust_config()
+    core = load_core_config(config.core_config)
+
+    validate_persistence_benchmark_config(config)
+    windows = configured_validation_windows(config, core)
+
+    assert len(windows) == 7
+    assert tuple(start.isoformat() for start, _ in windows) == (
+        REGIME_ROBUST_VALIDATION_STARTS
+    )
+    assert tuple(end.isoformat() for _, end in windows) == (
+        REGIME_ROBUST_VALIDATION_ENDS
+    )
+    assert windows[0] == (
+        datetime(2026, 6, 9, tzinfo=UTC),
+        datetime(2026, 6, 16, tzinfo=UTC),
+    )
+    assert windows[-1] == (
+        datetime(2026, 7, 21, tzinfo=UTC),
+        datetime(2026, 7, 29, tzinfo=UTC),
+    )
+
+
+def test_regime_robust_configuration_locks_exact_ablation_matrix() -> None:
+    config = regime_robust_config()
+
+    validate_persistence_benchmark_config(config)
+    assert config.candidate_names == REGIME_ROBUST_ACCURACY_CANDIDATES
+    with pytest.raises(ValueError, match="frozen five-candidate"):
+        validate_persistence_benchmark_config(
+            replace(
+                config,
+                candidate_names=config.candidate_names[:-1],
+            )
+        )
+
+
+def test_regime_robust_candidate_specs_isolate_model_training_changes() -> None:
+    config = regime_robust_config()
+    specs = {
+        name: _candidate_spec(CANDIDATE_PROFILES[name], config)
+        for name in config.candidate_names
+    }
+
+    assert specs["histogram_enriched"].feature_names == tuple(
+        CORE_ENRICHED_FEATURES
+    )
+    assert specs[MATURE_REVERSAL_ACCURACY_CANDIDATE].feature_names == tuple(
+        CORE_MATURE_REVERSAL_ENRICHED_FEATURES
+    )
+    assert specs[REGIME_ROBUST_RECENCY_CANDIDATE].feature_names == tuple(
+        CORE_MATURE_REVERSAL_ENRICHED_FEATURES
+    )
+    assert specs[REGIME_ROBUST_FEATURE_CANDIDATE].feature_names == tuple(
+        CORE_REGIME_REVERSAL_ENRICHED_FEATURES
+    )
+    assert specs[REGIME_ROBUST_REGULARIZED_CANDIDATE].feature_names == tuple(
+        CORE_MATURE_REVERSAL_ENRICHED_FEATURES
+    )
+    assert [len(specs[name].feature_names) for name in config.candidate_names] == [
+        58,
+        71,
+        71,
+        77,
+        71,
+    ]
+    assert specs[REGIME_ROBUST_RECENCY_CANDIDATE].recency_half_life_days == 28.0
+    assert all(
+        spec.recency_half_life_days is None
+        for name, spec in specs.items()
+        if name != REGIME_ROBUST_RECENCY_CANDIDATE
+    )
+    regularized = CANDIDATE_PROFILES[
+        REGIME_ROBUST_REGULARIZED_CANDIDATE
+    ].fixed_histogram_parameters
+    assert regularized is not None
+    assert regularized.min_samples_leaf == 370
+    assert regularized.l2_regularization == 2.0
+    for name in config.candidate_names:
+        profile = CANDIDATE_PROFILES[name]
+        assert profile.target_kind == "outcome_up"
+        assert profile.calibration_kind == "global_platt"
+
+
+def test_regime_robust_fold_roles_are_exact_disjoint_ranges() -> None:
+    config = regime_robust_config()
+    core = load_core_config(config.core_config)
+    first = rolling_walk_forward_fold_roles(config, core, 0)
+    last = rolling_walk_forward_fold_roles(config, core, 6)
+
+    assert first.fit_start == datetime(2026, 3, 21, tzinfo=UTC)
+    assert first.fit_end_exclusive == datetime(2026, 5, 26, tzinfo=UTC)
+    assert first.calibration_start == datetime(2026, 5, 26, tzinfo=UTC)
+    assert first.calibration_end_exclusive == datetime(2026, 6, 2, tzinfo=UTC)
+    assert first.policy_start == datetime(2026, 6, 2, tzinfo=UTC)
+    assert first.policy_end_exclusive == datetime(2026, 6, 9, tzinfo=UTC)
+    assert first.validation_start == datetime(2026, 6, 9, tzinfo=UTC)
+    assert first.validation_end_exclusive == datetime(2026, 6, 16, tzinfo=UTC)
+    assert last.fit_end_exclusive == datetime(2026, 7, 7, tzinfo=UTC)
+    assert last.calibration_start == datetime(2026, 7, 7, tzinfo=UTC)
+    assert last.calibration_end_exclusive == datetime(2026, 7, 14, tzinfo=UTC)
+    assert last.policy_start == datetime(2026, 7, 14, tzinfo=UTC)
+    assert last.policy_end_exclusive == datetime(2026, 7, 21, tzinfo=UTC)
+    assert last.validation_start == datetime(2026, 7, 21, tzinfo=UTC)
+    assert last.validation_end_exclusive == datetime(2026, 7, 29, tzinfo=UTC)
+
+    for fold_index in range(7):
+        roles = rolling_walk_forward_fold_roles(config, core, fold_index)
+        assert roles.fit_end_exclusive == roles.calibration_start
+        assert roles.calibration_end_exclusive == roles.policy_start
+        assert roles.policy_end_exclusive == roles.validation_start
+        assert roles.fit_start < roles.fit_end_exclusive
+        assert roles.calibration_start < roles.calibration_end_exclusive
+        assert roles.policy_start < roles.policy_end_exclusive
+        assert roles.validation_start < roles.validation_end_exclusive
+
+
+def test_old_profiles_keep_core_proportional_validation_windows() -> None:
+    package_root = Path(__file__).resolve().parents[1]
+    config = load_persistence_benchmark_config(
+        package_root
+        / "configs"
+        / "btc-5m-directional-mature-reversal-accuracy-20260321-20260729.toml"
+    )
+    core = load_core_config(config.core_config)
+
+    assert configured_validation_windows(config, core) is core.split.validation_windows
+    assert config.walk_forward_validation_starts == ()
+    assert config.walk_forward_validation_ends == ()
+    assert config.rolling_calibration_days is None
+    assert config.rolling_policy_days is None
+
+
 def test_mature_reversal_accuracy_gates_isolate_decision_quality() -> None:
     package_root = Path(__file__).resolve().parents[1]
     config = load_persistence_benchmark_config(
@@ -385,6 +546,267 @@ def test_mature_reversal_accuracy_gates_isolate_decision_quality() -> None:
     assert weak_accuracy["minimum aggregate accuracy uplift"] is False
     assert tied_down_recall["positive aggregate DOWN recall uplift"] is False
     assert lower_coverage["eligible-market coverage does not regress"] is False
+
+
+def test_regime_robust_accuracy_gates_require_every_configured_fold() -> None:
+    config = replace(
+        regime_robust_config(),
+        candidate_names=(
+            "histogram_enriched",
+            BOUNDARY_REVERSAL_ACCURACY_CANDIDATE,
+        ),
+    )
+    core = load_core_config(config.core_config)
+    candidate_name = BOUNDARY_REVERSAL_ACCURACY_CANDIDATE
+
+    def evaluate(qualified_validation_folds: int) -> dict[str, bool]:
+        benchmark = {
+            "candidates": {
+                "histogram_enriched": {"advance": {"checks": []}},
+                candidate_name: {"advance": {"checks": []}},
+            }
+        }
+        candidate_results = {
+            "histogram_enriched": {
+                "out_of_fold": {
+                    "accuracy": 0.900,
+                    "balanced_accuracy": 0.900,
+                    "up_recall": 0.900,
+                    "down_recall": 0.900,
+                    "wilson_lower_95": 0.880,
+                    "coverage": 0.60,
+                },
+                "hard_confident_errors": {
+                    "eligible_markets": 1_000,
+                    "hard_confident_error_markets": 2,
+                    "hard_confident_error_rate_selected": 2 / 800,
+                },
+            },
+            candidate_name: {
+                "out_of_fold": {
+                    "markets": 600,
+                    "accuracy": 0.902,
+                    "balanced_accuracy": 0.902,
+                    "up_recall": 0.901,
+                    "down_recall": 0.901,
+                    "wilson_lower_95": 0.882,
+                    "expected_calibration_error": 0.02,
+                    "coverage": 0.60,
+                },
+                "hard_confident_errors": {
+                    "eligible_markets": 1_000,
+                    "hard_confident_error_markets": 1,
+                    "hard_confident_error_rate_selected": 1 / 600,
+                },
+                "qualified_threshold_folds": 7,
+                "qualified_validation_folds": qualified_validation_folds,
+                "total_folds": 7,
+            },
+        }
+
+        _add_training_gates(
+            benchmark,
+            candidate_results,
+            config,
+            core,
+        )
+        return {
+            check["name"]: check["passed"]
+            for check in benchmark["candidates"][candidate_name]["advance"]["checks"]
+        }
+
+    passing = evaluate(7)
+    one_bad_fold = evaluate(6)
+
+    assert all(passing.values())
+    assert passing["frozen chronological fold count"] is True
+    assert passing["absolute accuracy standards in every validation fold"] is True
+    assert one_bad_fold["absolute accuracy standards in every validation fold"] is False
+
+
+def test_validation_fold_qualification_uses_all_absolute_accuracy_standards() -> None:
+    config = regime_robust_config()
+    core = load_core_config(config.core_config)
+    passing = {
+        "accuracy": core.gates.target_accuracy,
+        "balanced_accuracy": core.gates.target_balanced_accuracy,
+        "up_recall": core.gates.minimum_direction_recall,
+        "down_recall": core.gates.minimum_direction_recall,
+        "wilson_lower_95": core.gates.target_wilson_lower,
+        "expected_calibration_error": core.gates.maximum_ece,
+        "coverage": core.gates.minimum_coverage,
+    }
+
+    assert _validation_fold_meets_absolute_gates(passing, core) is True
+    for metric, failing_value in (
+        ("accuracy", core.gates.target_accuracy - 0.001),
+        ("balanced_accuracy", core.gates.target_balanced_accuracy - 0.001),
+        ("up_recall", core.gates.minimum_direction_recall - 0.001),
+        ("down_recall", core.gates.minimum_direction_recall - 0.001),
+        ("wilson_lower_95", core.gates.target_wilson_lower - 0.001),
+        ("expected_calibration_error", core.gates.maximum_ece + 0.001),
+        ("coverage", core.gates.minimum_coverage - 0.001),
+    ):
+        assert (
+            _validation_fold_meets_absolute_gates(
+                {**passing, metric: failing_value},
+                core,
+            )
+            is False
+        )
+
+
+def test_market_regularized_candidate_uses_exact_fixed_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = regime_robust_config()
+    core = load_core_config(config.core_config)
+    profile = CANDIDATE_PROFILES[REGIME_ROBUST_REGULARIZED_CANDIDATE]
+    spec = _candidate_spec(profile, config)
+    captured: dict[str, object] = {}
+    fitted = SimpleNamespace(estimator=object())
+
+    def fake_fit_model(frame, observed_spec, parameters, observed_core):
+        captured.update(
+            {
+                "frame": frame,
+                "spec": observed_spec,
+                "parameters": parameters,
+                "core": observed_core,
+            }
+        )
+        return fitted
+
+    monkeypatch.setattr(persistence_benchmark, "fit_model", fake_fit_model)
+    monkeypatch.setattr(
+        persistence_benchmark,
+        "estimator_converged",
+        lambda estimator: estimator is fitted.estimator,
+    )
+    frame = pl.DataFrame({"label_up": [0, 1]})
+
+    model, tuning = _fit_profile_model(frame, profile, spec, core)
+
+    assert model is fitted
+    assert captured["parameters"] == {
+        "learning_rate": 0.05,
+        "max_iter": 160,
+        "max_leaf_nodes": 15,
+        "min_samples_leaf": 370,
+        "l2_regularization": 2.0,
+    }
+    assert tuning["selected_hyperparameters"] == captured["parameters"]
+    assert tuning["hyperparameter_search_consumed"] is False
+
+
+def accuracy_rank_result(
+    *,
+    exposure: float,
+    selected_rate: float,
+    accuracy: float,
+    median: float = 150.0,
+) -> dict[str, object]:
+    return {
+        "hard_confident_errors": {
+            "hard_confident_error_exposure_rate": exposure,
+            "hard_confident_error_rate_selected": selected_rate,
+        },
+        "out_of_fold": {
+            "accuracy": accuracy,
+            "balanced_accuracy": accuracy,
+            "wilson_lower_95": accuracy - 0.01,
+            "coverage": 0.60,
+        },
+        "timing": {"median_first_crossing_seconds": median},
+    }
+
+
+def test_regime_robust_ranking_includes_only_oof_qualified_candidates() -> None:
+    benchmark = {
+        "benchmark_passed_candidates": [
+            MATURE_REVERSAL_ACCURACY_CANDIDATE,
+            REGIME_ROBUST_RECENCY_CANDIDATE,
+            REGIME_ROBUST_FEATURE_CANDIDATE,
+        ]
+    }
+    results = {
+        MATURE_REVERSAL_ACCURACY_CANDIDATE: accuracy_rank_result(
+            exposure=0.002,
+            selected_rate=0.003,
+            accuracy=0.91,
+        ),
+        REGIME_ROBUST_RECENCY_CANDIDATE: accuracy_rank_result(
+            exposure=0.001,
+            selected_rate=0.004,
+            accuracy=0.89,
+        ),
+        REGIME_ROBUST_FEATURE_CANDIDATE: accuracy_rank_result(
+            exposure=0.001,
+            selected_rate=0.003,
+            accuracy=0.90,
+        ),
+        REGIME_ROBUST_REGULARIZED_CANDIDATE: accuracy_rank_result(
+            exposure=0.0,
+            selected_rate=0.0,
+            accuracy=0.99,
+        ),
+    }
+
+    ranked = _ranked_regime_robust_candidates(benchmark, results)
+
+    assert ranked == (
+        REGIME_ROBUST_FEATURE_CANDIDATE,
+        REGIME_ROBUST_RECENCY_CANDIDATE,
+        MATURE_REVERSAL_ACCURACY_CANDIDATE,
+    )
+    assert REGIME_ROBUST_REGULARIZED_CANDIDATE not in ranked
+
+
+def test_ranked_development_fit_tries_until_first_policy_pass(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = regime_robust_config()
+    core = load_core_config(config.core_config)
+    ranked = (
+        REGIME_ROBUST_FEATURE_CANDIDATE,
+        REGIME_ROBUST_RECENCY_CANDIDATE,
+        REGIME_ROBUST_REGULARIZED_CANDIDATE,
+    )
+    called: list[str] = []
+
+    def fake_fit(candidate, observed_config, observed_core, run_dir):
+        called.append(candidate)
+        passed = candidate == REGIME_ROBUST_RECENCY_CANDIDATE
+        return {
+            "status": (
+                "development_candidate_frozen"
+                if passed
+                else "blocked_policy_selection"
+            ),
+            "candidate": candidate,
+            "policy_passed": passed,
+            "bundle_created": passed,
+        }
+
+    monkeypatch.setattr(
+        persistence_benchmark,
+        "_fit_development_finalist",
+        fake_fit,
+    )
+
+    finalist, bundle, attempts = _fit_ranked_development_candidates(
+        ranked,
+        config,
+        core,
+        tmp_path,
+    )
+
+    assert finalist == REGIME_ROBUST_RECENCY_CANDIDATE
+    assert bundle is not None and bundle["bundle_created"] is True
+    assert called == list(ranked[:2])
+    assert [attempt["rank"] for attempt in attempts] == [1, 2]
+    assert [attempt["bundle_created"] for attempt in attempts] == [False, True]
 
 
 def test_hard_confident_errors_use_fixed_and_selected_denominators() -> None:

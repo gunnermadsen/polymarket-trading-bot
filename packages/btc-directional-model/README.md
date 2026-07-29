@@ -242,6 +242,40 @@ not claim an earlier-entry or trade-frequency improvement. Because March 21-July
 consumed during development, a paper process starting after artifact freeze is still required for
 independent qualification.
 
+Run the corrected rolling regime-robust accuracy session:
+
+```bash
+export POLARS_MAX_THREADS=6
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export MKL_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+.venv/bin/btc-directional-model core-features \
+  --config configs/btc-5m-directional-core-boundary-reversal-20260321-20260729.toml \
+  --scope pre_holdout \
+  --force
+.venv/bin/btc-directional-model persistence-benchmark-run \
+  --config configs/btc-5m-directional-regime-robust-accuracy-20260321-20260729.toml
+```
+
+This session uses seven fixed rolling validations from June 9 through July 28. Each fold has an
+expanding fit interval followed by separate seven-day calibration, seven-day policy selection,
+and validation intervals. The last fold therefore evaluates July 21-28 with a model whose fit,
+calibration, and policy roles end before that validation begins. It corrects the older
+proportional-fold protocol, which did not reproduce the final model's consecutive seven-day
+calibration and policy windows.
+
+The frozen matrix contains the 58-feature control, the 71-feature mature-reversal candidate, and
+three isolated training ablations: a 28-day estimator-only recency half-life, a 77-feature variant
+with six longer-horizon causal regime fields, and a 71-feature histogram with market-scale leaf
+regularization. Probability calibration never receives recency decay. Every challenger remains a
+direct-outcome model with global Platt calibration; no gate, admission model, correctness
+selector, or execution policy changes its decisions. Advancement additionally requires every
+validation fold to meet the absolute accuracy, direction-recall, Wilson, calibration, and coverage
+standards. July 21-28 is consumed development evidence, so a newly frozen model still requires a
+post-freeze paper cohort for independent qualification.
+
 Run the rolling correctness-admission benchmark from a completed boundary session:
 
 ```bash

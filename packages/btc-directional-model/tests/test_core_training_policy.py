@@ -26,6 +26,7 @@ from btc_directional_model.core_training import (
     development_gate_passed,
     evaluate_core_holdout,
     market_equal_weights,
+    model_candidate_spec,
     qualification_checks,
     row_weight_schedule_payload,
     scored_fold_probability_rows,
@@ -392,6 +393,158 @@ def test_existing_candidates_retain_market_equal_weights() -> None:
             candidate_training_weights(frame, candidate_spec(name)),
             expected,
         )
+
+
+def test_default_recency_weighting_is_exactly_backward_compatible() -> None:
+    frame = pl.DataFrame(
+        {
+            "market_id": ["a", "a", "a", "b", "b"],
+            "seconds_elapsed": [60, 90, 180, 60, 180],
+        }
+    )
+    base = candidate_spec("histogram_early_weighted")
+    explicit_none = core_training.CandidateSpec(
+        name=base.name,
+        family=base.family,
+        feature_names=base.feature_names,
+        row_weight_policy=base.row_weight_policy,
+        row_weight_schedule=base.row_weight_schedule,
+        recency_half_life_days=None,
+    )
+
+    assert np.array_equal(
+        candidate_training_weights(frame, explicit_none),
+        candidate_training_weights(frame, base),
+    )
+
+
+def test_recency_decay_preserves_row_ratios_and_halves_market_totals() -> None:
+    latest = datetime(2026, 7, 28, tzinfo=UTC)
+    frame = pl.DataFrame(
+        {
+            "market_id": ["old", "old", "middle", "middle", "new", "new"],
+            "window_start": [
+                latest - timedelta(days=28),
+                latest - timedelta(days=28),
+                latest - timedelta(days=14),
+                latest - timedelta(days=14),
+                latest,
+                latest,
+            ],
+            "seconds_elapsed": [60, 180, 60, 180, 60, 180],
+        }
+    )
+    base = candidate_spec("histogram_early_weighted")
+    decayed = core_training.CandidateSpec(
+        name=base.name,
+        family=base.family,
+        feature_names=base.feature_names,
+        row_weight_policy=base.row_weight_policy,
+        row_weight_schedule=base.row_weight_schedule,
+        recency_half_life_days=14.0,
+    )
+
+    scheduled = candidate_training_weights(frame, base)
+    weights = candidate_training_weights(frame, decayed)
+
+    for start in (0, 2, 4):
+        assert weights[start] / weights[start + 1] == pytest.approx(
+            scheduled[start] / scheduled[start + 1]
+        )
+    old_total = weights[:2].sum()
+    middle_total = weights[2:4].sum()
+    new_total = weights[4:].sum()
+    assert middle_total / old_total == pytest.approx(2.0)
+    assert new_total / middle_total == pytest.approx(2.0)
+    assert weights.mean() == pytest.approx(1.0)
+
+
+def test_probability_calibration_excludes_recency_decay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    latest = datetime(2026, 7, 28, tzinfo=UTC)
+    frame = pl.DataFrame(
+        {
+            "market_id": ["old", "old", "new", "new"],
+            "window_start": [
+                latest - timedelta(days=14),
+                latest - timedelta(days=14),
+                latest,
+                latest,
+            ],
+            "seconds_elapsed": [60, 180, 60, 180],
+            "label_up": [0, 0, 1, 1],
+        }
+    )
+    base = candidate_spec("histogram_early_weighted")
+    decayed = core_training.CandidateSpec(
+        name=base.name,
+        family=base.family,
+        feature_names=base.feature_names,
+        row_weight_policy=base.row_weight_policy,
+        row_weight_schedule=base.row_weight_schedule,
+        recency_half_life_days=14.0,
+    )
+    captured: dict[str, np.ndarray] = {}
+
+    class RecordingCalibrator:
+        def __init__(self, **parameters: object) -> None:
+            self.max_iter = int(parameters["max_iter"])
+            self.coef_ = np.array([[1.0]])
+            self.intercept_ = np.array([0.0])
+            self.n_iter_ = np.array([1])
+
+        def fit(
+            self,
+            _logits: np.ndarray,
+            _labels: np.ndarray,
+            *,
+            sample_weight: np.ndarray,
+        ) -> RecordingCalibrator:
+            captured["sample_weight"] = sample_weight
+            return self
+
+    monkeypatch.setattr(core_training, "LogisticRegression", RecordingCalibrator)
+    model = SimpleNamespace(
+        raw_logit=lambda input_frame: np.linspace(-1.0, 1.0, input_frame.height)
+    )
+    config = SimpleNamespace(
+        model=SimpleNamespace(random_seed=7),
+        compute=SimpleNamespace(threads_per_fit=1),
+    )
+
+    core_training.fit_probability_calibrator(model, frame, config, decayed)
+
+    assert np.array_equal(
+        captured["sample_weight"],
+        candidate_training_weights(frame, base),
+    )
+    assert not np.array_equal(
+        captured["sample_weight"],
+        candidate_training_weights(frame, decayed),
+    )
+
+
+def test_persistence_candidate_spec_reconstructs_from_fitted_model_contract() -> None:
+    model = SimpleNamespace(
+        candidate_name="histogram_mature_reversal_recency_28d",
+        family="histogram",
+        feature_names=("feature_a", "feature_b"),
+        row_weight_policy="market_equal",
+        row_weight_schedule=RowWeightScheduleConfig(
+            start_second=None,
+            end_second_inclusive=None,
+            multiplier=1.0,
+        ),
+        recency_half_life_days=28.0,
+    )
+
+    spec = model_candidate_spec(model)
+
+    assert spec.name == model.candidate_name
+    assert spec.family == "histogram"
+    assert spec.feature_names == model.feature_names
+    assert spec.recency_half_life_days == 28.0
 
 
 def test_scored_fold_probabilities_preserve_every_validation_checkpoint() -> None:

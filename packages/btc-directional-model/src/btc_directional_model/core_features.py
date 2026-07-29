@@ -25,6 +25,9 @@ CORE_BOUNDARY_REVERSAL_FEATURE_SCHEMA_VERSION = (
 CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION = (
     "btc-5m-directional-mature-reversal-features-v1"
 )
+CORE_REGIME_REVERSAL_FEATURE_SCHEMA_VERSION = (
+    "btc-5m-directional-regime-reversal-features-v1"
+)
 
 CORE_BASELINE_FEATURES = [
     "seconds_elapsed_scaled",
@@ -165,6 +168,17 @@ CORE_MATURE_REVERSAL_FEATURES = [
 CORE_MATURE_REVERSAL_ENRICHED_FEATURES = (
     CORE_ENRICHED_FEATURES + CORE_MATURE_REVERSAL_FEATURES
 )
+CORE_REGIME_REVERSAL_FEATURES = [
+    "btc_path_sign_normalized_return_90s_bps",
+    "btc_path_sign_normalized_return_120s_bps",
+    "btc_path_sign_normalized_flow_90s",
+    "btc_path_sign_normalized_flow_120s",
+    "btc_realized_volatility_90s_bps",
+    "btc_realized_volatility_120s_bps",
+]
+CORE_REGIME_REVERSAL_ENRICHED_FEATURES = (
+    CORE_MATURE_REVERSAL_ENRICHED_FEATURES + CORE_REGIME_REVERSAL_FEATURES
+)
 CORE_MODEL_FEATURES = {
     "logistic_baseline": CORE_BASELINE_FEATURES,
     "logistic_enriched": CORE_ENRICHED_FEATURES,
@@ -172,6 +186,13 @@ CORE_MODEL_FEATURES = {
     "histogram_boundary_enriched": CORE_BOUNDARY_ENRICHED_FEATURES,
     "histogram_boundary_reversal": CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES,
     "histogram_mature_reversal": CORE_MATURE_REVERSAL_ENRICHED_FEATURES,
+    "histogram_mature_reversal_recency_28d": (
+        CORE_MATURE_REVERSAL_ENRICHED_FEATURES
+    ),
+    "histogram_mature_reversal_market_regularized": (
+        CORE_MATURE_REVERSAL_ENRICHED_FEATURES
+    ),
+    "histogram_regime_reversal": CORE_REGIME_REVERSAL_ENRICHED_FEATURES,
 }
 
 
@@ -301,6 +322,15 @@ def build_core_features(
             ),
             "histogram_mature_reversal": (
                 CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION
+            ),
+            "histogram_mature_reversal_recency_28d": (
+                CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION
+            ),
+            "histogram_mature_reversal_market_regularized": (
+                CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION
+            ),
+            "histogram_regime_reversal": (
+                CORE_REGIME_REVERSAL_FEATURE_SCHEMA_VERSION
             ),
         },
         "scope": scope,

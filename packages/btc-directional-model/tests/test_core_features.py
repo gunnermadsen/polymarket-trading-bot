@@ -16,6 +16,9 @@ from btc_directional_model.core_features import (
     CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION,
     CORE_MATURE_REVERSAL_FEATURES,
     CORE_MODEL_FEATURES,
+    CORE_REGIME_REVERSAL_ENRICHED_FEATURES,
+    CORE_REGIME_REVERSAL_FEATURE_SCHEMA_VERSION,
+    CORE_REGIME_REVERSAL_FEATURES,
     derive_core_point_in_time_features,
     validate_feature_allowlists,
 )
@@ -292,6 +295,105 @@ def test_mature_reversal_schema_is_narrow_boundary_independent_and_allowlisted()
         for value in mature_values.row(0)
     )
     validate_feature_allowlists(original_features)
+
+
+def test_regime_reversal_schema_is_immutable_additive_and_allowlisted() -> None:
+    features = derive_core_point_in_time_features(core_source_frame())
+
+    assert len(CORE_REGIME_REVERSAL_ENRICHED_FEATURES) == 77
+    assert (
+        CORE_REGIME_REVERSAL_ENRICHED_FEATURES[
+            : len(CORE_MATURE_REVERSAL_ENRICHED_FEATURES)
+        ]
+        == CORE_MATURE_REVERSAL_ENRICHED_FEATURES
+    )
+    assert (
+        CORE_REGIME_REVERSAL_ENRICHED_FEATURES[
+            len(CORE_MATURE_REVERSAL_ENRICHED_FEATURES) :
+        ]
+        == CORE_REGIME_REVERSAL_FEATURES
+    )
+    assert CORE_REGIME_REVERSAL_FEATURES == [
+        "btc_path_sign_normalized_return_90s_bps",
+        "btc_path_sign_normalized_return_120s_bps",
+        "btc_path_sign_normalized_flow_90s",
+        "btc_path_sign_normalized_flow_120s",
+        "btc_realized_volatility_90s_bps",
+        "btc_realized_volatility_120s_bps",
+    ]
+    assert (
+        CORE_MODEL_FEATURES["histogram_regime_reversal"]
+        == CORE_REGIME_REVERSAL_ENRICHED_FEATURES
+    )
+    assert (
+        CORE_REGIME_REVERSAL_FEATURE_SCHEMA_VERSION
+        == "btc-5m-directional-regime-reversal-features-v1"
+    )
+    assert not {
+        "label_up",
+        "official_outcome",
+        "final_price",
+        "window_end",
+        "opening_boundary",
+        "btc_cross_venue_boundary_gap_bps",
+        "btc_path_sign_normalized_boundary_gap_bps",
+    }.intersection(CORE_REGIME_REVERSAL_ENRICHED_FEATURES)
+    validate_feature_allowlists(features)
+
+
+def test_regime_reversal_features_are_causal_and_boundary_independent() -> None:
+    original = core_source_frame()
+    future_mutated = original.with_columns(
+        pl.when((pl.col("market_id") == "a") & (pl.col("seconds_elapsed") > 120))
+        .then(pl.col("btc_close") * 1.5)
+        .otherwise(pl.col("btc_close"))
+        .alias("btc_close"),
+        pl.when((pl.col("market_id") == "a") & (pl.col("seconds_elapsed") > 120))
+        .then(pl.col("btc_quote_volume") * 100)
+        .otherwise(pl.col("btc_quote_volume"))
+        .alias("btc_quote_volume"),
+        pl.when((pl.col("market_id") == "a") & (pl.col("seconds_elapsed") > 120))
+        .then(0.0)
+        .otherwise(pl.col("btc_taker_buy_quote_volume"))
+        .alias("btc_taker_buy_quote_volume"),
+    )
+    shifted_boundary = original.with_columns(
+        (pl.col("opening_boundary") * 1.02).alias("opening_boundary")
+    )
+    original_features = derive_core_point_in_time_features(original)
+    future_mutated_features = derive_core_point_in_time_features(future_mutated)
+    shifted_boundary_features = derive_core_point_in_time_features(shifted_boundary)
+
+    original_at_120 = original_features.filter(
+        (pl.col("market_id") == "a") & (pl.col("seconds_elapsed") == 120)
+    ).select(CORE_REGIME_REVERSAL_ENRICHED_FEATURES)
+    mutated_at_120 = future_mutated_features.filter(
+        (pl.col("market_id") == "a") & (pl.col("seconds_elapsed") == 120)
+    ).select(CORE_REGIME_REVERSAL_ENRICHED_FEATURES)
+
+    assert original_at_120.equals(mutated_at_120, null_equal=True)
+    assert original_features.select(CORE_REGIME_REVERSAL_ENRICHED_FEATURES).equals(
+        shifted_boundary_features.select(CORE_REGIME_REVERSAL_ENRICHED_FEATURES),
+        null_equal=True,
+    )
+
+
+def test_regime_reversal_features_require_complete_long_horizon_history() -> None:
+    features = derive_core_point_in_time_features(core_source_frame()).filter(
+        pl.col("market_id") == "a"
+    )
+    early = features.filter(pl.col("seconds_elapsed") == 60).select(
+        CORE_REGIME_REVERSAL_FEATURES
+    )
+    mature = features.filter(pl.col("seconds_elapsed") == 120).select(
+        CORE_REGIME_REVERSAL_FEATURES
+    )
+
+    assert early.null_count().sum_horizontal()[0] == len(
+        CORE_REGIME_REVERSAL_FEATURES
+    )
+    assert mature.null_count().sum_horizontal()[0] == 0
+    assert all(math.isfinite(float(value)) for value in mature.row(0))
 
 
 def test_boundary_reversal_features_are_causal_with_early_history_nulls() -> None:

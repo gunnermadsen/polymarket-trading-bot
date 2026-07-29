@@ -499,16 +499,51 @@ def _training_selection_panel(benchmark: dict[str, Any]) -> str:
             )
         )
     finalist = selection.get("finalist") or "none"
+    oof_finalist = selection.get("oof_finalist", selection.get("finalist")) or "none"
+    attempts = selection.get("development_attempts", [])
+    attempt_table = ""
+    if attempts:
+        attempt_rows = []
+        for attempt in attempts:
+            metrics = attempt.get("metrics", {})
+            attempt_rows.append(
+                (
+                    attempt.get("rank"),
+                    attempt.get("candidate"),
+                    attempt.get("status"),
+                    _number(attempt.get("threshold"), 2),
+                    _percent(metrics.get("coverage")),
+                    _percent(metrics.get("accuracy")),
+                    "yes" if attempt.get("bundle_created") else "no",
+                )
+            )
+        attempt_table = (
+            "<h3>Final policy-selection attempts</h3>"
+            + _table(
+                (
+                    "Rank",
+                    "Candidate",
+                    "Status",
+                    "Threshold",
+                    "Coverage",
+                    "Accuracy",
+                    "Bundle",
+                ),
+                attempt_rows,
+            )
+        )
     return (
         '<section class="panel" style="margin-top:14px">'
         "<h2>Frozen training selection</h2>"
-        f"<p>Finalist: <strong>{html.escape(str(finalist))}</strong>. "
+        f"<p>OOF finalist: <strong>{html.escape(str(oof_finalist))}</strong>. "
+        f"Final policy-qualified candidate: <strong>{html.escape(str(finalist))}</strong>. "
         "This selection excludes deferred native runtime evidence and does not "
         "create a deployment artifact.</p>"
         + _table(
             ("Candidate", "Training gate", "Failed checks", "Runtime"),
             rows,
         )
+        + attempt_table
         + "</section>"
     )
 
