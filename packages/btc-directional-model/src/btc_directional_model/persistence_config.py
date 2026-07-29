@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -40,12 +42,49 @@ BOUNDARY_REVERSAL_ACCURACY_CANDIDATES = (
     BOUNDARY_REVERSAL_ACCURACY_CANDIDATE,
 )
 RESIDUAL_ADMISSION_SOURCE_CANDIDATES = BOUNDARY_REVERSAL_ACCURACY_CANDIDATES
+MATURE_REVERSAL_ACCURACY_CANDIDATE = "histogram_mature_reversal"
+MATURE_REVERSAL_ACCURACY_CANDIDATES = (
+    "histogram_enriched",
+    MATURE_REVERSAL_ACCURACY_CANDIDATE,
+)
+REGIME_ROBUST_RECENCY_CANDIDATE = "histogram_mature_reversal_recency_28d"
+REGIME_ROBUST_FEATURE_CANDIDATE = "histogram_regime_reversal"
+REGIME_ROBUST_REGULARIZED_CANDIDATE = (
+    "histogram_mature_reversal_market_regularized"
+)
+REGIME_ROBUST_ACCURACY_CANDIDATES = (
+    "histogram_enriched",
+    MATURE_REVERSAL_ACCURACY_CANDIDATE,
+    REGIME_ROBUST_RECENCY_CANDIDATE,
+    REGIME_ROBUST_FEATURE_CANDIDATE,
+    REGIME_ROBUST_REGULARIZED_CANDIDATE,
+)
 PATH_PERSISTENCE_PROFILE = "path_persistence"
 ACCURACY_TIMING_PROFILE = "accuracy_timing"
 FOLD_ROBUST_FREQUENCY_PROFILE = "fold_robust_frequency"
 BOUNDARY_ALIGNMENT_PROFILE = "boundary_alignment"
 BOUNDARY_REVERSAL_ACCURACY_PROFILE = "boundary_reversal_accuracy"
 RESIDUAL_ADMISSION_SOURCE_PROFILE = "residual_admission_source"
+MATURE_REVERSAL_ACCURACY_PROFILE = "mature_reversal_accuracy"
+REGIME_ROBUST_ACCURACY_PROFILE = "regime_robust_accuracy"
+REGIME_ROBUST_VALIDATION_STARTS = (
+    "2026-06-09T00:00:00+00:00",
+    "2026-06-16T00:00:00+00:00",
+    "2026-06-23T00:00:00+00:00",
+    "2026-06-30T00:00:00+00:00",
+    "2026-07-07T00:00:00+00:00",
+    "2026-07-14T00:00:00+00:00",
+    "2026-07-21T00:00:00+00:00",
+)
+REGIME_ROBUST_VALIDATION_ENDS = (
+    "2026-06-16T00:00:00+00:00",
+    "2026-06-23T00:00:00+00:00",
+    "2026-06-30T00:00:00+00:00",
+    "2026-07-07T00:00:00+00:00",
+    "2026-07-14T00:00:00+00:00",
+    "2026-07-21T00:00:00+00:00",
+    "2026-07-29T00:00:00+00:00",
+)
 
 
 @dataclass(frozen=True)
@@ -75,6 +114,10 @@ class PersistenceBenchmarkConfig:
     hard_confidence_floor: float
     minimum_hard_confident_error_count_reduction: int
     maximum_hard_confident_error_selected_rate_regression: float
+    minimum_accuracy_uplift: float
+    minimum_balanced_accuracy_uplift: float
+    minimum_direction_recall_uplift: float
+    minimum_wilson_lower_uplift: float
     maximum_accuracy_regression: float
     maximum_balanced_accuracy_regression: float
     maximum_direction_recall_regression: float
@@ -86,6 +129,10 @@ class PersistenceBenchmarkConfig:
     prewindow_features: Path
     execution_evidence: Path
     runs: Path
+    walk_forward_validation_starts: tuple[str, ...] = ()
+    walk_forward_validation_ends: tuple[str, ...] = ()
+    rolling_calibration_days: int | None = None
+    rolling_policy_days: int | None = None
 
 
 def load_persistence_benchmark_config(path: Path) -> PersistenceBenchmarkConfig:
@@ -97,6 +144,7 @@ def load_persistence_benchmark_config(path: Path) -> PersistenceBenchmarkConfig:
     calibration = raw["calibration"]
     gates = raw["advancement_gates"]
     paths = raw["paths"]
+    walk_forward = raw.get("walk_forward", {})
     config = PersistenceBenchmarkConfig(
         source_path=source_path,
         package_root=package_root,
@@ -148,6 +196,16 @@ def load_persistence_benchmark_config(path: Path) -> PersistenceBenchmarkConfig:
                 0.0,
             )
         ),
+        minimum_accuracy_uplift=float(gates.get("minimum_accuracy_uplift", 0.0)),
+        minimum_balanced_accuracy_uplift=float(
+            gates.get("minimum_balanced_accuracy_uplift", 0.0)
+        ),
+        minimum_direction_recall_uplift=float(
+            gates.get("minimum_direction_recall_uplift", 0.0)
+        ),
+        minimum_wilson_lower_uplift=float(
+            gates.get("minimum_wilson_lower_uplift", 0.0)
+        ),
         maximum_accuracy_regression=float(gates["maximum_accuracy_regression"]),
         maximum_balanced_accuracy_regression=float(gates["maximum_balanced_accuracy_regression"]),
         maximum_direction_recall_regression=float(gates["maximum_direction_recall_regression"]),
@@ -168,9 +226,53 @@ def load_persistence_benchmark_config(path: Path) -> PersistenceBenchmarkConfig:
         prewindow_features=package_root / str(paths["prewindow_features"]),
         execution_evidence=package_root / str(paths["execution_evidence"]),
         runs=package_root / str(paths["runs"]),
+        walk_forward_validation_starts=tuple(
+            str(value) for value in walk_forward.get("validation_starts", ())
+        ),
+        walk_forward_validation_ends=tuple(
+            str(value) for value in walk_forward.get("validation_ends", ())
+        ),
+        rolling_calibration_days=(
+            int(walk_forward["rolling_calibration_days"])
+            if "rolling_calibration_days" in walk_forward
+            else None
+        ),
+        rolling_policy_days=(
+            int(walk_forward["rolling_policy_days"])
+            if "rolling_policy_days" in walk_forward
+            else None
+        ),
     )
     validate_persistence_benchmark_config(config)
     return config
+
+
+def walk_forward_validation_windows(
+    config: PersistenceBenchmarkConfig,
+) -> tuple[tuple[datetime, datetime], ...]:
+    starts = tuple(
+        _parse_walk_forward_timestamp(value)
+        for value in config.walk_forward_validation_starts
+    )
+    ends = tuple(
+        _parse_walk_forward_timestamp(value)
+        for value in config.walk_forward_validation_ends
+    )
+    if len(starts) != len(ends):
+        raise ValueError("walk-forward validation start/end lists must have equal length")
+    return tuple(zip(starts, ends, strict=True))
+
+
+def _parse_walk_forward_timestamp(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError(f"invalid walk-forward ISO timestamp: {value}") from error
+    if parsed.tzinfo is None:
+        raise ValueError("walk-forward timestamps must include a UTC offset")
+    if parsed.utcoffset() != timedelta(0):
+        raise ValueError("walk-forward timestamps must use UTC")
+    return parsed.astimezone(UTC)
 
 
 def validate_persistence_benchmark_config(
@@ -240,6 +342,63 @@ def validate_persistence_benchmark_config(
                 "residual-admission source benchmark requires the frozen "
                 "hard-confident-error contract"
             )
+    elif config.profile == MATURE_REVERSAL_ACCURACY_PROFILE:
+        if config.candidate_names != MATURE_REVERSAL_ACCURACY_CANDIDATES:
+            raise ValueError(
+                "mature-reversal accuracy benchmark requires its frozen "
+                "two-candidate matrix"
+            )
+        if config.row_weight_schedules:
+            raise ValueError(
+                "mature-reversal accuracy benchmark preserves equal market weighting"
+            )
+        if (
+            config.hard_confidence_floor != 0.95
+            or config.minimum_hard_confident_error_count_reduction != 1
+            or config.maximum_hard_confident_error_selected_rate_regression != 0.0
+            or config.minimum_accuracy_uplift != 0.001
+            or config.minimum_balanced_accuracy_uplift != 0.001
+            or config.minimum_direction_recall_uplift != 0.0
+            or config.minimum_wilson_lower_uplift != 0.001
+            or config.minimum_coverage_uplift != 0.0
+            or config.maximum_accuracy_regression != 0.0
+            or config.maximum_balanced_accuracy_regression != 0.0
+            or config.maximum_direction_recall_regression != 0.0
+            or config.maximum_median_entry_seconds_regression != 0.0
+        ):
+            raise ValueError(
+                "mature-reversal accuracy benchmark requires its frozen "
+                "accuracy-uplift and diagnostic-tolerance contract"
+            )
+    elif config.profile == REGIME_ROBUST_ACCURACY_PROFILE:
+        if config.candidate_names != REGIME_ROBUST_ACCURACY_CANDIDATES:
+            raise ValueError(
+                "regime-robust accuracy benchmark requires its frozen "
+                "five-candidate ablation matrix"
+            )
+        if config.row_weight_schedules:
+            raise ValueError(
+                "regime-robust accuracy benchmark preserves the untimed "
+                "within-market row schedule"
+            )
+        if (
+            config.hard_confidence_floor != 0.95
+            or config.minimum_hard_confident_error_count_reduction != 1
+            or config.maximum_hard_confident_error_selected_rate_regression != 0.0
+            or config.minimum_accuracy_uplift != 0.001
+            or config.minimum_balanced_accuracy_uplift != 0.001
+            or config.minimum_direction_recall_uplift != 0.0
+            or config.minimum_wilson_lower_uplift != 0.001
+            or config.minimum_coverage_uplift != 0.0
+            or config.maximum_accuracy_regression != 0.0
+            or config.maximum_balanced_accuracy_regression != 0.0
+            or config.maximum_direction_recall_regression != 0.0
+            or config.maximum_median_entry_seconds_regression != 0.0
+        ):
+            raise ValueError(
+                "regime-robust accuracy benchmark requires its frozen "
+                "accuracy-uplift contract"
+            )
     else:
         raise ValueError(f"unsupported persistence benchmark profile: {config.profile}")
     if config.control_candidate != config.candidate_names[0]:
@@ -258,19 +417,81 @@ def validate_persistence_benchmark_config(
         or config.minimum_executable_markets < 500
     ):
         raise ValueError("sample gates cannot be weakened below 500 markets")
-    if (
-        config.minimum_coverage_uplift <= 0.0
-        or not 0.5 <= config.hard_confidence_floor <= 1.0
-        or config.minimum_hard_confident_error_count_reduction < 0
-        or config.maximum_hard_confident_error_selected_rate_regression < 0.0
-        or config.maximum_accuracy_regression > 0.0
-        or config.maximum_balanced_accuracy_regression > 0.0
-        or config.maximum_direction_recall_regression > 0.0
-        or config.maximum_median_entry_seconds_regression > -5.0
-        or config.minimum_mean_direct_edge_per_share < 0.0
-        or config.minimum_realized_net_per_share < 0.0
+    if config.profile in {
+        MATURE_REVERSAL_ACCURACY_PROFILE,
+        REGIME_ROBUST_ACCURACY_PROFILE,
+    }:
+        weakens_contract = (
+            config.minimum_coverage_uplift < 0.0
+            or not 0.5 <= config.hard_confidence_floor <= 1.0
+            or config.minimum_hard_confident_error_count_reduction < 1
+            or config.maximum_hard_confident_error_selected_rate_regression < 0.0
+            or config.minimum_accuracy_uplift <= 0.0
+            or config.minimum_balanced_accuracy_uplift <= 0.0
+            or config.minimum_direction_recall_uplift < 0.0
+            or config.minimum_wilson_lower_uplift <= 0.0
+            or config.maximum_accuracy_regression < 0.0
+            or config.maximum_balanced_accuracy_regression < 0.0
+            or config.maximum_direction_recall_regression < 0.0
+            or config.maximum_median_entry_seconds_regression < 0.0
+            or config.minimum_mean_direct_edge_per_share < 0.0
+            or config.minimum_realized_net_per_share < 0.0
+        )
+    else:
+        weakens_contract = (
+            config.minimum_coverage_uplift <= 0.0
+            or not 0.5 <= config.hard_confidence_floor <= 1.0
+            or config.minimum_hard_confident_error_count_reduction < 0
+            or config.maximum_hard_confident_error_selected_rate_regression < 0.0
+            or config.minimum_accuracy_uplift < 0.0
+            or config.minimum_balanced_accuracy_uplift < 0.0
+            or config.minimum_direction_recall_uplift < 0.0
+            or config.minimum_wilson_lower_uplift < 0.0
+            or config.maximum_accuracy_regression > 0.0
+            or config.maximum_balanced_accuracy_regression > 0.0
+            or config.maximum_direction_recall_regression > 0.0
+            or config.maximum_median_entry_seconds_regression > -5.0
+            or config.minimum_mean_direct_edge_per_share < 0.0
+            or config.minimum_realized_net_per_share < 0.0
+        )
+    if weakens_contract:
+        raise ValueError("advancement gates weaken the frozen profile contract")
+    if config.profile == REGIME_ROBUST_ACCURACY_PROFILE:
+        windows = walk_forward_validation_windows(config)
+        expected_windows = tuple(
+            zip(
+                (
+                    _parse_walk_forward_timestamp(value)
+                    for value in REGIME_ROBUST_VALIDATION_STARTS
+                ),
+                (
+                    _parse_walk_forward_timestamp(value)
+                    for value in REGIME_ROBUST_VALIDATION_ENDS
+                ),
+                strict=True,
+            )
+        )
+        if (
+            windows != expected_windows
+            or config.rolling_calibration_days != 7
+            or config.rolling_policy_days != 7
+        ):
+            raise ValueError(
+                "regime-robust accuracy benchmark requires the frozen seven-window "
+                "rolling calibration and policy contract"
+            )
+        for previous, current in pairwise(windows):
+            if previous[1] > current[0]:
+                raise ValueError("walk-forward validation windows must not overlap")
+    elif (
+        config.walk_forward_validation_starts
+        or config.walk_forward_validation_ends
+        or config.rolling_calibration_days is not None
+        or config.rolling_policy_days is not None
     ):
-        raise ValueError("advancement gates weaken the frozen non-regression contract")
+        raise ValueError(
+            "rolling walk-forward fields are reserved for regime-robust accuracy"
+        )
     expected_bands = (
         CalibrationBand("60-89", 60, 90),
         CalibrationBand("90-119", 90, 120),
@@ -295,6 +516,15 @@ def validate_persistence_benchmark_config(
             "2026-07-21T00:00:00+00:00",
             122,
         )
+    elif config.profile in {
+        MATURE_REVERSAL_ACCURACY_PROFILE,
+        REGIME_ROBUST_ACCURACY_PROFILE,
+    }:
+        expected_range = (
+            "2026-03-21T00:00:00+00:00",
+            "2026-07-29T00:00:00+00:00",
+            130,
+        )
     else:
         expected_range = (
             "2026-04-21T00:00:00+00:00",
@@ -309,7 +539,11 @@ def validate_persistence_benchmark_config(
         raise ValueError(
             "persistence benchmark training range does not match its frozen profile"
         )
-    if config.profile == BOUNDARY_REVERSAL_ACCURACY_PROFILE:
+    if config.profile in {
+        BOUNDARY_REVERSAL_ACCURACY_PROFILE,
+        MATURE_REVERSAL_ACCURACY_PROFILE,
+        REGIME_ROBUST_ACCURACY_PROFILE,
+    }:
         expected_split = (
             "2026-03-21T00:00:00+00:00",
             "2026-07-14T00:00:00+00:00",
@@ -326,31 +560,15 @@ def validate_persistence_benchmark_config(
             core.split.policy_selection_start.isoformat(),
             core.split.policy_selection_end.isoformat(),
         )
-        expected_validation_windows = (
-            (
-                "2026-06-09T00:00:00+00:00",
-                "2026-06-16T00:00:00+00:00",
-            ),
-            (
-                "2026-06-16T00:00:00+00:00",
-                "2026-06-23T00:00:00+00:00",
-            ),
-            (
-                "2026-06-23T00:00:00+00:00",
-                "2026-06-30T00:00:00+00:00",
-            ),
-            (
-                "2026-06-30T00:00:00+00:00",
-                "2026-07-07T00:00:00+00:00",
-            ),
-            (
-                "2026-07-07T00:00:00+00:00",
-                "2026-07-14T00:00:00+00:00",
-            ),
+        expected_validation_windows = tuple(
+            zip(
+                REGIME_ROBUST_VALIDATION_STARTS[:5],
+                REGIME_ROBUST_VALIDATION_ENDS[:5],
+                strict=True,
+            )
         )
         observed_validation_windows = tuple(
-            (start.isoformat(), end.isoformat())
-            for start, end in core.split.validation_windows
+            (start.isoformat(), end.isoformat()) for start, end in core.split.validation_windows
         )
         if (
             observed_split != expected_split

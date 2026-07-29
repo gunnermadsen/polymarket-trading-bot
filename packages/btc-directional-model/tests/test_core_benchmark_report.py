@@ -155,6 +155,29 @@ def test_generate_report_writes_self_contained_html(tmp_path: Path) -> None:
     assert "plotly.js" in contents
 
 
+def test_report_uses_recorded_walk_forward_fold_count() -> None:
+    record = deepcopy(report_record())
+    control = record["candidates"]["control"]["own_policy"]
+    record["training_evidence"] = {
+        "core_candidates": {
+            "control": {
+                "out_of_fold": control,
+                "timing": {
+                    "median_first_crossing_seconds": 90,
+                    "early_entry_coverage": 0.5,
+                },
+                "total_folds": 7,
+                "passed_development": False,
+            }
+        }
+    }
+
+    document = render_benchmark_report(record)
+
+    assert "7-fold walk-forward" in document
+    assert "five-fold walk-forward" not in document
+
+
 def test_report_labels_chronological_policy_and_reused_diagnostics() -> None:
     record = deepcopy(report_record())
     record["candidates"]["control"]["policy"].update(

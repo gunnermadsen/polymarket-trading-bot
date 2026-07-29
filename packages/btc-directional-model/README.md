@@ -264,6 +264,73 @@ without a database read:
 The snapshot operation creates a new no-overwrite cache, verifies every source partition, and uses
 hard links where the filesystem permits them.
 
+Run the narrower March 21-July 28 mature-reversal accuracy session:
+
+```bash
+export POLARS_MAX_THREADS=6
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export MKL_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+.venv/bin/btc-directional-model core-features \
+  --config configs/btc-5m-directional-core-boundary-reversal-20260321-20260729.toml \
+  --scope pre_holdout
+.venv/bin/btc-directional-model persistence-benchmark-run \
+  --config configs/btc-5m-directional-mature-reversal-accuracy-20260321-20260729.toml
+```
+
+This accuracy-focused session compares the current 58-feature direct-outcome model with one
+71-feature direct-outcome challenger under the same five chronological folds, global Platt
+calibration, threshold search, and equal-total-per-market weighting. The 13 added fields use only
+causal Binance path excursion, pullback, recovery, recency, short-horizon return, and signed-flow
+history already present in the compact core dataset. They do not use the official opening
+boundary, final price, a correctness selector, an admission model, or a post-prediction veto.
+
+Advancement requires the existing absolute accuracy standards, at least 0.1 percentage-point
+aggregate improvements in accuracy, balanced accuracy, and Wilson lower confidence, strictly
+positive UP and DOWN recall changes, coverage non-regression, five qualified chronological folds,
+and at least one fewer wrong first-crossing prediction at 95% or greater confidence without a
+worse selected-trade error rate. Early coverage, exact-time comparisons, entry timing,
+path-persistence uplift, and execution economics remain reported diagnostics; this session does
+not claim an earlier-entry or trade-frequency improvement. Because March 21-July 28 has been
+consumed during development, a paper process starting after artifact freeze is still required for
+independent qualification.
+
+Run the corrected rolling regime-robust accuracy session:
+
+```bash
+export POLARS_MAX_THREADS=6
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export MKL_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+.venv/bin/btc-directional-model core-features \
+  --config configs/btc-5m-directional-core-boundary-reversal-20260321-20260729.toml \
+  --scope pre_holdout \
+  --force
+.venv/bin/btc-directional-model persistence-benchmark-run \
+  --config configs/btc-5m-directional-regime-robust-accuracy-20260321-20260729.toml
+```
+
+This session uses seven fixed rolling validations from June 9 through July 28. Each fold has an
+expanding fit interval followed by separate seven-day calibration, seven-day policy selection,
+and validation intervals. The last fold therefore evaluates July 21-28 with a model whose fit,
+calibration, and policy roles end before that validation begins. It corrects the older
+proportional-fold protocol, which did not reproduce the final model's consecutive seven-day
+calibration and policy windows.
+
+The frozen matrix contains the 58-feature control, the 71-feature mature-reversal candidate, and
+three isolated training ablations: a 28-day estimator-only recency half-life, a 77-feature variant
+with six longer-horizon causal regime fields, and a 71-feature histogram with market-scale leaf
+regularization. Probability calibration never receives recency decay. Every challenger remains a
+direct-outcome model with global Platt calibration; no gate, admission model, correctness
+selector, or execution policy changes its decisions. Advancement additionally requires every
+validation fold to meet the absolute accuracy, direction-recall, Wilson, calibration, and coverage
+standards. July 21-28 is consumed development evidence, so a newly frozen model still requires a
+post-freeze paper cohort for independent qualification.
+
 Run the rolling correctness-admission benchmark from a completed boundary session:
 
 ```bash
