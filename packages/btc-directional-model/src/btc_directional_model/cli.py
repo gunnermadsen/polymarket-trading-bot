@@ -20,6 +20,10 @@ from .extract import extract_source
 from .features import build_features
 from .frequency_policy_benchmark import run_frequency_policy_benchmark
 from .frequency_policy_config import load_frequency_policy_benchmark_config
+from .paper_candidate import (
+    PAPER_ONLY_AUTHORIZATION,
+    run_paper_candidate_export,
+)
 from .persistence_benchmark import run_persistence_benchmark
 from .persistence_config import load_persistence_benchmark_config
 from .policy_benchmark import run_saved_policy_benchmark
@@ -73,6 +77,31 @@ def main() -> None:
     persistence_run = subparsers.add_parser("persistence-benchmark-run")
     persistence_run.add_argument("--config", type=Path, required=True)
     persistence_run.add_argument("--force", action="store_true")
+    persistence_paper_export = subparsers.add_parser(
+        "persistence-paper-candidate-export"
+    )
+    persistence_paper_export.add_argument("--config", type=Path, required=True)
+    persistence_paper_export.add_argument(
+        "--benchmark-run",
+        type=Path,
+        required=True,
+    )
+    persistence_paper_export.add_argument(
+        "--freeze-root",
+        type=Path,
+        required=True,
+    )
+    persistence_paper_export.add_argument(
+        "--runtime-output-root",
+        type=Path,
+        required=True,
+    )
+    persistence_paper_export.add_argument("--model-key", required=True)
+    persistence_paper_export.add_argument(
+        "--authorize-paper-only",
+        action="store_true",
+        help="authorize a non-production artifact exclusively for paper evaluation",
+    )
     persistence_policy_run = subparsers.add_parser(
         "persistence-policy-benchmark-run"
     )
@@ -142,6 +171,27 @@ def main() -> None:
         print("holdout labels/features: not accessed")
         print("holdout book quality: only if separately recorded in run evidence")
         print("runtime: unchanged")
+        return
+    if args.command == "persistence-paper-candidate-export":
+        if not args.authorize_paper_only:
+            parser.error(
+                "persistence-paper-candidate-export requires "
+                "--authorize-paper-only"
+            )
+        freeze_dir, runtime_dir, manifest = run_paper_candidate_export(
+            config_path=args.config,
+            benchmark_run=args.benchmark_run,
+            freeze_root=args.freeze_root,
+            runtime_output_root=args.runtime_output_root,
+            model_key=args.model_key,
+            authorization=PAPER_ONLY_AUTHORIZATION,
+        )
+        print(f"freeze: {freeze_dir}")
+        print(f"runtime model: {runtime_dir}")
+        print(
+            "scope: paper_only; production-qualified: "
+            f"{str(manifest['production_qualified']).lower()}"
+        )
         return
     if args.command == "persistence-policy-benchmark-run":
         config = load_saved_policy_benchmark_config(args.config)

@@ -452,6 +452,24 @@ Exporting the same key from the same inputs is idempotent. A key that already ex
 bytes is rejected; a newly trained replacement must use a new immutable model key. This keeps model
 replacement repeatable without permitting a running process's model identity to change in place.
 
+The regime-robust recency candidate has a separate, explicit paper-only path. It retains the exact
+estimator fitted on March 21 through July 13, applies global Platt calibration from July 14 through
+July 20, and uses July 21 through July 28 only for its locked `0.88` first-crossing policy. Export
+fails if that threshold does not retain at least 55% eligible-market coverage. This command never
+changes the production gates: its freeze and native manifests remain
+`production_qualified = false` and `live_capital_allowed = false` until an independent post-freeze
+cohort is evaluated.
+
+```bash
+.venv/bin/btc-directional-model persistence-paper-candidate-export \
+  --config configs/btc-5m-directional-regime-robust-accuracy-20260321-20260729.toml \
+  --benchmark-run runs/btc-regime-robust-accuracy-20260321-20260729/<run-id> \
+  --freeze-root artifacts/btc-directional-recency-paper \
+  --runtime-output-root runtime-models \
+  --model-key btc-5m-directional-mature-reversal-recency-28d-paper-v1 \
+  --authorize-paper-only
+```
+
 ## Training contract
 
 Markets are split chronologically and kept disjoint across fitting, calibration, and holdout

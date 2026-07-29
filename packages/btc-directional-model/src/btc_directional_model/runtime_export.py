@@ -79,6 +79,11 @@ def export_runtime_model(
         "source_freeze_manifest_sha256": freeze_sha256,
         "source_training_model_sha256": freeze["model_sha256"],
     }
+    deployment = validate_deployment_metadata(freeze)
+    if deployment is not None:
+        manifest["deployment_scope"] = deployment["scope"]
+        manifest["production_qualified"] = deployment["production_qualified"]
+        manifest["live_capital_allowed"] = deployment["live_capital_allowed"]
     files = {
         MODEL_FILENAME: model_bytes,
         MANIFEST_FILENAME: canonical_json_bytes(manifest),
@@ -109,6 +114,7 @@ def verify_frozen_bundle(
     freeze = read_json_object(manifest_path)
     if freeze.get("schema_version") != CORE_FREEZE_SCHEMA_VERSION:
         raise RuntimeError("unsupported freeze manifest schema")
+    validate_deployment_metadata(freeze)
 
     model_filename = freeze.get("model_file")
     if not isinstance(model_filename, str) or Path(model_filename).name != model_filename:
@@ -208,7 +214,7 @@ def runtime_model_payload(
     baseline = float(estimator._baseline_prediction[0, 0])
     if not math.isfinite(baseline):
         raise RuntimeError("histogram baseline is not finite")
-    return {
+    payload = {
         "schema_version": RUNTIME_MODEL_SCHEMA_VERSION,
         "model_key": model_key,
         "features": {
@@ -287,6 +293,51 @@ def runtime_model_payload(
             "random_seed": freeze["random_seed"],
             "training_hyperparameters": model.hyperparameters,
         },
+    }
+    deployment = validate_deployment_metadata(freeze)
+    if deployment is not None:
+        payload["deployment"] = deployment
+    return payload
+
+
+def validate_deployment_metadata(
+    freeze: dict[str, Any],
+) -> dict[str, Any] | None:
+    fields = (
+        "deployment_scope",
+        "production_qualified",
+        "live_capital_allowed",
+    )
+    present = tuple(name in freeze for name in fields)
+    if not any(present):
+        return None
+    if not all(present):
+        raise RuntimeError("frozen deployment metadata is incomplete")
+    scope = freeze["deployment_scope"]
+    production_qualified = freeze["production_qualified"]
+    live_capital_allowed = freeze["live_capital_allowed"]
+    if not isinstance(scope, str) or not scope:
+        raise TypeError("frozen deployment scope must be a non-empty string")
+    if (
+        not isinstance(production_qualified, bool)
+        or not isinstance(live_capital_allowed, bool)
+    ):
+        raise TypeError("frozen deployment qualification fields must be booleans")
+    if scope == "paper_only" and (
+        production_qualified or live_capital_allowed
+    ):
+        raise RuntimeError(
+            "paper-only frozen models cannot be production-qualified "
+            "or allow live capital"
+        )
+    if live_capital_allowed and not production_qualified:
+        raise RuntimeError(
+            "live-capital permission requires production qualification"
+        )
+    return {
+        "scope": scope,
+        "production_qualified": production_qualified,
+        "live_capital_allowed": live_capital_allowed,
     }
 
 

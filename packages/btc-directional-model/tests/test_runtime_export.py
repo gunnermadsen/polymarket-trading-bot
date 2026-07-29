@@ -89,6 +89,9 @@ def make_frozen_candidate(tmp_path: Path) -> tuple[Path, Path, FrozenTrainingBun
         "created_at": "2026-07-26T23:54:22+00:00",
         "status": "candidate_frozen",
         "deployment_status": "blocked_pending_execution_economics",
+        "deployment_scope": "paper_only",
+        "production_qualified": False,
+        "live_capital_allowed": False,
         "model_file": TRAINING_MODEL_FILENAME,
         "model_sha256": file_sha256(model_path),
         "model_summary_sha256": file_sha256(summary_path),
@@ -187,6 +190,14 @@ def test_runtime_export_is_deterministic_and_reconstructable(tmp_path: Path) -> 
     assert model["schema_version"] == RUNTIME_MODEL_SCHEMA_VERSION
     assert manifest["schema_version"] == RUNTIME_MANIFEST_SCHEMA_VERSION
     assert golden["schema_version"] == GOLDEN_VECTORS_SCHEMA_VERSION
+    assert model["deployment"] == {
+        "scope": "paper_only",
+        "production_qualified": False,
+        "live_capital_allowed": False,
+    }
+    assert manifest["deployment_scope"] == "paper_only"
+    assert manifest["production_qualified"] is False
+    assert manifest["live_capital_allowed"] is False
     assert manifest["model_sha256"] == file_sha256(destination / MODEL_FILENAME)
     assert manifest["golden_vectors_sha256"] == file_sha256(
         destination / GOLDEN_VECTORS_FILENAME
@@ -229,6 +240,45 @@ def test_runtime_export_rejects_model_key_with_trailing_dash(tmp_path: Path) -> 
             golden_features=tmp_path / "missing-features.parquet",
             output_root=tmp_path / "runtime-models",
             model_key="btc-invalid-",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        (
+            "production_qualified",
+            "false",
+            "qualification fields must be booleans",
+        ),
+        (
+            "live_capital_allowed",
+            True,
+            "paper-only frozen models cannot",
+        ),
+    ),
+)
+def test_runtime_export_rejects_incoherent_paper_deployment_metadata(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    freeze_dir, feature_path, _ = make_frozen_candidate(tmp_path)
+    manifest_path = freeze_dir / "freeze-manifest.json"
+    freeze = json.loads(manifest_path.read_text())
+    freeze[field] = value
+    write_json_atomic(manifest_path, freeze)
+    (freeze_dir / "freeze-manifest.sha256").write_text(
+        file_sha256(manifest_path) + "\n"
+    )
+
+    with pytest.raises((RuntimeError, TypeError), match=message):
+        export_runtime_model(
+            freeze_dir=freeze_dir,
+            golden_features=feature_path,
+            output_root=tmp_path / "runtime-models",
+            model_key=MODEL_KEY,
         )
 
 
