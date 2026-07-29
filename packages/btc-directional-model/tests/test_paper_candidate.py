@@ -53,11 +53,11 @@ def policy_row(
     }
 
 
-def test_paper_threshold_is_locked_to_088_with_coverage_floor() -> None:
+def test_paper_threshold_is_locked_to_087_with_coverage_floor() -> None:
     table = [
-        policy_row(0.87, coverage=0.60, markets=1_200, accuracy=0.87),
-        policy_row(0.88, coverage=0.56, markets=1_120, accuracy=0.89),
-        policy_row(0.89, coverage=0.55, markets=1_100, accuracy=0.92),
+        policy_row(0.86, coverage=0.60, markets=1_200, accuracy=0.87),
+        policy_row(0.87, coverage=0.56, markets=1_120, accuracy=0.89),
+        policy_row(0.88, coverage=0.55, markets=1_100, accuracy=0.92),
     ]
 
     selected = choose_paper_threshold(
@@ -67,14 +67,14 @@ def test_paper_threshold_is_locked_to_088_with_coverage_floor() -> None:
         minimum_markets=1_100,
     )
 
-    assert selected["threshold"] == 0.88
+    assert selected["threshold"] == 0.87
     assert selected["accuracy"] == 0.89
 
 
 def test_locked_paper_threshold_rejects_insufficient_coverage() -> None:
     with pytest.raises(RuntimeError, match="does not retain"):
         choose_paper_threshold(
-            [policy_row(0.88, coverage=0.549, markets=1_500, accuracy=0.99)],
+            [policy_row(0.87, coverage=0.549, markets=1_500, accuracy=0.99)],
             locked_threshold=PAPER_CONFIDENCE_THRESHOLD,
             minimum_coverage=PAPER_MINIMUM_COVERAGE,
             minimum_markets=1_000,

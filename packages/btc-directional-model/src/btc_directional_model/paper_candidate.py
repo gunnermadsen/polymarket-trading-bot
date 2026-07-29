@@ -59,7 +59,7 @@ from .runtime_export import export_runtime_model
 PAPER_CANDIDATE_SCHEMA_VERSION = "btc-directional-paper-candidate-v1"
 PAPER_ONLY_AUTHORIZATION = "explicit-paper-only-forward-evaluation"
 PAPER_MINIMUM_COVERAGE = 0.55
-PAPER_CONFIDENCE_THRESHOLD = 0.88
+PAPER_CONFIDENCE_THRESHOLD = 0.87
 PAPER_GOLDEN_FEATURES_FILENAME = "golden-features.parquet"
 
 
@@ -379,7 +379,7 @@ def fit_paper_candidate(
         threshold_history=table,
         paper_policy={
             "selection_objective": (
-                "pre-registered 0.88 confidence threshold, accepted only when "
+                "pre-registered 0.87 confidence threshold, accepted only when "
                 "it retains at least 55% eligible-market coverage"
             ),
             "threshold_locked_before_fit": True,
@@ -448,7 +448,10 @@ def choose_paper_threshold(
     ):
         raise RuntimeError(
             f"locked paper confidence threshold {locked_threshold:.2f} "
-            "does not retain the paper coverage floor"
+            "does not retain the paper coverage floor: "
+            f"coverage={selected['coverage']:.6f}, "
+            f"markets={selected['markets']}, minimum_coverage={minimum_coverage:.6f}, "
+            f"minimum_markets={minimum_markets}"
         )
     return selected
 

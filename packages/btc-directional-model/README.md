@@ -454,7 +454,7 @@ replacement repeatable without permitting a running process's model identity to 
 
 The regime-robust recency candidate has a separate, explicit paper-only path. It retains the exact
 estimator fitted on March 21 through July 13, applies global Platt calibration from July 14 through
-July 20, and uses July 21 through July 28 only for its locked `0.88` first-crossing policy. Export
+July 20, and uses July 21 through July 28 only for its locked `0.87` first-crossing policy. Export
 fails if that threshold does not retain at least 55% eligible-market coverage. This command never
 changes the production gates: its freeze and native manifests remain
 `production_qualified = false` and `live_capital_allowed = false` until an independent post-freeze
