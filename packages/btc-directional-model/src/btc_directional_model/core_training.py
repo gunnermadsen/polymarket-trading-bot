@@ -99,8 +99,14 @@ class CandidateSpec:
     feature_names: tuple[str, ...]
     row_weight_policy: str = MARKET_EQUAL_ROW_WEIGHT_POLICY
     row_weight_schedule: RowWeightScheduleConfig | None = None
+    recency_half_life_days: float | None = None
 
     def __post_init__(self) -> None:
+        if self.recency_half_life_days is not None and (
+            not math.isfinite(self.recency_half_life_days)
+            or self.recency_half_life_days <= 0.0
+        ):
+            raise ValueError("recency_half_life_days must be finite and positive")
         if self.row_weight_policy not in {
             MARKET_EQUAL_ROW_WEIGHT_POLICY,
             EARLY_ENTRY_MARKET_EQUAL_ROW_WEIGHT_POLICY,
@@ -179,6 +185,7 @@ class FittedCoreModel:
     estimator: Any
     row_weight_policy: str | None = None
     row_weight_schedule: RowWeightScheduleConfig | None = None
+    recency_half_life_days: float | None = None
 
     def raw_probability(self, frame: pl.DataFrame) -> np.ndarray:
         matrix = feature_matrix(frame, self.feature_names)
@@ -700,7 +707,7 @@ def aggregate_candidate_results(
             bootstrap,
             nonnegative_folds,
         )
-        output[spec.name] = {
+        candidate_record = {
             "candidate": spec.name,
             "family": spec.family,
             "feature_count": len(spec.feature_names),
@@ -719,6 +726,9 @@ def aggregate_candidate_results(
             "nonnegative_uplift_folds": nonnegative_folds,
             "passed_development": passed,
         }
+        if spec.recency_half_life_days is not None:
+            candidate_record["recency_half_life_days"] = spec.recency_half_life_days
+        output[spec.name] = candidate_record
     return output
 
 
@@ -866,6 +876,7 @@ def fit_model(
         estimator=estimator,
         row_weight_policy=spec.row_weight_policy,
         row_weight_schedule=resolved_row_weight_schedule(spec),
+        recency_half_life_days=spec.recency_half_life_days,
     )
 
 
@@ -877,7 +888,7 @@ def fit_probability_calibrator(
 ) -> ProbabilityCalibrator:
     logits = model.raw_logit(frame).reshape(-1, 1)
     labels = frame["label_up"].to_numpy()
-    weights = candidate_training_weights(
+    weights = candidate_calibration_weights(
         frame,
         spec or model_candidate_spec(model),
     )
@@ -966,6 +977,8 @@ def freeze_candidate(
             bundle.model.candidate_name
         ]["paired"]["accuracy_uplift"],
     }
+    if frozen_spec.recency_half_life_days is not None:
+        manifest["recency_half_life_days"] = frozen_spec.recency_half_life_days
     manifest_path = freeze_dir / "freeze-manifest.json"
     write_json_atomic(manifest_path, manifest)
     (freeze_dir / "freeze-manifest.sha256").write_text(
@@ -1235,6 +1248,8 @@ def model_summary_payload(bundle: FrozenTrainingBundle) -> dict[str, Any]:
         "calibrator": asdict(bundle.calibrator),
         "confidence_threshold": bundle.confidence_threshold,
     }
+    if spec.recency_half_life_days is not None:
+        payload["recency_half_life_days"] = spec.recency_half_life_days
     if model.family == "logistic":
         payload.update(
             {
@@ -1306,6 +1321,7 @@ def candidate_spec(
         base.feature_names,
         policy,
         schedule,
+        base.recency_half_life_days,
     )
 
 
@@ -1319,17 +1335,35 @@ def configured_candidate_specs(
 
 
 def model_candidate_spec(model: FittedCoreModel) -> CandidateSpec:
-    base = candidate_spec(model.candidate_name)
+    try:
+        base = candidate_spec(model.candidate_name)
+    except ValueError:
+        base = CandidateSpec(
+            name=model.candidate_name,
+            family=model.family,
+            feature_names=model.feature_names,
+            row_weight_policy=(
+                vars(model).get("row_weight_policy")
+                or MARKET_EQUAL_ROW_WEIGHT_POLICY
+            ),
+            row_weight_schedule=vars(model).get("row_weight_schedule"),
+            recency_half_life_days=vars(model).get("recency_half_life_days"),
+        )
     schedule = vars(model).get("row_weight_schedule")
     policy = vars(model).get("row_weight_policy") or base.row_weight_policy
-    if schedule is None:
+    recency_half_life_days = vars(model).get(
+        "recency_half_life_days",
+        base.recency_half_life_days,
+    )
+    if schedule is None and recency_half_life_days is None:
         return base
     return CandidateSpec(
         base.name,
         base.family,
         base.feature_names,
         policy,
-        schedule,
+        schedule or base.row_weight_schedule,
+        recency_half_life_days,
     )
 
 
@@ -1395,10 +1429,45 @@ def candidate_training_weights(
     frame: pl.DataFrame,
     spec: CandidateSpec,
 ) -> np.ndarray:
+    scheduled = scheduled_market_equal_weights(
+        frame,
+        resolved_row_weight_schedule(spec),
+    )
+    if spec.recency_half_life_days is None:
+        return scheduled
+    return apply_recency_decay(
+        frame,
+        scheduled,
+        spec.recency_half_life_days,
+    )
+
+
+def candidate_calibration_weights(
+    frame: pl.DataFrame,
+    spec: CandidateSpec,
+) -> np.ndarray:
     return scheduled_market_equal_weights(
         frame,
         resolved_row_weight_schedule(spec),
     )
+
+
+def apply_recency_decay(
+    frame: pl.DataFrame,
+    scheduled_weights: np.ndarray,
+    half_life_days: float,
+) -> np.ndarray:
+    latest_window_start = frame["window_start"].max()
+    age_days = frame.select(
+        (
+            (pl.lit(latest_window_start) - pl.col("window_start"))
+            .dt.total_milliseconds()
+            .cast(pl.Float64)
+            / 86_400_000.0
+        ).alias("age_days")
+    )["age_days"].to_numpy()
+    raw = scheduled_weights * np.exp2(-age_days / half_life_days)
+    return raw / raw.mean()
 
 
 def early_entry_market_equal_weights(frame: pl.DataFrame) -> np.ndarray:

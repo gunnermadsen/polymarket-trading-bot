@@ -1,0 +1,70 @@
+[benchmark]
+profile = "regime_robust_accuracy"
+core_config = "configs/btc-5m-directional-core-boundary-reversal-20260321-20260729.toml"
+control_candidate = "histogram_enriched"
+candidate_names = [
+  "histogram_enriched",
+  "histogram_mature_reversal",
+  "histogram_mature_reversal_recency_28d",
+  "histogram_regime_reversal",
+  "histogram_mature_reversal_market_regularized",
+]
+evaluation_is_independent = false
+evaluation_note = "The exact half-open UTC interval [2026-03-21, 2026-07-29), representing March 21 through July 28 inclusive, is consumed chronological development evidence. Seven fixed rolling validation windows mirror the final fit, seven-day probability-calibration, and seven-day policy-selection roles; July 21 through July 28 is consumed as the last validation window. The current 58-feature direct-outcome model is compared with the 71-feature mature-reversal model and three isolated model-training ablations: 28-day estimator-only recency decay, six additional causal Binance regime descriptors, and fixed market-scale histogram regularization. Calibration does not receive recency decay. No admission model, post-prediction veto, execution gate, official opening boundary, final price, or paid order-book feature is used for model decisions. Accuracy, balanced accuracy, both direction recalls, Wilson confidence, coverage non-regression, hard-confident error tails, and every-fold absolute standards are advancement gates. Timing and execution economics are diagnostic only. A new forward paper cohort beginning after artifact freeze remains required for independent qualification."
+quantity = 5.0
+early_cutoff_second = 120
+
+[walk_forward]
+validation_starts = [
+  "2026-06-09T00:00:00Z",
+  "2026-06-16T00:00:00Z",
+  "2026-06-23T00:00:00Z",
+  "2026-06-30T00:00:00Z",
+  "2026-07-07T00:00:00Z",
+  "2026-07-14T00:00:00Z",
+  "2026-07-21T00:00:00Z",
+]
+validation_ends = [
+  "2026-06-16T00:00:00Z",
+  "2026-06-23T00:00:00Z",
+  "2026-06-30T00:00:00Z",
+  "2026-07-07T00:00:00Z",
+  "2026-07-14T00:00:00Z",
+  "2026-07-21T00:00:00Z",
+  "2026-07-29T00:00:00Z",
+]
+rolling_calibration_days = 7
+rolling_policy_days = 7
+
+[calibration]
+minimum_rows_per_band = 500
+bands = [
+  { name = "60-89", start_second = 60, end_second_exclusive = 90 },
+  { name = "90-119", start_second = 90, end_second_exclusive = 120 },
+  { name = "120-179", start_second = 120, end_second_exclusive = 180 },
+  { name = "180-240", start_second = 180, end_second_exclusive = 241 },
+]
+
+[advancement_gates]
+minimum_early_markets = 500
+minimum_common_markets = 500
+minimum_executable_markets = 500
+minimum_coverage_uplift = 0.0
+hard_confidence_floor = 0.95
+minimum_hard_confident_error_count_reduction = 1
+maximum_hard_confident_error_selected_rate_regression = 0.0
+minimum_accuracy_uplift = 0.001
+minimum_balanced_accuracy_uplift = 0.001
+minimum_direction_recall_uplift = 0.0
+minimum_wilson_lower_uplift = 0.001
+maximum_accuracy_regression = 0.0
+maximum_balanced_accuracy_regression = 0.0
+maximum_direction_recall_regression = 0.0
+maximum_median_entry_seconds_regression = 0.0
+minimum_mean_direct_edge_per_share = 0.0
+minimum_realized_net_per_share = 0.0
+
+[paths]
+prewindow_features = "data/btc-prewindow-regime-robust-accuracy-20260321-20260729/features.parquet"
+execution_evidence = "data/btc-execution-evidence-v2-book-residual-20260527-20260719"
+runs = "runs/btc-regime-robust-accuracy-20260321-20260729"
