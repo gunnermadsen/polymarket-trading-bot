@@ -351,6 +351,54 @@ def test_time_band_policy_accepts_one_immutable_threshold_per_band() -> None:
     assert result["candidates"]["control"]["own_policy"]["markets"] == 12
 
 
+def test_time_band_policy_accepts_causally_frozen_thresholds_per_fold() -> None:
+    first_fold = prediction_frame("control", early=True).with_columns(
+        pl.lit(0).alias("fold_index"),
+        pl.when(pl.col("seconds_elapsed") < 120)
+        .then(0.90)
+        .otherwise(0.85)
+        .alias("selected_confidence_threshold"),
+        pl.when(pl.col("seconds_elapsed") < 120)
+        .then(pl.lit("early"))
+        .otherwise(pl.lit("late"))
+        .alias("policy_threshold_band"),
+    )
+    second_fold = prediction_frame("control", early=True).with_columns(
+        pl.concat_str(pl.lit("fold-1-"), pl.col("market_id")).alias("market_id"),
+        (pl.col("observed_at") + pl.duration(days=7)).alias("observed_at"),
+        pl.lit(1).alias("fold_index"),
+        pl.when(pl.col("seconds_elapsed") < 120)
+        .then(0.85)
+        .otherwise(0.80)
+        .alias("selected_confidence_threshold"),
+        pl.when(pl.col("seconds_elapsed") < 120)
+        .then(pl.lit("early"))
+        .otherwise(pl.lit("late"))
+        .alias("policy_threshold_band"),
+    )
+    frame = pl.concat((first_fold, second_fold), how="vertical_relaxed")
+    first_crossings = (
+        frame.filter(
+            pl.col("confidence") >= pl.col("selected_confidence_threshold")
+        )
+        .sort(["market_id", "seconds_elapsed", "observed_at"])
+        .group_by("market_id", maintain_order=True)
+        .first()
+        .select("market_id", "observed_at", "seconds_elapsed")
+        .with_columns(pl.lit(True).alias("policy_selected"))
+    )
+    frame = frame.join(
+        first_crossings,
+        on=["market_id", "observed_at", "seconds_elapsed"],
+        how="left",
+    ).with_columns(pl.col("policy_selected").fill_null(False))
+
+    selected = select_time_band_policy_rows(frame)
+
+    assert selected["market_id"].n_unique() == 24
+    assert selected["fold_index"].n_unique() == 2
+
+
 def test_time_band_policy_rejects_threshold_drift_within_a_band() -> None:
     frame = prediction_frame("control", early=True).with_columns(
         pl.when(pl.col("market_id") == "market-00")

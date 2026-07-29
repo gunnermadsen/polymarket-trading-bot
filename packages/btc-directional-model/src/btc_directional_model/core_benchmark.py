@@ -364,8 +364,20 @@ def select_time_band_policy_rows(frame: pl.DataFrame) -> pl.DataFrame:
         return eligible
     if eligible["policy_threshold_band"].null_count():
         raise ValueError("time-band preselected policy cannot contain an unassigned row")
+    threshold_group_keys = ["policy_threshold_band"]
+    if "fold_index" in eligible.columns:
+        unstable_market_folds = (
+            eligible.group_by("market_id")
+            .agg(pl.col("fold_index").n_unique().alias("folds"))
+            .filter(pl.col("folds") != 1)
+        )
+        if not unstable_market_folds.is_empty():
+            raise ValueError(
+                "time-band preselected policy fold must be stable per market"
+            )
+        threshold_group_keys.insert(0, "fold_index")
     unstable_thresholds = (
-        eligible.group_by("policy_threshold_band")
+        eligible.group_by(threshold_group_keys)
         .agg(
             pl.col("selected_confidence_threshold")
             .n_unique()
@@ -375,7 +387,8 @@ def select_time_band_policy_rows(frame: pl.DataFrame) -> pl.DataFrame:
     )
     if not unstable_thresholds.is_empty():
         raise ValueError(
-            "time-band selected confidence threshold must be stable per band"
+            "time-band selected confidence threshold must be stable per band "
+            "within each fold"
         )
     return _validated_preselected_policy_rows(eligible)
 

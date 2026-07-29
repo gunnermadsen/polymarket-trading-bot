@@ -156,6 +156,46 @@ the model. The exact-checkpoint direction metrics therefore cannot regress from 
 common rows. The second command still applies the single anchor-fold policy and all frozen
 frequency gates before any holdout or runtime work.
 
+Run the boundary-aligned training session without accessing the external holdout:
+
+```bash
+export POLARS_MAX_THREADS=6
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+.venv/bin/btc-directional-model core-features \
+  --config configs/btc-5m-directional-core-boundary-aligned-20260421-20260720.toml \
+  --scope pre_holdout
+.venv/bin/btc-directional-model persistence-benchmark-run \
+  --config configs/btc-5m-directional-boundary-alignment-20260421-20260720.toml
+```
+
+This session preserves the 58-feature histogram control and adds a separate outcome model with
+causal official-boundary distance, crossing, persistence, time-on-side, volatility-normalized
+distance, and short-horizon boundary-momentum features. The control retains its global calibration;
+the challenger uses frozen 60-89, 90-119, 120-179, and 180-240-second calibration bands. The
+output is consumed development evidence only; it does not export a runtime model or access
+July 21-August 4.
+
+Run the rolling correctness-admission benchmark from a completed boundary session:
+
+```bash
+BOUNDARY_RUN_ID="<UTC run identifier>"
+sed "s/__BOUNDARY_RUN_ID__/${BOUNDARY_RUN_ID}/g" \
+  configs/btc-5m-directional-correctness-admission-20260421-20260720.toml.template \
+  > data/btc-5m-directional-correctness-admission-runtime.toml
+.venv/bin/btc-directional-model admission-benchmark-run \
+  --config data/btc-5m-directional-correctness-admission-runtime.toml
+```
+
+For evaluation folds 2, 3, and 4, the correctness selector fits only older out-of-fold
+predictions. It splits the immediately prior fold chronologically between four-band Platt
+calibration and exhaustive time-band policy selection, then scores the next fold once. A
+`q < 0.5` decision always abstains and never reverses the boundary model's direction. These three
+folds can provide development evidence only; five validation folds plus independent holdout
+evidence remain mandatory before any runtime export or live-capital decision.
+
 Run the strict-book chronology diagnostic separately:
 
 ```bash

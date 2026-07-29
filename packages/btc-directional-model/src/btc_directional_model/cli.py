@@ -6,6 +6,8 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from .admission_benchmark import run_admission_benchmark
+from .admission_config import load_admission_benchmark_config
 from .benchmark_config import load_entry_benchmark_config
 from .config import load_config
 from .core_config import load_core_config
@@ -74,6 +76,8 @@ def main() -> None:
         "frequency-policy-benchmark-run"
     )
     frequency_policy_run.add_argument("--config", type=Path, required=True)
+    admission_run = subparsers.add_parser("admission-benchmark-run")
+    admission_run.add_argument("--config", type=Path, required=True)
     serve_parser = subparsers.add_parser("serve")
     serve_parser.add_argument("--run", type=Path, required=True)
     serve_parser.add_argument("--port", type=int, default=8765)
@@ -163,6 +167,23 @@ def main() -> None:
         print("timing: diagnostic only")
         print("evidence: non-independent development validation")
         print("runtime: unchanged")
+        return
+    if args.command == "admission-benchmark-run":
+        config = load_admission_benchmark_config(args.config)
+        run_dir, benchmark = run_admission_benchmark(config)
+        print(f"report: {run_dir / 'report.html'}")
+        print(
+            "development benchmark passed: "
+            + (
+                ", ".join(benchmark["benchmark_passed_candidates"])
+                if benchmark["benchmark_passed_candidates"]
+                else "none"
+            )
+        )
+        print(f"winner: {benchmark['winner'] or 'none'}")
+        print("selector evaluation: rolling folds 2, 3, 4")
+        print("deployment: not qualified; only three selector validation folds")
+        print("holdout/database/runtime: untouched")
         return
     if args.command.startswith("core-"):
         run_core_command(args)
