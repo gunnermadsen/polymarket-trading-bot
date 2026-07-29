@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "capitonic-btc-directional-model"
+version = "0.1.0"
+description = "Point-in-time training and evaluation for the Capitonic BTC five-minute directional model"
+requires-python = ">=3.11,<3.14"
+license = { text = "UNLICENSED" }
+dependencies = [
+  "numpy>=2.1,<3",
+  "plotly>=6,<7",
+  "polars>=1.30,<2",
+  "psycopg[binary]>=3.2,<4",
+  "pyarrow>=19,<22",
+  "scikit-learn>=1.6,<2",
+  "scipy>=1.14,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "ruff>=0.9,<1",
+]
+
+[project.scripts]
+btc-directional-model = "btc_directional_model.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/btc_directional_model"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

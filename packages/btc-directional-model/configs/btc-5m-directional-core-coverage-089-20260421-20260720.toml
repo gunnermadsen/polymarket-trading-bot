@@ -1,0 +1,92 @@
+[data]
+source_contract = "btc_core_v1"
+range_start = "2026-04-21T00:00:00Z"
+range_end = "2026-07-21T00:00:00Z"
+sample_interval_seconds = 5
+min_seconds_after_open = 60
+min_seconds_before_close = 60
+strict_final_price_audit = false
+
+[split]
+development_start = "2026-04-21T00:00:00Z"
+development_end = "2026-07-01T00:00:00Z"
+probability_calibration_start = "2026-07-01T00:00:00Z"
+probability_calibration_end = "2026-07-07T00:00:00Z"
+policy_selection_start = "2026-07-07T00:00:00Z"
+policy_selection_end = "2026-07-14T00:00:00Z"
+holdout_start = "2026-07-14T00:00:00Z"
+holdout_end = "2026-07-21T00:00:00Z"
+validation_starts = [
+  "2026-05-27T00:00:00Z",
+  "2026-06-03T00:00:00Z",
+  "2026-06-10T00:00:00Z",
+  "2026-06-17T00:00:00Z",
+  "2026-06-24T00:00:00Z",
+]
+validation_ends = [
+  "2026-06-03T00:00:00Z",
+  "2026-06-10T00:00:00Z",
+  "2026-06-17T00:00:00Z",
+  "2026-06-24T00:00:00Z",
+  "2026-07-01T00:00:00Z",
+]
+
+[model]
+c_candidates = [0.01, 0.1, 1.0, 10.0]
+confidence_min = 0.89
+confidence_max = 0.89
+confidence_step = 0.01
+random_seed = 20260726
+
+[[model.histogram_candidates]]
+learning_rate = 0.05
+max_iter = 160
+max_leaf_nodes = 15
+min_samples_leaf = 100
+l2_regularization = 0.10
+
+[[model.histogram_candidates]]
+learning_rate = 0.05
+max_iter = 220
+max_leaf_nodes = 31
+min_samples_leaf = 100
+l2_regularization = 1.0
+
+[[model.histogram_candidates]]
+learning_rate = 0.08
+max_iter = 160
+max_leaf_nodes = 15
+min_samples_leaf = 150
+l2_regularization = 1.0
+
+[[model.histogram_candidates]]
+learning_rate = 0.08
+max_iter = 220
+max_leaf_nodes = 31
+min_samples_leaf = 150
+l2_regularization = 2.0
+
+[gates]
+target_accuracy = 0.874
+target_wilson_lower = 0.865
+target_balanced_accuracy = 0.874
+minimum_direction_recall = 0.874
+minimum_coverage = 0.55
+minimum_holdout_markets = 1000
+maximum_walk_forward_holdout_gap = 0.05
+minimum_same_time_path_uplift = 0.00
+minimum_nonnegative_uplift_folds = 5
+maximum_ece = 0.05
+bootstrap_resamples = 10000
+
+[compute]
+max_parallel_fits = 4
+threads_per_fit = 1
+polars_threads = 6
+
+[paths]
+source_data = "data/btc-core-20260421-20260720/source"
+development_feature_data = "data/btc-core-20260421-20260720/features/development.parquet"
+holdout_feature_data = "data/btc-core-20260421-20260720/features/holdout.parquet"
+runs = "runs/btc-core-coverage-089-20260421-20260720"
+artifacts = "artifacts/btc-core-20260421-20260720"

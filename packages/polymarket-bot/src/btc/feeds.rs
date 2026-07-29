@@ -10,9 +10,9 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::types::{
-    BookReadiness, BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, MarketFeedEvent,
-    MarketFeedEventType, OrderbookCheckpoint, OrderbookLevel, Readiness, RealtimeState,
-    ReferencePriceSource, ReferencePriceTick, SourceReadiness,
+    BinanceAggregateTrade, BookReadiness, BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus,
+    MarketFeedEvent, MarketFeedEventType, OrderbookCheckpoint, OrderbookLevel, Readiness,
+    RealtimeState, ReferencePriceSource, ReferencePriceTick, SourceReadiness,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -240,6 +240,37 @@ pub fn parse_binance_agg_trade(
     ingest_sequence: u64,
     received_at: DateTime<Utc>,
 ) -> Result<ReferencePriceTick> {
+    parse_binance_agg_trade_with_details(value, connection_id, ingest_sequence, received_at)
+        .map(|(tick, _)| tick)
+}
+
+pub fn parse_binance_agg_trade_with_details(
+    value: &Value,
+    connection_id: Uuid,
+    ingest_sequence: u64,
+    received_at: DateTime<Utc>,
+) -> Result<(ReferencePriceTick, BinanceAggregateTrade)> {
+    let trade = parse_binance_aggregate_trade(value)?;
+    let object = value
+        .as_object()
+        .context("Binance aggregate trade must be an object")?;
+    let envelope_timestamp = Some(timestamp_field(object, &["E"])?);
+    let tick = reference_tick(
+        ReferencePriceSource::DirectBinance,
+        "BTCUSD",
+        trade.price,
+        trade.transact_time,
+        envelope_timestamp,
+        received_at,
+        connection_id,
+        ingest_sequence,
+        Some(trade.aggregate_trade_id.to_string()),
+        value.clone(),
+    )?;
+    Ok((tick, trade))
+}
+
+pub fn parse_binance_aggregate_trade(value: &Value) -> Result<BinanceAggregateTrade> {
     let object = value
         .as_object()
         .context("Binance aggregate trade must be an object")?;
@@ -250,25 +281,28 @@ pub fn parse_binance_agg_trade(
     if !symbol.eq_ignore_ascii_case("BTCUSDT") {
         bail!("Binance aggregate trade has unexpected symbol {symbol}");
     }
+    let aggregate_trade_id = required_u64(object, &["a"])?;
     let price = required_decimal(object, &["p"])?;
-    let source_timestamp = timestamp_field(object, &["T"])?;
-    let envelope_timestamp = Some(timestamp_field(object, &["E"])?);
-    let source_event_id = required_string(object, &["a"])?
-        .parse::<u64>()
-        .context("Binance aggregate trade has invalid aggregate trade ID")?
-        .to_string();
-    reference_tick(
-        ReferencePriceSource::DirectBinance,
-        "BTCUSD",
+    let quantity = required_decimal(object, &["q"])?;
+    let first_trade_id = required_u64(object, &["f"])?;
+    let last_trade_id = required_u64(object, &["l"])?;
+    let transact_time = timestamp_field(object, &["T"])?;
+    let is_buyer_maker = object
+        .get("m")
+        .and_then(Value::as_bool)
+        .context("invalid boolean field m")?;
+    if price <= Decimal::ZERO || quantity <= Decimal::ZERO || first_trade_id > last_trade_id {
+        bail!("Binance aggregate trade has invalid price, quantity, or trade range");
+    }
+    Ok(BinanceAggregateTrade {
+        aggregate_trade_id,
         price,
-        source_timestamp,
-        envelope_timestamp,
-        received_at,
-        connection_id,
-        ingest_sequence,
-        Some(source_event_id),
-        value.clone(),
-    )
+        quantity,
+        first_trade_id,
+        last_trade_id,
+        transact_time,
+        is_buyer_maker,
+    })
 }
 
 fn reference_tick(
@@ -1366,6 +1400,13 @@ fn required_decimal(object: &serde_json::Map<String, Value>, keys: &[&str]) -> R
     decimal_field(object, keys).with_context(|| format!("invalid decimal field {}", keys[0]))
 }
 
+fn required_u64(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Result<u64> {
+    let value = required_string(object, keys)?;
+    value
+        .parse::<u64>()
+        .with_context(|| format!("invalid unsigned integer field {}", keys[0]))
+}
+
 fn timestamp_field(
     object: &serde_json::Map<String, Value>,
     keys: &[&str],
@@ -1773,7 +1814,8 @@ mod tests {
     fn parses_direct_binance_aggregate_trade_idempotently() {
         let value = serde_json::json!({
             "e": "aggTrade", "E": 1783902701250_i64, "s": "BTCUSDT", "a": 12345,
-            "p": "67236.12345678", "q": "0.5", "T": 1783902701200_i64, "m": false
+            "p": "67236.12345678", "q": "0.5", "f": 12500, "l": 12502,
+            "T": 1783902701200_i64, "m": false
         });
         let connection = Uuid::new_v4();
         let first = parse_binance_agg_trade(&value, connection, 1, ts(1_783_902_701_300)).unwrap();
@@ -1786,7 +1828,8 @@ mod tests {
 
         let malformed = serde_json::json!({
             "e": "aggTrade", "E": 1783902701250_i64, "s": "BTCUSDT", "a": "invalid",
-            "p": "67236.12345678", "q": "0.5", "T": 1783902701200_i64, "m": false
+            "p": "67236.12345678", "q": "0.5", "f": 12500, "l": 12502,
+            "T": 1783902701200_i64, "m": false
         });
         assert!(
             parse_binance_agg_trade(&malformed, Uuid::new_v4(), 100, ts(1_783_902_702_100),)
@@ -2633,7 +2676,8 @@ mod tests {
         state.update_books(&registry);
         for value in [serde_json::json!({
             "e": "aggTrade", "E": 1783902701400_i64, "s": "BTCUSDT", "a": 1,
-            "p": "67000", "q": "1", "T": 1783902701400_i64
+            "p": "67000", "q": "1", "f": 1, "l": 1,
+            "T": 1783902701400_i64, "m": false
         })] {
             state.update_reference_price(
                 parse_binance_agg_trade(&value, Uuid::new_v4(), 1, now).unwrap(),
