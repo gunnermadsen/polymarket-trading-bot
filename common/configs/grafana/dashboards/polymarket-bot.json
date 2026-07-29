@@ -2771,11 +2771,11 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgres"
       },
-      "description": "Daily net realized PnL for the current PnL scope, grouped by the UTC day an official outcome was received. This panel uses a rolling 30-day range so each bar represents one calendar day. Green bars are profitable days and red bars are losing days. Selected process uses the Trading process selection; All processes sums across eligible realtime-paper processes.",
+      "description": "Daily net realized PnL for the current PnL scope, grouped by the UTC day an official outcome was received. Green bars are profitable days and red bars are losing days. Selected process uses the Trading process selection; All processes sums across eligible realtime-paper processes.",
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "mode": "thresholds"
           },
           "custom": {
             "axisBorderShow": false,
@@ -2783,9 +2783,6 @@
             "axisColorMode": "text",
             "axisLabel": "Net PnL (USD)",
             "axisPlacement": "left",
-            "barAlignment": 0,
-            "barWidthFactor": 0.9,
-            "drawStyle": "bars",
             "fillOpacity": 100,
             "gradientMode": "none",
             "hideFrom": {
@@ -2793,19 +2790,9 @@
               "tooltip": false,
               "viz": false
             },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
             "lineWidth": 1,
-            "pointSize": 5,
             "scaleDistribution": {
               "type": "linear"
-            },
-            "showPoints": "never",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
             },
             "thresholdsStyle": {
               "mode": "off"
@@ -2828,38 +2815,7 @@
           },
           "unit": "currencyUSD"
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Profit"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "green",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Loss"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
         "h": 13,
@@ -2869,17 +2825,26 @@
       },
       "id": 24,
       "options": {
+        "barRadius": 0,
+        "barWidth": 0.9,
+        "fullHighlight": false,
+        "groupWidth": 0.7,
         "legend": {
           "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": false
         },
+        "orientation": "vertical",
+        "showValue": "auto",
+        "stacking": "none",
         "tooltip": {
           "hideZeros": false,
           "mode": "single",
           "sort": "none"
-        }
+        },
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
       },
       "pluginVersion": "12.4.2",
       "targets": [
@@ -2889,9 +2854,9 @@
             "uid": "postgres"
           },
           "editorMode": "code",
-          "format": "time_series",
+          "format": "table",
           "rawQuery": true,
-"rawSql": "WITH bounds AS MATERIALIZED (\n  SELECT $__timeFrom()::timestamptz AS from_ts,$__timeTo()::timestamptz AS to_ts\n), utc_days AS MATERIALIZED (\n  SELECT generate_series(\n    date_trunc('day',from_ts AT TIME ZONE 'UTC'),\n    date_trunc('day',to_ts AT TIME ZONE 'UTC'),\n    interval '1 day'\n  ) AS utc_day\n  FROM bounds\n), selected_process AS MATERIALIZED (\n  SELECT p.process_id\n  FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m'\n    AND p.process_scope='realtime_paper'\n    AND p.status <> 'completed'\n), realized_by_day AS MATERIALIZED (\n  SELECT\n    date_trunc('day',m.official_resolution_received_at AT TIME ZONE 'UTC') AS utc_day,\n    SUM(\n      CASE WHEN o.token_id=m.official_winning_token_id THEN f.size ELSE 0::numeric END\n      -f.price*f.size-f.fee\n    )::numeric AS net_pnl\n  FROM selected_process p\n  JOIN polymarket.fills f\n    ON f.process_id=p.process_id\n   AND f.source='paper'\n  JOIN polymarket.orders o\n    ON o.order_id=f.order_id\n   AND o.process_id=f.process_id\n  JOIN polymarket.btc_interval_markets m\n    ON m.market_id=o.market_id\n  CROSS JOIN bounds b\n  WHERE m.official_outcome IN ('up','down')\n    AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at BETWEEN b.from_ts AND b.to_ts\n  GROUP BY 1\n), daily_pnl AS MATERIALIZED (\n  SELECT\n    GREATEST(d.utc_day AT TIME ZONE 'UTC',b.from_ts) AS time,\n    COALESCE(r.net_pnl,0::numeric) AS net_pnl\n  FROM utc_days d\n  CROSS JOIN bounds b\n  LEFT JOIN realized_by_day r USING(utc_day)\n  WHERE d.utc_day AT TIME ZONE 'UTC' < b.to_ts\n)\nSELECT\n  time,\n  CASE WHEN net_pnl >= 0 THEN net_pnl END::double precision AS \"Profit\",\n  CASE WHEN net_pnl < 0 THEN net_pnl END::double precision AS \"Loss\"\nFROM daily_pnl\nORDER BY time;",
+          "rawSql": "WITH bounds AS MATERIALIZED (\n  SELECT $__timeFrom()::timestamptz AS from_ts,$__timeTo()::timestamptz AS to_ts\n), utc_days AS MATERIALIZED (\n  SELECT generate_series(\n    date_trunc('day',from_ts AT TIME ZONE 'UTC'),\n    date_trunc('day',to_ts AT TIME ZONE 'UTC'),\n    interval '1 day'\n  ) AS utc_day\n  FROM bounds\n), selected_process AS MATERIALIZED (\n  SELECT p.process_id\n  FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m'\n    AND p.process_scope='realtime_paper'\n    AND p.status <> 'completed'\n), realized_by_day AS MATERIALIZED (\n  SELECT\n    date_trunc('day',m.official_resolution_received_at AT TIME ZONE 'UTC') AS utc_day,\n    SUM(\n      CASE WHEN o.token_id=m.official_winning_token_id THEN f.size ELSE 0::numeric END\n      -f.price*f.size-f.fee\n    )::numeric AS net_pnl\n  FROM selected_process p\n  JOIN polymarket.fills f\n    ON f.process_id=p.process_id\n   AND f.source='paper'\n  JOIN polymarket.orders o\n    ON o.order_id=f.order_id\n   AND o.process_id=f.process_id\n  JOIN polymarket.btc_interval_markets m\n    ON m.market_id=o.market_id\n  CROSS JOIN bounds b\n  WHERE m.official_outcome IN ('up','down')\n    AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at BETWEEN b.from_ts AND b.to_ts\n  GROUP BY 1\n)\nSELECT\n  d.utc_day AT TIME ZONE 'UTC' AS \"UTC Day\",\n  COALESCE(r.net_pnl,0::numeric)::double precision AS \"Daily Net Realized PnL\"\nFROM utc_days d\nLEFT JOIN realized_by_day r USING(utc_day)\nORDER BY d.utc_day;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -2912,9 +2877,8 @@
           }
         }
       ],
-      "timeFrom": "30d",
       "title": "Daily Net Realized PnL",
-      "type": "timeseries"
+      "type": "barchart"
     },
     {
       "datasource": {
@@ -3565,6 +3529,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 121,
+  "version": 122,
   "weekStart": ""
 }
