@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 import polars as pl
 
 from btc_directional_model.core_features import (
+    CORE_BOUNDARY_ENRICHED_FEATURES,
+    CORE_ENRICHED_FEATURES,
     CORE_MODEL_FEATURES,
     derive_core_point_in_time_features,
 )
@@ -97,11 +99,40 @@ def test_model_features_ignore_cross_venue_opening_basis() -> None:
     original_features = derive_core_point_in_time_features(original)
     shifted_features = derive_core_point_in_time_features(shifted_boundary)
 
-    for allowlist in CORE_MODEL_FEATURES.values():
-        assert original_features.select(allowlist).equals(
-            shifted_features.select(allowlist),
-            null_equal=True,
-        )
+    assert original_features.select(CORE_ENRICHED_FEATURES).equals(
+        shifted_features.select(CORE_ENRICHED_FEATURES),
+        null_equal=True,
+    )
+    assert not original_features.select(CORE_BOUNDARY_ENRICHED_FEATURES).equals(
+        shifted_features.select(CORE_BOUNDARY_ENRICHED_FEATURES),
+        null_equal=True,
+    )
     assert original_features["binance_sign_up"].equals(
         shifted_features["binance_sign_up"]
     )
+
+
+def test_boundary_features_are_causal_and_market_local() -> None:
+    original = core_source_frame()
+    altered = original.with_columns(
+        pl.when((pl.col("market_id") == "a") & (pl.col("seconds_elapsed") > 120))
+        .then(pl.col("btc_close") * 1.5)
+        .otherwise(pl.col("btc_close"))
+        .alias("btc_close")
+    )
+    original_features = derive_core_point_in_time_features(original)
+    altered_features = derive_core_point_in_time_features(altered)
+
+    before = original_features.filter(
+        (pl.col("market_id") == "a") & (pl.col("seconds_elapsed") == 120)
+    ).select(CORE_BOUNDARY_ENRICHED_FEATURES)
+    after = altered_features.filter(
+        (pl.col("market_id") == "a") & (pl.col("seconds_elapsed") == 120)
+    ).select(CORE_BOUNDARY_ENRICHED_FEATURES)
+    first_b = original_features.filter(
+        (pl.col("market_id") == "b") & (pl.col("seconds_elapsed") == 0)
+    )
+
+    assert before.equals(after, null_equal=True)
+    assert first_b["btc_boundary_cross_count"][0] == 0
+    assert first_b["btc_boundary_distance_velocity_5s_bps"][0] is None

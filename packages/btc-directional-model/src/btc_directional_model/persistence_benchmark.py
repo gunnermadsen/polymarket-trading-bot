@@ -39,6 +39,7 @@ from .core_execution import (
 )
 from .core_extract import file_sha256, write_json_atomic
 from .core_features import (
+    CORE_BOUNDARY_ENRICHED_FEATURES,
     CORE_ENRICHED_FEATURES,
     load_core_feature_frame,
     validate_core_feature_cache,
@@ -60,6 +61,7 @@ from .core_training import (
     tune_and_fit_model,
 )
 from .persistence_config import (
+    BOUNDARY_ALIGNMENT_CANDIDATE,
     FOLD_ROBUST_FREQUENCY_CANDIDATE,
     FOLD_ROBUST_FREQUENCY_PROFILE,
     PATH_PERSISTENCE_PROFILE,
@@ -103,7 +105,7 @@ PERSISTENCE_TRAINING_CHECKS = {
 class CandidateProfile:
     name: str
     target_kind: Literal["outcome_up", "path_persistence"]
-    feature_kind: Literal["core", "core_prewindow"]
+    feature_kind: Literal["core", "core_boundary", "core_prewindow"]
     calibration_kind: Literal["global_platt", "time_banded_platt"]
 
 
@@ -171,6 +173,12 @@ CANDIDATE_PROFILES = {
             "histogram_path_persistence_time_calibrated_90_120",
             "path_persistence",
             "core_prewindow",
+            "time_banded_platt",
+        ),
+        CandidateProfile(
+            BOUNDARY_ALIGNMENT_CANDIDATE,
+            "outcome_up",
+            "core_boundary",
             "time_banded_platt",
         ),
         CandidateProfile(
@@ -1421,7 +1429,11 @@ def _candidate_spec(
     profile: CandidateProfile,
     config: PersistenceBenchmarkConfig,
 ) -> CandidateSpec:
-    features = tuple(CORE_ENRICHED_FEATURES)
+    features = (
+        tuple(CORE_BOUNDARY_ENRICHED_FEATURES)
+        if profile.feature_kind == "core_boundary"
+        else tuple(CORE_ENRICHED_FEATURES)
+    )
     if profile.feature_kind == "core_prewindow":
         features += tuple(PREWINDOW_MODEL_FEATURES)
     schedule = persistence_row_weight_schedule(config, profile.name)

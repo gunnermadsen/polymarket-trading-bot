@@ -29,9 +29,15 @@ FOLD_ROBUST_FREQUENCY_CANDIDATES = (
     "histogram_enriched",
     FOLD_ROBUST_FREQUENCY_CANDIDATE,
 )
+BOUNDARY_ALIGNMENT_CANDIDATE = "histogram_boundary_enriched"
+BOUNDARY_ALIGNMENT_CANDIDATES = (
+    "histogram_enriched",
+    BOUNDARY_ALIGNMENT_CANDIDATE,
+)
 PATH_PERSISTENCE_PROFILE = "path_persistence"
 ACCURACY_TIMING_PROFILE = "accuracy_timing"
 FOLD_ROBUST_FREQUENCY_PROFILE = "fold_robust_frequency"
+BOUNDARY_ALIGNMENT_PROFILE = "boundary_alignment"
 
 
 @dataclass(frozen=True)
@@ -166,6 +172,15 @@ def validate_persistence_benchmark_config(
                 "fold-robust frequency benchmark requires its frozen two-candidate matrix"
             )
         _validate_fold_robust_frequency_weights(config)
+    elif config.profile == BOUNDARY_ALIGNMENT_PROFILE:
+        if config.candidate_names != BOUNDARY_ALIGNMENT_CANDIDATES:
+            raise ValueError(
+                "boundary-alignment benchmark requires its frozen two-candidate matrix"
+            )
+        if config.row_weight_schedules:
+            raise ValueError(
+                "boundary-alignment benchmark preserves equal market weighting"
+            )
     else:
         raise ValueError(f"unsupported persistence benchmark profile: {config.profile}")
     if config.control_candidate != config.candidate_names[0]:

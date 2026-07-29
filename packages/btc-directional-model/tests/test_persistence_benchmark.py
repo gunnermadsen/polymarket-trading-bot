@@ -19,6 +19,8 @@ from btc_directional_model.persistence_benchmark import (
     target_probability_to_up,
 )
 from btc_directional_model.persistence_config import (
+    BOUNDARY_ALIGNMENT_CANDIDATE,
+    BOUNDARY_ALIGNMENT_PROFILE,
     FOLD_ROBUST_FREQUENCY_CANDIDATE,
     FOLD_ROBUST_FREQUENCY_PROFILE,
     CalibrationBand,
@@ -147,6 +149,24 @@ def test_fold_robust_frequency_configuration_is_training_only() -> None:
         "histogram_enriched",
         FOLD_ROBUST_FREQUENCY_CANDIDATE,
     )
+    assert config.evaluation_is_independent is False
+
+
+def test_boundary_alignment_configuration_preserves_control_and_gates() -> None:
+    package_root = Path(__file__).resolve().parents[1]
+    config = load_persistence_benchmark_config(
+        package_root
+        / "configs"
+        / "btc-5m-directional-boundary-alignment-20260421-20260720.toml"
+    )
+
+    assert config.profile == BOUNDARY_ALIGNMENT_PROFILE
+    assert config.candidate_names == (
+        "histogram_enriched",
+        BOUNDARY_ALIGNMENT_CANDIDATE,
+    )
+    assert config.maximum_median_entry_seconds_regression == -5.0
+    assert config.minimum_executable_markets == 500
     assert config.evaluation_is_independent is False
 
 

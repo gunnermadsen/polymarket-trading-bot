@@ -18,6 +18,7 @@ from .core_extract import (
 
 CoreFeatureScope = Literal["pre_holdout", "holdout"]
 CORE_FEATURE_SCHEMA_VERSION = "btc-5m-directional-core-features-v2"
+CORE_BOUNDARY_FEATURE_SCHEMA_VERSION = "btc-5m-directional-boundary-features-v1"
 
 CORE_BASELINE_FEATURES = [
     "seconds_elapsed_scaled",
@@ -84,10 +85,24 @@ CORE_ENRICHMENT_FEATURES = [
 ]
 
 CORE_ENRICHED_FEATURES = CORE_BASELINE_FEATURES + CORE_ENRICHMENT_FEATURES
+CORE_BOUNDARY_FEATURES = [
+    "btc_cross_venue_boundary_gap_bps",
+    "btc_window_open_cross_venue_basis_bps",
+    "btc_boundary_terminal_volatility_z",
+    "btc_boundary_abs_terminal_volatility_z",
+    "btc_boundary_cross_count",
+    "btc_seconds_since_boundary_cross",
+    "btc_fraction_time_boundary_positive",
+    "btc_fraction_time_boundary_negative",
+    "btc_boundary_distance_velocity_5s_bps",
+    "btc_boundary_momentum_alignment_5s",
+]
+CORE_BOUNDARY_ENRICHED_FEATURES = CORE_ENRICHED_FEATURES + CORE_BOUNDARY_FEATURES
 CORE_MODEL_FEATURES = {
     "logistic_baseline": CORE_BASELINE_FEATURES,
     "logistic_enriched": CORE_ENRICHED_FEATURES,
     "histogram_enriched": CORE_ENRICHED_FEATURES,
+    "histogram_boundary_enriched": CORE_BOUNDARY_ENRICHED_FEATURES,
 }
 
 
@@ -174,6 +189,9 @@ def build_core_features(
             "btc_path_positive",
             "btc_path_crossed",
             "btc_last_path_cross_second",
+            "btc_boundary_positive",
+            "btc_boundary_crossed",
+            "btc_last_boundary_cross_second",
             strict=False,
         )
         .sort(["window_start", "seconds_elapsed"])
@@ -207,6 +225,9 @@ def build_core_features(
     metadata: dict[str, Any] = {
         "build_contract": build_contract,
         "feature_schema_version": CORE_FEATURE_SCHEMA_VERSION,
+        "candidate_feature_schema_versions": {
+            "histogram_boundary_enriched": CORE_BOUNDARY_FEATURE_SCHEMA_VERSION,
+        },
         "scope": scope,
         "range_start": range_start.isoformat(),
         "range_end": range_end.isoformat(),
@@ -263,6 +284,9 @@ def derive_core_point_in_time_features(frame: pl.DataFrame) -> pl.DataFrame:
         ),
     ).with_columns(
         (pl.col("btc_path_from_window_open_bps") >= 0).alias("btc_path_positive"),
+        (pl.col("btc_cross_venue_boundary_gap_bps") >= 0).alias(
+            "btc_boundary_positive"
+        ),
     )
     frame = frame.with_columns(
         (
@@ -271,6 +295,12 @@ def derive_core_point_in_time_features(frame: pl.DataFrame) -> pl.DataFrame:
         )
         .fill_null(False)
         .alias("btc_path_crossed"),
+        (
+            pl.col("btc_boundary_positive")
+            != pl.col("btc_boundary_positive").shift(1).over("market_id")
+        )
+        .fill_null(False)
+        .alias("btc_boundary_crossed"),
     )
     for seconds in (1, 5, 15, 30, 60):
         frame = frame.with_columns(
@@ -418,6 +448,25 @@ def derive_core_point_in_time_features(frame: pl.DataFrame) -> pl.DataFrame:
             pl.col("btc_path_positive").cast(pl.Int32).cum_sum().over("market_id")
             / (pl.col("seconds_elapsed") + 1)
         ).alias("btc_fraction_time_path_positive"),
+        pl.when(pl.col("btc_boundary_crossed"))
+        .then(pl.col("seconds_elapsed"))
+        .otherwise(None)
+        .forward_fill()
+        .over("market_id")
+        .alias("btc_last_boundary_cross_second"),
+        pl.col("btc_boundary_crossed")
+        .cast(pl.Int32)
+        .cum_sum()
+        .over("market_id")
+        .cast(pl.Float64)
+        .alias("btc_boundary_cross_count"),
+        (
+            pl.col("btc_boundary_positive")
+            .cast(pl.Int32)
+            .cum_sum()
+            .over("market_id")
+            / (pl.col("seconds_elapsed") + 1)
+        ).alias("btc_fraction_time_boundary_positive"),
     )
     frame = frame.with_columns(
         (
@@ -429,6 +478,16 @@ def derive_core_point_in_time_features(frame: pl.DataFrame) -> pl.DataFrame:
         .alias("btc_seconds_since_path_cross"),
         (1.0 - pl.col("btc_fraction_time_path_positive")).alias(
             "btc_fraction_time_path_negative"
+        ),
+        (
+            pl.col("seconds_elapsed")
+            - pl.col("btc_last_boundary_cross_second")
+            .fill_null(pl.col("seconds_elapsed"))
+        )
+        .cast(pl.Float64)
+        .alias("btc_seconds_since_boundary_cross"),
+        (1.0 - pl.col("btc_fraction_time_boundary_positive")).alias(
+            "btc_fraction_time_boundary_negative"
         ),
         (
             pl.col("btc_realized_volatility_60s_bps").cum_sum().over("market_id")
@@ -457,6 +516,33 @@ def derive_core_point_in_time_features(frame: pl.DataFrame) -> pl.DataFrame:
                 + 1e-9
             )
         ).alias("btc_path_abs_terminal_volatility_z"),
+        (
+            pl.col("btc_cross_venue_boundary_gap_bps")
+            / (
+                pl.col("btc_realized_volatility_60s_bps")
+                * (300 - pl.col("seconds_elapsed")).clip(lower_bound=1).sqrt()
+                + 1e-9
+            )
+        ).alias("btc_boundary_terminal_volatility_z"),
+        (
+            pl.col("btc_cross_venue_boundary_gap_bps").abs()
+            / (
+                pl.col("btc_realized_volatility_60s_bps")
+                * (300 - pl.col("seconds_elapsed")).clip(lower_bound=1).sqrt()
+                + 1e-9
+            )
+        ).alias("btc_boundary_abs_terminal_volatility_z"),
+        (
+            pl.col("btc_cross_venue_boundary_gap_bps").abs()
+            - pl.col("btc_cross_venue_boundary_gap_bps")
+            .abs()
+            .shift(5)
+            .over("market_id")
+        ).alias("btc_boundary_distance_velocity_5s_bps"),
+        (
+            pl.col("btc_cross_venue_boundary_gap_bps").sign()
+            * pl.col("btc_return_5s_bps").sign()
+        ).alias("btc_boundary_momentum_alignment_5s"),
         (
             pl.col("btc_return_5s_bps").sign()
             * pl.col("btc_return_15s_bps").sign()
