@@ -1,0 +1,15 @@
+{
+  "deployment_scope": "paper_only",
+  "feature_schema_sha256": "c4ab70d0df6e9fdd8e3274cfffe5a90d0be06b89845a44650f699b3ff5e9628b",
+  "feature_schema_version": "btc-5m-directional-mature-reversal-features-v1",
+  "golden_vectors_file": "golden-vectors.json",
+  "golden_vectors_sha256": "a5b845eba447fe818e622c5175780e20c03735b0e90d7aca8042fbf2d40f9087",
+  "live_capital_allowed": false,
+  "model_file": "model.json",
+  "model_key": "btc-5m-directional-histogram-mature-reversal-recency-28d-20260321-20260728-paper-v1",
+  "model_sha256": "d94d44fe307926e97b3880ca0e52ac1285007121801cbf483606cba7700b55a6",
+  "production_qualified": false,
+  "schema_version": "capitonic-btc-directional-runtime-manifest-v1",
+  "source_freeze_manifest_sha256": "d7a8d9e9e5d33dff35bf5354cfb72e1bdd5689f0197ce08141953de0e37b0365",
+  "source_training_model_sha256": "72bce703f24d6d8984de7cef2e7a6b665725e84433e733b6071c28fa52f591e7"
+}
