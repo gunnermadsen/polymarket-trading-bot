@@ -413,7 +413,7 @@ def _training_evidence_panel(benchmark: dict[str, Any]) -> str:
         rows.append(
             _training_evidence_row(
                 name,
-                "five-fold walk-forward",
+                _walk_forward_label(candidate),
                 candidate["out_of_fold"],
                 candidate["timing"],
                 candidate.get("passed_development"),
@@ -432,7 +432,7 @@ def _training_evidence_panel(benchmark: dict[str, Any]) -> str:
                 (
                     "prior diagnostic — reused, not retrained, not eligible"
                     if reused_prior
-                    else "five-fold walk-forward / pre-open BTC"
+                    else f"{_walk_forward_label(preopen)} / pre-open BTC"
                 ),
                 preopen["out_of_fold"],
                 preopen["timing"],
@@ -546,6 +546,11 @@ def _training_selection_panel(benchmark: dict[str, Any]) -> str:
         + attempt_table
         + "</section>"
     )
+
+
+def _walk_forward_label(candidate: dict[str, Any]) -> str:
+    fold_count = candidate.get("total_folds", 5)
+    return f"{fold_count}-fold walk-forward"
 
 
 def _training_evidence_row(
