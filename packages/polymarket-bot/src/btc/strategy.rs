@@ -9,7 +9,7 @@ use super::{
     directional_model::{
         directional_model_input_sha256, runtime_model, BtcDirectionalModelFeatureSnapshot,
         RuntimeModelSelection, BTC_DIRECTIONAL_MODEL_FAMILY,
-        BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION, BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
+        BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
     },
     types::{BtcOutcome, FeedIntegrityStatus},
 };
@@ -850,8 +850,6 @@ impl<'a> ResolvedBtcDecisionStrategy<'a> {
                     artifact_sha256,
                     feature_schema_sha256,
                 } if config.strategy_version == BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION
-                    && config.feature_schema_version
-                        == BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION
                     && config.volatility_continuation.is_none() =>
                 {
                     let selection = RuntimeModelSelection {
@@ -859,13 +857,18 @@ impl<'a> ResolvedBtcDecisionStrategy<'a> {
                         artifact_sha256: artifact_sha256.clone(),
                         feature_schema_sha256: feature_schema_sha256.clone(),
                     };
-                    runtime_model(&selection)
-                        .map(|_| Self::BtcDirectionalModel {
-                            model_key,
-                            artifact_sha256,
-                            feature_schema_sha256,
-                        })
-                        .map_err(|_| BtcRejectReason::InvalidConfiguration)
+                    match runtime_model(&selection) {
+                        Ok(model)
+                            if model.feature_schema_version() == config.feature_schema_version =>
+                        {
+                            Ok(Self::BtcDirectionalModel {
+                                model_key,
+                                artifact_sha256,
+                                feature_schema_sha256,
+                            })
+                        }
+                        _ => Err(BtcRejectReason::InvalidConfiguration),
+                    }
                 }
                 _ => Err(BtcRejectReason::InvalidConfiguration),
             };
@@ -1853,7 +1856,8 @@ fn validate_config(config: &BtcStrategyConfig) -> Result<(), BtcRejectReason> {
                 btc_directional_model_selection(model_key, artifact_sha256, feature_schema_sha256);
             runtime_model(&selection).is_ok_and(|model| {
                 let policy = model.prediction_policy();
-                policy.minimum_seconds_after_open == config.min_seconds_after_open
+                model.feature_schema_version() == config.feature_schema_version
+                    && policy.minimum_seconds_after_open == config.min_seconds_after_open
                     && 300 - policy.maximum_seconds_after_open == config.min_seconds_before_close
                     && policy.cadence_seconds > 0
                     && config.max_reference_age_ms == config.max_book_age_ms
@@ -2597,8 +2601,8 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::super::directional_model::{
-        BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256, BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256,
-        BTC_DIRECTIONAL_MODEL_V1_KEY,
+        BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION, BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256,
+        BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256, BTC_DIRECTIONAL_MODEL_V1_KEY,
     };
     use super::*;
     use crate::{

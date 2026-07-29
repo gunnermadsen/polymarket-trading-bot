@@ -31,7 +31,7 @@ use super::{
         ShadowPredictiveRegimeEvaluation, ShadowPredictiveRegimeState,
         ShadowPredictiveRegimeTransition,
     },
-    directional_features::{build_directional_features, DirectionalFeatureVector},
+    directional_features::{build_directional_features_for_schema, DirectionalFeatureVector},
     directional_model::{
         directional_model_input_sha256, runtime_model, BtcDirectionalModelFeatureSnapshot,
         RuntimeModelSelection, RuntimePredictionPolicy, BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
@@ -1465,10 +1465,11 @@ impl BtcPaperProcessRunner {
                         return Ok(());
                     }
                 }
-                let features = match build_directional_features(
+                let features = match build_directional_features_for_schema(
                     &observation.state.binance_one_second_window,
                     market.window_start,
                     feature_as_of,
+                    model.feature_schema_version(),
                 ) {
                     Ok(features) => {
                         directional_candidate = Some(candidate);

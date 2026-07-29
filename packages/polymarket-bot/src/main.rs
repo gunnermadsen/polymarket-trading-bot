@@ -12,19 +12,19 @@ use async_trait::async_trait;
 use chrono::Utc;
 use polymarket_bot::{
     btc::{
-        runtime_status_from_inputs, BookRegistry, BtcDecisionStrategyConfig,
+        runtime_model, runtime_status_from_inputs, BookRegistry, BtcDecisionStrategyConfig,
         BtcDirectionalModelEntryPolicy, BtcEntryAdmissionConfig, BtcPaperProcessConfig,
         BtcPaperProcessRunner, BtcPlaybookRuntimeHandle, BtcRepository, BtcRuntime,
         BtcRuntimeConfig, BtcRuntimeHandle, BtcStrategyConfig, PaperPreviewConfig,
-        PaperVenue as BtcPaperVenue, PaperVenueConfig,
+        PaperVenue as BtcPaperVenue, PaperVenueConfig, RuntimeModelSelection,
         BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
         BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION,
         BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION,
         BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION,
         BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_FEATURE_SCHEMA_VERSION,
         BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_STRATEGY_VERSION,
-        BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION, BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
-        BTC_FEATURE_SCHEMA_VERSION, BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION,
+        BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION, BTC_FEATURE_SCHEMA_VERSION,
+        BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION,
         BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION, BTC_STRATEGY_VERSION,
         BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION,
     },
@@ -324,48 +324,65 @@ fn resolve_btc_strategy(
         .map_err(|error| {
             HttpError::bad_request(format!("invalid BTC decision strategy selection: {error}"))
         })?;
-        let (strategy_version, feature_schema_version) = match selection {
-            BtcDecisionStrategyConfig::ChainlinkFairValue {} => {
-                (BTC_STRATEGY_VERSION, BTC_FEATURE_SCHEMA_VERSION)
-            }
+        let (strategy_version, feature_schema_version) = match &selection {
+            BtcDecisionStrategyConfig::ChainlinkFairValue {} => (
+                BTC_STRATEGY_VERSION.to_string(),
+                BTC_FEATURE_SCHEMA_VERSION.to_string(),
+            ),
             BtcDecisionStrategyConfig::ChainlinkPersistenceCalibratedFairValue { .. } => (
-                BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION,
-                BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION,
+                BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION.to_string(),
+                BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION.to_string(),
             ),
             BtcDecisionStrategyConfig::ChainlinkPersistenceReliabilityCalibratedFairValue {
                 ..
             } => (
-                BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_STRATEGY_VERSION,
-                BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_FEATURE_SCHEMA_VERSION,
+                BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_STRATEGY_VERSION.to_string(),
+                BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_FEATURE_SCHEMA_VERSION.to_string(),
             ),
             BtcDecisionStrategyConfig::ChainlinkPathConditionedFairValue { .. } => (
-                BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION,
-                BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
+                BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION.to_string(),
+                BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION.to_string(),
             ),
             BtcDecisionStrategyConfig::VolatilityContinuation { .. } => (
-                BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION,
-                BTC_FEATURE_SCHEMA_VERSION,
+                BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION.to_string(),
+                BTC_FEATURE_SCHEMA_VERSION.to_string(),
             ),
             BtcDecisionStrategyConfig::MarketAnchoredFairValue { .. } => (
-                BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION,
-                BTC_FEATURE_SCHEMA_VERSION,
+                BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION.to_string(),
+                BTC_FEATURE_SCHEMA_VERSION.to_string(),
             ),
             BtcDecisionStrategyConfig::MarketAnchoredDirectionalPrediction { .. } => (
-                BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION,
-                BTC_FEATURE_SCHEMA_VERSION,
+                BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION.to_string(),
+                BTC_FEATURE_SCHEMA_VERSION.to_string(),
             ),
-            BtcDecisionStrategyConfig::BtcDirectionalModel { .. } => (
-                BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
-                BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION,
-            ),
+            BtcDecisionStrategyConfig::BtcDirectionalModel {
+                model_key,
+                artifact_sha256,
+                feature_schema_sha256,
+            } => {
+                let model = runtime_model(&RuntimeModelSelection {
+                    model_key: model_key.clone(),
+                    artifact_sha256: artifact_sha256.clone(),
+                    feature_schema_sha256: feature_schema_sha256.clone(),
+                })
+                .map_err(|error| {
+                    HttpError::bad_request(format!(
+                        "invalid BTC directional model selection: {error}"
+                    ))
+                })?;
+                (
+                    BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION.to_string(),
+                    model.feature_schema_version().to_string(),
+                )
+            }
         };
         strategy_object.insert(
             "strategy_version".to_string(),
-            serde_json::Value::String(strategy_version.to_string()),
+            serde_json::Value::String(strategy_version),
         );
         strategy_object.insert(
             "feature_schema_version".to_string(),
-            serde_json::Value::String(feature_schema_version.to_string()),
+            serde_json::Value::String(feature_schema_version),
         );
     }
 
@@ -375,41 +392,53 @@ fn resolve_btc_strategy(
     strategy
         .validate()
         .map_err(|error| HttpError::bad_request(error.to_string()))?;
-    let compiled_identity_valid = matches!(
-        (
-            strategy.strategy_version.as_str(),
-            strategy.feature_schema_version.as_str()
-        ),
-        (BTC_STRATEGY_VERSION, BTC_FEATURE_SCHEMA_VERSION)
-            | (
-                BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION,
-                BTC_FEATURE_SCHEMA_VERSION
-            )
-            | (
-                BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION,
-                BTC_FEATURE_SCHEMA_VERSION
-            )
-            | (
-                BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION,
-                BTC_FEATURE_SCHEMA_VERSION
-            )
-            | (
-                BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION,
-                BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION
-            )
-            | (
-                BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_STRATEGY_VERSION,
-                BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_FEATURE_SCHEMA_VERSION
-            )
-            | (
-                BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION,
-                BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION
-            )
-            | (
-                BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
-                BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION
-            )
-    );
+    let directional_model_identity_valid = match strategy.decision_strategy.as_ref() {
+        Some(BtcDecisionStrategyConfig::BtcDirectionalModel {
+            model_key,
+            artifact_sha256,
+            feature_schema_sha256,
+        }) if strategy.strategy_version == BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION => {
+            runtime_model(&RuntimeModelSelection {
+                model_key: model_key.clone(),
+                artifact_sha256: artifact_sha256.clone(),
+                feature_schema_sha256: feature_schema_sha256.clone(),
+            })
+            .is_ok_and(|model| model.feature_schema_version() == strategy.feature_schema_version)
+        }
+        _ => false,
+    };
+    let compiled_identity_valid = directional_model_identity_valid
+        || matches!(
+            (
+                strategy.strategy_version.as_str(),
+                strategy.feature_schema_version.as_str()
+            ),
+            (BTC_STRATEGY_VERSION, BTC_FEATURE_SCHEMA_VERSION)
+                | (
+                    BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION,
+                    BTC_FEATURE_SCHEMA_VERSION
+                )
+                | (
+                    BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION,
+                    BTC_FEATURE_SCHEMA_VERSION
+                )
+                | (
+                    BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_VERSION,
+                    BTC_FEATURE_SCHEMA_VERSION
+                )
+                | (
+                    BTC_CHAINLINK_PERSISTENCE_CALIBRATED_STRATEGY_VERSION,
+                    BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION
+                )
+                | (
+                    BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_STRATEGY_VERSION,
+                    BTC_CHAINLINK_PERSISTENCE_RELIABILITY_CALIBRATED_FEATURE_SCHEMA_VERSION
+                )
+                | (
+                    BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION,
+                    BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION
+                )
+        );
     if !compiled_identity_valid {
         return Err(HttpError::bad_request(
             "BTC strategy and feature schema versions are compiled identities and cannot be overridden",
@@ -3092,6 +3121,7 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+    use polymarket_bot::btc::BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION;
 
     #[test]
     fn btc_process_terminal_validation_accepts_all_supported_terminal_states() {

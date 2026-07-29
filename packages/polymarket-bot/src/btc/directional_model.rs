@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::directional_features::BTC_DIRECTIONAL_FEATURE_NAMES;
+use super::directional_features::directional_feature_names;
 
 pub const BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION: &str = "btc_5m_directional_model_v1";
 pub const BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION: &str =
@@ -44,13 +44,23 @@ pub fn directional_model_input_sha256(
     seconds_elapsed: i64,
     feature_values: &[f64],
 ) -> Result<String> {
+    let feature_names = directional_feature_names(feature_schema_version)
+        .context("BTC directional model feature schema is not supported")?;
+    if feature_values.len() != feature_names.len() {
+        bail!(
+            "BTC directional model input has {} feature values; schema {} requires {}",
+            feature_values.len(),
+            feature_schema_version,
+            feature_names.len()
+        );
+    }
     let payload = serde_json::json!({
         "contract": BTC_DIRECTIONAL_MODEL_INPUT_CONTRACT,
         "model_key": selection.model_key,
         "model_artifact_sha256": selection.artifact_sha256,
         "feature_schema_version": feature_schema_version,
         "feature_schema_sha256": selection.feature_schema_sha256,
-        "feature_names": BTC_DIRECTIONAL_FEATURE_NAMES.as_slice(),
+        "feature_names": feature_names,
         "market_id": market_id,
         "window_start": window_start,
         "feature_as_of": feature_as_of,
@@ -398,6 +408,15 @@ struct RuntimeModelFile {
     decision: RuntimeDecisionFile,
     prediction_policy: RuntimePredictionPolicyFile,
     provenance: serde_json::Value,
+    deployment: Option<RuntimeDeploymentFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeDeploymentFile {
+    scope: String,
+    production_qualified: bool,
+    live_capital_allowed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -497,6 +516,9 @@ struct RuntimeManifestFile {
     feature_schema_sha256: String,
     source_freeze_manifest_sha256: String,
     source_training_model_sha256: String,
+    deployment_scope: Option<String>,
+    production_qualified: Option<bool>,
+    live_capital_allowed: Option<bool>,
 }
 
 fn load_runtime_model(
@@ -544,7 +566,7 @@ fn validate_manifest(
         || manifest.model_file != "model.json"
         || manifest.golden_vectors_file != "golden-vectors.json"
         || manifest.model_sha256 != selection.artifact_sha256
-        || manifest.feature_schema_version != BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION
+        || directional_feature_names(&manifest.feature_schema_version).is_none()
         || manifest.feature_schema_sha256 != selection.feature_schema_sha256
     {
         bail!("BTC directional runtime model manifest does not match its frozen contract");
@@ -563,7 +585,34 @@ fn validate_manifest(
     ] {
         validate_sha256(name, digest)?;
     }
+    validate_manifest_deployment_metadata(manifest)?;
     Ok(())
+}
+
+fn validate_manifest_deployment_metadata(manifest: &RuntimeManifestFile) -> Result<()> {
+    match (
+        manifest.deployment_scope.as_deref(),
+        manifest.production_qualified,
+        manifest.live_capital_allowed,
+    ) {
+        (None, None, None) => Ok(()),
+        (Some(scope), Some(production_qualified), Some(live_capital_allowed))
+            if valid_deployment_metadata(scope, production_qualified, live_capital_allowed) =>
+        {
+            Ok(())
+        }
+        _ => bail!("BTC directional runtime model deployment metadata is invalid or incomplete"),
+    }
+}
+
+fn valid_deployment_metadata(
+    scope: &str,
+    production_qualified: bool,
+    live_capital_allowed: bool,
+) -> bool {
+    !scope.trim().is_empty()
+        && !(scope == "paper_only" && (production_qualified || live_capital_allowed))
+        && (!live_capital_allowed || production_qualified)
 }
 
 fn compile_runtime_model(
@@ -584,6 +633,26 @@ fn compile_runtime_model(
     if !file.provenance.is_object() {
         bail!("BTC directional runtime model provenance must be a JSON object");
     }
+    match (
+        file.deployment.as_ref(),
+        manifest.deployment_scope.as_deref(),
+        manifest.production_qualified,
+        manifest.live_capital_allowed,
+    ) {
+        (None, None, None, None) => {}
+        (Some(deployment), Some(scope), Some(production_qualified), Some(live_capital_allowed))
+            if deployment.scope == scope
+                && deployment.production_qualified == production_qualified
+                && deployment.live_capital_allowed == live_capital_allowed
+                && valid_deployment_metadata(
+                    &deployment.scope,
+                    deployment.production_qualified,
+                    deployment.live_capital_allowed,
+                ) => {}
+        _ => {
+            bail!("BTC directional runtime model deployment metadata does not match its manifest")
+        }
+    }
     let feature_count = file.features.names.len();
     if feature_count == 0
         || feature_count != file.features.imputation_medians.len()
@@ -601,7 +670,7 @@ fn compile_runtime_model(
     {
         bail!("BTC directional runtime model feature contract is malformed");
     }
-    validate_frozen_feature_order(&file.features.names)?;
+    validate_frozen_feature_order(&file.features.schema_version, &file.features.names)?;
 
     let estimator = file.estimator;
     if estimator.estimator_type != "histogram_gradient_boosting_binary_classifier"
@@ -685,16 +754,21 @@ fn compile_runtime_model(
     })
 }
 
-fn validate_frozen_feature_order(feature_names: &[String]) -> Result<()> {
-    if feature_names.len() != BTC_DIRECTIONAL_FEATURE_NAMES.len()
+fn validate_frozen_feature_order(
+    feature_schema_version: &str,
+    feature_names: &[String],
+) -> Result<()> {
+    let expected = directional_feature_names(feature_schema_version)
+        .context("BTC directional runtime model feature schema is not supported")?;
+    if feature_names.len() != expected.len()
         || feature_names
             .iter()
-            .zip(BTC_DIRECTIONAL_FEATURE_NAMES)
-            .any(|(actual, expected)| actual != expected)
+            .zip(expected.iter())
+            .any(|(actual, expected)| actual.as_str() != *expected)
     {
         bail!(
             "BTC directional runtime model feature order does not match schema {}",
-            BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION
+            feature_schema_version
         );
     }
     Ok(())
@@ -855,6 +929,12 @@ fn sigmoid(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::btc::directional_features::{
+        BTC_DIRECTIONAL_FEATURE_COUNT, BTC_DIRECTIONAL_FEATURE_NAMES,
+        BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_COUNT,
+        BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_NAMES,
+        BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION,
+    };
 
     #[derive(Debug, Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -930,15 +1010,108 @@ mod tests {
             .iter()
             .map(|name| (*name).to_string())
             .collect::<Vec<_>>();
-        validate_frozen_feature_order(&expected).unwrap();
+        validate_frozen_feature_order(BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION, &expected)
+            .unwrap();
 
         let mut reordered = expected.clone();
         reordered.swap(0, 1);
-        assert!(validate_frozen_feature_order(&reordered).is_err());
+        assert!(validate_frozen_feature_order(
+            BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION,
+            &reordered,
+        )
+        .is_err());
 
         let mut replaced = expected;
         replaced[0] = "unexpected_feature".to_string();
-        assert!(validate_frozen_feature_order(&replaced).is_err());
+        assert!(validate_frozen_feature_order(
+            BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION,
+            &replaced,
+        )
+        .is_err());
+
+        let mature = BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_NAMES
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+        validate_frozen_feature_order(
+            BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION,
+            &mature,
+        )
+        .unwrap();
+        assert!(validate_frozen_feature_order(
+            BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION,
+            &mature,
+        )
+        .is_err());
+        assert!(validate_frozen_feature_order(
+            BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION,
+            &BTC_DIRECTIONAL_FEATURE_NAMES
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>(),
+        )
+        .is_err());
+        assert!(validate_frozen_feature_order("unsupported-schema", &[]).is_err());
+    }
+
+    #[test]
+    fn paper_only_deployment_metadata_fails_closed_on_live_permissions() {
+        assert!(valid_deployment_metadata("paper_only", false, false));
+        assert!(!valid_deployment_metadata("paper_only", true, false));
+        assert!(!valid_deployment_metadata("paper_only", false, true));
+        assert!(!valid_deployment_metadata("production", false, true));
+        assert!(valid_deployment_metadata("production", true, true));
+        assert!(!valid_deployment_metadata(" ", false, false));
+    }
+
+    #[test]
+    fn input_hash_rejects_feature_count_mismatches_for_selected_schema() {
+        let selection = RuntimeModelSelection {
+            model_key: "btc-test-model".to_string(),
+            artifact_sha256: "a".repeat(64),
+            feature_schema_sha256: "b".repeat(64),
+        };
+        let window_start = "2026-07-28T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let feature_as_of = "2026-07-28T12:01:00Z".parse::<DateTime<Utc>>().unwrap();
+
+        for (schema_version, expected_count) in [
+            (
+                BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION,
+                BTC_DIRECTIONAL_FEATURE_COUNT,
+            ),
+            (
+                BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION,
+                BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_COUNT,
+            ),
+        ] {
+            assert!(directional_model_input_sha256(
+                &selection,
+                schema_version,
+                "market",
+                window_start,
+                feature_as_of,
+                60,
+                &vec![0.0; expected_count],
+            )
+            .is_ok());
+
+            let error = directional_model_input_sha256(
+                &selection,
+                schema_version,
+                "market",
+                window_start,
+                feature_as_of,
+                60,
+                &vec![0.0; expected_count - 1],
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains(&format!(
+                    "schema {schema_version} requires {expected_count}"
+                )),
+                "unexpected error: {error:#}"
+            );
+        }
     }
 
     #[test]

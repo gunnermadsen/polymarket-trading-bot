@@ -7,6 +7,9 @@ use super::types::{BinanceOneSecondKline, BinanceOneSecondWindow};
 
 pub const BTC_DIRECTIONAL_FEATURE_SCHEMA_VERSION: &str = "btc-5m-directional-core-features-v2";
 pub const BTC_DIRECTIONAL_FEATURE_COUNT: usize = 58;
+pub const BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION: &str =
+    "btc-5m-directional-mature-reversal-features-v1";
+pub const BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_COUNT: usize = 71;
 pub const BTC_DIRECTIONAL_FIRST_CANDIDATE_SECOND: i64 = 60;
 pub const BTC_DIRECTIONAL_LAST_CANDIDATE_SECOND: i64 = 240;
 pub const BTC_DIRECTIONAL_CANDIDATE_CADENCE_SECONDS: i64 = 5;
@@ -81,8 +84,56 @@ pub const BTC_DIRECTIONAL_FEATURE_NAMES: [&str; BTC_DIRECTIONAL_FEATURE_COUNT] =
     "btc_price_flow_divergence_30s",
 ];
 
+pub const BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SUFFIX_NAMES: [&str;
+    BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_COUNT - BTC_DIRECTIONAL_FEATURE_COUNT] = [
+    "btc_path_max_favorable_excursion_bps",
+    "btc_path_max_adverse_excursion_bps",
+    "btc_path_pullback_from_favorable_extreme_bps",
+    "btc_path_recovery_from_adverse_extreme_bps",
+    "btc_seconds_since_path_high_scaled",
+    "btc_seconds_since_path_low_scaled",
+    "btc_path_sign_normalized_return_5s_bps",
+    "btc_path_sign_normalized_return_15s_bps",
+    "btc_path_sign_normalized_return_30s_bps",
+    "btc_path_sign_normalized_return_60s_bps",
+    "btc_path_sign_normalized_flow_5s",
+    "btc_path_sign_normalized_flow_30s",
+    "btc_path_sign_normalized_flow_60s",
+];
+
+const fn mature_reversal_feature_names(
+) -> [&'static str; BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_COUNT] {
+    let mut names = [""; BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_COUNT];
+    let mut index = 0;
+    while index < BTC_DIRECTIONAL_FEATURE_COUNT {
+        names[index] = BTC_DIRECTIONAL_FEATURE_NAMES[index];
+        index += 1;
+    }
+    let mut suffix_index = 0;
+    while suffix_index < BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SUFFIX_NAMES.len() {
+        names[index] = BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SUFFIX_NAMES[suffix_index];
+        index += 1;
+        suffix_index += 1;
+    }
+    names
+}
+
+pub const BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_NAMES: [&str;
+    BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_COUNT] = mature_reversal_feature_names();
+
+pub fn directional_feature_names(schema_version: &str) -> Option<&'static [&'static str]> {
+    match schema_version {
+        BTC_DIRECTIONAL_FEATURE_SCHEMA_VERSION => Some(&BTC_DIRECTIONAL_FEATURE_NAMES),
+        BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION => {
+            Some(&BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_NAMES)
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectionalFeatureVector {
+    schema_version: &'static str,
     pub feature_as_of: DateTime<Utc>,
     pub seconds_elapsed: u16,
     pub values: Vec<f64>,
@@ -90,15 +141,16 @@ pub struct DirectionalFeatureVector {
 
 impl DirectionalFeatureVector {
     pub fn schema_version(&self) -> &'static str {
-        BTC_DIRECTIONAL_FEATURE_SCHEMA_VERSION
+        self.schema_version
     }
 
-    pub fn names(&self) -> &'static [&'static str; BTC_DIRECTIONAL_FEATURE_COUNT] {
-        &BTC_DIRECTIONAL_FEATURE_NAMES
+    pub fn names(&self) -> &'static [&'static str] {
+        directional_feature_names(self.schema_version)
+            .expect("directional feature vectors carry only supported schemas")
     }
 
     pub fn get(&self, name: &str) -> Option<f64> {
-        BTC_DIRECTIONAL_FEATURE_NAMES
+        self.names()
             .iter()
             .position(|candidate| *candidate == name)
             .map(|index| self.values[index])
@@ -145,6 +197,9 @@ pub enum DirectionalFeatureError {
     NonFiniteFeature {
         index: usize,
         name: &'static str,
+    },
+    UnsupportedFeatureSchema {
+        schema_version: String,
     },
 }
 
@@ -204,6 +259,12 @@ impl fmt::Display for DirectionalFeatureError {
                 formatter,
                 "directional feature {name} at index {index} is not finite"
             ),
+            Self::UnsupportedFeatureSchema { schema_version } => {
+                write!(
+                    formatter,
+                    "directional feature schema {schema_version} is not supported"
+                )
+            }
         }
     }
 }
@@ -222,6 +283,25 @@ pub fn build_directional_features(
     window_start: DateTime<Utc>,
     feature_as_of: DateTime<Utc>,
 ) -> Result<DirectionalFeatureVector, DirectionalFeatureError> {
+    build_directional_features_for_schema(
+        window,
+        window_start,
+        feature_as_of,
+        BTC_DIRECTIONAL_FEATURE_SCHEMA_VERSION,
+    )
+}
+
+pub fn build_directional_features_for_schema(
+    window: &BinanceOneSecondWindow,
+    window_start: DateTime<Utc>,
+    feature_as_of: DateTime<Utc>,
+    schema_version: &str,
+) -> Result<DirectionalFeatureVector, DirectionalFeatureError> {
+    let schema_version = canonical_feature_schema_version(schema_version).ok_or_else(|| {
+        DirectionalFeatureError::UnsupportedFeatureSchema {
+            schema_version: schema_version.to_string(),
+        }
+    })?;
     let seconds_elapsed = validate_feature_time(window_start, feature_as_of)?;
     let required_start = window_start - chrono::Duration::seconds(1);
     let required_end = feature_as_of - chrono::Duration::seconds(1);
@@ -230,7 +310,17 @@ pub fn build_directional_features(
         .into_iter()
         .map(NumericCandle::try_from)
         .collect::<Result<Vec<_>, _>>()?;
-    derive_directional_features(&numeric, feature_as_of, seconds_elapsed)
+    derive_directional_features(&numeric, feature_as_of, seconds_elapsed, schema_version)
+}
+
+fn canonical_feature_schema_version(schema_version: &str) -> Option<&'static str> {
+    match schema_version {
+        BTC_DIRECTIONAL_FEATURE_SCHEMA_VERSION => Some(BTC_DIRECTIONAL_FEATURE_SCHEMA_VERSION),
+        BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION => {
+            Some(BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION)
+        }
+        _ => None,
+    }
 }
 
 fn validate_feature_time(
@@ -439,6 +529,7 @@ fn derive_directional_features(
     candles: &[NumericCandle],
     feature_as_of: DateTime<Utc>,
     seconds_elapsed: i64,
+    schema_version: &'static str,
 ) -> Result<DirectionalFeatureVector, DirectionalFeatureError> {
     debug_assert_eq!(candles.len(), seconds_elapsed as usize + 1);
     let end = candles.len() - 1;
@@ -536,7 +627,7 @@ fn derive_directional_features(
     let weekday_angle =
         feature_as_of.weekday().number_from_monday() as f64 * std::f64::consts::TAU / 7.0;
 
-    let values = vec![
+    let mut values = vec![
         seconds_elapsed as f64 / MARKET_WINDOW_SECONDS as f64,
         (MARKET_WINDOW_SECONDS - seconds_elapsed) as f64 / MARKET_WINDOW_SECONDS as f64,
         path_from_open,
@@ -596,7 +687,53 @@ fn derive_directional_features(
         price_flow_agreement_30,
         price_flow_divergence_30,
     ];
-    debug_assert_eq!(values.len(), BTC_DIRECTIONAL_FEATURE_COUNT);
+    if schema_version == BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION {
+        let path_direction_sign = if path_from_open >= 0.0 { 1.0 } else { -1.0 };
+        let path_extremes = elapsed_path_extremes(candles);
+        let window_open_close = candles[0].close;
+        let running_path_high_bps = (path_extremes.running_high / window_open_close).ln() * BPS;
+        let running_path_low_bps = (path_extremes.running_low / window_open_close).ln() * BPS;
+        let path_drawdown_from_high_bps = (path_extremes.running_high / close).ln() * BPS;
+        let path_rebound_from_low_bps = (close / path_extremes.running_low).ln() * BPS;
+        let (
+            path_max_favorable_excursion_bps,
+            path_max_adverse_excursion_bps,
+            path_pullback_from_favorable_extreme_bps,
+            path_recovery_from_adverse_extreme_bps,
+        ) = if path_direction_sign > 0.0 {
+            (
+                running_path_high_bps.max(0.0),
+                (-running_path_low_bps).max(0.0),
+                path_drawdown_from_high_bps,
+                path_rebound_from_low_bps,
+            )
+        } else {
+            (
+                (-running_path_low_bps).max(0.0),
+                running_path_high_bps.max(0.0),
+                path_rebound_from_low_bps,
+                path_drawdown_from_high_bps,
+            )
+        };
+        values.extend_from_slice(&[
+            path_max_favorable_excursion_bps,
+            path_max_adverse_excursion_bps,
+            path_pullback_from_favorable_extreme_bps,
+            path_recovery_from_adverse_extreme_bps,
+            path_extremes.seconds_since_high as f64 / MARKET_WINDOW_SECONDS as f64,
+            path_extremes.seconds_since_low as f64 / MARKET_WINDOW_SECONDS as f64,
+            path_direction_sign * return_5,
+            path_direction_sign * return_15,
+            path_direction_sign * return_30,
+            path_direction_sign * return_60,
+            path_direction_sign * signed_flow_5,
+            path_direction_sign * signed_flow_30,
+            path_direction_sign * signed_flow_60,
+        ]);
+    }
+    let feature_names = directional_feature_names(schema_version)
+        .expect("feature schema was canonicalized before derivation");
+    debug_assert_eq!(values.len(), feature_names.len());
     if let Some((index, _)) = values
         .iter()
         .enumerate()
@@ -604,11 +741,12 @@ fn derive_directional_features(
     {
         return Err(DirectionalFeatureError::NonFiniteFeature {
             index,
-            name: BTC_DIRECTIONAL_FEATURE_NAMES[index],
+            name: feature_names[index],
         });
     }
 
     Ok(DirectionalFeatureVector {
+        schema_version,
         feature_as_of,
         seconds_elapsed: seconds_elapsed as u16,
         values,
@@ -685,6 +823,39 @@ struct ElapsedPathStats {
     cross_count: usize,
     seconds_since_cross: usize,
     positive_fraction: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ElapsedPathExtremes {
+    running_high: f64,
+    running_low: f64,
+    seconds_since_high: usize,
+    seconds_since_low: usize,
+}
+
+fn elapsed_path_extremes(candles: &[NumericCandle]) -> ElapsedPathExtremes {
+    let mut running_high = f64::NEG_INFINITY;
+    let mut running_low = f64::INFINITY;
+    let mut last_high_second = 0;
+    let mut last_low_second = 0;
+    for (second, candle) in candles.iter().enumerate() {
+        running_high = running_high.max(candle.high);
+        running_low = running_low.min(candle.low);
+        // Python updates the most recent extreme on equality as well as on a new extreme.
+        if candle.high >= running_high {
+            last_high_second = second;
+        }
+        if candle.low <= running_low {
+            last_low_second = second;
+        }
+    }
+    let end = candles.len() - 1;
+    ElapsedPathExtremes {
+        running_high,
+        running_low,
+        seconds_since_high: end - last_high_second,
+        seconds_since_low: end - last_low_second,
+    }
 }
 
 fn elapsed_path_stats(log_closes: &[f64]) -> ElapsedPathStats {
@@ -790,6 +961,23 @@ mod tests {
         -0.02,
     ];
 
+    const PYTHON_MATURE_REVERSAL_SUFFIX_SECOND_240: [f64;
+        BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SUFFIX_NAMES.len()] = [
+        11.773067024164103,
+        4.5210218279224943,
+        9.5733089886757377,
+        6.7207798634092528,
+        0.0033333333333333335,
+        0.79666666666666675,
+        -7.3456847407271653,
+        -2.0493390953291168,
+        -4.0982582976134552,
+        1.799766035261996,
+        -0.019999999999999997,
+        -0.02,
+        -0.02,
+    ];
+
     #[test]
     fn feature_names_match_frozen_python_order() {
         assert_eq!(BTC_DIRECTIONAL_FEATURE_NAMES.len(), 58);
@@ -833,6 +1021,136 @@ mod tests {
                 BTC_DIRECTIONAL_FEATURE_NAMES[index],
             );
         }
+    }
+
+    #[test]
+    fn mature_reversal_schema_has_exact_order_and_matches_python_suffix() {
+        assert_eq!(BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_NAMES.len(), 71);
+        assert_eq!(
+            &BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_NAMES[..BTC_DIRECTIONAL_FEATURE_COUNT],
+            &BTC_DIRECTIONAL_FEATURE_NAMES
+        );
+        assert_eq!(
+            &BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_NAMES[BTC_DIRECTIONAL_FEATURE_COUNT..],
+            &BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SUFFIX_NAMES
+        );
+
+        let window_start = Utc.with_ymd_and_hms(2026, 6, 14, 12, 35, 0).unwrap();
+        let window = BinanceOneSecondWindow::from_completed(
+            (0..=240)
+                .map(|second| fixture_candle(window_start, second))
+                .collect(),
+        )
+        .unwrap();
+        let core = build_directional_features(
+            &window,
+            window_start,
+            window_start + Duration::seconds(240),
+        )
+        .unwrap();
+        let mature = build_directional_features_for_schema(
+            &window,
+            window_start,
+            window_start + Duration::seconds(240),
+            BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION,
+        )
+        .unwrap();
+
+        assert_eq!(
+            mature.schema_version(),
+            BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION
+        );
+        assert_eq!(
+            mature.names(),
+            &BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_NAMES
+        );
+        assert_eq!(
+            &mature.values[..BTC_DIRECTIONAL_FEATURE_COUNT],
+            core.values.as_slice()
+        );
+        for (index, (actual, expected)) in mature.values[BTC_DIRECTIONAL_FEATURE_COUNT..]
+            .iter()
+            .zip(PYTHON_MATURE_REVERSAL_SUFFIX_SECOND_240)
+            .enumerate()
+        {
+            let tolerance = 2e-10_f64.max(expected.abs() * 2e-11);
+            assert!(
+                (actual - expected).abs() <= tolerance,
+                "{} mismatch: actual={actual:.17}, expected={expected:.17}, \
+                 tolerance={tolerance:.3e}",
+                BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SUFFIX_NAMES[index],
+            );
+        }
+    }
+
+    #[test]
+    fn mature_reversal_zero_path_uses_positive_sign_and_latest_tied_extremes() {
+        let window_start = Utc.with_ymd_and_hms(2026, 6, 14, 12, 35, 0).unwrap();
+        let price = Decimal::new(100_000_000, 3);
+        let candles = (0..=60)
+            .map(|second| {
+                let mut candle = fixture_candle(window_start, second);
+                candle.open_price = price;
+                candle.high_price = price;
+                candle.low_price = price;
+                candle.close_price = price;
+                candle.base_volume = candle.quote_volume / price;
+                candle.taker_buy_base_volume = candle.taker_buy_quote_volume / price;
+                candle
+            })
+            .collect();
+        let window = BinanceOneSecondWindow::from_completed(candles).unwrap();
+        let features = build_directional_features_for_schema(
+            &window,
+            window_start,
+            window_start + Duration::seconds(60),
+            BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION,
+        )
+        .unwrap();
+        let suffix = &features.values[BTC_DIRECTIONAL_FEATURE_COUNT..];
+
+        assert_eq!(&suffix[..6], &[0.0; 6]);
+        assert_eq!(suffix[6], 0.0);
+        assert_eq!(suffix[7], 0.0);
+        assert_eq!(suffix[8], 0.0);
+        assert_eq!(suffix[9], 0.0);
+        assert_eq!(suffix[10], features.values[26]);
+        assert_eq!(suffix[11], features.values[27]);
+        assert_eq!(suffix[12], features.values[53]);
+    }
+
+    #[test]
+    fn schema_selected_builder_ignores_future_candles() {
+        let window_start = Utc.with_ymd_and_hms(2026, 6, 14, 12, 35, 0).unwrap();
+        let as_of = window_start + Duration::seconds(120);
+        let observed = BinanceOneSecondWindow::from_completed(
+            (0..=120)
+                .map(|second| fixture_candle(window_start, second))
+                .collect(),
+        )
+        .unwrap();
+        let with_future = BinanceOneSecondWindow::from_completed(
+            (0..=240)
+                .map(|second| fixture_candle(window_start, second))
+                .collect(),
+        )
+        .unwrap();
+
+        let observed = build_directional_features_for_schema(
+            &observed,
+            window_start,
+            as_of,
+            BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION,
+        )
+        .unwrap();
+        let with_future = build_directional_features_for_schema(
+            &with_future,
+            window_start,
+            as_of,
+            BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION,
+        )
+        .unwrap();
+        assert_eq!(observed, with_future);
     }
 
     #[test]
