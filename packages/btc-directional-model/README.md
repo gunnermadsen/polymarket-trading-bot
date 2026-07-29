@@ -178,6 +178,37 @@ the challenger uses frozen 60-89, 90-119, 120-179, and 180-240-second calibratio
 output is consumed development evidence only; it does not export a runtime model or access
 July 21-August 4.
 
+Run the March 21-July 28 boundary-reversal accuracy session:
+
+```bash
+export POLARS_MAX_THREADS=6
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export MKL_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+.venv/bin/btc-directional-model core-extract \
+  --config configs/btc-5m-directional-core-boundary-reversal-20260321-20260729.toml \
+  --scope pre_holdout
+.venv/bin/btc-directional-model core-features \
+  --config configs/btc-5m-directional-core-boundary-reversal-20260321-20260729.toml \
+  --scope pre_holdout
+.venv/bin/btc-directional-model persistence-benchmark-run \
+  --config configs/btc-5m-directional-boundary-reversal-accuracy-20260321-20260729.toml
+```
+
+This consumed-development session compares the current 58-feature outcome control with one
+106-feature continuation-versus-reversal challenger. The additional causal fields describe
+longer-horizon momentum, excursion, pullback/recovery, boundary-cross density, volatility shock,
+and path-sign-normalized price and flow. Final-price availability does not select the cohort and
+final prices are never model inputs. The challenger must preserve all existing accuracy,
+direction-recall, timing, coverage, calibration, and execution-economics gates. It must also
+reduce the absolute number of wrong out-of-fold first-crossing decisions made at 95% or greater
+confidence, without worsening that error rate per selected trade. This requirement qualifies the
+trained artifact only; it does not select thresholds, veto individual trades, or add runtime
+trading logic. A new forward paper cohort beginning after artifact freeze remains required for
+independent qualification.
+
 Run the rolling correctness-admission benchmark from a completed boundary session:
 
 ```bash

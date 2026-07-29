@@ -34,10 +34,16 @@ BOUNDARY_ALIGNMENT_CANDIDATES = (
     "histogram_enriched",
     BOUNDARY_ALIGNMENT_CANDIDATE,
 )
+BOUNDARY_REVERSAL_ACCURACY_CANDIDATE = "histogram_boundary_reversal"
+BOUNDARY_REVERSAL_ACCURACY_CANDIDATES = (
+    "histogram_enriched",
+    BOUNDARY_REVERSAL_ACCURACY_CANDIDATE,
+)
 PATH_PERSISTENCE_PROFILE = "path_persistence"
 ACCURACY_TIMING_PROFILE = "accuracy_timing"
 FOLD_ROBUST_FREQUENCY_PROFILE = "fold_robust_frequency"
 BOUNDARY_ALIGNMENT_PROFILE = "boundary_alignment"
+BOUNDARY_REVERSAL_ACCURACY_PROFILE = "boundary_reversal_accuracy"
 
 
 @dataclass(frozen=True)
@@ -64,6 +70,9 @@ class PersistenceBenchmarkConfig:
     minimum_common_markets: int
     minimum_executable_markets: int
     minimum_coverage_uplift: float
+    hard_confidence_floor: float
+    minimum_hard_confident_error_count_reduction: int
+    maximum_hard_confident_error_selected_rate_regression: float
     maximum_accuracy_regression: float
     maximum_balanced_accuracy_regression: float
     maximum_direction_recall_regression: float
@@ -127,6 +136,16 @@ def load_persistence_benchmark_config(path: Path) -> PersistenceBenchmarkConfig:
         minimum_common_markets=int(gates["minimum_common_markets"]),
         minimum_executable_markets=int(gates["minimum_executable_markets"]),
         minimum_coverage_uplift=float(gates["minimum_coverage_uplift"]),
+        hard_confidence_floor=float(gates.get("hard_confidence_floor", 0.95)),
+        minimum_hard_confident_error_count_reduction=int(
+            gates.get("minimum_hard_confident_error_count_reduction", 0)
+        ),
+        maximum_hard_confident_error_selected_rate_regression=float(
+            gates.get(
+                "maximum_hard_confident_error_selected_rate_regression",
+                0.0,
+            )
+        ),
         maximum_accuracy_regression=float(gates["maximum_accuracy_regression"]),
         maximum_balanced_accuracy_regression=float(gates["maximum_balanced_accuracy_regression"]),
         maximum_direction_recall_regression=float(gates["maximum_direction_recall_regression"]),
@@ -181,6 +200,25 @@ def validate_persistence_benchmark_config(
             raise ValueError(
                 "boundary-alignment benchmark preserves equal market weighting"
             )
+    elif config.profile == BOUNDARY_REVERSAL_ACCURACY_PROFILE:
+        if config.candidate_names != BOUNDARY_REVERSAL_ACCURACY_CANDIDATES:
+            raise ValueError(
+                "boundary-reversal accuracy benchmark requires its frozen "
+                "two-candidate matrix"
+            )
+        if config.row_weight_schedules:
+            raise ValueError(
+                "boundary-reversal accuracy benchmark preserves equal market weighting"
+            )
+        if (
+            config.hard_confidence_floor != 0.95
+            or config.minimum_hard_confident_error_count_reduction != 1
+            or config.maximum_hard_confident_error_selected_rate_regression != 0.0
+        ):
+            raise ValueError(
+                "boundary-reversal accuracy benchmark requires the frozen "
+                "hard-confident-error contract"
+            )
     else:
         raise ValueError(f"unsupported persistence benchmark profile: {config.profile}")
     if config.control_candidate != config.candidate_names[0]:
@@ -201,6 +239,9 @@ def validate_persistence_benchmark_config(
         raise ValueError("sample gates cannot be weakened below 500 markets")
     if (
         config.minimum_coverage_uplift <= 0.0
+        or not 0.5 <= config.hard_confidence_floor <= 1.0
+        or config.minimum_hard_confident_error_count_reduction < 0
+        or config.maximum_hard_confident_error_selected_rate_regression < 0.0
         or config.maximum_accuracy_regression > 0.0
         or config.maximum_balanced_accuracy_regression > 0.0
         or config.maximum_direction_recall_regression > 0.0
@@ -221,12 +262,78 @@ def validate_persistence_benchmark_config(
         raise ValueError("each calibration band requires at least 500 rows")
 
     core = load_core_config(config.core_config)
+    expected_range = (
+        (
+            "2026-03-21T00:00:00+00:00",
+            "2026-07-29T00:00:00+00:00",
+            130,
+        )
+        if config.profile == BOUNDARY_REVERSAL_ACCURACY_PROFILE
+        else (
+            "2026-04-21T00:00:00+00:00",
+            "2026-07-20T00:00:00+00:00",
+            90,
+        )
+    )
     if (
-        core.data.range_start.isoformat() != "2026-04-21T00:00:00+00:00"
-        or core.data.range_end.isoformat() != "2026-07-20T00:00:00+00:00"
-        or (core.data.range_end - core.data.range_start).days != 90
+        core.data.range_start.isoformat() != expected_range[0]
+        or core.data.range_end.isoformat() != expected_range[1]
+        or (core.data.range_end - core.data.range_start).days != expected_range[2]
     ):
-        raise ValueError("persistence benchmark requires exact [2026-04-21, 2026-07-20)")
+        raise ValueError(
+            "persistence benchmark training range does not match its frozen profile"
+        )
+    if config.profile == BOUNDARY_REVERSAL_ACCURACY_PROFILE:
+        expected_split = (
+            "2026-03-21T00:00:00+00:00",
+            "2026-07-14T00:00:00+00:00",
+            "2026-07-14T00:00:00+00:00",
+            "2026-07-21T00:00:00+00:00",
+            "2026-07-21T00:00:00+00:00",
+            "2026-07-29T00:00:00+00:00",
+        )
+        observed_split = (
+            core.split.development_start.isoformat(),
+            core.split.development_end.isoformat(),
+            core.split.probability_calibration_start.isoformat(),
+            core.split.probability_calibration_end.isoformat(),
+            core.split.policy_selection_start.isoformat(),
+            core.split.policy_selection_end.isoformat(),
+        )
+        expected_validation_windows = (
+            (
+                "2026-06-09T00:00:00+00:00",
+                "2026-06-16T00:00:00+00:00",
+            ),
+            (
+                "2026-06-16T00:00:00+00:00",
+                "2026-06-23T00:00:00+00:00",
+            ),
+            (
+                "2026-06-23T00:00:00+00:00",
+                "2026-06-30T00:00:00+00:00",
+            ),
+            (
+                "2026-06-30T00:00:00+00:00",
+                "2026-07-07T00:00:00+00:00",
+            ),
+            (
+                "2026-07-07T00:00:00+00:00",
+                "2026-07-14T00:00:00+00:00",
+            ),
+        )
+        observed_validation_windows = tuple(
+            (start.isoformat(), end.isoformat())
+            for start, end in core.split.validation_windows
+        )
+        if (
+            observed_split != expected_split
+            or observed_validation_windows != expected_validation_windows
+            or core.data.strict_final_price_audit
+        ):
+            raise ValueError(
+                "boundary-reversal accuracy split or source-selection contract changed"
+            )
     if (
         core.split.holdout_start != core.data.range_end
         or core.split.holdout_end != core.data.range_end

@@ -19,6 +19,9 @@ from .core_extract import (
 CoreFeatureScope = Literal["pre_holdout", "holdout"]
 CORE_FEATURE_SCHEMA_VERSION = "btc-5m-directional-core-features-v2"
 CORE_BOUNDARY_FEATURE_SCHEMA_VERSION = "btc-5m-directional-boundary-features-v1"
+CORE_BOUNDARY_REVERSAL_FEATURE_SCHEMA_VERSION = (
+    "btc-5m-directional-boundary-reversal-features-v1"
+)
 
 CORE_BASELINE_FEATURES = [
     "seconds_elapsed_scaled",
@@ -98,11 +101,55 @@ CORE_BOUNDARY_FEATURES = [
     "btc_boundary_momentum_alignment_5s",
 ]
 CORE_BOUNDARY_ENRICHED_FEATURES = CORE_ENRICHED_FEATURES + CORE_BOUNDARY_FEATURES
+CORE_BOUNDARY_REVERSAL_FEATURES = [
+    "btc_return_90s_bps",
+    "btc_return_120s_bps",
+    "btc_return_180s_bps",
+    "btc_realized_volatility_90s_bps",
+    "btc_realized_volatility_120s_bps",
+    "btc_realized_volatility_180s_bps",
+    "btc_signed_flow_90s",
+    "btc_signed_flow_120s",
+    "btc_signed_flow_180s",
+    "btc_price_acceleration_30_vs_90",
+    "btc_price_acceleration_60_vs_120",
+    "btc_price_acceleration_90_vs_180",
+    "btc_path_max_favorable_excursion_bps",
+    "btc_path_max_adverse_excursion_bps",
+    "btc_path_pullback_from_favorable_extreme_bps",
+    "btc_path_recovery_from_adverse_extreme_bps",
+    "btc_seconds_since_path_high_scaled",
+    "btc_seconds_since_path_low_scaled",
+    "btc_boundary_cross_density_elapsed",
+    "btc_last_boundary_cross_direction",
+    "btc_volatility_shock_30_vs_120",
+    "btc_volatility_shock_60_vs_180",
+    "btc_path_sign_normalized_return_5s_bps",
+    "btc_path_sign_normalized_return_15s_bps",
+    "btc_path_sign_normalized_return_30s_bps",
+    "btc_path_sign_normalized_return_60s_bps",
+    "btc_path_sign_normalized_return_90s_bps",
+    "btc_path_sign_normalized_return_120s_bps",
+    "btc_path_sign_normalized_return_180s_bps",
+    "btc_path_sign_normalized_flow_5s",
+    "btc_path_sign_normalized_flow_30s",
+    "btc_path_sign_normalized_flow_60s",
+    "btc_path_sign_normalized_flow_90s",
+    "btc_path_sign_normalized_flow_120s",
+    "btc_path_sign_normalized_flow_180s",
+    "btc_path_sign_normalized_boundary_gap_bps",
+    "btc_path_sign_normalized_boundary_terminal_volatility_z",
+    "btc_path_sign_normalized_last_boundary_cross_direction",
+]
+CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES = (
+    CORE_BOUNDARY_ENRICHED_FEATURES + CORE_BOUNDARY_REVERSAL_FEATURES
+)
 CORE_MODEL_FEATURES = {
     "logistic_baseline": CORE_BASELINE_FEATURES,
     "logistic_enriched": CORE_ENRICHED_FEATURES,
     "histogram_enriched": CORE_ENRICHED_FEATURES,
     "histogram_boundary_enriched": CORE_BOUNDARY_ENRICHED_FEATURES,
+    "histogram_boundary_reversal": CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES,
 }
 
 
@@ -227,6 +274,9 @@ def build_core_features(
         "feature_schema_version": CORE_FEATURE_SCHEMA_VERSION,
         "candidate_feature_schema_versions": {
             "histogram_boundary_enriched": CORE_BOUNDARY_FEATURE_SCHEMA_VERSION,
+            "histogram_boundary_reversal": (
+                CORE_BOUNDARY_REVERSAL_FEATURE_SCHEMA_VERSION
+            ),
         },
         "scope": scope,
         "range_start": range_start.isoformat(),
@@ -311,6 +361,15 @@ def derive_core_point_in_time_features(frame: pl.DataFrame) -> pl.DataFrame:
             .mul(10_000)
             .alias(f"btc_return_{seconds}s_bps")
         )
+    for seconds in (90, 120, 180):
+        frame = frame.with_columns(
+            (
+                pl.col("btc_log_close")
+                - pl.col("btc_log_close").shift(seconds).over("market_id")
+            )
+            .mul(10_000)
+            .alias(f"btc_return_{seconds}s_bps")
+        )
     frame = frame.with_columns(
         (
             pl.col("btc_log_close")
@@ -346,6 +405,22 @@ def derive_core_point_in_time_features(frame: pl.DataFrame) -> pl.DataFrame:
             .alias(f"btc_trade_count_{seconds}s"),
             pl.col("btc_taker_buy_quote_volume")
             .rolling_sum(window_size=seconds, min_samples=max(1, seconds // 2))
+            .over("market_id")
+            .alias(f"btc_taker_buy_quote_volume_{seconds}s"),
+        )
+    for seconds in (90, 120, 180):
+        frame = frame.with_columns(
+            pl.col("btc_log_return_1s")
+            .rolling_std(window_size=seconds, min_samples=seconds)
+            .over("market_id")
+            .mul(10_000)
+            .alias(f"btc_realized_volatility_{seconds}s_bps"),
+            pl.col("btc_quote_volume")
+            .rolling_sum(window_size=seconds, min_samples=seconds)
+            .over("market_id")
+            .alias(f"btc_quote_volume_{seconds}s"),
+            pl.col("btc_taker_buy_quote_volume")
+            .rolling_sum(window_size=seconds, min_samples=seconds)
             .over("market_id")
             .alias(f"btc_taker_buy_quote_volume_{seconds}s"),
         )
@@ -431,6 +506,15 @@ def derive_core_point_in_time_features(frame: pl.DataFrame) -> pl.DataFrame:
             .truediv(pl.col(f"btc_quote_volume_{seconds}s") + 1e-9)
             .alias(f"btc_signed_flow_{seconds}s"),
         )
+    for seconds in (90, 120, 180):
+        frame = frame.with_columns(
+            (
+                2 * pl.col(f"btc_taker_buy_quote_volume_{seconds}s")
+                - pl.col(f"btc_quote_volume_{seconds}s")
+            )
+            .truediv(pl.col(f"btc_quote_volume_{seconds}s") + 1e-9)
+            .alias(f"btc_signed_flow_{seconds}s")
+        )
     frame = frame.with_columns(
         pl.when(pl.col("btc_path_crossed"))
         .then(pl.col("seconds_elapsed"))
@@ -498,6 +582,61 @@ def derive_core_point_in_time_features(frame: pl.DataFrame) -> pl.DataFrame:
             .over("market_id")
             .clip(lower_bound=1)
         ).alias("btc_elapsed_volatility_mean"),
+    )
+    frame = frame.with_columns(
+        pl.col("btc_high")
+        .cum_max()
+        .over("market_id")
+        .alias("btc_running_path_high"),
+        pl.col("btc_low")
+        .cum_min()
+        .over("market_id")
+        .alias("btc_running_path_low"),
+        pl.when(pl.col("btc_path_from_window_open_bps") >= 0)
+        .then(1.0)
+        .otherwise(-1.0)
+        .alias("btc_path_direction_sign"),
+    )
+    frame = frame.with_columns(
+        pl.when(pl.col("btc_high") >= pl.col("btc_running_path_high"))
+        .then(pl.col("seconds_elapsed"))
+        .otherwise(None)
+        .forward_fill()
+        .over("market_id")
+        .alias("btc_last_path_high_second"),
+        pl.when(pl.col("btc_low") <= pl.col("btc_running_path_low"))
+        .then(pl.col("seconds_elapsed"))
+        .otherwise(None)
+        .forward_fill()
+        .over("market_id")
+        .alias("btc_last_path_low_second"),
+        (pl.col("btc_running_path_high") / pl.col("btc_window_open_close"))
+        .log()
+        .mul(10_000)
+        .alias("btc_running_path_high_bps"),
+        (pl.col("btc_running_path_low") / pl.col("btc_window_open_close"))
+        .log()
+        .mul(10_000)
+        .alias("btc_running_path_low_bps"),
+        (pl.col("btc_running_path_high") / pl.col("btc_close"))
+        .log()
+        .mul(10_000)
+        .alias("btc_path_drawdown_from_high_bps"),
+        (pl.col("btc_close") / pl.col("btc_running_path_low"))
+        .log()
+        .mul(10_000)
+        .alias("btc_path_rebound_from_low_bps"),
+        pl.when(pl.col("btc_boundary_crossed"))
+        .then(
+            pl.when(pl.col("btc_boundary_positive"))
+            .then(1.0)
+            .otherwise(-1.0)
+        )
+        .otherwise(None)
+        .forward_fill()
+        .over("market_id")
+        .fill_null(0.0)
+        .alias("btc_last_boundary_cross_direction"),
     )
     frame = frame.with_columns(
         (
@@ -649,6 +788,90 @@ def derive_core_point_in_time_features(frame: pl.DataFrame) -> pl.DataFrame:
         (pl.col("btc_path_from_window_open_bps") >= 0)
         .cast(pl.Int8)
         .alias("binance_sign_up"),
+    )
+    frame = frame.with_columns(
+        (
+            pl.col("btc_return_30s_bps")
+            - pl.col("btc_return_90s_bps") * (30.0 / 90.0)
+        ).alias("btc_price_acceleration_30_vs_90"),
+        (
+            pl.col("btc_return_60s_bps")
+            - pl.col("btc_return_120s_bps") * (60.0 / 120.0)
+        ).alias("btc_price_acceleration_60_vs_120"),
+        (
+            pl.col("btc_return_90s_bps")
+            - pl.col("btc_return_180s_bps") * (90.0 / 180.0)
+        ).alias("btc_price_acceleration_90_vs_180"),
+        pl.when(pl.col("btc_path_direction_sign") > 0)
+        .then(pl.col("btc_running_path_high_bps").clip(lower_bound=0.0))
+        .otherwise(
+            (-pl.col("btc_running_path_low_bps")).clip(lower_bound=0.0)
+        )
+        .alias("btc_path_max_favorable_excursion_bps"),
+        pl.when(pl.col("btc_path_direction_sign") > 0)
+        .then((-pl.col("btc_running_path_low_bps")).clip(lower_bound=0.0))
+        .otherwise(pl.col("btc_running_path_high_bps").clip(lower_bound=0.0))
+        .alias("btc_path_max_adverse_excursion_bps"),
+        pl.when(pl.col("btc_path_direction_sign") > 0)
+        .then(pl.col("btc_path_drawdown_from_high_bps"))
+        .otherwise(pl.col("btc_path_rebound_from_low_bps"))
+        .alias("btc_path_pullback_from_favorable_extreme_bps"),
+        pl.when(pl.col("btc_path_direction_sign") > 0)
+        .then(pl.col("btc_path_rebound_from_low_bps"))
+        .otherwise(pl.col("btc_path_drawdown_from_high_bps"))
+        .alias("btc_path_recovery_from_adverse_extreme_bps"),
+        (
+            (pl.col("seconds_elapsed") - pl.col("btc_last_path_high_second"))
+            .cast(pl.Float64)
+            / 300.0
+        ).alias("btc_seconds_since_path_high_scaled"),
+        (
+            (pl.col("seconds_elapsed") - pl.col("btc_last_path_low_second"))
+            .cast(pl.Float64)
+            / 300.0
+        ).alias("btc_seconds_since_path_low_scaled"),
+        (
+            pl.col("btc_boundary_cross_count")
+            / (pl.col("seconds_elapsed") + 1).cast(pl.Float64)
+        ).alias("btc_boundary_cross_density_elapsed"),
+        (
+            pl.col("btc_realized_volatility_30s_bps")
+            / (pl.col("btc_realized_volatility_120s_bps") + 1e-9)
+            - 1.0
+        ).alias("btc_volatility_shock_30_vs_120"),
+        (
+            pl.col("btc_realized_volatility_60s_bps")
+            / (pl.col("btc_realized_volatility_180s_bps") + 1e-9)
+            - 1.0
+        ).alias("btc_volatility_shock_60_vs_180"),
+    )
+    for seconds in (5, 15, 30, 60, 90, 120, 180):
+        frame = frame.with_columns(
+            (
+                pl.col("btc_path_direction_sign")
+                * pl.col(f"btc_return_{seconds}s_bps")
+            ).alias(f"btc_path_sign_normalized_return_{seconds}s_bps")
+        )
+    for seconds in (5, 30, 60, 90, 120, 180):
+        frame = frame.with_columns(
+            (
+                pl.col("btc_path_direction_sign")
+                * pl.col(f"btc_signed_flow_{seconds}s")
+            ).alias(f"btc_path_sign_normalized_flow_{seconds}s")
+        )
+    frame = frame.with_columns(
+        (
+            pl.col("btc_path_direction_sign")
+            * pl.col("btc_cross_venue_boundary_gap_bps")
+        ).alias("btc_path_sign_normalized_boundary_gap_bps"),
+        (
+            pl.col("btc_path_direction_sign")
+            * pl.col("btc_boundary_terminal_volatility_z")
+        ).alias("btc_path_sign_normalized_boundary_terminal_volatility_z"),
+        (
+            pl.col("btc_path_direction_sign")
+            * pl.col("btc_last_boundary_cross_direction")
+        ).alias("btc_path_sign_normalized_last_boundary_cross_direction"),
     )
     return frame
 

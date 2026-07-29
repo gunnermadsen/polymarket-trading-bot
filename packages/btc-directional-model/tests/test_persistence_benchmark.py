@@ -6,14 +6,20 @@ import numpy as np
 import polars as pl
 
 from btc_directional_model.core_config import load_core_config
+from btc_directional_model.core_features import (
+    CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES,
+)
 from btc_directional_model.core_training import ProbabilityCalibrator
 from btc_directional_model.persistence_benchmark import (
+    CANDIDATE_PROFILES,
     CalibratorSet,
     _add_training_gates,
+    _candidate_spec,
     _fold_robust_agreement_probability,
     attach_execution_evidence,
     calibrated_target_probability,
     common_selected_execution_comparison,
+    hard_confident_error_metrics,
     path_is_directionally_eligible,
     persistence_target_labels,
     target_probability_to_up,
@@ -21,6 +27,8 @@ from btc_directional_model.persistence_benchmark import (
 from btc_directional_model.persistence_config import (
     BOUNDARY_ALIGNMENT_CANDIDATE,
     BOUNDARY_ALIGNMENT_PROFILE,
+    BOUNDARY_REVERSAL_ACCURACY_CANDIDATE,
+    BOUNDARY_REVERSAL_ACCURACY_PROFILE,
     FOLD_ROBUST_FREQUENCY_CANDIDATE,
     FOLD_ROBUST_FREQUENCY_PROFILE,
     CalibrationBand,
@@ -168,6 +176,184 @@ def test_boundary_alignment_configuration_preserves_control_and_gates() -> None:
     assert config.maximum_median_entry_seconds_regression == -5.0
     assert config.minimum_executable_markets == 500
     assert config.evaluation_is_independent is False
+
+
+def test_boundary_reversal_accuracy_configuration_locks_march_july_contract() -> None:
+    package_root = Path(__file__).resolve().parents[1]
+    config = load_persistence_benchmark_config(
+        package_root
+        / "configs"
+        / "btc-5m-directional-boundary-reversal-accuracy-20260321-20260729.toml"
+    )
+    core = load_core_config(config.core_config)
+
+    assert config.profile == BOUNDARY_REVERSAL_ACCURACY_PROFILE
+    assert config.candidate_names == (
+        "histogram_enriched",
+        BOUNDARY_REVERSAL_ACCURACY_CANDIDATE,
+    )
+    assert core.data.range_start == datetime(2026, 3, 21, tzinfo=UTC)
+    assert core.data.range_end == datetime(2026, 7, 29, tzinfo=UTC)
+    assert core.split.development_end == datetime(2026, 7, 14, tzinfo=UTC)
+    assert core.split.probability_calibration_end == datetime(
+        2026, 7, 21, tzinfo=UTC
+    )
+    assert core.split.policy_selection_end == datetime(2026, 7, 29, tzinfo=UTC)
+    assert core.data.strict_final_price_audit is False
+    assert config.evaluation_is_independent is False
+    assert config.hard_confidence_floor == 0.95
+    assert config.minimum_hard_confident_error_count_reduction == 1
+    assert config.maximum_hard_confident_error_selected_rate_regression == 0.0
+
+
+def test_boundary_reversal_candidate_uses_full_versioned_feature_contract() -> None:
+    package_root = Path(__file__).resolve().parents[1]
+    config = load_persistence_benchmark_config(
+        package_root
+        / "configs"
+        / "btc-5m-directional-boundary-reversal-accuracy-20260321-20260729.toml"
+    )
+    profile = CANDIDATE_PROFILES[BOUNDARY_REVERSAL_ACCURACY_CANDIDATE]
+
+    spec = _candidate_spec(profile, config)
+
+    assert spec.feature_names == tuple(CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES)
+    assert len(spec.feature_names) == 106
+    assert "btc_path_from_window_open_bps" in spec.feature_names
+    assert "btc_cross_venue_boundary_gap_bps" in spec.feature_names
+    assert "btc_path_sign_normalized_boundary_gap_bps" in spec.feature_names
+
+
+def test_hard_confident_errors_use_fixed_and_selected_denominators() -> None:
+    rows = pl.DataFrame(
+        {
+            "market_id": ["hard-wrong", "soft-wrong", "hard-correct"],
+            "correct": [False, False, True],
+            "confidence": [0.96, 0.94, 0.99],
+        }
+    )
+
+    metrics = hard_confident_error_metrics(
+        rows,
+        eligible_markets=5,
+        confidence_floor=0.95,
+    )
+
+    assert metrics["hard_confident_error_markets"] == 1
+    assert metrics["hard_confident_error_exposure_rate"] == 0.2
+    assert metrics["hard_confident_error_rate_selected"] == 1 / 3
+    assert metrics["maximum_incorrect_confidence"] == 0.96
+
+
+def test_boundary_reversal_tail_gate_cannot_be_diluted_by_more_trades() -> None:
+    package_root = Path(__file__).resolve().parents[1]
+    config = load_persistence_benchmark_config(
+        package_root
+        / "configs"
+        / "btc-5m-directional-boundary-reversal-accuracy-20260321-20260729.toml"
+    )
+    core = load_core_config(config.core_config)
+
+    def evaluate(
+        candidate_hard_errors: int,
+        candidate_selected_markets: int = 100,
+    ) -> dict[str, bool]:
+        checkpoints = [
+            {
+                "seconds_elapsed": second,
+                "accuracy_delta": 0.0,
+                "balanced_accuracy_delta": 0.0,
+                "up_recall_delta": 0.0,
+                "down_recall_delta": 0.0,
+            }
+            for second in (60, 90, 120, 180, 240)
+        ]
+        benchmark = {
+            "candidates": {
+                "histogram_enriched": {"advance": {"checks": []}},
+                BOUNDARY_REVERSAL_ACCURACY_CANDIDATE: {
+                    "advance": {"checks": []}
+                },
+            },
+            "common_comparisons": {
+                BOUNDARY_REVERSAL_ACCURACY_CANDIDATE: {
+                    "checkpoints": checkpoints
+                }
+            },
+            "common_selected_execution_comparisons": {
+                BOUNDARY_REVERSAL_ACCURACY_CANDIDATE: {"common_markets": 500}
+            },
+        }
+        candidate_results = {
+            "histogram_enriched": {
+                "hard_confident_errors": {
+                    "eligible_markets": 100,
+                    "selected_markets": 80,
+                    "hard_confident_error_markets": 2,
+                    "hard_confident_error_rate_selected": 2 / 80,
+                }
+            },
+            BOUNDARY_REVERSAL_ACCURACY_CANDIDATE: {
+                "hard_confident_errors": {
+                    "eligible_markets": 100,
+                    "selected_markets": candidate_selected_markets,
+                    "hard_confident_error_markets": candidate_hard_errors,
+                    "hard_confident_error_rate_selected": (
+                        candidate_hard_errors / candidate_selected_markets
+                    ),
+                },
+                "early": {
+                    "markets": 500,
+                    "accuracy": 0.90,
+                    "balanced_accuracy": 0.90,
+                    "up_recall": 0.90,
+                    "down_recall": 0.90,
+                    "wilson_lower_95": 0.88,
+                },
+                "qualified_threshold_folds": 5,
+                "total_folds": 5,
+                "nonnegative_uplift_folds": 5,
+                "bootstrap": {"lower_95": 0.0},
+                "passed_development": True,
+            },
+        }
+
+        _add_training_gates(
+            benchmark,
+            candidate_results,
+            config,
+            core,
+        )
+
+        return {
+            check["name"]: check["passed"]
+            for check in benchmark["candidates"][
+                BOUNDARY_REVERSAL_ACCURACY_CANDIDATE
+            ]["advance"]["checks"]
+        }
+
+    diluted = evaluate(candidate_hard_errors=2)
+    improved = evaluate(candidate_hard_errors=1)
+    concentrated = evaluate(
+        candidate_hard_errors=1,
+        candidate_selected_markets=20,
+    )
+
+    assert diluted["minimum hard-confident error count reduction"] is False
+    assert (
+        diluted["hard-confident error rate per selected trade does not regress"]
+        is True
+    )
+    assert improved["minimum hard-confident error count reduction"] is True
+    assert (
+        improved["hard-confident error rate per selected trade does not regress"]
+        is True
+    )
+    assert concentrated["minimum hard-confident error count reduction"] is True
+    assert (
+        concentrated["hard-confident error rate per selected trade does not regress"]
+        is False
+    )
 
 
 def test_fold_robust_agreement_boost_preserves_control_direction() -> None:

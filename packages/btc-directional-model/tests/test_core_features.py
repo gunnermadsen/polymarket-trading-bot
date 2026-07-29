@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
+import pytest
 
 from btc_directional_model.core_features import (
     CORE_BOUNDARY_ENRICHED_FEATURES,
+    CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES,
+    CORE_BOUNDARY_REVERSAL_FEATURE_SCHEMA_VERSION,
+    CORE_BOUNDARY_REVERSAL_FEATURES,
     CORE_ENRICHED_FEATURES,
     CORE_MODEL_FEATURES,
     derive_core_point_in_time_features,
+    validate_feature_allowlists,
 )
 
 
@@ -40,6 +46,55 @@ def core_source_frame() -> pl.DataFrame:
                     "trade_count": 10,
                     "btc_taker_buy_base_volume": 0.5,
                     "btc_taker_buy_quote_volume": 5_000.0 + second / 2,
+                }
+            )
+    return pl.DataFrame(rows).sort(["market_id", "seconds_elapsed"])
+
+
+def mirrored_path_source_frame() -> pl.DataFrame:
+    start = datetime(2026, 5, 2, tzinfo=UTC)
+    rows = []
+    boundary_anchor = 100_000.0
+    log_move_per_second = 0.00001
+    for market_index, (market_id, direction) in enumerate(
+        (("path-up", 1.0), ("path-down", -1.0))
+    ):
+        opening_boundary = boundary_anchor * math.exp(
+            direction * log_move_per_second * 10
+        )
+        for second in range(300):
+            close = boundary_anchor * math.exp(
+                direction * log_move_per_second * second
+            )
+            quote_volume = 10_000.0
+            taker_buy_share = 0.75 if direction > 0 else 0.25
+            observed_at = start + timedelta(
+                minutes=market_index * 5, seconds=second
+            )
+            rows.append(
+                {
+                    "market_id": market_id,
+                    "window_start": start + timedelta(minutes=market_index * 5),
+                    "window_end": start
+                    + timedelta(minutes=(market_index + 1) * 5),
+                    "official_outcome": "up" if direction > 0 else "down",
+                    "label_up": int(direction > 0),
+                    "opening_boundary": opening_boundary,
+                    "final_price": opening_boundary
+                    * (1.001 if direction > 0 else 0.999),
+                    "observed_at": observed_at,
+                    "seconds_elapsed": second,
+                    "btc_open": close,
+                    "btc_high": close * math.exp(0.000005),
+                    "btc_low": close * math.exp(-0.000005),
+                    "btc_close": close,
+                    "btc_base_volume": 1.0,
+                    "btc_quote_volume": quote_volume,
+                    "trade_count": 10,
+                    "btc_taker_buy_base_volume": taker_buy_share,
+                    "btc_taker_buy_quote_volume": (
+                        quote_volume * taker_buy_share
+                    ),
                 }
             )
     return pl.DataFrame(rows).sort(["market_id", "seconds_elapsed"])
@@ -136,3 +191,115 @@ def test_boundary_features_are_causal_and_market_local() -> None:
     assert before.equals(after, null_equal=True)
     assert first_b["btc_boundary_cross_count"][0] == 0
     assert first_b["btc_boundary_distance_velocity_5s_bps"][0] is None
+
+
+def test_boundary_reversal_schema_is_additive_and_allowlisted() -> None:
+    features = derive_core_point_in_time_features(core_source_frame())
+
+    assert len(CORE_ENRICHED_FEATURES) == 58
+    assert len(CORE_BOUNDARY_ENRICHED_FEATURES) == 68
+    assert (
+        CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES[
+            : len(CORE_BOUNDARY_ENRICHED_FEATURES)
+        ]
+        == CORE_BOUNDARY_ENRICHED_FEATURES
+    )
+    assert (
+        CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES[
+            len(CORE_BOUNDARY_ENRICHED_FEATURES) :
+        ]
+        == CORE_BOUNDARY_REVERSAL_FEATURES
+    )
+    assert (
+        CORE_MODEL_FEATURES["histogram_boundary_reversal"]
+        == CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES
+    )
+    assert (
+        CORE_BOUNDARY_REVERSAL_FEATURE_SCHEMA_VERSION
+        == "btc-5m-directional-boundary-reversal-features-v1"
+    )
+    assert not {
+        "label_up",
+        "official_outcome",
+        "final_price",
+        "window_end",
+        "opening_boundary",
+    }.intersection(CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES)
+    validate_feature_allowlists(features)
+
+
+def test_boundary_reversal_features_are_causal_with_early_history_nulls() -> None:
+    original = core_source_frame()
+    altered = original.with_columns(
+        pl.when((pl.col("market_id") == "a") & (pl.col("seconds_elapsed") > 120))
+        .then(pl.col("btc_close") * 1.5)
+        .otherwise(pl.col("btc_close"))
+        .alias("btc_close"),
+        pl.when((pl.col("market_id") == "a") & (pl.col("seconds_elapsed") > 120))
+        .then(pl.col("btc_high") * 1.5)
+        .otherwise(pl.col("btc_high"))
+        .alias("btc_high"),
+        pl.when((pl.col("market_id") == "a") & (pl.col("seconds_elapsed") > 120))
+        .then(pl.col("btc_low") * 0.5)
+        .otherwise(pl.col("btc_low"))
+        .alias("btc_low"),
+        pl.when((pl.col("market_id") == "a") & (pl.col("seconds_elapsed") > 120))
+        .then(pl.col("btc_quote_volume") * 100)
+        .otherwise(pl.col("btc_quote_volume"))
+        .alias("btc_quote_volume"),
+        pl.when((pl.col("market_id") == "a") & (pl.col("seconds_elapsed") > 120))
+        .then(0.0)
+        .otherwise(pl.col("btc_taker_buy_quote_volume"))
+        .alias("btc_taker_buy_quote_volume"),
+    )
+    original_features = derive_core_point_in_time_features(original)
+    altered_features = derive_core_point_in_time_features(altered)
+
+    before = original_features.filter(
+        (pl.col("market_id") == "a") & (pl.col("seconds_elapsed") == 120)
+    ).select(CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES)
+    after = altered_features.filter(
+        (pl.col("market_id") == "a") & (pl.col("seconds_elapsed") == 120)
+    ).select(CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES)
+    early = original_features.filter(
+        (pl.col("market_id") == "a") & (pl.col("seconds_elapsed") == 60)
+    )
+    mature = original_features.filter(
+        (pl.col("market_id") == "a") & (pl.col("seconds_elapsed") == 180)
+    )
+
+    assert before.equals(after, null_equal=True)
+    assert early["btc_return_90s_bps"][0] is None
+    assert early["btc_realized_volatility_90s_bps"][0] is None
+    assert early["btc_signed_flow_90s"][0] is None
+    assert early["btc_price_acceleration_30_vs_90"][0] is None
+    assert mature.select(CORE_BOUNDARY_REVERSAL_FEATURES).null_count().sum_horizontal()[
+        0
+    ] == 0
+
+
+def test_path_sign_normalization_is_symmetric_for_mirrored_paths() -> None:
+    features = derive_core_point_in_time_features(
+        mirrored_path_source_frame()
+    ).filter(pl.col("seconds_elapsed") == 180)
+    path_up = features.filter(pl.col("market_id") == "path-up")
+    path_down = features.filter(pl.col("market_id") == "path-down")
+
+    assert path_up["btc_return_90s_bps"][0] == pytest.approx(
+        -path_down["btc_return_90s_bps"][0]
+    )
+    assert path_up["btc_signed_flow_120s"][0] == pytest.approx(
+        -path_down["btc_signed_flow_120s"][0]
+    )
+    for feature in (
+        "btc_path_sign_normalized_return_30s_bps",
+        "btc_path_sign_normalized_return_90s_bps",
+        "btc_path_sign_normalized_return_180s_bps",
+        "btc_path_sign_normalized_flow_30s",
+        "btc_path_sign_normalized_flow_120s",
+        "btc_path_sign_normalized_boundary_gap_bps",
+        "btc_path_sign_normalized_last_boundary_cross_direction",
+    ):
+        assert path_up[feature][0] == pytest.approx(
+            path_down[feature][0], abs=1e-9
+        )

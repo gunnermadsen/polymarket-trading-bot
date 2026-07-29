@@ -40,6 +40,7 @@ from .core_execution import (
 from .core_extract import file_sha256, write_json_atomic
 from .core_features import (
     CORE_BOUNDARY_ENRICHED_FEATURES,
+    CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES,
     CORE_ENRICHED_FEATURES,
     load_core_feature_frame,
     validate_core_feature_cache,
@@ -62,6 +63,8 @@ from .core_training import (
 )
 from .persistence_config import (
     BOUNDARY_ALIGNMENT_CANDIDATE,
+    BOUNDARY_REVERSAL_ACCURACY_CANDIDATE,
+    BOUNDARY_REVERSAL_ACCURACY_PROFILE,
     FOLD_ROBUST_FREQUENCY_CANDIDATE,
     FOLD_ROBUST_FREQUENCY_PROFILE,
     PATH_PERSISTENCE_PROFILE,
@@ -105,7 +108,12 @@ PERSISTENCE_TRAINING_CHECKS = {
 class CandidateProfile:
     name: str
     target_kind: Literal["outcome_up", "path_persistence"]
-    feature_kind: Literal["core", "core_boundary", "core_prewindow"]
+    feature_kind: Literal[
+        "core",
+        "core_boundary",
+        "core_boundary_reversal",
+        "core_prewindow",
+    ]
     calibration_kind: Literal["global_platt", "time_banded_platt"]
 
 
@@ -182,6 +190,12 @@ CANDIDATE_PROFILES = {
             "time_banded_platt",
         ),
         CandidateProfile(
+            BOUNDARY_REVERSAL_ACCURACY_CANDIDATE,
+            "path_persistence",
+            "core_boundary_reversal",
+            "time_banded_platt",
+        ),
+        CandidateProfile(
             FOLD_ROBUST_FREQUENCY_CANDIDATE,
             "outcome_up",
             "core_prewindow",
@@ -203,11 +217,20 @@ def run_persistence_benchmark(
         core_config,
         enforce_external_holdout_contract=(config.profile == PATH_PERSISTENCE_PROFILE),
     )
-    prewindow_metadata = build_prewindow_features(
-        core_config,
-        config.prewindow_features,
-        force=force,
+    configured_profiles = tuple(
+        CANDIDATE_PROFILES[name] for name in config.candidate_names
     )
+    if any(profile.feature_kind == "core_prewindow" for profile in configured_profiles):
+        prewindow_metadata = build_prewindow_features(
+            core_config,
+            config.prewindow_features,
+            force=force,
+        )
+    else:
+        prewindow_metadata = {
+            "status": "not_required",
+            "reason": "the configured candidate matrix has no pre-window feature consumer",
+        }
     execution_config = _execution_config(config)
     execution_manifest = load_execution_evidence_manifest(execution_config)
 
@@ -263,9 +286,12 @@ def run_persistence_benchmark(
         control_candidate=config.control_candidate,
         evidence=BenchmarkEvidence(
             label=(
-                "Five-fold chronological April 21-July 6 development evidence; "
-                "historical labels consumed; compact-book execution evidence "
-                "available only on the intersecting May 27-June 11 cohort"
+                "Five-fold chronological "
+                f"{core_config.split.validation_windows[0][0].date().isoformat()} through "
+                f"{core_config.split.validation_windows[-1][1].date().isoformat()} "
+                "development evidence; historical labels consumed; cached compact-book "
+                f"execution evidence intersected over [{execution_manifest['range_start']}, "
+                f"{execution_manifest['range_end']})"
             ),
             kind="development",
             independent=config.evaluation_is_independent,
@@ -316,8 +342,9 @@ def run_persistence_benchmark(
         "historical_compact_book_use": {
             "model_feature_role": "excluded",
             "execution_economics_role": (
-                "strict-both-side cached execution evidence on the "
-                "intersecting May 27-June 11 development cohort"
+                "strict-both-side cached execution evidence intersected by market and "
+                f"timestamp over [{execution_manifest['range_start']}, "
+                f"{execution_manifest['range_end']})"
             ),
             "source": "compact 250 ms execution snapshots",
             "raw_pmxt_archive_read": False,
@@ -357,12 +384,20 @@ def run_persistence_benchmark(
             "model_evaluation_accessed": False,
             "book_quality_diagnostics_accessed": False,
         }
-    deployment_reasons = [
-        (
+    if config.profile == BOUNDARY_REVERSAL_ACCURACY_PROFILE:
+        runtime_contract_gap = (
+            "the challenger's path-persistence target conversion, time-banded "
+            "calibration, and 106-feature boundary-reversal schema are not "
+            "runtime-v1 contracts"
+        )
+    else:
+        runtime_contract_gap = (
             "path-persistence target conversion, time-banded calibration, "
             "and pre-window features are not runtime-v1 contracts"
-        ),
-        "no Rust, image, process, playbook, or adapter change is authorized",
+        )
+    deployment_reasons = [
+        runtime_contract_gap,
+        "this benchmark does not modify Rust, images, processes, playbooks, or adapters",
     ]
     if config.profile == PATH_PERSISTENCE_PROFILE:
         deployment_reasons.insert(
@@ -1372,6 +1407,11 @@ def _aggregate_candidate(
             eligible,
         ),
     }
+    hard_confident_errors = hard_confident_error_metrics(
+        selected,
+        eligible_markets=eligible,
+        confidence_floor=config.hard_confidence_floor,
+    )
     passed = development_gate_passed(
         core_config,
         metrics,
@@ -1414,6 +1454,7 @@ def _aggregate_candidate(
         "timing": first_crossing_timing(selected, eligible_markets=eligible),
         "early": early,
         "path_behavior": path_behavior,
+        "hard_confident_errors": hard_confident_errors,
         "calibration": [fold["calibration"] for fold in folds],
         "nonnegative_uplift_folds": nonnegative_folds,
         "qualified_threshold_folds": qualified_threshold_folds,
@@ -1429,11 +1470,12 @@ def _candidate_spec(
     profile: CandidateProfile,
     config: PersistenceBenchmarkConfig,
 ) -> CandidateSpec:
-    features = (
-        tuple(CORE_BOUNDARY_ENRICHED_FEATURES)
-        if profile.feature_kind == "core_boundary"
-        else tuple(CORE_ENRICHED_FEATURES)
-    )
+    if profile.feature_kind == "core_boundary":
+        features = tuple(CORE_BOUNDARY_ENRICHED_FEATURES)
+    elif profile.feature_kind == "core_boundary_reversal":
+        features = tuple(CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES)
+    else:
+        features = tuple(CORE_ENRICHED_FEATURES)
     if profile.feature_kind == "core_prewindow":
         features += tuple(PREWINDOW_MODEL_FEATURES)
     schedule = persistence_row_weight_schedule(config, profile.name)
@@ -1644,6 +1686,41 @@ def _path_behavior_metrics(
     }
 
 
+def hard_confident_error_metrics(
+    rows: pl.DataFrame,
+    *,
+    eligible_markets: int,
+    confidence_floor: float,
+) -> dict[str, Any]:
+    if not 0.5 <= confidence_floor <= 1.0:
+        raise ValueError("hard-confidence floor must be between 0.5 and 1.0")
+    if eligible_markets < 0:
+        raise ValueError("eligible market count cannot be negative")
+    if rows.height > eligible_markets:
+        raise ValueError("selected rows cannot exceed the eligible market universe")
+    if not rows.is_empty() and rows["market_id"].n_unique() != rows.height:
+        raise ValueError("hard-confident-error evidence requires one row per market")
+    incorrect = rows.filter(~pl.col("correct"))
+    hard = incorrect.filter(pl.col("confidence") >= confidence_floor)
+    selected_markets = rows.height
+    hard_errors = hard.height
+    return {
+        "confidence_floor": confidence_floor,
+        "eligible_markets": eligible_markets,
+        "selected_markets": selected_markets,
+        "hard_confident_error_markets": hard_errors,
+        "hard_confident_error_exposure_rate": (
+            hard_errors / eligible_markets if eligible_markets else 0.0
+        ),
+        "hard_confident_error_rate_selected": (
+            hard_errors / selected_markets if selected_markets else 0.0
+        ),
+        "maximum_incorrect_confidence": (
+            float(incorrect["confidence"].max()) if not incorrect.is_empty() else None
+        ),
+    }
+
+
 def _add_training_gates(
     benchmark: dict[str, Any],
     candidate_results: dict[str, dict[str, Any]],
@@ -1696,6 +1773,51 @@ def _add_training_gates(
                 )
             )
         common_execution = benchmark["common_selected_execution_comparisons"][name]
+        if config.profile == BOUNDARY_REVERSAL_ACCURACY_PROFILE:
+            control_tail = candidate_results[config.control_candidate][
+                "hard_confident_errors"
+            ]
+            candidate_tail = result["hard_confident_errors"]
+            checks.append(
+                _check(
+                    "hard-confident-error eligible universe matches control",
+                    candidate_tail["eligible_markets"],
+                    "==",
+                    control_tail["eligible_markets"],
+                )
+            )
+            if control_tail["hard_confident_error_markets"] > 0:
+                checks.append(
+                    _check(
+                        "minimum hard-confident error count reduction",
+                        (
+                            control_tail["hard_confident_error_markets"]
+                            - candidate_tail["hard_confident_error_markets"]
+                        ),
+                        ">=",
+                        config.minimum_hard_confident_error_count_reduction,
+                    )
+                )
+            else:
+                checks.append(
+                    _check(
+                        "no hard-confident errors when control has none",
+                        candidate_tail["hard_confident_error_markets"],
+                        "==",
+                        0,
+                    )
+                )
+            checks.append(
+                _check(
+                    "hard-confident error rate per selected trade does not regress",
+                    (
+                        control_tail["hard_confident_error_rate_selected"]
+                        - candidate_tail["hard_confident_error_rate_selected"]
+                    ),
+                    ">=",
+                    -config.maximum_hard_confident_error_selected_rate_regression,
+                )
+            )
         checks.extend(
             (
                 _check(
@@ -1810,6 +1932,28 @@ def _select_finalist(
     passing = benchmark["benchmark_passed_candidates"]
     if not passing:
         return None
+    if config.profile == BOUNDARY_REVERSAL_ACCURACY_PROFILE:
+        return max(
+            passing,
+            key=lambda name: (
+                -candidate_results[name]["hard_confident_errors"][
+                    "hard_confident_error_exposure_rate"
+                ],
+                -candidate_results[name]["hard_confident_errors"][
+                    "hard_confident_error_rate_selected"
+                ],
+                candidate_results[name]["out_of_fold"]["accuracy"],
+                candidate_results[name]["out_of_fold"]["balanced_accuracy"],
+                candidate_results[name]["out_of_fold"]["wilson_lower_95"],
+                candidate_results[name]["out_of_fold"]["coverage"],
+                -(
+                    candidate_results[name]["timing"][
+                        "median_first_crossing_seconds"
+                    ]
+                    or float("inf")
+                ),
+            ),
+        )
     return max(
         passing,
         key=lambda name: (
