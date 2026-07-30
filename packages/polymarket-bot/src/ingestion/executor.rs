@@ -1307,6 +1307,24 @@ impl IngestionExecutor {
             } else {
                 None
             };
+            let expected_records = u64::try_from(output_scope.len())
+                .map_err(IngestionExecutionError::permanent)?
+                .saturating_mul(
+                    u64::try_from(EXECUTION_SNAPSHOTS_PER_MARKET)
+                        .map_err(IngestionExecutionError::permanent)?,
+                );
+            let produced_records =
+                u64::try_from(output.len()).map_err(IngestionExecutionError::permanent)?;
+            if produced_records != expected_records {
+                let message = format!(
+                    "compact PMXT hour {hour} produced {produced_records} snapshots; expected {expected_records}"
+                );
+                let _ = self
+                    .repository
+                    .fail_artifact(claim, prepared.artifact.artifact_id, &message)
+                    .await;
+                return Err(IngestionExecutionError::permanent(message));
+            }
             self.persist_execution_snapshot_output(
                 claim,
                 prepared.artifact.artifact_id,
@@ -1317,22 +1335,6 @@ impl IngestionExecutor {
                 &mut summary,
             )
             .await?;
-            let expected_records = u64::try_from(output_scope.len())
-                .map_err(IngestionExecutionError::permanent)?
-                .saturating_mul(
-                    u64::try_from(EXECUTION_SNAPSHOTS_PER_MARKET)
-                        .map_err(IngestionExecutionError::permanent)?,
-                );
-            if reconstructed_records != expected_records {
-                let message = format!(
-                    "compact PMXT hour {hour} produced {reconstructed_records} snapshots; expected {expected_records}"
-                );
-                let _ = self
-                    .repository
-                    .fail_artifact(claim, prepared.artifact.artifact_id, &message)
-                    .await;
-                return Err(IngestionExecutionError::permanent(message));
-            }
             let actual_checksum = format!("{:x}", digest.finalize());
             self.repository
                 .complete_artifact(
