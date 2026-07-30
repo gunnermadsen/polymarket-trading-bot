@@ -127,15 +127,19 @@ from Polygon JSON-RPC. It discovers all retained aggregator addresses, scans eve
 block availability timestamp, raw answer, exact scaled price, feed phase and round, block, and
 transaction identity. It does not downsample updates and it does not represent the on-chain Data
 Feed as Polymarket's Data Streams settlement source. Public RPC endpoints may rate-limit large
-requests, so the worker bounds each `eth_getLogs` query to 100 blocks by default. The default
-endpoint returns each log's block timestamp, avoiding one additional RPC request per update:
+requests, so the worker bounds each `eth_getLogs` query to 100 blocks by default. Free public
+endpoints split the workload: PublicNode provides feed metadata and block boundaries, while Tatum
+provides bounded historical logs with each log's block timestamp. This avoids one additional RPC
+request per update:
 
 ```dotenv
-POLYMARKET_POLYGON_RPC_URL=https://polygon-mainnet.gateway.tatum.io
+POLYMARKET_POLYGON_RPC_URL=https://polygon-bor-rpc.publicnode.com
+POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL=https://polygon-mainnet.gateway.tatum.io
 ```
 
-The proxy address and maximum block range are non-sensitive Docker Compose configuration. Put an
-authenticated RPC URL in `.env` if a public endpoint cannot reliably serve the historical slice.
+The endpoints, proxy address, and maximum block range are non-sensitive Docker Compose
+configuration. Put authenticated RPC URLs in `.env` if the public endpoints cannot reliably serve
+the historical slice.
 
 Market definitions reuse the same strict Gamma identity parser as realtime execution. Official
 outcomes reuse the same strict CLOB resolution parser and persistence path. Missing or ambiguous

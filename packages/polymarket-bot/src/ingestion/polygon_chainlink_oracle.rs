@@ -12,7 +12,8 @@ use sha3::{Digest as Sha3Digest, Keccak256};
 use super::{binance_archive::ArchiveCancellation, job::PolygonChainlinkBtcusdOracleRound};
 
 pub const POLYGON_CHAINLINK_ORACLE_PROVIDER: &str = "chainlink_polygon_data_feed";
-pub const DEFAULT_POLYGON_RPC_URL: &str = "https://polygon-mainnet.gateway.tatum.io";
+pub const DEFAULT_POLYGON_RPC_URL: &str = "https://polygon-bor-rpc.publicnode.com";
+pub const DEFAULT_POLYGON_ARCHIVE_LOG_RPC_URL: &str = "https://polygon-mainnet.gateway.tatum.io";
 pub const DEFAULT_POLYGON_CHAINLINK_BTCUSD_PROXY: &str =
     "0xc907e116054ad103354f2d350fd2514433d57f6f";
 pub const POLYGON_CHAIN_ID: i64 = 137;
@@ -24,6 +25,7 @@ const BLOCK_FETCH_CONCURRENCY: usize = 4;
 #[derive(Debug, Clone)]
 pub struct PolygonChainlinkOracleConfig {
     pub rpc_url: String,
+    pub archive_log_rpc_url: String,
     pub feed_proxy_address: String,
     pub maximum_block_range: u64,
 }
@@ -76,6 +78,9 @@ impl PolygonChainlinkOracleConfig {
     pub fn validate(&self) -> Result<()> {
         if self.rpc_url.trim().is_empty() {
             bail!("POLYMARKET_POLYGON_RPC_URL must not be empty");
+        }
+        if self.archive_log_rpc_url.trim().is_empty() {
+            bail!("POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL must not be empty");
         }
         validate_address(&self.feed_proxy_address)?;
         if !(1..=20_000).contains(&self.maximum_block_range) {
@@ -410,8 +415,9 @@ impl PolygonChainlinkOracleConfig {
         cancellation: &ArchiveCancellation,
     ) -> Result<(Vec<RpcLog>, u64)> {
         let (value, bytes) = self
-            .rpc(
+            .rpc_at(
                 client,
+                &self.archive_log_rpc_url,
                 "eth_getLogs",
                 json!([{
                     "address": addresses,
@@ -433,9 +439,21 @@ impl PolygonChainlinkOracleConfig {
         params: Value,
         cancellation: &ArchiveCancellation,
     ) -> Result<(Value, u64)> {
+        self.rpc_at(client, &self.rpc_url, method, params, cancellation)
+            .await
+    }
+
+    async fn rpc_at(
+        &self,
+        client: &reqwest::Client,
+        rpc_url: &str,
+        method: &str,
+        params: Value,
+        cancellation: &ArchiveCancellation,
+    ) -> Result<(Value, u64)> {
         ensure_not_cancelled(cancellation)?;
         let response = client
-            .post(self.rpc_url.trim())
+            .post(rpc_url.trim())
             .timeout(std::time::Duration::from_secs(30))
             .json(&json!({
                 "jsonrpc": "2.0",

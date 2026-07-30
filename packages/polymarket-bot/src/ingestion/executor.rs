@@ -2574,6 +2574,7 @@ mod tests {
             },
             polygon_chainlink: PolygonChainlinkOracleConfig {
                 rpc_url: "https://polygon.example".to_string(),
+                archive_log_rpc_url: "https://polygon-archive.example".to_string(),
                 feed_proxy_address:
                     super::super::polygon_chainlink_oracle::DEFAULT_POLYGON_CHAINLINK_BTCUSD_PROXY
                         .to_string(),

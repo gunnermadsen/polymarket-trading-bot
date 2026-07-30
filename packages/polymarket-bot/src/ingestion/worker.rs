@@ -21,8 +21,8 @@ use super::{
     job::{BackfillEventLevel, BackfillFailureKind, BackfillJobSummary, ClaimedJob, WorkerControl},
     pmxt_archive::DEFAULT_PMXT_ARCHIVE_URL,
     polygon_chainlink_oracle::{
-        PolygonChainlinkOracleConfig, DEFAULT_POLYGON_CHAINLINK_BTCUSD_PROXY,
-        DEFAULT_POLYGON_RPC_URL,
+        PolygonChainlinkOracleConfig, DEFAULT_POLYGON_ARCHIVE_LOG_RPC_URL,
+        DEFAULT_POLYGON_CHAINLINK_BTCUSD_PROXY, DEFAULT_POLYGON_RPC_URL,
     },
     repository::IngestionRepository,
 };
@@ -156,6 +156,10 @@ impl BackfillWorker {
                 },
                 polygon_chainlink: PolygonChainlinkOracleConfig {
                     rpc_url: env_string("POLYMARKET_POLYGON_RPC_URL", DEFAULT_POLYGON_RPC_URL),
+                    archive_log_rpc_url: env_string(
+                        "POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL",
+                        DEFAULT_POLYGON_ARCHIVE_LOG_RPC_URL,
+                    ),
                     feed_proxy_address: env_string(
                         "POLYMARKET_POLYGON_CHAINLINK_BTCUSD_PROXY",
                         DEFAULT_POLYGON_CHAINLINK_BTCUSD_PROXY,
