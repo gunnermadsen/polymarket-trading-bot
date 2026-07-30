@@ -4,5 +4,6 @@ pub mod execution_snapshots;
 pub mod executor;
 pub mod job;
 pub mod pmxt_archive;
+pub mod polygon_chainlink_oracle;
 pub mod repository;
 pub mod worker;

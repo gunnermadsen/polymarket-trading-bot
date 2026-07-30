@@ -15,6 +15,7 @@ execution; backfill jobs are durable operational jobs that prepare training inpu
 | `binance_btcusdt_one_second_klines` | UTC day | checksummed BTCUSDT one-second candles |
 | `polymarket_btc_five_minute_execution_snapshots` | UTC hour | causal 250 ms executable-book snapshots for validated BTC five-minute markets |
 | `chainlink_btcusd_reference_ticks` | UTC day | optional decoded, signed Chainlink BTC/USD Data Streams v3 reports |
+| `polygon_chainlink_btcusd_oracle_rounds` | UTC day | every on-chain Polygon Chainlink BTC/USD `AnswerUpdated` round |
 
 `polymarket_btc_five_minute_orderbooks` is retained only so already-queued jobs and historical
 artifact identities remain readable. The API reports `accepts_new_requests: false` for it and
@@ -119,6 +120,21 @@ The official BTC/USD feed ID, REST endpoint, PMXT endpoint, and bounded page siz
 worker configuration in Docker Compose. If credentials are absent, workers remain available for
 all other ingesters and Chainlink jobs fail permanently with a configuration error. Historical
 Chainlink coverage does not gate the free-source training dataset.
+
+The Polygon Chainlink ingester is credential-free and reads the public BTC/USD Data Feed proxy
+from Polygon JSON-RPC. It discovers all retained aggregator addresses, scans every
+`AnswerUpdated(int256,uint256,uint256)` log for the UTC day, and persists the source timestamp,
+block availability timestamp, raw answer, exact scaled price, feed phase and round, block, and
+transaction identity. It does not downsample updates and it does not represent the on-chain Data
+Feed as Polymarket's Data Streams settlement source. Public RPC endpoints may rate-limit large
+requests, so the worker bounds each `eth_getLogs` query to 2,000 blocks by default:
+
+```dotenv
+POLYMARKET_POLYGON_RPC_URL=https://polygon.drpc.org
+```
+
+The proxy address and maximum block range are non-sensitive Docker Compose configuration. Put an
+authenticated RPC URL in `.env` if a public endpoint cannot reliably serve the historical slice.
 
 Market definitions reuse the same strict Gamma identity parser as realtime execution. Official
 outcomes reuse the same strict CLOB resolution parser and persistence path. Missing or ambiguous

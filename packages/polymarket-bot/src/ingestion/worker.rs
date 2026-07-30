@@ -20,6 +20,10 @@ use super::{
     executor::{IngestionExecutor, IngestionExecutorConfig},
     job::{BackfillEventLevel, BackfillFailureKind, BackfillJobSummary, ClaimedJob, WorkerControl},
     pmxt_archive::DEFAULT_PMXT_ARCHIVE_URL,
+    polygon_chainlink_oracle::{
+        PolygonChainlinkOracleConfig, DEFAULT_POLYGON_CHAINLINK_BTCUSD_PROXY,
+        DEFAULT_POLYGON_RPC_URL,
+    },
     repository::IngestionRepository,
 };
 
@@ -149,6 +153,14 @@ impl BackfillWorker {
                     ),
                     page_limit: env_usize("POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT", 1_000)?,
                     credentials: chainlink_credentials_from_env()?,
+                },
+                polygon_chainlink: PolygonChainlinkOracleConfig {
+                    rpc_url: env_string("POLYMARKET_POLYGON_RPC_URL", DEFAULT_POLYGON_RPC_URL),
+                    feed_proxy_address: env_string(
+                        "POLYMARKET_POLYGON_CHAINLINK_BTCUSD_PROXY",
+                        DEFAULT_POLYGON_CHAINLINK_BTCUSD_PROXY,
+                    ),
+                    maximum_block_range: env_u64("POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE", 2_000)?,
                 },
                 cache_directory: config.cache_directory.clone(),
                 batch_rows: config.batch_rows,
