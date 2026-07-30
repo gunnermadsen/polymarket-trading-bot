@@ -13,7 +13,7 @@ use super::{binance_archive::ArchiveCancellation, job::PolygonChainlinkBtcusdOra
 
 pub const POLYGON_CHAINLINK_ORACLE_PROVIDER: &str = "chainlink_polygon_data_feed";
 pub const DEFAULT_POLYGON_RPC_URL: &str = "https://polygon-bor-rpc.publicnode.com";
-pub const DEFAULT_POLYGON_ARCHIVE_LOG_RPC_URL: &str = "https://polygon-mainnet.gateway.tatum.io";
+pub const DEFAULT_POLYGON_ARCHIVE_LOG_RPC_URL: &str = "https://tenderly.rpc.polygon.community";
 pub const DEFAULT_POLYGON_CHAINLINK_BTCUSD_PROXY: &str =
     "0xc907e116054ad103354f2d350fd2514433d57f6f";
 pub const POLYGON_CHAIN_ID: i64 = 137;
@@ -21,6 +21,7 @@ pub const POLYGON_CHAIN_ID: i64 = 137;
 const MAX_SUPPORTED_DECIMALS: u32 = 18;
 const BLOCK_TIME_BOUNDARY_PADDING_SECONDS: i64 = 300;
 const BLOCK_FETCH_CONCURRENCY: usize = 4;
+const BLOCK_FETCH_BATCH_SIZE: usize = 100;
 
 #[derive(Debug, Clone)]
 pub struct PolygonChainlinkOracleConfig {
@@ -83,8 +84,8 @@ impl PolygonChainlinkOracleConfig {
             bail!("POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL must not be empty");
         }
         validate_address(&self.feed_proxy_address)?;
-        if !(1..=20_000).contains(&self.maximum_block_range) {
-            bail!("POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE must be between 1 and 20000");
+        if !(1..=30_000).contains(&self.maximum_block_range) {
+            bail!("POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE must be between 1 and 30000");
         }
         Ok(())
     }
@@ -240,28 +241,37 @@ impl PolygonChainlinkOracleConfig {
             .map(|record| {
                 u64::try_from(record.block_number).context("Polygon block number was negative")
             })
-            .collect::<Result<BTreeSet<_>>>()?;
+            .collect::<Result<BTreeSet<_>>>()?
+            .into_iter()
+            .collect::<Vec<_>>();
+        let block_batches = block_numbers
+            .chunks(BLOCK_FETCH_BATCH_SIZE)
+            .map(|batch| batch.to_vec())
+            .collect::<Vec<_>>();
         let config = self.clone();
         let client = client.clone();
         let cancellation = cancellation.clone();
-        let block_results = stream::iter(block_numbers.into_iter().map(|number| {
+        let block_results = stream::iter(block_batches.into_iter().map(|numbers| {
             let config = config.clone();
             let client = client.clone();
             let cancellation = cancellation.clone();
             async move {
-                let result = config
-                    .block_by_number(&client, number, &cancellation)
-                    .await?;
-                Ok::<_, anyhow::Error>((number, result.0, result.1))
+                config
+                    .blocks_by_number(&client, &numbers, &cancellation)
+                    .await
             }
         }))
         .buffer_unordered(BLOCK_FETCH_CONCURRENCY)
         .try_collect::<Vec<_>>()
         .await?;
         let mut block_timestamps = BTreeMap::new();
-        for (number, timestamp, bytes) in block_results {
+        for (batch, bytes) in block_results {
             response_bytes = response_bytes.saturating_add(bytes);
-            block_timestamps.insert(number, timestamp);
+            for (number, timestamp) in batch {
+                if block_timestamps.insert(number, timestamp).is_some() {
+                    bail!("Polygon RPC returned a duplicate block in timestamp batches");
+                }
+            }
         }
         for record in &mut decoded {
             if provider_timestamp_blocks.contains(&record.block_number) {
@@ -376,6 +386,93 @@ impl PolygonChainlinkOracleConfig {
             .single()
             .context("invalid Polygon block timestamp")?;
         Ok((timestamp, bytes))
+    }
+
+    async fn blocks_by_number(
+        &self,
+        client: &reqwest::Client,
+        block_numbers: &[u64],
+        cancellation: &ArchiveCancellation,
+    ) -> Result<(Vec<(u64, chrono::DateTime<Utc>)>, u64)> {
+        if block_numbers.is_empty() || block_numbers.len() > BLOCK_FETCH_BATCH_SIZE {
+            bail!("Polygon block timestamp batch size was outside its resource bound");
+        }
+        ensure_not_cancelled(cancellation)?;
+        let request = block_numbers
+            .iter()
+            .enumerate()
+            .map(|(index, block_number)| {
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": index + 1,
+                    "method": "eth_getBlockByNumber",
+                    "params": [format_quantity(*block_number), false],
+                })
+            })
+            .collect::<Vec<_>>();
+        let response = client
+            .post(self.rpc_url.trim())
+            .timeout(std::time::Duration::from_secs(30))
+            .json(&request)
+            .send()
+            .await
+            .context("failed to call Polygon block timestamp batch")?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .context("failed to read Polygon block timestamp batch response")?;
+        let response_bytes =
+            u64::try_from(body.len()).context("Polygon RPC response size overflow")?;
+        if !status.is_success() {
+            let bounded = &body[..body.len().min(512)];
+            bail!(
+                "Polygon block timestamp batch returned HTTP {status}: {}",
+                String::from_utf8_lossy(bounded)
+            );
+        }
+        let envelopes: Vec<RpcEnvelope> =
+            serde_json::from_slice(&body).context("invalid Polygon batch JSON-RPC response")?;
+        if envelopes.len() != block_numbers.len() {
+            bail!("Polygon block timestamp batch returned an incomplete response");
+        }
+        let requested = block_numbers.iter().copied().collect::<BTreeSet<_>>();
+        let mut timestamps = BTreeMap::new();
+        for envelope in envelopes {
+            if let Some(error) = envelope.error {
+                bail!(
+                    "Polygon block timestamp batch failed with {}: {}",
+                    error.code,
+                    error.message
+                );
+            }
+            let value = envelope
+                .result
+                .context("Polygon block timestamp batch omitted a result")?;
+            let block: RpcBlock =
+                serde_json::from_value(value).context("invalid Polygon batch block response")?;
+            let number = block
+                .number
+                .as_deref()
+                .context("Polygon RPC returned a pending block for a historical query")
+                .and_then(parse_quantity_u64)?;
+            if !requested.contains(&number) {
+                bail!("Polygon block timestamp batch returned an unrequested block");
+            }
+            let timestamp = parse_quantity_u64(&block.timestamp)?;
+            let timestamp = i64::try_from(timestamp).context("Polygon block timestamp overflow")?;
+            let timestamp = Utc
+                .timestamp_opt(timestamp, 0)
+                .single()
+                .context("invalid Polygon block timestamp")?;
+            if timestamps.insert(number, timestamp).is_some() {
+                bail!("Polygon block timestamp batch returned a duplicate block");
+            }
+        }
+        if timestamps.len() != requested.len() {
+            bail!("Polygon block timestamp batch omitted a requested block");
+        }
+        Ok((timestamps.into_iter().collect(), response_bytes))
     }
 
     async fn eth_call(
