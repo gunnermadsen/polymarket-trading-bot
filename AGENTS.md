@@ -14,6 +14,9 @@ Think of Capitonic as a vision to generate income through systems with automatio
 
 # Source Control
 - Commit changes, grouped by feature domain.
+- When building a new image, tag the commit for which the image was built:
+-- using this pattern for container images: image/<image_name>/sha256-<docker-sha256-hash>
+-- using this patter for a container image using a new model: model/<model-name-with-metadata>
 - New features must be committed to a new branch, based from the latest commit on development branch.
 - For one feature change, do not merge changes into development.
 - For multiple features in a task, group feature by branch, and merge into development with --no-ff, only when the feature is stable by performance, latency and optimization standards.

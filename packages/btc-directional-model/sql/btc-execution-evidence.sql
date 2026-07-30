@@ -50,9 +50,15 @@ candidate_snapshots AS MATERIALIZED (
     snapshot.down_ask_vwap_10::double precision AS down_ask_vwap_10,
     snapshot.down_imbalance::double precision AS down_imbalance,
     snapshot.quality_flags
-  FROM eligible_markets market
-  JOIN polymarket.btc_market_execution_snapshots snapshot
+  FROM polymarket.btc_market_execution_snapshots snapshot
+  JOIN polymarket.backfill_artifacts snapshot_artifact
+    ON snapshot_artifact.artifact_id = snapshot.artifact_id
+   AND snapshot_artifact.status = 'completed'
+   AND snapshot_artifact.ingester_key =
+     'polymarket_btc_five_minute_execution_snapshots'
+  JOIN eligible_markets market
     ON snapshot.market_id = market.market_id
+  WHERE snapshot.artifact_id = %(artifact_id)s
    AND snapshot.sampled_at >= %(batch_start)s
    AND snapshot.sampled_at < %(batch_end)s
    AND snapshot.sampled_at >=
@@ -65,12 +71,7 @@ candidate_snapshots AS MATERIALIZED (
      )::bigint,
      %(sample_interval_milliseconds)s
    ) = 0
-   AND snapshot.schema_version = %(snapshot_schema_version)s
-  JOIN polymarket.backfill_artifacts snapshot_artifact
-    ON snapshot_artifact.artifact_id = snapshot.artifact_id
-   AND snapshot_artifact.status = 'completed'
-   AND snapshot_artifact.ingester_key =
-     'polymarket_btc_five_minute_execution_snapshots'
+   AND snapshot.schema_version = ANY(%(snapshot_schema_versions)s)
 ),
 validity AS (
   SELECT

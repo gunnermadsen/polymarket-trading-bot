@@ -13,8 +13,9 @@ execution; backfill jobs are durable operational jobs that prepare training inpu
 | `btc_five_minute_resolutions` | five minutes | official CLOB outcomes on the existing market identities |
 | `binance_btcusdt_agg_trades` | UTC day | checksummed BTCUSDT aggregate trades |
 | `binance_btcusdt_one_second_klines` | UTC day | checksummed BTCUSDT one-second candles |
-| `polymarket_btc_five_minute_execution_snapshots` | UTC hour | causal 250 ms executable-book snapshots for validated BTC five-minute markets |
+| `polymarket_btc_five_minute_execution_snapshots` | UTC hour | causal five-second executable-book snapshots from 90 through 140 seconds for validated BTC five-minute markets |
 | `chainlink_btcusd_reference_ticks` | UTC day | optional decoded, signed Chainlink BTC/USD Data Streams v3 reports |
+| `polygon_chainlink_btcusd_oracle_rounds` | UTC day | every on-chain Polygon Chainlink BTC/USD `AnswerUpdated` round |
 
 `polymarket_btc_five_minute_orderbooks` is retained only so already-queued jobs and historical
 artifact identities remain readable. The API reports `accepts_new_requests: false` for it and
@@ -82,11 +83,12 @@ events for validated BTC five-minute condition and outcome-token IDs through the
 channel.
 
 The compact ingester reconstructs each token book using only events whose provider receipt time is
-at or before the sample. It persists one row per market every 250 ms with both outcomes: best
-bid/ask and sizes, total depth, executable ask VWAP for 1, 5, and 10 shares, imbalance, source
-timestamps, and explicit missing, stale, crossed-book, and insufficient-depth flags. It does not
-fabricate a book. Each five-minute market therefore has exactly 1,200 rows and a full UTC day has
-345,600 rows. The preceding UTC hour is read for full-book seeds. When a completed raw
+at or before the sample. It persists one row per market every five seconds from 90 through 140
+seconds after open with both outcomes: best bid/ask and sizes, total depth, executable ask VWAP
+for 1, 5, and 10 shares, imbalance, source timestamps, and explicit missing, stale, crossed-book,
+and insufficient-depth flags. It does not fabricate a book. Each five-minute market therefore has
+exactly 11 rows and a full UTC day has 3,168 rows. The preceding UTC hour is read for full-book
+seeds. When a completed raw
 materialization exists, it is reprocessed without downloading the source again; otherwise the
 worker streams the PMXT files directly to compact rows and removes the hourly cache as it advances.
 Raw database chunks may be pruned only after exact market coverage, cadence, causality, completed
@@ -120,6 +122,26 @@ worker configuration in Docker Compose. If credentials are absent, workers remai
 all other ingesters and Chainlink jobs fail permanently with a configuration error. Historical
 Chainlink coverage does not gate the free-source training dataset.
 
+The Polygon Chainlink ingester is credential-free and reads the public BTC/USD Data Feed proxy
+from Polygon JSON-RPC. It discovers all retained aggregator addresses, scans every
+`AnswerUpdated(int256,uint256,uint256)` log for the UTC day, and persists the source timestamp,
+block availability timestamp, raw answer, exact scaled price, feed phase and round, block, and
+transaction identity. It does not downsample updates and it does not represent the on-chain Data
+Feed as Polymarket's Data Streams settlement source. Public RPC endpoints may rate-limit large
+requests, so the worker bounds each `eth_getLogs` query to 30,000 blocks by default. Free public
+endpoints split the workload: PublicNode provides feed metadata and block boundaries, while
+Tenderly provides bounded historical logs. Missing block timestamps are fetched from PublicNode
+in strict 100-block batches, preserving exact availability time without one request per update:
+
+```dotenv
+POLYMARKET_POLYGON_RPC_URL=https://polygon-bor-rpc.publicnode.com
+POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL=https://tenderly.rpc.polygon.community
+```
+
+The endpoints, proxy address, and maximum block range are non-sensitive Docker Compose
+configuration. Put authenticated RPC URLs in `.env` if the public endpoints cannot reliably serve
+the historical slice.
+
 Market definitions reuse the same strict Gamma identity parser as realtime execution. Official
 outcomes reuse the same strict CLOB resolution parser and persistence path. Missing or ambiguous
 source records are recorded as missing; the ingesters do not fabricate order books, Chainlink
@@ -129,7 +151,7 @@ ticks, outcomes, or prices.
 
 The readiness endpoint reports coverage rather than claiming model quality. A market is usable
 only when it has a valid five-minute identity, Gamma opening and final boundaries, an official
-outcome, complete all-300-second Binance candle coverage, and exactly 1,200 compact execution
+outcome, complete all-300-second Binance candle coverage, and exactly 11 decision-window execution
 snapshots. Aggregate trades and historical Chainlink ticks are optional and do not gate readiness.
 Chainlink coverage remains visible for ranges where authenticated reports are available. Quality
 flags remain in the dataset so a strategy or later model can learn or abstain under poor liquidity
@@ -142,3 +164,45 @@ The intended pilot order is market identities, official outcomes, one-second Bin
 then compact PMXT execution snapshots. Binance aggregate trades and authenticated Chainlink
 reports are optional for separate research and do not gate strategy readiness. No ingester is
 automatically executed by deployment or migration.
+
+## Canonical orderbook training source
+
+`polymarket.btc_market_execution_snapshots` is the canonical durable source for historical BTC
+five-minute orderbook training.  Its retained `btc5m-book-250ms-v1` rows hold causal book state
+and executable ask VWAP at one, five, and ten shares.  Decision-window extraction selects only
+the 90, 95, ..., 140 second observations from a completed source artifact; it does not require a
+second copy of the same orderbook data.
+
+The earlier `polymarket.btc_market_decision_execution_snapshots` table is a legacy compact
+materialization.  It is not a training input.  Its artifact and provenance records must remain
+available until a migration retires its writer and records the replacement lineage; do not delete
+either table by hand.
+
+The canonical reader must query one completed PMXT artifact at a time.  An hourly raw artifact
+contains at most 14,400 source rows and yields at most 132 target-window observations.  It uses a
+read-only transaction, a five-second statement timeout, a two-second lock timeout, and 16 MiB of
+working memory.  Table-wide diagnostic aggregates are prohibited because they have previously
+caused an avoidable database restart.
+
+### 2026-07-30 availability audit
+
+The audit read all completed 250 ms source artifacts through bounded per-artifact queries.  It
+verified that `up_ask_vwap_5`/`down_ask_vwap_5` and
+`up_ask_vwap_10`/`down_ask_vwap_10` are both retained; they had matching availability in every
+audited interval.  A null value is recorded as unavailable and must not be reconstructed from a
+summary snapshot.
+
+Source artifact availability begins on 2026-04-13.  The requested 2026-03-21 through
+2026-04-12 history is not in this table and cannot be obtained from PMXT v2, whose documented
+coverage boundary is 2026-04-13T19:00:00Z.  The audit also found partial or missing source-hour
+coverage on 2026-05-29 through 2026-05-31, 2026-06-07, 2026-06-11, 2026-06-20,
+2026-06-22, 2026-06-28, 2026-07-01, 2026-07-06, 2026-07-12, and 2026-07-27; there are no retained
+250 ms source artifacts for 2026-07-21 or 2026-07-23 through 2026-07-26.
+
+Timestamp coverage alone does not make an execution observation usable.  Two sustained periods
+have complete or near-complete timestamp coverage but no two-sided executable VWAP: 2026-06-13
+through 2026-06-28 and 2026-07-09 through 2026-07-13.  April through 2026-05-25 is predominantly
+sparse, while healthy two-sided VWAP availability starts on 2026-05-26, resumes on 2026-06-29,
+and is strong again from 2026-07-16.  Dataset construction must retain the flags and explicitly
+exclude unavailable observations from execution-economic measurements; it must not fabricate a
+price or silently turn an unavailable book into a negative label.

@@ -13,6 +13,12 @@ The original four-table data contract uses the confirmed backfill sources:
 - `polymarket.binance_one_second_klines` for point-in-time BTC path and flow features;
 - `polymarket.btc_market_execution_snapshots` for optional point-in-time execution-book features.
 
+Execution-book evidence reads the canonical snapshot table one completed PMXT artifact at a time
+and selects the 90–140 second decision points from its retained causal 250 ms observations.
+`btc_market_decision_execution_snapshots` is a legacy compact materialization and is not a model
+input. Both five-share and ten-share executable ask VWAP remain available in the canonical rows;
+the evidence manifest records which snapshot schema versions were used.
+
 The April 21-May 20 source cohort contains 8,509 markets with an exact opening boundary and
 official outcome. The point-in-time feature contract additionally requires a dense one-second
 history through the last candidate decision, leaving 8,508 training markets. Final-price

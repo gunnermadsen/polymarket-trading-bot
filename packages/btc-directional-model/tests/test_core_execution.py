@@ -59,11 +59,12 @@ def complete_side(
     )
 
 
-def test_execution_sql_is_bounded_to_canonical_compact_backfill_inputs() -> None:
+def test_execution_sql_is_bounded_to_canonical_orderbook_inputs() -> None:
     sql = execution_sql().lower()
 
     assert "polymarket.btc_interval_markets" in sql
     assert "polymarket.btc_market_execution_snapshots" in sql
+    assert "polymarket.btc_market_decision_execution_snapshots" not in sql
     assert "polymarket.backfill_artifacts" in sql
     assert "snapshot_artifact.status = 'completed'" in sql
     assert "polymarket_btc_five_minute_execution_snapshots" in sql
@@ -81,7 +82,8 @@ def test_execution_sql_uses_exact_configured_candidate_timestamps() -> None:
     assert "%(min_seconds_after_open)s" in sql
     assert "%(max_seconds_after_open)s" in sql
     assert "%(sample_interval_milliseconds)s" in sql
-    assert "snapshot.schema_version = %(snapshot_schema_version)s" in sql
+    assert "snapshot.schema_version = any(%(snapshot_schema_versions)s)" in sql
+    assert "snapshot.artifact_id = %(artifact_id)s" in sql
     assert "snapshot.up_ask_vwap_10" in sql
     assert "snapshot.down_ask_vwap_10" in sql
     assert "(cohort.quality_flags & 255) = 0" in sql

@@ -186,12 +186,16 @@ services:
       POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "1000"
       POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY:-}"
       POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET:-}"
+      POLYMARKET_POLYGON_RPC_URL: "${POLYMARKET_POLYGON_RPC_URL:-https://polygon-bor-rpc.publicnode.com}"
+      POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL: "${POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL:-https://tenderly.rpc.polygon.community}"
+      POLYMARKET_POLYGON_CHAINLINK_BTCUSD_PROXY: "0xc907e116054ad103354f2d350fd2514433d57f6f"
+      POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE: "30000"
       POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-1"
       POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-1"
       POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
       POLYMARKET_BACKFILL_LEASE_SECS: "120"
       POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
-      POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "2"
+      POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "1"
       POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
       POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "42949672960"
       POLYMARKET_BACKFILL_CACHE_STALE_SECS: "172800"
@@ -244,12 +248,16 @@ services:
       POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "1000"
       POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY:-}"
       POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET:-}"
+      POLYMARKET_POLYGON_RPC_URL: "${POLYMARKET_POLYGON_RPC_URL:-https://polygon-bor-rpc.publicnode.com}"
+      POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL: "${POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL:-https://tenderly.rpc.polygon.community}"
+      POLYMARKET_POLYGON_CHAINLINK_BTCUSD_PROXY: "0xc907e116054ad103354f2d350fd2514433d57f6f"
+      POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE: "30000"
       POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-2"
       POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-2"
       POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
       POLYMARKET_BACKFILL_LEASE_SECS: "120"
       POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
-      POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "2"
+      POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "1"
       POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
       POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "42949672960"
       POLYMARKET_BACKFILL_CACHE_STALE_SECS: "172800"
@@ -302,12 +310,16 @@ services:
       POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "1000"
       POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY:-}"
       POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET:-}"
+      POLYMARKET_POLYGON_RPC_URL: "${POLYMARKET_POLYGON_RPC_URL:-https://polygon-bor-rpc.publicnode.com}"
+      POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL: "${POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL:-https://tenderly.rpc.polygon.community}"
+      POLYMARKET_POLYGON_CHAINLINK_BTCUSD_PROXY: "0xc907e116054ad103354f2d350fd2514433d57f6f"
+      POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE: "30000"
       POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-3"
       POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-3"
       POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
       POLYMARKET_BACKFILL_LEASE_SECS: "120"
       POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
-      POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "2"
+      POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "1"
       POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
       POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "42949672960"
       POLYMARKET_BACKFILL_CACHE_STALE_SECS: "172800"
@@ -325,6 +337,33 @@ services:
       - /tmp:size=16m,mode=1777
     stop_grace_period: 60s
     restart: unless-stopped
+
+  polymarket-backfill-worker-4:
+    extends:
+      service: polymarket-backfill-worker
+    container_name: polymarket-backfill-worker-4
+    hostname: polymarket-backfill-worker-4
+    environment:
+      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-4"
+      POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-4"
+
+  polymarket-backfill-worker-5:
+    extends:
+      service: polymarket-backfill-worker
+    container_name: polymarket-backfill-worker-5
+    hostname: polymarket-backfill-worker-5
+    environment:
+      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-5"
+      POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-5"
+
+  polymarket-backfill-worker-6:
+    extends:
+      service: polymarket-backfill-worker
+    container_name: polymarket-backfill-worker-6
+    hostname: polymarket-backfill-worker-6
+    environment:
+      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-6"
+      POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-6"
 
   grafana:
     image: grafana/grafana:${GRAFANA_VERSION:-12.4.2}
