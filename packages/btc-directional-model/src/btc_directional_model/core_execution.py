@@ -23,7 +23,12 @@ LEGACY_EXECUTION_EVIDENCE_CONTRACT = "btc_execution_evidence_v1"
 LEGACY_EXECUTION_EVIDENCE_SCHEMA_VERSION = "btc-execution-evidence-v1"
 EXECUTION_EVIDENCE_CONTRACT = "btc_execution_evidence_v2"
 EXECUTION_EVIDENCE_SCHEMA_VERSION = "btc-execution-evidence-v2"
-COMPACT_SNAPSHOT_SCHEMA_VERSION = "btc5m-decision-book-90-140s-5s-v1"
+LEGACY_SNAPSHOT_SCHEMA_VERSION = "btc5m-book-250ms-v1"
+CANONICAL_COMPACT_SNAPSHOT_SCHEMA_VERSION = "btc5m-decision-book-90-140s-5s-v2"
+CANONICAL_SNAPSHOT_SCHEMA_VERSIONS = (
+    LEGACY_SNAPSHOT_SCHEMA_VERSION,
+    CANONICAL_COMPACT_SNAPSHOT_SCHEMA_VERSION,
+)
 DEFAULT_EXECUTION_QUANTITY = 5.0
 DEFAULT_FRESHNESS_SECONDS = 2
 
@@ -101,6 +106,7 @@ class ExecutionEvidenceConfig:
     max_seconds_after_open: int = 140
     freshness_seconds: int = DEFAULT_FRESHNESS_SECONDS
     quantity: float = DEFAULT_EXECUTION_QUANTITY
+    snapshot_schema_versions: tuple[str, ...] = CANONICAL_SNAPSHOT_SCHEMA_VERSIONS
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -128,6 +134,11 @@ class ExecutionEvidenceConfig:
             raise ValueError("freshness_seconds must be positive")
         if self.quantity != DEFAULT_EXECUTION_QUANTITY:
             raise ValueError("execution evidence is fixed to the stored five-share VWAP")
+        if not self.snapshot_schema_versions or any(
+            not schema_version.strip()
+            for schema_version in self.snapshot_schema_versions
+        ):
+            raise ValueError("snapshot_schema_versions must contain non-empty values")
 
 
 @dataclass(frozen=True)
@@ -305,7 +316,7 @@ def extract_execution_evidence(
         "source_schema_sha256": hashlib.sha256(
             EXECUTION_EVIDENCE_SCHEMA.to_string().encode()
         ).hexdigest(),
-        "snapshot_schema_version": COMPACT_SNAPSHOT_SCHEMA_VERSION,
+        "snapshot_schema_versions": list(config.snapshot_schema_versions),
         "range_start": config.range_start.isoformat(),
         "range_end": config.range_end.isoformat(),
         "sample_interval_seconds": config.sample_interval_seconds,
@@ -316,7 +327,7 @@ def extract_execution_evidence(
         "primary_key": ["market_id", "observed_at"],
         "source_tables": [
             "polymarket.btc_interval_markets",
-            "polymarket.btc_market_decision_execution_snapshots",
+            "polymarket.btc_market_execution_snapshots",
             "polymarket.backfill_artifacts",
         ],
         "query_sha256": hashlib.sha256(query.encode()).hexdigest(),
@@ -351,6 +362,12 @@ def extract_execution_evidence(
                 if connection is None:
                     connection = database_connection()
                     configure_read_only_connection(connection)
+                artifact_ids = _execution_artifact_ids(
+                    connection,
+                    batch_start=batch_start,
+                    batch_end=batch_end,
+                    snapshot_schema_versions=config.snapshot_schema_versions,
+                )
                 rows = _extract_execution_partition(
                     connection,
                     query,
@@ -358,6 +375,7 @@ def extract_execution_evidence(
                     config=config,
                     batch_start=batch_start,
                     batch_end=batch_end,
+                    artifact_ids=artifact_ids,
                 )
                 summary = execution_partition_summary(destination)
                 if rows != summary["rows"]:
@@ -441,48 +459,59 @@ def _extract_execution_partition(
     config: ExecutionEvidenceConfig,
     batch_start: datetime,
     batch_end: datetime,
+    artifact_ids: Sequence[object],
 ) -> int:
     temporary = destination.with_suffix(".parquet.partial")
     writer: pq.ParquetWriter | None = None
     row_count = 0
     try:
-        cursor_name = f"btc_execution_{batch_start:%Y%m%d}"
-        with connection.transaction(), connection.cursor(name=cursor_name) as cursor:
-            cursor.execute(
-                query,
-                {
-                    "batch_start": batch_start,
-                    "batch_end": batch_end,
-                    "min_seconds_after_open": config.min_seconds_after_open,
-                    "max_seconds_after_open": config.max_seconds_after_open,
-                    "sample_interval_milliseconds": (
-                        config.sample_interval_seconds * 1_000
-                    ),
-                    "snapshot_schema_version": COMPACT_SNAPSHOT_SCHEMA_VERSION,
-                    "freshness_seconds": config.freshness_seconds,
-                },
-            )
-            while rows := cursor.fetchmany(10_000):
-                records = [
-                    dict(zip(EXECUTION_EVIDENCE_SCHEMA.names, row, strict=True))
-                    for row in rows
-                ]
-                table = pa.Table.from_pylist(records, schema=EXECUTION_EVIDENCE_SCHEMA)
-                if writer is None:
-                    writer = pq.ParquetWriter(
-                        temporary,
-                        EXECUTION_EVIDENCE_SCHEMA,
-                        compression="zstd",
-                        write_statistics=True,
-                        use_dictionary=[
-                            "market_id",
-                            "official_outcome",
-                            "artifact_id",
-                            "schema_version",
-                        ],
+        for artifact_index, artifact_id in enumerate(artifact_ids):
+            cursor_name = f"btc_execution_{batch_start:%Y%m%d}_{artifact_index}"
+            with connection.transaction():
+                connection.execute("SET LOCAL statement_timeout = '5s'")
+                connection.execute("SET LOCAL work_mem = '16MB'")
+                with connection.cursor(name=cursor_name) as cursor:
+                    cursor.execute(
+                        query,
+                        {
+                            "artifact_id": artifact_id,
+                            "batch_start": batch_start,
+                            "batch_end": batch_end,
+                            "min_seconds_after_open": config.min_seconds_after_open,
+                            "max_seconds_after_open": config.max_seconds_after_open,
+                            "sample_interval_milliseconds": (
+                                config.sample_interval_seconds * 1_000
+                            ),
+                            "snapshot_schema_versions": list(
+                                config.snapshot_schema_versions
+                            ),
+                            "freshness_seconds": config.freshness_seconds,
+                        },
                     )
-                writer.write_table(table)
-                row_count += len(rows)
+                    while rows := cursor.fetchmany(10_000):
+                        records = [
+                            dict(zip(EXECUTION_EVIDENCE_SCHEMA.names, row, strict=True))
+                            for row in rows
+                        ]
+                        table = pa.Table.from_pylist(
+                            records,
+                            schema=EXECUTION_EVIDENCE_SCHEMA,
+                        )
+                        if writer is None:
+                            writer = pq.ParquetWriter(
+                                temporary,
+                                EXECUTION_EVIDENCE_SCHEMA,
+                                compression="zstd",
+                                write_statistics=True,
+                                use_dictionary=[
+                                    "market_id",
+                                    "official_outcome",
+                                    "artifact_id",
+                                    "schema_version",
+                                ],
+                            )
+                        writer.write_table(table)
+                        row_count += len(rows)
     finally:
         if writer is not None:
             writer.close()
@@ -494,6 +523,38 @@ def _extract_execution_partition(
         )
     temporary.replace(destination)
     return row_count
+
+
+def _execution_artifact_ids(
+    connection: psycopg.Connection[Any],
+    *,
+    batch_start: datetime,
+    batch_end: datetime,
+    snapshot_schema_versions: Sequence[str],
+) -> list[object]:
+    with connection.transaction():
+        connection.execute("SET LOCAL statement_timeout = '5s'")
+        connection.execute("SET LOCAL work_mem = '16MB'")
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT artifact_id
+                FROM polymarket.backfill_artifacts
+                WHERE provider = 'pmxt_v2_execution_snapshots'
+                  AND ingester_key = 'polymarket_btc_five_minute_execution_snapshots'
+                  AND status = 'completed'
+                  AND source_date >= %s
+                  AND source_date < %s
+                  AND metadata->>'schema_version' = ANY(%s)
+                ORDER BY logical_key, artifact_id
+                """,
+                (
+                    batch_start.date(),
+                    batch_end.date(),
+                    list(snapshot_schema_versions),
+                ),
+            )
+            return [row[0] for row in cursor.fetchall()]
 
 
 def execution_partition_summary(path: Path) -> dict[str, Any]:

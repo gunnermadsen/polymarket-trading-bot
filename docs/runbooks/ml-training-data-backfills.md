@@ -164,3 +164,45 @@ The intended pilot order is market identities, official outcomes, one-second Bin
 then compact PMXT execution snapshots. Binance aggregate trades and authenticated Chainlink
 reports are optional for separate research and do not gate strategy readiness. No ingester is
 automatically executed by deployment or migration.
+
+## Canonical orderbook training source
+
+`polymarket.btc_market_execution_snapshots` is the canonical durable source for historical BTC
+five-minute orderbook training.  Its retained `btc5m-book-250ms-v1` rows hold causal book state
+and executable ask VWAP at one, five, and ten shares.  Decision-window extraction selects only
+the 90, 95, ..., 140 second observations from a completed source artifact; it does not require a
+second copy of the same orderbook data.
+
+The earlier `polymarket.btc_market_decision_execution_snapshots` table is a legacy compact
+materialization.  It is not a training input.  Its artifact and provenance records must remain
+available until a migration retires its writer and records the replacement lineage; do not delete
+either table by hand.
+
+The canonical reader must query one completed PMXT artifact at a time.  An hourly raw artifact
+contains at most 14,400 source rows and yields at most 132 target-window observations.  It uses a
+read-only transaction, a five-second statement timeout, a two-second lock timeout, and 16 MiB of
+working memory.  Table-wide diagnostic aggregates are prohibited because they have previously
+caused an avoidable database restart.
+
+### 2026-07-30 availability audit
+
+The audit read all completed 250 ms source artifacts through bounded per-artifact queries.  It
+verified that `up_ask_vwap_5`/`down_ask_vwap_5` and
+`up_ask_vwap_10`/`down_ask_vwap_10` are both retained; they had matching availability in every
+audited interval.  A null value is recorded as unavailable and must not be reconstructed from a
+summary snapshot.
+
+Source artifact availability begins on 2026-04-13.  The requested 2026-03-21 through
+2026-04-12 history is not in this table and cannot be obtained from PMXT v2, whose documented
+coverage boundary is 2026-04-13T19:00:00Z.  The audit also found partial or missing source-hour
+coverage on 2026-05-29 through 2026-05-31, 2026-06-07, 2026-06-11, 2026-06-20,
+2026-06-22, 2026-06-28, 2026-07-01, 2026-07-06, 2026-07-12, and 2026-07-27; there are no retained
+250 ms source artifacts for 2026-07-21 or 2026-07-23 through 2026-07-26.
+
+Timestamp coverage alone does not make an execution observation usable.  Two sustained periods
+have complete or near-complete timestamp coverage but no two-sided executable VWAP: 2026-06-13
+through 2026-06-28 and 2026-07-09 through 2026-07-13.  April through 2026-05-25 is predominantly
+sparse, while healthy two-sided VWAP availability starts on 2026-05-26, resumes on 2026-06-29,
+and is strong again from 2026-07-16.  Dataset construction must retain the flags and explicitly
+exclude unavailable observations from execution-economic measurements; it must not fabricate a
+price or silently turn an unavailable book into a negative label.
