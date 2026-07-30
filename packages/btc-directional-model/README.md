@@ -11,7 +11,7 @@ The original four-table data contract uses the confirmed backfill sources:
 - `polymarket.btc_interval_markets` for market identity and official outcome labels;
 - `polymarket.btc_market_reference_facts` for the opening boundary and final-price audit;
 - `polymarket.binance_one_second_klines` for point-in-time BTC path and flow features;
-- `polymarket.btc_market_execution_snapshots` for optional point-in-time execution-book features.
+- `polymarket.btc_market_decision_execution_snapshots` for optional point-in-time execution-book features.
 
 The April 21-May 20 source cohort contains 8,509 markets with an exact opening boundary and
 official outcome. The point-in-time feature contract additionally requires a dense one-second

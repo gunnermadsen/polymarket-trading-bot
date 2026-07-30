@@ -23,7 +23,7 @@ LEGACY_EXECUTION_EVIDENCE_CONTRACT = "btc_execution_evidence_v1"
 LEGACY_EXECUTION_EVIDENCE_SCHEMA_VERSION = "btc-execution-evidence-v1"
 EXECUTION_EVIDENCE_CONTRACT = "btc_execution_evidence_v2"
 EXECUTION_EVIDENCE_SCHEMA_VERSION = "btc-execution-evidence-v2"
-COMPACT_SNAPSHOT_SCHEMA_VERSION = "btc5m-book-250ms-v1"
+COMPACT_SNAPSHOT_SCHEMA_VERSION = "btc5m-decision-book-90-140s-5s-v1"
 DEFAULT_EXECUTION_QUANTITY = 5.0
 DEFAULT_FRESHNESS_SECONDS = 2
 
@@ -97,8 +97,8 @@ class ExecutionEvidenceConfig:
     range_end: datetime
     output_dir: Path
     sample_interval_seconds: int = 5
-    min_seconds_after_open: int = 60
-    max_seconds_after_open: int = 240
+    min_seconds_after_open: int = 90
+    max_seconds_after_open: int = 140
     freshness_seconds: int = DEFAULT_FRESHNESS_SECONDS
     quantity: float = DEFAULT_EXECUTION_QUANTITY
 
@@ -316,7 +316,7 @@ def extract_execution_evidence(
         "primary_key": ["market_id", "observed_at"],
         "source_tables": [
             "polymarket.btc_interval_markets",
-            "polymarket.btc_market_execution_snapshots",
+            "polymarket.btc_market_decision_execution_snapshots",
             "polymarket.backfill_artifacts",
         ],
         "query_sha256": hashlib.sha256(query.encode()).hexdigest(),

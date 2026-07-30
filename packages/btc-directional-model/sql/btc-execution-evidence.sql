@@ -51,7 +51,7 @@ candidate_snapshots AS MATERIALIZED (
     snapshot.down_imbalance::double precision AS down_imbalance,
     snapshot.quality_flags
   FROM eligible_markets market
-  JOIN polymarket.btc_market_execution_snapshots snapshot
+  JOIN polymarket.btc_market_decision_execution_snapshots snapshot
     ON snapshot.market_id = market.market_id
    AND snapshot.sampled_at >= %(batch_start)s
    AND snapshot.sampled_at < %(batch_end)s

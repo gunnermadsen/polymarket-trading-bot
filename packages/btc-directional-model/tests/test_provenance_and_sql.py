@@ -178,7 +178,7 @@ def test_sql_uses_only_confirmed_sources_and_prior_completed_second() -> None:
         "polymarket.btc_interval_markets",
         "polymarket.btc_market_reference_facts",
         "polymarket.binance_one_second_klines",
-        "polymarket.btc_market_execution_snapshots",
+        "polymarket.btc_market_decision_execution_snapshots",
     ):
         assert table in sql
     assert "snapshot.sampled_at - interval '1 second'" in sql

@@ -9,8 +9,11 @@ use super::job::{
     BtcExecutionSnapshot, BtcOrderbookArchiveEvent, BtcOrderbookMarketScope, BtcOutcome,
 };
 
-pub const EXECUTION_SNAPSHOT_SCHEMA_VERSION: &str = "btc5m-book-250ms-v1";
-pub const EXECUTION_SNAPSHOT_INTERVAL_MILLIS: i64 = 250;
+pub const EXECUTION_SNAPSHOT_SCHEMA_VERSION: &str = "btc5m-decision-book-90-140s-5s-v1";
+pub const EXECUTION_SNAPSHOT_INTERVAL_MILLIS: i64 = 5_000;
+pub const EXECUTION_SNAPSHOT_START_MILLIS: i64 = 90_000;
+pub const EXECUTION_SNAPSHOT_END_MILLIS: i64 = 140_000;
+pub const EXECUTION_SNAPSHOTS_PER_MARKET: usize = 11;
 pub const QUALITY_UP_MISSING: i32 = 1;
 pub const QUALITY_DOWN_MISSING: i32 = 1 << 1;
 pub const QUALITY_UP_STALE: i32 = 1 << 2;
@@ -85,7 +88,7 @@ impl OutcomeState {
         Self {
             book,
             next_sample,
-            samples: Vec::with_capacity(1_200),
+            samples: Vec::with_capacity(EXECUTION_SNAPSHOTS_PER_MARKET),
             last_event_received_at: None,
         }
     }
@@ -166,8 +169,8 @@ impl ExecutionSnapshotReconstructor {
                 .map(|seed| (seed.up.clone(), seed.down.clone()))
                 .unwrap_or_default();
             states.push(MarketState {
-                up: OutcomeState::new(scope.window_start, seeded_books.0),
-                down: OutcomeState::new(scope.window_start, seeded_books.1),
+                up: OutcomeState::new(decision_window_start(&scope), seeded_books.0),
+                down: OutcomeState::new(decision_window_start(&scope), seeded_books.1),
                 scope,
                 emitted_samples: 0,
             });
@@ -189,8 +192,10 @@ impl ExecutionSnapshotReconstructor {
                 bail!("PMXT token was associated with an unexpected condition");
             }
             match outcome {
-                BtcOutcome::Up => market.up.apply(event, market.scope.window_end)?,
-                BtcOutcome::Down => market.down.apply(event, market.scope.window_end)?,
+                BtcOutcome::Up => market.up.apply(event, decision_window_end(&market.scope))?,
+                BtcOutcome::Down => market
+                    .down
+                    .apply(event, decision_window_end(&market.scope))?,
             }
         }
         Ok(())
@@ -198,8 +203,9 @@ impl ExecutionSnapshotReconstructor {
 
     pub fn finish(&mut self, through: DateTime<Utc>, output: &mut Vec<BtcExecutionSnapshot>) {
         for market in &mut self.markets {
-            market.up.emit_through(through, market.scope.window_end);
-            market.down.emit_through(through, market.scope.window_end);
+            let sample_end = decision_window_end(&market.scope);
+            market.up.emit_through(through, sample_end);
+            market.down.emit_through(through, sample_end);
             emit_joined_snapshots(market, output);
         }
     }
@@ -210,8 +216,9 @@ impl ExecutionSnapshotReconstructor {
         output: &mut Vec<BtcExecutionSnapshot>,
     ) {
         for market in &mut self.markets {
-            market.up.emit_before(boundary, market.scope.window_end);
-            market.down.emit_before(boundary, market.scope.window_end);
+            let sample_end = decision_window_end(&market.scope);
+            market.up.emit_before(boundary, sample_end);
+            market.down.emit_before(boundary, sample_end);
             emit_joined_snapshots(market, output);
         }
     }
@@ -232,9 +239,11 @@ fn emit_joined_snapshots(market: &mut MarketState, output: &mut Vec<BtcExecution
     let available_samples = market.up.samples.len().min(market.down.samples.len());
     while market.emitted_samples < available_samples {
         let index = market.emitted_samples;
-        let offset_millis = i64::try_from(index)
-            .unwrap_or(i64::MAX)
-            .saturating_mul(EXECUTION_SNAPSHOT_INTERVAL_MILLIS);
+        let offset_millis = EXECUTION_SNAPSHOT_START_MILLIS.saturating_add(
+            i64::try_from(index)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(EXECUTION_SNAPSHOT_INTERVAL_MILLIS),
+        );
         let sampled_at = market.scope.window_start + Duration::milliseconds(offset_millis);
         output.push(snapshot(
             &market.scope,
@@ -244,6 +253,18 @@ fn emit_joined_snapshots(market: &mut MarketState, output: &mut Vec<BtcExecution
         ));
         market.emitted_samples += 1;
     }
+}
+
+fn decision_window_start(scope: &BtcOrderbookMarketScope) -> DateTime<Utc> {
+    scope.window_start + Duration::milliseconds(EXECUTION_SNAPSHOT_START_MILLIS)
+}
+
+fn decision_window_end(scope: &BtcOrderbookMarketScope) -> DateTime<Utc> {
+    let next_sample_after_window = scope.window_start
+        + Duration::milliseconds(
+            EXECUTION_SNAPSHOT_END_MILLIS.saturating_add(EXECUTION_SNAPSHOT_INTERVAL_MILLIS),
+        );
+    next_sample_after_window.min(scope.window_end)
 }
 
 #[derive(Debug, Default)]
@@ -448,8 +469,8 @@ mod tests {
             condition_id: "condition".to_string(),
             up_token_id: "up".to_string(),
             down_token_id: "down".to_string(),
-            window_start: time(1_000),
-            window_end: time(2_000),
+            window_start: time(0),
+            window_end: time(300_000),
         }
     }
 
@@ -459,8 +480,8 @@ mod tests {
             condition_id: "condition".to_string(),
             up_token_id: "next-up".to_string(),
             down_token_id: "next-down".to_string(),
-            window_start: time(2_000),
-            window_end: time(3_000),
+            window_start: time(300_000),
+            window_end: time(600_000),
         }
     }
 
@@ -487,19 +508,19 @@ mod tests {
     }
 
     #[test]
-    fn reconstructs_causal_quarter_second_snapshots_for_both_outcomes() {
+    fn reconstructs_causal_decision_window_snapshots_for_both_outcomes() {
         let mut reconstructor = ExecutionSnapshotReconstructor::new(vec![scope()]).unwrap();
         let mut snapshots = Vec::new();
         reconstructor
-            .apply(&book("up", 900, 1), &mut snapshots)
+            .apply(&book("up", 89_900, 1), &mut snapshots)
             .unwrap();
         reconstructor
-            .apply(&book("down", 900, 2), &mut snapshots)
+            .apply(&book("down", 89_900, 2), &mut snapshots)
             .unwrap();
-        reconstructor.finish(time(2_000), &mut snapshots);
-        assert_eq!(snapshots.len(), 4);
-        assert_eq!(snapshots[0].sampled_at, time(1_000));
-        assert_eq!(snapshots[3].sampled_at, time(1_750));
+        reconstructor.finish(time(300_000), &mut snapshots);
+        assert_eq!(snapshots.len(), EXECUTION_SNAPSHOTS_PER_MARKET);
+        assert_eq!(snapshots[0].sampled_at, time(90_000));
+        assert_eq!(snapshots[10].sampled_at, time(140_000));
         assert_eq!(snapshots[0].quality_flags, 0);
         assert_eq!(snapshots[0].up_best_ask, Some(Decimal::new(45, 2)));
         assert_eq!(snapshots[0].up_ask_vwap_5, Some(Decimal::new(46, 2)));
@@ -510,15 +531,15 @@ mod tests {
         let mut reconstructor = ExecutionSnapshotReconstructor::new(vec![scope()]).unwrap();
         let mut snapshots = Vec::new();
         reconstructor
-            .apply(&book("up", 1_100, 1), &mut snapshots)
+            .apply(&book("up", 90_100, 1), &mut snapshots)
             .unwrap();
         reconstructor
-            .apply(&book("down", 1_100, 2), &mut snapshots)
+            .apply(&book("down", 90_100, 2), &mut snapshots)
             .unwrap();
-        reconstructor.finish(time(2_000), &mut snapshots);
+        reconstructor.finish(time(300_000), &mut snapshots);
         assert_ne!(snapshots[0].quality_flags & QUALITY_UP_MISSING, 0);
         assert_ne!(snapshots[0].quality_flags & QUALITY_DOWN_MISSING, 0);
-        assert_eq!(snapshots[1].up_provider_received_at, Some(time(1_100)));
+        assert_eq!(snapshots[1].up_provider_received_at, Some(time(90_100)));
     }
 
     #[test]
@@ -526,17 +547,20 @@ mod tests {
         let mut reconstructor = ExecutionSnapshotReconstructor::new(vec![scope()]).unwrap();
         let mut snapshots = Vec::new();
         reconstructor
-            .apply(&book("up", 1_100, 1), &mut snapshots)
+            .apply(&book("up", 90_100, 1), &mut snapshots)
             .unwrap();
         reconstructor
-            .apply(&book("down", 900, 2), &mut snapshots)
+            .apply(&book("down", 89_900, 2), &mut snapshots)
             .unwrap();
-        reconstructor.finish(time(2_000), &mut snapshots);
+        reconstructor.finish(time(300_000), &mut snapshots);
 
-        assert_eq!(snapshots.len(), 4);
+        assert_eq!(snapshots.len(), EXECUTION_SNAPSHOTS_PER_MARKET);
         assert_ne!(snapshots[0].quality_flags & QUALITY_UP_MISSING, 0);
         assert_eq!(snapshots[0].quality_flags & QUALITY_DOWN_MISSING, 0);
-        assert_eq!(snapshots[1].quality_flags, 0);
+        assert_eq!(
+            snapshots[1].quality_flags,
+            QUALITY_UP_STALE | QUALITY_DOWN_STALE
+        );
     }
 
     #[test]
@@ -560,22 +584,25 @@ mod tests {
         let next = next_scope();
         let mut first = ExecutionSnapshotReconstructor::new(vec![scope(), next.clone()]).unwrap();
         let mut discarded = Vec::new();
-        let mut next_up = book("next-up", 1_900, 1);
+        let mut next_up = book("next-up", 299_900, 1);
         next_up.condition_id = next.condition_id.clone();
-        let mut next_down = book("next-down", 1_900, 2);
+        let mut next_down = book("next-down", 299_900, 2);
         next_down.condition_id = next.condition_id.clone();
         first.apply(&next_up, &mut discarded).unwrap();
         first.apply(&next_down, &mut discarded).unwrap();
-        first.finish_before(time(2_000), &mut discarded);
+        first.finish_before(time(300_000), &mut discarded);
         let seed = first.market_seed(&next.market_id).unwrap();
 
         let mut second =
             ExecutionSnapshotReconstructor::new_with_seed(vec![next], Some(seed)).unwrap();
         let mut snapshots = Vec::new();
-        second.finish(time(2_250), &mut snapshots);
+        second.finish(time(395_000), &mut snapshots);
         assert_eq!(snapshots.len(), 2);
-        assert_eq!(snapshots[0].sampled_at, time(2_000));
-        assert_eq!(snapshots[0].quality_flags, 0);
-        assert_eq!(snapshots[0].up_provider_received_at, Some(time(1_900)));
+        assert_eq!(snapshots[0].sampled_at, time(390_000));
+        assert_eq!(
+            snapshots[0].quality_flags,
+            QUALITY_UP_STALE | QUALITY_DOWN_STALE
+        );
+        assert_eq!(snapshots[0].up_provider_received_at, Some(time(299_900)));
     }
 }

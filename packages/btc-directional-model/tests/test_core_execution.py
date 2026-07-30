@@ -63,7 +63,7 @@ def test_execution_sql_is_bounded_to_canonical_compact_backfill_inputs() -> None
     sql = execution_sql().lower()
 
     assert "polymarket.btc_interval_markets" in sql
-    assert "polymarket.btc_market_execution_snapshots" in sql
+    assert "polymarket.btc_market_decision_execution_snapshots" in sql
     assert "polymarket.backfill_artifacts" in sql
     assert "snapshot_artifact.status = 'completed'" in sql
     assert "polymarket_btc_five_minute_execution_snapshots" in sql

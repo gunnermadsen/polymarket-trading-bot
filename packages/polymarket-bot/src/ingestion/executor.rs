@@ -16,7 +16,9 @@ use super::{
     },
     chainlink_archive::{ChainlinkArchiveConfig, CHAINLINK_ARCHIVE_PROVIDER},
     execution_snapshots::{
-        ExecutionMarketSeed, ExecutionSnapshotReconstructor, EXECUTION_SNAPSHOT_SCHEMA_VERSION,
+        ExecutionMarketSeed, ExecutionSnapshotReconstructor, EXECUTION_SNAPSHOTS_PER_MARKET,
+        EXECUTION_SNAPSHOT_END_MILLIS, EXECUTION_SNAPSHOT_INTERVAL_MILLIS,
+        EXECUTION_SNAPSHOT_SCHEMA_VERSION, EXECUTION_SNAPSHOT_START_MILLIS,
     },
     job::{
         ArtifactCompletion, ArtifactDisposition, ArtifactSpec, BackfillArtifactStatus,
@@ -1007,7 +1009,7 @@ impl IngestionExecutor {
                 )));
             }
             let stamp = hour.format("%Y-%m-%dT%H");
-            let logical_key = format!("pmxt:v2:btc5m_execution_snapshots:250ms:{stamp}");
+            let logical_key = format!("pmxt:v2:btc5m_execution_snapshots:90-140s-5s:{stamp}");
             progress.current_logical_key = Some(logical_key.clone());
             let prepared = self
                 .repository
@@ -1019,7 +1021,7 @@ impl IngestionExecutor {
                         logical_key,
                         provider: "pmxt_v2_execution_snapshots".to_string(),
                         source_uri: format!(
-                            "{}#btc5m-250ms",
+                            "{}#btc5m-90-140s-5s",
                             source_specs
                                 .last()
                                 .expect("compact PMXT source contains the current hour")
@@ -1029,7 +1031,9 @@ impl IngestionExecutor {
                         expected_checksum: None,
                         metadata: serde_json::json!({
                             "schema_version": EXECUTION_SNAPSHOT_SCHEMA_VERSION,
-                            "sample_interval_milliseconds": 250,
+                            "sample_interval_milliseconds": EXECUTION_SNAPSHOT_INTERVAL_MILLIS,
+                            "sample_window_start_milliseconds": EXECUTION_SNAPSHOT_START_MILLIS,
+                            "sample_window_end_milliseconds": EXECUTION_SNAPSHOT_END_MILLIS,
                             "source_logical_keys": logical_keys,
                             "source_mode": if reuse_raw_materialization {
                                 "existing_raw_materialization"
@@ -1315,7 +1319,10 @@ impl IngestionExecutor {
             .await?;
             let expected_records = u64::try_from(output_scope.len())
                 .map_err(IngestionExecutionError::permanent)?
-                .saturating_mul(1_200);
+                .saturating_mul(
+                    u64::try_from(EXECUTION_SNAPSHOTS_PER_MARKET)
+                        .map_err(IngestionExecutionError::permanent)?,
+                );
             if reconstructed_records != expected_records {
                 let message = format!(
                     "compact PMXT hour {hour} produced {reconstructed_records} snapshots; expected {expected_records}"
@@ -1341,7 +1348,9 @@ impl IngestionExecutor {
                         ),
                         metadata: serde_json::json!({
                             "schema_version": EXECUTION_SNAPSHOT_SCHEMA_VERSION,
-                            "sample_interval_milliseconds": 250,
+                            "sample_interval_milliseconds": EXECUTION_SNAPSHOT_INTERVAL_MILLIS,
+                            "sample_window_start_milliseconds": EXECUTION_SNAPSHOT_START_MILLIS,
+                            "sample_window_end_milliseconds": EXECUTION_SNAPSHOT_END_MILLIS,
                             "source_events_consumed": source_events,
                             "source_artifact_ids": source_artifacts
                                 .iter()

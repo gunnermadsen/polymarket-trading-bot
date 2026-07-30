@@ -1249,7 +1249,7 @@ impl IngestionRepository {
         let mut inserted = 0u64;
         for chunk in records.chunks(MAX_EXECUTION_SNAPSHOT_INSERT_ROWS) {
             let mut query = QueryBuilder::<Postgres>::new(
-                "INSERT INTO polymarket.btc_market_execution_snapshots (market_id, sampled_at, \
+                "INSERT INTO polymarket.btc_market_decision_execution_snapshots (market_id, sampled_at, \
                  artifact_id, schema_version, up_source_row_number, up_source_timestamp, \
                  up_provider_received_at, up_best_bid, up_best_ask, up_best_bid_size, \
                  up_best_ask_size, up_bid_depth, up_ask_depth, up_ask_vwap_1, up_ask_vwap_5, \
@@ -1331,7 +1331,7 @@ impl IngestionRepository {
             .bind(replacement_artifact_id)
             .bind(source.record_count.unwrap_or_default())
             .bind(serde_json::json!({
-                "replacement_schema": "btc5m-book-250ms-v1",
+                "replacement_schema": "btc5m-decision-book-90-140s-5s-v1",
                 "replacement_ingester": IngesterKey::PolymarketBtcFiveMinuteExecutionSnapshots,
             }))
             .execute(&mut *tx)
@@ -1733,17 +1733,27 @@ impl IngestionRepository {
                     AND c.source_timestamp < m.window_end
                     AND a.status = 'completed'
                 ) AS chainlink_covered,
-                COALESCE((
-                  SELECT count(*) = 1200
-                    AND min(s.sampled_at) = m.window_start
-                    AND max(s.sampled_at) = m.window_end - interval '250 milliseconds'
-                  FROM polymarket.btc_market_execution_snapshots s
+                EXISTS (
+                  SELECT 1
+                  FROM polymarket.btc_market_decision_execution_snapshots s
                   JOIN polymarket.backfill_artifacts a USING (artifact_id)
                   WHERE s.market_id = m.market_id
                     AND s.sampled_at >= m.window_start
                     AND s.sampled_at < m.window_end
                     AND a.status = 'completed'
-                ), false) AS orderbook_covered
+                  GROUP BY s.schema_version
+                  HAVING (
+                    s.schema_version = 'btc5m-book-250ms-v1'
+                    AND count(*) = 1200
+                    AND min(s.sampled_at) = m.window_start
+                    AND max(s.sampled_at) = m.window_end - interval '250 milliseconds'
+                  ) OR (
+                    s.schema_version = 'btc5m-decision-book-90-140s-5s-v1'
+                    AND count(*) = 11
+                    AND min(s.sampled_at) = m.window_start + interval '90 seconds'
+                    AND max(s.sampled_at) = m.window_start + interval '140 seconds'
+                  )
+                ) AS orderbook_covered
               FROM markets m
             )
             SELECT
@@ -1779,10 +1789,10 @@ impl IngestionRepository {
               (SELECT max(source_timestamp) FROM polymarket.chainlink_btcusd_archive_ticks
                 WHERE source_timestamp >= $1 AND source_timestamp < $2)
                 AS chainlink_max_timestamp,
-              (SELECT min(sampled_at) FROM polymarket.btc_market_execution_snapshots
+              (SELECT min(sampled_at) FROM polymarket.btc_market_decision_execution_snapshots
                 WHERE sampled_at >= $1 AND sampled_at < $2)
                 AS orderbook_min_timestamp,
-              (SELECT max(sampled_at) FROM polymarket.btc_market_execution_snapshots
+              (SELECT max(sampled_at) FROM polymarket.btc_market_decision_execution_snapshots
                 WHERE sampled_at >= $1 AND sampled_at < $2)
                 AS orderbook_max_timestamp
             FROM markets m
