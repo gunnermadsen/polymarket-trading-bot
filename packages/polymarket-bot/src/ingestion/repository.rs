@@ -14,7 +14,8 @@ use crate::ingestion::job::{
     BatchWriteResult, BinanceAggregateTradeRecord, BinanceOneSecondKlineRecord,
     BtcExecutionSnapshot, BtcIntervalMarket, BtcOrderbookArchiveEvent, BtcOrderbookMarketScope,
     BtcOutcome, BtcReferenceFact, BtcResolutionCandidate, ChainlinkBtcusdArchiveTick, ClaimedJob,
-    IngesterKey, PreparedArtifact, TrainingReadiness, ValidatedBackfillRequest, WorkerControl,
+    IngesterKey, PolygonChainlinkBtcusdOracleRound, PreparedArtifact, TrainingReadiness,
+    ValidatedBackfillRequest, WorkerControl,
 };
 
 const MAX_DATABASE_BATCH_ROWS: usize = 4_000;
@@ -25,6 +26,9 @@ const MAX_ORDERBOOK_EVENT_INSERT_ROWS: usize =
 const EXECUTION_SNAPSHOT_INSERT_COLUMNS: usize = 31;
 const MAX_EXECUTION_SNAPSHOT_INSERT_ROWS: usize =
     POSTGRES_MAX_BIND_PARAMETERS / EXECUTION_SNAPSHOT_INSERT_COLUMNS;
+const POLYGON_CHAINLINK_INSERT_COLUMNS: usize = 15;
+const MAX_POLYGON_CHAINLINK_INSERT_ROWS: usize =
+    POSTGRES_MAX_BIND_PARAMETERS / POLYGON_CHAINLINK_INSERT_COLUMNS;
 
 #[derive(Clone)]
 pub struct IngestionRepository {
@@ -1506,6 +1510,98 @@ impl IngestionRepository {
         batch_write_result(records.len(), inserted, "Chainlink tick")
     }
 
+    pub async fn insert_polygon_chainlink_oracle_round_batch(
+        &self,
+        claim: &ClaimedJob,
+        artifact_id: Uuid,
+        records: &[PolygonChainlinkBtcusdOracleRound],
+    ) -> Result<BatchWriteResult> {
+        if records.is_empty() {
+            return Ok(BatchWriteResult::default());
+        }
+        if records.len() > MAX_POLYGON_CHAINLINK_INSERT_ROWS {
+            bail!(
+                "Polygon Chainlink oracle batch exceeds {MAX_POLYGON_CHAINLINK_INSERT_ROWS} rows"
+            );
+        }
+        validate_polygon_chainlink_oracle_batch(records)?;
+        let mut tx = self.pool.begin().await?;
+        require_active_lease(&mut tx, claim).await?;
+        require_writable_artifact(&mut tx, claim, artifact_id).await?;
+        let transaction_hashes = records
+            .iter()
+            .map(|record| record.transaction_hash.clone())
+            .collect::<Vec<_>>();
+        let existing = sqlx::query_as::<_, ExistingPolygonChainlinkOracleRoundRow>(
+            r#"
+            SELECT chain_id, feed_proxy_address, aggregator_address, phase_id,
+              aggregator_round_id, source_timestamp, block_timestamp, answer_raw, price,
+              decimals, block_number, block_hash, transaction_hash, log_index, artifact_id
+            FROM polymarket.polygon_chainlink_btcusd_oracle_rounds
+            WHERE feed_proxy_address = $1 AND transaction_hash = ANY($2)
+            "#,
+        )
+        .bind(&records[0].feed_proxy_address)
+        .bind(&transaction_hashes)
+        .fetch_all(&mut *tx)
+        .await
+        .context("failed to inspect existing Polygon Chainlink oracle rounds")?;
+        for stored in &existing {
+            let candidate = records
+                .iter()
+                .find(|record| {
+                    record.transaction_hash == stored.transaction_hash
+                        && record.log_index == stored.log_index
+                })
+                .context(
+                    "stored Polygon Chainlink oracle identity was absent from candidate batch",
+                )?;
+            if !stored.same_as(candidate, artifact_id) {
+                bail!(
+                    "immutable Polygon Chainlink oracle conflict for {}:{}",
+                    stored.transaction_hash,
+                    stored.log_index
+                );
+            }
+        }
+
+        let mut query = QueryBuilder::<Postgres>::new(
+            "INSERT INTO polymarket.polygon_chainlink_btcusd_oracle_rounds (chain_id, \
+             feed_proxy_address, aggregator_address, phase_id, aggregator_round_id, \
+             source_timestamp, block_timestamp, answer_raw, price, decimals, block_number, \
+             block_hash, transaction_hash, log_index, artifact_id) ",
+        );
+        query.push_values(records, |mut row, record| {
+            row.push_bind(record.chain_id)
+                .push_bind(&record.feed_proxy_address)
+                .push_bind(&record.aggregator_address)
+                .push_bind(record.phase_id)
+                .push_bind(record.aggregator_round_id)
+                .push_bind(record.source_timestamp)
+                .push_bind(record.block_timestamp)
+                .push_bind(record.answer_raw)
+                .push_bind(record.price)
+                .push_bind(record.decimals)
+                .push_bind(record.block_number)
+                .push_bind(&record.block_hash)
+                .push_bind(&record.transaction_hash)
+                .push_bind(record.log_index)
+                .push_bind(artifact_id);
+        });
+        query.push(
+            " ON CONFLICT (feed_proxy_address, source_timestamp, transaction_hash, log_index) \
+             DO NOTHING",
+        );
+        let inserted = query
+            .build()
+            .execute(&mut *tx)
+            .await
+            .context("failed to persist Polygon Chainlink oracle round batch")?
+            .rows_affected();
+        tx.commit().await?;
+        batch_write_result(records.len(), inserted, "Polygon Chainlink oracle round")
+    }
+
     pub async fn insert_aggregate_trade_batch(
         &self,
         claim: &ClaimedJob,
@@ -2259,6 +2355,45 @@ struct ExistingChainlinkTickRow {
     artifact_id: Uuid,
 }
 
+#[derive(Debug, FromRow)]
+struct ExistingPolygonChainlinkOracleRoundRow {
+    chain_id: i64,
+    feed_proxy_address: String,
+    aggregator_address: String,
+    phase_id: i32,
+    aggregator_round_id: i64,
+    source_timestamp: DateTime<Utc>,
+    block_timestamp: DateTime<Utc>,
+    answer_raw: Decimal,
+    price: Decimal,
+    decimals: i32,
+    block_number: i64,
+    block_hash: String,
+    transaction_hash: String,
+    log_index: i32,
+    artifact_id: Uuid,
+}
+
+impl ExistingPolygonChainlinkOracleRoundRow {
+    fn same_as(&self, row: &PolygonChainlinkBtcusdOracleRound, artifact_id: Uuid) -> bool {
+        self.chain_id == row.chain_id
+            && self.feed_proxy_address == row.feed_proxy_address
+            && self.aggregator_address == row.aggregator_address
+            && self.phase_id == row.phase_id
+            && self.aggregator_round_id == row.aggregator_round_id
+            && self.source_timestamp == row.source_timestamp
+            && self.block_timestamp == row.block_timestamp
+            && self.answer_raw == row.answer_raw
+            && self.price == row.price
+            && self.decimals == row.decimals
+            && self.block_number == row.block_number
+            && self.block_hash == row.block_hash
+            && self.transaction_hash == row.transaction_hash
+            && self.log_index == row.log_index
+            && self.artifact_id == artifact_id
+    }
+}
+
 impl ExistingChainlinkTickRow {
     fn same_as(&self, row: &ChainlinkBtcusdArchiveTick, artifact_id: Uuid) -> bool {
         self.feed_id == row.feed_id
@@ -2518,6 +2653,62 @@ fn validate_chainlink_tick_batch(records: &[ChainlinkBtcusdArchiveTick]) -> Resu
         previous = Some(record.source_timestamp);
     }
     Ok(())
+}
+
+fn validate_polygon_chainlink_oracle_batch(
+    records: &[PolygonChainlinkBtcusdOracleRound],
+) -> Result<()> {
+    let feed_proxy_address = &records[0].feed_proxy_address;
+    let mut previous = None;
+    for record in records {
+        if record.chain_id != 137
+            || &record.feed_proxy_address != feed_proxy_address
+            || !valid_evm_address(&record.feed_proxy_address)
+            || !valid_evm_address(&record.aggregator_address)
+            || record.phase_id <= 0
+            || record.aggregator_round_id <= 0
+            || record.source_timestamp > record.block_timestamp
+            || record.answer_raw <= Decimal::ZERO
+            || record.answer_raw.scale() != 0
+            || record.price <= Decimal::ZERO
+            || !(0..=18).contains(&record.decimals)
+            || record.block_number <= 0
+            || !valid_evm_hash(&record.block_hash)
+            || !valid_evm_hash(&record.transaction_hash)
+            || record.log_index < 0
+        {
+            bail!("invalid Polygon Chainlink BTC/USD oracle round");
+        }
+        let expected_price = Decimal::from_i128_with_scale(
+            record.answer_raw.mantissa(),
+            u32::try_from(record.decimals).context("invalid Polygon Chainlink decimals")?,
+        );
+        if record.price != expected_price {
+            bail!("invalid Polygon Chainlink BTC/USD scaled price");
+        }
+        let identity = (
+            record.source_timestamp,
+            record.block_number,
+            record.log_index,
+        );
+        if previous.is_some_and(|value| identity <= value) {
+            bail!("Polygon Chainlink oracle rounds must be strictly ordered within a batch");
+        }
+        previous = Some(identity);
+    }
+    Ok(())
+}
+
+fn valid_evm_address(value: &str) -> bool {
+    value.len() == 42
+        && value.starts_with("0x")
+        && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn valid_evm_hash(value: &str) -> bool {
+    value.len() == 66
+        && value.starts_with("0x")
+        && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn batch_write_result(records: usize, inserted: u64, name: &str) -> Result<BatchWriteResult> {

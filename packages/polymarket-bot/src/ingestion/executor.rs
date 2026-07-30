@@ -32,6 +32,7 @@ use super::{
         spawn_execution_parser as spawn_pmxt_execution_parser, spawn_parser as spawn_pmxt_parser,
         PmxtArchivePrefetch, PmxtArchiveSpec, PMXT_ARCHIVE_PROVIDER, PMXT_COVERAGE_START_EPOCH,
     },
+    polygon_chainlink_oracle::{PolygonChainlinkOracleConfig, POLYGON_CHAINLINK_ORACLE_PROVIDER},
     repository::IngestionRepository,
 };
 
@@ -47,6 +48,7 @@ pub struct IngestionExecutorConfig {
     pub binance_archive_base_url: String,
     pub pmxt_archive_base_url: String,
     pub chainlink: ChainlinkArchiveConfig,
+    pub polygon_chainlink: PolygonChainlinkOracleConfig,
     pub cache_directory: PathBuf,
     pub batch_rows: usize,
     pub pmxt_prefetch_concurrency: usize,
@@ -63,6 +65,7 @@ impl IngestionExecutorConfig {
             bail!("backfill source base URLs must not be empty");
         }
         self.chainlink.validate()?;
+        self.polygon_chainlink.validate()?;
         if !(1..=4_000).contains(&self.batch_rows) {
             bail!("POLYMARKET_BACKFILL_BATCH_ROWS must be between 1 and 4000");
         }
@@ -197,6 +200,16 @@ impl IngestionExecutor {
             IngesterKey::ChainlinkBtcusdReferenceTicks => {
                 self.ingest_chainlink(claim, range_start, range_end, progress, &cancellation)
                     .await
+            }
+            IngesterKey::PolygonChainlinkBtcusdOracleRounds => {
+                self.ingest_polygon_chainlink_oracle(
+                    claim,
+                    range_start,
+                    range_end,
+                    progress,
+                    &cancellation,
+                )
+                .await
             }
         }
     }
@@ -1567,6 +1580,151 @@ impl IngestionExecutor {
         Ok(summary)
     }
 
+    async fn ingest_polygon_chainlink_oracle(
+        &self,
+        claim: &ClaimedJob,
+        range_start: DateTime<Utc>,
+        range_end: DateTime<Utc>,
+        mut progress: BackfillProgress,
+        cancellation: &ArchiveCancellation,
+    ) -> std::result::Result<BackfillJobSummary, IngestionExecutionError> {
+        let mut summary = summary_from_progress(&progress);
+        let mut date = checkpoint_date(claim).unwrap_or(range_start.date_naive());
+        let end_date = range_end.date_naive();
+        while date < end_date {
+            self.ensure_continue(claim, cancellation).await?;
+            let logical_key = self.config.polygon_chainlink.logical_key(date);
+            let source_uri = self.config.polygon_chainlink.source_uri(date);
+            progress.current_logical_key = Some(logical_key.clone());
+            let prepared = self
+                .repository
+                .prepare_artifact(
+                    claim,
+                    &ArtifactSpec {
+                        job_id: claim.job.job_id,
+                        ingester: IngesterKey::PolygonChainlinkBtcusdOracleRounds,
+                        logical_key,
+                        provider: POLYGON_CHAINLINK_ORACLE_PROVIDER.to_string(),
+                        source_uri,
+                        source_date: Some(date),
+                        expected_checksum: None,
+                        metadata: serde_json::json!({
+                            "chain_id": 137,
+                            "feed_proxy_address": self.config.polygon_chainlink.feed_proxy_address,
+                            "event": "AnswerUpdated(int256,uint256,uint256)",
+                            "native_resolution": true,
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            if prepared.disposition == ArtifactDisposition::AlreadyCompleted {
+                observe_reused_artifact(&mut progress, &mut summary, &prepared.artifact);
+                date += ChronoDuration::days(1);
+                self.finish_work_unit(claim, &mut progress, range_end, Some(date))
+                    .await?;
+                continue;
+            }
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Downloading,
+            )
+            .await?;
+            let day = match self
+                .config
+                .polygon_chainlink
+                .fetch_day(&self.client, date, cancellation)
+                .await
+            {
+                Ok(day) => day,
+                Err(error) => {
+                    let _ = self
+                        .repository
+                        .fail_artifact(claim, prepared.artifact.artifact_id, &error.to_string())
+                        .await;
+                    return Err(classify_polygon_chainlink_error(error));
+                }
+            };
+            if day.records.is_empty() {
+                let message =
+                    format!("Polygon Chainlink BTC/USD feed returned no updates for {date}");
+                let _ = self
+                    .repository
+                    .fail_artifact(claim, prepared.artifact.artifact_id, &message)
+                    .await;
+                return Err(IngestionExecutionError::permanent(message));
+            }
+            progress.bytes_downloaded =
+                progress.bytes_downloaded.saturating_add(day.response_bytes);
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Downloaded,
+            )
+            .await?;
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Verified,
+            )
+            .await?;
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Ingesting,
+            )
+            .await?;
+            for batch in day.records.chunks(self.config.batch_rows) {
+                self.ensure_continue(claim, cancellation).await?;
+                let result = self
+                    .repository
+                    .insert_polygon_chainlink_oracle_round_batch(
+                        claim,
+                        prepared.artifact.artifact_id,
+                        batch,
+                    )
+                    .await
+                    .map_err(IngestionExecutionError::transient)?;
+                observe_batch(&mut progress, &mut summary, result);
+                self.update_batch_checkpoint(claim, &progress, date).await?;
+            }
+            let minimum_source_timestamp =
+                day.records.first().map(|record| record.source_timestamp);
+            let maximum_source_timestamp = day.records.last().map(|record| record.source_timestamp);
+            self.repository
+                .complete_artifact(
+                    claim,
+                    prepared.artifact.artifact_id,
+                    &ArtifactCompletion {
+                        actual_checksum: day.sha256,
+                        compressed_bytes: day.response_bytes,
+                        record_count: u64::try_from(day.records.len())
+                            .map_err(IngestionExecutionError::permanent)?,
+                        minimum_source_timestamp,
+                        maximum_source_timestamp,
+                        metadata: serde_json::json!({
+                            "chain_id": 137,
+                            "feed_proxy_address": self.config.polygon_chainlink.feed_proxy_address,
+                            "start_block": day.start_block,
+                            "end_block": day.end_block,
+                            "phase_count": day.phase_count,
+                            "maximum_block_range": self.config.polygon_chainlink.maximum_block_range,
+                            "native_resolution": true,
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            summary.artifacts_completed = summary.artifacts_completed.saturating_add(1);
+            date += ChronoDuration::days(1);
+            self.finish_work_unit(claim, &mut progress, range_end, Some(date))
+                .await?;
+        }
+        summary.completed_work_units = progress.completed_work_units;
+        Ok(summary)
+    }
+
     async fn fetch_bounded_json_bytes(
         &self,
         source_uri: &str,
@@ -1773,6 +1931,31 @@ fn classify_chainlink_error(error: anyhow::Error) -> IngestionExecutionError {
         || error.to_string().contains("credentials are not configured")
         || error.to_string().contains("invalid Chainlink")
         || error.to_string().contains("failed to decode Chainlink")
+    {
+        IngestionExecutionError::permanent(error)
+    } else {
+        IngestionExecutionError::transient(error)
+    }
+}
+
+fn classify_polygon_chainlink_error(error: anyhow::Error) -> IngestionExecutionError {
+    let permanent_http_error = error.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .and_then(reqwest::Error::status)
+            .filter(|status| {
+                status.is_client_error()
+                    && *status != reqwest::StatusCode::TOO_MANY_REQUESTS
+                    && *status != reqwest::StatusCode::REQUEST_TIMEOUT
+            })
+    });
+    let message = error.to_string();
+    if permanent_http_error.is_some()
+        || message.contains("invalid Polygon")
+        || message.contains("invalid ABI")
+        || message.contains("unexpected topic")
+        || message.contains("overflow")
+        || message.contains("exceed")
     {
         IngestionExecutionError::permanent(error)
     } else {
@@ -2399,6 +2582,14 @@ mod tests {
                     .to_string(),
                 page_limit: 1_000,
                 credentials: None,
+            },
+            polygon_chainlink: PolygonChainlinkOracleConfig {
+                rpc_url: "https://polygon.example".to_string(),
+                archive_log_rpc_url: "https://polygon-archive.example".to_string(),
+                feed_proxy_address:
+                    super::super::polygon_chainlink_oracle::DEFAULT_POLYGON_CHAINLINK_BTCUSD_PROXY
+                        .to_string(),
+                maximum_block_range: 2_000,
             },
             cache_directory: PathBuf::from("/tmp/cache"),
             batch_rows: 4_000,

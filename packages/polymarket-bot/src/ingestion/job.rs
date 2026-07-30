@@ -66,10 +66,11 @@ pub enum IngesterKey {
     PolymarketBtcFiveMinuteOrderbooks,
     PolymarketBtcFiveMinuteExecutionSnapshots,
     ChainlinkBtcusdReferenceTicks,
+    PolygonChainlinkBtcusdOracleRounds,
 }
 
 impl IngesterKey {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::BtcFiveMinuteMarkets,
         Self::BtcFiveMinuteResolutions,
         Self::BinanceBtcusdtAggTrades,
@@ -77,6 +78,7 @@ impl IngesterKey {
         Self::PolymarketBtcFiveMinuteOrderbooks,
         Self::PolymarketBtcFiveMinuteExecutionSnapshots,
         Self::ChainlinkBtcusdReferenceTicks,
+        Self::PolygonChainlinkBtcusdOracleRounds,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -90,6 +92,7 @@ impl IngesterKey {
                 "polymarket_btc_five_minute_execution_snapshots"
             }
             Self::ChainlinkBtcusdReferenceTicks => "chainlink_btcusd_reference_ticks",
+            Self::PolygonChainlinkBtcusdOracleRounds => "polygon_chainlink_btcusd_oracle_rounds",
         }
     }
 
@@ -108,7 +111,8 @@ impl IngesterKey {
             | Self::PolymarketBtcFiveMinuteExecutionSnapshots => 3_600,
             Self::BinanceBtcusdtAggTrades
             | Self::BinanceBtcusdtOneSecondKlines
-            | Self::ChainlinkBtcusdReferenceTicks => 86_400,
+            | Self::ChainlinkBtcusdReferenceTicks
+            | Self::PolygonChainlinkBtcusdOracleRounds => 86_400,
         }
     }
 
@@ -145,6 +149,9 @@ impl FromStr for IngesterKey {
                 Ok(Self::PolymarketBtcFiveMinuteExecutionSnapshots)
             }
             "chainlink_btcusd_reference_ticks" => Ok(Self::ChainlinkBtcusdReferenceTicks),
+            "polygon_chainlink_btcusd_oracle_rounds" => {
+                Ok(Self::PolygonChainlinkBtcusdOracleRounds)
+            }
             other => Err(BackfillRequestValidationError::new(format!(
                 "unsupported ingester {other}"
             ))),
@@ -731,6 +738,24 @@ pub struct ChainlinkBtcusdArchiveTick {
     pub report_sha256: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct PolygonChainlinkBtcusdOracleRound {
+    pub chain_id: i64,
+    pub feed_proxy_address: String,
+    pub aggregator_address: String,
+    pub phase_id: i32,
+    pub aggregator_round_id: i64,
+    pub source_timestamp: DateTime<Utc>,
+    pub block_timestamp: DateTime<Utc>,
+    pub answer_raw: Decimal,
+    pub price: Decimal,
+    pub decimals: i32,
+    pub block_number: i64,
+    pub block_hash: String,
+    pub transaction_hash: String,
+    pub log_index: i32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrainingReadiness {
     pub range_start: DateTime<Utc>,
@@ -850,6 +875,15 @@ mod tests {
         .validate()
         .unwrap();
         assert_eq!(chainlink.expected_work_units, 1);
+
+        let polygon_chainlink = request(
+            IngesterKey::PolygonChainlinkBtcusdOracleRounds,
+            1_783_382_400,
+            1_783_468_800,
+        )
+        .validate()
+        .unwrap();
+        assert_eq!(polygon_chainlink.expected_work_units, 1);
 
         assert!(request(
             IngesterKey::PolymarketBtcFiveMinuteExecutionSnapshots,
