@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from btc_directional_model.core_config import (
+    CORE_ORACLE_SOURCE_CONTRACT,
+    CORE_SOURCE_CONTRACT,
     evaluation_holdout_range,
     load_core_config,
 )
@@ -50,10 +53,18 @@ def conservative_coverage_config() -> Path:
     )
 
 
+def oracle_early_entry_config() -> Path:
+    return (
+        Path(__file__).parent.parent
+        / "configs"
+        / "btc-5m-directional-core-oracle-early-entry-20260321-20260729.toml"
+    )
+
+
 def test_expanded_core_config_has_frozen_contiguous_cohorts() -> None:
     config = load_core_config(repository_config())
 
-    assert config.data.source_contract == "btc_core_v1"
+    assert config.data.source_contract == CORE_SOURCE_CONTRACT
     assert config.data.range_start == config.split.development_start
     assert config.split.development_end == config.split.probability_calibration_start
     assert config.split.probability_calibration_end == config.split.policy_selection_start
@@ -69,6 +80,71 @@ def test_expanded_core_config_has_frozen_contiguous_cohorts() -> None:
     assert config.gates.minimum_same_time_path_uplift == 0
     assert config.gates.minimum_nonnegative_uplift_folds == 5
     assert config.paths.development_feature_data != config.paths.holdout_feature_data
+
+
+def test_oracle_early_entry_config_has_exact_range_window_and_isolated_paths() -> None:
+    config = load_core_config(oracle_early_entry_config())
+    legacy = load_core_config(
+        Path(__file__).parent.parent
+        / "configs"
+        / "btc-5m-directional-core-boundary-reversal-20260321-20260729.toml"
+    )
+
+    assert config.data.source_contract == CORE_ORACLE_SOURCE_CONTRACT
+    assert config.data.range_start == datetime(2026, 3, 21, tzinfo=UTC)
+    assert config.data.range_end == datetime(2026, 7, 29, tzinfo=UTC)
+    assert config.data.sample_interval_seconds == 5
+    assert config.data.min_seconds_after_open == 120
+    assert config.data.min_seconds_before_close == 160
+    assert list(
+        range(
+            config.data.min_seconds_after_open,
+            301 - config.data.min_seconds_before_close,
+            config.data.sample_interval_seconds,
+        )
+    ) == [120, 125, 130, 135, 140]
+    assert config.split.development_start == config.data.range_start
+    assert (
+        config.split.development_end
+        == config.split.probability_calibration_start
+    )
+    assert (
+        config.split.probability_calibration_end
+        == config.split.policy_selection_start
+    )
+    assert config.split.policy_selection_end == config.split.holdout_start
+    assert config.split.holdout_end == config.data.range_end
+    assert evaluation_holdout_range(config) == (
+        datetime(2026, 7, 29, tzinfo=UTC),
+        datetime(2026, 7, 29, tzinfo=UTC),
+    )
+    assert len(config.split.validation_windows) == 5
+    assert config.model.candidate_names == ("histogram_enriched",)
+    assert config.model.row_weight_schedules[0].schedule.multiplier == 1.0
+    assert config.gates.minimum_coverage == 0.60
+    assert config.paths.source_data != legacy.paths.source_data
+    assert (
+        config.paths.development_feature_data
+        != legacy.paths.development_feature_data
+    )
+    assert config.paths.runs != legacy.paths.runs
+    assert config.paths.artifacts != legacy.paths.artifacts
+    assert "btc-core-oracle-early-entry-20260321-20260729" in str(
+        config.paths.source_data
+    )
+
+
+def test_core_config_rejects_unknown_source_contract(tmp_path: Path) -> None:
+    source = oracle_early_entry_config().read_text().replace(
+        'source_contract = "btc_core_oracle_v1"',
+        'source_contract = "btc_core_oracle_future"',
+    )
+    path = tmp_path / "unknown-source" / "configs" / "core.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text(source)
+
+    with pytest.raises(ValueError, match="data.source_contract must be one of"):
+        load_core_config(path)
 
 
 def test_coverage_challenger_freezes_one_stricter_policy() -> None:
