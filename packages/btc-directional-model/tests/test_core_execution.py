@@ -4,10 +4,13 @@ import json
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from btc_directional_model.core_execution import (
     DEFAULT_EXECUTION_QUANTITY,
+    EXECUTION_CONTEXT_SECONDS,
     EXECUTION_EVIDENCE_CONTRACT,
     EXECUTION_EVIDENCE_SCHEMA,
     EXECUTION_EVIDENCE_SCHEMA_VERSION,
@@ -18,6 +21,7 @@ from btc_directional_model.core_execution import (
     QUALITY_UP_STALE,
     ExecutionEvidenceConfig,
     classify_side_eligibility,
+    execution_partition_summary,
     expected_net_per_share,
     load_execution_evidence_manifest,
     realized_pnl,
@@ -57,6 +61,43 @@ def complete_side(
         imbalance=0.0,
         quality_flags=quality_flags,
     )
+
+
+def execution_evidence_row(
+    *,
+    market_id: str,
+    window_start: datetime,
+    second: int,
+    strict_five: bool,
+    strict_ten: bool,
+) -> dict[str, object]:
+    row: dict[str, object] = {
+        name: None for name in EXECUTION_EVIDENCE_SCHEMA.names
+    }
+    row.update(
+        {
+            "market_id": market_id,
+            "window_start": window_start,
+            "window_end": window_start + timedelta(minutes=5),
+            "official_outcome": "up",
+            "label_up": 1,
+            "observed_at": window_start + timedelta(seconds=second),
+            "seconds_elapsed": second,
+            "up_ask_vwap_5": 0.45,
+            "down_ask_vwap_5": 0.55,
+            "up_ask_vwap_10": 0.46,
+            "down_ask_vwap_10": 0.56,
+            "up_side_valid": True,
+            "down_side_valid": True,
+            "up_side_fresh": True,
+            "down_side_fresh": True,
+            "up_stale_initialized": False,
+            "down_stale_initialized": False,
+            "strict_both_side_eligible": strict_five,
+            "strict_both_side_eligible_10": strict_ten,
+        }
+    )
+    return row
 
 
 def test_execution_sql_is_bounded_to_canonical_orderbook_inputs() -> None:
@@ -248,3 +289,127 @@ def test_economics_match_rust_dynamic_taker_fee_and_binary_payout() -> None:
         execution_price=0.40,
         fee_rate=0.25,
     ) == pytest.approx(-2.30)
+
+
+def test_execution_summary_requires_exact_11_point_ten_share_set(
+    tmp_path: Path,
+) -> None:
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    rows = [
+        execution_evidence_row(
+            market_id="complete",
+            window_start=start,
+            second=second,
+            strict_five=True,
+            strict_ten=True,
+        )
+        for second in EXECUTION_CONTEXT_SECONDS
+    ]
+    rows.extend(
+        execution_evidence_row(
+            market_id="wrong-eleven",
+            window_start=start + timedelta(minutes=5),
+            second=second,
+            strict_five=True,
+            strict_ten=True,
+        )
+        for second in (*EXECUTION_CONTEXT_SECONDS[:-1], 145)
+    )
+    path = tmp_path / "execution.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(rows, schema=EXECUTION_EVIDENCE_SCHEMA),
+        path,
+    )
+
+    summary = execution_partition_summary(path)
+
+    assert (
+        summary[
+            "strict_both_side_eligible_10_complete_11_point_markets"
+        ]
+        == 1
+    )
+    assert summary[
+        "strict_both_side_eligible_10_point_qualified_markets_by_second"
+    ]["120"] == 2
+    assert summary[
+        "strict_both_side_eligible_10_rows_by_second"
+    ]["140"] == 1
+
+
+def test_execution_summary_requires_t_minus_five_for_point_readiness(
+    tmp_path: Path,
+) -> None:
+    start = datetime(2026, 7, 2, tzinfo=UTC)
+    rows = [
+        execution_evidence_row(
+            market_id="missing-115",
+            window_start=start,
+            second=second,
+            strict_five=True,
+            strict_ten=second != 115,
+        )
+        for second in EXECUTION_CONTEXT_SECONDS
+    ]
+    path = tmp_path / "missing.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(rows, schema=EXECUTION_EVIDENCE_SCHEMA),
+        path,
+    )
+
+    summary = execution_partition_summary(path)
+
+    assert summary[
+        "strict_both_side_eligible_10_rows_by_second"
+    ]["120"] == 1
+    assert summary[
+        "strict_both_side_eligible_10_point_qualified_markets_by_second"
+    ]["120"] == 0
+
+
+def test_ten_share_summary_fails_without_both_vwap_depths(
+    tmp_path: Path,
+) -> None:
+    start = datetime(2026, 7, 3, tzinfo=UTC)
+    row = execution_evidence_row(
+        market_id="invalid-depth",
+        window_start=start,
+        second=120,
+        strict_five=True,
+        strict_ten=True,
+    )
+    row["up_ask_vwap_10"] = None
+    path = tmp_path / "invalid.parquet"
+    pq.write_table(
+        pa.Table.from_pylist([row], schema=EXECUTION_EVIDENCE_SCHEMA),
+        path,
+    )
+
+    with pytest.raises(RuntimeError, match="without usable up_ask_vwap_10"):
+        execution_partition_summary(path)
+
+
+def test_zero_event_execution_partition_has_zero_readiness_counts(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "empty.parquet"
+    pq.write_table(
+        pa.Table.from_pylist([], schema=EXECUTION_EVIDENCE_SCHEMA),
+        path,
+    )
+
+    summary = execution_partition_summary(path)
+
+    assert summary["rows"] == 0
+    assert (
+        summary[
+            "strict_both_side_eligible_10_complete_11_point_markets"
+        ]
+        == 0
+    )
+    assert all(
+        count == 0
+        for count in summary[
+            "strict_both_side_eligible_10_rows_by_second"
+        ].values()
+    )

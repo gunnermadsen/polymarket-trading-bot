@@ -9,6 +9,8 @@ import numpy as np
 import polars as pl
 
 BENCHMARK_SCHEMA_VERSION = "btc-directional-model-benchmark-v1"
+VWAP5_FIVE_SHARE_EXECUTION = "vwap5_five_share"
+VWAP10_TEN_SHARE_EXECUTION = "vwap10_ten_share"
 FIXED_CHECKPOINTS = (60, 90, 120, 180, 240)
 TIME_BANDS = (
     ("60-89", 60, 89),
@@ -649,6 +651,16 @@ def _own_policy_metrics(
     available_markets = available["market_id"].n_unique()
     metrics = _classification_metrics(selected, eligible_markets=eligible_markets)
     markets = metrics["markets"]
+    five_share_execution = _execution_metrics(
+        selected,
+        quantity=5.0,
+        vwap_depth=5,
+    )
+    ten_share_execution = _execution_metrics(
+        selected,
+        quantity=10.0,
+        vwap_depth=10,
+    )
     metrics.update(
         {
             "available_markets": available_markets,
@@ -671,10 +683,13 @@ def _own_policy_metrics(
             "p90_seconds_elapsed": _quantile_or_none(
                 selected, "seconds_elapsed", 0.9
             ),
-            "execution": _execution_metrics(
-                selected,
-                quantity=quantity,
-            ),
+            # Preserve the original flat contract for existing five-share
+            # consumers while publishing the two explicit execution sizes.
+            "execution": five_share_execution,
+            "execution_by_size": {
+                VWAP5_FIVE_SHARE_EXECUTION: five_share_execution,
+                VWAP10_TEN_SHARE_EXECUTION: ten_share_execution,
+            },
         }
     )
     return metrics
@@ -747,10 +762,19 @@ def _classification_metrics(
     }
 
 
-def _execution_metrics(rows: pl.DataFrame, *, quantity: float) -> dict[str, Any]:
-    selected = _with_execution_columns(rows, quantity=quantity)
+def _execution_metrics(
+    rows: pl.DataFrame,
+    *,
+    quantity: float,
+    vwap_depth: Literal[5, 10] = 5,
+) -> dict[str, Any]:
+    selected = _with_execution_columns(
+        rows,
+        quantity=quantity,
+        vwap_depth=vwap_depth,
+    )
     if selected.is_empty():
-        return _empty_execution_metrics(quantity)
+        return _empty_execution_metrics(quantity, vwap_depth=vwap_depth)
     evidence_cohort = (
         selected.filter(pl.col("execution_evidence_available"))
         if "execution_evidence_available" in selected.columns
@@ -767,11 +791,16 @@ def _execution_metrics(rows: pl.DataFrame, *, quantity: float) -> dict[str, Any]
         & pl.col("_realized_net_pnl").is_finite()
     )
     execution_prices = executable["_execution_price"].to_numpy()
-    result = _empty_execution_metrics(quantity)
+    result = _empty_execution_metrics(quantity, vwap_depth=vwap_depth)
+    median_vwap_key = f"median_selected_ask_vwap_{vwap_depth}"
+    p90_vwap_key = f"p90_selected_ask_vwap_{vwap_depth}"
     result.update(
         {
-            "execution_price_source": _execution_price_source(rows),
-            "fee_source": _fee_source(rows),
+            "execution_price_source": _execution_price_source(
+                rows,
+                vwap_depth=vwap_depth,
+            ),
+            "fee_source": _fee_source(rows, vwap_depth=vwap_depth),
             "selected_markets": selected.height,
             "execution_evidence_markets": evidence_cohort.height,
             "execution_evidence_coverage": evidence_cohort.height / selected.height,
@@ -783,10 +812,10 @@ def _execution_metrics(rows: pl.DataFrame, *, quantity: float) -> dict[str, Any]
                 if evidence_cohort.height
                 else 0.0
             ),
-            "median_selected_ask_vwap_5": (
+            median_vwap_key: (
                 float(np.median(execution_prices)) if len(execution_prices) else None
             ),
-            "p90_selected_ask_vwap_5": (
+            p90_vwap_key: (
                 float(np.quantile(execution_prices, 0.9))
                 if len(execution_prices)
                 else None
@@ -825,7 +854,12 @@ def _execution_metrics(rows: pl.DataFrame, *, quantity: float) -> dict[str, Any]
     return result
 
 
-def _with_execution_columns(rows: pl.DataFrame, *, quantity: float) -> pl.DataFrame:
+def _with_execution_columns(
+    rows: pl.DataFrame,
+    *,
+    quantity: float,
+    vwap_depth: Literal[5, 10] = 5,
+) -> pl.DataFrame:
     if rows.is_empty():
         return rows.with_columns(
             pl.lit(None, dtype=pl.Float64).alias("_execution_price"),
@@ -834,9 +868,16 @@ def _with_execution_columns(rows: pl.DataFrame, *, quantity: float) -> pl.DataFr
             pl.lit(None, dtype=pl.Float64).alias("_direct_edge_per_share"),
             pl.lit(None, dtype=pl.Float64).alias("_realized_net_pnl"),
         )
-    price_expression = _execution_price_expression(rows)
-    executable_expression = _execution_available_expression(rows)
-    fee_expression = _fee_per_share_expression(rows, quantity=quantity)
+    price_expression = _execution_price_expression(rows, vwap_depth=vwap_depth)
+    executable_expression = _execution_available_expression(
+        rows,
+        vwap_depth=vwap_depth,
+    )
+    fee_expression = _fee_per_share_expression(
+        rows,
+        quantity=quantity,
+        vwap_depth=vwap_depth,
+    )
     selected_probability = (
         pl.when(pl.col("predicted_up") == 1)
         .then(pl.col("probability_up"))
@@ -861,15 +902,17 @@ def _with_execution_columns(rows: pl.DataFrame, *, quantity: float) -> pl.DataFr
             - pl.col("_fee_per_share")
         ).alias("_derived_direct_edge_per_share"),
     )
-    direct_edge_candidates = [
-        pl.col(column).cast(pl.Float64, strict=False)
-        for column in (
-            "direct_net_edge_per_share",
-            "expected_net_per_share",
-            "direct_edge",
+    direct_edge_candidates = []
+    if vwap_depth == 5:
+        direct_edge_candidates.extend(
+            pl.col(column).cast(pl.Float64, strict=False)
+            for column in (
+                "direct_net_edge_per_share",
+                "expected_net_per_share",
+                "direct_edge",
+            )
+            if column in rows.columns
         )
-        if column in rows.columns
-    ]
     direct_edge_candidates.append(pl.col("_derived_direct_edge_per_share"))
     return with_price.with_columns(
         pl.coalesce(direct_edge_candidates).alias("_direct_edge_per_share"),
@@ -884,7 +927,21 @@ def _with_execution_columns(rows: pl.DataFrame, *, quantity: float) -> pl.DataFr
     )
 
 
-def _execution_price_expression(rows: pl.DataFrame) -> pl.Expr:
+def _execution_price_expression(
+    rows: pl.DataFrame,
+    *,
+    vwap_depth: Literal[5, 10] = 5,
+) -> pl.Expr:
+    if vwap_depth == 10:
+        if "selected_ask_vwap_10" in rows.columns:
+            return pl.col("selected_ask_vwap_10")
+        if {"up_ask_vwap_10", "down_ask_vwap_10"}.issubset(rows.columns):
+            return (
+                pl.when(pl.col("predicted_up") == 1)
+                .then(pl.col("up_ask_vwap_10"))
+                .otherwise(pl.col("down_ask_vwap_10"))
+            )
+        return pl.lit(None, dtype=pl.Float64)
     for column in (
         "selected_ask_vwap_5",
         "execution_price",
@@ -901,33 +958,61 @@ def _execution_price_expression(rows: pl.DataFrame) -> pl.Expr:
     return pl.lit(None, dtype=pl.Float64)
 
 
-def _execution_available_expression(rows: pl.DataFrame) -> pl.Expr:
-    if "selected_side_executable" in rows.columns:
-        return pl.col("selected_side_executable").fill_null(False).cast(pl.Boolean)
-    if {"up_executable", "down_executable"}.issubset(rows.columns):
+def _execution_available_expression(
+    rows: pl.DataFrame,
+    *,
+    vwap_depth: Literal[5, 10] = 5,
+) -> pl.Expr:
+    strict_column = (
+        "strict_both_side_eligible_10"
+        if vwap_depth == 10
+        else "strict_both_side_eligible"
+    )
+    if strict_column in rows.columns:
+        return pl.col(strict_column).fill_null(False).cast(pl.Boolean)
+    selected_column = (
+        "selected_side_executable_10"
+        if vwap_depth == 10
+        else "selected_side_executable"
+    )
+    if selected_column in rows.columns:
+        return pl.col(selected_column).fill_null(False).cast(pl.Boolean)
+    up_column = "up_executable_10" if vwap_depth == 10 else "up_executable"
+    down_column = (
+        "down_executable_10" if vwap_depth == 10 else "down_executable"
+    )
+    if {up_column, down_column}.issubset(rows.columns):
         return (
             pl.when(pl.col("predicted_up") == 1)
-            .then(pl.col("up_executable"))
-            .otherwise(pl.col("down_executable"))
+            .then(pl.col(up_column))
+            .otherwise(pl.col(down_column))
             .fill_null(False)
             .cast(pl.Boolean)
         )
+    if vwap_depth == 10:
+        return pl.lit(False)
     return pl.lit(True)
 
 
-def _fee_per_share_expression(rows: pl.DataFrame, *, quantity: float) -> pl.Expr:
-    for column in (
-        "direct_taker_fee_per_share",
-        "fee_per_share",
-        "estimated_fee_per_share",
-    ):
-        if column in rows.columns:
-            return pl.col(column)
-    for column in ("fee_total", "fees_total", "fees"):
-        if column in rows.columns:
-            return pl.col(column) / quantity
+def _fee_per_share_expression(
+    rows: pl.DataFrame,
+    *,
+    quantity: float,
+    vwap_depth: Literal[5, 10] = 5,
+) -> pl.Expr:
+    if vwap_depth == 5:
+        for column in (
+            "direct_taker_fee_per_share",
+            "fee_per_share",
+            "estimated_fee_per_share",
+        ):
+            if column in rows.columns:
+                return pl.col(column)
+        for column in ("fee_total", "fees_total", "fees"):
+            if column in rows.columns:
+                return pl.col(column) / quantity
     if "fee_rate" in rows.columns:
-        price = _execution_price_expression(rows)
+        price = _execution_price_expression(rows, vwap_depth=vwap_depth)
         return (
             pl.col("fee_rate").cast(pl.Float64, strict=False)
             * price
@@ -936,7 +1021,17 @@ def _fee_per_share_expression(rows: pl.DataFrame, *, quantity: float) -> pl.Expr
     return pl.lit(None, dtype=pl.Float64)
 
 
-def _execution_price_source(rows: pl.DataFrame) -> str | None:
+def _execution_price_source(
+    rows: pl.DataFrame,
+    *,
+    vwap_depth: Literal[5, 10] = 5,
+) -> str | None:
+    if vwap_depth == 10:
+        if "selected_ask_vwap_10" in rows.columns:
+            return "selected_ask_vwap_10"
+        if {"up_ask_vwap_10", "down_ask_vwap_10"}.issubset(rows.columns):
+            return "selected(up_ask_vwap_10,down_ask_vwap_10)"
+        return None
     for column in (
         "selected_ask_vwap_5",
         "execution_price",
@@ -949,7 +1044,13 @@ def _execution_price_source(rows: pl.DataFrame) -> str | None:
     return None
 
 
-def _fee_source(rows: pl.DataFrame) -> str | None:
+def _fee_source(
+    rows: pl.DataFrame,
+    *,
+    vwap_depth: Literal[5, 10] = 5,
+) -> str | None:
+    if vwap_depth == 10:
+        return "fee_rate" if "fee_rate" in rows.columns else None
     for column in (
         "direct_taker_fee_per_share",
         "fee_per_share",
@@ -964,9 +1065,14 @@ def _fee_source(rows: pl.DataFrame) -> str | None:
     return None
 
 
-def _empty_execution_metrics(quantity: float) -> dict[str, Any]:
-    return {
+def _empty_execution_metrics(
+    quantity: float,
+    *,
+    vwap_depth: Literal[5, 10] = 5,
+) -> dict[str, Any]:
+    result = {
         "quantity": quantity,
+        "vwap_depth": vwap_depth,
         "execution_price_source": None,
         "fee_source": None,
         "selected_markets": 0,
@@ -976,8 +1082,6 @@ def _empty_execution_metrics(quantity: float) -> dict[str, Any]:
         "executable_coverage": 0.0,
         "executable_coverage_all_selected": 0.0,
         "executable_coverage_within_evidence": 0.0,
-        "median_selected_ask_vwap_5": None,
-        "p90_selected_ask_vwap_5": None,
         "economics_available": False,
         "economic_markets": 0,
         "mean_fee_per_share": None,
@@ -991,6 +1095,9 @@ def _empty_execution_metrics(quantity: float) -> dict[str, Any]:
         "maximum_net_loss_streak": None,
         "maximum_drawdown": None,
     }
+    result[f"median_selected_ask_vwap_{vwap_depth}"] = None
+    result[f"p90_selected_ask_vwap_{vwap_depth}"] = None
+    return result
 
 
 def _time_band_metrics(

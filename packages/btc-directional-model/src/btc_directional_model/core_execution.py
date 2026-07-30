@@ -31,6 +31,8 @@ CANONICAL_SNAPSHOT_SCHEMA_VERSIONS = (
 )
 DEFAULT_EXECUTION_QUANTITY = 5.0
 DEFAULT_FRESHNESS_SECONDS = 2
+EXECUTION_CONTEXT_SECONDS = tuple(range(90, 141, 5))
+EXECUTION_DECISION_SECONDS = tuple(range(120, 141, 5))
 
 QUALITY_UP_MISSING = 1
 QUALITY_DOWN_MISSING = 1 << 1
@@ -438,7 +440,32 @@ def load_execution_evidence_manifest(
             "execution-evidence manifest does not match configuration "
             f"({', '.join(mismatches)})"
         )
-    for partition in manifest.get("partitions", []):
+    partitions = manifest.get("partitions", [])
+    if not isinstance(partitions, list):
+        raise TypeError(
+            "execution-evidence manifest does not contain partitions"
+        )
+    if contract_pair == (
+        EXECUTION_EVIDENCE_CONTRACT,
+        EXECUTION_EVIDENCE_SCHEMA_VERSION,
+    ):
+        expected_paths = {
+            f"{day.date().isoformat()}.parquet"
+            for day in _daily_boundaries(
+                config.range_start,
+                config.range_end,
+            )
+        }
+        observed_paths = [str(row.get("path")) for row in partitions]
+        if (
+            len(observed_paths) != len(expected_paths)
+            or set(observed_paths) != expected_paths
+        ):
+            raise RuntimeError(
+                "execution-evidence manifest does not contain the exact "
+                "daily range"
+            )
+    for partition in partitions:
         partition_path = config.output_dir / partition["path"]
         if not partition_path.exists():
             raise RuntimeError(
@@ -448,6 +475,16 @@ def load_execution_evidence_manifest(
             raise RuntimeError(
                 f"execution-evidence partition hash mismatch: {partition_path.name}"
             )
+    if (
+        contract_pair
+        == (
+            EXECUTION_EVIDENCE_CONTRACT,
+            EXECUTION_EVIDENCE_SCHEMA_VERSION,
+        )
+        and manifest.get("totals")
+        != _aggregate_partition_summaries(partitions)
+    ):
+        raise RuntimeError("execution-evidence manifest totals do not match")
     return manifest
 
 
@@ -565,6 +602,11 @@ def execution_partition_summary(path: Path) -> dict[str, Any]:
         columns=[
             "market_id",
             "observed_at",
+            "seconds_elapsed",
+            "up_ask_vwap_5",
+            "down_ask_vwap_5",
+            "up_ask_vwap_10",
+            "down_ask_vwap_10",
             "up_side_valid",
             "down_side_valid",
             "up_side_fresh",
@@ -584,6 +626,78 @@ def execution_partition_summary(path: Path) -> dict[str, Any]:
     keys = list(zip(market_ids, observed_at, strict=True))
     if len(keys) != len(set(keys)):
         raise RuntimeError(f"{path.name} contains duplicate market_id/observed_at keys")
+    seconds_elapsed = table["seconds_elapsed"].to_pylist()
+    strict_five = table["strict_both_side_eligible"].to_pylist()
+    strict_ten = (
+        table[ten_share_eligibility_column].to_pylist()
+        if ten_share_eligibility_column in table.column_names
+        else [False] * table.num_rows
+    )
+    for row_index, eligible in enumerate(strict_ten):
+        if not eligible:
+            continue
+        if strict_five[row_index] is not True:
+            raise RuntimeError(
+                f"{path.name} has ten-share eligibility without five-share "
+                "eligibility"
+            )
+        for column in (
+            "up_ask_vwap_5",
+            "down_ask_vwap_5",
+            "up_ask_vwap_10",
+            "down_ask_vwap_10",
+        ):
+            value = table[column][row_index].as_py()
+            if value is None or value <= 0:
+                raise RuntimeError(
+                    f"{path.name} has ten-share eligibility without usable "
+                    f"{column}"
+                )
+    strict_five_by_second = {
+        str(second): sum(
+            eligible is True and observed_second == second
+            for eligible, observed_second in zip(
+                strict_five,
+                seconds_elapsed,
+                strict=True,
+            )
+        )
+        for second in EXECUTION_CONTEXT_SECONDS
+    }
+    strict_ten_by_second = {
+        str(second): sum(
+            eligible is True and observed_second == second
+            for eligible, observed_second in zip(
+                strict_ten,
+                seconds_elapsed,
+                strict=True,
+            )
+        )
+        for second in EXECUTION_CONTEXT_SECONDS
+    }
+    strict_ten_seconds_by_market: dict[str, set[int]] = {}
+    for market_id, second, eligible in zip(
+        market_ids,
+        seconds_elapsed,
+        strict_ten,
+        strict=True,
+    ):
+        if eligible is True:
+            strict_ten_seconds_by_market.setdefault(market_id, set()).add(
+                int(second)
+            )
+    expected_context = set(EXECUTION_CONTEXT_SECONDS)
+    complete_11_point_markets = sum(
+        observed_seconds == expected_context
+        for observed_seconds in strict_ten_seconds_by_market.values()
+    )
+    point_qualified_by_second = {
+        str(second): sum(
+            {second - 5, second}.issubset(observed_seconds)
+            for observed_seconds in strict_ten_seconds_by_market.values()
+        )
+        for second in EXECUTION_DECISION_SECONDS
+    }
     return {
         "rows": table.num_rows,
         "markets": len(set(market_ids)),
@@ -609,6 +723,18 @@ def execution_partition_summary(path: Path) -> dict[str, Any]:
             if ten_share_eligibility_column in table.column_names
             else 0
         ),
+        "strict_both_side_eligible_rows_by_second": (
+            strict_five_by_second
+        ),
+        "strict_both_side_eligible_10_rows_by_second": (
+            strict_ten_by_second
+        ),
+        "strict_both_side_eligible_10_complete_11_point_markets": (
+            complete_11_point_markets
+        ),
+        "strict_both_side_eligible_10_point_qualified_markets_by_second": (
+            point_qualified_by_second
+        ),
     }
 
 
@@ -618,7 +744,7 @@ def _true_count(values: pa.ChunkedArray) -> int:
 
 def _aggregate_partition_summaries(
     partitions: Sequence[dict[str, Any]],
-) -> dict[str, int]:
+) -> dict[str, Any]:
     keys = (
         "rows",
         "markets",
@@ -631,9 +757,67 @@ def _aggregate_partition_summaries(
         "strict_both_side_eligible_rows",
         "strict_both_side_eligible_10_rows",
     )
-    return {
+    totals: dict[str, Any] = {
         key: sum(int(partition[key]) for partition in partitions) for key in keys
     }
+    totals[
+        "strict_both_side_eligible_rows_by_second"
+    ] = _aggregate_counts_by_second(
+        partitions,
+        "strict_both_side_eligible_rows_by_second",
+        EXECUTION_CONTEXT_SECONDS,
+    )
+    totals[
+        "strict_both_side_eligible_10_rows_by_second"
+    ] = _aggregate_counts_by_second(
+        partitions,
+        "strict_both_side_eligible_10_rows_by_second",
+        EXECUTION_CONTEXT_SECONDS,
+    )
+    totals[
+        "strict_both_side_eligible_10_complete_11_point_markets"
+    ] = sum(
+        int(
+            partition[
+                "strict_both_side_eligible_10_complete_11_point_markets"
+            ]
+        )
+        for partition in partitions
+    )
+    totals[
+        "strict_both_side_eligible_10_point_qualified_markets_by_second"
+    ] = _aggregate_counts_by_second(
+        partitions,
+        "strict_both_side_eligible_10_point_qualified_markets_by_second",
+        EXECUTION_DECISION_SECONDS,
+    )
+    return totals
+
+
+def _aggregate_counts_by_second(
+    partitions: Sequence[dict[str, Any]],
+    key: str,
+    seconds: Sequence[int],
+) -> dict[str, int]:
+    return {
+        str(second): sum(
+            int(partition[key][str(second)])
+            for partition in partitions
+        )
+        for second in seconds
+    }
+
+
+def _daily_boundaries(
+    range_start: datetime,
+    range_end: datetime,
+) -> list[datetime]:
+    days: list[datetime] = []
+    current = range_start
+    while current < range_end:
+        days.append(current)
+        current += timedelta(days=1)
+    return days
 
 
 def _load_existing_manifest(

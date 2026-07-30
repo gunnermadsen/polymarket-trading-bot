@@ -42,9 +42,14 @@ def prediction_frame(candidate: str, *, early: bool) -> pl.DataFrame:
                     "correct": True,
                     "up_executable": True,
                     "down_executable": True,
+                    "strict_both_side_eligible": True,
+                    "strict_both_side_eligible_10": True,
                     "up_ask_vwap_5": 0.50,
                     "down_ask_vwap_5": 0.50,
+                    "up_ask_vwap_10": 0.55,
+                    "down_ask_vwap_10": 0.55,
                     "direct_taker_fee_per_share": 0.01,
+                    "fee_rate": 0.20,
                 }
             )
     return pl.DataFrame(rows)
@@ -92,6 +97,51 @@ def test_own_policy_metrics_include_timing_no_trade_and_five_share_economics() -
         2.45
     )
     assert early["execution"]["maximum_drawdown"] == 0
+    assert early["execution"] is early["execution_by_size"]["vwap5_five_share"]
+    ten_share = early["execution_by_size"]["vwap10_ten_share"]
+    assert ten_share["quantity"] == 10
+    assert ten_share["vwap_depth"] == 10
+    assert ten_share["execution_price_source"] == (
+        "selected(up_ask_vwap_10,down_ask_vwap_10)"
+    )
+    assert ten_share["median_selected_ask_vwap_10"] == pytest.approx(0.55)
+    assert ten_share["mean_fee_per_share"] == pytest.approx(0.0495)
+    assert ten_share["mean_direct_edge_per_share"] == pytest.approx(0.3005)
+    assert ten_share["realized_net_expectancy_per_trade"] == pytest.approx(4.005)
+    assert ten_share["maximum_drawdown"] == 0
+
+
+def test_ten_share_economics_fail_closed_without_vwap10() -> None:
+    frames = {
+        "control": prediction_frame("control", early=False),
+        "early-core": prediction_frame("early-core", early=True).drop(
+            "up_ask_vwap_10",
+            "down_ask_vwap_10",
+        ),
+    }
+
+    result = benchmark_predictions(
+        frames,
+        policies={
+            "control": CandidatePolicy(0.8, True, 0.20, 1024),
+            "early-core": CandidatePolicy(0.8, True, 0.18, 2048),
+        },
+        control_candidate="control",
+        evidence=BenchmarkEvidence(
+            label="Chronological development comparison",
+            kind="development",
+            independent=False,
+        ),
+        minimum_samples=8,
+        minimum_executable_samples=8,
+    )
+
+    early = result["candidates"]["early-core"]["own_policy"]
+    assert early["execution"]["economic_markets"] == 12
+    ten_share = early["execution_by_size"]["vwap10_ten_share"]
+    assert ten_share["executable_markets"] == 0
+    assert ten_share["economic_markets"] == 0
+    assert ten_share["realized_net_expectancy_per_trade"] is None
 
 
 def test_common_comparison_uses_exact_fixed_timestamps() -> None:
@@ -175,7 +225,8 @@ def test_execution_gate_fails_when_fee_evidence_is_absent() -> None:
     frames = {
         "control": prediction_frame("control", early=False),
         "early-core": prediction_frame("early-core", early=True).drop(
-            "direct_taker_fee_per_share"
+            "direct_taker_fee_per_share",
+            "fee_rate",
         ),
     }
     result = benchmark_predictions(
