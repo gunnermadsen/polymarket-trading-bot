@@ -2409,6 +2409,59 @@ impl BtcRepository {
         })
     }
 
+    /// Loads the market's immutable official Chainlink opening reference without rebuilding
+    /// reference histories. The receipt-time and configured boundary-window predicates preserve
+    /// the model feature timestamp's no-lookahead contract.
+    pub(crate) async fn load_directional_model_opening_reference(
+        &self,
+        market: &BtcIntervalMarket,
+        feature_as_of: DateTime<Utc>,
+        max_chainlink_open_delay: chrono::Duration,
+    ) -> Result<Option<ReferencePriceTick>> {
+        if max_chainlink_open_delay <= Duration::zero() {
+            bail!("directional-model Chainlink opening-reference delay must be positive");
+        }
+        let latest_valid_open = market
+            .window_start
+            .checked_add_signed(max_chainlink_open_delay)
+            .context("directional-model Chainlink opening window exceeds the timestamp range")?;
+        sqlx::query_as::<_, ReferenceTickRow>(
+            r#"
+            SELECT t.tick_id, t.source_timestamp, t.received_at, t.source, t.symbol, t.price,
+              t.envelope_timestamp, t.connection_id, t.ingest_sequence, t.source_event_id,
+              t.dedup_key, t.raw_payload
+            FROM polymarket.btc_interval_markets m
+            JOIN LATERAL (
+              SELECT tick_id, source_timestamp, received_at, source, symbol, price,
+                envelope_timestamp, connection_id, ingest_sequence, source_event_id,
+                dedup_key, raw_payload
+              FROM polymarket.reference_price_ticks
+              WHERE source = 'rtds_chainlink'
+                AND symbol = 'BTCUSD'
+                AND integrity_status = 'ok'
+                AND source_timestamp = m.reference_source_timestamp
+                AND price = m.reference_price
+                AND received_at <= $2
+              ORDER BY received_at ASC, ingest_sequence ASC, tick_id ASC
+              LIMIT 1
+            ) t ON true
+            WHERE m.market_id = $1
+              AND m.reference_price IS NOT NULL
+              AND m.reference_source_timestamp >= $3
+              AND m.reference_source_timestamp <= $4
+            "#,
+        )
+        .bind(&market.market_id)
+        .bind(feature_as_of)
+        .bind(market.window_start)
+        .bind(latest_valid_open)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to load directional-model Chainlink opening reference")?
+        .map(reference_tick_from_row)
+        .transpose()
+    }
+
     /// Loads only the immutable execution evidence needed after native directional-model
     /// inference. Model features come from the runtime's bounded one-second Binance window, so
     /// this path deliberately avoids rebuilding unused reference histories from Postgres.

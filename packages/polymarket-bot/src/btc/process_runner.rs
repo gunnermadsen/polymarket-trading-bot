@@ -31,7 +31,10 @@ use super::{
         ShadowPredictiveRegimeEvaluation, ShadowPredictiveRegimeState,
         ShadowPredictiveRegimeTransition,
     },
-    directional_features::{build_directional_features_for_schema, DirectionalFeatureVector},
+    directional_features::{
+        build_directional_features_for_schema_with_boundary, DirectionalFeatureVector,
+        BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION,
+    },
     directional_model::{
         directional_model_input_sha256, runtime_model, BtcDirectionalModelFeatureSnapshot,
         RuntimeModelSelection, RuntimePredictionPolicy, BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
@@ -1410,6 +1413,7 @@ impl BtcPaperProcessRunner {
         let observed_at = observation.readiness.checked_at;
         let directional_selection = directional_model_selection(&self.config.strategy);
         let mut directional_candidate = None;
+        let mut directional_opening_reference = None;
         let (snapshot_identity_at, directional_model, directional_model_feature_error) =
             if let Some(selection) = directional_selection.as_ref() {
                 let Some(latest_feature_as_of) = observation
@@ -1465,11 +1469,29 @@ impl BtcPaperProcessRunner {
                         return Ok(());
                     }
                 }
-                let features = match build_directional_features_for_schema(
+                let opening_reference = if model.feature_schema_version()
+                    == BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION
+                {
+                    self.repository
+                        .load_directional_model_opening_reference(
+                            market,
+                            feature_as_of,
+                            chrono::Duration::milliseconds(
+                                self.config.strategy.max_chainlink_open_delay_ms,
+                            ),
+                        )
+                        .await?
+                } else {
+                    None
+                };
+                let opening_boundary = opening_reference.as_ref().map(|tick| tick.price);
+                directional_opening_reference = opening_reference;
+                let features = match build_directional_features_for_schema_with_boundary(
                     &observation.state.binance_one_second_window,
                     market.window_start,
                     feature_as_of,
                     model.feature_schema_version(),
+                    opening_boundary,
                 ) {
                     Ok(features) => {
                         directional_candidate = Some(candidate);
@@ -1492,7 +1514,7 @@ impl BtcPaperProcessRunner {
             };
         self.schedule_shadow_predictive_regime_refresh(&market.market_id, observed_at);
         let clob_connection_id = observation_clob_connection_id(market, &observation.readiness);
-        let inputs = if directional_selection.is_some() {
+        let mut inputs = if directional_selection.is_some() {
             self.repository
                 .load_directional_model_execution_inputs(
                     market,
@@ -1516,6 +1538,9 @@ impl BtcPaperProcessRunner {
                 )
                 .await?
         };
+        if directional_opening_reference.is_some() {
+            inputs.chainlink_open = directional_opening_reference;
+        }
         let snapshot = build_snapshot(
             self.config.process_id,
             market,

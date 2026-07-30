@@ -87,6 +87,18 @@ def main() -> None:
         required=True,
     )
     persistence_paper_export.add_argument(
+        "--candidate",
+        help=(
+            "explicit time-banded paper candidate; omit for the "
+            "regime-robust recency candidate"
+        ),
+    )
+    persistence_paper_export.add_argument(
+        "--policy-benchmark-run",
+        type=Path,
+        help="causal frozen-policy evidence required by the frequency candidate",
+    )
+    persistence_paper_export.add_argument(
         "--freeze-root",
         type=Path,
         required=True,
@@ -181,6 +193,8 @@ def main() -> None:
         freeze_dir, runtime_dir, manifest = run_paper_candidate_export(
             config_path=args.config,
             benchmark_run=args.benchmark_run,
+            candidate=args.candidate,
+            policy_benchmark_run=args.policy_benchmark_run,
             freeze_root=args.freeze_root,
             runtime_output_root=args.runtime_output_root,
             model_key=args.model_key,

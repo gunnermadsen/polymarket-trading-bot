@@ -26,8 +26,12 @@ pub const BTC_DIRECTIONAL_MODEL_DIR_ENV: &str = "POLYMARKET_BTC_MODEL_DIR";
 pub const DEFAULT_BTC_DIRECTIONAL_MODEL_DIR: &str = "/usr/local/share/polymarket-bot/models";
 
 pub const RUNTIME_MODEL_SCHEMA_VERSION: &str = "capitonic-btc-directional-runtime-model-v1";
+pub const RUNTIME_MODEL_TIME_BANDED_SCHEMA_VERSION: &str =
+    "capitonic-btc-directional-runtime-model-v2";
 pub const RUNTIME_MANIFEST_SCHEMA_VERSION: &str = "capitonic-btc-directional-runtime-manifest-v1";
 pub const GOLDEN_VECTORS_SCHEMA_VERSION: &str = "capitonic-btc-directional-golden-vectors-v1";
+pub const TIME_BANDED_GOLDEN_VECTORS_SCHEMA_VERSION: &str =
+    "capitonic-btc-directional-golden-vectors-v2";
 pub const BTC_DIRECTIONAL_MODEL_INPUT_CONTRACT: &str = "btc_directional_model_input_v1";
 
 const MODEL_FILE_MAX_BYTES: u64 = 32 * 1024 * 1024;
@@ -145,7 +149,8 @@ pub struct RuntimeDirectionalModel {
     imputation_medians: Vec<f64>,
     baseline_logit: f64,
     trees: Vec<RuntimeTree>,
-    calibration: RuntimeCalibration,
+    calibration_policy: RuntimeCalibrationPolicy,
+    target: RuntimeTarget,
     decision: RuntimeDecision,
     prediction_policy: RuntimePredictionPolicy,
 }
@@ -183,8 +188,20 @@ impl RuntimeDirectionalModel {
         self.decision.probability_up_threshold
     }
 
+    /// Returns the legacy global threshold, or the first configured threshold for a
+    /// time-banded model. Inference callers should use `confidence_threshold_at`.
     pub fn confidence_threshold(&self) -> f64 {
-        self.decision.confidence_threshold
+        self.calibration_policy.first_confidence_threshold()
+    }
+
+    pub fn confidence_threshold_at(&self, seconds_elapsed: i64) -> Result<f64> {
+        if !self.prediction_policy.accepts(seconds_elapsed) {
+            bail!("BTC directional model elapsed time is outside its prediction policy");
+        }
+        Ok(self
+            .calibration_policy
+            .at(seconds_elapsed)?
+            .confidence_threshold)
     }
 
     pub fn score_snapshot(
@@ -202,14 +219,41 @@ impl RuntimeDirectionalModel {
         if !self.prediction_policy.accepts(snapshot.seconds_elapsed) {
             bail!("BTC directional model feature snapshot is outside its prediction policy");
         }
-        self.score(&snapshot.feature_values)
+        self.score_at_seconds(&snapshot.feature_values, snapshot.seconds_elapsed)
     }
 
     /// Scores an ordered feature vector without allocating on the inference path.
     ///
     /// Non-finite values follow the frozen training contract and use the corresponding
-    /// feature median. The caller must provide the exact frozen feature order.
+    /// feature median. This compatibility entrypoint is only valid for legacy models
+    /// with one global calibration and confidence threshold.
     pub fn score(&self, features: &[f64]) -> Result<RuntimeModelScore> {
+        let policy = self
+            .calibration_policy
+            .global()
+            .context("BTC time-banded directional model scoring requires elapsed-time context")?;
+        self.score_with_policy(features, policy)
+    }
+
+    /// Scores an ordered feature vector using the calibration and confidence threshold
+    /// frozen for the supplied elapsed-time band.
+    pub fn score_at_seconds(
+        &self,
+        features: &[f64],
+        seconds_elapsed: i64,
+    ) -> Result<RuntimeModelScore> {
+        if !self.prediction_policy.accepts(seconds_elapsed) {
+            bail!("BTC directional model elapsed time is outside its prediction policy");
+        }
+        let policy = self.calibration_policy.at(seconds_elapsed)?;
+        self.score_with_policy(features, policy)
+    }
+
+    fn score_with_policy(
+        &self,
+        features: &[f64],
+        policy: RuntimeCalibrationDecisionRef<'_>,
+    ) -> Result<RuntimeModelScore> {
         if features.len() != self.feature_names.len() {
             bail!(
                 "BTC directional model expected {} features but received {}",
@@ -228,22 +272,34 @@ impl RuntimeDirectionalModel {
 
         let raw_probability = sigmoid(raw_logit);
         let clipped_probability = raw_probability.clamp(
-            self.calibration.input_probability_minimum,
-            self.calibration.input_probability_maximum,
+            policy.calibration.input_probability_minimum,
+            policy.calibration.input_probability_maximum,
         );
         let clipped_logit = (clipped_probability / (1.0 - clipped_probability)).ln();
         let calibrated_logit =
-            (clipped_logit * self.calibration.slope + self.calibration.intercept).clamp(
-                self.calibration.output_logit_minimum,
-                self.calibration.output_logit_maximum,
+            (clipped_logit * policy.calibration.slope + policy.calibration.intercept).clamp(
+                policy.calibration.output_logit_minimum,
+                policy.calibration.output_logit_maximum,
             );
-        let probability_up = sigmoid(calibrated_logit);
+        let calibrated_target_probability = sigmoid(calibrated_logit);
+        let Some(probability_up) = self
+            .target
+            .probability_up(features, calibrated_target_probability)
+        else {
+            return Ok(RuntimeModelScore {
+                raw_logit,
+                probability_up: 0.5,
+                confidence: 0.5,
+                action: RuntimeModelAction::NoTrade,
+                accepted: false,
+            });
+        };
         let confidence = probability_up.max(1.0 - probability_up);
         if !probability_up.is_finite() || !confidence.is_finite() {
             bail!("BTC directional model produced a non-finite calibrated probability");
         }
 
-        let action = if confidence < self.decision.confidence_threshold {
+        let action = if confidence < policy.confidence_threshold {
             RuntimeModelAction::NoTrade
         } else if probability_up >= self.decision.probability_up_threshold {
             RuntimeModelAction::Up
@@ -392,9 +448,111 @@ struct RuntimeCalibration {
 }
 
 #[derive(Debug)]
+enum RuntimeCalibrationPolicy {
+    Global {
+        calibration: RuntimeCalibration,
+        confidence_threshold: f64,
+    },
+    TimeBanded {
+        bands: Vec<RuntimeTimeBand>,
+    },
+}
+
+impl RuntimeCalibrationPolicy {
+    fn global(&self) -> Option<RuntimeCalibrationDecisionRef<'_>> {
+        match self {
+            Self::Global {
+                calibration,
+                confidence_threshold,
+            } => Some(RuntimeCalibrationDecisionRef {
+                calibration,
+                confidence_threshold: *confidence_threshold,
+            }),
+            Self::TimeBanded { .. } => None,
+        }
+    }
+
+    fn at(&self, seconds_elapsed: i64) -> Result<RuntimeCalibrationDecisionRef<'_>> {
+        match self {
+            Self::Global {
+                calibration,
+                confidence_threshold,
+            } => Ok(RuntimeCalibrationDecisionRef {
+                calibration,
+                confidence_threshold: *confidence_threshold,
+            }),
+            Self::TimeBanded { bands } => bands
+                .iter()
+                .find(|band| {
+                    seconds_elapsed >= band.start_seconds
+                        && seconds_elapsed < band.end_seconds_exclusive
+                })
+                .map(|band| RuntimeCalibrationDecisionRef {
+                    calibration: &band.calibration,
+                    confidence_threshold: band.confidence_threshold,
+                })
+                .context("BTC directional model elapsed time has no frozen calibration band"),
+        }
+    }
+
+    fn first_confidence_threshold(&self) -> f64 {
+        match self {
+            Self::Global {
+                confidence_threshold,
+                ..
+            } => *confidence_threshold,
+            Self::TimeBanded { bands } => bands[0].confidence_threshold,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RuntimeTimeBand {
+    start_seconds: i64,
+    end_seconds_exclusive: i64,
+    calibration: RuntimeCalibration,
+    confidence_threshold: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RuntimeCalibrationDecisionRef<'a> {
+    calibration: &'a RuntimeCalibration,
+    confidence_threshold: f64,
+}
+
+#[derive(Debug)]
+enum RuntimeTarget {
+    OutcomeUp,
+    PathPersistence {
+        path_direction_feature_index: usize,
+        zero_path_epsilon_bps: f64,
+    },
+}
+
+impl RuntimeTarget {
+    fn probability_up(&self, features: &[f64], calibrated_target_probability: f64) -> Option<f64> {
+        match self {
+            Self::OutcomeUp => Some(calibrated_target_probability),
+            Self::PathPersistence {
+                path_direction_feature_index,
+                zero_path_epsilon_bps,
+            } => {
+                let path = features[*path_direction_feature_index];
+                if !path.is_finite() || path.abs() <= *zero_path_epsilon_bps {
+                    None
+                } else if path > 0.0 {
+                    Some(calibrated_target_probability)
+                } else {
+                    Some(1.0 - calibrated_target_probability)
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
 struct RuntimeDecision {
     probability_up_threshold: f64,
-    confidence_threshold: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -404,7 +562,9 @@ struct RuntimeModelFile {
     model_key: String,
     features: RuntimeFeatureFile,
     estimator: RuntimeEstimatorFile,
-    calibration: RuntimeCalibrationFile,
+    calibration: Option<RuntimeCalibrationFile>,
+    time_bands: Option<Vec<RuntimeTimeBandFile>>,
+    target: Option<RuntimeTargetFile>,
     decision: RuntimeDecisionFile,
     prediction_policy: RuntimePredictionPolicyFile,
     provenance: serde_json::Value,
@@ -478,6 +638,27 @@ struct RuntimeCalibrationFile {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RuntimeTimeBandFile {
+    name: String,
+    start_seconds: i64,
+    end_seconds_exclusive: i64,
+    calibration: RuntimeCalibrationFile,
+    confidence_threshold: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum RuntimeTargetFile {
+    OutcomeUp,
+    PathPersistence {
+        path_direction_feature: String,
+        zero_path_epsilon_bps: f64,
+        ineligible_action: String,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct NumericRangeFile {
     minimum: f64,
     maximum: f64,
@@ -487,7 +668,7 @@ struct NumericRangeFile {
 #[serde(deny_unknown_fields)]
 struct RuntimeDecisionFile {
     probability_up_threshold: f64,
-    confidence_threshold: f64,
+    confidence_threshold: Option<f64>,
     below_confidence_action: String,
     up_action: String,
     down_action: String,
@@ -621,7 +802,9 @@ fn compile_runtime_model(
     selection: &RuntimeModelSelection,
     artifact_sha256: String,
 ) -> Result<RuntimeDirectionalModel> {
-    if file.schema_version != RUNTIME_MODEL_SCHEMA_VERSION
+    let legacy_schema = file.schema_version == RUNTIME_MODEL_SCHEMA_VERSION;
+    let time_banded_schema = file.schema_version == RUNTIME_MODEL_TIME_BANDED_SCHEMA_VERSION;
+    if (!legacy_schema && !time_banded_schema)
         || file.model_key != selection.model_key
         || file.features.schema_version != manifest.feature_schema_version
         || file.features.schema_sha256 != manifest.feature_schema_sha256
@@ -690,19 +873,8 @@ fn compile_runtime_model(
         .map(|(index, tree)| compile_tree(tree, feature_count, index))
         .collect::<Result<Vec<_>>>()?;
 
-    let calibration = file.calibration;
-    if calibration.calibration_type != "platt_logit"
-        || !calibration.slope.is_finite()
-        || !calibration.intercept.is_finite()
-        || !valid_probability_clip(&calibration.input_probability_clip)
-        || !valid_numeric_range(&calibration.output_logit_clip)
-    {
-        bail!("BTC directional runtime model calibration contract is invalid");
-    }
-
     let decision = file.decision;
     if !valid_open_probability(decision.probability_up_threshold)
-        || !valid_open_probability(decision.confidence_threshold)
         || decision.below_confidence_action != "no_trade"
         || decision.up_action != "up"
         || decision.down_action != "down"
@@ -724,6 +896,50 @@ fn compile_runtime_model(
     {
         bail!("BTC directional runtime model prediction policy is invalid");
     }
+    let prediction_policy = RuntimePredictionPolicy {
+        minimum_seconds_after_open: prediction_policy.minimum_seconds_after_open,
+        maximum_seconds_after_open: prediction_policy.maximum_seconds_after_open,
+        cadence_seconds: prediction_policy.cadence_seconds,
+    };
+
+    let (calibration_policy, target) = if legacy_schema {
+        if file.time_bands.is_some() || file.target.is_some() {
+            bail!("BTC directional runtime model v1 contains unsupported time-band metadata");
+        }
+        let calibration = file
+            .calibration
+            .context("BTC directional runtime model v1 requires one global calibration")?;
+        let confidence_threshold = decision
+            .confidence_threshold
+            .context("BTC directional runtime model v1 requires one global confidence threshold")?;
+        if !valid_open_probability(confidence_threshold) {
+            bail!("BTC directional runtime model decision contract is invalid");
+        }
+        (
+            RuntimeCalibrationPolicy::Global {
+                calibration: compile_calibration(calibration)?,
+                confidence_threshold,
+            },
+            RuntimeTarget::OutcomeUp,
+        )
+    } else {
+        if file.calibration.is_some() || decision.confidence_threshold.is_some() {
+            bail!(
+                "BTC directional runtime model v2 must freeze calibration and confidence by time band"
+            );
+        }
+        let bands = compile_time_bands(
+            file.time_bands
+                .context("BTC directional runtime model v2 requires time bands")?,
+            prediction_policy,
+        )?;
+        let target = compile_runtime_target(
+            file.target
+                .context("BTC directional runtime model v2 requires a target contract")?,
+            &file.features.names,
+        )?;
+        (RuntimeCalibrationPolicy::TimeBanded { bands }, target)
+    };
 
     Ok(RuntimeDirectionalModel {
         model_key: file.model_key,
@@ -734,24 +950,101 @@ fn compile_runtime_model(
         imputation_medians: file.features.imputation_medians,
         baseline_logit: estimator.baseline_logit,
         trees,
-        calibration: RuntimeCalibration {
-            slope: calibration.slope,
-            intercept: calibration.intercept,
-            input_probability_minimum: calibration.input_probability_clip.minimum,
-            input_probability_maximum: calibration.input_probability_clip.maximum,
-            output_logit_minimum: calibration.output_logit_clip.minimum,
-            output_logit_maximum: calibration.output_logit_clip.maximum,
-        },
+        calibration_policy,
+        target,
         decision: RuntimeDecision {
             probability_up_threshold: decision.probability_up_threshold,
-            confidence_threshold: decision.confidence_threshold,
         },
-        prediction_policy: RuntimePredictionPolicy {
-            minimum_seconds_after_open: prediction_policy.minimum_seconds_after_open,
-            maximum_seconds_after_open: prediction_policy.maximum_seconds_after_open,
-            cadence_seconds: prediction_policy.cadence_seconds,
-        },
+        prediction_policy,
     })
+}
+
+fn compile_calibration(file: RuntimeCalibrationFile) -> Result<RuntimeCalibration> {
+    if file.calibration_type != "platt_logit"
+        || !file.slope.is_finite()
+        || !file.intercept.is_finite()
+        || !valid_probability_clip(&file.input_probability_clip)
+        || !valid_numeric_range(&file.output_logit_clip)
+    {
+        bail!("BTC directional runtime model calibration contract is invalid");
+    }
+    Ok(RuntimeCalibration {
+        slope: file.slope,
+        intercept: file.intercept,
+        input_probability_minimum: file.input_probability_clip.minimum,
+        input_probability_maximum: file.input_probability_clip.maximum,
+        output_logit_minimum: file.output_logit_clip.minimum,
+        output_logit_maximum: file.output_logit_clip.maximum,
+    })
+}
+
+fn compile_time_bands(
+    files: Vec<RuntimeTimeBandFile>,
+    prediction_policy: RuntimePredictionPolicy,
+) -> Result<Vec<RuntimeTimeBand>> {
+    if files.is_empty() {
+        bail!("BTC directional runtime model time-band contract is empty");
+    }
+    let mut names = HashSet::with_capacity(files.len());
+    let mut expected_start = prediction_policy.minimum_seconds_after_open;
+    let mut bands = Vec::with_capacity(files.len());
+    for file in files {
+        if file.name.trim().is_empty()
+            || !names.insert(file.name)
+            || file.start_seconds != expected_start
+            || file.start_seconds >= file.end_seconds_exclusive
+            || file.end_seconds_exclusive > prediction_policy.maximum_seconds_after_open + 1
+            || (file.start_seconds - prediction_policy.minimum_seconds_after_open)
+                % prediction_policy.cadence_seconds
+                != 0
+            || !valid_open_probability(file.confidence_threshold)
+            || file.confidence_threshold <= 0.5
+        {
+            bail!("BTC directional runtime model time-band contract is invalid");
+        }
+        expected_start = file.end_seconds_exclusive;
+        bands.push(RuntimeTimeBand {
+            start_seconds: file.start_seconds,
+            end_seconds_exclusive: file.end_seconds_exclusive,
+            calibration: compile_calibration(file.calibration)?,
+            confidence_threshold: file.confidence_threshold,
+        });
+    }
+    if expected_start != prediction_policy.maximum_seconds_after_open + 1 {
+        bail!("BTC directional runtime model time bands do not cover its prediction policy");
+    }
+    Ok(bands)
+}
+
+fn compile_runtime_target(
+    file: RuntimeTargetFile,
+    feature_names: &[String],
+) -> Result<RuntimeTarget> {
+    match file {
+        RuntimeTargetFile::OutcomeUp => Ok(RuntimeTarget::OutcomeUp),
+        RuntimeTargetFile::PathPersistence {
+            path_direction_feature,
+            zero_path_epsilon_bps,
+            ineligible_action,
+        } => {
+            if !zero_path_epsilon_bps.is_finite()
+                || zero_path_epsilon_bps <= 0.0
+                || ineligible_action != "no_trade"
+            {
+                bail!("BTC directional runtime model path-persistence target is invalid");
+            }
+            let path_direction_feature_index = feature_names
+                .iter()
+                .position(|name| name == &path_direction_feature)
+                .context(
+                    "BTC directional runtime model path-persistence direction feature is missing",
+                )?;
+            Ok(RuntimeTarget::PathPersistence {
+                path_direction_feature_index,
+                zero_path_epsilon_bps,
+            })
+        }
+    }
 }
 
 fn validate_frozen_feature_order(
@@ -950,6 +1243,7 @@ mod tests {
     struct GoldenVector {
         id: String,
         source: Option<serde_json::Value>,
+        seconds_elapsed: Option<i64>,
         feature_values: Vec<Option<f64>>,
         expected: GoldenExpected,
     }
@@ -984,17 +1278,20 @@ mod tests {
                     RuntimeTreeNode::Leaf { value: 3.0 },
                 ],
             }],
-            calibration: RuntimeCalibration {
-                slope: 1.0,
-                intercept: 0.0,
-                input_probability_minimum: 1e-9,
-                input_probability_maximum: 0.999_999_999,
-                output_logit_minimum: -40.0,
-                output_logit_maximum: 40.0,
+            calibration_policy: RuntimeCalibrationPolicy::Global {
+                calibration: RuntimeCalibration {
+                    slope: 1.0,
+                    intercept: 0.0,
+                    input_probability_minimum: 1e-9,
+                    input_probability_maximum: 0.999_999_999,
+                    output_logit_minimum: -40.0,
+                    output_logit_maximum: 40.0,
+                },
+                confidence_threshold,
             },
+            target: RuntimeTarget::OutcomeUp,
             decision: RuntimeDecision {
                 probability_up_threshold: 0.5,
-                confidence_threshold,
             },
             prediction_policy: RuntimePredictionPolicy {
                 minimum_seconds_after_open: 60,
@@ -1002,6 +1299,54 @@ mod tests {
                 cadence_seconds: 5,
             },
         }
+    }
+
+    fn calibration(intercept: f64) -> RuntimeCalibration {
+        RuntimeCalibration {
+            slope: 1.0,
+            intercept,
+            input_probability_minimum: 1e-9,
+            input_probability_maximum: 0.999_999_999,
+            output_logit_minimum: -40.0,
+            output_logit_maximum: 40.0,
+        }
+    }
+
+    fn calibration_file() -> RuntimeCalibrationFile {
+        RuntimeCalibrationFile {
+            calibration_type: "platt_logit".to_string(),
+            slope: 1.0,
+            intercept: 0.0,
+            input_probability_clip: NumericRangeFile {
+                minimum: 1e-9,
+                maximum: 0.999_999_999,
+            },
+            output_logit_clip: NumericRangeFile {
+                minimum: -40.0,
+                maximum: 40.0,
+            },
+        }
+    }
+
+    fn time_banded_test_model() -> RuntimeDirectionalModel {
+        let mut model = test_model(0.5);
+        model.calibration_policy = RuntimeCalibrationPolicy::TimeBanded {
+            bands: vec![
+                RuntimeTimeBand {
+                    start_seconds: 60,
+                    end_seconds_exclusive: 90,
+                    calibration: calibration(0.0),
+                    confidence_threshold: 0.96,
+                },
+                RuntimeTimeBand {
+                    start_seconds: 90,
+                    end_seconds_exclusive: 241,
+                    calibration: calibration(0.0),
+                    confidence_threshold: 0.90,
+                },
+            ],
+        };
+        model
     }
 
     #[test]
@@ -1137,6 +1482,86 @@ mod tests {
     }
 
     #[test]
+    fn time_banded_model_uses_elapsed_threshold_and_requires_time_context() {
+        let model = time_banded_test_model();
+
+        let early = model.score_at_seconds(&[1.0], 85).unwrap();
+        let later = model.score_at_seconds(&[1.0], 90).unwrap();
+
+        assert_eq!(early.action, RuntimeModelAction::NoTrade);
+        assert_eq!(later.action, RuntimeModelAction::Up);
+        assert_eq!(model.confidence_threshold_at(85).unwrap(), 0.96);
+        assert_eq!(model.confidence_threshold_at(90).unwrap(), 0.90);
+        assert!(model.score(&[1.0]).is_err());
+        assert!(model.score_at_seconds(&[1.0], 89).is_err());
+    }
+
+    #[test]
+    fn time_band_contract_must_exactly_cover_prediction_policy() {
+        let policy = RuntimePredictionPolicy {
+            minimum_seconds_after_open: 60,
+            maximum_seconds_after_open: 240,
+            cadence_seconds: 5,
+        };
+        let valid = vec![
+            RuntimeTimeBandFile {
+                name: "60-89".to_string(),
+                start_seconds: 60,
+                end_seconds_exclusive: 90,
+                calibration: calibration_file(),
+                confidence_threshold: 0.91,
+            },
+            RuntimeTimeBandFile {
+                name: "90-240".to_string(),
+                start_seconds: 90,
+                end_seconds_exclusive: 241,
+                calibration: calibration_file(),
+                confidence_threshold: 0.89,
+            },
+        ];
+        assert!(compile_time_bands(valid, policy).is_ok());
+
+        let gap = vec![
+            RuntimeTimeBandFile {
+                name: "60-89".to_string(),
+                start_seconds: 60,
+                end_seconds_exclusive: 90,
+                calibration: calibration_file(),
+                confidence_threshold: 0.91,
+            },
+            RuntimeTimeBandFile {
+                name: "95-240".to_string(),
+                start_seconds: 95,
+                end_seconds_exclusive: 241,
+                calibration: calibration_file(),
+                confidence_threshold: 0.89,
+            },
+        ];
+        assert!(compile_time_bands(gap, policy).is_err());
+    }
+
+    #[test]
+    fn path_persistence_target_converts_by_raw_path_sign_and_rejects_zero_path() {
+        let target = RuntimeTarget::PathPersistence {
+            path_direction_feature_index: 0,
+            zero_path_epsilon_bps: 1e-12,
+        };
+
+        assert_eq!(target.probability_up(&[2.0], 0.8), Some(0.8));
+        assert!((target.probability_up(&[-2.0], 0.8).unwrap() - 0.2).abs() < f64::EPSILON);
+        assert_eq!(target.probability_up(&[0.0], 0.8), None);
+        assert_eq!(target.probability_up(&[f64::NAN], 0.8), None);
+
+        let mut model = test_model(0.5);
+        model.target = target;
+        let ineligible = model.score(&[0.0]).unwrap();
+        assert_eq!(ineligible.probability_up, 0.5);
+        assert_eq!(ineligible.confidence, 0.5);
+        assert_eq!(ineligible.action, RuntimeModelAction::NoTrade);
+        assert!(!ineligible.accepted);
+    }
+
+    #[test]
     fn non_finite_input_uses_frozen_median() {
         let model = test_model(0.5);
         let missing = model.score(&[f64::NAN]).unwrap();
@@ -1198,7 +1623,10 @@ mod tests {
                 &fs::read(directory.join(&manifest.golden_vectors_file)).unwrap(),
             )
             .unwrap();
-            assert_eq!(vectors.schema_version, GOLDEN_VECTORS_SCHEMA_VERSION);
+            assert!(
+                vectors.schema_version == GOLDEN_VECTORS_SCHEMA_VERSION
+                    || vectors.schema_version == TIME_BANDED_GOLDEN_VECTORS_SCHEMA_VERSION
+            );
             assert_eq!(vectors.model_key, selection.model_key);
             assert_eq!(
                 vectors.feature_schema_sha256,
@@ -1212,7 +1640,16 @@ mod tests {
                     .into_iter()
                     .map(|value| value.unwrap_or(f64::NAN))
                     .collect::<Vec<_>>();
-                let actual = model.score(&features).unwrap();
+                let actual = match (vectors.schema_version.as_str(), vector.seconds_elapsed) {
+                    (GOLDEN_VECTORS_SCHEMA_VERSION, None) => model.score(&features).unwrap(),
+                    (TIME_BANDED_GOLDEN_VECTORS_SCHEMA_VERSION, Some(seconds_elapsed)) => {
+                        model.score_at_seconds(&features, seconds_elapsed).unwrap()
+                    }
+                    _ => panic!(
+                        "{}:{} golden-vector elapsed-time contract mismatch",
+                        selection.model_key, vector.id
+                    ),
+                };
                 assert!(
                     (actual.raw_logit - vector.expected.raw_logit).abs() < 1e-12,
                     "{}:{} raw logit mismatch: {actual:?}",

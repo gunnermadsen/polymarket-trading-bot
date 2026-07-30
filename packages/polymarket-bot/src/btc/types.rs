@@ -2,13 +2,16 @@ use std::collections::{BTreeMap, VecDeque};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
-use rust_decimal::Decimal;
+use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub const BTC_INTERVAL_SECONDS: i64 = 300;
 pub const BTC_INTERVAL_SLUG_PREFIX: &str = "btc-updown-5m-";
 pub const BINANCE_ONE_SECOND_WINDOW_CAPACITY: usize = 305;
+pub const BINANCE_PREWINDOW_SUMMARY_CAPACITY: usize = 12;
+const BINANCE_ONE_SECOND_BOOTSTRAP_CAPACITY: usize =
+    BINANCE_ONE_SECOND_WINDOW_CAPACITY + BINANCE_PREWINDOW_SUMMARY_CAPACITY * 300;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -132,15 +135,29 @@ pub struct BinanceOneSecondKline {
     pub synthetic: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct BinanceFiveMinuteSummary {
+    pub window_start: DateTime<Utc>,
+    pub open_available_close: f64,
+    pub window_high: f64,
+    pub window_low: f64,
+    pub window_quote_volume: f64,
+    pub window_trade_count: f64,
+    pub window_taker_buy_quote_volume: f64,
+    pub window_volatility_bps: f64,
+    pub source_complete: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BinanceOneSecondWindow {
     current: Option<BinanceOneSecondKline>,
     completed: VecDeque<BinanceOneSecondKline>,
+    completed_five_minute_summaries: VecDeque<BinanceFiveMinuteSummary>,
 }
 
 impl BinanceOneSecondWindow {
     pub fn from_completed(klines: Vec<BinanceOneSecondKline>) -> Result<Self> {
-        if klines.len() > BINANCE_ONE_SECOND_WINDOW_CAPACITY {
+        if klines.len() > BINANCE_ONE_SECOND_BOOTSTRAP_CAPACITY {
             bail!("Binance one-second kline bootstrap exceeds the bounded window");
         }
         for (index, kline) in klines.iter().enumerate() {
@@ -149,10 +166,11 @@ impl BinanceOneSecondWindow {
                 bail!("Binance one-second kline bootstrap is not contiguous");
             }
         }
-        Ok(Self {
-            current: None,
-            completed: klines.into(),
-        })
+        let mut window = Self::default();
+        for kline in klines {
+            window.push_completed(kline)?;
+        }
+        Ok(window)
     }
 
     pub fn current(&self) -> Option<&BinanceOneSecondKline> {
@@ -163,9 +181,14 @@ impl BinanceOneSecondWindow {
         &self.completed
     }
 
+    pub(crate) fn completed_five_minute_summaries(&self) -> &VecDeque<BinanceFiveMinuteSummary> {
+        &self.completed_five_minute_summaries
+    }
+
     pub fn clear(&mut self) {
         self.current = None;
         self.completed.clear();
+        self.completed_five_minute_summaries.clear();
     }
 
     pub fn update(
@@ -209,7 +232,7 @@ impl BinanceOneSecondWindow {
             bail!("Binance aggregate-trade gap exceeds the bounded model window");
         }
         let mut next_open = current.close_timestamp;
-        self.push_completed(current);
+        self.push_completed(current)?;
         while next_open < bucket_open {
             let next_close = next_open
                 .checked_add_signed(chrono::Duration::seconds(1))
@@ -233,7 +256,7 @@ impl BinanceOneSecondWindow {
                 max_received_at: carry_received_at,
                 source_complete: contiguous,
                 synthetic: true,
-            });
+            })?;
             next_open = next_close;
         }
         self.current = Some(kline_from_trade(
@@ -245,12 +268,125 @@ impl BinanceOneSecondWindow {
         Ok(())
     }
 
-    fn push_completed(&mut self, kline: BinanceOneSecondKline) {
+    fn push_completed(&mut self, kline: BinanceOneSecondKline) -> Result<()> {
+        let next_window_start = five_minute_window_start(kline.close_timestamp)?;
+        if let Some(previous) = self.completed.back() {
+            let previous_window_start = five_minute_window_start(previous.close_timestamp)?;
+            if previous_window_start != next_window_start {
+                if let Some(summary) =
+                    summarize_completed_five_minute_window(&self.completed, previous_window_start)?
+                {
+                    self.completed_five_minute_summaries.push_back(summary);
+                    while self.completed_five_minute_summaries.len()
+                        > BINANCE_PREWINDOW_SUMMARY_CAPACITY
+                    {
+                        self.completed_five_minute_summaries.pop_front();
+                    }
+                }
+            }
+        }
         self.completed.push_back(kline);
         while self.completed.len() > BINANCE_ONE_SECOND_WINDOW_CAPACITY {
             self.completed.pop_front();
         }
+        Ok(())
     }
+}
+
+fn five_minute_window_start(timestamp: DateTime<Utc>) -> Result<DateTime<Utc>> {
+    let epoch_seconds = timestamp.timestamp();
+    let window_start_seconds =
+        epoch_seconds.div_euclid(BTC_INTERVAL_SECONDS) * BTC_INTERVAL_SECONDS;
+    DateTime::from_timestamp(window_start_seconds, 0)
+        .context("Binance five-minute summary timestamp is outside the supported range")
+}
+
+fn summarize_completed_five_minute_window(
+    completed: &VecDeque<BinanceOneSecondKline>,
+    window_start: DateTime<Utc>,
+) -> Result<Option<BinanceFiveMinuteSummary>> {
+    let mut candles = completed
+        .iter()
+        .filter(|candle| {
+            five_minute_window_start(candle.close_timestamp)
+                .is_ok_and(|candidate| candidate == window_start)
+        })
+        .collect::<Vec<_>>();
+    if candles.len() != BTC_INTERVAL_SECONDS as usize {
+        return Ok(None);
+    }
+    candles.sort_unstable_by_key(|candle| candle.open_timestamp);
+    let expected_last_close = window_start
+        .checked_add_signed(chrono::Duration::seconds(BTC_INTERVAL_SECONDS - 1))
+        .context("Binance five-minute summary end timestamp overflowed")?;
+    if candles[0].close_timestamp != window_start
+        || candles.last().map(|candle| candle.close_timestamp) != Some(expected_last_close)
+        || candles
+            .windows(2)
+            .any(|pair| pair[0].close_timestamp != pair[1].open_timestamp)
+    {
+        return Ok(None);
+    }
+
+    let mut closes = Vec::with_capacity(candles.len());
+    let mut window_high = f64::NEG_INFINITY;
+    let mut window_low = f64::INFINITY;
+    let mut window_quote_volume = 0.0;
+    let mut window_trade_count = 0.0;
+    let mut window_taker_buy_quote_volume = 0.0;
+    let mut source_complete = true;
+    for candle in &candles {
+        let close = summary_decimal(candle.close_price, "close_price")?;
+        closes.push(close);
+        window_high = window_high.max(summary_decimal(candle.high_price, "high_price")?);
+        window_low = window_low.min(summary_decimal(candle.low_price, "low_price")?);
+        window_quote_volume += summary_decimal(candle.quote_volume, "quote_volume")?;
+        window_trade_count += candle.trade_count as f64;
+        window_taker_buy_quote_volume +=
+            summary_decimal(candle.taker_buy_quote_volume, "taker_buy_quote_volume")?;
+        source_complete &= candle.source_complete;
+    }
+    let log_returns = closes
+        .windows(2)
+        .map(|pair| pair[1].ln() - pair[0].ln())
+        .collect::<Vec<_>>();
+    let mean = log_returns.iter().sum::<f64>() / log_returns.len() as f64;
+    let squared_deviations = log_returns
+        .iter()
+        .map(|value| {
+            let deviation = value - mean;
+            deviation * deviation
+        })
+        .sum::<f64>();
+    let window_volatility_bps =
+        (squared_deviations / (log_returns.len() - 1) as f64).sqrt() * 10_000.0;
+    if !window_high.is_finite()
+        || !window_low.is_finite()
+        || !window_quote_volume.is_finite()
+        || !window_trade_count.is_finite()
+        || !window_taker_buy_quote_volume.is_finite()
+        || !window_volatility_bps.is_finite()
+    {
+        bail!("Binance five-minute summary contains a non-finite value");
+    }
+    Ok(Some(BinanceFiveMinuteSummary {
+        window_start,
+        open_available_close: closes[0],
+        window_high,
+        window_low,
+        window_quote_volume,
+        window_trade_count,
+        window_taker_buy_quote_volume,
+        window_volatility_bps,
+        source_complete,
+    }))
+}
+
+fn summary_decimal(value: Decimal, field: &str) -> Result<f64> {
+    value
+        .to_f64()
+        .filter(|value| value.is_finite())
+        .with_context(|| format!("Binance five-minute summary {field} is not finite"))
 }
 
 fn validate_binance_one_second_kline(kline: &BinanceOneSecondKline) -> Result<()> {
@@ -610,6 +746,78 @@ mod tests {
             .is_err());
         assert!(window.current().is_none());
         assert!(window.completed().is_empty());
+    }
+
+    #[test]
+    fn five_minute_summary_ring_rolls_over_and_clears_with_the_raw_window() {
+        let current_window_start = DateTime::from_timestamp(4_200, 0).unwrap();
+        let first_open = current_window_start - chrono::Duration::seconds(3_901);
+        let mut window = BinanceOneSecondWindow::default();
+
+        for offset in 0_u64..=3_901 {
+            let bucket = first_open + chrono::Duration::seconds(offset as i64);
+            let price = Decimal::new(100_000 + offset as i64, 3);
+            window
+                .update(
+                    &BinanceAggregateTrade {
+                        aggregate_trade_id: offset + 1,
+                        price,
+                        quantity: Decimal::ONE,
+                        first_trade_id: offset + 1,
+                        last_trade_id: offset + 1,
+                        transact_time: bucket + chrono::Duration::milliseconds(100),
+                        is_buyer_maker: offset % 2 == 0,
+                    },
+                    bucket + chrono::Duration::milliseconds(150),
+                )
+                .unwrap();
+        }
+
+        assert_eq!(window.completed().len(), BINANCE_ONE_SECOND_WINDOW_CAPACITY);
+        assert_eq!(
+            window.completed_five_minute_summaries().len(),
+            BINANCE_PREWINDOW_SUMMARY_CAPACITY
+        );
+        assert_eq!(
+            window
+                .completed_five_minute_summaries()
+                .front()
+                .unwrap()
+                .window_start,
+            current_window_start - chrono::Duration::seconds(3_600)
+        );
+        assert_eq!(
+            window
+                .completed_five_minute_summaries()
+                .back()
+                .unwrap()
+                .window_start,
+            current_window_start - chrono::Duration::seconds(300)
+        );
+        assert!(window
+            .completed_five_minute_summaries()
+            .iter()
+            .all(|summary| summary.source_complete));
+
+        let far_bucket = current_window_start
+            + chrono::Duration::seconds(BINANCE_ONE_SECOND_WINDOW_CAPACITY as i64 + 3);
+        assert!(window
+            .update(
+                &BinanceAggregateTrade {
+                    aggregate_trade_id: 3_903,
+                    price: dec!(105),
+                    quantity: Decimal::ONE,
+                    first_trade_id: 3_903,
+                    last_trade_id: 3_903,
+                    transact_time: far_bucket + chrono::Duration::milliseconds(100),
+                    is_buyer_maker: false,
+                },
+                far_bucket + chrono::Duration::milliseconds(150),
+            )
+            .is_err());
+        assert!(window.current().is_none());
+        assert!(window.completed().is_empty());
+        assert!(window.completed_five_minute_summaries().is_empty());
     }
 
     #[test]
