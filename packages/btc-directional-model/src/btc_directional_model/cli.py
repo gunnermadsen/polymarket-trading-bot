@@ -33,6 +33,7 @@ from .residual_admission_benchmark import run_residual_admission_benchmark
 from .residual_admission_config import load_residual_admission_config
 from .runtime_export import export_runtime_model
 from .train import train_models
+from .training_readiness import prepare_training_readiness
 
 
 def main() -> None:
@@ -71,6 +72,15 @@ def main() -> None:
     core_run = subparsers.add_parser("core-run")
     core_run.add_argument("--config", type=Path, required=True)
     core_run.add_argument("--force", action="store_true")
+    core_readiness = subparsers.add_parser("core-training-readiness")
+    core_readiness.add_argument("--config", type=Path, required=True)
+    core_readiness.add_argument(
+        "--execution-output",
+        type=Path,
+        required=True,
+    )
+    core_readiness.add_argument("--output-dir", type=Path, required=True)
+    core_readiness.add_argument("--force", action="store_true")
     entry_run = subparsers.add_parser("entry-benchmark-run")
     entry_run.add_argument("--config", type=Path, required=True)
     entry_run.add_argument("--force", action="store_true")
@@ -332,6 +342,23 @@ def run_core_command(args: argparse.Namespace) -> None:
         run_dir, metrics = evaluate_core_holdout(config, freeze_dir)
         destination = generate_core_report(run_dir, metrics)
         print(f"report: {destination}")
+    elif args.command == "core-training-readiness":
+        json_path, markdown_path, payload = prepare_training_readiness(
+            config,
+            execution_output_dir=args.execution_output.resolve(),
+            output_dir=args.output_dir.resolve(),
+            force=args.force,
+        )
+        print(f"readiness JSON: {json_path}")
+        print(f"readiness report: {markdown_path}")
+        print(
+            "core + oracle complete markets: "
+            f"{payload['totals']['core_oracle_complete_markets']:,}"
+        )
+        print(
+            "book-complete 11-point markets: "
+            f"{payload['totals']['book_complete_11_point_markets']:,}"
+        )
 
 
 def serve(directory: Path, port: int) -> None:
