@@ -127,10 +127,11 @@ from Polygon JSON-RPC. It discovers all retained aggregator addresses, scans eve
 block availability timestamp, raw answer, exact scaled price, feed phase and round, block, and
 transaction identity. It does not downsample updates and it does not represent the on-chain Data
 Feed as Polymarket's Data Streams settlement source. Public RPC endpoints may rate-limit large
-requests, so the worker bounds each `eth_getLogs` query to 2,000 blocks by default:
+requests, so the worker bounds each `eth_getLogs` query to 100 blocks by default. The default
+endpoint returns each log's block timestamp, avoiding one additional RPC request per update:
 
 ```dotenv
-POLYMARKET_POLYGON_RPC_URL=https://polygon.drpc.org
+POLYMARKET_POLYGON_RPC_URL=https://polygon-mainnet.gateway.tatum.io
 ```
 
 The proxy address and maximum block range are non-sensitive Docker Compose configuration. Put an

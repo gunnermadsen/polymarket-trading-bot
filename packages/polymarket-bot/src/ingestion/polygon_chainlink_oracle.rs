@@ -12,7 +12,7 @@ use sha3::{Digest as Sha3Digest, Keccak256};
 use super::{binance_archive::ArchiveCancellation, job::PolygonChainlinkBtcusdOracleRound};
 
 pub const POLYGON_CHAINLINK_ORACLE_PROVIDER: &str = "chainlink_polygon_data_feed";
-pub const DEFAULT_POLYGON_RPC_URL: &str = "https://polygon.drpc.org";
+pub const DEFAULT_POLYGON_RPC_URL: &str = "https://polygon-mainnet.gateway.tatum.io";
 pub const DEFAULT_POLYGON_CHAINLINK_BTCUSD_PROXY: &str =
     "0xc907e116054ad103354f2d350fd2514433d57f6f";
 pub const POLYGON_CHAIN_ID: i64 = 137;
@@ -67,6 +67,7 @@ struct RpcLog {
     block_hash: String,
     transaction_hash: String,
     log_index: String,
+    block_timestamp: Option<String>,
     #[serde(default)]
     removed: bool,
 }
@@ -77,8 +78,8 @@ impl PolygonChainlinkOracleConfig {
             bail!("POLYMARKET_POLYGON_RPC_URL must not be empty");
         }
         validate_address(&self.feed_proxy_address)?;
-        if !(100..=20_000).contains(&self.maximum_block_range) {
-            bail!("POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE must be between 100 and 20000");
+        if !(1..=20_000).contains(&self.maximum_block_range) {
+            bail!("POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE must be between 1 and 20000");
         }
         Ok(())
     }
@@ -131,7 +132,7 @@ impl PolygonChainlinkOracleConfig {
             bail!("Polygon Chainlink feed reported no aggregator phases");
         }
 
-        let mut aggregators = Vec::with_capacity(usize::from(phase_count));
+        let mut aggregators = BTreeMap::new();
         for phase_id in 1..=phase_count {
             ensure_not_cancelled(cancellation)?;
             let argument = encode_u16_word(phase_id);
@@ -145,7 +146,7 @@ impl PolygonChainlinkOracleConfig {
             response_bytes = response_bytes.saturating_add(bytes);
             let address = parse_abi_address(&value)?;
             if address != "0x0000000000000000000000000000000000000000" {
-                aggregators.push((phase_id, address));
+                aggregators.insert(address, phase_id);
             }
         }
         if aggregators.is_empty() {
@@ -169,42 +170,49 @@ impl PolygonChainlinkOracleConfig {
 
         let topic = event_topic("AnswerUpdated(int256,uint256,uint256)");
         let mut decoded = Vec::new();
-        for (phase_id, aggregator_address) in aggregators {
-            let mut from_block = start_block;
-            while from_block <= end_block {
-                ensure_not_cancelled(cancellation)?;
-                let to_block = from_block
-                    .saturating_add(self.maximum_block_range.saturating_sub(1))
-                    .min(end_block);
-                let (logs, bytes) = self
-                    .logs(
-                        client,
-                        &aggregator_address,
-                        &topic,
-                        from_block,
-                        to_block,
-                        cancellation,
-                    )
-                    .await?;
-                response_bytes = response_bytes.saturating_add(bytes);
-                for log in logs {
-                    if let Some(record) = decode_answer_updated(
-                        log,
-                        &self.feed_proxy_address,
-                        &aggregator_address,
-                        phase_id,
-                        decimals,
-                        day_start.timestamp(),
-                        day_end.timestamp(),
-                    )? {
-                        decoded.push(record);
+        let mut provider_timestamp_blocks = BTreeSet::new();
+        let aggregator_addresses = aggregators.keys().cloned().collect::<Vec<_>>();
+        let mut from_block = start_block;
+        while from_block <= end_block {
+            ensure_not_cancelled(cancellation)?;
+            let to_block = from_block
+                .saturating_add(self.maximum_block_range.saturating_sub(1))
+                .min(end_block);
+            let (logs, bytes) = self
+                .logs(
+                    client,
+                    &aggregator_addresses,
+                    &topic,
+                    from_block,
+                    to_block,
+                    cancellation,
+                )
+                .await?;
+            response_bytes = response_bytes.saturating_add(bytes);
+            for log in logs {
+                let aggregator_address = log.address.to_ascii_lowercase();
+                let phase_id = *aggregators
+                    .get(&aggregator_address)
+                    .context("Polygon Chainlink log came from an unknown aggregator")?;
+                if let Some((record, provider_block_timestamp)) = decode_answer_updated(
+                    log,
+                    &self.feed_proxy_address,
+                    &aggregator_address,
+                    phase_id,
+                    decimals,
+                    day_start.timestamp(),
+                    day_end.timestamp(),
+                )? {
+                    if provider_block_timestamp {
+                        provider_timestamp_blocks.insert(record.block_number);
                     }
+                    decoded.push(record);
                 }
-                if to_block == u64::MAX {
-                    break;
-                }
-                from_block = to_block + 1;
             }
+            if to_block == u64::MAX {
+                break;
+            }
+            from_block = to_block + 1;
         }
 
         decoded.sort_by_key(|record| {
@@ -223,6 +231,7 @@ impl PolygonChainlinkOracleConfig {
 
         let block_numbers = decoded
             .iter()
+            .filter(|record| !provider_timestamp_blocks.contains(&record.block_number))
             .map(|record| {
                 u64::try_from(record.block_number).context("Polygon block number was negative")
             })
@@ -250,6 +259,9 @@ impl PolygonChainlinkOracleConfig {
             block_timestamps.insert(number, timestamp);
         }
         for record in &mut decoded {
+            if provider_timestamp_blocks.contains(&record.block_number) {
+                continue;
+            }
             let block_number =
                 u64::try_from(record.block_number).context("Polygon block number was negative")?;
             record.block_timestamp = *block_timestamps
@@ -391,7 +403,7 @@ impl PolygonChainlinkOracleConfig {
     async fn logs(
         &self,
         client: &reqwest::Client,
-        address: &str,
+        addresses: &[String],
         topic: &str,
         from_block: u64,
         to_block: u64,
@@ -402,7 +414,7 @@ impl PolygonChainlinkOracleConfig {
                 client,
                 "eth_getLogs",
                 json!([{
-                    "address": address,
+                    "address": addresses,
                     "fromBlock": format_quantity(from_block),
                     "toBlock": format_quantity(to_block),
                     "topics": [topic],
@@ -433,15 +445,21 @@ impl PolygonChainlinkOracleConfig {
             }))
             .send()
             .await
-            .with_context(|| format!("failed to call Polygon RPC method {method}"))?
-            .error_for_status()
-            .with_context(|| format!("Polygon RPC rejected method {method}"))?;
+            .with_context(|| format!("failed to call Polygon RPC method {method}"))?;
+        let status = response.status();
         let body = response
             .bytes()
             .await
             .with_context(|| format!("failed to read Polygon RPC method {method} response"))?;
         let response_bytes =
             u64::try_from(body.len()).context("Polygon RPC response size overflow")?;
+        if !status.is_success() {
+            let bounded = &body[..body.len().min(512)];
+            bail!(
+                "Polygon RPC method {method} returned HTTP {status}: {}",
+                String::from_utf8_lossy(bounded)
+            );
+        }
         let envelope: RpcEnvelope =
             serde_json::from_slice(&body).context("invalid Polygon JSON-RPC response")?;
         if let Some(error) = envelope.error {
@@ -466,7 +484,7 @@ fn decode_answer_updated(
     decimals: u32,
     day_start: i64,
     day_end: i64,
-) -> Result<Option<PolygonChainlinkBtcusdOracleRound>> {
+) -> Result<Option<(PolygonChainlinkBtcusdOracleRound, bool)>> {
     if log.removed {
         return Ok(None);
     }
@@ -491,6 +509,20 @@ fn decode_answer_updated(
         .timestamp_opt(source_seconds, 0)
         .single()
         .context("invalid Polygon Chainlink source timestamp")?;
+    let provider_block_timestamp = log.block_timestamp.is_some();
+    let block_timestamp = log
+        .block_timestamp
+        .as_deref()
+        .map(parse_quantity_u64)
+        .transpose()?
+        .map(|timestamp| {
+            let timestamp = i64::try_from(timestamp).context("Polygon block timestamp overflow")?;
+            Utc.timestamp_opt(timestamp, 0)
+                .single()
+                .context("invalid Polygon block timestamp")
+        })
+        .transpose()?
+        .unwrap_or(source_timestamp);
     let block_number = i64::try_from(parse_quantity_u64(&log.block_number)?)
         .context("Polygon block number overflow")?;
     let log_index =
@@ -502,22 +534,25 @@ fn decode_answer_updated(
     if price <= Decimal::ZERO {
         bail!("Polygon Chainlink BTC/USD update had a non-positive answer");
     }
-    Ok(Some(PolygonChainlinkBtcusdOracleRound {
-        chain_id: POLYGON_CHAIN_ID,
-        feed_proxy_address: feed_proxy_address.to_ascii_lowercase(),
-        aggregator_address: expected_aggregator_address.to_ascii_lowercase(),
-        phase_id: i32::from(phase_id),
-        aggregator_round_id,
-        source_timestamp,
-        block_timestamp: source_timestamp,
-        answer_raw,
-        price,
-        decimals: i32::try_from(decimals).context("oracle decimals overflow")?,
-        block_number,
-        block_hash: log.block_hash.to_ascii_lowercase(),
-        transaction_hash: log.transaction_hash.to_ascii_lowercase(),
-        log_index,
-    }))
+    Ok(Some((
+        PolygonChainlinkBtcusdOracleRound {
+            chain_id: POLYGON_CHAIN_ID,
+            feed_proxy_address: feed_proxy_address.to_ascii_lowercase(),
+            aggregator_address: expected_aggregator_address.to_ascii_lowercase(),
+            phase_id: i32::from(phase_id),
+            aggregator_round_id,
+            source_timestamp,
+            block_timestamp,
+            answer_raw,
+            price,
+            decimals: i32::try_from(decimals).context("oracle decimals overflow")?,
+            block_number,
+            block_hash: log.block_hash.to_ascii_lowercase(),
+            transaction_hash: log.transaction_hash.to_ascii_lowercase(),
+            log_index,
+        },
+        provider_block_timestamp,
+    )))
 }
 
 fn abi_calldata(signature: &str, arguments: &[String]) -> String {
@@ -655,9 +690,10 @@ mod tests {
             transaction_hash: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 .to_string(),
             log_index: "0x2".to_string(),
+            block_timestamp: Some(format!("0x{source_seconds:x}")),
             removed: false,
         };
-        let record = decode_answer_updated(
+        let (record, provider_block_timestamp) = decode_answer_updated(
             log,
             DEFAULT_POLYGON_CHAINLINK_BTCUSD_PROXY,
             "0x1111111111111111111111111111111111111111",
@@ -677,6 +713,8 @@ mod tests {
         assert_eq!(record.price, Decimal::new(8_412_345_678_901, 8));
         assert_eq!(record.block_number, 100);
         assert_eq!(record.log_index, 2);
+        assert!(provider_block_timestamp);
+        assert_eq!(record.block_timestamp.timestamp(), source_seconds);
     }
 
     #[test]

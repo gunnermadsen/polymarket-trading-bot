@@ -160,7 +160,7 @@ impl BackfillWorker {
                         "POLYMARKET_POLYGON_CHAINLINK_BTCUSD_PROXY",
                         DEFAULT_POLYGON_CHAINLINK_BTCUSD_PROXY,
                     ),
-                    maximum_block_range: env_u64("POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE", 2_000)?,
+                    maximum_block_range: env_u64("POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE", 100)?,
                 },
                 cache_directory: config.cache_directory.clone(),
                 batch_rows: config.batch_rows,
