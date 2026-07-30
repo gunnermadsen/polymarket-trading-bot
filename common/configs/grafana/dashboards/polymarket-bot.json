@@ -2771,7 +2771,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgres"
       },
-      "description": "Daily net realized PnL for the current PnL scope, grouped by the UTC day an official outcome was received. Green bars are profitable days and red bars are losing days. Selected process uses the Trading process selection; All processes sums across eligible realtime-paper processes.",
+      "description": "Daily net realized PnL for the current PnL scope, grouped by the UTC day an official outcome was received. Only days with officially resolved, documented PnL are shown. Each bar is labeled with its calendar day. This panel uses a rolling 30-day range so daily results are visible by default. Green bars are profitable days and red bars are losing days. Selected process uses the Trading process selection; All processes sums across eligible realtime-paper processes.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2856,7 +2856,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH bounds AS MATERIALIZED (\n  SELECT $__timeFrom()::timestamptz AS from_ts,$__timeTo()::timestamptz AS to_ts\n), utc_days AS MATERIALIZED (\n  SELECT generate_series(\n    date_trunc('day',from_ts AT TIME ZONE 'UTC'),\n    date_trunc('day',to_ts AT TIME ZONE 'UTC'),\n    interval '1 day'\n  ) AS utc_day\n  FROM bounds\n), selected_process AS MATERIALIZED (\n  SELECT p.process_id\n  FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m'\n    AND p.process_scope='realtime_paper'\n    AND p.status <> 'completed'\n), realized_by_day AS MATERIALIZED (\n  SELECT\n    date_trunc('day',m.official_resolution_received_at AT TIME ZONE 'UTC') AS utc_day,\n    SUM(\n      CASE WHEN o.token_id=m.official_winning_token_id THEN f.size ELSE 0::numeric END\n      -f.price*f.size-f.fee\n    )::numeric AS net_pnl\n  FROM selected_process p\n  JOIN polymarket.fills f\n    ON f.process_id=p.process_id\n   AND f.source='paper'\n  JOIN polymarket.orders o\n    ON o.order_id=f.order_id\n   AND o.process_id=f.process_id\n  JOIN polymarket.btc_interval_markets m\n    ON m.market_id=o.market_id\n  CROSS JOIN bounds b\n  WHERE m.official_outcome IN ('up','down')\n    AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at BETWEEN b.from_ts AND b.to_ts\n  GROUP BY 1\n)\nSELECT\n  d.utc_day AT TIME ZONE 'UTC' AS \"UTC Day\",\n  COALESCE(r.net_pnl,0::numeric)::double precision AS \"Daily Net Realized PnL\"\nFROM utc_days d\nLEFT JOIN realized_by_day r USING(utc_day)\nORDER BY d.utc_day;",
+          "rawSql": "WITH bounds AS MATERIALIZED (\n  SELECT $__timeFrom()::timestamptz AS from_ts,$__timeTo()::timestamptz AS to_ts\n), selected_process AS MATERIALIZED (\n  SELECT p.process_id\n  FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m'\n    AND p.process_scope='realtime_paper'\n    AND p.status <> 'completed'\n), realized_by_day AS MATERIALIZED (\n  SELECT\n    date_trunc('day',m.official_resolution_received_at AT TIME ZONE 'UTC') AS utc_day,\n    SUM(\n      CASE WHEN o.token_id=m.official_winning_token_id THEN f.size ELSE 0::numeric END\n      -f.price*f.size-f.fee\n    )::numeric AS net_pnl\n  FROM selected_process p\n  JOIN polymarket.fills f\n    ON f.process_id=p.process_id\n   AND f.source='paper'\n  JOIN polymarket.orders o\n    ON o.order_id=f.order_id\n   AND o.process_id=f.process_id\n  JOIN polymarket.btc_interval_markets m\n    ON m.market_id=o.market_id\n  CROSS JOIN bounds b\n  WHERE m.official_outcome IN ('up','down')\n    AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at BETWEEN b.from_ts AND b.to_ts\n  GROUP BY 1\n)\nSELECT\n  to_char(r.utc_day,'YYYY-MM-DD') AS \"Day\",\n  r.net_pnl::double precision AS \"Daily Net Realized PnL\"\nFROM realized_by_day r\nORDER BY r.utc_day;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -2877,6 +2877,7 @@
           }
         }
       ],
+      "timeFrom": "30d",
       "title": "Daily Net Realized PnL",
       "type": "barchart"
     },
@@ -3529,6 +3530,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 122,
+  "version": 124,
   "weekStart": ""
 }
