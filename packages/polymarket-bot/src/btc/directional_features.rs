@@ -1,15 +1,24 @@
 use std::fmt;
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
-use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::{prelude::ToPrimitive, Decimal};
 
-use super::types::{BinanceOneSecondKline, BinanceOneSecondWindow};
+use super::types::{
+    BinanceFiveMinuteSummary, BinanceOneSecondKline, BinanceOneSecondWindow,
+    BINANCE_PREWINDOW_SUMMARY_CAPACITY,
+};
 
 pub const BTC_DIRECTIONAL_FEATURE_SCHEMA_VERSION: &str = "btc-5m-directional-core-features-v2";
 pub const BTC_DIRECTIONAL_FEATURE_COUNT: usize = 58;
 pub const BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION: &str =
     "btc-5m-directional-mature-reversal-features-v1";
 pub const BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_COUNT: usize = 71;
+pub const BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION: &str =
+    "btc-5m-directional-boundary-features-v1";
+pub const BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT: usize = 68;
+pub const BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SCHEMA_VERSION: &str =
+    "btc-5m-directional-path-persistence-prewindow-features-v1";
+pub const BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_COUNT: usize = 100;
 pub const BTC_DIRECTIONAL_FIRST_CANDIDATE_SECOND: i64 = 60;
 pub const BTC_DIRECTIONAL_LAST_CANDIDATE_SECOND: i64 = 240;
 pub const BTC_DIRECTIONAL_CANDIDATE_CADENCE_SECONDS: i64 = 5;
@@ -121,11 +130,116 @@ const fn mature_reversal_feature_names(
 pub const BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_NAMES: [&str;
     BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_COUNT] = mature_reversal_feature_names();
 
+pub const BTC_DIRECTIONAL_BOUNDARY_FEATURE_SUFFIX_NAMES: [&str;
+    BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT - BTC_DIRECTIONAL_FEATURE_COUNT] = [
+    "btc_cross_venue_boundary_gap_bps",
+    "btc_window_open_cross_venue_basis_bps",
+    "btc_boundary_terminal_volatility_z",
+    "btc_boundary_abs_terminal_volatility_z",
+    "btc_boundary_cross_count",
+    "btc_seconds_since_boundary_cross",
+    "btc_fraction_time_boundary_positive",
+    "btc_fraction_time_boundary_negative",
+    "btc_boundary_distance_velocity_5s_bps",
+    "btc_boundary_momentum_alignment_5s",
+];
+
+const fn boundary_feature_names() -> [&'static str; BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT] {
+    let mut names = [""; BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT];
+    let mut index = 0;
+    while index < BTC_DIRECTIONAL_FEATURE_COUNT {
+        names[index] = BTC_DIRECTIONAL_FEATURE_NAMES[index];
+        index += 1;
+    }
+    let mut suffix_index = 0;
+    while suffix_index < BTC_DIRECTIONAL_BOUNDARY_FEATURE_SUFFIX_NAMES.len() {
+        names[index] = BTC_DIRECTIONAL_BOUNDARY_FEATURE_SUFFIX_NAMES[suffix_index];
+        index += 1;
+        suffix_index += 1;
+    }
+    names
+}
+
+pub const BTC_DIRECTIONAL_BOUNDARY_FEATURE_NAMES: [&str; BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT] =
+    boundary_feature_names();
+
+pub const BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SUFFIX_NAMES: [&str;
+    BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_COUNT - BTC_DIRECTIONAL_FEATURE_COUNT] = [
+    "prewindow_return_5m_bps",
+    "prewindow_range_5m_bps",
+    "prewindow_realized_volatility_5m_bps",
+    "prewindow_log_quote_volume_5m",
+    "prewindow_log_trade_count_5m",
+    "prewindow_taker_buy_share_5m",
+    "prewindow_signed_flow_5m",
+    "prewindow_return_15m_bps",
+    "prewindow_range_15m_bps",
+    "prewindow_realized_volatility_15m_bps",
+    "prewindow_log_quote_volume_15m",
+    "prewindow_log_trade_count_15m",
+    "prewindow_taker_buy_share_15m",
+    "prewindow_signed_flow_15m",
+    "prewindow_return_30m_bps",
+    "prewindow_range_30m_bps",
+    "prewindow_realized_volatility_30m_bps",
+    "prewindow_log_quote_volume_30m",
+    "prewindow_log_trade_count_30m",
+    "prewindow_taker_buy_share_30m",
+    "prewindow_signed_flow_30m",
+    "prewindow_return_60m_bps",
+    "prewindow_range_60m_bps",
+    "prewindow_realized_volatility_60m_bps",
+    "prewindow_log_quote_volume_60m",
+    "prewindow_log_trade_count_60m",
+    "prewindow_taker_buy_share_60m",
+    "prewindow_signed_flow_60m",
+    "prewindow_momentum_agreement_5_15",
+    "prewindow_momentum_agreement_5_30",
+    "prewindow_momentum_agreement_5_60",
+    "prewindow_momentum_acceleration_5_vs_15",
+    "prewindow_momentum_acceleration_5_vs_30",
+    "prewindow_momentum_acceleration_5_vs_60",
+    "btc_path_prewindow_5m_agreement",
+    "btc_path_prewindow_5m_reversal",
+    "btc_path_prewindow_15m_agreement",
+    "btc_path_prewindow_15m_reversal",
+    "btc_path_prewindow_30m_agreement",
+    "btc_path_prewindow_30m_reversal",
+    "btc_path_prewindow_60m_agreement",
+    "btc_path_prewindow_60m_reversal",
+];
+
+const fn path_prewindow_feature_names(
+) -> [&'static str; BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_COUNT] {
+    let mut names = [""; BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_COUNT];
+    let mut index = 0;
+    while index < BTC_DIRECTIONAL_FEATURE_COUNT {
+        names[index] = BTC_DIRECTIONAL_FEATURE_NAMES[index];
+        index += 1;
+    }
+    let mut suffix_index = 0;
+    while suffix_index < BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SUFFIX_NAMES.len() {
+        names[index] = BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SUFFIX_NAMES[suffix_index];
+        index += 1;
+        suffix_index += 1;
+    }
+    names
+}
+
+pub const BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_NAMES: [&str;
+    BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_COUNT] = path_prewindow_feature_names();
+
 pub fn directional_feature_names(schema_version: &str) -> Option<&'static [&'static str]> {
     match schema_version {
         BTC_DIRECTIONAL_FEATURE_SCHEMA_VERSION => Some(&BTC_DIRECTIONAL_FEATURE_NAMES),
         BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION => {
             Some(&BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_NAMES)
+        }
+        BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION => {
+            Some(&BTC_DIRECTIONAL_BOUNDARY_FEATURE_NAMES)
+        }
+        BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SCHEMA_VERSION => {
+            Some(&BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_NAMES)
         }
         _ => None,
     }
@@ -201,6 +315,21 @@ pub enum DirectionalFeatureError {
     UnsupportedFeatureSchema {
         schema_version: String,
     },
+    MissingPrewindowHistory {
+        required_start: DateTime<Utc>,
+        required_end: DateTime<Utc>,
+        available_start: Option<DateTime<Utc>>,
+        available_end: Option<DateTime<Utc>>,
+    },
+    GappedPrewindowHistory {
+        expected_window_start: DateTime<Utc>,
+        actual_window_start: DateTime<Utc>,
+    },
+    IncompletePrewindowHistory {
+        window_start: DateTime<Utc>,
+    },
+    MissingOpeningBoundary,
+    InvalidOpeningBoundary,
 }
 
 impl fmt::Display for DirectionalFeatureError {
@@ -265,6 +394,34 @@ impl fmt::Display for DirectionalFeatureError {
                     "directional feature schema {schema_version} is not supported"
                 )
             }
+            Self::MissingPrewindowHistory {
+                required_start,
+                required_end,
+                available_start,
+                available_end,
+            } => write!(
+                formatter,
+                "directional pre-window features require complete summaries [{required_start}, \
+                 {required_end}], available range is {available_start:?} through {available_end:?}"
+            ),
+            Self::GappedPrewindowHistory {
+                expected_window_start,
+                actual_window_start,
+            } => write!(
+                formatter,
+                "directional pre-window history expected {expected_window_start} but found \
+                 {actual_window_start}"
+            ),
+            Self::IncompletePrewindowHistory { window_start } => write!(
+                formatter,
+                "directional pre-window history at {window_start} is incomplete"
+            ),
+            Self::MissingOpeningBoundary => {
+                write!(formatter, "directional boundary features require an opening boundary")
+            }
+            Self::InvalidOpeningBoundary => {
+                write!(formatter, "directional feature opening boundary must be positive")
+            }
         }
     }
 }
@@ -297,12 +454,45 @@ pub fn build_directional_features_for_schema(
     feature_as_of: DateTime<Utc>,
     schema_version: &str,
 ) -> Result<DirectionalFeatureVector, DirectionalFeatureError> {
+    build_directional_features_for_schema_with_boundary(
+        window,
+        window_start,
+        feature_as_of,
+        schema_version,
+        None,
+    )
+}
+
+pub fn build_directional_features_for_schema_with_boundary(
+    window: &BinanceOneSecondWindow,
+    window_start: DateTime<Utc>,
+    feature_as_of: DateTime<Utc>,
+    schema_version: &str,
+    opening_boundary: Option<Decimal>,
+) -> Result<DirectionalFeatureVector, DirectionalFeatureError> {
     let schema_version = canonical_feature_schema_version(schema_version).ok_or_else(|| {
         DirectionalFeatureError::UnsupportedFeatureSchema {
             schema_version: schema_version.to_string(),
         }
     })?;
+    let opening_boundary = if schema_version == BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION {
+        let boundary = opening_boundary.ok_or(DirectionalFeatureError::MissingOpeningBoundary)?;
+        Some(
+            boundary
+                .to_f64()
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .ok_or(DirectionalFeatureError::InvalidOpeningBoundary)?,
+        )
+    } else {
+        None
+    };
     let seconds_elapsed = validate_feature_time(window_start, feature_as_of)?;
+    let prewindow_summaries =
+        if schema_version == BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SCHEMA_VERSION {
+            Some(collect_required_prewindow_summaries(window, window_start)?)
+        } else {
+            None
+        };
     let required_start = window_start - chrono::Duration::seconds(1);
     let required_end = feature_as_of - chrono::Duration::seconds(1);
     let completed = collect_required_candles(window, required_start, required_end)?;
@@ -310,7 +500,14 @@ pub fn build_directional_features_for_schema(
         .into_iter()
         .map(NumericCandle::try_from)
         .collect::<Result<Vec<_>, _>>()?;
-    derive_directional_features(&numeric, feature_as_of, seconds_elapsed, schema_version)
+    derive_directional_features(
+        &numeric,
+        feature_as_of,
+        seconds_elapsed,
+        schema_version,
+        opening_boundary,
+        prewindow_summaries.as_ref(),
+    )
 }
 
 fn canonical_feature_schema_version(schema_version: &str) -> Option<&'static str> {
@@ -318,6 +515,12 @@ fn canonical_feature_schema_version(schema_version: &str) -> Option<&'static str
         BTC_DIRECTIONAL_FEATURE_SCHEMA_VERSION => Some(BTC_DIRECTIONAL_FEATURE_SCHEMA_VERSION),
         BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION => {
             Some(BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION)
+        }
+        BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION => {
+            Some(BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION)
+        }
+        BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SCHEMA_VERSION => {
+            Some(BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SCHEMA_VERSION)
         }
         _ => None,
     }
@@ -431,6 +634,73 @@ fn collect_required_candles(
     Ok(candles)
 }
 
+fn collect_required_prewindow_summaries(
+    window: &BinanceOneSecondWindow,
+    window_start: DateTime<Utc>,
+) -> Result<[&BinanceFiveMinuteSummary; BINANCE_PREWINDOW_SUMMARY_CAPACITY], DirectionalFeatureError>
+{
+    let required_start = window_start - chrono::Duration::seconds(MARKET_WINDOW_SECONDS * 12);
+    let required_end = window_start - chrono::Duration::seconds(MARKET_WINDOW_SECONDS);
+    let available_start = window
+        .completed_five_minute_summaries()
+        .front()
+        .map(|summary| summary.window_start);
+    let available_end = window
+        .completed_five_minute_summaries()
+        .back()
+        .map(|summary| summary.window_start);
+    if available_start != Some(required_start) || available_end != Some(required_end) {
+        return Err(DirectionalFeatureError::MissingPrewindowHistory {
+            required_start,
+            required_end,
+            available_start,
+            available_end,
+        });
+    }
+    let mut selected = [None; BINANCE_PREWINDOW_SUMMARY_CAPACITY];
+    let mut count = 0;
+    for summary in window.completed_five_minute_summaries() {
+        if summary.window_start < required_start {
+            continue;
+        }
+        if summary.window_start > required_end {
+            break;
+        }
+        if count == BINANCE_PREWINDOW_SUMMARY_CAPACITY {
+            return Err(DirectionalFeatureError::MissingPrewindowHistory {
+                required_start,
+                required_end,
+                available_start,
+                available_end,
+            });
+        }
+        let expected_window_start =
+            required_start + chrono::Duration::seconds(MARKET_WINDOW_SECONDS * count as i64);
+        if summary.window_start != expected_window_start {
+            return Err(DirectionalFeatureError::GappedPrewindowHistory {
+                expected_window_start,
+                actual_window_start: summary.window_start,
+            });
+        }
+        if !summary.source_complete {
+            return Err(DirectionalFeatureError::IncompletePrewindowHistory {
+                window_start: summary.window_start,
+            });
+        }
+        selected[count] = Some(summary);
+        count += 1;
+    }
+    if count != BINANCE_PREWINDOW_SUMMARY_CAPACITY {
+        return Err(DirectionalFeatureError::MissingPrewindowHistory {
+            required_start,
+            required_end,
+            available_start,
+            available_end,
+        });
+    }
+    Ok(selected.map(|summary| summary.expect("all pre-window summary slots were populated")))
+}
+
 #[derive(Debug, Clone, Copy)]
 struct NumericCandle {
     high: f64,
@@ -530,6 +800,8 @@ fn derive_directional_features(
     feature_as_of: DateTime<Utc>,
     seconds_elapsed: i64,
     schema_version: &'static str,
+    opening_boundary: Option<f64>,
+    prewindow_summaries: Option<&[&BinanceFiveMinuteSummary; BINANCE_PREWINDOW_SUMMARY_CAPACITY]>,
 ) -> Result<DirectionalFeatureVector, DirectionalFeatureError> {
     debug_assert_eq!(candles.len(), seconds_elapsed as usize + 1);
     let end = candles.len() - 1;
@@ -730,6 +1002,34 @@ fn derive_directional_features(
             path_direction_sign * signed_flow_30,
             path_direction_sign * signed_flow_60,
         ]);
+    } else if schema_version == BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION {
+        let opening_boundary =
+            opening_boundary.expect("boundary schema validates its opening boundary");
+        let boundary_log_price = opening_boundary.ln();
+        let boundary_gap = (log_closes[end] - boundary_log_price) * BPS;
+        let window_open_basis = (log_closes[0] - boundary_log_price) * BPS;
+        let boundary_stats = elapsed_anchor_stats(&log_closes, boundary_log_price);
+        let boundary_gap_5 = (log_closes[end - 5] - boundary_log_price) * BPS;
+        values.extend_from_slice(&[
+            boundary_gap,
+            window_open_basis,
+            boundary_gap / terminal_denominator,
+            boundary_gap.abs() / terminal_denominator,
+            boundary_stats.cross_count as f64,
+            boundary_stats.seconds_since_cross as f64,
+            boundary_stats.positive_fraction,
+            1.0 - boundary_stats.positive_fraction,
+            boundary_gap.abs() - boundary_gap_5.abs(),
+            sign(boundary_gap) * sign_5,
+        ]);
+    } else if schema_version == BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SCHEMA_VERSION {
+        let summaries =
+            prewindow_summaries.expect("path pre-window schema validates summary history");
+        values.extend_from_slice(&derive_path_prewindow_features(
+            summaries,
+            candles[0].close,
+            path_from_open,
+        ));
     }
     let feature_names = directional_feature_names(schema_version)
         .expect("feature schema was canonicalized before derivation");
@@ -751,6 +1051,66 @@ fn derive_directional_features(
         seconds_elapsed: seconds_elapsed as u16,
         values,
     })
+}
+
+fn derive_path_prewindow_features(
+    summaries: &[&BinanceFiveMinuteSummary; BINANCE_PREWINDOW_SUMMARY_CAPACITY],
+    current_open_available_close: f64,
+    current_path_bps: f64,
+) -> [f64; BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_COUNT - BTC_DIRECTIONAL_FEATURE_COUNT] {
+    const HORIZON_WINDOWS: [usize; 4] = [1, 3, 6, 12];
+    let mut values =
+        [0.0; BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_COUNT - BTC_DIRECTIONAL_FEATURE_COUNT];
+    let mut returns = [0.0; HORIZON_WINDOWS.len()];
+    for (horizon_index, windows) in HORIZON_WINDOWS.into_iter().enumerate() {
+        let selected = &summaries[BINANCE_PREWINDOW_SUMMARY_CAPACITY - windows..];
+        let prewindow_return =
+            (current_open_available_close / selected[0].open_available_close).ln() * BPS;
+        let (window_high, window_low) = selected.iter().fold(
+            (f64::NEG_INFINITY, f64::INFINITY),
+            |(high, low), summary| (high.max(summary.window_high), low.min(summary.window_low)),
+        );
+        let quote_volume = selected
+            .iter()
+            .map(|summary| summary.window_quote_volume)
+            .sum::<f64>();
+        let trade_count = selected
+            .iter()
+            .map(|summary| summary.window_trade_count)
+            .sum::<f64>();
+        let taker_buy_quote_volume = selected
+            .iter()
+            .map(|summary| summary.window_taker_buy_quote_volume)
+            .sum::<f64>();
+        let volatility = (selected
+            .iter()
+            .map(|summary| summary.window_volatility_bps.powi(2))
+            .sum::<f64>()
+            / windows as f64)
+            .sqrt();
+        let base = horizon_index * 7;
+        returns[horizon_index] = prewindow_return;
+        values[base] = prewindow_return;
+        values[base + 1] = (window_high - window_low) / current_open_available_close * BPS;
+        values[base + 2] = volatility;
+        values[base + 3] = quote_volume.ln_1p();
+        values[base + 4] = trade_count.ln_1p();
+        values[base + 5] = taker_buy_quote_volume / (quote_volume + EPSILON);
+        values[base + 6] = (2.0 * taker_buy_quote_volume - quote_volume) / (quote_volume + EPSILON);
+    }
+
+    values[28] = sign(returns[0]) * sign(returns[1]);
+    values[29] = sign(returns[0]) * sign(returns[2]);
+    values[30] = sign(returns[0]) * sign(returns[3]);
+    values[31] = returns[0] - returns[1] / 3.0;
+    values[32] = returns[0] - returns[2] / 6.0;
+    values[33] = returns[0] - returns[3] / 12.0;
+    for (horizon_index, prewindow_return) in returns.into_iter().enumerate() {
+        let base = 34 + horizon_index * 2;
+        values[base] = sign(current_path_bps) * sign(prewindow_return);
+        values[base + 1] = f64::from(current_path_bps * prewindow_return < 0.0);
+    }
+    values
 }
 
 fn horizon_return(log_closes: &[f64], end: usize, seconds: usize) -> f64 {
@@ -859,14 +1219,17 @@ fn elapsed_path_extremes(candles: &[NumericCandle]) -> ElapsedPathExtremes {
 }
 
 fn elapsed_path_stats(log_closes: &[f64]) -> ElapsedPathStats {
-    let window_open = log_closes[0];
-    let mut previous_positive = true;
+    elapsed_anchor_stats(log_closes, log_closes[0])
+}
+
+fn elapsed_anchor_stats(log_closes: &[f64], anchor: f64) -> ElapsedPathStats {
+    let mut previous_positive = log_closes[0] - anchor >= 0.0;
     let mut positive_count = 0;
     let mut cross_count = 0;
     let mut last_cross = None;
 
     for (second, close) in log_closes.iter().enumerate() {
-        let positive = close - window_open >= 0.0;
+        let positive = close - anchor >= 0.0;
         positive_count += usize::from(positive);
         if second > 0 && positive != previous_positive {
             cross_count += 1;
@@ -976,6 +1339,66 @@ mod tests {
         -0.019999999999999997,
         -0.02,
         -0.02,
+    ];
+
+    const PYTHON_BOUNDARY_SUFFIX_SECOND_240: [f64; BTC_DIRECTIONAL_BOUNDARY_FEATURE_SUFFIX_NAMES
+        .len()] = [
+        1.199808032155038,
+        -0.9999500033332495,
+        0.07080120146828416,
+        0.07080120146828416,
+        19.0,
+        58.0,
+        0.7178423236514523,
+        0.2821576763485477,
+        -7.3456847407145505,
+        -1.0,
+    ];
+
+    const PYTHON_PATH_PREWINDOW_SUFFIX_SECOND_240: [f64;
+        BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SUFFIX_NAMES.len()] = [
+        2.296451991781443,
+        8.635664796437913,
+        1.194265333751639,
+        19.817884137115634,
+        10.385605012165374,
+        0.49000301690828724,
+        -0.01999396618342555,
+        -0.49915891732780154,
+        11.745502465906014,
+        1.2177671557935095,
+        20.89398787957333,
+        11.484484837338378,
+        0.4900030855845033,
+        -0.019993828830993432,
+        6.3914356940399495,
+        16.17814428049467,
+        1.2064276468049047,
+        21.552392817022486,
+        12.177621729356158,
+        0.4900031946685695,
+        -0.019993610662860997,
+        20.106856894113257,
+        25.158237326038776,
+        1.2012517690489037,
+        22.17221029686565,
+        12.870756049089538,
+        0.49000340720942975,
+        -0.019993185581140546,
+        -1.0,
+        1.0,
+        1.0,
+        2.4628382975573766,
+        1.2312127094414516,
+        0.6208805839386717,
+        1.0,
+        0.0,
+        -1.0,
+        1.0,
+        1.0,
+        0.0,
+        1.0,
+        0.0,
     ];
 
     #[test]
@@ -1117,6 +1540,193 @@ mod tests {
         assert_eq!(suffix[10], features.values[26]);
         assert_eq!(suffix[11], features.values[27]);
         assert_eq!(suffix[12], features.values[53]);
+    }
+
+    #[test]
+    fn boundary_schema_has_exact_python_order_and_values() {
+        assert_eq!(BTC_DIRECTIONAL_BOUNDARY_FEATURE_NAMES.len(), 68);
+        assert_eq!(
+            &BTC_DIRECTIONAL_BOUNDARY_FEATURE_NAMES[..BTC_DIRECTIONAL_FEATURE_COUNT],
+            &BTC_DIRECTIONAL_FEATURE_NAMES
+        );
+        assert_eq!(
+            &BTC_DIRECTIONAL_BOUNDARY_FEATURE_NAMES[BTC_DIRECTIONAL_FEATURE_COUNT..],
+            &BTC_DIRECTIONAL_BOUNDARY_FEATURE_SUFFIX_NAMES
+        );
+
+        let window_start = Utc.with_ymd_and_hms(2026, 6, 14, 12, 35, 0).unwrap();
+        let window = BinanceOneSecondWindow::from_completed(
+            (0..=240)
+                .map(|second| fixture_candle(window_start, second))
+                .collect(),
+        )
+        .unwrap();
+        let core = build_directional_features(
+            &window,
+            window_start,
+            window_start + Duration::seconds(240),
+        )
+        .unwrap();
+        let boundary = build_directional_features_for_schema_with_boundary(
+            &window,
+            window_start,
+            window_start + Duration::seconds(240),
+            BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION,
+            Some(Decimal::new(100_010, 0)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            boundary.schema_version(),
+            BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION
+        );
+        assert_eq!(boundary.names(), &BTC_DIRECTIONAL_BOUNDARY_FEATURE_NAMES);
+        assert_eq!(
+            &boundary.values[..BTC_DIRECTIONAL_FEATURE_COUNT],
+            core.values.as_slice()
+        );
+        for (index, (actual, expected)) in boundary.values[BTC_DIRECTIONAL_FEATURE_COUNT..]
+            .iter()
+            .zip(PYTHON_BOUNDARY_SUFFIX_SECOND_240)
+            .enumerate()
+        {
+            let tolerance = 2e-10_f64.max(expected.abs() * 2e-11);
+            assert!(
+                (actual - expected).abs() <= tolerance,
+                "{} mismatch: actual={actual:.17}, expected={expected:.17}, \
+                 tolerance={tolerance:.3e}",
+                BTC_DIRECTIONAL_BOUNDARY_FEATURE_SUFFIX_NAMES[index],
+            );
+        }
+    }
+
+    #[test]
+    fn boundary_schema_requires_a_positive_opening_boundary() {
+        let window_start = Utc.with_ymd_and_hms(2026, 6, 14, 12, 35, 0).unwrap();
+        let as_of = window_start + Duration::seconds(60);
+        let window = BinanceOneSecondWindow::from_completed(
+            (0..=60)
+                .map(|second| fixture_candle(window_start, second))
+                .collect(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            build_directional_features_for_schema(
+                &window,
+                window_start,
+                as_of,
+                BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION,
+            ),
+            Err(DirectionalFeatureError::MissingOpeningBoundary)
+        );
+        assert_eq!(
+            build_directional_features_for_schema_with_boundary(
+                &window,
+                window_start,
+                as_of,
+                BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION,
+                Some(Decimal::ZERO),
+            ),
+            Err(DirectionalFeatureError::InvalidOpeningBoundary)
+        );
+    }
+
+    #[test]
+    fn path_prewindow_schema_is_compact_and_matches_python() {
+        assert_eq!(BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_NAMES.len(), 100);
+        assert_eq!(
+            &BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_NAMES[..BTC_DIRECTIONAL_FEATURE_COUNT],
+            &BTC_DIRECTIONAL_FEATURE_NAMES
+        );
+        assert_eq!(
+            &BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_NAMES[BTC_DIRECTIONAL_FEATURE_COUNT..],
+            &BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SUFFIX_NAMES
+        );
+
+        let window_start = Utc.with_ymd_and_hms(2026, 6, 14, 12, 35, 0).unwrap();
+        let window = BinanceOneSecondWindow::from_completed(
+            (0..3_841)
+                .map(|index| prewindow_fixture_candle(window_start, index))
+                .collect(),
+        )
+        .unwrap();
+        let as_of = window_start + Duration::seconds(240);
+        let core = build_directional_features(&window, window_start, as_of).unwrap();
+        let path = build_directional_features_for_schema(
+            &window,
+            window_start,
+            as_of,
+            BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SCHEMA_VERSION,
+        )
+        .unwrap();
+
+        assert_eq!(
+            path.schema_version(),
+            BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SCHEMA_VERSION
+        );
+        assert_eq!(path.names(), &BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_NAMES);
+        assert_eq!(
+            &path.values[..BTC_DIRECTIONAL_FEATURE_COUNT],
+            core.values.as_slice()
+        );
+        assert_eq!(
+            window.completed().len(),
+            super::super::types::BINANCE_ONE_SECOND_WINDOW_CAPACITY
+        );
+        assert_eq!(
+            window.completed_five_minute_summaries().len(),
+            BINANCE_PREWINDOW_SUMMARY_CAPACITY
+        );
+        for (index, (actual, expected)) in path.values[BTC_DIRECTIONAL_FEATURE_COUNT..]
+            .iter()
+            .zip(PYTHON_PATH_PREWINDOW_SUFFIX_SECOND_240)
+            .enumerate()
+        {
+            let tolerance = 2e-10_f64.max(expected.abs() * 2e-11);
+            assert!(
+                (actual - expected).abs() <= tolerance,
+                "{} mismatch: actual={actual:.17}, expected={expected:.17}, \
+                 tolerance={tolerance:.3e}",
+                BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SUFFIX_NAMES[index],
+            );
+        }
+    }
+
+    #[test]
+    fn path_prewindow_schema_fails_closed_without_complete_prior_windows() {
+        let window_start = Utc.with_ymd_and_hms(2026, 6, 14, 12, 35, 0).unwrap();
+        let as_of = window_start + Duration::seconds(240);
+        let only_eleven_windows = BinanceOneSecondWindow::from_completed(
+            (300..3_841)
+                .map(|index| prewindow_fixture_candle(window_start, index))
+                .collect(),
+        )
+        .unwrap();
+        assert!(matches!(
+            build_directional_features_for_schema(
+                &only_eleven_windows,
+                window_start,
+                as_of,
+                BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SCHEMA_VERSION,
+            ),
+            Err(DirectionalFeatureError::MissingPrewindowHistory { .. })
+        ));
+
+        let mut incomplete_candles = (0..3_841)
+            .map(|index| prewindow_fixture_candle(window_start, index))
+            .collect::<Vec<_>>();
+        incomplete_candles[100].source_complete = false;
+        let incomplete = BinanceOneSecondWindow::from_completed(incomplete_candles).unwrap();
+        assert!(matches!(
+            build_directional_features_for_schema(
+                &incomplete,
+                window_start,
+                as_of,
+                BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SCHEMA_VERSION,
+            ),
+            Err(DirectionalFeatureError::IncompletePrewindowHistory { .. })
+        ));
     }
 
     #[test]
@@ -1289,6 +1899,44 @@ mod tests {
             base_volume: quote_volume / close_price,
             quote_volume,
             trade_count: (100 + second % 17) as u64,
+            taker_buy_base_volume: taker_buy_quote_volume / close_price,
+            taker_buy_quote_volume,
+            first_aggregate_trade_id: trade_id,
+            last_aggregate_trade_id: trade_id,
+            first_source_timestamp: open_timestamp + Duration::milliseconds(100),
+            last_source_timestamp: open_timestamp + Duration::milliseconds(900),
+            max_received_at: open_timestamp + Duration::milliseconds(950),
+            source_complete: true,
+            synthetic: false,
+        }
+    }
+
+    fn prewindow_fixture_candle(window_start: DateTime<Utc>, index: i64) -> BinanceOneSecondKline {
+        let close_milli = 100_000_000
+            + index * 50
+            + ((index % 37) - 18) * 2_000
+            + if index % 29 == 0 { 800 } else { 0 };
+        let open_milli = close_milli + ((index % 3) - 1) * 200;
+        let high_milli = open_milli.max(close_milli) + 500 + (index % 5) * 100;
+        let low_milli = open_milli.min(close_milli) - 400 - (index % 4) * 100;
+        let quote_cents = 100_000_000 + index * 10_000 + (index % 13) * 50_000;
+        let taker_buy_quote_cents = quote_cents * (45 + (index % 5) * 2) / 100;
+        let close_price = Decimal::new(close_milli, 3);
+        let quote_volume = Decimal::new(quote_cents, 2);
+        let taker_buy_quote_volume = Decimal::new(taker_buy_quote_cents, 2);
+        let open_timestamp = window_start - Duration::seconds(3_601) + Duration::seconds(index);
+        let trade_id = index as u64 + 1;
+
+        BinanceOneSecondKline {
+            open_timestamp,
+            close_timestamp: open_timestamp + Duration::seconds(1),
+            open_price: Decimal::new(open_milli, 3),
+            high_price: Decimal::new(high_milli, 3),
+            low_price: Decimal::new(low_milli, 3),
+            close_price,
+            base_volume: quote_volume / close_price,
+            quote_volume,
+            trade_count: (100 + index % 17) as u64,
             taker_buy_base_volume: taker_buy_quote_volume / close_price,
             taker_buy_quote_volume,
             first_aggregate_trade_id: trade_id,

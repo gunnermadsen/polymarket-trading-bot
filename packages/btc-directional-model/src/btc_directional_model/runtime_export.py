@@ -19,12 +19,20 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from .core_extract import file_sha256
 from .core_training import (
     CORE_FREEZE_SCHEMA_VERSION,
+    FrozenCalibrationBand,
+    FrozenTimeBandedTrainingBundle,
     FrozenTrainingBundle,
 )
 
 RUNTIME_MODEL_SCHEMA_VERSION = "capitonic-btc-directional-runtime-model-v1"
+TIME_BANDED_RUNTIME_MODEL_SCHEMA_VERSION = (
+    "capitonic-btc-directional-runtime-model-v2"
+)
 RUNTIME_MANIFEST_SCHEMA_VERSION = "capitonic-btc-directional-runtime-manifest-v1"
 GOLDEN_VECTORS_SCHEMA_VERSION = "capitonic-btc-directional-golden-vectors-v1"
+TIME_BANDED_GOLDEN_VECTORS_SCHEMA_VERSION = (
+    "capitonic-btc-directional-golden-vectors-v2"
+)
 MODEL_FILENAME = "model.json"
 MANIFEST_FILENAME = "manifest.json"
 GOLDEN_VECTORS_FILENAME = "golden-vectors.json"
@@ -96,7 +104,11 @@ def export_runtime_model(
 
 def verify_frozen_bundle(
     freeze_dir: Path,
-) -> tuple[FrozenTrainingBundle, dict[str, Any], str]:
+) -> tuple[
+    FrozenTrainingBundle | FrozenTimeBandedTrainingBundle,
+    dict[str, Any],
+    str,
+]:
     freeze_dir = freeze_dir.resolve()
     manifest_path = freeze_dir / "freeze-manifest.json"
     manifest_hash_path = freeze_dir / "freeze-manifest.sha256"
@@ -128,14 +140,17 @@ def verify_frozen_bundle(
         raise RuntimeError("frozen model summary hash mismatch")
 
     bundle = joblib.load(model_path)
-    if not isinstance(bundle, FrozenTrainingBundle):
+    if not isinstance(
+        bundle,
+        (FrozenTrainingBundle, FrozenTimeBandedTrainingBundle),
+    ):
         raise TypeError("unsupported frozen training bundle")
     validate_bundle_against_freeze(bundle, freeze, read_json_object(summary_path))
     return bundle, freeze, actual_manifest_hash
 
 
 def validate_bundle_against_freeze(
-    bundle: FrozenTrainingBundle,
+    bundle: FrozenTrainingBundle | FrozenTimeBandedTrainingBundle,
     freeze: dict[str, Any],
     summary: dict[str, Any],
 ) -> None:
@@ -152,10 +167,6 @@ def validate_bundle_against_freeze(
         raise RuntimeError("frozen candidate does not match training model")
     if freeze.get("hyperparameters") != model.hyperparameters:
         raise RuntimeError("frozen hyperparameters do not match training model")
-    if freeze.get("calibrator") != asdict(bundle.calibrator):
-        raise RuntimeError("frozen calibrator does not match training model")
-    if freeze.get("confidence_threshold") != bundle.confidence_threshold:
-        raise RuntimeError("frozen confidence threshold does not match training model")
     if summary.get("training_only") is not True:
         raise RuntimeError("frozen model summary is not marked training-only")
     expected_summary = {
@@ -164,9 +175,38 @@ def validate_bundle_against_freeze(
         "feature_names": list(model.feature_names),
         "hyperparameters": model.hyperparameters,
         "imputation_medians": model.imputation_medians.tolist(),
-        "calibrator": asdict(bundle.calibrator),
-        "confidence_threshold": bundle.confidence_threshold,
     }
+    if isinstance(bundle, FrozenTrainingBundle):
+        if freeze.get("calibrator") != asdict(bundle.calibrator):
+            raise RuntimeError("frozen calibrator does not match training model")
+        if freeze.get("confidence_threshold") != bundle.confidence_threshold:
+            raise RuntimeError(
+                "frozen confidence threshold does not match training model"
+            )
+        expected_summary.update(
+            {
+                "calibrator": asdict(bundle.calibrator),
+                "confidence_threshold": bundle.confidence_threshold,
+            }
+        )
+    else:
+        validate_time_banded_bundle(bundle)
+        expected_bands = frozen_calibration_bands_payload(bundle.bands)
+        if freeze.get("calibration_kind") != "time_banded_platt":
+            raise RuntimeError("frozen calibration kind is not time-banded Platt")
+        if freeze.get("calibration_bands") != expected_bands:
+            raise RuntimeError(
+                "frozen calibration bands do not match training model"
+            )
+        if freeze.get("target_kind") != bundle.target_kind:
+            raise RuntimeError("frozen target kind does not match training model")
+        expected_summary.update(
+            {
+                "calibration_kind": "time_banded_platt",
+                "calibration_bands": expected_bands,
+                "target_kind": bundle.target_kind,
+            }
+        )
     for name, expected in expected_summary.items():
         if summary.get(name) != expected:
             raise RuntimeError(f"frozen model summary field does not match: {name}")
@@ -197,7 +237,7 @@ def validate_bundle_against_freeze(
 
 def runtime_model_payload(
     *,
-    bundle: FrozenTrainingBundle,
+    bundle: FrozenTrainingBundle | FrozenTimeBandedTrainingBundle,
     freeze: dict[str, Any],
     freeze_sha256: str,
     model_key: str,
@@ -214,8 +254,13 @@ def runtime_model_payload(
     baseline = float(estimator._baseline_prediction[0, 0])
     if not math.isfinite(baseline):
         raise RuntimeError("histogram baseline is not finite")
-    payload = {
-        "schema_version": RUNTIME_MODEL_SCHEMA_VERSION,
+    time_banded = isinstance(bundle, FrozenTimeBandedTrainingBundle)
+    payload: dict[str, Any] = {
+        "schema_version": (
+            TIME_BANDED_RUNTIME_MODEL_SCHEMA_VERSION
+            if time_banded
+            else RUNTIME_MODEL_SCHEMA_VERSION
+        ),
         "model_key": model_key,
         "features": {
             "schema_version": feature_schema_version,
@@ -237,28 +282,8 @@ def runtime_model_payload(
             "split_comparison": "less_than_or_equal",
             "trees": trees,
         },
-        "calibration": {
-            "type": "platt_logit",
-            "slope": finite_float(bundle.calibrator.slope, "calibration slope"),
-            "intercept": finite_float(
-                bundle.calibrator.intercept,
-                "calibration intercept",
-            ),
-            "input_probability_clip": {
-                "minimum": RAW_PROBABILITY_CLIP[0],
-                "maximum": RAW_PROBABILITY_CLIP[1],
-            },
-            "output_logit_clip": {
-                "minimum": CALIBRATION_LOGIT_CLIP[0],
-                "maximum": CALIBRATION_LOGIT_CLIP[1],
-            },
-        },
         "decision": {
             "probability_up_threshold": 0.5,
-            "confidence_threshold": finite_float(
-                bundle.confidence_threshold,
-                "confidence threshold",
-            ),
             "below_confidence_action": "no_trade",
             "up_action": "up",
             "down_action": "down",
@@ -294,10 +319,125 @@ def runtime_model_payload(
             "training_hyperparameters": model.hyperparameters,
         },
     }
+    if time_banded:
+        payload["target"] = runtime_target_payload(bundle)
+        payload["time_bands"] = [
+            runtime_time_band_payload(band) for band in bundle.bands
+        ]
+    else:
+        payload["calibration"] = runtime_calibration_payload(bundle.calibrator)
+        payload["decision"]["confidence_threshold"] = finite_float(
+            bundle.confidence_threshold,
+            "confidence threshold",
+        )
     deployment = validate_deployment_metadata(freeze)
     if deployment is not None:
         payload["deployment"] = deployment
     return payload
+
+
+def validate_time_banded_bundle(
+    bundle: FrozenTimeBandedTrainingBundle,
+) -> None:
+    if bundle.target_kind not in {"outcome_up", "path_persistence"}:
+        raise RuntimeError("unsupported frozen time-banded target kind")
+    expected_ranges = (
+        ("60-89", 60, 90),
+        ("90-119", 90, 120),
+        ("120-179", 120, 180),
+        ("180-240", 180, 241),
+    )
+    observed_ranges = tuple(
+        (band.name, band.start_second, band.end_second_exclusive)
+        for band in bundle.bands
+    )
+    if observed_ranges != expected_ranges:
+        raise RuntimeError(
+            "frozen time bands must exactly cover the 60-240 second runtime policy"
+        )
+    for band in bundle.bands:
+        if not band.calibrator.converged or band.calibrator.slope <= 0.0:
+            raise RuntimeError(
+                f"frozen time-band calibrator is invalid: {band.name}"
+            )
+        threshold = finite_float(
+            band.confidence_threshold,
+            f"{band.name} confidence threshold",
+        )
+        if not 0.5 <= threshold <= 1.0:
+            raise RuntimeError(
+                f"frozen time-band confidence threshold is invalid: {band.name}"
+            )
+    if (
+        bundle.target_kind == "path_persistence"
+        and "btc_path_from_window_open_bps"
+        not in bundle.model.feature_names
+    ):
+        raise RuntimeError(
+            "path-persistence runtime model is missing its path-direction feature"
+        )
+
+
+def frozen_calibration_bands_payload(
+    bands: Sequence[FrozenCalibrationBand],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": band.name,
+            "start_second": band.start_second,
+            "end_second_exclusive": band.end_second_exclusive,
+            "calibrator": asdict(band.calibrator),
+            "confidence_threshold": band.confidence_threshold,
+        }
+        for band in bands
+    ]
+
+
+def runtime_calibration_payload(calibrator: Any) -> dict[str, Any]:
+    return {
+        "type": "platt_logit",
+        "slope": finite_float(calibrator.slope, "calibration slope"),
+        "intercept": finite_float(
+            calibrator.intercept,
+            "calibration intercept",
+        ),
+        "input_probability_clip": {
+            "minimum": RAW_PROBABILITY_CLIP[0],
+            "maximum": RAW_PROBABILITY_CLIP[1],
+        },
+        "output_logit_clip": {
+            "minimum": CALIBRATION_LOGIT_CLIP[0],
+            "maximum": CALIBRATION_LOGIT_CLIP[1],
+        },
+    }
+
+
+def runtime_time_band_payload(
+    band: FrozenCalibrationBand,
+) -> dict[str, Any]:
+    return {
+        "name": band.name,
+        "start_seconds": band.start_second,
+        "end_seconds_exclusive": band.end_second_exclusive,
+        "calibration": runtime_calibration_payload(band.calibrator),
+        "confidence_threshold": finite_float(
+            band.confidence_threshold,
+            f"{band.name} confidence threshold",
+        ),
+    }
+
+
+def runtime_target_payload(
+    bundle: FrozenTimeBandedTrainingBundle,
+) -> dict[str, Any]:
+    if bundle.target_kind == "outcome_up":
+        return {"type": "outcome_up"}
+    return {
+        "type": "path_persistence",
+        "path_direction_feature": "btc_path_from_window_open_bps",
+        "zero_path_epsilon_bps": 1e-12,
+        "ineligible_action": "no_trade",
+    }
 
 
 def validate_deployment_metadata(
@@ -404,10 +544,16 @@ def validate_tree_graph(nodes: list[dict[str, Any]]) -> None:
 
 def golden_vectors_payload(
     *,
-    bundle: FrozenTrainingBundle,
+    bundle: FrozenTrainingBundle | FrozenTimeBandedTrainingBundle,
     model: dict[str, Any],
     golden_features: Path,
 ) -> dict[str, Any]:
+    if isinstance(bundle, FrozenTimeBandedTrainingBundle):
+        return time_banded_golden_vectors_payload(
+            bundle=bundle,
+            model=model,
+            golden_features=golden_features,
+        )
     golden_features = golden_features.resolve()
     if not golden_features.is_file():
         raise RuntimeError("golden feature cache is missing")
@@ -488,6 +634,128 @@ def golden_vectors_payload(
     }
 
 
+def time_banded_golden_vectors_payload(
+    *,
+    bundle: FrozenTimeBandedTrainingBundle,
+    model: dict[str, Any],
+    golden_features: Path,
+) -> dict[str, Any]:
+    golden_features = golden_features.resolve()
+    if not golden_features.is_file():
+        raise RuntimeError("golden feature cache is missing")
+    feature_names = list(model["features"]["names"])
+    available = set(pl.scan_parquet(golden_features).collect_schema().names())
+    required = {"market_id", "observed_at", "seconds_elapsed", *feature_names}
+    missing = sorted(required - available)
+    if missing:
+        raise RuntimeError(
+            f"golden feature cache is missing columns: {', '.join(missing)}"
+        )
+    validate_golden_feature_metadata(
+        golden_features,
+        model["features"]["schema_version"],
+    )
+    frame = pl.read_parquet(
+        golden_features,
+        columns=["market_id", "observed_at", "seconds_elapsed", *feature_names],
+    ).sort(["observed_at", "market_id"])
+    if frame.is_empty():
+        raise RuntimeError("golden feature cache is empty")
+    matrix = frame.select(feature_names).cast(pl.Float64).to_numpy()
+    medians = np.asarray(bundle.model.imputation_medians, dtype=np.float64)
+    transformed = np.where(np.isfinite(matrix), matrix, medians)
+    sklearn_raw = bundle.model.estimator._raw_predict(transformed)[:, 0]
+    sklearn_probability = bundle.probability_up(frame)
+    elapsed = frame["seconds_elapsed"].cast(pl.Int64).to_numpy()
+
+    selected: set[int] = set()
+    vector_specs: list[tuple[str, int]] = []
+    for band in bundle.bands:
+        in_band = np.flatnonzero(
+            (elapsed >= band.start_second)
+            & (elapsed < band.end_second_exclusive)
+        )
+        if not len(in_band):
+            raise RuntimeError(f"golden feature cache has no rows for {band.name}")
+        band_probability = sklearn_probability[in_band]
+        for suffix, target in (
+            ("minimum", float(band_probability.min())),
+            ("down_boundary", 1.0 - band.confidence_threshold),
+            ("no_trade", 0.5),
+            ("up_boundary", band.confidence_threshold),
+            ("maximum", float(band_probability.max())),
+        ):
+            index = nearest_unselected_subset_index(
+                sklearn_probability,
+                target,
+                selected,
+                in_band,
+            )
+            selected.add(index)
+            vector_specs.append((f"{band.name}-{suffix}", index))
+
+    vectors: list[dict[str, Any]] = []
+    for vector_id, index in vector_specs:
+        feature_values = json_feature_values(matrix[index])
+        seconds_elapsed = int(elapsed[index])
+        scored = score_runtime_model(
+            model,
+            feature_values,
+            seconds_elapsed=seconds_elapsed,
+        )
+        if scored["raw_logit"] != float(sklearn_raw[index]):
+            raise RuntimeError(
+                "portable tree traversal does not match scikit-learn"
+            )
+        if not math.isclose(
+            scored["probability_up"],
+            float(sklearn_probability[index]),
+            rel_tol=0.0,
+            abs_tol=1e-15,
+        ):
+            raise RuntimeError(
+                "portable calibration does not match training bundle"
+            )
+        vectors.append(
+            {
+                "id": vector_id,
+                "source": {
+                    "market_id": str(frame[index, "market_id"]),
+                    "observed_at": frame[index, "observed_at"].isoformat(),
+                },
+                "seconds_elapsed": seconds_elapsed,
+                "feature_values": feature_values,
+                "expected": scored,
+            }
+        )
+
+    non_finite_seconds = bundle.bands[0].start_second
+    vectors.append(
+        {
+            "id": "all_features_non_finite",
+            "source": None,
+            "seconds_elapsed": non_finite_seconds,
+            "feature_values": [None] * len(feature_names),
+            "expected": score_runtime_model(
+                model,
+                [None] * len(feature_names),
+                seconds_elapsed=non_finite_seconds,
+            ),
+        }
+    )
+    actions = {vector["expected"]["action"] for vector in vectors}
+    if not {"up", "down", "no_trade"}.issubset(actions):
+        raise RuntimeError(
+            "time-banded golden vectors do not cover up, down, and no_trade"
+        )
+    return {
+        "schema_version": TIME_BANDED_GOLDEN_VECTORS_SCHEMA_VERSION,
+        "model_key": model["model_key"],
+        "feature_schema_sha256": model["features"]["schema_sha256"],
+        "vectors": vectors,
+    }
+
+
 def validate_golden_feature_metadata(
     feature_path: Path,
     feature_schema_version: str,
@@ -505,6 +773,8 @@ def validate_golden_feature_metadata(
 def score_runtime_model(
     model: dict[str, Any],
     feature_values: Sequence[float | int | None],
+    *,
+    seconds_elapsed: int | None = None,
 ) -> dict[str, Any]:
     features = model["features"]
     if len(feature_values) != len(features["names"]):
@@ -522,8 +792,79 @@ def score_runtime_model(
     raw_logit = float(estimator["baseline_logit"])
     for tree in estimator["trees"]:
         raw_logit += reached_leaf_value(tree["nodes"], values)
-    calibration = model["calibration"]
     raw_probability = stable_sigmoid(raw_logit)
+    if model["schema_version"] == TIME_BANDED_RUNTIME_MODEL_SCHEMA_VERSION:
+        if seconds_elapsed is None or isinstance(seconds_elapsed, bool):
+            raise ValueError("time-banded runtime scoring requires seconds_elapsed")
+        band = runtime_band_for_second(model, int(seconds_elapsed))
+        target_probability = calibrated_probability(
+            raw_probability,
+            band["calibration"],
+        )
+        target = model["target"]
+        if target["type"] == "outcome_up":
+            probability_up = target_probability
+        elif target["type"] == "path_persistence":
+            feature_index = features["names"].index(
+                target["path_direction_feature"]
+            )
+            raw_path_value = feature_values[feature_index]
+            path = (
+                float(raw_path_value)
+                if raw_path_value is not None
+                and not isinstance(raw_path_value, bool)
+                else math.nan
+            )
+            epsilon = float(target["zero_path_epsilon_bps"])
+            if not math.isfinite(path) or abs(path) <= epsilon:
+                return {
+                    "raw_logit": raw_logit,
+                    "probability_up": 0.5,
+                    "confidence": 0.5,
+                    "action": target["ineligible_action"],
+                }
+            probability_up = (
+                target_probability if path > 0.0 else 1.0 - target_probability
+            )
+        else:
+            raise ValueError("unsupported runtime target type")
+        confidence = max(probability_up, 1.0 - probability_up)
+        decision = model["decision"]
+        if confidence < float(band["confidence_threshold"]):
+            action = decision["below_confidence_action"]
+        elif probability_up >= float(decision["probability_up_threshold"]):
+            action = decision["up_action"]
+        else:
+            action = decision["down_action"]
+        return {
+            "raw_logit": raw_logit,
+            "probability_up": probability_up,
+            "confidence": confidence,
+            "action": action,
+        }
+
+    calibration = model["calibration"]
+    probability_up = calibrated_probability(raw_probability, calibration)
+    confidence = max(probability_up, 1.0 - probability_up)
+    decision = model["decision"]
+    if confidence < float(decision["confidence_threshold"]):
+        action = decision["below_confidence_action"]
+    elif probability_up >= float(decision["probability_up_threshold"]):
+        action = decision["up_action"]
+    else:
+        action = decision["down_action"]
+    return {
+        "raw_logit": raw_logit,
+        "probability_up": probability_up,
+        "confidence": confidence,
+        "action": action,
+    }
+
+
+def calibrated_probability(
+    raw_probability: float,
+    calibration: dict[str, Any],
+) -> float:
     probability_clip = calibration["input_probability_clip"]
     clipped_probability = min(
         max(raw_probability, float(probability_clip["minimum"])),
@@ -539,21 +880,21 @@ def score_runtime_model(
         max(calibrated_logit, float(output_clip["minimum"])),
         float(output_clip["maximum"]),
     )
-    probability_up = stable_sigmoid(calibrated_logit)
-    confidence = max(probability_up, 1.0 - probability_up)
-    decision = model["decision"]
-    if confidence < float(decision["confidence_threshold"]):
-        action = decision["below_confidence_action"]
-    elif probability_up >= float(decision["probability_up_threshold"]):
-        action = decision["up_action"]
-    else:
-        action = decision["down_action"]
-    return {
-        "raw_logit": raw_logit,
-        "probability_up": probability_up,
-        "confidence": confidence,
-        "action": action,
-    }
+    return stable_sigmoid(calibrated_logit)
+
+
+def runtime_band_for_second(
+    model: dict[str, Any],
+    seconds_elapsed: int,
+) -> dict[str, Any]:
+    for band in model["time_bands"]:
+        if (
+            int(band["start_seconds"])
+            <= seconds_elapsed
+            < int(band["end_seconds_exclusive"])
+        ):
+            return band
+    raise ValueError("seconds_elapsed is outside the runtime time bands")
 
 
 def reached_leaf_value(
@@ -588,6 +929,20 @@ def nearest_unselected_index(
         if candidate not in selected:
             return candidate
     raise RuntimeError("golden feature cache has too few distinct rows")
+
+
+def nearest_unselected_subset_index(
+    probabilities: np.ndarray,
+    target: float,
+    selected: set[int],
+    indexes: np.ndarray,
+) -> int:
+    distances = np.abs(probabilities[indexes] - target)
+    for position in np.argsort(distances, kind="stable"):
+        candidate = int(indexes[int(position)])
+        if candidate not in selected:
+            return candidate
+    raise RuntimeError("golden feature cache has too few distinct rows in a time band")
 
 
 def json_feature_values(values: np.ndarray) -> list[float | None]:

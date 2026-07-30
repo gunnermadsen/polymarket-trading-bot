@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from btc_directional_model.core_extract import file_sha256
 from btc_directional_model.core_training import (
     FittedCoreModel,
     ProbabilityCalibrator,
@@ -14,11 +15,17 @@ from btc_directional_model.core_training import (
 from btc_directional_model.paper_candidate import (
     PAPER_CONFIDENCE_THRESHOLD,
     PAPER_MINIMUM_COVERAGE,
+    PATH_PERSISTENCE_FREQUENCY_CANDIDATE,
+    PATH_PERSISTENCE_PREWINDOW_FEATURE_SCHEMA_VERSION,
     _benchmark_check_observed,
+    _candidate_spec_feature_names,
     choose_paper_threshold,
+    executing_package_root,
     load_benchmark_evidence,
+    load_frequency_policy_evidence,
     persistence_bundle_to_runtime_bundle,
     production_blocking_reasons,
+    time_banded_feature_schema_version,
     validate_mature_reversal_schema,
 )
 from btc_directional_model.persistence_benchmark import (
@@ -27,10 +34,12 @@ from btc_directional_model.persistence_benchmark import (
     PersistenceTrainingBundle,
 )
 from btc_directional_model.persistence_config import (
+    BOUNDARY_ALIGNMENT_CANDIDATE,
     REGIME_ROBUST_RECENCY_CANDIDATE,
     load_persistence_benchmark_config,
     persistence_config_to_dict,
 )
+from btc_directional_model.prewindow_features import PREWINDOW_MODEL_FEATURES
 
 
 def policy_row(
@@ -69,6 +78,10 @@ def test_paper_threshold_is_locked_to_087_with_coverage_floor() -> None:
 
     assert selected["threshold"] == 0.87
     assert selected["accuracy"] == 0.89
+
+
+def test_export_provenance_uses_the_executing_package_source() -> None:
+    assert executing_package_root() == Path(__file__).resolve().parent.parent
 
 
 def test_locked_paper_threshold_rejects_insufficient_coverage() -> None:
@@ -202,3 +215,81 @@ def test_recency_candidate_requires_the_71_feature_schema() -> None:
                 }
             }
         )
+
+
+def test_time_banded_feature_schemas_preserve_exact_candidate_widths() -> None:
+    path_features = _candidate_spec_feature_names(
+        PATH_PERSISTENCE_FREQUENCY_CANDIDATE
+    )
+    assert len(path_features) == 100
+    assert tuple(path_features[-len(PREWINDOW_MODEL_FEATURES) :]) == tuple(
+        PREWINDOW_MODEL_FEATURES
+    )
+    assert (
+        time_banded_feature_schema_version(
+            PATH_PERSISTENCE_FREQUENCY_CANDIDATE,
+            {},
+        )
+        == PATH_PERSISTENCE_PREWINDOW_FEATURE_SCHEMA_VERSION
+    )
+
+    boundary_features = _candidate_spec_feature_names(
+        BOUNDARY_ALIGNMENT_CANDIDATE
+    )
+    assert len(boundary_features) == 68
+    assert (
+        time_banded_feature_schema_version(
+            BOUNDARY_ALIGNMENT_CANDIDATE,
+            {
+                "candidate_feature_schema_versions": {
+                    BOUNDARY_ALIGNMENT_CANDIDATE: (
+                        "btc-5m-directional-boundary-features-v1"
+                    )
+                }
+            },
+        )
+        == "btc-5m-directional-boundary-features-v1"
+    )
+
+
+def test_frequency_policy_evidence_binds_source_probabilities(
+    tmp_path: Path,
+) -> None:
+    source_run = tmp_path / "source"
+    source_manifest = source_run / "saved-policy-probabilities" / "manifest.json"
+    source_manifest.parent.mkdir(parents=True)
+    source_manifest.write_text('{"schema_version":"test"}')
+    policy_run = tmp_path / "policy"
+    policy_run.mkdir()
+    policy = {
+        "probability_evidence": {
+            "manifest_sha256": file_sha256(source_manifest)
+        },
+        "candidates": {
+            PATH_PERSISTENCE_FREQUENCY_CANDIDATE: {
+                "target_kind": "path_persistence",
+                "feature_kind": "core_prewindow",
+                "calibration_kind": "time_banded_platt",
+                "single_policy": {
+                    "qualified": True,
+                    "thresholds": {
+                        "60-89": 0.91,
+                        "90-119": 0.89,
+                        "120-179": 0.91,
+                        "180-240": 0.84,
+                    },
+                },
+            }
+        },
+    }
+    (policy_run / "benchmark.json").write_text(json.dumps(policy))
+
+    loaded, _ = load_frequency_policy_evidence(
+        policy_run,
+        source_run,
+        PATH_PERSISTENCE_FREQUENCY_CANDIDATE,
+    )
+
+    assert loaded["candidates"][PATH_PERSISTENCE_FREQUENCY_CANDIDATE][
+        "single_policy"
+    ]["thresholds"]["180-240"] == 0.84

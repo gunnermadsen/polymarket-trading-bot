@@ -223,6 +223,44 @@ class FrozenTrainingBundle:
         return self.calibrator.probability(self.model.raw_logit(frame))
 
 
+@dataclass(frozen=True)
+class FrozenCalibrationBand:
+    name: str
+    start_second: int
+    end_second_exclusive: int
+    calibrator: ProbabilityCalibrator
+    confidence_threshold: float
+
+
+@dataclass
+class FrozenTimeBandedTrainingBundle:
+    model: FittedCoreModel
+    target_kind: str
+    bands: tuple[FrozenCalibrationBand, ...]
+
+    def target_probability(self, frame: pl.DataFrame) -> np.ndarray:
+        raw_logit = self.model.raw_logit(frame)
+        elapsed = frame["seconds_elapsed"].to_numpy()
+        output = np.full(frame.height, np.nan, dtype=np.float64)
+        for band in self.bands:
+            mask = (elapsed >= band.start_second) & (
+                elapsed < band.end_second_exclusive
+            )
+            output[mask] = band.calibrator.probability(raw_logit[mask])
+        if not np.isfinite(output).all():
+            raise RuntimeError("frozen calibration bands do not cover every row")
+        return output
+
+    def probability_up(self, frame: pl.DataFrame) -> np.ndarray:
+        target_probability = self.target_probability(frame)
+        if self.target_kind == "outcome_up":
+            return target_probability
+        if self.target_kind != "path_persistence":
+            raise ValueError(f"unsupported frozen target kind: {self.target_kind}")
+        path = frame["btc_path_from_window_open_bps"].to_numpy()
+        return np.where(path > 0.0, target_probability, 1.0 - target_probability)
+
+
 def develop_core_models(
     config: CoreTrainingConfig,
     *,

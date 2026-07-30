@@ -1000,6 +1000,7 @@ impl DeterministicBtcStrategy {
                 Err(reason) => return rejected(decision_id, snapshot, reason, None, None, None),
             };
             let minimum = btc_directional_model_confidence_threshold(
+                snapshot,
                 model_key,
                 artifact_sha256,
                 feature_schema_sha256,
@@ -1433,6 +1434,7 @@ fn btc_directional_model_selection(
 }
 
 fn btc_directional_model_confidence_threshold(
+    snapshot: &BtcFeatureSnapshot,
     model_key: &str,
     artifact_sha256: &str,
     feature_schema_sha256: &str,
@@ -1440,7 +1442,15 @@ fn btc_directional_model_confidence_threshold(
     let selection =
         btc_directional_model_selection(model_key, artifact_sha256, feature_schema_sha256);
     let model = runtime_model(&selection).map_err(|_| BtcRejectReason::InvalidConfiguration)?;
-    decimal_from_f64(model.confidence_threshold())
+    let features = snapshot
+        .directional_model
+        .as_ref()
+        .ok_or(BtcRejectReason::MissingBinanceReturns)?;
+    decimal_from_f64(
+        model
+            .confidence_threshold_at(features.seconds_elapsed)
+            .map_err(|_| BtcRejectReason::OutsideEntryWindow)?,
+    )
 }
 
 fn estimate_btc_directional_model(

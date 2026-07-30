@@ -470,6 +470,40 @@ cohort is evaluated.
   --authorize-paper-only
 ```
 
+The same exporter supports the two time-banded paper candidates without adding a second
+training or runtime subsystem. The frequency candidate must bind the causal four-band policy
+selected by its frequency benchmark:
+
+```bash
+.venv/bin/btc-directional-model persistence-paper-candidate-export \
+  --config configs/btc-5m-directional-accuracy-timing-20260421-20260720.toml \
+  --benchmark-run runs/btc-accuracy-timing-20260421-20260720/20260728T151930Z \
+  --policy-benchmark-run runs/btc-frequency-policy-20260421-20260720/20260728T201621Z \
+  --candidate histogram_path_persistence_time_calibrated_60_120 \
+  --freeze-root artifacts/btc-directional-path-persistence-paper \
+  --runtime-output-root runtime-models \
+  --model-key btc-5m-directional-path-persistence-60-120-frequency-20260421-20260720-paper-v1 \
+  --authorize-paper-only
+```
+
+Boundary alignment derives its repeated per-band confidence threshold from the final
+policy-selection range under the already frozen benchmark configuration:
+
+```bash
+.venv/bin/btc-directional-model persistence-paper-candidate-export \
+  --config configs/btc-5m-directional-boundary-alignment-20260421-20260720.toml \
+  --benchmark-run runs/btc-boundary-alignment-20260421-20260720/20260729T002520Z \
+  --candidate histogram_boundary_enriched \
+  --freeze-root artifacts/btc-directional-boundary-alignment-paper \
+  --runtime-output-root runtime-models \
+  --model-key btc-5m-directional-boundary-alignment-20260421-20260720-paper-v1 \
+  --authorize-paper-only
+```
+
+The frequency artifact keeps all 100 ordered features (58 core plus 42 pre-window features) and
+the path-persistence-to-UP conversion. The boundary artifact keeps its exact 68-feature schema.
+Both use runtime-model v2 with four calibrated time bands and remain paper-only.
+
 ## Training contract
 
 Markets are split chronologically and kept disjoint across fitting, calibration, and holdout
