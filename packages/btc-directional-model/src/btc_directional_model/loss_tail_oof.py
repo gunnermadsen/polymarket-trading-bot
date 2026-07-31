@@ -4,7 +4,7 @@ import hashlib
 import math
 import os
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,7 @@ from .core_training import (
 
 LOSS_TAIL_OOF_SCHEMA_VERSION = "btc-loss-tail-oof-signals-v1"
 LOSS_TAIL_OOF_HISTORY_START = datetime(2026, 3, 21, tzinfo=UTC)
+LOSS_TAIL_OOF_MAXIMUM_FIRST_MARKET_START = LOSS_TAIL_OOF_HISTORY_START + timedelta(minutes=5)
 LOSS_TAIL_OOF_KEYS = (
     "market_id",
     "window_start",
@@ -775,8 +776,8 @@ def _validate_universal_input(frame: pl.DataFrame) -> None:
     }
     _require_columns(frame, required, "universal core")
     _validate_unique_keys(frame, "universal core")
-    if frame["window_start"].min() > LOSS_TAIL_OOF_HISTORY_START:
-        raise RuntimeError("universal core does not begin at the frozen history start")
+    if frame["window_start"].min() > LOSS_TAIL_OOF_MAXIMUM_FIRST_MARKET_START:
+        raise RuntimeError("universal core begins after the permitted causal warm-up market")
     if frame["window_start"].max() >= LOSS_TAIL_OOF_BLOCKS[-1].end:
         raise RuntimeError("universal core contains rows after the frozen OOF range")
     _validate_binary_rows(frame, "universal core")

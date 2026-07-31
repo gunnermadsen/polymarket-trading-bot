@@ -140,6 +140,24 @@ def test_correctness_feature_contract_is_fixed_and_causal() -> None:
     assert forbidden.isdisjoint(BOUNDARY_CORRECTNESS_FEATURES)
 
 
+def test_universal_input_allows_only_one_causal_warm_up_market() -> None:
+    universal = _universal_frame()
+    five_minutes = timedelta(minutes=5)
+    one_market_warm_up = universal.with_columns(
+        (pl.col("window_start") + five_minutes).alias("window_start"),
+        (pl.col("observed_at") + five_minutes).alias("observed_at"),
+    )
+    loss_tail_oof._validate_universal_input(one_market_warm_up)
+
+    with pytest.raises(RuntimeError, match="permitted causal warm-up market"):
+        loss_tail_oof._validate_universal_input(
+            one_market_warm_up.with_columns(
+                (pl.col("window_start") + five_minutes).alias("window_start"),
+                (pl.col("observed_at") + five_minutes).alias("observed_at"),
+            )
+        )
+
+
 def test_source_signal_deltas_require_an_exact_previous_five_second_point() -> None:
     head = LOSS_TAIL_OOF_HEADS[0]
     start = datetime(2026, 6, 9, tzinfo=UTC)
