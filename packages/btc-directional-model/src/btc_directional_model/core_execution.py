@@ -381,7 +381,16 @@ def extract_execution_evidence(
         contract["decision_min_seconds_after_open"] = (
             config.decision_min_seconds_after_open
         )
-    existing_manifest = _load_existing_manifest(manifest_path, contract, force=force)
+    expected_partition_paths = {
+        f"{day.date().isoformat()}.parquet"
+        for day in _daily_boundaries(config.range_start, config.range_end)
+    }
+    existing_manifest = _load_existing_manifest(
+        manifest_path,
+        contract,
+        force=force,
+        resumable_partition_paths=expected_partition_paths,
+    )
     existing_partitions = {
         row["path"]: row for row in (existing_manifest or {}).get("partitions", [])
     }
@@ -396,22 +405,35 @@ def extract_execution_evidence(
             expected = existing_partitions.get(destination.name)
             if destination.exists() and not force:
                 if expected is None:
-                    raise RuntimeError(
-                        f"{destination.name} is not recorded in {manifest_path.name}; "
-                        "use force only for an intentional isolated rebuild"
+                    if existing_manifest is not None:
+                        raise RuntimeError(
+                            f"{destination.name} is not recorded in "
+                            f"{manifest_path.name}; use force only for an "
+                            "intentional isolated rebuild"
+                        )
+                    summary, sha256 = _validate_resumable_execution_partition(
+                        destination,
+                        config=config,
+                        batch_start=batch_start,
+                        batch_end=batch_end,
                     )
-                summary = execution_partition_summary(
-                    destination,
-                    context_seconds=config.context_seconds,
-                    decision_seconds=config.decision_seconds,
-                    sample_interval_seconds=config.sample_interval_seconds,
-                )
-                sha256 = file_sha256(destination)
-                if expected.get("sha256") != sha256 or expected.get("rows") != summary["rows"]:
-                    raise RuntimeError(
-                        f"{destination.name} does not match its manifest; "
-                        "use force to rebuild the isolated evidence partition"
+                else:
+                    summary = execution_partition_summary(
+                        destination,
+                        context_seconds=config.context_seconds,
+                        decision_seconds=config.decision_seconds,
+                        sample_interval_seconds=config.sample_interval_seconds,
                     )
+                    sha256 = file_sha256(destination)
+                    if (
+                        expected.get("sha256") != sha256
+                        or expected.get("rows") != summary["rows"]
+                    ):
+                        raise RuntimeError(
+                            f"{destination.name} does not match its manifest; "
+                            "use force to rebuild the isolated evidence "
+                            "partition"
+                        )
             else:
                 if connection is None:
                     connection = database_connection()
@@ -1026,16 +1048,21 @@ def _load_existing_manifest(
     contract: dict[str, Any],
     *,
     force: bool,
+    resumable_partition_paths: set[str] | None = None,
 ) -> dict[str, Any] | None:
     if force:
         return None
     parquet_files = list(manifest_path.parent.glob("*.parquet"))
     if not manifest_path.exists():
         if parquet_files:
-            raise RuntimeError(
-                "execution-evidence partitions exist without a manifest; "
-                "use force only for an intentional isolated rebuild"
-            )
+            observed_paths = {path.name for path in parquet_files}
+            unexpected_paths = observed_paths - (resumable_partition_paths or set())
+            if unexpected_paths:
+                raise RuntimeError(
+                    "execution-evidence partitions exist without a manifest "
+                    "and outside the configured daily range: "
+                    f"{', '.join(sorted(unexpected_paths))}"
+                )
         return None
     existing = json.loads(manifest_path.read_text())
     mismatches = [
@@ -1048,3 +1075,146 @@ def _load_existing_manifest(
             "output path or use force only for an intentional replacement"
         )
     return existing
+
+
+def _validate_resumable_execution_partition(
+    path: Path,
+    *,
+    config: ExecutionEvidenceConfig,
+    batch_start: datetime,
+    batch_end: datetime,
+) -> tuple[dict[str, Any], str]:
+    """Validate an atomically completed daily file before manifest recovery.
+
+    Only final ``.parquet`` files are considered by the caller. The extractor
+    writes through ``.parquet.partial`` and promotes a partition atomically, so
+    a final file can be recovered after an interruption between that promotion
+    and the final manifest write. Without a prior manifest checksum, hash the
+    file on both sides of semantic validation to prove that the bytes recorded
+    in the recovered manifest did not change while they were inspected.
+    """
+
+    observed_schema = pq.read_schema(path)
+    if not observed_schema.equals(EXECUTION_EVIDENCE_SCHEMA, check_metadata=True):
+        raise RuntimeError(
+            f"{path.name} does not match the execution-evidence Arrow schema"
+        )
+
+    sha256_before = file_sha256(path)
+    summary = execution_partition_summary(
+        path,
+        context_seconds=config.context_seconds,
+        decision_seconds=config.decision_seconds,
+        sample_interval_seconds=config.sample_interval_seconds,
+    )
+    _validate_resumable_partition_rows(
+        path,
+        config=config,
+        batch_start=batch_start,
+        batch_end=batch_end,
+    )
+    sha256_after = file_sha256(path)
+    if sha256_before != sha256_after:
+        raise RuntimeError(f"{path.name} changed while it was being validated")
+    return summary, sha256_after
+
+
+def _validate_resumable_partition_rows(
+    path: Path,
+    *,
+    config: ExecutionEvidenceConfig,
+    batch_start: datetime,
+    batch_end: datetime,
+) -> None:
+    table = pq.read_table(
+        path,
+        columns=[
+            "market_id",
+            "window_start",
+            "window_end",
+            "official_outcome",
+            "label_up",
+            "observed_at",
+            "seconds_elapsed",
+            "artifact_id",
+            "schema_version",
+        ],
+    )
+    allowed_seconds = set(config.context_seconds)
+    allowed_schema_versions = set(config.snapshot_schema_versions)
+    columns = {
+        name: table[name].to_pylist() for name in table.column_names
+    }
+    for row_index, (
+        market_id,
+        window_start,
+        window_end,
+        official_outcome,
+        label_up,
+        observed_at,
+        seconds_elapsed,
+        artifact_id,
+        schema_version,
+    ) in enumerate(
+        zip(
+            columns["market_id"],
+            columns["window_start"],
+            columns["window_end"],
+            columns["official_outcome"],
+            columns["label_up"],
+            columns["observed_at"],
+            columns["seconds_elapsed"],
+            columns["artifact_id"],
+            columns["schema_version"],
+            strict=True,
+        )
+    ):
+        required_values = (
+            market_id,
+            window_start,
+            window_end,
+            official_outcome,
+            label_up,
+            observed_at,
+            seconds_elapsed,
+            artifact_id,
+            schema_version,
+        )
+        if any(value is None for value in required_values):
+            raise RuntimeError(
+                f"{path.name} row {row_index} has null identity or lineage fields"
+            )
+        if not batch_start <= window_start < batch_end:
+            raise RuntimeError(
+                f"{path.name} row {row_index} is outside its daily market range"
+            )
+        if window_end != window_start + timedelta(minutes=5):
+            raise RuntimeError(
+                f"{path.name} row {row_index} has a non-five-minute market window"
+            )
+        if seconds_elapsed not in allowed_seconds:
+            raise RuntimeError(
+                f"{path.name} row {row_index} is outside the configured cadence"
+            )
+        if observed_at != window_start + timedelta(seconds=seconds_elapsed):
+            raise RuntimeError(
+                f"{path.name} row {row_index} has inconsistent elapsed time"
+            )
+        if not batch_start <= observed_at < batch_end:
+            raise RuntimeError(
+                f"{path.name} row {row_index} is outside its daily observation range"
+            )
+        if official_outcome not in {"up", "down"} or label_up != int(
+            official_outcome == "up"
+        ):
+            raise RuntimeError(
+                f"{path.name} row {row_index} has an inconsistent official label"
+            )
+        if not market_id or not artifact_id:
+            raise RuntimeError(
+                f"{path.name} row {row_index} has empty identity or lineage fields"
+            )
+        if schema_version not in allowed_schema_versions:
+            raise RuntimeError(
+                f"{path.name} row {row_index} has an unconfigured snapshot schema"
+            )
