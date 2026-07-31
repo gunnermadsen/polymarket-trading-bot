@@ -20,6 +20,10 @@ from .extract import extract_source
 from .features import build_features
 from .frequency_policy_benchmark import run_frequency_policy_benchmark
 from .frequency_policy_config import load_frequency_policy_benchmark_config
+from .oracle_book_benchmark import (
+    load_oracle_book_benchmark_config,
+    run_oracle_book_benchmark,
+)
 from .paper_candidate import (
     PAPER_ONLY_AUTHORIZATION,
     run_paper_candidate_export,
@@ -84,6 +88,8 @@ def main() -> None:
     entry_run = subparsers.add_parser("entry-benchmark-run")
     entry_run.add_argument("--config", type=Path, required=True)
     entry_run.add_argument("--force", action="store_true")
+    oracle_book_run = subparsers.add_parser("oracle-book-benchmark-run")
+    oracle_book_run.add_argument("--config", type=Path, required=True)
     persistence_run = subparsers.add_parser("persistence-benchmark-run")
     persistence_run.add_argument("--config", type=Path, required=True)
     persistence_run.add_argument("--force", action="store_true")
@@ -177,6 +183,15 @@ def main() -> None:
                 if benchmark["deployment_qualified_candidates"]
                 else "none"
             )
+        )
+        return
+    if args.command == "oracle-book-benchmark-run":
+        config = load_oracle_book_benchmark_config(args.config)
+        run_dir, benchmark = run_oracle_book_benchmark(config)
+        print(f"report: {run_dir / 'report.html'}")
+        print(
+            "status: "
+            f"{benchmark['status']}; runtime export/deployment: disabled"
         )
         return
     if args.command == "persistence-benchmark-run":

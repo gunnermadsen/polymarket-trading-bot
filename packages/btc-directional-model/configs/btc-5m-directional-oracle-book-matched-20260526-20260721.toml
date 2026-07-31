@@ -1,0 +1,25 @@
+[benchmark]
+core_config = "configs/btc-5m-directional-core-oracle-early-entry-20260321-20260729.toml"
+core_config_sha256 = "ec5262959ec33d15047943c7242d4e05ad43665f40313e304975c6644127b294"
+execution_manifest_sha256 = "c02f14c75382c8609fb8d4d905e9ca5735fca33a352d17f6a224aa415742cc34"
+evaluation_note = "The July 14-20 cohort is consumed chronological development evidence. It compares a core-plus-oracle control with a core-plus-oracle-plus-book challenger on identical qualified rows; it is not an independent holdout."
+
+[split]
+fit_start = "2026-05-26T00:00:00Z"
+fit_end = "2026-07-01T00:00:00Z"
+calibration_start = "2026-07-01T00:00:00Z"
+calibration_end = "2026-07-05T00:00:00Z"
+threshold_start = "2026-07-05T00:00:00Z"
+threshold_end = "2026-07-09T00:00:00Z"
+evaluation_start = "2026-07-14T00:00:00Z"
+evaluation_end = "2026-07-21T00:00:00Z"
+
+[model]
+confidence_min = 0.80
+confidence_max = 0.95
+confidence_step = 0.01
+recency_half_life_days = 28.0
+
+[paths]
+execution_evidence = "data/btc-core-oracle-early-entry-20260321-20260729/execution-evidence"
+runs = "runs/btc-oracle-book-matched-20260526-20260721"
