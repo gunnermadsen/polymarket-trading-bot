@@ -18,6 +18,12 @@ from .core_training import develop_core_models, evaluate_core_holdout
 from .entry_benchmark import run_entry_benchmark
 from .extract import extract_source
 from .features import build_features
+from .fixed_time_benchmark import (
+    FIXED_TIME_PAPER_AUTHORIZATION,
+    freeze_and_export_fixed_time_paper_candidate,
+    run_fixed_time_accuracy_benchmark,
+)
+from .fixed_time_config import load_fixed_time_accuracy_config
 from .frequency_policy_benchmark import run_frequency_policy_benchmark
 from .frequency_policy_config import load_frequency_policy_benchmark_config
 from .oracle_book_benchmark import (
@@ -90,6 +96,21 @@ def main() -> None:
     entry_run.add_argument("--force", action="store_true")
     oracle_book_run = subparsers.add_parser("oracle-book-benchmark-run")
     oracle_book_run.add_argument("--config", type=Path, required=True)
+    fixed_time_run = subparsers.add_parser("fixed-120-benchmark-run")
+    fixed_time_run.add_argument("--config", type=Path, required=True)
+    fixed_time_export = subparsers.add_parser("fixed-120-paper-candidate-export")
+    fixed_time_export.add_argument("--config", type=Path, required=True)
+    fixed_time_export.add_argument(
+        "--benchmark-run",
+        type=Path,
+        required=True,
+    )
+    fixed_time_export.add_argument("--model-key", required=True)
+    fixed_time_export.add_argument(
+        "--authorize-paper-only",
+        action="store_true",
+        help="authorize an exact-120-second model only for paper evaluation",
+    )
     persistence_run = subparsers.add_parser("persistence-benchmark-run")
     persistence_run.add_argument("--config", type=Path, required=True)
     persistence_run.add_argument("--force", action="store_true")
@@ -192,6 +213,38 @@ def main() -> None:
         print(
             "status: "
             f"{benchmark['status']}; runtime export/deployment: disabled"
+        )
+        return
+    if args.command == "fixed-120-benchmark-run":
+        config = load_fixed_time_accuracy_config(args.config)
+        run_dir, benchmark = run_fixed_time_accuracy_benchmark(config)
+        print(f"report: {run_dir / 'report.html'}")
+        print(
+            "paper-freeze qualified: "
+            + str(benchmark["selection"]["paper_candidate_qualified"]).lower()
+        )
+        print("decision: exact 120 seconds; live capital: not authorized")
+        return
+    if args.command == "fixed-120-paper-candidate-export":
+        if not args.authorize_paper_only:
+            parser.error(
+                "fixed-120-paper-candidate-export requires "
+                "--authorize-paper-only"
+            )
+        config = load_fixed_time_accuracy_config(args.config)
+        freeze_dir, runtime_dir, manifest = (
+            freeze_and_export_fixed_time_paper_candidate(
+                config=config,
+                benchmark_run=args.benchmark_run,
+                model_key=args.model_key,
+                authorization=FIXED_TIME_PAPER_AUTHORIZATION,
+            )
+        )
+        print(f"freeze: {freeze_dir}")
+        print(f"runtime model: {runtime_dir}")
+        print(
+            "scope: paper_only; production-qualified: "
+            f"{str(manifest['production_qualified']).lower()}"
         )
         return
     if args.command == "persistence-benchmark-run":

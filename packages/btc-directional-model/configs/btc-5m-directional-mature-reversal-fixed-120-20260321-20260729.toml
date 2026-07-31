@@ -1,0 +1,144 @@
+[benchmark]
+profile = "mature_reversal_fixed_120_accuracy"
+candidate = "histogram_mature_reversal_recency_28d"
+core_config = "configs/btc-5m-directional-core-oracle-early-entry-20260321-20260729.toml"
+core_config_sha256 = "ec5262959ec33d15047943c7242d4e05ad43665f40313e304975c6644127b294"
+evaluation_is_independent = false
+evaluation_note = "The exact half-open UTC interval [2026-03-21, 2026-07-29), representing March 21 through July 28 inclusive, is consumed chronological development evidence. The direct-outcome histogram candidate retains its predecessor's exact 120/125/130/135/140-second estimator-training context, but probability calibration, policy selection, validation, and runtime decisions use only the exact 120-second row. It uses the frozen 71-feature mature-reversal core contract, global Platt calibration, equal total weight per market, and 28-day estimator-only recency decay. Oracle and order-book fields are excluded from model inputs. Thresholds are selected empirically and causally from each preceding policy cohort for the primary 15% and secondary 10% coverage objectives, then evaluated on the following validation cohort. The final paper threshold is selected only from July 21 through July 28 after fitting through July 13 and calibrating July 14 through July 20. Accuracy, balanced accuracy, both direction recalls, Wilson confidence, calibration, hard-confident errors, and five-share and ten-share execution economics are reported. A forward cohort beginning only after artifact freeze remains required for independent qualification."
+
+[split]
+development_start = "2026-03-21T00:00:00Z"
+development_end = "2026-07-14T00:00:00Z"
+probability_calibration_start = "2026-07-14T00:00:00Z"
+probability_calibration_end = "2026-07-21T00:00:00Z"
+policy_selection_start = "2026-07-21T00:00:00Z"
+policy_selection_end = "2026-07-29T00:00:00Z"
+validation_starts = [
+  "2026-06-09T00:00:00Z",
+  "2026-06-16T00:00:00Z",
+  "2026-06-23T00:00:00Z",
+  "2026-06-30T00:00:00Z",
+  "2026-07-07T00:00:00Z",
+]
+validation_ends = [
+  "2026-06-16T00:00:00Z",
+  "2026-06-23T00:00:00Z",
+  "2026-06-30T00:00:00Z",
+  "2026-07-07T00:00:00Z",
+  "2026-07-14T00:00:00Z",
+]
+
+[model]
+decision_second = 120
+estimator_training_seconds = [120, 125, 130, 135, 140]
+target = "outcome_up"
+estimator_family = "histogram_gradient_boosting"
+probability_calibration = "global_platt"
+recency_half_life_days = 28.0
+feature_contract = "core_mature_reversal_71_v1"
+feature_schema_version = "btc-5m-directional-mature-reversal-features-v1"
+include_oracle = false
+include_book = false
+threshold_selection = "empirical_policy_confidence_quantile"
+hard_confidence_floor = 0.95
+require_hard_confident_error_no_regression = true
+feature_names = [
+  "seconds_elapsed_scaled",
+  "seconds_remaining_scaled",
+  "btc_path_from_window_open_bps",
+  "btc_return_1s_bps",
+  "btc_return_5s_bps",
+  "btc_return_15s_bps",
+  "btc_return_30s_bps",
+  "btc_return_60s_bps",
+  "btc_realized_volatility_5s_bps",
+  "btc_realized_volatility_15s_bps",
+  "btc_realized_volatility_30s_bps",
+  "btc_realized_volatility_60s_bps",
+  "btc_range_5s_bps",
+  "btc_range_30s_bps",
+  "btc_range_60s_bps",
+  "btc_path_efficiency_30s",
+  "btc_path_efficiency_60s",
+  "btc_range_position_30s",
+  "btc_volatility_expansion_5_to_30",
+  "btc_log_quote_volume_5s",
+  "btc_log_quote_volume_30s",
+  "btc_log_quote_volume_60s",
+  "btc_log_trade_count_5s",
+  "btc_log_trade_count_30s",
+  "btc_taker_buy_share_5s",
+  "btc_taker_buy_share_30s",
+  "btc_signed_flow_5s",
+  "btc_signed_flow_30s",
+  "btc_volume_surprise_5_to_60",
+  "hour_sin",
+  "hour_cos",
+  "weekday_sin",
+  "weekday_cos",
+  "btc_path_terminal_volatility_z",
+  "btc_path_abs_terminal_volatility_z",
+  "btc_path_cross_count",
+  "btc_seconds_since_path_cross",
+  "btc_fraction_time_path_positive",
+  "btc_fraction_time_path_negative",
+  "btc_momentum_agreement_5_15",
+  "btc_momentum_agreement_15_30",
+  "btc_momentum_multihorizon_score",
+  "btc_momentum_acceleration_5_vs_30",
+  "btc_momentum_acceleration_15_vs_60",
+  "btc_reversal_5_vs_30",
+  "btc_range_position_60s",
+  "btc_distance_from_high_30s_bps",
+  "btc_distance_from_low_30s_bps",
+  "btc_distance_from_high_60s_bps",
+  "btc_distance_from_low_60s_bps",
+  "btc_volatility_regime_60_vs_elapsed",
+  "btc_log_trade_count_60s",
+  "btc_taker_buy_share_60s",
+  "btc_signed_flow_60s",
+  "btc_flow_persistence_5_30",
+  "btc_flow_persistence_30_60",
+  "btc_price_flow_agreement_30s",
+  "btc_price_flow_divergence_30s",
+  "btc_path_max_favorable_excursion_bps",
+  "btc_path_max_adverse_excursion_bps",
+  "btc_path_pullback_from_favorable_extreme_bps",
+  "btc_path_recovery_from_adverse_extreme_bps",
+  "btc_seconds_since_path_high_scaled",
+  "btc_seconds_since_path_low_scaled",
+  "btc_path_sign_normalized_return_5s_bps",
+  "btc_path_sign_normalized_return_15s_bps",
+  "btc_path_sign_normalized_return_30s_bps",
+  "btc_path_sign_normalized_return_60s_bps",
+  "btc_path_sign_normalized_flow_5s",
+  "btc_path_sign_normalized_flow_30s",
+  "btc_path_sign_normalized_flow_60s",
+]
+
+[primary_operating_point]
+target_coverage = 0.15
+coverage_tolerance = 0.03
+minimum_accuracy = 0.91
+minimum_balanced_accuracy = 0.90
+minimum_direction_recall = 0.90
+minimum_wilson_lower_95 = 0.895
+maximum_expected_calibration_error = 0.05
+
+[secondary_operating_point]
+target_coverage = 0.10
+coverage_tolerance = 0.025
+minimum_accuracy = 0.93
+minimum_balanced_accuracy = 0.92
+minimum_direction_recall = 0.92
+minimum_wilson_lower_95 = 0.90
+maximum_expected_calibration_error = 0.05
+
+[paths]
+execution_evidence = "data/btc-core-oracle-early-entry-20260321-20260729/execution-evidence"
+execution_manifest_sha256 = "c02f14c75382c8609fb8d4d905e9ca5735fca33a352d17f6a224aa415742cc34"
+predecessor_benchmark = "runs/btc-mature-reversal-oracle-accuracy-20260321-20260729/20260731T000952Z/benchmark.json"
+predecessor_benchmark_sha256 = "5e4f3fabc403d108b28fc85d1dc3240fd8328341c23bb5f691bff128c141b057"
+runs = "runs/btc-mature-reversal-fixed-120-20260321-20260729"
+freezes = "artifacts/btc-mature-reversal-fixed-120-20260321-20260729/freezes"
+runtime_models = "runtime-models"

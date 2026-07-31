@@ -476,6 +476,29 @@ cohort is evaluated.
   --authorize-paper-only
 ```
 
+The exact-120 mature-reversal path preserves the predecessor estimator's five causal
+120/125/130/135/140-second training rows, while calibration, causal coverage-threshold selection,
+validation, and runtime inference use only the 120-second row. Its 71 model features contain no
+oracle or order-book fields; historical book evidence is joined only after scoring for separate
+five-share and ten-share execution economics. The primary paper operating point targets 15%
+coverage and the secondary diagnostic targets 10%.
+
+```bash
+.venv/bin/btc-directional-model fixed-120-benchmark-run \
+  --config configs/btc-5m-directional-mature-reversal-fixed-120-20260321-20260729.toml
+
+.venv/bin/btc-directional-model fixed-120-paper-candidate-export \
+  --config configs/btc-5m-directional-mature-reversal-fixed-120-20260321-20260729.toml \
+  --benchmark-run runs/btc-mature-reversal-fixed-120-20260321-20260729/<run-id> \
+  --model-key btc-5m-directional-mature-reversal-fixed-120-paper-v1 \
+  --authorize-paper-only
+```
+
+The export command fails unless the benchmark's primary operating point passes accuracy,
+balanced-accuracy, both directional-recall, Wilson, calibration, hard-confidence-tail, and
+ten-share positive-expectancy checks. The exported prediction policy is exactly `120/120/5` and
+remains paper-only pending independent forward evidence.
+
 The same exporter supports the two time-banded paper candidates without adding a second
 training or runtime subsystem. The frequency candidate must bind the causal four-band policy
 selected by its frequency benchmark:

@@ -464,6 +464,29 @@ fn validate_directional_model_entry_policy(
     Ok(())
 }
 
+fn validate_btc_entry_timing(strategy: &BtcStrategyConfig) -> Result<(), HttpError> {
+    let fixed_120_directional_model = matches!(
+        strategy.decision_strategy.as_ref(),
+        Some(BtcDecisionStrategyConfig::BtcDirectionalModel { .. })
+    ) && strategy.min_seconds_after_open == 120
+        && strategy.min_seconds_before_close == 180;
+    let timing_valid = strategy.min_seconds_after_open >= 0
+        && strategy.min_seconds_before_close > 0
+        && strategy
+            .min_seconds_after_open
+            .checked_add(strategy.min_seconds_before_close)
+            .is_some_and(|entry_gate_seconds| {
+                entry_gate_seconds < 300
+                    || (entry_gate_seconds == 300 && fixed_120_directional_model)
+            });
+    if !timing_valid {
+        return Err(HttpError::bad_request(
+            "BTC entry timing gates leave no tradable portion of a five-minute window",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct BtcProcessRuntimeControl {
@@ -1036,15 +1059,7 @@ impl BtcProcessManager {
                 .validate()
                 .map_err(|error| HttpError::bad_request(error.to_string()))?;
         }
-        if strategy
-            .min_seconds_after_open
-            .checked_add(strategy.min_seconds_before_close)
-            .is_none_or(|entry_gate_seconds| entry_gate_seconds >= 300)
-        {
-            return Err(HttpError::bad_request(
-                "BTC entry timing gates leave no tradable portion of a five-minute window",
-            ));
-        }
+        validate_btc_entry_timing(&strategy)?;
         if !(1..=60_000).contains(&control.runtime.strategy_interval_ms)
             || !(1..=86_400).contains(&control.runtime.official_resolution_audit_grace_secs)
             || !(600..=604_800).contains(&control.runtime.official_resolution_watch_retention_secs)
@@ -3388,6 +3403,34 @@ mod lifecycle_tests {
         let mut live_mode = eligible_btc_process();
         live_mode.config.execution.as_mut().unwrap().mode = Some("live".to_string());
         assert!(validate_btc_process_capability(&live_mode, true, true).is_err());
+    }
+
+    #[test]
+    fn entry_timing_accepts_only_the_fixed_120_zero_width_model_window() {
+        let mut fixed_120 = BtcStrategyConfig {
+            min_seconds_after_open: 120,
+            min_seconds_before_close: 180,
+            decision_strategy: Some(BtcDecisionStrategyConfig::BtcDirectionalModel {
+                model_key: "btc-fixed-120".to_string(),
+                artifact_sha256: "a".repeat(64),
+                feature_schema_sha256: "b".repeat(64),
+            }),
+            ..BtcStrategyConfig::default()
+        };
+        validate_btc_entry_timing(&fixed_120).unwrap();
+
+        fixed_120.min_seconds_after_open = 125;
+        fixed_120.min_seconds_before_close = 175;
+        assert!(validate_btc_entry_timing(&fixed_120).is_err());
+
+        fixed_120.min_seconds_after_open = 121;
+        fixed_120.min_seconds_before_close = 180;
+        assert!(validate_btc_entry_timing(&fixed_120).is_err());
+
+        fixed_120.min_seconds_after_open = 120;
+        fixed_120.min_seconds_before_close = 180;
+        fixed_120.decision_strategy = None;
+        assert!(validate_btc_entry_timing(&fixed_120).is_err());
     }
 
     #[test]

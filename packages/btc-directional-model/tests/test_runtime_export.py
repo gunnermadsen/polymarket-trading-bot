@@ -472,6 +472,83 @@ def test_runtime_export_rejects_freeze_manifest_hash_mismatch(tmp_path: Path) ->
         )
 
 
+def test_runtime_export_accepts_exact_fixed_120_policy(tmp_path: Path) -> None:
+    freeze_dir, feature_path, _ = make_frozen_candidate(tmp_path)
+    manifest_path = freeze_dir / "freeze-manifest.json"
+    freeze = json.loads(manifest_path.read_text())
+    freeze["prediction_policy"] = {
+        "type": "first_confidence_crossing",
+        "minimum_seconds_after_open": 120,
+        "maximum_seconds_after_open": 120,
+        "cadence_seconds": 7,
+    }
+    write_json_atomic(manifest_path, freeze)
+    (freeze_dir / "freeze-manifest.sha256").write_text(
+        file_sha256(manifest_path) + "\n"
+    )
+
+    destination = export_runtime_model(
+        freeze_dir=freeze_dir,
+        golden_features=feature_path,
+        output_root=tmp_path / "runtime-models",
+        model_key=MODEL_KEY,
+    )
+    model = json.loads((destination / MODEL_FILENAME).read_text())
+
+    assert model["prediction_policy"] == freeze["prediction_policy"]
+
+
+@pytest.mark.parametrize(
+    "prediction_policy",
+    (
+        {
+            "type": "first_confidence_crossing",
+            "minimum_seconds_after_open": 120,
+            "maximum_seconds_after_open": 125,
+            "cadence_seconds": 5,
+        },
+        {
+            "type": "first_confidence_crossing",
+            "minimum_seconds_after_open": 125,
+            "maximum_seconds_after_open": 125,
+            "cadence_seconds": 5,
+        },
+        {
+            "type": "first_confidence_crossing",
+            "minimum_seconds_after_open": 120,
+            "maximum_seconds_after_open": 120,
+            "cadence_seconds": 0,
+        },
+        {
+            "type": "first_confidence_crossing",
+            "minimum_seconds_after_open": 120,
+            "maximum_seconds_after_open": 120,
+            "cadence_seconds": 5.0,
+        },
+    ),
+)
+def test_runtime_export_rejects_other_prediction_policies(
+    tmp_path: Path,
+    prediction_policy: dict[str, object],
+) -> None:
+    freeze_dir, feature_path, _ = make_frozen_candidate(tmp_path)
+    manifest_path = freeze_dir / "freeze-manifest.json"
+    freeze = json.loads(manifest_path.read_text())
+    freeze["prediction_policy"] = prediction_policy
+    write_json_atomic(manifest_path, freeze)
+    (freeze_dir / "freeze-manifest.sha256").write_text(
+        file_sha256(manifest_path) + "\n"
+    )
+
+    with pytest.raises(RuntimeError, match="exact fixed 120-second policy"):
+        export_runtime_model(
+            freeze_dir=freeze_dir,
+            golden_features=feature_path,
+            output_root=tmp_path / "runtime-models",
+            model_key=MODEL_KEY,
+        )
+
+
 def test_runtime_export_rejects_model_key_with_trailing_dash(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="model key"):
         export_runtime_model(

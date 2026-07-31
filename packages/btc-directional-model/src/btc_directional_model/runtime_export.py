@@ -41,6 +41,12 @@ RAW_PROBABILITY_CLIP = (1e-9, 1.0 - 1e-9)
 CALIBRATION_LOGIT_CLIP = (-40.0, 40.0)
 RUNTIME_DIRECTORY_MODE = 0o755
 RUNTIME_FILE_MODE = 0o644
+PREDICTION_POLICY_FIELDS = {
+    "type",
+    "minimum_seconds_after_open",
+    "maximum_seconds_after_open",
+    "cadence_seconds",
+}
 
 
 def export_runtime_model(
@@ -226,13 +232,27 @@ def validate_bundle_against_freeze(
         raise RuntimeError("runtime export requires at least one fitted tree")
 
     policy = freeze.get("prediction_policy")
-    if policy != {
+    rolling_policy = {
         "type": "first_confidence_crossing",
         "minimum_seconds_after_open": 60,
         "maximum_seconds_after_open": 240,
         "cadence_seconds": 5,
-    }:
-        raise RuntimeError("frozen prediction policy is not the supported 60-240/5 policy")
+    }
+    fixed_120_policy = (
+        isinstance(bundle, FrozenTrainingBundle)
+        and isinstance(policy, dict)
+        and set(policy) == PREDICTION_POLICY_FIELDS
+        and policy.get("type") == "first_confidence_crossing"
+        and policy.get("minimum_seconds_after_open") == 120
+        and policy.get("maximum_seconds_after_open") == 120
+        and type(policy.get("cadence_seconds")) is int
+        and policy["cadence_seconds"] > 0
+    )
+    if policy != rolling_policy and not fixed_120_policy:
+        raise RuntimeError(
+            "frozen prediction policy must be the supported 60-240/5 policy "
+            "or an exact fixed 120-second policy"
+        )
 
 
 def runtime_model_payload(
