@@ -920,8 +920,34 @@ def freeze_and_export_fixed_time_paper_candidate(
         eligible_markets=policy.height,
     )
     policy_checks = operating_point_checks(policy_metrics, config.primary)
+    assessment_path = benchmark_run.resolve() / "paper-freeze-assessment.json"
+    assessment = {
+        "schema_version": "btc-mature-reversal-fixed-time-freeze-assessment-v1",
+        "created_at": datetime.now(UTC).isoformat(),
+        "benchmark_run": str(benchmark_run.resolve()),
+        "benchmark_sha256": file_sha256(benchmark_path),
+        "candidate": FIXED_TIME_CANDIDATE,
+        "decision_second": config.model.decision_second,
+        "estimator_training_seconds": list(config.model.estimator_training_seconds),
+        "status": (
+            "qualified_for_paper_freeze"
+            if all(check["passed"] for check in policy_checks)
+            else "blocked_by_final_policy"
+        ),
+        "threshold_selection": threshold_selection,
+        "policy_metrics": policy_metrics,
+        "policy_checks": policy_checks,
+        "tuning": tuning,
+        "calibrator": asdict(calibrator),
+        "runtime_model_created": False,
+        "trading_process_created": False,
+    }
+    write_json_atomic(assessment_path, assessment)
     if not all(check["passed"] for check in policy_checks):
-        raise RuntimeError("final fixed-time policy cohort did not pass primary gates")
+        raise RuntimeError(
+            "final fixed-time policy cohort did not pass primary gates; "
+            f"assessment: {assessment_path}"
+        )
 
     bundle = FrozenTrainingBundle(
         model=model,
@@ -1044,6 +1070,14 @@ def freeze_and_export_fixed_time_paper_candidate(
         output_root=config.paths.runtime_models,
         model_key=model_key,
     )
+    assessment.update(
+        {
+            "status": "paper_runtime_exported",
+            "runtime_model_created": True,
+            "runtime_model": str(runtime_dir),
+        }
+    )
+    write_json_atomic(assessment_path, assessment)
     return freeze_dir, runtime_dir, manifest
 
 
