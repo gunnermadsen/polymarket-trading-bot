@@ -11,6 +11,8 @@ import polars as pl
 import pytest
 
 from btc_directional_model.loss_tail_benchmark import (
+    EXPECTED_STRICT_KEY_SHA256,
+    EXPECTED_STRICT_ROWS,
     MATCHED_BOUNDARY_CONTROL,
     _apply_worker_resources,
     _prediction_artifact_frame,
@@ -23,6 +25,15 @@ from btc_directional_model.loss_tail_benchmark import (
     _validate_matched_prediction_frames,
 )
 from btc_directional_model.loss_tail_config import load_loss_tail_benchmark_config
+
+
+def test_direct_loss_tail_cohort_is_frozen() -> None:
+    assert EXPECTED_STRICT_ROWS == 264_121
+    assert (
+        EXPECTED_STRICT_KEY_SHA256
+        == "2e4a6481d822be3491f4d574ee0ec8d11ec7d5dd8139979a54dc581a4daf312e"
+    )
+
 
 CONFIG_PATH = (
     Path(__file__).parents[1] / "configs" / "btc-5m-directional-loss-tail-20260413-20260729.toml"

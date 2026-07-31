@@ -75,14 +75,16 @@ from .provenance import runtime_provenance
 LOSS_TAIL_BENCHMARK_SCHEMA_VERSION = "btc-boundary-loss-tail-benchmark-v1"
 MATCHED_BOUNDARY_CONTROL = "matched_boundary_alignment_control"
 
-# These values were recorded by the prior independently completed 55-240
-# extraction.  Freezing them makes a silent source/cohort drift fail closed.
+# These values were recorded from the audited direct core + oracle + strict PMXT
+# cohort.  The cohort deliberately is not censored by continuous-context
+# availability because those features are outside the frozen 124-feature
+# contract.  Freezing the direct cohort makes silent source drift fail closed.
 EXPECTED_CORE_FEATURE_SHA256 = "1fc8d07b1b3389c2c3ac8286a2ef78a389d0302b80b21c90384f7528093d256f"
 EXPECTED_EXECUTION_MANIFEST_SHA256 = (
     "6bb946690c2ab5ab5ebe855556c2bcf941a5d92a9485f6814b2fb6f9c104ed1a"
 )
-EXPECTED_STRICT_KEY_SHA256 = "ca967461392497f1ffb0b96c4f35274c39e3227bc0e34d21c8d5b6daafc94866"
-EXPECTED_STRICT_ROWS = 263_329
+EXPECTED_STRICT_KEY_SHA256 = "2e4a6481d822be3491f4d574ee0ec8d11ec7d5dd8139979a54dc581a4daf312e"
+EXPECTED_STRICT_ROWS = 264_121
 EXPECTED_STRICT_MARKETS = 9_116
 
 _CACHE_KEYS = ("market_id", "window_start", "observed_at", "seconds_elapsed")
