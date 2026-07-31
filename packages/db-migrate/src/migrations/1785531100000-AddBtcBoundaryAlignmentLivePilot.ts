@@ -285,7 +285,14 @@ export class AddBtcBoundaryAlignmentLivePilot1785531100000
           AND process_type = 'btc_5m'
           AND process_scope = 'realtime_paper'
           AND process_key = $3
-          AND config = $4::jsonb
+          -- The manager rotates next_experiment_key when recovering a paper process. It is
+          -- run-control state, not part of the strategy/runtime/paper architecture being cloned.
+          AND (config #- '{raw,btc_realtime_paper,next_experiment_key}')
+              = ($4::jsonb #- '{raw,btc_realtime_paper,next_experiment_key}')
+          AND length(config #>> '{raw,btc_realtime_paper,next_experiment_key}')
+              BETWEEN 1 AND 128
+          AND config #>> '{raw,btc_realtime_paper,next_experiment_key}'
+              ~ '^[a-z0-9][a-z0-9._-]{0,127}$'
           AND metadata = $5::jsonb;
       `,
       [
@@ -386,7 +393,12 @@ export class AddBtcBoundaryAlignmentLivePilot1785531100000
           AND source.process_type = 'btc_5m'
           AND source.process_scope = 'realtime_paper'
           AND source.process_key = $8
-          AND source.config = $9::jsonb
+          AND (source.config #- '{raw,btc_realtime_paper,next_experiment_key}')
+              = ($9::jsonb #- '{raw,btc_realtime_paper,next_experiment_key}')
+          AND length(source.config #>> '{raw,btc_realtime_paper,next_experiment_key}')
+              BETWEEN 1 AND 128
+          AND source.config #>> '{raw,btc_realtime_paper,next_experiment_key}'
+              ~ '^[a-z0-9][a-z0-9._-]{0,127}$'
           AND source.metadata = $10::jsonb
         RETURNING process_id::text;
       `,
