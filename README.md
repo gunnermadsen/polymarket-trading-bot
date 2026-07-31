@@ -83,19 +83,23 @@ docker compose up -d --no-deps --force-recreate grafana
 
 ## Live Credentials
 
-Set the CLOB credential secrets in `.env`:
+Set only the CLOB authentication secrets in `.env`:
 
 ```bash
 POLYMARKET_CLOB_API_KEY=...
 POLYMARKET_CLOB_SECRET=...
 POLYMARKET_CLOB_PASSPHRASE=...
 POLYMARKET_PRIVATE_KEY=...
-POLYMARKET_FUNDER_ADDRESS=...
-POLYMARKET_SIGNATURE_TYPE=...
 ```
 
+`POLYMARKET_FUNDER_ADDRESS` and `POLYMARKET_SIGNATURE_TYPE` are non-secret
+account identity settings. They are mapped explicitly by both Compose files;
+the funder address is supplied as deployment-specific Compose configuration and
+the signature type defaults to `POLY_1271` for this pilot.
+
 Starting or stopping the `polymarket-bot` container does not select trading
-activity. The admin lifecycle supports only `btc_5m/realtime_paper` processes.
+activity. The admin lifecycle supports managed `btc_5m/realtime_paper`
+processes with a process-owned `paper` or `live` execution venue.
 Create or replace an inactive definition through
 `PUT /admin/trading-processes/by-key/{process_key}`; collection `POST` and
 generic process activation are intentionally unsupported. Use
@@ -107,8 +111,79 @@ distinct process-owned run, identified by `run_id`. Immutable run evidence
 lives in the existing process lifecycle records. Lifecycle and record ownership
 remain canonical to the selected `process_id`; the stable process key can be
 reused. Trading mode is selected by
-`trading_processes.config.execution.mode`; host configuration is limited to
-credentials, venue URLs, and hard risk caps.
+`trading_processes.config.execution.mode`; live definitions also require a
+bounded `execution.account_ref` which must exactly match the deployment's
+non-secret `POLYMARKET_LIVE_ACCOUNT_REF`. Host configuration is limited to
+credentials, the canonical account reference, venue URLs, transport toggles,
+and hard risk caps.
+
+The disabled live pilot is installed by migration with process ID
+`effa3e5e-2f5a-4f18-98ba-06e4c0da74ef` and process key
+`btc-5m-directional-model-boundary-alignment-live-pilot`. It starts in
+credential-validation-only mode:
+
+```json
+{
+  "mode": "live",
+  "execute_signals": false,
+  "live_capital": false,
+  "account_ref": "polymarket-primary",
+  "taker_fee_rate": null
+}
+```
+
+With `POLYMARKET_LIVE_ORDER_SUBMIT_ENABLED=false` and
+`POLYMARKET_LIVE_USER_WS_ENABLED=false`, run the non-trading connectivity and
+reconciliation check through:
+
+```text
+POST /admin/trading-processes/effa3e5e-2f5a-4f18-98ba-06e4c0da74ef/live-preflight
+```
+
+The preflight reads authenticated API-key, collateral/allowance, open-order,
+geoblock, and account-reconciliation state. It never signs or submits an order.
+It reports credential connectivity independently from activation readiness, and
+requires both process and host trading switches to remain disabled.
+
+Verify the private key and configured signing identity separately with the
+signing-only diagnostic:
+
+```text
+POST /admin/live/order-dry-run
+Content-Type: application/json
+
+{
+  "token_id": "<current-outcome-token-id>",
+  "side": "buy",
+  "order_type": "fok",
+  "price": "0.50",
+  "size": "1"
+}
+```
+
+This endpoint builds and signs locally but has no order-POST path. Its response
+redacts the owner and signature; do not persist the diagnostic response in
+application logs.
+
+This branch deliberately cannot activate live capital yet. Process accounting
+remains `unproven` because Polymarket position responses are wallet aggregates;
+no durable zero-exposure/account-ownership baseline has been established for
+the pilot. Exchange redemption is also not integrated, so internally observed
+market resolution never releases live exposure or credits reusable capital.
+The source model remains `paper_only` as well. These are explicit activation
+blockers, not warnings: preflight `ready` remains false, process start is denied,
+and the entry gate cannot open.
+
+Future live activation requires a distinct immutable directional-model
+artifact whose manifest explicitly permits live capital, both live process
+flags enabled together, live order submission and user websocket transport
+enabled in deployment configuration, a durable process-owned accounting
+baseline, exchange redemption proof, a successful process start/reconcile,
+and the process-scoped live-entry endpoint. Live activation also enforces the
+two-second reference/book freshness ceiling. A checked enable grants exactly
+one POST attempt; any user-websocket account event, websocket failure,
+reconciliation change, or manual halt consumes or invalidates that grant.
+Wallet-wide entry enable is intentionally rejected.
 
 ## BTC Five-Minute Chainlink Process Contract
 
@@ -116,8 +191,9 @@ Legacy Chainlink definitions and existing durable processes use
 `btc_realtime_paper_process_v2`; new definitions that need explicit strategy
 selection use the v3 contract below. The stable identity is
 `process_type=btc_5m`, `process_scope=realtime_paper`, plus a unique
-`process_key`. The execution contract is paper-only, executes approved signals,
-and never permits live capital. Unknown fields inside
+`process_key`. Paper definitions execute approved signals and never permit live
+capital; live definitions use the same strategy/runtime contract and change
+only the process-owned execution venue. Unknown fields inside
 `config.raw.btc_realtime_paper` are rejected. In particular, the retired
 `ml_shadow` setting is not part of this contract.
 

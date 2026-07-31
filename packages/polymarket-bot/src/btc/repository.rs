@@ -21,6 +21,7 @@ use super::{
     },
     directional_model::BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
     execution_guard::reference_execution_guard,
+    execution_lifecycle::BtcExecutionMode,
     predictive_regime_v2::{
         ShadowPredictiveRegimeV2Candidate, ShadowPredictiveRegimeV2CandidateSource,
         ShadowPredictiveRegimeV2Evaluation, ShadowPredictiveRegimeV2State,
@@ -169,10 +170,11 @@ fn ensure_unambiguous_order_run_identity(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct BtcPaperSettlementRecord {
+pub struct BtcSettlementRecord {
     pub process_id: Uuid,
     pub run_id: Uuid,
     pub settlement_id: Uuid,
+    pub execution_mode: String,
     pub order_id: String,
     pub market_id: String,
     pub token_id: String,
@@ -193,6 +195,9 @@ pub struct BtcPaperSettlementRecord {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+/// Compatibility alias for callers that only operate the paper venue.
+pub type BtcPaperSettlementRecord = BtcSettlementRecord;
 
 #[derive(Debug, Clone, FromRow)]
 struct ReferenceTickRow {
@@ -365,6 +370,7 @@ WITH causal_credited_rows AS (
     l.process_id,
     l.order_id,
     l.settlement_id,
+    l.execution_mode,
     l.credited_at,
     l.filled_size,
     l.entry_notional,
@@ -382,6 +388,7 @@ WITH causal_credited_rows AS (
     order_id,
     min(credited_at) AS first_credited_at,
     count(DISTINCT (
+      execution_mode,
       filled_size,
       entry_notional,
       entry_fees,
@@ -391,6 +398,7 @@ WITH causal_credited_rows AS (
   FROM causal_credited_rows
   GROUP BY process_id, order_id
   HAVING count(DISTINCT (
+    execution_mode,
     filled_size,
     entry_notional,
     entry_fees,
@@ -402,6 +410,7 @@ WITH causal_credited_rows AS (
     l.process_id,
     l.order_id,
     l.settlement_id,
+    l.execution_mode,
     l.credited_at,
     l.net_pnl
   FROM causal_credited_rows l
@@ -417,7 +426,7 @@ WITH causal_credited_rows AS (
   WHERE o.process_id = $1
     AND o.created_at <= $2
     AND o.raw_payload #>> '{request,metadata,execution_intent}' = 'entry'
-), process_paper_fills AS (
+), process_execution_fills AS (
   SELECT
     o.process_id,
     o.order_id,
@@ -428,12 +437,12 @@ WITH causal_credited_rows AS (
   JOIN polymarket.fills f
     ON f.process_id = o.process_id
    AND f.order_id = o.order_id
-  WHERE f.source = 'paper'
+  WHERE f.source IN ('paper', 'live')
     AND f.timestamp_utc <= $2
   GROUP BY o.process_id, o.order_id
 ), unsettled_orders AS (
   SELECT f.process_id, f.order_id, f.last_filled_at, f.entry_debit_usd, f.fill_ids
-  FROM process_paper_fills f
+  FROM process_execution_fills f
   LEFT JOIN canonical_credited_orders c
     ON c.process_id = f.process_id
    AND c.order_id = f.order_id
@@ -588,6 +597,7 @@ WITH order_identity AS MATERIALIZED (
   FROM polymarket.btc_paper_settlement_ledger
   WHERE process_id = $1
     AND run_id = $2
+    AND execution_mode = 'paper'
 )
 SELECT f.entry_debits, s.settlement_credits,
        o.order_count, f.fill_count, s.settlement_ids,
@@ -608,7 +618,7 @@ INSERT INTO polymarket.btc_strategy_decisions (
 )
 VALUES (
   $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-  $21,'paper',$22
+  $21,$22,$23
 )
 ON CONFLICT (decision_id, decision_at) DO NOTHING
 "#;
@@ -624,7 +634,7 @@ WHERE process_id = $1
   AND decision_at = $4
 "#;
 
-const DISCOVER_PENDING_PAPER_SETTLEMENTS_SQL: &str = r#"
+const DISCOVER_PENDING_SETTLEMENTS_SQL: &str = r#"
 WITH order_identity AS MATERIALIZED (
   SELECT
     o.process_id,
@@ -665,7 +675,7 @@ WITH order_identity AS MATERIALIZED (
   JOIN polymarket.fills f
     ON f.process_id = $1
    AND f.order_id = o.order_id
-   AND f.source = 'paper'
+   AND f.source = $3
   WHERE NOT COALESCE(
     o.metadata_run_id <> o.legacy_experiment_id,
     false
@@ -699,13 +709,13 @@ WITH order_identity AS MATERIALIZED (
     AND w.resolution_source = m.official_resolution_source
 ), inserted AS (
   INSERT INTO polymarket.btc_paper_settlement_ledger (
-    process_id, run_id, order_id, market_id, token_id, fill_ids,
+    process_id, run_id, execution_mode, order_id, market_id, token_id, fill_ids,
     official_outcome, official_winning_token_id,
     official_resolution_received_at, official_resolution_source,
     filled_size, entry_notional, entry_fees, payout, net_pnl
   )
   SELECT
-    process_id, run_id, order_id, market_id, token_id, fill_ids,
+    process_id, run_id, $3, order_id, market_id, token_id, fill_ids,
     official_outcome, official_winning_token_id,
     official_resolution_received_at, official_resolution_source,
     filled_size, entry_notional, entry_fees, payout,
@@ -720,8 +730,8 @@ SELECT
   (SELECT COUNT(*)::bigint FROM inserted) AS inserted_count
 "#;
 
-const LOAD_PENDING_PAPER_SETTLEMENTS_SQL: &str = r#"
-SELECT settlement_id, run_id, process_id, order_id, market_id, token_id,
+const LOAD_PENDING_SETTLEMENTS_SQL: &str = r#"
+SELECT settlement_id, run_id, process_id, execution_mode, order_id, market_id, token_id,
   fill_ids,
   official_outcome, official_winning_token_id,
   official_resolution_received_at, official_resolution_source,
@@ -731,20 +741,22 @@ SELECT settlement_id, run_id, process_id, order_id, market_id, token_id,
 FROM polymarket.btc_paper_settlement_ledger
 WHERE process_id = $1
   AND run_id = $2
+  AND execution_mode = $3
   AND credit_status = 'pending'
 ORDER BY official_resolution_received_at, order_id, settlement_id
 "#;
 
-const MARK_PAPER_SETTLEMENT_CREDITED_SQL: &str = r#"
+const MARK_SETTLEMENT_RECOGNIZED_SQL: &str = r#"
 UPDATE polymarket.btc_paper_settlement_ledger
 SET credit_status = 'credited',
     credited_at = now(),
     credit_attempts = credit_attempts + 1,
-    credit_evidence = $4,
+    credit_evidence = $5,
     updated_at = now()
 WHERE process_id = $1
   AND run_id = $2
   AND settlement_id = $3
+  AND execution_mode = $4
   AND credit_status = 'pending'
 "#;
 
@@ -2952,9 +2964,9 @@ impl BtcRepository {
         .transpose()
     }
 
-    /// Reconstructs the causal UTC-day realized-PnL watermark and every still-unsettled paper
-    /// entry for one stable trading process. This state is deliberately process-owned: it carries
-    /// across immutable execution runs and must never be filtered by run identity.
+    /// Reconstructs the causal UTC-day realized-PnL watermark and every still-unsettled paper or
+    /// live entry for one stable trading process. This state is deliberately process-owned: it
+    /// carries across immutable execution runs and must never be filtered by run identity.
     pub async fn load_daily_realized_pnl_high_water_mark_state(
         &self,
         process_id: Uuid,
@@ -3079,6 +3091,7 @@ impl BtcRepository {
         decision: &BtcDecision,
         entry_admission_evidence: Option<&serde_json::Value>,
         order_plan_id: Option<Uuid>,
+        execution_mode: BtcExecutionMode,
         status: &str,
     ) -> Result<bool> {
         if decision.process_id != process_id {
@@ -3122,6 +3135,7 @@ impl BtcRepository {
             .bind(status)
             .bind(decision.reject_reason.map(|reason| reason.as_str()))
             .bind(order_plan_id)
+            .bind(execution_mode.as_str())
             .bind(metadata)
             .execute(&self.pool)
             .await
@@ -3154,35 +3168,91 @@ impl BtcRepository {
     }
 
     /// Materializes every newly eligible official settlement into a durable, idempotent ledger
-    /// and returns credits still awaiting application to the in-memory paper venue. Eligibility
-    /// requires the immutable official market fact and its matching durable resolution watch.
+    /// and returns records still awaiting venue-specific recognition. Fill selection is exact for
+    /// the requested execution source. Eligibility requires the immutable official market fact
+    /// and its matching durable resolution watch.
+    pub async fn discover_pending_settlements(
+        &self,
+        process_id: Uuid,
+        run_id: Uuid,
+        execution_mode: BtcExecutionMode,
+    ) -> Result<Vec<BtcSettlementRecord>> {
+        let (has_identity_conflict, _inserted_count) =
+            sqlx::query_as::<_, (bool, i64)>(DISCOVER_PENDING_SETTLEMENTS_SQL)
+                .bind(process_id)
+                .bind(run_id)
+                .bind(execution_mode.as_str())
+                .fetch_one(&self.pool)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to discover durable BTC {} settlements",
+                        execution_mode.as_str()
+                    )
+                })?;
+        ensure_unambiguous_order_run_identity(process_id, run_id, has_identity_conflict)?;
+
+        let records = sqlx::query_as::<_, BtcSettlementRecord>(LOAD_PENDING_SETTLEMENTS_SQL)
+            .bind(process_id)
+            .bind(run_id)
+            .bind(execution_mode.as_str())
+            .fetch_all(&self.pool)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to load pending BTC {} settlements",
+                    execution_mode.as_str()
+                )
+            })?;
+        for record in &records {
+            validate_settlement_record(record, execution_mode)?;
+        }
+        Ok(records)
+    }
+
+    /// Compatibility wrapper for the existing paper lifecycle.
     pub async fn discover_pending_paper_settlements(
         &self,
         process_id: Uuid,
         run_id: Uuid,
     ) -> Result<Vec<BtcPaperSettlementRecord>> {
-        let (has_identity_conflict, _inserted_count) =
-            sqlx::query_as::<_, (bool, i64)>(DISCOVER_PENDING_PAPER_SETTLEMENTS_SQL)
-                .bind(process_id)
-                .bind(run_id)
-                .fetch_one(&self.pool)
-                .await
-                .context("failed to discover durable BTC paper settlements")?;
-        ensure_unambiguous_order_run_identity(process_id, run_id, has_identity_conflict)?;
-
-        let records =
-            sqlx::query_as::<_, BtcPaperSettlementRecord>(LOAD_PENDING_PAPER_SETTLEMENTS_SQL)
-                .bind(process_id)
-                .bind(run_id)
-                .fetch_all(&self.pool)
-                .await
-                .context("failed to load pending BTC paper settlement credits")?;
-        for record in &records {
-            validate_paper_settlement_record(record)?;
-        }
-        Ok(records)
+        self.discover_pending_settlements(process_id, run_id, BtcExecutionMode::Paper)
+            .await
     }
 
+    pub async fn mark_settlement_recognized(
+        &self,
+        process_id: Uuid,
+        run_id: Uuid,
+        settlement_id: Uuid,
+        execution_mode: BtcExecutionMode,
+        recognition_evidence: &serde_json::Value,
+    ) -> Result<bool> {
+        validate_settlement_recognition_mode(execution_mode)?;
+        if !recognition_evidence.is_object() {
+            bail!(
+                "{} settlement recognition evidence must be a JSON object",
+                execution_mode.as_str()
+            );
+        }
+        let result = sqlx::query(MARK_SETTLEMENT_RECOGNIZED_SQL)
+            .bind(process_id)
+            .bind(run_id)
+            .bind(settlement_id)
+            .bind(execution_mode.as_str())
+            .bind(recognition_evidence)
+            .execute(&self.pool)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to mark BTC {} settlement recognized",
+                    execution_mode.as_str()
+                )
+            })?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Compatibility wrapper for the existing paper lifecycle.
     pub async fn mark_paper_settlement_credited(
         &self,
         process_id: Uuid,
@@ -3190,19 +3260,24 @@ impl BtcRepository {
         settlement_id: Uuid,
         credit_evidence: &serde_json::Value,
     ) -> Result<bool> {
-        if !credit_evidence.is_object() {
-            bail!("paper settlement credit evidence must be a JSON object");
-        }
-        let result = sqlx::query(MARK_PAPER_SETTLEMENT_CREDITED_SQL)
-            .bind(process_id)
-            .bind(run_id)
-            .bind(settlement_id)
-            .bind(credit_evidence)
-            .execute(&self.pool)
-            .await
-            .context("failed to mark BTC paper settlement credited")?;
-        Ok(result.rows_affected() == 1)
+        self.mark_settlement_recognized(
+            process_id,
+            run_id,
+            settlement_id,
+            BtcExecutionMode::Paper,
+            credit_evidence,
+        )
+        .await
     }
+}
+
+fn validate_settlement_recognition_mode(execution_mode: BtcExecutionMode) -> Result<()> {
+    if execution_mode == BtcExecutionMode::Live {
+        bail!(
+            "live settlement recognition requires exact exchange redemption proof and is not implemented"
+        );
+    }
+    Ok(())
 }
 
 async fn load_market_boundary_for_update(
@@ -3241,29 +3316,35 @@ fn validate_run_manifest(
     Ok(())
 }
 
-fn validate_paper_settlement_record(record: &BtcPaperSettlementRecord) -> Result<()> {
+fn validate_settlement_record(
+    record: &BtcSettlementRecord,
+    expected_mode: BtcExecutionMode,
+) -> Result<()> {
+    if record.execution_mode != expected_mode.as_str() {
+        bail!("BTC settlement execution mode conflicts with the requested source");
+    }
     if !matches!(record.official_outcome.as_str(), "up" | "down") {
-        bail!("paper settlement has a nonofficial outcome");
+        bail!("BTC settlement has a nonofficial outcome");
     }
     if !is_supported_official_resolution_source(&record.official_resolution_source) {
-        bail!("paper settlement has an unsupported official-resolution source");
+        bail!("BTC settlement has an unsupported official-resolution source");
     }
     if record.official_winning_token_id.trim().is_empty() {
-        bail!("paper settlement is missing its official winning token");
+        bail!("BTC settlement is missing its official winning token");
     }
     if record
         .fill_ids
         .as_array()
         .is_none_or(|fill_ids| fill_ids.is_empty())
     {
-        bail!("paper settlement must attribute at least one fill");
+        bail!("BTC settlement must attribute at least one fill");
     }
     if record.filled_size <= Decimal::ZERO
         || record.entry_notional < Decimal::ZERO
         || record.entry_fees < Decimal::ZERO
         || record.payout < Decimal::ZERO
     {
-        bail!("paper settlement contains invalid amounts");
+        bail!("BTC settlement contains invalid amounts");
     }
     let expected_payout = if record.token_id == record.official_winning_token_id {
         record.filled_size
@@ -3271,10 +3352,10 @@ fn validate_paper_settlement_record(record: &BtcPaperSettlementRecord) -> Result
         Decimal::ZERO
     };
     if record.payout != expected_payout {
-        bail!("paper settlement payout conflicts with the official winning token");
+        bail!("BTC settlement payout conflicts with the official winning token");
     }
     if record.net_pnl != record.payout - record.entry_notional - record.entry_fees {
-        bail!("paper settlement net PnL conflicts with its payout and entry costs");
+        bail!("BTC settlement net PnL conflicts with its payout and entry costs");
     }
     Ok(())
 }
@@ -4877,6 +4958,7 @@ mod tests {
         assert!(resume.contains("i.has_identity_conflict"));
         assert!(resume.contains("f.process_id = $1"));
         assert!(resume.contains("where process_id = $1\n    and run_id = $2"));
+        assert!(resume.contains("and execution_mode = 'paper'"));
         assert!(resume.matches("metadata,run_id").count() >= 2);
         assert!(resume.matches("experiment_id").count() >= 2);
         assert!(!resume.contains("btc_paper_experiments"));
@@ -4884,19 +4966,24 @@ mod tests {
         let decision_insert = INSERT_STRATEGY_DECISION_SQL.to_ascii_lowercase();
         assert!(decision_insert.contains("process_id, run_id, decision_id"));
         assert!(decision_insert.contains("values (\n  $1,$2,$3"));
+        assert!(decision_insert.contains("$21,$22,$23"));
+        assert!(!decision_insert.contains("'paper'"));
         assert!(!decision_insert.contains("experiment_id"));
 
         let decision_update = UPDATE_STRATEGY_DECISION_EXECUTION_SQL.to_ascii_lowercase();
         assert!(decision_update.contains("where process_id = $1"));
         assert!(decision_update.contains("and run_id = $2"));
 
-        let discovery = DISCOVER_PENDING_PAPER_SETTLEMENTS_SQL.to_ascii_lowercase();
+        let discovery = DISCOVER_PENDING_SETTLEMENTS_SQL.to_ascii_lowercase();
         assert!(discovery.contains("with order_identity as materialized"));
         assert!(discovery.contains("where o.process_id = $1"));
         assert!(discovery.contains("bool_or("));
         assert!(discovery.contains("as has_identity_conflict"));
         assert!(discovery.contains("on f.process_id = $1"));
+        assert!(discovery.contains("and f.source = $3"));
         assert!(discovery.contains("$2::uuid as run_id"));
+        assert!(discovery.contains("process_id, run_id, execution_mode"));
+        assert!(discovery.contains("process_id, run_id, $3"));
         assert!(discovery.contains("on conflict (run_id, order_id) do nothing"));
         assert!(discovery.contains("where not (select has_identity_conflict from identity_state)"));
         assert!(discovery.contains(
@@ -4906,15 +4993,38 @@ mod tests {
         assert!(discovery.matches("experiment_id").count() >= 2);
         assert!(!discovery.contains("btc_paper_experiments"));
 
-        for query in [
-            LOAD_PENDING_PAPER_SETTLEMENTS_SQL,
-            MARK_PAPER_SETTLEMENT_CREDITED_SQL,
-        ] {
+        for query in [LOAD_PENDING_SETTLEMENTS_SQL, MARK_SETTLEMENT_RECOGNIZED_SQL] {
             let normalized = query.to_ascii_lowercase();
             assert!(normalized.contains("process_id = $1"));
             assert!(normalized.contains("run_id = $2"));
+            assert!(
+                normalized.contains("execution_mode = $3")
+                    || normalized.contains("execution_mode = $4")
+            );
             assert!(!normalized.contains("experiment_id"));
         }
+    }
+
+    #[test]
+    fn strategy_decision_execution_mode_binding_preserves_paper_and_accepts_live() {
+        assert_eq!(BtcExecutionMode::Paper.as_str(), "paper");
+        assert_eq!(BtcExecutionMode::Live.as_str(), "live");
+
+        let insert = INSERT_STRATEGY_DECISION_SQL.to_ascii_lowercase();
+        assert!(insert.contains("order_plan_id, execution_mode"));
+        assert!(insert.contains("$21,$22,$23"));
+        assert!(!insert.contains("'paper'"));
+        assert!(!insert.contains("'live'"));
+    }
+
+    #[test]
+    fn settlement_recognition_remains_paper_only_until_redemption_is_proven() {
+        validate_settlement_recognition_mode(BtcExecutionMode::Paper).unwrap();
+
+        let error = validate_settlement_recognition_mode(BtcExecutionMode::Live).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("exact exchange redemption proof"));
     }
 
     #[test]
@@ -4947,6 +5057,8 @@ mod tests {
         assert!(normalized.contains("o.process_id = $1"));
         assert!(normalized.contains("f.process_id = o.process_id"));
         assert!(normalized.contains("c.process_id = f.process_id"));
+        assert!(normalized.contains("l.execution_mode"));
+        assert!(normalized.contains("f.source in ('paper', 'live')"));
         assert!(normalized.contains("l.credited_at <= $2"));
         assert!(normalized.contains("f.timestamp_utc <= $2"));
     }
@@ -5966,12 +6078,13 @@ mod tests {
         );
     }
 
-    fn settlement_record() -> BtcPaperSettlementRecord {
+    fn settlement_record() -> BtcSettlementRecord {
         let at = Utc::now();
-        BtcPaperSettlementRecord {
+        BtcSettlementRecord {
             process_id: Uuid::from_u128(3),
             run_id: Uuid::from_u128(2),
             settlement_id: Uuid::from_u128(1),
+            execution_mode: "paper".to_string(),
             order_id: "order".to_string(),
             market_id: "market".to_string(),
             token_id: "up-token".to_string(),
@@ -5997,37 +6110,46 @@ mod tests {
     #[test]
     fn paper_settlement_contract_requires_official_provenance_fill_attribution_and_binary_payout() {
         let winner = settlement_record();
-        validate_paper_settlement_record(&winner).unwrap();
+        validate_settlement_record(&winner, BtcExecutionMode::Paper).unwrap();
 
         let mut gamma_winner = winner.clone();
         gamma_winner.official_resolution_source = "gamma_rest_reconciliation".to_string();
-        validate_paper_settlement_record(&gamma_winner).unwrap();
+        validate_settlement_record(&gamma_winner, BtcExecutionMode::Paper).unwrap();
 
         let mut loser = winner.clone();
         loser.token_id = "down-token".to_string();
         loser.payout = Decimal::ZERO;
         loser.net_pnl = dec!(-2.1);
-        validate_paper_settlement_record(&loser).unwrap();
+        validate_settlement_record(&loser, BtcExecutionMode::Paper).unwrap();
 
         let mut unsupported = winner.clone();
         unsupported.official_resolution_source = "local_chainlink_label".to_string();
-        assert!(validate_paper_settlement_record(&unsupported).is_err());
+        assert!(validate_settlement_record(&unsupported, BtcExecutionMode::Paper).is_err());
 
         let mut missing_fill_attribution = winner.clone();
         missing_fill_attribution.fill_ids = serde_json::json!([]);
-        assert!(validate_paper_settlement_record(&missing_fill_attribution).is_err());
+        assert!(
+            validate_settlement_record(&missing_fill_attribution, BtcExecutionMode::Paper).is_err()
+        );
 
         let mut negative = winner.clone();
         negative.payout = dec!(-1);
-        assert!(validate_paper_settlement_record(&negative).is_err());
+        assert!(validate_settlement_record(&negative, BtcExecutionMode::Paper).is_err());
 
         let mut wrong_binary_payout = winner;
         wrong_binary_payout.payout = dec!(4.99);
-        assert!(validate_paper_settlement_record(&wrong_binary_payout).is_err());
+        assert!(validate_settlement_record(&wrong_binary_payout, BtcExecutionMode::Paper).is_err());
 
         let mut inconsistent_net_pnl = settlement_record();
         inconsistent_net_pnl.net_pnl = Decimal::ZERO;
-        assert!(validate_paper_settlement_record(&inconsistent_net_pnl).is_err());
+        assert!(
+            validate_settlement_record(&inconsistent_net_pnl, BtcExecutionMode::Paper).is_err()
+        );
+
+        let mut wrong_mode = settlement_record();
+        wrong_mode.execution_mode = "live".to_string();
+        assert!(validate_settlement_record(&wrong_mode, BtcExecutionMode::Paper).is_err());
+        validate_settlement_record(&wrong_mode, BtcExecutionMode::Live).unwrap();
     }
 
     #[test]

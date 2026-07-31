@@ -72,6 +72,7 @@ pub struct PostgresConfig {
 
 #[derive(Debug, Clone)]
 pub struct LiveExecutionConfig {
+    pub account_ref: String,
     pub order_submit_enabled: bool,
     pub max_order_notional_usd: Decimal,
     pub max_open_notional_usd: Decimal,
@@ -104,6 +105,9 @@ pub struct HttpConfig {
 impl AppConfig {
     pub fn from_env() -> Result<Self> {
         let live = LiveExecutionConfig {
+            account_ref: env_or("POLYMARKET_LIVE_ACCOUNT_REF", "polymarket-primary")
+                .trim()
+                .to_string(),
             order_submit_enabled: parse_bool("POLYMARKET_LIVE_ORDER_SUBMIT_ENABLED", false),
             max_order_notional_usd: parse_decimal(
                 "POLYMARKET_LIVE_MAX_ORDER_NOTIONAL_USD",
@@ -224,27 +228,6 @@ impl AppConfig {
                 );
             }
         }
-        if btc.realtime_enabled || btc.paper_enabled {
-            let mut conflicting_flags = Vec::new();
-            for (name, enabled) in [
-                (
-                    "POLYMARKET_LIVE_ORDER_SUBMIT_ENABLED",
-                    live.order_submit_enabled,
-                ),
-                ("POLYMARKET_LIVE_USER_WS_ENABLED", live.user_ws_enabled),
-            ] {
-                if enabled {
-                    conflicting_flags.push(name);
-                }
-            }
-            if !conflicting_flags.is_empty() {
-                bail!(
-                    "BTC realtime execution runs require an isolated process; disable {}",
-                    conflicting_flags.join(", ")
-                );
-            }
-        }
-
         Ok(Self {
             live,
             gamma_base_url: env_or(
@@ -283,6 +266,14 @@ impl AppConfig {
 
 impl LiveExecutionConfig {
     pub fn validate_for_live(&self) -> Result<()> {
+        if self.account_ref.is_empty()
+            || self.account_ref.len() > 128
+            || !self.account_ref.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':')
+            })
+        {
+            bail!("POLYMARKET_LIVE_ACCOUNT_REF must be a bounded account identity slug");
+        }
         if self.max_order_notional_usd <= Decimal::ZERO {
             bail!("POLYMARKET_LIVE_MAX_ORDER_NOTIONAL_USD must be positive");
         }
@@ -320,6 +311,16 @@ impl LiveExecutionConfig {
             }
         }
         if self.order_submit_enabled {
+            if !self.user_ws_enabled {
+                bail!(
+                    "POLYMARKET_LIVE_USER_WS_ENABLED must be true when live order submission is enabled"
+                );
+            }
+            if !self.require_idempotency_clean {
+                bail!(
+                    "POLYMARKET_LIVE_REQUIRE_IDEMPOTENCY_CLEAN must be true when live order submission is enabled"
+                );
+            }
             for (key, value) in [
                 ("POLYMARKET_CLOB_API_KEY", &self.clob_api_key),
                 ("POLYMARKET_CLOB_SECRET", &self.clob_secret),

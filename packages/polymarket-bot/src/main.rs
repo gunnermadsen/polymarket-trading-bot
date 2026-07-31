@@ -13,9 +13,10 @@ use chrono::Utc;
 use polymarket_bot::{
     btc::{
         runtime_model, runtime_status_from_inputs, BookRegistry, BtcDecisionStrategyConfig,
-        BtcDirectionalModelEntryPolicy, BtcEntryAdmissionConfig, BtcPaperProcessConfig,
-        BtcPaperProcessRunner, BtcPlaybookRuntimeHandle, BtcRepository, BtcRuntime,
-        BtcRuntimeConfig, BtcRuntimeHandle, BtcStrategyConfig, PaperPreviewConfig,
+        BtcDirectionalModelEntryPolicy, BtcEntryAdmissionConfig, BtcExecutionLifecycle,
+        BtcExecutionMode, BtcLiveExecutionAdapter, BtcPlaybookRuntimeHandle, BtcProcessConfig,
+        BtcProcessRunner, BtcRepository, BtcRuntime, BtcRuntimeConfig, BtcRuntimeHandle,
+        BtcStrategyConfig, LiveExecutionLifecycle, PaperExecutionLifecycle, PaperPreviewConfig,
         PaperVenue as BtcPaperVenue, PaperVenueConfig, RuntimeModelSelection,
         BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
         BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION,
@@ -42,13 +43,16 @@ use polymarket_bot::{
         ControlApi, HealthResponse, HealthStatus, HttpError, IngestionBackfillCancelResponse,
         IngestionBackfillEnqueueResponse, IngestionBackfillEventsResponse,
         IngestionBackfillJobResponse, IngestionBackfillJobsResponse, MetricsResponse,
-        TradingProcessResponse, TradingProcessStartPreviewResponse, TradingProcessStatusResponse,
-        TradingProcessesResponse,
+        TradingProcessLivePreflightResponse, TradingProcessResponse,
+        TradingProcessStartPreviewResponse, TradingProcessStatusResponse, TradingProcessesResponse,
     },
     ingestion::{
         job::BackfillRequest as IngestionBackfillRequest, repository::IngestionRepository,
     },
-    models::{ProcessExecutionConfig, TradingProcess, TradingProcessConfig},
+    models::{
+        EffectiveProcessExecutionConfig, ProcessExecutionConfig, TradingProcess,
+        TradingProcessConfig,
+    },
     store::Store,
 };
 use rust_decimal_macros::dec;
@@ -67,6 +71,8 @@ const LEGACY_BTC_PROCESS_SCHEMA_VERSION: &str = "btc_realtime_paper_process_v1";
 const BTC_PROCESS_TYPE: &str = "btc_5m";
 const BTC_PROCESS_SCOPE: &str = "realtime_paper";
 const BTC_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(45);
+const BTC_LIVE_QUIESCE_TIMEOUT: Duration = Duration::from_secs(10);
+const BTC_LIVE_CONTROL_TIMEOUT: Duration = Duration::from_secs(20);
 const COMPILED_SOURCE_IDENTITY: &str = env!("POLYMARKET_COMPILED_SOURCE_ID");
 
 async fn preflight_btc_run_identity(
@@ -156,12 +162,14 @@ fn validate_btc_process_terminal_request(status: &str, reason: &str) -> Result<(
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct BtcProcessManagerConfig {
     btc: BtcConfig,
     gamma_base_url: String,
     clob_rest_base_url: String,
     clob_ws_url: String,
+    live_venue: Option<Arc<LiveVenue>>,
+    live_reconcile_interval: Duration,
 }
 
 fn shared_market_data_config_compatible(left: &BtcRuntimeConfig, right: &BtcRuntimeConfig) -> bool {
@@ -208,6 +216,7 @@ impl Default for BtcRealtimePaperControlConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BtcDefinitionUse {
+    InactiveDefinition,
     ExplicitStart,
     DurableResume,
 }
@@ -567,9 +576,13 @@ struct PreparedBtcStartDefinition {
     runtime: BtcRuntimeConfig,
     paper_venue: PaperVenueConfig,
     paper_stress_previews: Vec<PaperPreviewConfig>,
+    execution_mode: BtcExecutionMode,
+    account_ref: Option<String>,
     frozen_process_config: TradingProcessConfig,
     config_hash: String,
 }
+
+const BTC_LIVE_EXECUTION_FRESHNESS_LIMIT_MS: i64 = 2_000;
 
 fn validate_btc_start_eligibility(
     process: &TradingProcess,
@@ -577,6 +590,7 @@ fn validate_btc_start_eligibility(
     paper_enabled: bool,
 ) -> Result<(), HttpError> {
     validate_btc_process_capability(process, realtime_enabled, paper_enabled)?;
+    validate_btc_execution_activation(process)?;
     if process.enabled || matches!(process.status.as_str(), "starting" | "running" | "stopping") {
         return Err(HttpError::conflict(
             "BTC trading process already claims an active lifecycle",
@@ -601,35 +615,144 @@ fn validate_btc_process_capability(
 ) -> Result<(), HttpError> {
     if !BtcProcessManager::is_managed_process(process) {
         return Err(HttpError::bad_request(
-            "process is not a managed BTC realtime-paper process",
+            "process is not a managed BTC realtime execution process",
         ));
     }
-    if !realtime_enabled || !paper_enabled {
+    if !realtime_enabled {
         return Err(HttpError::bad_request(
-            "BTC realtime-paper capability is disabled for this deployment",
+            "BTC realtime capability is disabled for this deployment",
         ));
     }
     let execution = process.effective_execution();
-    if execution.mode != "paper" {
-        return Err(HttpError::bad_request(
-            "BTC realtime-paper process execution.mode must be paper",
-        ));
-    }
-    if !execution.execute_signals {
-        return Err(HttpError::bad_request(
-            "BTC realtime-paper process execution.execute_signals must be true",
-        ));
-    }
-    if execution.live_capital {
-        return Err(HttpError::bad_request(
-            "BTC realtime-paper process execution.live_capital must be false",
-        ));
+    match execution.mode.as_str() {
+        "paper" => {
+            if !paper_enabled {
+                return Err(HttpError::bad_request(
+                    "BTC paper execution capability is disabled for this deployment",
+                ));
+            }
+            if execution.live_capital {
+                return Err(HttpError::bad_request(
+                    "BTC paper execution cannot enable live capital",
+                ));
+            }
+            if !execution.execute_signals {
+                return Err(HttpError::bad_request(
+                    "BTC paper execution requires execution.execute_signals=true",
+                ));
+            }
+            if execution.account_ref.is_some() {
+                return Err(HttpError::bad_request(
+                    "BTC paper execution cannot select a live account_ref",
+                ));
+            }
+        }
+        "live" => {
+            let account_ref = execution
+                .account_ref
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("");
+            if account_ref.is_empty()
+                || account_ref.len() > 128
+                || !account_ref.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':')
+                })
+            {
+                return Err(HttpError::bad_request(
+                    "BTC live execution requires a bounded account_ref slug",
+                ));
+            }
+            if execution.execute_signals != execution.live_capital {
+                return Err(HttpError::bad_request(
+                    "BTC live execution must enable execute_signals and live_capital together",
+                ));
+            }
+        }
+        _ => {
+            return Err(HttpError::bad_request(
+                "BTC execution.mode must be paper or live",
+            ));
+        }
     }
     Ok(())
 }
 
+fn validate_btc_execution_activation(process: &TradingProcess) -> Result<(), HttpError> {
+    let execution = process.effective_execution();
+    match execution.mode.as_str() {
+        "paper" if execution.execute_signals && !execution.live_capital => Ok(()),
+        "live" if execution.execute_signals && execution.live_capital => Ok(()),
+        "paper" => Err(HttpError::bad_request(
+            "BTC paper start requires execution.execute_signals=true",
+        )),
+        "live" => Err(HttpError::bad_request(
+            "BTC live start requires execution.execute_signals=true and execution.live_capital=true; credential-only definitions cannot start",
+        )),
+        _ => Err(HttpError::bad_request(
+            "BTC execution.mode must be paper or live",
+        )),
+    }
+}
+
+fn validate_btc_live_model_authorization(strategy: &BtcStrategyConfig) -> Result<(), HttpError> {
+    let Some(BtcDecisionStrategyConfig::BtcDirectionalModel {
+        model_key,
+        artifact_sha256,
+        feature_schema_sha256,
+    }) = strategy.decision_strategy.as_ref()
+    else {
+        return Err(HttpError::bad_request(
+            "BTC live execution currently requires an immutable directional-model artifact",
+        ));
+    };
+    let model = runtime_model(&RuntimeModelSelection {
+        model_key: model_key.clone(),
+        artifact_sha256: artifact_sha256.clone(),
+        feature_schema_sha256: feature_schema_sha256.clone(),
+    })
+    .map_err(|error| HttpError::bad_request(format!("invalid live model artifact: {error}")))?;
+    if !model.live_capital_allowed() {
+        return Err(HttpError::conflict(format!(
+            "model {} is not authorized for live capital (deployment_scope={}, production_qualified={})",
+            model.model_key(),
+            model.deployment_scope().unwrap_or("unspecified"),
+            model.production_qualified()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_btc_live_execution_freshness(strategy: &BtcStrategyConfig) -> Result<(), HttpError> {
+    if strategy.max_reference_age_ms > BTC_LIVE_EXECUTION_FRESHNESS_LIMIT_MS
+        || strategy.max_book_age_ms > BTC_LIVE_EXECUTION_FRESHNESS_LIMIT_MS
+    {
+        return Err(HttpError::bad_request(format!(
+            "BTC live execution requires max_reference_age_ms and max_book_age_ms at or below {BTC_LIVE_EXECUTION_FRESHNESS_LIMIT_MS}"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn prepare_btc_start_definition(
     resolved: ResolvedBtcProcessDefinition,
+) -> Result<PreparedBtcStartDefinition, HttpError> {
+    prepare_btc_start_definition_for_execution(
+        resolved,
+        &EffectiveProcessExecutionConfig {
+            mode: "paper".to_string(),
+            execute_signals: true,
+            live_capital: false,
+            account_ref: None,
+            taker_fee_rate: dec!(0.03),
+        },
+    )
+}
+
+fn prepare_btc_start_definition_for_execution(
+    resolved: ResolvedBtcProcessDefinition,
+    execution: &EffectiveProcessExecutionConfig,
 ) -> Result<PreparedBtcStartDefinition, HttpError> {
     let ResolvedBtcProcessDefinition {
         control,
@@ -654,9 +777,25 @@ fn prepare_btc_start_definition(
     };
     let run_key = control.next_experiment_key;
     let preregistration_sha256 = control.preregistration_sha256;
+    let execution_mode = match execution.mode.as_str() {
+        "paper" => BtcExecutionMode::Paper,
+        "live" => BtcExecutionMode::Live,
+        _ => {
+            return Err(HttpError::bad_request(
+                "BTC execution.mode must be paper or live",
+            ))
+        }
+    };
+    if execution_mode == BtcExecutionMode::Live {
+        validate_btc_live_execution_freshness(&strategy)?;
+    }
+    let run_namespace = match execution_mode {
+        BtcExecutionMode::Paper => "polymarket-bot/btc-paper",
+        BtcExecutionMode::Live => "polymarket-bot/btc-live",
+    };
     let run_id = uuid::Uuid::new_v5(
         &uuid::Uuid::NAMESPACE_URL,
-        format!("polymarket-bot/btc-paper/{run_key}").as_bytes(),
+        format!("{run_namespace}/{run_key}").as_bytes(),
     );
     let mut frozen_raw = serde_json::json!({
         "pipeline_version": pipeline_version,
@@ -694,11 +833,25 @@ fn prepare_btc_start_definition(
                     .map_err(|error| HttpError::internal(error.to_string()))?,
             );
     }
+    if execution_mode == BtcExecutionMode::Live {
+        frozen_raw["paper"]["execution_enabled"] = serde_json::Value::Bool(false);
+        frozen_raw
+            .as_object_mut()
+            .expect("BTC frozen process config is an object")
+            .insert(
+                "live".to_string(),
+                serde_json::json!({
+                    "execution_enabled": true,
+                    "account_ref": execution.account_ref,
+                }),
+            );
+    }
     let frozen_process_config = TradingProcessConfig {
         execution: Some(ProcessExecutionConfig {
-            mode: Some("paper".to_string()),
-            execute_signals: true,
-            live_capital: false,
+            mode: Some(execution_mode.as_str().to_string()),
+            execute_signals: execution.execute_signals,
+            live_capital: execution.live_capital,
+            account_ref: execution.account_ref.clone(),
             taker_fee_rate: None,
         }),
         raw: frozen_raw,
@@ -715,6 +868,8 @@ fn prepare_btc_start_definition(
         runtime,
         paper_venue,
         paper_stress_previews,
+        execution_mode,
+        account_ref: execution.account_ref.clone(),
         frozen_process_config,
         config_hash,
     })
@@ -771,7 +926,15 @@ struct ActiveBtcPlaybook {
     run_id: uuid::Uuid,
     run_key: String,
     config_hash: String,
+    execution_mode: BtcExecutionMode,
+    live_venue: Option<Arc<LiveVenue>>,
     runtime: BtcPlaybookRuntimeHandle,
+}
+
+struct BtcExecutionComponents {
+    venue: Arc<dyn ExecutionVenue>,
+    lifecycle: Arc<dyn BtcExecutionLifecycle>,
+    live_venue: Option<Arc<LiveVenue>>,
 }
 
 struct SharedBtcRuntime {
@@ -820,6 +983,65 @@ impl BtcProcessManager {
             active_playbooks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             shared_runtime: Arc::new(tokio::sync::Mutex::new(None)),
             terminal_pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn execution_components(
+        &self,
+        execution_mode: BtcExecutionMode,
+        account_ref: Option<&str>,
+        process_id: uuid::Uuid,
+        books: Arc<tokio::sync::RwLock<BookRegistry>>,
+        paper_venue_config: PaperVenueConfig,
+        strategy: &BtcStrategyConfig,
+    ) -> Result<BtcExecutionComponents> {
+        match execution_mode {
+            BtcExecutionMode::Paper => {
+                let paper_venue = Arc::new(BtcPaperVenue::new_with_reference_execution_guard(
+                    books,
+                    paper_venue_config,
+                    strategy.max_depth_participation,
+                    process_id,
+                    chrono::Duration::milliseconds(strategy.max_reference_age_ms),
+                )?);
+                let venue: Arc<dyn ExecutionVenue> = paper_venue.clone();
+                let lifecycle: Arc<dyn BtcExecutionLifecycle> =
+                    Arc::new(PaperExecutionLifecycle::new(paper_venue));
+                Ok(BtcExecutionComponents {
+                    venue,
+                    lifecycle,
+                    live_venue: None,
+                })
+            }
+            BtcExecutionMode::Live => {
+                let account_ref =
+                    account_ref.context("live BTC execution is missing account_ref")?;
+                let global = self
+                    .config
+                    .live_venue
+                    .as_ref()
+                    .context("live BTC execution credentials are not configured")?;
+                let live_venue = Arc::new(global.bind_process(process_id, account_ref)?);
+                let delegate: Arc<dyn ExecutionVenue> = live_venue.clone();
+                let venue: Arc<dyn ExecutionVenue> = Arc::new(BtcLiveExecutionAdapter::new(
+                    delegate,
+                    books,
+                    process_id,
+                    chrono::Duration::milliseconds(strategy.max_reference_age_ms),
+                    chrono::Duration::milliseconds(strategy.max_book_age_ms),
+                    strategy.max_depth_participation,
+                )?);
+                let lifecycle: Arc<dyn BtcExecutionLifecycle> =
+                    Arc::new(LiveExecutionLifecycle::new(
+                        venue.clone(),
+                        self.config.live_reconcile_interval,
+                    )?);
+                Ok(BtcExecutionComponents {
+                    venue,
+                    lifecycle,
+                    live_venue: Some(live_venue),
+                })
+            }
         }
     }
 
@@ -962,6 +1184,13 @@ impl BtcProcessManager {
         self.validate_definition(process, BtcDefinitionUse::ExplicitStart)
     }
 
+    fn validate_inactive_definition(
+        &self,
+        process: &TradingProcess,
+    ) -> Result<ResolvedBtcProcessDefinition, HttpError> {
+        self.validate_definition(process, BtcDefinitionUse::InactiveDefinition)
+    }
+
     fn validate_resume_definition(
         &self,
         process: &TradingProcess,
@@ -974,18 +1203,25 @@ impl BtcProcessManager {
         process: &TradingProcess,
         definition_use: BtcDefinitionUse,
     ) -> Result<ResolvedBtcProcessDefinition, HttpError> {
-        if definition_use == BtcDefinitionUse::ExplicitStart {
-            validate_btc_start_eligibility(
+        match definition_use {
+            BtcDefinitionUse::ExplicitStart => validate_btc_start_eligibility(
                 process,
                 self.config.btc.realtime_enabled,
                 self.config.btc.paper_enabled,
-            )?;
-        } else {
-            validate_btc_process_capability(
+            )?,
+            BtcDefinitionUse::DurableResume => {
+                validate_btc_process_capability(
+                    process,
+                    self.config.btc.realtime_enabled,
+                    self.config.btc.paper_enabled,
+                )?;
+                validate_btc_execution_activation(process)?;
+            }
+            BtcDefinitionUse::InactiveDefinition => validate_btc_process_capability(
                 process,
                 self.config.btc.realtime_enabled,
                 self.config.btc.paper_enabled,
-            )?;
+            )?,
         }
         if process
             .config
@@ -995,7 +1231,7 @@ impl BtcProcessManager {
             .is_some()
         {
             return Err(HttpError::bad_request(
-                "BTC realtime-paper config accepts only execution safety fields and raw.btc_realtime_paper settings",
+                "BTC realtime execution config accepts only execution safety fields and raw.btc_realtime_paper settings",
             ));
         }
         let raw = process.config.raw.as_object().ok_or_else(|| {
@@ -1050,6 +1286,11 @@ impl BtcProcessManager {
             ));
         }
         let strategy = resolve_btc_strategy(&control)?;
+        if process.effective_execution().mode == "live"
+            && definition_use != BtcDefinitionUse::InactiveDefinition
+        {
+            validate_btc_live_model_authorization(&strategy)?;
+        }
         validate_directional_model_entry_policy(
             &strategy,
             control.paper.directional_model_entry_policy,
@@ -1156,14 +1397,263 @@ impl BtcProcessManager {
         &self,
         process: &TradingProcess,
     ) -> Result<PreparedBtcStartDefinition, HttpError> {
-        prepare_btc_start_definition(self.validate_start_definition(process)?)
+        prepare_btc_start_definition_for_execution(
+            self.validate_start_definition(process)?,
+            &process.effective_execution(),
+        )
     }
 
     fn prepare_resume_definition(
         &self,
         process: &TradingProcess,
     ) -> Result<PreparedBtcStartDefinition, HttpError> {
-        prepare_btc_start_definition(self.validate_resume_definition(process)?)
+        prepare_btc_start_definition_for_execution(
+            self.validate_resume_definition(process)?,
+            &process.effective_execution(),
+        )
+    }
+
+    async fn live_preflight(
+        &self,
+        process_id: uuid::Uuid,
+    ) -> Result<TradingProcessLivePreflightResponse, HttpError> {
+        let process = self
+            .store
+            .get_trading_process(process_id)
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?
+            .ok_or_else(|| HttpError::not_found("trading process not found"))?;
+        if process.enabled || matches!(process.status.as_str(), "starting" | "running" | "stopping")
+        {
+            return Err(HttpError::conflict(
+                "credential preflight requires an inactive trading process",
+            ));
+        }
+        self.validate_inactive_definition(&process)?;
+        let execution = process.effective_execution();
+        if execution.mode != "live" {
+            return Err(HttpError::bad_request(
+                "process-scoped live preflight requires execution.mode=live",
+            ));
+        }
+        let account_ref = execution
+            .account_ref
+            .as_deref()
+            .ok_or_else(|| HttpError::internal("validated live process is missing account_ref"))?
+            .to_string();
+        let global = self.config.live_venue.as_ref().cloned().ok_or_else(|| {
+            HttpError::bad_request("live execution credentials are not configured")
+        })?;
+        let venue = Arc::new(
+            global
+                .bind_process(process_id, &account_ref)
+                .map_err(|error| HttpError::bad_request(error.to_string()))?,
+        );
+        let identity = venue
+            .live_identity_diagnostics()
+            .await
+            .map_err(|error| HttpError::bad_request(error.to_string()))?;
+        let reconciliation_result = venue.reconcile().await;
+        let (reconciliation, reconciliation_error) = match reconciliation_result {
+            Ok(report) => (Some(report), None),
+            Err(error) => {
+                let mut message = error.to_string();
+                message.truncate(512);
+                (None, Some(message))
+            }
+        };
+        let status = venue
+            .live_status()
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        let credential_connectivity_ready = identity.credentials_present
+            && identity.account_identity_valid
+            && identity.account_identity_fingerprint_sha256.is_some()
+            && identity.api_keys_readable
+            && identity.balance_allowance_readable
+            && identity.open_orders_readable
+            && identity.signer_address.is_some()
+            && identity.configured_funder_address.is_some()
+            && identity.resolved_signature_type.is_some()
+            && identity.authenticated_client_address.is_some();
+        let reconciliation_ready = reconciliation.as_ref().is_some_and(|report| {
+            report.balances_checked
+                && report.mismatches_found == 0
+                && report.unresolved_count == 0
+                && status.process_accounting_proven
+        });
+        let trading_disabled = !execution.execute_signals
+            && !execution.live_capital
+            && !status.order_submit_enabled
+            && !status.entries_enabled;
+        let mut reasons = Vec::with_capacity(3);
+        if !credential_connectivity_ready {
+            reasons.push("credential_connectivity_failed".to_string());
+        }
+        if !reconciliation_ready {
+            reasons.push("process_reconciliation_not_clean".to_string());
+        }
+        if !trading_disabled {
+            reasons.push("credential_preflight_requires_trading_disabled".to_string());
+        }
+        let ready = reasons.is_empty();
+        let checked_at = Utc::now();
+        self.record_event(
+            process_id,
+            if ready { "info" } else { "warn" },
+            "btc_live_preflight_completed",
+            "BTC live credential and reconciliation preflight completed without order submission",
+            serde_json::json!({
+                "account_ref": &account_ref,
+                "ready": ready,
+                "credential_connectivity_ready": credential_connectivity_ready,
+                "reconciliation_ready": reconciliation_ready,
+                "trading_disabled": trading_disabled,
+                "reasons": &reasons,
+                "checked_at": checked_at,
+            }),
+        )
+        .await;
+        Ok(TradingProcessLivePreflightResponse {
+            process_id,
+            account_ref,
+            credential_connectivity_ready,
+            reconciliation_ready,
+            trading_disabled,
+            ready,
+            reasons,
+            identity,
+            status,
+            reconciliation,
+            reconciliation_error,
+            checked_at,
+        })
+    }
+
+    async fn set_live_entries_enabled(
+        &self,
+        process_id: uuid::Uuid,
+        enabled: bool,
+    ) -> Result<LiveVenueStatus, HttpError> {
+        let _transition_guard = self.transition.lock().await;
+        let (venue, active_run_id, active_run_key, active_config_hash) = {
+            let active = self.active_playbooks.lock().await;
+            let active = active
+                .get(&process_id)
+                .filter(|active| active.execution_mode == BtcExecutionMode::Live)
+                .ok_or_else(|| HttpError::conflict("active live process runtime not found"))?;
+            let venue = active
+                .live_venue
+                .clone()
+                .ok_or_else(|| HttpError::internal("active live runtime omitted its venue"))?;
+            (
+                venue,
+                active.run_id,
+                active.run_key.clone(),
+                active.config_hash.clone(),
+            )
+        };
+        if enabled {
+            let process = self
+                .store
+                .get_trading_process(process_id)
+                .await
+                .map_err(|error| HttpError::internal(error.to_string()))?
+                .ok_or_else(|| HttpError::not_found("trading process not found"))?;
+            if !process.enabled || process.status != "running" {
+                return Err(HttpError::conflict(
+                    "live entries require the exact active process to be enabled and running",
+                ));
+            }
+            let prepared = self.prepare_resume_definition(&process)?;
+            if prepared.run_id != active_run_id || prepared.run_key != active_run_key {
+                return Err(HttpError::conflict(
+                    "live process definition no longer matches the active run identity",
+                ));
+            }
+            let manifest = self
+                .repository
+                .load_run_manifest(process_id, active_run_id, &active_run_key)
+                .await
+                .map_err(|error| HttpError::internal(error.to_string()))?
+                .ok_or_else(|| HttpError::conflict("active live run manifest is missing"))?;
+            if manifest.config_hash != active_config_hash
+                || resume_process_contract_projection(
+                    serde_json::to_value(&prepared.frozen_process_config)
+                        .map_err(|error| HttpError::internal(error.to_string()))?,
+                ) != resume_process_contract_projection(manifest.frozen_process_config)
+            {
+                return Err(HttpError::conflict(
+                    "live process definition or manifest drifted from the active runtime",
+                ));
+            }
+            let active_still_matches = self
+                .active_playbooks
+                .lock()
+                .await
+                .get(&process_id)
+                .is_some_and(|active| {
+                    active.execution_mode == BtcExecutionMode::Live
+                        && active.run_id == active_run_id
+                        && active.config_hash == active_config_hash
+                        && active.live_venue.is_some()
+                });
+            if !active_still_matches {
+                return Err(HttpError::conflict(
+                    "active live runtime changed during entry-enable validation",
+                ));
+            }
+        }
+        // The venue owns the authoritative close/drain/reconcile/generation-CAS sequence.
+        // Bound the whole operation instead of performing an earlier, non-authoritative
+        // reconciliation that could go stale before the gate is reopened.
+        let status = tokio::time::timeout(
+            BTC_LIVE_CONTROL_TIMEOUT,
+            venue.set_live_entries_enabled(
+                enabled,
+                (!enabled).then(|| "process_manual_disable".to_string()),
+            ),
+        )
+        .await
+        .map_err(|_| {
+            HttpError::conflict(format!(
+                "live entry transition timed out after {}s; entries remain fail-closed",
+                BTC_LIVE_CONTROL_TIMEOUT.as_secs()
+            ))
+        })?
+        .map_err(|error| HttpError::conflict(error.to_string()))?;
+        if enabled && !status.entries_enabled {
+            let _ = venue
+                .set_live_entries_enabled(
+                    false,
+                    Some("entry_enable_preconditions_failed".to_string()),
+                )
+                .await;
+            return Err(HttpError::conflict(format!(
+                "live entry enable preconditions failed: {}",
+                status.reason.as_deref().unwrap_or("unknown")
+            )));
+        }
+        self.record_event(
+            process_id,
+            "warn",
+            if enabled {
+                "btc_live_entries_enabled"
+            } else {
+                "btc_live_entries_disabled"
+            },
+            if enabled {
+                "BTC live entries manually enabled after strict reconciliation"
+            } else {
+                "BTC live entries manually disabled"
+            },
+            serde_json::json!({
+                "entries_enabled": status.entries_enabled,
+                "reason": &status.reason,
+            }),
+        )
+        .await;
+        Ok(status)
     }
 
     async fn ensure_start_slot_available(&self, process_id: uuid::Uuid) -> Result<(), HttpError> {
@@ -1175,11 +1665,65 @@ impl BtcProcessManager {
         }
         if let Some(active) = self.active_playbooks.lock().await.get(&process_id) {
             return Err(HttpError::conflict(format!(
-                "BTC process {} is already running paper run {}",
+                "BTC process {} is already running execution run {}",
                 active.process_id, active.run_key
             )));
         }
         Ok(())
+    }
+
+    async fn ensure_execution_account_available(
+        &self,
+        process_id: uuid::Uuid,
+        execution_mode: BtcExecutionMode,
+    ) -> Result<(), HttpError> {
+        if execution_mode != BtcExecutionMode::Live {
+            return Ok(());
+        }
+        let active = self.active_playbooks.lock().await;
+        if let Some(owner) = active.values().find(|active| {
+            active.process_id != process_id && active.execution_mode == BtcExecutionMode::Live
+        }) {
+            return Err(HttpError::conflict(format!(
+                "live credential account is already owned by active process {}",
+                owner.process_id
+            )));
+        }
+        Ok(())
+    }
+
+    async fn quiesce_live_venue(venue: Option<&Arc<LiveVenue>>, reason: &str) -> Option<String> {
+        let Some(venue) = venue else {
+            return None;
+        };
+        let quiesce = async {
+            let mut failures = Vec::with_capacity(3);
+            if let Err(error) = venue
+                .set_live_entries_enabled(false, Some(reason.to_string()))
+                .await
+            {
+                failures.push(format!("live_entry_disable_failed: {error:#}"));
+            }
+            if let Err(error) = venue.cancel_all().await {
+                failures.push(format!("live_order_cancel_failed: {error:#}"));
+            }
+            match venue.reconcile().await {
+                Ok(report) if report.open_orders == 0 && report.unresolved_count == 0 => {}
+                Ok(report) => failures.push(format!(
+                    "live_quiesce_unresolved: open_orders={} unresolved_count={}",
+                    report.open_orders, report.unresolved_count
+                )),
+                Err(error) => failures.push(format!("live_quiesce_reconcile_failed: {error:#}")),
+            }
+            failures
+        };
+        match tokio::time::timeout(BTC_LIVE_QUIESCE_TIMEOUT, quiesce).await {
+            Ok(failures) => (!failures.is_empty()).then(|| failures.join("; ")),
+            Err(_) => Some(format!(
+                "live_quiesce_timeout_after_{}s",
+                BTC_LIVE_QUIESCE_TIMEOUT.as_secs()
+            )),
+        }
     }
 
     async fn preview_start(
@@ -1294,7 +1838,7 @@ impl BtcProcessManager {
             .map_err(|error| HttpError::internal(error.to_string()))?;
             if durable_claims > 0 {
                 return Err(HttpError::conflict(
-                    "durable BTC realtime-paper state exists but cannot be reattached exactly; database state was left unchanged",
+                    "durable BTC realtime execution state exists but cannot be reattached exactly; database state was left unchanged",
                 ));
             }
             return Ok(Vec::new());
@@ -1319,6 +1863,8 @@ impl BtcProcessManager {
             .map_err(|error| HttpError::internal(error.to_string()))?
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
         let prepared = self.prepare_resume_definition(&process)?;
+        self.ensure_execution_account_available(process_id, prepared.execution_mode)
+            .await?;
         let manifest = self
             .repository
             .load_run_manifest(process_id, prepared.run_id, &prepared.run_key)
@@ -1349,6 +1895,8 @@ impl BtcProcessManager {
             runtime: runtime_config,
             paper_venue: paper_venue_config,
             paper_stress_previews,
+            execution_mode,
+            account_ref,
             frozen_process_config: _,
             config_hash: current_config_hash,
         } = prepared;
@@ -1356,7 +1904,7 @@ impl BtcProcessManager {
             process_id,
             "info",
             "btc_runtime_resuming",
-            "BTC realtime-paper runtime resume accepted",
+            "BTC realtime execution runtime resume accepted",
             serde_json::json!({
                 "run_id": run_id,
                 "run_key": &run_key,
@@ -1368,23 +1916,27 @@ impl BtcProcessManager {
         )
         .await;
 
-        let startup_result: Result<BtcPlaybookRuntimeHandle> = async {
+        let startup_result: Result<(BtcPlaybookRuntimeHandle, Option<Arc<LiveVenue>>)> = async {
             let (state, books) = self
                 .ensure_shared_runtime(&runtime_config)
                 .await
                 .map_err(|error| anyhow::anyhow!("{error:?}"))?;
-            let paper_venue = BtcPaperVenue::new_with_reference_execution_guard(
+            let components = self.execution_components(
+                execution_mode,
+                account_ref.as_deref(),
+                process_id,
                 books.clone(),
                 paper_venue_config,
-                strategy.max_depth_participation,
-                process_id,
-                chrono::Duration::milliseconds(strategy.max_reference_age_ms),
+                &strategy,
             )?;
-            let process_runner = Arc::new(BtcPaperProcessRunner::new(
+            let live_process_venue = components.live_venue.clone();
+            let process_runner = Arc::new(BtcProcessRunner::new_with_execution(
                 self.repository.clone(),
                 self.store.clone(),
-                paper_venue,
-                BtcPaperProcessConfig {
+                components.venue,
+                books,
+                components.lifecycle,
+                BtcProcessConfig {
                     run_id,
                     run_key: run_key.clone(),
                     process_id,
@@ -1401,10 +1953,13 @@ impl BtcProcessManager {
                 .resume()
                 .await
                 .context("failed to reattach immutable BTC run before feed resume")?;
-            BtcPlaybookRuntimeHandle::start(runtime_config, process_runner, state)
+            Ok((
+                BtcPlaybookRuntimeHandle::start(runtime_config, process_runner, state)?,
+                live_process_venue,
+            ))
         }
         .await;
-        let runtime = match startup_result {
+        let (runtime, live_process_venue) = match startup_result {
             Ok(runtime) => runtime,
             Err(resume_error) => {
                 return Err(HttpError::internal(format!(
@@ -1419,6 +1974,8 @@ impl BtcProcessManager {
                 run_id,
                 run_key: run_key.clone(),
                 config_hash: config_hash.clone(),
+                execution_mode,
+                live_venue: live_process_venue,
                 runtime,
             },
         );
@@ -1426,7 +1983,7 @@ impl BtcProcessManager {
             process_id,
             "info",
             "btc_runtime_resumed",
-            "BTC realtime-paper runtime resumed after service restart",
+            "BTC realtime execution runtime resumed after service restart",
             serde_json::json!({
                 "run_id": run_id,
                 "run_key": &run_key,
@@ -1441,7 +1998,7 @@ impl BtcProcessManager {
             run_id = %run_id,
             run_key = %run_key,
             config_hash = %config_hash,
-            "durable BTC realtime-paper runtime resumed"
+            "durable BTC realtime execution runtime resumed"
         );
         Ok(process)
     }
@@ -1467,9 +2024,13 @@ impl BtcProcessManager {
             runtime: runtime_config,
             paper_venue: paper_venue_config,
             paper_stress_previews,
+            execution_mode,
+            account_ref,
             frozen_process_config,
             config_hash,
         } = self.prepare_start_definition(&process)?;
+        self.ensure_execution_account_available(process_id, execution_mode)
+            .await?;
         preflight_btc_run_identity(&self.repository, &run_key, run_id)
             .await
             .map_err(|error| HttpError::conflict(error.to_string()))?;
@@ -1512,7 +2073,7 @@ impl BtcProcessManager {
             process_id,
             "info",
             "btc_runtime_starting",
-            "BTC realtime-paper runtime start accepted",
+            "BTC realtime execution runtime start accepted",
             serde_json::json!({
                 "run_id": run_id,
                 "run_key": &run_key,
@@ -1521,23 +2082,27 @@ impl BtcProcessManager {
         )
         .await;
 
-        let startup_result: Result<BtcPlaybookRuntimeHandle> = async {
+        let startup_result: Result<(BtcPlaybookRuntimeHandle, Option<Arc<LiveVenue>>)> = async {
             let (state, books) = self
                 .ensure_shared_runtime(&runtime_config)
                 .await
                 .map_err(|error| anyhow::anyhow!("{error:?}"))?;
-            let paper_venue = BtcPaperVenue::new_with_reference_execution_guard(
+            let components = self.execution_components(
+                execution_mode,
+                account_ref.as_deref(),
+                process_id,
                 books.clone(),
                 paper_venue_config,
-                strategy.max_depth_participation,
-                process_id,
-                chrono::Duration::milliseconds(strategy.max_reference_age_ms),
+                &strategy,
             )?;
-            let process_runner = Arc::new(BtcPaperProcessRunner::new(
+            let live_process_venue = components.live_venue.clone();
+            let process_runner = Arc::new(BtcProcessRunner::new_with_execution(
                 self.repository.clone(),
                 self.store.clone(),
-                paper_venue,
-                BtcPaperProcessConfig {
+                components.venue,
+                books,
+                components.lifecycle,
+                BtcProcessConfig {
                     run_id,
                     run_key: run_key.clone(),
                     process_id,
@@ -1554,11 +2119,14 @@ impl BtcProcessManager {
                 .initialize()
                 .await
                 .context("failed to initialize immutable BTC run before feed startup")?;
-            BtcPlaybookRuntimeHandle::start(runtime_config, process_runner, state)
+            Ok((
+                BtcPlaybookRuntimeHandle::start(runtime_config, process_runner, state)?,
+                live_process_venue,
+            ))
         }
         .await;
 
-        let runtime = match startup_result {
+        let (runtime, live_process_venue) = match startup_result {
             Ok(runtime) => runtime,
             Err(startup_error) => {
                 let reason = format!("btc_startup_failed: {startup_error:#}");
@@ -1599,6 +2167,8 @@ impl BtcProcessManager {
                 run_id,
                 run_key: run_key.clone(),
                 config_hash: config_hash.clone(),
+                execution_mode,
+                live_venue: live_process_venue,
                 runtime,
             },
         );
@@ -1614,7 +2184,7 @@ impl BtcProcessManager {
             process_id,
             "info",
             "btc_runtime_started",
-            "BTC realtime-paper runtime is running",
+            "BTC realtime execution runtime is running",
             serde_json::json!({
                 "run_id": run_id,
                 "run_key": &run_key,
@@ -1628,7 +2198,7 @@ impl BtcProcessManager {
             run_key = %run_key,
             config_hash = %config_hash,
             compiled_source_identity = COMPILED_SOURCE_IDENTITY,
-            "API-owned BTC realtime-paper runtime started"
+            "API-owned BTC realtime execution runtime started"
         );
         Ok(running_process)
     }
@@ -1731,7 +2301,7 @@ impl BtcProcessManager {
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
         if !Self::is_managed_process(&process) {
             return Err(HttpError::bad_request(
-                "process is not a managed BTC realtime-paper process",
+                "process is not a managed BTC realtime execution process",
             ));
         }
 
@@ -1775,7 +2345,7 @@ impl BtcProcessManager {
             process_id,
             "info",
             "btc_runtime_stopping",
-            "BTC realtime-paper runtime stop accepted",
+            "BTC realtime execution runtime stop accepted",
             serde_json::json!({
                 "run_id": active_run_id,
                 "run_key": active_run_key,
@@ -1803,6 +2373,8 @@ impl BtcProcessManager {
             .lock()
             .await
             .insert(process_id, provisional_pending);
+        let live_quiesce_failure =
+            Self::quiesce_live_venue(active.live_venue.as_ref(), "process_runtime_stopping").await;
         let shutdown_result =
             tokio::time::timeout(BTC_RUNTIME_SHUTDOWN_TIMEOUT, active.runtime.shutdown()).await;
         let shutdown_failure = match shutdown_result {
@@ -1815,14 +2387,24 @@ impl BtcProcessManager {
                 BTC_RUNTIME_SHUTDOWN_TIMEOUT.as_secs()
             )),
         };
-        let terminal_status = if runtime_failed || shutdown_failure.is_some() {
-            "failed"
+        let terminal_status =
+            if runtime_failed || live_quiesce_failure.is_some() || shutdown_failure.is_some() {
+                "failed"
+            } else {
+                successful_terminal_status
+            };
+        let mut terminal_failures = Vec::with_capacity(2);
+        if let Some(failure) = live_quiesce_failure {
+            terminal_failures.push(failure);
+        }
+        if let Some(failure) = shutdown_failure {
+            terminal_failures.push(failure);
+        }
+        let terminal_reason = if terminal_failures.is_empty() {
+            reason.to_string()
         } else {
-            successful_terminal_status
+            format!("{reason}; {}", terminal_failures.join("; "))
         };
-        let terminal_reason = shutdown_failure
-            .map(|failure| format!("{reason}; {failure}"))
-            .unwrap_or_else(|| reason.to_string());
         let pending = PendingBtcTerminal {
             process_id: active.process_id,
             run_id: active.run_id,
@@ -1930,6 +2512,11 @@ impl BtcProcessManager {
             let run_id = active.run_id;
             let run_key = active.run_key.clone();
             let config_hash = active.config_hash.clone();
+            if let Some(failure) =
+                Self::quiesce_live_venue(active.live_venue.as_ref(), "service_shutdown").await
+            {
+                failures.push(format!("{process_id}: {failure}"));
+            }
             let shutdown_result =
                 tokio::time::timeout(BTC_RUNTIME_SHUTDOWN_TIMEOUT, active.runtime.shutdown()).await;
             if let Some(shutdown_failure) = match shutdown_result {
@@ -1947,7 +2534,7 @@ impl BtcProcessManager {
                 process_id,
                 "info",
                 "btc_runtime_suspended",
-                "BTC realtime-paper runtime suspended for service shutdown",
+                "BTC realtime execution runtime suspended for service shutdown",
                 serde_json::json!({
                     "run_id": run_id,
                     "run_key": run_key,
@@ -1960,7 +2547,7 @@ impl BtcProcessManager {
             info!(
                 process_id = %process_id,
                 run_id = %run_id,
-                "BTC realtime-paper runtime suspended with durable resume intent"
+                "BTC realtime execution runtime suspended with durable resume intent"
             );
         }
         let shared_runtime = { self.shared_runtime.lock().await.take() };
@@ -2163,16 +2750,19 @@ impl BtcProcessManager {
     }
 
     async fn runtime_status(&self) -> serde_json::Value {
-        let process_ids = self
+        let active_processes = self
             .active_playbooks
             .lock()
             .await
-            .keys()
-            .copied()
+            .values()
+            .map(|active| (active.process_id, active.execution_mode))
             .collect::<Vec<_>>();
-        let mut processes = Vec::with_capacity(process_ids.len());
-        for process_id in process_ids {
-            processes.push(self.runtime_status_for_process(process_id).await);
+        let mut processes = Vec::with_capacity(active_processes.len());
+        for (process_id, execution_mode) in active_processes {
+            processes.push(
+                self.runtime_status_for_process(process_id, Some(execution_mode.as_str()))
+                    .await,
+            );
         }
         let shared_inputs = self
             .shared_runtime
@@ -2200,7 +2790,11 @@ impl BtcProcessManager {
         })
     }
 
-    async fn runtime_status_for_process(&self, process_id: uuid::Uuid) -> serde_json::Value {
+    async fn runtime_status_for_process(
+        &self,
+        process_id: uuid::Uuid,
+        configured_execution_mode: Option<&str>,
+    ) -> serde_json::Value {
         let active = self
             .active_playbooks
             .lock()
@@ -2212,22 +2806,60 @@ impl BtcProcessManager {
                     active.run_id,
                     active.run_key.clone(),
                     active.config_hash.clone(),
+                    active.execution_mode,
+                    active.live_venue.clone(),
                     active.runtime.status_inputs(),
                 )
             });
-        if let Some((process_id, run_id, run_key, config_hash, inputs)) = active {
+        if let Some((
+            process_id,
+            run_id,
+            run_key,
+            config_hash,
+            execution_mode,
+            live_venue,
+            inputs,
+        )) = active
+        {
             let (state, metrics, config, running) = inputs;
             let runtime = runtime_status_from_inputs(state, metrics, config, running).await;
-            return serde_json::json!({
+            let mut status = serde_json::json!({
                 "capability_enabled": self.config.btc.realtime_enabled,
                 "active": true,
                 "process_id": process_id,
                 "run_id": run_id,
                 "run_key": run_key,
                 "config_hash": config_hash,
+                "execution_mode": execution_mode.as_str(),
                 "runtime": runtime,
             });
+            if execution_mode == BtcExecutionMode::Live {
+                let live_status = match live_venue {
+                    Some(venue) => venue
+                        .live_status()
+                        .await
+                        .and_then(|status| {
+                            serde_json::to_value(status).map_err(anyhow::Error::from)
+                        })
+                        .unwrap_or_else(|_| {
+                            serde_json::json!({
+                                "entries_enabled": false,
+                                "reason": "bound_live_status_unavailable"
+                            })
+                        }),
+                    None => serde_json::json!({
+                        "entries_enabled": false,
+                        "reason": "bound_live_venue_unavailable"
+                    }),
+                };
+                status
+                    .as_object_mut()
+                    .expect("BTC runtime status is an object")
+                    .insert("live_status".to_string(), live_status);
+            }
+            return status;
         }
+        let configured_execution_mode = configured_execution_mode.unwrap_or("unknown");
         let pending = self.terminal_pending.lock().await.get(&process_id).cloned();
         if let Some(pending) = pending {
             return serde_json::json!({
@@ -2239,6 +2871,7 @@ impl BtcProcessManager {
                 "run_id": pending.run_id,
                 "run_key": pending.run_key,
                 "config_hash": pending.config_hash,
+                "execution_mode": configured_execution_mode,
                 "desired_terminal_status": pending.terminal_status,
                 "terminal_reason": pending.terminal_reason,
                 "readiness": {"ready": false, "reasons": ["terminal_persistence_pending"]}
@@ -2249,6 +2882,7 @@ impl BtcProcessManager {
             "active": false,
             "running": false,
             "process_id": process_id,
+            "execution_mode": configured_execution_mode,
             "readiness": {"ready": false, "reasons": ["trading_process_inactive"]}
         })
     }
@@ -2277,7 +2911,7 @@ impl RuntimeMetrics {
 struct RuntimeControl {
     store: Store,
     ingestion: IngestionRepository,
-    live_venue: Option<Arc<dyn ExecutionVenue>>,
+    live_venue: Option<Arc<LiveVenue>>,
     metrics: Arc<Mutex<RuntimeMetrics>>,
     btc_manager: Option<BtcProcessManager>,
 }
@@ -2286,6 +2920,7 @@ impl RuntimeControl {
     fn live_venue(&self) -> Result<Arc<dyn ExecutionVenue>, HttpError> {
         self.live_venue
             .clone()
+            .map(|venue| venue as Arc<dyn ExecutionVenue>)
             .ok_or_else(|| HttpError::bad_request("live execution is not configured"))
     }
 }
@@ -2471,29 +3106,64 @@ impl ControlApi for RuntimeControl {
     }
 
     async fn live_halt(&self) -> Result<serde_json::Value, HttpError> {
+        let _transition_guard = match &self.btc_manager {
+            Some(manager) => Some(manager.transition.lock().await),
+            None => None,
+        };
         let live = self.live_venue()?;
-        let disable_result = live
-            .set_live_entries_enabled(false, Some("manual_live_halt".to_string()))
-            .await;
-        let cancel_result = live.cancel_all().await;
-        let reconcile_result = live.reconcile().await;
+        let disable_result = match tokio::time::timeout(
+            BTC_LIVE_CONTROL_TIMEOUT,
+            live.set_live_entries_enabled(false, Some("manual_live_halt".to_string())),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(|error| error.to_string()),
+            Err(_) => Err(format!(
+                "live disable timed out after {}s",
+                BTC_LIVE_CONTROL_TIMEOUT.as_secs()
+            )),
+        };
+        let cancel_result =
+            match tokio::time::timeout(BTC_LIVE_CONTROL_TIMEOUT, live.cancel_all()).await {
+                Ok(result) => result.map_err(|error| error.to_string()),
+                Err(_) => Err(format!(
+                    "live cancel-all timed out after {}s",
+                    BTC_LIVE_CONTROL_TIMEOUT.as_secs()
+                )),
+            };
+        let reconcile_result =
+            match tokio::time::timeout(BTC_LIVE_CONTROL_TIMEOUT, live.reconcile()).await {
+                Ok(result) => result.map_err(|error| error.to_string()),
+                Err(_) => Err(format!(
+                    "live reconciliation timed out after {}s",
+                    BTC_LIVE_CONTROL_TIMEOUT.as_secs()
+                )),
+            };
+        let halted = disable_result
+            .as_ref()
+            .is_ok_and(|status| !status.entries_enabled)
+            && cancel_result.is_ok()
+            && reconcile_result
+                .as_ref()
+                .is_ok_and(|report| report.open_orders == 0 && report.unresolved_count == 0);
         self.store
             .insert_service_event(&ServiceEvent::new(
                 "manual_live_halt",
                 serde_json::json!({
-                    "disable_result": disable_result.as_ref().map(|status| serde_json::json!({"entries_enabled": status.entries_enabled, "reason": status.reason})).unwrap_or_else(|error| serde_json::json!({"error": error.to_string()})),
-                    "cancel_result": cancel_result.as_ref().map(|count| serde_json::json!({"cancelled": count})).unwrap_or_else(|error| serde_json::json!({"error": error.to_string()})),
+                    "halted": halted,
+                    "disable_result": disable_result.as_ref().map(|status| serde_json::json!({"entries_enabled": status.entries_enabled, "reason": status.reason})).unwrap_or_else(|error| serde_json::json!({"error": error})),
+                    "cancel_result": cancel_result.as_ref().map(|count| serde_json::json!({"cancelled": count})).unwrap_or_else(|error| serde_json::json!({"error": error})),
                     "reconcile_result": reconcile_result.as_ref().map(|report| serde_json::json!({
                         "open_orders": report.open_orders,
                         "mismatches_found": report.mismatches_found,
                         "unresolved_count": report.unresolved_count
-                    })).unwrap_or_else(|error| serde_json::json!({"error": error.to_string()}))
+                    })).unwrap_or_else(|error| serde_json::json!({"error": error}))
                 }),
             ))
             .await
             .map_err(|error| HttpError::internal(error.to_string()))?;
         Ok(serde_json::json!({
-            "halted": true,
+            "halted": halted,
             "cancelled": cancel_result.ok(),
             "reconciled": reconcile_result.ok()
         }))
@@ -2519,10 +3189,40 @@ impl ControlApi for RuntimeControl {
     }
 
     async fn live_set_entries_enabled(&self, enabled: bool) -> Result<LiveVenueStatus, HttpError> {
+        if enabled {
+            return Err(HttpError::bad_request(
+                "wallet-wide live entry enable is disabled; enable entries on an active process-scoped runtime",
+            ));
+        }
+        let _transition_guard = match &self.btc_manager {
+            Some(manager) => Some(manager.transition.lock().await),
+            None => None,
+        };
         self.live_venue()?
             .set_live_entries_enabled(enabled, (!enabled).then(|| "manual_disable".to_string()))
             .await
             .map_err(|error| HttpError::internal(error.to_string()))
+    }
+
+    async fn trading_process_live_preflight(
+        &self,
+        process_id: uuid::Uuid,
+    ) -> Result<TradingProcessLivePreflightResponse, HttpError> {
+        let manager = self.btc_manager.as_ref().ok_or_else(|| {
+            HttpError::bad_request("BTC realtime capability is disabled for this deployment")
+        })?;
+        manager.live_preflight(process_id).await
+    }
+
+    async fn set_trading_process_live_entries_enabled(
+        &self,
+        process_id: uuid::Uuid,
+        enabled: bool,
+    ) -> Result<LiveVenueStatus, HttpError> {
+        let manager = self.btc_manager.as_ref().ok_or_else(|| {
+            HttpError::bad_request("BTC realtime capability is disabled for this deployment")
+        })?;
+        manager.set_live_entries_enabled(process_id, enabled).await
     }
 
     async fn list_trading_processes(
@@ -2592,10 +3292,10 @@ impl ControlApi for RuntimeControl {
             None => None,
         };
         let manager = self.btc_manager.as_ref().ok_or_else(|| {
-            HttpError::bad_request("BTC realtime-paper capability is disabled for this deployment")
+            HttpError::bad_request("BTC realtime capability is disabled for this deployment")
         })?;
         let now = Utc::now();
-        manager.validate_start_definition(&TradingProcess {
+        manager.validate_inactive_definition(&TradingProcess {
             process_id: uuid::Uuid::nil(),
             name: name.to_string(),
             process_type: BTC_PROCESS_TYPE.to_string(),
@@ -2692,12 +3392,18 @@ impl ControlApi for RuntimeControl {
                     "aggregate_scope".to_string(),
                     serde_json::Value::String("process_lifetime".to_string()),
                 );
+                let execution_mode = process.effective_execution().mode;
                 let runtime = match &self.btc_manager {
-                    Some(manager) => manager.runtime_status_for_process(process_id).await,
+                    Some(manager) => {
+                        manager
+                            .runtime_status_for_process(process_id, Some(&execution_mode))
+                            .await
+                    }
                     None => serde_json::json!({
                         "capability_enabled": false,
                         "active": false,
-                        "running": false
+                        "running": false,
+                        "execution_mode": execution_mode
                     }),
                 };
                 object.insert("btc_runtime".to_string(), runtime);
@@ -2718,11 +3424,11 @@ impl ControlApi for RuntimeControl {
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
         if !BtcProcessManager::is_managed_process(&current) {
             return Err(HttpError::bad_request(
-                "start preview is available only for managed BTC realtime-paper processes",
+                "start preview is available only for managed BTC realtime execution processes",
             ));
         }
         let manager = self.btc_manager.as_ref().ok_or_else(|| {
-            HttpError::bad_request("BTC realtime-paper capability is disabled for this deployment")
+            HttpError::bad_request("BTC realtime capability is disabled for this deployment")
         })?;
         manager.preview_start(process_id).await
     }
@@ -2750,7 +3456,7 @@ impl ControlApi for RuntimeControl {
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
         if !BtcProcessManager::is_managed_process(&current) {
             return Err(HttpError::bad_request(
-                "only managed BTC realtime-paper process definitions can be updated",
+                "only managed BTC realtime execution process definitions can be updated",
             ));
         }
         let runtime_active = match &self.btc_manager {
@@ -2780,13 +3486,11 @@ impl ControlApi for RuntimeControl {
         }
         if let Some(config) = &request.config {
             let manager = self.btc_manager.as_ref().ok_or_else(|| {
-                HttpError::bad_request(
-                    "BTC realtime-paper capability is disabled for this deployment",
-                )
+                HttpError::bad_request("BTC realtime capability is disabled for this deployment")
             })?;
             let mut candidate = current.clone();
             candidate.config = config.clone();
-            manager.validate_start_definition(&candidate)?;
+            manager.validate_inactive_definition(&candidate)?;
         }
         let process = self
             .store
@@ -2815,11 +3519,11 @@ impl ControlApi for RuntimeControl {
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
         if !BtcProcessManager::is_managed_process(&current) {
             return Err(HttpError::bad_request(
-                "only managed BTC realtime-paper processes can be started",
+                "only managed BTC realtime execution processes can be started",
             ));
         }
         let manager = self.btc_manager.as_ref().ok_or_else(|| {
-            HttpError::bad_request("BTC realtime-paper capability is disabled for this deployment")
+            HttpError::bad_request("BTC realtime capability is disabled for this deployment")
         })?;
         let process = manager.start_process(process_id).await?;
         Ok(TradingProcessResponse { process })
@@ -2837,11 +3541,11 @@ impl ControlApi for RuntimeControl {
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
         if !BtcProcessManager::is_managed_process(&current) {
             return Err(HttpError::bad_request(
-                "only managed BTC realtime-paper processes can be stopped",
+                "only managed BTC realtime execution processes can be stopped",
             ));
         }
         let manager = self.btc_manager.as_ref().ok_or_else(|| {
-            HttpError::bad_request("BTC realtime-paper capability is disabled for this deployment")
+            HttpError::bad_request("BTC realtime capability is disabled for this deployment")
         })?;
         let process = manager.stop_process(process_id, "api_stop").await?;
         Ok(TradingProcessResponse { process })
@@ -2859,11 +3563,11 @@ impl ControlApi for RuntimeControl {
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
         if !BtcProcessManager::is_managed_process(&current) {
             return Err(HttpError::bad_request(
-                "only managed BTC realtime-paper processes can be completed",
+                "only managed BTC realtime execution processes can be completed",
             ));
         }
         let manager = self.btc_manager.as_ref().ok_or_else(|| {
-            HttpError::bad_request("BTC realtime-paper capability is disabled for this deployment")
+            HttpError::bad_request("BTC realtime capability is disabled for this deployment")
         })?;
         let process = manager.complete_process(process_id, "api_complete").await?;
         Ok(TradingProcessResponse { process })
@@ -2964,7 +3668,7 @@ async fn main() -> Result<()> {
         .await?;
 
     let data_api = DataApiClient::new(config.data_api_base_url.clone());
-    let live_venue: Option<Arc<dyn ExecutionVenue>> = if config.live.live_auth_available() {
+    let live_venue: Option<Arc<LiveVenue>> = if config.live.live_auth_available() {
         Some(Arc::new(LiveVenue::new(
             config.live.clone(),
             config.live.clob_api_base_url.clone(),
@@ -2985,6 +3689,8 @@ async fn main() -> Result<()> {
                 gamma_base_url: config.gamma_base_url.clone(),
                 clob_rest_base_url: config.clob_base_url.clone(),
                 clob_ws_url: config.clob_ws_url.clone(),
+                live_venue: live_venue.clone(),
+                live_reconcile_interval: config.live.reconcile_interval,
             },
         ))
     } else {
@@ -2993,7 +3699,7 @@ async fn main() -> Result<()> {
     if let Some(manager) = &btc_manager {
         if let Err(error) = manager.resume_durable_processes().await {
             bail!(
-                "failed to resume durable BTC realtime-paper state; database lifecycle state was left unchanged: {error:?}"
+                "failed to resume durable BTC realtime execution state; database lifecycle state was left unchanged: {error:?}"
             );
         }
     }
@@ -3138,6 +3844,40 @@ mod lifecycle_tests {
     use super::*;
     use polymarket_bot::btc::BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION;
 
+    #[tokio::test]
+    async fn inactive_runtime_status_reports_configured_mode_without_unbound_live_status() {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:postgres@localhost/polymarket")
+            .unwrap();
+        let manager = BtcProcessManager::new(
+            Store::from_pool(pool.clone()),
+            pool.clone(),
+            BtcRepository::from_pool(pool),
+            BtcProcessManagerConfig {
+                btc: BtcConfig {
+                    realtime_enabled: true,
+                    paper_enabled: true,
+                    rtds_ws_url: String::new(),
+                    binance_ws_url: String::new(),
+                    data_source_heartbeat: polymarket_bot::btc::BtcHeartbeatConfig::default(),
+                },
+                gamma_base_url: String::new(),
+                clob_rest_base_url: String::new(),
+                clob_ws_url: String::new(),
+                live_venue: None,
+                live_reconcile_interval: Duration::from_secs(1),
+            },
+        );
+
+        let status = manager
+            .runtime_status_for_process(uuid::Uuid::new_v4(), Some("live"))
+            .await;
+
+        assert_eq!(status["active"], false);
+        assert_eq!(status["execution_mode"], "live");
+        assert!(status.get("live_status").is_none());
+    }
+
     #[test]
     fn btc_process_terminal_validation_accepts_all_supported_terminal_states() {
         for status in ["stopped", "failed", "completed"] {
@@ -3162,6 +3902,7 @@ mod lifecycle_tests {
                     mode: Some("paper".to_string()),
                     execute_signals: true,
                     live_capital: false,
+                    account_ref: None,
                     taker_fee_rate: None,
                 }),
                 ..TradingProcessConfig::default()
@@ -3952,6 +4693,138 @@ mod lifecycle_tests {
         assert!(validate_btc_start_eligibility(&invalid, true, true).is_err());
 
         assert!(validate_btc_start_eligibility(&eligible_btc_process(), true, true).is_ok());
+    }
+
+    #[test]
+    fn live_credential_only_definition_is_valid_but_cannot_start() {
+        let mut process = eligible_btc_process();
+        process.config.execution = Some(ProcessExecutionConfig {
+            mode: Some("live".to_string()),
+            execute_signals: false,
+            live_capital: false,
+            account_ref: Some("polymarket-primary".to_string()),
+            taker_fee_rate: None,
+        });
+
+        validate_btc_process_capability(&process, true, true).unwrap();
+        assert!(validate_btc_start_eligibility(&process, true, true).is_err());
+
+        let execution = process.config.execution.as_mut().unwrap();
+        execution.execute_signals = true;
+        execution.live_capital = true;
+        validate_btc_start_eligibility(&process, true, true).unwrap();
+    }
+
+    #[test]
+    fn live_start_preparation_has_a_distinct_venue_identity_and_frozen_seam() {
+        let run_key = "btc-5m-live-cutover-preview";
+        let resolved = ResolvedBtcProcessDefinition {
+            control: BtcRealtimePaperControlConfig {
+                schema_version: BTC_PROCESS_SCHEMA_VERSION.to_string(),
+                next_experiment_key: run_key.to_string(),
+                preregistration_sha256: "c".repeat(64),
+                ..BtcRealtimePaperControlConfig::default()
+            },
+            strategy: BtcStrategyConfig::default(),
+            entry_admission: None,
+            runtime: BtcRuntimeConfig {
+                enabled: true,
+                ..BtcRuntimeConfig::default()
+            },
+            paper_venue: PaperVenueConfig::default(),
+            paper_stress_previews: Vec::new(),
+        };
+        let execution = EffectiveProcessExecutionConfig {
+            mode: "live".to_string(),
+            execute_signals: true,
+            live_capital: true,
+            account_ref: Some("polymarket-primary".to_string()),
+            taker_fee_rate: dec!(0.03),
+        };
+
+        let prepared = prepare_btc_start_definition_for_execution(resolved, &execution).unwrap();
+        assert_eq!(prepared.execution_mode, BtcExecutionMode::Live);
+        assert_eq!(prepared.account_ref.as_deref(), Some("polymarket-primary"));
+        assert_eq!(
+            prepared.run_id,
+            uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_URL,
+                format!("polymarket-bot/btc-live/{run_key}").as_bytes(),
+            )
+        );
+        assert_eq!(
+            prepared
+                .frozen_process_config
+                .execution
+                .as_ref()
+                .unwrap()
+                .mode
+                .as_deref(),
+            Some("live")
+        );
+        assert_eq!(
+            prepared.frozen_process_config.raw["paper"]["execution_enabled"],
+            false
+        );
+        assert_eq!(
+            prepared.frozen_process_config.raw["live"],
+            serde_json::json!({
+                "execution_enabled": true,
+                "account_ref": "polymarket-primary"
+            })
+        );
+    }
+
+    #[test]
+    fn live_start_cannot_relax_the_two_second_execution_freshness_contract() {
+        let execution = EffectiveProcessExecutionConfig {
+            mode: "live".to_string(),
+            execute_signals: true,
+            live_capital: true,
+            account_ref: Some("polymarket-primary".to_string()),
+            taker_fee_rate: dec!(0.03),
+        };
+        let resolved = |strategy: BtcStrategyConfig| ResolvedBtcProcessDefinition {
+            control: BtcRealtimePaperControlConfig {
+                schema_version: BTC_PROCESS_SCHEMA_VERSION.to_string(),
+                next_experiment_key: "btc-live-freshness-contract".to_string(),
+                preregistration_sha256: "d".repeat(64),
+                ..BtcRealtimePaperControlConfig::default()
+            },
+            strategy,
+            entry_admission: None,
+            runtime: BtcRuntimeConfig {
+                enabled: true,
+                ..BtcRuntimeConfig::default()
+            },
+            paper_venue: PaperVenueConfig::default(),
+            paper_stress_previews: Vec::new(),
+        };
+
+        let mut relaxed_reference = BtcStrategyConfig::default();
+        relaxed_reference.max_reference_age_ms = BTC_LIVE_EXECUTION_FRESHNESS_LIMIT_MS + 1;
+        assert!(prepare_btc_start_definition_for_execution(
+            resolved(relaxed_reference.clone()),
+            &execution,
+        )
+        .is_err());
+        assert!(
+            prepare_btc_start_definition(resolved(relaxed_reference)).is_ok(),
+            "the live-only ceiling must not break existing paper definitions"
+        );
+
+        let mut relaxed_book = BtcStrategyConfig::default();
+        relaxed_book.max_book_age_ms = BTC_LIVE_EXECUTION_FRESHNESS_LIMIT_MS + 1;
+        assert!(
+            prepare_btc_start_definition_for_execution(resolved(relaxed_book), &execution,)
+                .is_err()
+        );
+
+        assert!(prepare_btc_start_definition_for_execution(
+            resolved(BtcStrategyConfig::default()),
+            &execution,
+        )
+        .is_ok());
     }
 
     #[test]

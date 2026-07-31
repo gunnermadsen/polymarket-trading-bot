@@ -17,7 +17,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::{
-    execution::{execute_order_plan, OrderPlan},
+    execution::{execute_order_plan, ExecutionVenue, OrderPlan, OrderPlanReport},
     models::{OrderRequest, OrderSide, OrderState, OrderType},
     store::Store,
 };
@@ -40,6 +40,8 @@ use super::{
         RuntimeModelSelection, RuntimePredictionPolicy, BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
     },
     execution_guard::BtcReferenceExecutionGuard,
+    execution_lifecycle::{BtcExecutionLifecycle, BtcExecutionMode, PaperExecutionLifecycle},
+    feeds::BookRegistry,
     paper::{PaperPreviewConfig, PaperVenue, PAPER_DYNAMIC_FEE_RATE_METADATA_KEY},
     predictive_regime_v2::{
         ShadowPredictiveRegimeCircuitBreakerConfigSelector,
@@ -65,7 +67,6 @@ use super::{
     },
 };
 
-const PAPER_CAPITAL_RECONCILE_INTERVAL: TokioDuration = TokioDuration::from_secs(5);
 const SHADOW_PREDICTIVE_REGIME_MAX_REPLAY_CANDIDATES: u32 = 10_000;
 const SHADOW_PREDICTIVE_REGIME_REPLAY_FETCH_CANDIDATES: u32 =
     SHADOW_PREDICTIVE_REGIME_MAX_REPLAY_CANDIDATES + 1;
@@ -73,7 +74,7 @@ const SHADOW_PREDICTIVE_REGIME_TRANSITION_EVENT_NAMESPACE: Uuid =
     Uuid::from_u128(0x8f0d_73b4_4e62_5b31_9a77_21cf_09d8_6a42);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BtcPaperProcessConfig {
+pub struct BtcProcessConfig {
     pub process_id: Uuid,
     pub run_id: Uuid,
     pub run_key: String,
@@ -93,6 +94,8 @@ pub struct BtcPaperProcessConfig {
     pub execution_enabled: bool,
     pub paper_stress_previews: Vec<PaperPreviewConfig>,
 }
+
+pub type BtcPaperProcessConfig = BtcProcessConfig;
 
 #[derive(Debug, Default)]
 struct LossRegimeAdmissionRuntime {
@@ -501,27 +504,56 @@ struct EntryAdmissionEvaluation {
     evidence: serde_json::Value,
 }
 
-pub struct BtcPaperProcessRunner {
+pub struct BtcProcessRunner {
     repository: BtcRepository,
     store: Store,
-    paper_venue: PaperVenue,
-    config: BtcPaperProcessConfig,
+    execution_venue: Arc<dyn ExecutionVenue>,
+    execution_lifecycle: Arc<dyn BtcExecutionLifecycle>,
+    book_registry: Arc<tokio::sync::RwLock<BookRegistry>>,
+    config: BtcProcessConfig,
     initialized: OnceCell<()>,
     loss_regime_admission: Mutex<Option<LossRegimeAdmissionRuntime>>,
     shadow_predictive_regime_admission:
         Arc<StdMutex<Option<ShadowPredictiveRegimeAdmissionRuntime>>>,
     shadow_predictive_regime_refresh_tasks: StdMutex<ShadowPredictiveRegimeRefreshTasks>,
     high_water_mark_entry_submission: Mutex<()>,
-    paper_capital_reconcile_started_at: Mutex<Option<Instant>>,
+    execution_reconcile_started_at: Mutex<Option<Instant>>,
     directional_model_runtime: StdMutex<DirectionalModelProcessRuntime>,
 }
 
-impl BtcPaperProcessRunner {
+pub type BtcPaperProcessRunner = BtcProcessRunner;
+
+impl BtcProcessRunner {
+    /// Backward-compatible paper constructor. New process wiring should use
+    /// `new_with_execution` so venue choice occurs only at the composition boundary.
     pub fn new(
         repository: BtcRepository,
         store: Store,
         paper_venue: PaperVenue,
-        config: BtcPaperProcessConfig,
+        config: BtcProcessConfig,
+    ) -> Result<Self> {
+        let paper_venue = Arc::new(paper_venue);
+        let book_registry = paper_venue.registry();
+        let execution_venue: Arc<dyn ExecutionVenue> = paper_venue.clone();
+        let execution_lifecycle: Arc<dyn BtcExecutionLifecycle> =
+            Arc::new(PaperExecutionLifecycle::new(paper_venue));
+        Self::new_with_execution(
+            repository,
+            store,
+            execution_venue,
+            book_registry,
+            execution_lifecycle,
+            config,
+        )
+    }
+
+    pub fn new_with_execution(
+        repository: BtcRepository,
+        store: Store,
+        execution_venue: Arc<dyn ExecutionVenue>,
+        book_registry: Arc<tokio::sync::RwLock<BookRegistry>>,
+        execution_lifecycle: Arc<dyn BtcExecutionLifecycle>,
+        config: BtcProcessConfig,
     ) -> Result<Self> {
         if config.run_key.trim().is_empty() || config.config_hash.trim().is_empty() {
             anyhow::bail!("BTC run identity and config hash must not be empty");
@@ -529,9 +561,23 @@ impl BtcPaperProcessRunner {
         if !config.frozen_process_config.is_object() {
             anyhow::bail!("BTC run frozen process config must be a JSON object");
         }
+        ensure!(
+            !execution_lifecycle.reconcile_interval().is_zero(),
+            "BTC execution reconcile interval must be positive"
+        );
+        if let Some(frozen_mode) = config
+            .frozen_process_config
+            .pointer("/execution/mode")
+            .and_then(serde_json::Value::as_str)
+        {
+            ensure!(
+                frozen_mode == execution_lifecycle.mode().as_str(),
+                "BTC execution lifecycle mode does not match the frozen process config"
+            );
+        }
         config.strategy.validate()?;
         if config.strategy.attribution().is_none() {
-            anyhow::bail!("BTC paper run strategy attribution is invalid");
+            anyhow::bail!("BTC execution run strategy attribution is invalid");
         }
         validate_directional_model_entry_policy(
             &config.strategy,
@@ -573,7 +619,9 @@ impl BtcPaperProcessRunner {
         Ok(Self {
             repository,
             store,
-            paper_venue,
+            execution_venue,
+            execution_lifecycle,
+            book_registry,
             loss_regime_admission: Mutex::new(
                 config
                     .entry_admission
@@ -589,9 +637,13 @@ impl BtcPaperProcessRunner {
             high_water_mark_entry_submission: Mutex::new(()),
             config,
             initialized: OnceCell::new(),
-            paper_capital_reconcile_started_at: Mutex::new(None),
+            execution_reconcile_started_at: Mutex::new(None),
             directional_model_runtime: StdMutex::new(DirectionalModelProcessRuntime::default()),
         })
+    }
+
+    pub fn execution_mode(&self) -> BtcExecutionMode {
+        self.execution_lifecycle.mode()
     }
 
     fn claim_directional_model_candidate(
@@ -634,6 +686,7 @@ impl BtcPaperProcessRunner {
                 decision,
                 entry_admission_evidence,
                 order_plan_id,
+                self.execution_mode(),
                 status,
             )
             .await?;
@@ -663,18 +716,8 @@ impl BtcPaperProcessRunner {
                             &self.config.frozen_process_config,
                         )
                         .await?;
-                    let state = self
-                        .repository
-                        .paper_venue_resume_state(self.config.process_id, self.config.run_id)
-                        .await?;
-                    self.paper_venue
-                        .rehydrate_capital(
-                            state.entry_debits_usd,
-                            state.settlement_credits_usd,
-                            state.order_count,
-                            state.fill_count,
-                            state.credited_settlement_ids,
-                        )
+                    self.execution_lifecycle
+                        .resume_run(&self.repository, self.config.process_id, self.config.run_id)
                         .await?;
                 } else {
                     self.repository
@@ -1302,16 +1345,23 @@ impl BtcPaperProcessRunner {
         Ok(())
     }
 
-    pub fn shared_book_registry(&self) -> Arc<tokio::sync::RwLock<super::feeds::BookRegistry>> {
-        self.paper_venue.registry()
+    pub fn shared_book_registry(&self) -> Arc<tokio::sync::RwLock<BookRegistry>> {
+        self.book_registry.clone()
     }
 
     async fn refresh_settlement_and_reconcile(&self) -> Result<()> {
-        self.reconcile_paper_capital().await
+        self.execution_lifecycle
+            .reconcile_run(
+                &self.repository,
+                self.config.process_id,
+                self.config.run_id,
+                &self.config.config_hash,
+            )
+            .await
     }
 
     async fn force_refresh_settlement_and_reconcile(&self) -> Result<()> {
-        let mut last_started_at = self.paper_capital_reconcile_started_at.lock().await;
+        let mut last_started_at = self.execution_reconcile_started_at.lock().await;
         let previous = *last_started_at;
         *last_started_at = Some(Instant::now());
         let result = self.refresh_settlement_and_reconcile().await;
@@ -1322,11 +1372,15 @@ impl BtcPaperProcessRunner {
     }
 
     async fn refresh_settlement_and_reconcile_if_due(&self) -> Result<()> {
-        let Ok(mut last_started_at) = self.paper_capital_reconcile_started_at.try_lock() else {
+        let Ok(mut last_started_at) = self.execution_reconcile_started_at.try_lock() else {
             return Ok(());
         };
         let now = Instant::now();
-        if !paper_capital_reconcile_due(*last_started_at, now) {
+        if !execution_reconcile_due(
+            *last_started_at,
+            now,
+            self.execution_lifecycle.reconcile_interval(),
+        ) {
             return Ok(());
         }
         let previous = *last_started_at;
@@ -1336,57 +1390,6 @@ impl BtcPaperProcessRunner {
             *last_started_at = previous;
         }
         result
-    }
-
-    async fn reconcile_paper_capital(&self) -> Result<()> {
-        let pending = self
-            .repository
-            .discover_pending_paper_settlements(self.config.process_id, self.config.run_id)
-            .await?;
-        for settlement in pending {
-            let credit = self
-                .paper_venue
-                .apply_settlement_credit(settlement.settlement_id, settlement.payout)
-                .await?;
-            let evidence = serde_json::json!({
-                "evidence_version": "btc_paper_capital_credit_v1",
-                "settlement_id": settlement.settlement_id,
-                "process_id": settlement.process_id,
-                "run_id": settlement.run_id,
-                "order_id": settlement.order_id,
-                "market_id": settlement.market_id,
-                "token_id": settlement.token_id,
-                "fill_ids": settlement.fill_ids,
-                "official_outcome": settlement.official_outcome,
-                "official_winning_token_id": settlement.official_winning_token_id,
-                "official_resolution_received_at": settlement.official_resolution_received_at,
-                "official_resolution_source": settlement.official_resolution_source,
-                "filled_size": settlement.filled_size,
-                "entry_notional": settlement.entry_notional,
-                "entry_fees": settlement.entry_fees,
-                "payout": settlement.payout,
-                "net_pnl": settlement.net_pnl,
-                "venue_credit": credit,
-                "credited_by_config_hash": self.config.config_hash,
-            });
-            let marked = self
-                .repository
-                .mark_paper_settlement_credited(
-                    self.config.process_id,
-                    self.config.run_id,
-                    settlement.settlement_id,
-                    &evidence,
-                )
-                .await?;
-            if !marked {
-                warn!(
-                    settlement_id = %settlement.settlement_id,
-                    run_id = %self.config.run_id,
-                    "BTC paper settlement was already credited by a concurrent reconciliation"
-                );
-            }
-        }
-        Ok(())
     }
 
     async fn observe(&self, observation: StrategyObservation) -> Result<()> {
@@ -1699,11 +1702,11 @@ impl BtcPaperProcessRunner {
             .config
             .paper_stress_previews
             .iter()
-            .map(|preview| self.paper_venue.preview_order(&request, preview));
+            .map(|preview| self.execution_lifecycle.preview_order(&request, preview));
         let primary_request = request.clone();
         let (report, preview_results) = tokio::join!(
             execute_order_plan(
-                &self.paper_venue,
+                self.execution_venue.as_ref(),
                 OrderPlan {
                     plan_id,
                     orders: vec![primary_request],
@@ -1711,7 +1714,10 @@ impl BtcPaperProcessRunner {
             ),
             futures_util::future::join_all(preview_futures),
         );
-        let report = report.context("BTC paper OrderPlan execution failed")?;
+        let execution_mode = self.execution_lifecycle.mode();
+        let report = report.with_context(|| {
+            format!("BTC {} OrderPlan execution failed", execution_mode.as_str())
+        })?;
         let mut stress_previews = Vec::with_capacity(preview_results.len());
         for (config, result) in self
             .config
@@ -1720,9 +1726,14 @@ impl BtcPaperProcessRunner {
             .zip(preview_results)
         {
             match result {
-                Ok(result) => stress_previews.push(serde_json::json!({
+                Ok(Some(result)) => stress_previews.push(serde_json::json!({
                     "status": "observed",
                     "result": result,
+                })),
+                Ok(None) => stress_previews.push(serde_json::json!({
+                    "status": "unavailable",
+                    "scenario_key": config.scenario_key,
+                    "execution_mode": execution_mode.as_str(),
                 })),
                 Err(error) => {
                     warn!(
@@ -1740,45 +1751,85 @@ impl BtcPaperProcessRunner {
             }
         }
         self.store.persist_order_plan_report(&report).await?;
-        let filled = report
+        let primary_state = report
             .orders
             .first()
-            .map(|order| order.state == OrderState::Filled)
-            .unwrap_or(false);
+            .map(|order| order.state)
+            .context("BTC OrderPlan report omitted its primary order")?;
+        let filled = primary_state == OrderState::Filled;
+        let execution_status = decision_execution_status(primary_state);
         let execution_reject_reason = report
             .orders
             .first()
             .and_then(|order| order.request.metadata.get("reject_reason"))
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
+        let execution_metadata = execution_result_metadata(
+            execution_mode,
+            &report,
+            &self.config.config_hash,
+            stress_previews,
+        );
         self.repository
             .update_strategy_decision_execution(
                 self.config.process_id,
                 self.config.run_id,
                 decision.decision_id,
                 decision.evaluated_at,
-                if filled { "filled" } else { "rejected" },
+                execution_status,
                 execution_reject_reason.as_deref(),
-                serde_json::json!({
-                    "paper_order_plan": {
-                        "plan_id": report.plan_id,
-                        "orders": report.orders,
-                        "fills": report.fills,
-                        "reconciliation": report.reconciliation,
-                    },
-                    "paper_stress_previews": {
-                        "telemetry_only": true,
-                        "influenced_primary_execution": false,
-                        "primary_config_hash": self.config.config_hash,
-                        "scenarios": stress_previews,
-                    }
-                }),
+                execution_metadata,
             )
             .await?;
         if filled {
             self.force_refresh_settlement_and_reconcile().await?;
         }
         Ok(())
+    }
+}
+
+fn decision_execution_status(state: OrderState) -> &'static str {
+    match state {
+        OrderState::Filled => "filled",
+        OrderState::Rejected | OrderState::Cancelled | OrderState::Expired => "rejected",
+        OrderState::Created
+        | OrderState::Submitted
+        | OrderState::Acknowledged
+        | OrderState::PartiallyFilled
+        | OrderState::CancelRequested
+        | OrderState::Unknown => "submitted",
+    }
+}
+
+fn execution_result_metadata(
+    mode: BtcExecutionMode,
+    report: &OrderPlanReport,
+    config_hash: &str,
+    stress_previews: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let order_plan = serde_json::json!({
+        "plan_id": report.plan_id,
+        "orders": &report.orders,
+        "fills": &report.fills,
+        "reconciliation": &report.reconciliation,
+    });
+    let previews = serde_json::json!({
+        "telemetry_only": true,
+        "influenced_primary_execution": false,
+        "primary_config_hash": config_hash,
+        "scenarios": stress_previews,
+    });
+    match mode {
+        // Preserve the durable paper evidence shape for existing processes and resumable runs.
+        BtcExecutionMode::Paper => serde_json::json!({
+            "paper_order_plan": order_plan,
+            "paper_stress_previews": previews,
+        }),
+        BtcExecutionMode::Live => serde_json::json!({
+            "execution_mode": mode.as_str(),
+            "order_plan": order_plan,
+            "stress_previews": previews,
+        }),
     }
 }
 
@@ -2254,10 +2305,13 @@ fn selected_conservative_probability(decision: &BtcDecision) -> Option<Decimal> 
     }
 }
 
-fn paper_capital_reconcile_due(last_started_at: Option<Instant>, now: Instant) -> bool {
-    last_started_at.is_none_or(|last_started_at| {
-        now.saturating_duration_since(last_started_at) >= PAPER_CAPITAL_RECONCILE_INTERVAL
-    })
+fn execution_reconcile_due(
+    last_started_at: Option<Instant>,
+    now: Instant,
+    interval: TokioDuration,
+) -> bool {
+    last_started_at
+        .is_none_or(|last_started_at| now.saturating_duration_since(last_started_at) >= interval)
 }
 
 fn snapshot_quality_flags(
@@ -2455,7 +2509,7 @@ fn validate_directional_model_entry_policy(
         && (!directional_model_configured(strategy) || !execution_enabled)
     {
         anyhow::bail!(
-            "BTC directional prediction execution policy requires an executing directional-model paper process"
+            "BTC directional prediction execution policy requires an executing directional-model process"
         );
     }
     Ok(())
@@ -2509,13 +2563,13 @@ fn build_directional_model_feature_snapshot(
 }
 
 #[async_trait]
-impl BtcStrategyRunner for BtcPaperProcessRunner {
+impl BtcStrategyRunner for BtcProcessRunner {
     async fn on_observation(&self, observation: StrategyObservation) -> Result<()> {
         self.observe(observation).await
     }
 
     async fn shutdown(&self) -> Result<()> {
-        BtcPaperProcessRunner::shutdown(self).await
+        BtcProcessRunner::shutdown(self).await
     }
 }
 
@@ -3424,15 +3478,69 @@ mod tests {
     #[test]
     fn paper_capital_reconciliation_is_due_at_five_second_boundaries() {
         let started_at = Instant::now();
-        assert!(paper_capital_reconcile_due(None, started_at));
-        assert!(!paper_capital_reconcile_due(
+        let interval = TokioDuration::from_secs(5);
+        assert!(execution_reconcile_due(None, started_at, interval));
+        assert!(!execution_reconcile_due(
             Some(started_at),
-            started_at + TokioDuration::from_millis(4_999)
+            started_at + TokioDuration::from_millis(4_999),
+            interval,
         ));
-        assert!(paper_capital_reconcile_due(
+        assert!(execution_reconcile_due(
             Some(started_at),
-            started_at + TokioDuration::from_secs(5)
+            started_at + TokioDuration::from_secs(5),
+            interval,
         ));
+    }
+
+    #[test]
+    fn asynchronous_order_states_remain_submitted_until_reconciliation_finalizes_them() {
+        for state in [
+            OrderState::Created,
+            OrderState::Submitted,
+            OrderState::Acknowledged,
+            OrderState::PartiallyFilled,
+            OrderState::CancelRequested,
+            OrderState::Unknown,
+        ] {
+            assert_eq!(decision_execution_status(state), "submitted");
+        }
+        assert_eq!(decision_execution_status(OrderState::Filled), "filled");
+        for state in [
+            OrderState::Rejected,
+            OrderState::Cancelled,
+            OrderState::Expired,
+        ] {
+            assert_eq!(decision_execution_status(state), "rejected");
+        }
+    }
+
+    #[test]
+    fn execution_result_metadata_preserves_paper_shape_and_names_live_evidence() {
+        let report = OrderPlanReport {
+            plan_id: Uuid::from_u128(601),
+            orders: Vec::new(),
+            fills: Vec::new(),
+            reconciliation: crate::execution::ReconciliationReport {
+                open_orders: 0,
+                balances_checked: true,
+                mismatches_found: 0,
+                unresolved_count: 0,
+                checked_at: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
+            },
+        };
+        let paper =
+            execution_result_metadata(BtcExecutionMode::Paper, &report, "paper-config", Vec::new());
+        assert!(paper.get("paper_order_plan").is_some());
+        assert!(paper.get("paper_stress_previews").is_some());
+        assert!(paper.get("execution_mode").is_none());
+        assert!(paper.get("order_plan").is_none());
+
+        let live =
+            execution_result_metadata(BtcExecutionMode::Live, &report, "live-config", Vec::new());
+        assert_eq!(live["execution_mode"], "live");
+        assert!(live.get("order_plan").is_some());
+        assert!(live.get("stress_previews").is_some());
+        assert!(live.get("paper_order_plan").is_none());
     }
 
     #[test]
