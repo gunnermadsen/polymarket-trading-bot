@@ -1194,9 +1194,13 @@ def write_golden_feature_sample(
     probability_up: np.ndarray,
     bundle: FrozenTrainingBundle,
     destination: Path,
+    *,
+    feature_schema_version: str = CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION,
 ) -> None:
     if frame.height != len(probability_up):
         raise ValueError("golden probability count does not match feature rows")
+    if not feature_schema_version.strip():
+        raise ValueError("golden feature schema version cannot be empty")
     order = np.argsort(probability_up)
     sample_count = min(256, len(order))
     quantile_positions = np.linspace(0, len(order) - 1, sample_count).round().astype(int)
@@ -1218,7 +1222,7 @@ def write_golden_feature_sample(
     write_json_atomic(
         destination.with_suffix(".metadata.json"),
         {
-            "feature_schema_version": CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION,
+            "feature_schema_version": feature_schema_version,
             "feature_file_sha256": file_sha256(destination),
             "rows": selected.height,
             "source": "policy_selection_feature_sample",

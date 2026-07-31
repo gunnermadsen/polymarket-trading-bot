@@ -24,6 +24,12 @@ from .fixed_time_benchmark import (
     run_fixed_time_accuracy_benchmark,
 )
 from .fixed_time_config import load_fixed_time_accuracy_config
+from .fixed_time_selective_benchmark import (
+    FIXED_TIME_SELECTIVE_PAPER_AUTHORIZATION,
+    freeze_and_export_fixed_time_selective_paper_candidate,
+    run_fixed_time_selective_benchmark,
+)
+from .fixed_time_selective_config import load_fixed_time_selective_config
 from .frequency_policy_benchmark import run_frequency_policy_benchmark
 from .frequency_policy_config import load_frequency_policy_benchmark_config
 from .oracle_book_benchmark import (
@@ -110,6 +116,25 @@ def main() -> None:
         "--authorize-paper-only",
         action="store_true",
         help="authorize an exact-120-second model only for paper evaluation",
+    )
+    fixed_time_selective_run = subparsers.add_parser(
+        "fixed-120-selective-benchmark-run"
+    )
+    fixed_time_selective_run.add_argument("--config", type=Path, required=True)
+    fixed_time_selective_export = subparsers.add_parser(
+        "fixed-120-selective-paper-candidate-export"
+    )
+    fixed_time_selective_export.add_argument("--config", type=Path, required=True)
+    fixed_time_selective_export.add_argument(
+        "--benchmark-run",
+        type=Path,
+        required=True,
+    )
+    fixed_time_selective_export.add_argument("--model-key", required=True)
+    fixed_time_selective_export.add_argument(
+        "--authorize-paper-only",
+        action="store_true",
+        help="authorize a selective exact-120 model only for paper evaluation",
     )
     persistence_run = subparsers.add_parser("persistence-benchmark-run")
     persistence_run.add_argument("--config", type=Path, required=True)
@@ -246,6 +271,40 @@ def main() -> None:
             "scope: paper_only; production-qualified: "
             f"{str(manifest['production_qualified']).lower()}"
         )
+        return
+    if args.command == "fixed-120-selective-benchmark-run":
+        config = load_fixed_time_selective_config(args.config)
+        run_dir, benchmark = run_fixed_time_selective_benchmark(config)
+        print(f"report: {run_dir / 'report.html'}")
+        print(
+            "development candidate: "
+            f"{benchmark['selection']['selected_candidate'] or 'none'}"
+        )
+        print("evidence: consumed development; July 29 onward excluded")
+        print("live capital: not authorized")
+        return
+    if args.command == "fixed-120-selective-paper-candidate-export":
+        if not args.authorize_paper_only:
+            parser.error(
+                "fixed-120-selective-paper-candidate-export requires "
+                "--authorize-paper-only"
+            )
+        config = load_fixed_time_selective_config(args.config)
+        freeze_dir, runtime_dir, manifest = (
+            freeze_and_export_fixed_time_selective_paper_candidate(
+                config=config,
+                benchmark_run=args.benchmark_run,
+                model_key=args.model_key,
+                authorization=FIXED_TIME_SELECTIVE_PAPER_AUTHORIZATION,
+            )
+        )
+        print(f"freeze: {freeze_dir}")
+        print(f"runtime model: {runtime_dir}")
+        print(
+            "scope: paper_only; production-qualified: "
+            f"{str(manifest['production_qualified']).lower()}"
+        )
+        print("fresh forward evidence: required from July 29, 2026")
         return
     if args.command == "persistence-benchmark-run":
         config = load_persistence_benchmark_config(args.config)

@@ -5,11 +5,13 @@ from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
+import polars as pl
 import pytest
 
 from btc_directional_model.core_extract import file_sha256
 from btc_directional_model.core_training import (
     FittedCoreModel,
+    FrozenTrainingBundle,
     ProbabilityCalibrator,
 )
 from btc_directional_model.paper_candidate import (
@@ -27,6 +29,7 @@ from btc_directional_model.paper_candidate import (
     production_blocking_reasons,
     time_banded_feature_schema_version,
     validate_mature_reversal_schema,
+    write_golden_feature_sample,
 )
 from btc_directional_model.persistence_benchmark import (
     CANDIDATE_PROFILES,
@@ -82,6 +85,47 @@ def test_paper_threshold_is_locked_to_087_with_coverage_floor() -> None:
 
 def test_export_provenance_uses_the_executing_package_source() -> None:
     assert executing_package_root() == Path(__file__).resolve().parent.parent
+
+
+def test_golden_feature_sample_records_the_selected_feature_schema(
+    tmp_path: Path,
+) -> None:
+    model = FittedCoreModel(
+        candidate_name="regime-candidate",
+        family="histogram",
+        feature_names=("regime_feature",),
+        hyperparameters={"max_iter": 1},
+        imputation_medians=np.asarray([0.0]),
+        standardization_means=None,
+        standardization_scales=None,
+        estimator=object(),
+    )
+    bundle = FrozenTrainingBundle(
+        model=model,
+        calibrator=ProbabilityCalibrator(1.0, 0.0, True, 1),
+        confidence_threshold=0.9,
+    )
+    frame = pl.DataFrame(
+        {
+            "market_id": ["market-a", "market-b"],
+            "observed_at": [1, 2],
+            "regime_feature": [0.1, 0.2],
+        }
+    )
+    destination = tmp_path / "golden.parquet"
+
+    write_golden_feature_sample(
+        frame,
+        np.asarray([0.2, 0.8]),
+        bundle,
+        destination,
+        feature_schema_version="btc-5m-directional-regime-reversal-features-v1",
+    )
+
+    metadata = json.loads(destination.with_suffix(".metadata.json").read_text())
+    assert metadata["feature_schema_version"] == (
+        "btc-5m-directional-regime-reversal-features-v1"
+    )
 
 
 def test_locked_paper_threshold_rejects_insufficient_coverage() -> None:
