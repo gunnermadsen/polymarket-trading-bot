@@ -22,6 +22,7 @@ from btc_directional_model.loss_tail_benchmark import (
     _score_direct,
     _select_candidate,
     _set_worker_thread_environment,
+    _start_max_rss_watchdog,
     _validate_matched_prediction_frames,
 )
 from btc_directional_model.loss_tail_config import load_loss_tail_benchmark_config
@@ -282,6 +283,7 @@ def test_worker_resource_contract_without_lowering_process_limits(
     assert applied["threads"] == 3
     assert applied["memory_limit_bytes"] == memory_bytes
     assert calls == [(kind, (memory_bytes, infinity)) for kind in supported_limits]
+    assert applied["memory_enforcement"] == {"mode": "address_space_rlimit"}
 
     thread_variables = (
         "OMP_NUM_THREADS",
@@ -299,3 +301,38 @@ def test_worker_resource_contract_without_lowering_process_limits(
     _restore_environment(previous)
     assert os.environ[thread_variables[0]] == "17"
     assert all(name not in os.environ for name in thread_variables[1:])
+
+
+def test_worker_resource_falls_back_to_fail_hard_rss_watchdog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_loss_tail_benchmark_config(CONFIG_PATH)
+    memory_bytes = 8 * 1024**3
+    watchdog_calls: list[int] = []
+
+    monkeypatch.setattr(resource, "getrlimit", lambda _kind: (resource.RLIM_INFINITY,) * 2)
+
+    def unavailable(_kind: int, _limits: tuple[int, int]) -> None:
+        raise ValueError("host does not support lowering this limit")
+
+    monkeypatch.setattr(resource, "setrlimit", unavailable)
+    monkeypatch.setattr(
+        "btc_directional_model.loss_tail_benchmark._start_max_rss_watchdog",
+        lambda limit: watchdog_calls.append(limit) or {"mode": "maximum_rss_watchdog"},
+    )
+
+    applied = _apply_worker_resources(config)
+
+    assert watchdog_calls == [memory_bytes]
+    assert applied["memory_enforcement"] == {"mode": "maximum_rss_watchdog"}
+
+
+def test_max_rss_watchdog_rejects_a_worker_already_over_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "btc_directional_model.loss_tail_benchmark._maximum_resident_set_bytes",
+        lambda: 9 * 1024**3,
+    )
+    with pytest.raises(RuntimeError, match="already exceeds"):
+        _start_max_rss_watchdog(8 * 1024**3)

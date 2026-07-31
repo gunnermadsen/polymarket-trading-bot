@@ -6,6 +6,8 @@ import math
 import multiprocessing as mp
 import os
 import resource
+import sys
+import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, replace
@@ -232,7 +234,10 @@ def run_loss_tail_benchmark(
                 - config.resources.workers * config.resources.threads_per_worker,
             ),
             "cpu_affinity": "not available on this macOS host",
-            "memory_enforcement": "per-worker address-space limit",
+            "memory_enforcement": (
+                "per-worker address-space limit when supported; otherwise a fail-hard "
+                "OS maximum-RSS watchdog"
+            ),
         },
         "cache": cache_manifest,
         "training": {
@@ -1075,9 +1080,42 @@ def _apply_worker_resources(config: LossTailBenchmarkConfig) -> dict[str, Any]:
             applied["memory_limits"][name] = target
         except (OSError, ValueError) as error:
             applied["memory_limits"][name] = f"unavailable: {error}"
-    if not any(isinstance(value, int) for value in applied["memory_limits"].values()):
-        raise RuntimeError("worker memory limit could not be enforced")
+    if any(isinstance(value, int) for value in applied["memory_limits"].values()):
+        applied["memory_enforcement"] = {"mode": "address_space_rlimit"}
+    else:
+        applied["memory_enforcement"] = _start_max_rss_watchdog(memory_bytes)
     return applied
+
+
+def _start_max_rss_watchdog(memory_bytes: int) -> dict[str, Any]:
+    poll_seconds = 0.10
+    baseline_bytes = _maximum_resident_set_bytes()
+    if baseline_bytes > memory_bytes:
+        raise RuntimeError("worker already exceeds its configured memory limit")
+
+    def enforce_limit() -> None:
+        while True:
+            if _maximum_resident_set_bytes() > memory_bytes:
+                os._exit(137)
+            time.sleep(poll_seconds)
+
+    threading.Thread(
+        target=enforce_limit,
+        name="loss-tail-memory-limit",
+        daemon=True,
+    ).start()
+    return {
+        "mode": "maximum_rss_watchdog",
+        "source": "resource.getrusage(RUSAGE_SELF).ru_maxrss",
+        "baseline_bytes": baseline_bytes,
+        "poll_interval_milliseconds": int(poll_seconds * 1_000),
+        "exit_code_on_limit": 137,
+    }
+
+
+def _maximum_resident_set_bytes() -> int:
+    maximum_rss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    return maximum_rss if sys.platform == "darwin" else maximum_rss * 1_024
 
 
 def _set_worker_thread_environment(threads: int) -> dict[str, str | None]:
