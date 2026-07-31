@@ -1089,7 +1089,13 @@ def _validate_feature_metadata(
         raise RuntimeError("fixed-time reversal cache start changed")
     if metadata.get("range_end") != config.split.policy_selection_end.isoformat():
         raise RuntimeError("fixed-time reversal cache includes post-July-28 data")
-    if int(metadata.get("expected_candidate_rows_per_market", 0)) != 37:
+    if int(metadata.get("core_complete_candidate_markets", 0)) != (
+        config.model.expected_source_markets
+    ):
+        raise RuntimeError("fixed-time reversal source market count changed")
+    if int(metadata.get("expected_candidate_rows_per_market", 0)) != len(
+        config.model.estimator_training_seconds
+    ):
         raise RuntimeError("fixed-time reversal source cache cadence changed")
 
 

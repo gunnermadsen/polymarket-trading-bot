@@ -20,6 +20,7 @@ from btc_directional_model.fixed_time_reversal_benchmark import (
     _score_candidate_rows,
     _select_candidate,
     _validate_eligible_cohort,
+    _validate_feature_metadata,
     hard_false_up_metrics,
     sign_override_metrics,
 )
@@ -241,6 +242,38 @@ def test_eligible_cohort_keeps_exact_120_without_future_path_conditioning() -> N
     )
 
     _validate_eligible_cohort(frame, config)
+
+
+def test_feature_metadata_cadence_matches_five_estimator_rows() -> None:
+    start = datetime(2026, 3, 21, tzinfo=UTC)
+    end = datetime(2026, 7, 29, tzinfo=UTC)
+    config = SimpleNamespace(
+        candidates=(SimpleNamespace(feature_schema_version="mature-v1"),),
+        split=SimpleNamespace(
+            development_start=start,
+            policy_selection_end=end,
+        ),
+        model=SimpleNamespace(
+            estimator_training_seconds=(120, 125, 130, 135, 140),
+            expected_source_markets=36_579,
+        ),
+    )
+    metadata = {
+        "candidate_feature_schema_versions": {"candidate": "mature-v1"},
+        "scope": "pre_holdout",
+        "range_start": start.isoformat(),
+        "range_end": end.isoformat(),
+        "core_complete_candidate_markets": 36_579,
+        "expected_candidate_rows_per_market": 5,
+    }
+
+    _validate_feature_metadata(metadata, config)
+
+    with pytest.raises(RuntimeError, match="source cache cadence"):
+        _validate_feature_metadata(
+            {**metadata, "expected_candidate_rows_per_market": 37},
+            config,
+        )
 
 
 def test_fold_summary_reports_all_raw_uplifts_without_gating_them() -> None:
