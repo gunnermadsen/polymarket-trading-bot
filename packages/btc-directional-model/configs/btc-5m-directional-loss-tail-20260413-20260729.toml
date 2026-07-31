@@ -148,5 +148,5 @@ allow_fallback_winner = false
 [paths]
 core_features = "data/btc-price-aware-economic-20260321-20260729/features/development.parquet"
 execution_evidence = "data/btc-price-aware-economic-20260321-20260729/execution-evidence"
-shared_cache = "data/btc-boundary-loss-tail-20260413-20260729/shared-cache"
+shared_cache = "data/btc-boundary-loss-tail-20260413-20260729/direct-core-oracle-book-cache"
 runs = "runs/btc-boundary-loss-tail-20260413-20260729"
