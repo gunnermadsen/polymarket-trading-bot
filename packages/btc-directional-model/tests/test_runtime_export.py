@@ -33,6 +33,7 @@ from btc_directional_model.runtime_export import (
     TIME_BANDED_RUNTIME_MODEL_SCHEMA_VERSION,
     export_runtime_model,
     score_runtime_model,
+    validate_bundle_against_freeze,
 )
 
 MODEL_KEY = "btc-test-histogram-v1"
@@ -154,11 +155,17 @@ def make_frozen_candidate(tmp_path: Path) -> tuple[Path, Path, FrozenTrainingBun
 
 def make_time_banded_candidate(
     tmp_path: Path,
+    *,
+    fixed_120: bool = False,
 ) -> tuple[Path, Path, FrozenTimeBandedTrainingBundle]:
     feature_names = ("btc_path_from_window_open_bps", "signal")
     per_band = 100
-    seconds = np.repeat([60, 90, 120, 180], per_band)
-    signal = np.tile(np.linspace(-4.0, 4.0, per_band), 4)
+    seconds_to_materialize = [120, 125] if fixed_120 else [60, 90, 120, 180]
+    seconds = np.repeat(seconds_to_materialize, per_band)
+    signal = np.tile(
+        np.linspace(-4.0, 4.0, per_band),
+        len(seconds_to_materialize),
+    )
     path = np.where(np.arange(len(signal)) % 2 == 0, 8.0, -8.0)
     training_matrix = np.column_stack([np.full(len(signal), 8.0), signal])
     probability = 1.0 / (1.0 + np.exp(-signal))
@@ -178,7 +185,11 @@ def make_time_banded_candidate(
         random_state=17,
     ).fit(training_matrix, labels)
     fitted = FittedCoreModel(
-        candidate_name="histogram_path_persistence_time_calibrated_60_120",
+        candidate_name=(
+            "histogram_path_persistence_exact_120"
+            if fixed_120
+            else "histogram_path_persistence_time_calibrated_60_120"
+        ),
         family="histogram",
         feature_names=feature_names,
         hyperparameters=parameters,
@@ -194,10 +205,14 @@ def make_time_banded_candidate(
         iterations=1,
     )
     ranges = (
-        ("60-89", 60, 90, 0.75),
-        ("90-119", 90, 120, 0.76),
-        ("120-179", 120, 180, 0.77),
-        ("180-240", 180, 241, 0.78),
+        (("120-120", 120, 121, 0.77),)
+        if fixed_120
+        else (
+            ("60-89", 60, 90, 0.75),
+            ("90-119", 90, 120, 0.76),
+            ("120-179", 120, 180, 0.77),
+            ("180-240", 180, 241, 0.78),
+        )
     )
     bundle = FrozenTimeBandedTrainingBundle(
         model=fitted,
@@ -223,7 +238,7 @@ def make_time_banded_candidate(
         }
         for band in bundle.bands
     ]
-    freeze_dir = tmp_path / "time-freeze"
+    freeze_dir = tmp_path / ("fixed-time-freeze" if fixed_120 else "time-freeze")
     freeze_dir.mkdir()
     model_path = freeze_dir / TRAINING_MODEL_FILENAME
     joblib.dump(bundle, model_path, compress=3)
@@ -263,8 +278,8 @@ def make_time_banded_candidate(
         "target_kind": "path_persistence",
         "prediction_policy": {
             "type": "first_confidence_crossing",
-            "minimum_seconds_after_open": 60,
-            "maximum_seconds_after_open": 240,
+            "minimum_seconds_after_open": 120 if fixed_120 else 60,
+            "maximum_seconds_after_open": 120 if fixed_120 else 240,
             "cadence_seconds": 5,
         },
         "configuration_sha256": "1" * 64,
@@ -284,7 +299,9 @@ def make_time_banded_candidate(
         file_sha256(manifest_path) + "\n"
     )
     start = datetime(2026, 7, 13, tzinfo=UTC)
-    feature_path = tmp_path / "time-golden.parquet"
+    feature_path = tmp_path / (
+        "fixed-time-golden.parquet" if fixed_120 else "time-golden.parquet"
+    )
     pl.DataFrame(
         {
             "market_id": [
@@ -457,6 +474,124 @@ def test_time_banded_runtime_export_preserves_target_and_policy(
         "confidence": 0.5,
         "action": "no_trade",
     }
+    zero_path_vector = next(
+        vector for vector in golden["vectors"] if vector["id"] == "zero_path_ineligible"
+    )
+    assert zero_path_vector["expected"]["probability_up"] == 0.5
+    assert zero_path_vector["expected"]["confidence"] == 0.5
+    assert zero_path_vector["expected"]["action"] == "no_trade"
+
+
+def test_exact_120_time_banded_runtime_export_is_reconstructable(
+    tmp_path: Path,
+) -> None:
+    freeze_dir, feature_path, bundle = make_time_banded_candidate(
+        tmp_path,
+        fixed_120=True,
+    )
+    destination = export_runtime_model(
+        freeze_dir=freeze_dir,
+        golden_features=feature_path,
+        output_root=tmp_path / "runtime-models",
+        model_key="btc-test-path-persistence-exact-120-v2",
+    )
+    model = json.loads((destination / MODEL_FILENAME).read_text())
+    golden = json.loads((destination / GOLDEN_VECTORS_FILENAME).read_text())
+
+    assert model["prediction_policy"] == {
+        "type": "first_confidence_crossing",
+        "minimum_seconds_after_open": 120,
+        "maximum_seconds_after_open": 120,
+        "cadence_seconds": 5,
+    }
+    assert model["time_bands"] == [
+        {
+            "name": "120-120",
+            "start_seconds": 120,
+            "end_seconds_exclusive": 121,
+            "calibration": model["time_bands"][0]["calibration"],
+            "confidence_threshold": 0.77,
+        }
+    ]
+    assert {vector["seconds_elapsed"] for vector in golden["vectors"]} == {120}
+    assert {vector["id"] for vector in golden["vectors"]} >= {
+        "120-120-minimum",
+        "120-120-maximum",
+        "zero_path_ineligible",
+        "all_features_non_finite",
+    }
+    for vector in golden["vectors"]:
+        assert (
+            score_runtime_model(
+                model,
+                vector["feature_values"],
+                seconds_elapsed=vector["seconds_elapsed"],
+            )
+            == vector["expected"]
+        )
+
+    exact_row = pl.DataFrame(
+        {
+            "seconds_elapsed": [120],
+            "btc_path_from_window_open_bps": [8.0],
+            "signal": [3.0],
+        }
+    )
+    expected_probability = float(bundle.probability_up(exact_row)[0])
+    actual = score_runtime_model(model, [8.0, 3.0], seconds_elapsed=120)
+    assert actual["probability_up"] == pytest.approx(
+        expected_probability,
+        abs=1e-15,
+    )
+    zero_path = score_runtime_model(model, [0.0, 3.0], seconds_elapsed=120)
+    assert zero_path["probability_up"] == 0.5
+    assert zero_path["confidence"] == 0.5
+    assert zero_path["action"] == "no_trade"
+    with pytest.raises(ValueError, match="outside the runtime time bands"):
+        score_runtime_model(model, [8.0, 3.0], seconds_elapsed=125)
+
+
+def test_time_banded_runtime_export_rejects_incomplete_rolling_bands(
+    tmp_path: Path,
+) -> None:
+    freeze_dir, _, bundle = make_time_banded_candidate(tmp_path)
+    freeze = json.loads((freeze_dir / "freeze-manifest.json").read_text())
+    summary = json.loads((freeze_dir / "model-summary.json").read_text())
+    incomplete_bundle = FrozenTimeBandedTrainingBundle(
+        model=bundle.model,
+        target_kind=bundle.target_kind,
+        bands=bundle.bands[:-1],
+    )
+    incomplete_bands = [
+        {
+            "name": band.name,
+            "start_second": band.start_second,
+            "end_second_exclusive": band.end_second_exclusive,
+            "calibrator": asdict(band.calibrator),
+            "confidence_threshold": band.confidence_threshold,
+        }
+        for band in incomplete_bundle.bands
+    ]
+    freeze["calibration_bands"] = incomplete_bands
+    summary["calibration_bands"] = incomplete_bands
+
+    with pytest.raises(RuntimeError, match="exactly cover the 60-240"):
+        validate_bundle_against_freeze(incomplete_bundle, freeze, summary)
+
+
+def test_exact_120_policy_rejects_legacy_four_band_bundle(tmp_path: Path) -> None:
+    freeze_dir, _, bundle = make_time_banded_candidate(tmp_path)
+    freeze = json.loads((freeze_dir / "freeze-manifest.json").read_text())
+    summary = json.loads((freeze_dir / "model-summary.json").read_text())
+    freeze["prediction_policy"] = {
+        "type": "first_confidence_crossing",
+        "minimum_seconds_after_open": 120,
+        "maximum_seconds_after_open": 120,
+        "cadence_seconds": 5,
+    }
+
+    with pytest.raises(RuntimeError, match="exactly one 120-121 band"):
+        validate_bundle_against_freeze(bundle, freeze, summary)
 
 
 def test_runtime_export_rejects_freeze_manifest_hash_mismatch(tmp_path: Path) -> None:

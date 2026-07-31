@@ -1,0 +1,119 @@
+[benchmark]
+profile = "mature_reversal_fixed_120_reversal_decision"
+tuning_identity = "exact_120_reversal_decision"
+core_config = "configs/btc-5m-directional-core-oracle-early-entry-20260321-20260729.toml"
+core_config_sha256 = "ec5262959ec33d15047943c7242d4e05ad43665f40313e304975c6644127b294"
+evaluation_is_independent = false
+evaluation_note = "The exact half-open UTC interval [2026-03-21, 2026-07-29), representing March 21 through July 28 inclusive, is consumed chronological development evidence. Seven contiguous validation windows span June 9 through July 28. Hyperparameter tuning, global Platt calibration, policy selection, and validation use only exact 120-second decisions; estimator fitting retains eligible rows from the causal 120/125/130/135/140-second context. Every candidate uses the same 71 core mature-reversal features, 28-day recency, and market-equal weighting. Source completeness is validated before each estimator row is independently admitted only when its contemporaneous BTC path is directionally defined. Exact-120 decisions are never conditioned on path availability at later timestamps. Oracle and order-book fields are excluded. July 29 and later remain untouched forward evidence."
+
+[split]
+development_start = "2026-03-21T00:00:00Z"
+development_end = "2026-07-14T00:00:00Z"
+probability_calibration_start = "2026-07-14T00:00:00Z"
+probability_calibration_end = "2026-07-21T00:00:00Z"
+policy_selection_start = "2026-07-21T00:00:00Z"
+policy_selection_end = "2026-07-29T00:00:00Z"
+validation_starts = [
+  "2026-06-09T00:00:00Z",
+  "2026-06-16T00:00:00Z",
+  "2026-06-23T00:00:00Z",
+  "2026-06-30T00:00:00Z",
+  "2026-07-07T00:00:00Z",
+  "2026-07-14T00:00:00Z",
+  "2026-07-21T00:00:00Z",
+]
+validation_ends = [
+  "2026-06-16T00:00:00Z",
+  "2026-06-23T00:00:00Z",
+  "2026-06-30T00:00:00Z",
+  "2026-07-07T00:00:00Z",
+  "2026-07-14T00:00:00Z",
+  "2026-07-21T00:00:00Z",
+  "2026-07-29T00:00:00Z",
+]
+
+[model]
+decision_second = 120
+estimator_training_seconds = [120, 125, 130, 135, 140]
+decision_target = "outcome_up"
+reversal_estimator_positive_class = "path_persistence"
+estimator_family = "histogram_gradient_boosting"
+probability_calibration = "global_platt"
+recency_half_life_days = 28.0
+include_oracle = false
+include_book = false
+threshold_selection = "empirical_policy_confidence_quantile"
+path_zero_epsilon_bps = 1e-12
+expected_source_markets = 36579
+expected_source_estimator_rows = 182895
+expected_eligible_markets = 36561
+expected_eligible_estimator_rows = 181751
+expected_exact_120_eligible_markets = 36301
+hard_confidence_floor = 0.95
+
+[[tail_histogram_parameters]]
+max_leaf_nodes = 15
+min_samples_leaf = 200
+l2_regularization = 2.0
+learning_rate = 0.05
+max_iter = 160
+
+[[tail_histogram_parameters]]
+max_leaf_nodes = 15
+min_samples_leaf = 300
+l2_regularization = 5.0
+learning_rate = 0.03
+max_iter = 220
+
+[[tail_histogram_parameters]]
+max_leaf_nodes = 7
+min_samples_leaf = 200
+l2_regularization = 2.0
+learning_rate = 0.05
+max_iter = 160
+
+[[candidates]]
+name = "histogram_mature_reversal_fixed_120_outcome_control"
+target_kind = "outcome_up"
+feature_schema_version = "btc-5m-directional-mature-reversal-features-v1"
+market_weight_multiplier = 1.0
+parameter_grid = "base"
+
+[[candidates]]
+name = "histogram_mature_reversal_fixed_120_path_persistence"
+target_kind = "path_persistence"
+feature_schema_version = "btc-5m-directional-mature-reversal-features-v1"
+market_weight_multiplier = 1.0
+parameter_grid = "base"
+
+[[candidates]]
+name = "histogram_mature_reversal_fixed_120_path_persistence_tail_regularized"
+target_kind = "path_persistence"
+feature_schema_version = "btc-5m-directional-mature-reversal-features-v1"
+market_weight_multiplier = 1.0
+parameter_grid = "tail"
+
+[primary_operating_point]
+target_coverage = 0.10
+coverage_tolerance = 0.025
+minimum_accuracy = 0.93
+minimum_balanced_accuracy = 0.92
+minimum_direction_recall = 0.92
+minimum_wilson_lower_95 = 0.90
+maximum_expected_calibration_error = 0.05
+
+[diagnostic_operating_point]
+target_coverage = 0.08
+coverage_tolerance = 0.02
+minimum_accuracy = 0.935
+minimum_balanced_accuracy = 0.925
+minimum_direction_recall = 0.92
+minimum_wilson_lower_95 = 0.90
+maximum_expected_calibration_error = 0.05
+
+[paths]
+execution_evidence = "data/btc-core-oracle-early-entry-20260321-20260729/execution-evidence"
+execution_manifest_sha256 = "c02f14c75382c8609fb8d4d905e9ca5735fca33a352d17f6a224aa415742cc34"
+runs = "runs/btc-mature-reversal-fixed-120-reversal-decision-20260321-20260729"
+freezes = "artifacts/btc-mature-reversal-fixed-120-reversal-decision-20260321-20260729/freezes"
+runtime_models = "runtime-models/btc-mature-reversal-fixed-120-reversal-decision-20260321-20260729"

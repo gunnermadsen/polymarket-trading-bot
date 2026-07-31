@@ -182,6 +182,20 @@ def validate_bundle_against_freeze(
         "hyperparameters": model.hyperparameters,
         "imputation_medians": model.imputation_medians.tolist(),
     }
+    policy = freeze.get("prediction_policy")
+    rolling_policy = {
+        "type": "first_confidence_crossing",
+        "minimum_seconds_after_open": 60,
+        "maximum_seconds_after_open": 240,
+        "cadence_seconds": 5,
+    }
+    fixed_120_policy = is_exact_fixed_120_policy(policy)
+    if policy != rolling_policy and not fixed_120_policy:
+        raise RuntimeError(
+            "frozen prediction policy must be the supported 60-240/5 policy "
+            "or an exact fixed 120-second policy"
+        )
+
     if isinstance(bundle, FrozenTrainingBundle):
         if freeze.get("calibrator") != asdict(bundle.calibrator):
             raise RuntimeError("frozen calibrator does not match training model")
@@ -196,7 +210,10 @@ def validate_bundle_against_freeze(
             }
         )
     else:
-        validate_time_banded_bundle(bundle)
+        validate_time_banded_bundle(
+            bundle,
+            exact_fixed_120_policy=fixed_120_policy,
+        )
         expected_bands = frozen_calibration_bands_payload(bundle.bands)
         if freeze.get("calibration_kind") != "time_banded_platt":
             raise RuntimeError("frozen calibration kind is not time-banded Platt")
@@ -230,30 +247,6 @@ def validate_bundle_against_freeze(
         raise RuntimeError("runtime export requires one binary baseline logit")
     if not estimator._predictors:
         raise RuntimeError("runtime export requires at least one fitted tree")
-
-    policy = freeze.get("prediction_policy")
-    rolling_policy = {
-        "type": "first_confidence_crossing",
-        "minimum_seconds_after_open": 60,
-        "maximum_seconds_after_open": 240,
-        "cadence_seconds": 5,
-    }
-    fixed_120_policy = (
-        isinstance(bundle, FrozenTrainingBundle)
-        and isinstance(policy, dict)
-        and set(policy) == PREDICTION_POLICY_FIELDS
-        and policy.get("type") == "first_confidence_crossing"
-        and policy.get("minimum_seconds_after_open") == 120
-        and policy.get("maximum_seconds_after_open") == 120
-        and type(policy.get("cadence_seconds")) is int
-        and policy["cadence_seconds"] > 0
-    )
-    if policy != rolling_policy and not fixed_120_policy:
-        raise RuntimeError(
-            "frozen prediction policy must be the supported 60-240/5 policy "
-            "or an exact fixed 120-second policy"
-        )
-
 
 def runtime_model_payload(
     *,
@@ -358,6 +351,8 @@ def runtime_model_payload(
 
 def validate_time_banded_bundle(
     bundle: FrozenTimeBandedTrainingBundle,
+    *,
+    exact_fixed_120_policy: bool,
 ) -> None:
     if bundle.target_kind not in {"outcome_up", "path_persistence"}:
         raise RuntimeError("unsupported frozen time-banded target kind")
@@ -367,14 +362,29 @@ def validate_time_banded_bundle(
         ("120-179", 120, 180),
         ("180-240", 180, 241),
     )
-    observed_ranges = tuple(
-        (band.name, band.start_second, band.end_second_exclusive)
-        for band in bundle.bands
-    )
-    if observed_ranges != expected_ranges:
-        raise RuntimeError(
-            "frozen time bands must exactly cover the 60-240 second runtime policy"
+    if exact_fixed_120_policy:
+        observed_ranges = tuple(
+            (band.start_second, band.end_second_exclusive)
+            for band in bundle.bands
         )
+        if (
+            observed_ranges != ((120, 121),)
+            or not isinstance(bundle.bands[0].name, str)
+            or not bundle.bands[0].name.strip()
+        ):
+            raise RuntimeError(
+                "frozen time bands must contain exactly one 120-121 band "
+                "for the exact fixed 120-second runtime policy"
+            )
+    else:
+        observed_ranges_with_names = tuple(
+            (band.name, band.start_second, band.end_second_exclusive)
+            for band in bundle.bands
+        )
+        if observed_ranges_with_names != expected_ranges:
+            raise RuntimeError(
+                "frozen time bands must exactly cover the 60-240 second runtime policy"
+            )
     for band in bundle.bands:
         if not band.calibrator.converged or band.calibrator.slope <= 0.0:
             raise RuntimeError(
@@ -396,6 +406,18 @@ def validate_time_banded_bundle(
         raise RuntimeError(
             "path-persistence runtime model is missing its path-direction feature"
         )
+
+
+def is_exact_fixed_120_policy(policy: Any) -> bool:
+    return (
+        isinstance(policy, dict)
+        and set(policy) == PREDICTION_POLICY_FIELDS
+        and policy.get("type") == "first_confidence_crossing"
+        and policy.get("minimum_seconds_after_open") == 120
+        and policy.get("maximum_seconds_after_open") == 120
+        and type(policy.get("cadence_seconds")) is int
+        and policy["cadence_seconds"] > 0
+    )
 
 
 def frozen_calibration_bands_payload(
@@ -681,6 +703,17 @@ def time_banded_golden_vectors_payload(
     ).sort(["observed_at", "market_id"])
     if frame.is_empty():
         raise RuntimeError("golden feature cache is empty")
+    frame = frame.filter(
+        pl.any_horizontal(
+            *(
+                (pl.col("seconds_elapsed") >= band.start_second)
+                & (pl.col("seconds_elapsed") < band.end_second_exclusive)
+                for band in bundle.bands
+            )
+        )
+    )
+    if frame.is_empty():
+        raise RuntimeError("golden feature cache has no rows in the runtime time bands")
     matrix = frame.select(feature_names).cast(pl.Float64).to_numpy()
     medians = np.asarray(bundle.model.imputation_medians, dtype=np.float64)
     transformed = np.where(np.isfinite(matrix), matrix, medians)
@@ -750,6 +783,28 @@ def time_banded_golden_vectors_payload(
         )
 
     non_finite_seconds = bundle.bands[0].start_second
+    if model["target"]["type"] == "path_persistence":
+        zero_path_values = json_feature_values(matrix[vector_specs[0][1]])
+        path_feature_index = feature_names.index(
+            model["target"]["path_direction_feature"]
+        )
+        zero_path_values[path_feature_index] = 0.0
+        zero_path_expected = score_runtime_model(
+            model,
+            zero_path_values,
+            seconds_elapsed=non_finite_seconds,
+        )
+        if zero_path_expected["action"] != "no_trade":
+            raise RuntimeError("zero path must be ineligible for runtime trading")
+        vectors.append(
+            {
+                "id": "zero_path_ineligible",
+                "source": None,
+                "seconds_elapsed": non_finite_seconds,
+                "feature_values": zero_path_values,
+                "expected": zero_path_expected,
+            }
+        )
     vectors.append(
         {
             "id": "all_features_non_finite",

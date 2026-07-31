@@ -24,6 +24,12 @@ from .fixed_time_benchmark import (
     run_fixed_time_accuracy_benchmark,
 )
 from .fixed_time_config import load_fixed_time_accuracy_config
+from .fixed_time_reversal_benchmark import (
+    FIXED_TIME_REVERSAL_PAPER_AUTHORIZATION,
+    freeze_and_export_fixed_time_reversal_paper_candidate,
+    run_fixed_time_reversal_benchmark,
+)
+from .fixed_time_reversal_config import load_fixed_time_reversal_config
 from .fixed_time_selective_benchmark import (
     FIXED_TIME_SELECTIVE_PAPER_AUTHORIZATION,
     freeze_and_export_fixed_time_selective_paper_candidate,
@@ -135,6 +141,25 @@ def main() -> None:
         "--authorize-paper-only",
         action="store_true",
         help="authorize a selective exact-120 model only for paper evaluation",
+    )
+    fixed_time_reversal_run = subparsers.add_parser(
+        "fixed-120-reversal-benchmark-run"
+    )
+    fixed_time_reversal_run.add_argument("--config", type=Path, required=True)
+    fixed_time_reversal_export = subparsers.add_parser(
+        "fixed-120-reversal-paper-candidate-export"
+    )
+    fixed_time_reversal_export.add_argument("--config", type=Path, required=True)
+    fixed_time_reversal_export.add_argument(
+        "--benchmark-run",
+        type=Path,
+        required=True,
+    )
+    fixed_time_reversal_export.add_argument("--model-key", required=True)
+    fixed_time_reversal_export.add_argument(
+        "--authorize-paper-only",
+        action="store_true",
+        help="authorize an exact-120 reversal model only for paper evaluation",
     )
     persistence_run = subparsers.add_parser("persistence-benchmark-run")
     persistence_run.add_argument("--config", type=Path, required=True)
@@ -296,6 +321,40 @@ def main() -> None:
                 benchmark_run=args.benchmark_run,
                 model_key=args.model_key,
                 authorization=FIXED_TIME_SELECTIVE_PAPER_AUTHORIZATION,
+            )
+        )
+        print(f"freeze: {freeze_dir}")
+        print(f"runtime model: {runtime_dir}")
+        print(
+            "scope: paper_only; production-qualified: "
+            f"{str(manifest['production_qualified']).lower()}"
+        )
+        print("fresh forward evidence: required from July 29, 2026")
+        return
+    if args.command == "fixed-120-reversal-benchmark-run":
+        config = load_fixed_time_reversal_config(args.config)
+        run_dir, benchmark = run_fixed_time_reversal_benchmark(config)
+        print(f"report: {run_dir / 'report.html'}")
+        print(
+            "development candidate: "
+            f"{benchmark['selection']['selected_candidate'] or 'none'}"
+        )
+        print("decision: exact 120 seconds; evidence ends July 28, 2026")
+        print("live capital: not authorized")
+        return
+    if args.command == "fixed-120-reversal-paper-candidate-export":
+        if not args.authorize_paper_only:
+            parser.error(
+                "fixed-120-reversal-paper-candidate-export requires "
+                "--authorize-paper-only"
+            )
+        config = load_fixed_time_reversal_config(args.config)
+        freeze_dir, runtime_dir, manifest = (
+            freeze_and_export_fixed_time_reversal_paper_candidate(
+                config=config,
+                benchmark_run=args.benchmark_run,
+                model_key=args.model_key,
+                authorization=FIXED_TIME_REVERSAL_PAPER_AUTHORIZATION,
             )
         )
         print(f"freeze: {freeze_dir}")
