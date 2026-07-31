@@ -309,6 +309,7 @@ def run_oracle_book_benchmark(
             expected_seconds=TIMING_DECISION_SECONDS,
         ),
     )
+    selection = _selection_payload(experiments, core_config)
 
     payload: dict[str, Any] = {
         "schema_version": ORACLE_BOOK_BENCHMARK_SCHEMA_VERSION,
@@ -376,19 +377,191 @@ def run_oracle_book_benchmark(
             ].n_unique(),
         },
         "experiments": experiments,
+        "selection": selection,
         "deployment": {
             "authorized": False,
             "runtime_exported": False,
             "trading_process_created": False,
             "reason": (
-                "matched book experiments use consumed development evidence and "
-                "book features are outside the current runtime contract"
+                "no book challenger satisfied the frozen accuracy, coverage, "
+                "hard-error, and execution-economics selection contract"
+                if selection["selected_candidate"] is None
+                else "selected development candidate still requires runtime "
+                "feature parity and forward paper qualification"
             ),
         },
     }
     write_json_atomic(run_dir / "benchmark.json", payload)
     _write_text_atomic(run_dir / "report.html", _render_report(payload))
     return run_dir, payload
+
+
+def _selection_payload(
+    experiments: dict[str, Any],
+    core_config: CoreTrainingConfig,
+) -> dict[str, Any]:
+    candidates: dict[str, Any] = {}
+    for experiment_name, experiment in experiments.items():
+        control = experiment["arms"]["core_oracle"]
+        challenger = experiment["arms"]["core_oracle_book"]
+        control_policy = control["evaluation"]["policy"]
+        policy = challenger["evaluation"]["policy"]
+        control_tail = control["evaluation"]["hard_confident_errors"]
+        tail = challenger["evaluation"]["hard_confident_errors"]
+        ten_share = challenger["evaluation"]["execution_by_size"][
+            "vwap10_ten_share"
+        ]
+        checkpoint_deltas = [
+            float(row["accuracy_delta"])
+            for row in experiment["paired_evaluation"]["checkpoints"].values()
+        ]
+        checks = [
+            _selection_check(
+                "threshold qualified on earlier policy-selection data",
+                bool(challenger["training"]["threshold_qualified"]),
+            ),
+            _selection_check(
+                "minimum matched-cohort coverage",
+                policy["coverage"] >= core_config.gates.minimum_coverage,
+                observed=policy["coverage"],
+                required=core_config.gates.minimum_coverage,
+            ),
+            _selection_check(
+                "minimum accuracy",
+                policy["accuracy"] >= core_config.gates.target_accuracy,
+                observed=policy["accuracy"],
+                required=core_config.gates.target_accuracy,
+            ),
+            _selection_check(
+                "minimum balanced accuracy",
+                policy["balanced_accuracy"]
+                >= core_config.gates.target_balanced_accuracy,
+                observed=policy["balanced_accuracy"],
+                required=core_config.gates.target_balanced_accuracy,
+            ),
+            _selection_check(
+                "minimum UP recall",
+                policy["up_recall"]
+                >= core_config.gates.minimum_direction_recall,
+                observed=policy["up_recall"],
+                required=core_config.gates.minimum_direction_recall,
+            ),
+            _selection_check(
+                "minimum DOWN recall",
+                policy["down_recall"]
+                >= core_config.gates.minimum_direction_recall,
+                observed=policy["down_recall"],
+                required=core_config.gates.minimum_direction_recall,
+            ),
+            _selection_check(
+                "minimum Wilson lower bound",
+                policy["wilson_lower_95"]
+                >= core_config.gates.target_wilson_lower,
+                observed=policy["wilson_lower_95"],
+                required=core_config.gates.target_wilson_lower,
+            ),
+            _selection_check(
+                "maximum expected calibration error",
+                policy["expected_calibration_error"] is not None
+                and policy["expected_calibration_error"]
+                <= core_config.gates.maximum_ece,
+                observed=policy["expected_calibration_error"],
+                required=core_config.gates.maximum_ece,
+            ),
+            _selection_check(
+                "selected accuracy improves matched control",
+                policy["accuracy"] > control_policy["accuracy"],
+                observed=policy["accuracy"] - control_policy["accuracy"],
+                required=0.0,
+            ),
+            _selection_check(
+                "selected coverage improves matched control",
+                policy["coverage"] > control_policy["coverage"],
+                observed=policy["coverage"] - control_policy["coverage"],
+                required=0.0,
+            ),
+            _selection_check(
+                "raw checkpoint accuracy does not regress",
+                min(checkpoint_deltas) >= 0.0,
+                observed=min(checkpoint_deltas),
+                required=0.0,
+            ),
+            _selection_check(
+                "hard-confident error count does not increase",
+                tail["hard_confident_error_markets"]
+                <= control_tail["hard_confident_error_markets"],
+                observed=tail["hard_confident_error_markets"],
+                required=control_tail["hard_confident_error_markets"],
+            ),
+            _selection_check(
+                "hard-confident selected-error rate does not increase",
+                tail["hard_confident_error_rate_selected"]
+                <= control_tail["hard_confident_error_rate_selected"],
+                observed=tail["hard_confident_error_rate_selected"],
+                required=control_tail["hard_confident_error_rate_selected"],
+            ),
+            _selection_check(
+                "positive ten-share realized expectancy",
+                ten_share["realized_net_expectancy_per_trade"] is not None
+                and ten_share["realized_net_expectancy_per_trade"] > 0.0,
+                observed=ten_share["realized_net_expectancy_per_trade"],
+                required=0.0,
+            ),
+            _selection_check(
+                "positive ten-share realized PnL",
+                ten_share["realized_net_pnl_total"] is not None
+                and ten_share["realized_net_pnl_total"] > 0.0,
+                observed=ten_share["realized_net_pnl_total"],
+                required=0.0,
+            ),
+        ]
+        candidates[experiment_name] = {
+            "candidate": "core_oracle_book",
+            "passed": all(check["passed"] for check in checks),
+            "checks": checks,
+        }
+    passing = [
+        name for name, candidate in candidates.items() if candidate["passed"]
+    ]
+    selected = (
+        max(
+            passing,
+            key=lambda name: (
+                experiments[name]["arms"]["core_oracle_book"]["evaluation"][
+                    "policy"
+                ]["accuracy"],
+                experiments[name]["arms"]["core_oracle_book"]["evaluation"][
+                    "policy"
+                ]["coverage"],
+            ),
+        )
+        if passing
+        else None
+    )
+    return {
+        "objective": (
+            "select a book-enhanced model only when it improves model decision "
+            "accuracy and coverage without worsening confident-error tails, "
+            "while retaining positive ten-share execution expectancy"
+        ),
+        "selected_candidate": selected,
+        "candidates": candidates,
+    }
+
+
+def _selection_check(
+    name: str,
+    passed: bool,
+    *,
+    observed: Any = None,
+    required: Any = True,
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "observed": observed,
+        "required": required,
+        "passed": bool(passed),
+    }
 
 
 def control_candidate_spec(name: str, half_life_days: float) -> CandidateSpec:

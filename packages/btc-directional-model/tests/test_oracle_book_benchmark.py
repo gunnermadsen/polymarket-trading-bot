@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import copy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
 import pytest
 
+from btc_directional_model.core_config import load_core_config
 from btc_directional_model.core_execution import EXECUTION_CONTEXT_SECONDS
 from btc_directional_model.core_features import (
     CORE_MATURE_REVERSAL_ORACLE_FEATURES,
@@ -18,6 +20,7 @@ from btc_directional_model.oracle_book_benchmark import (
     _complete_context_market_ids,
     _evaluation_payload,
     _frame_sha256,
+    _selection_payload,
     _split_experiment_frame,
     _validate_strict_execution_contract,
     book_candidate_spec,
@@ -263,3 +266,71 @@ def test_evaluation_reports_five_and_ten_share_economics() -> None:
     assert ten["economic_markets"] == 2
     assert result["book_availability_coverage"] == 0.5
     assert result["hard_confident_errors"]["hard_confident_error_markets"] == 0
+
+
+def test_selection_requires_accuracy_coverage_tail_and_positive_economics(
+) -> None:
+    config = load_oracle_book_benchmark_config(repository_config())
+    core = load_core_config(config.core_config)
+    control_policy = {
+        "coverage": 0.61,
+        "accuracy": 0.88,
+    }
+    challenger_policy = {
+        "coverage": 0.65,
+        "accuracy": 0.90,
+        "balanced_accuracy": 0.90,
+        "up_recall": 0.90,
+        "down_recall": 0.90,
+        "wilson_lower_95": 0.88,
+        "expected_calibration_error": 0.02,
+    }
+    control_tail = {
+        "hard_confident_error_markets": 2,
+        "hard_confident_error_rate_selected": 0.01,
+    }
+    challenger_tail = {
+        "hard_confident_error_markets": 1,
+        "hard_confident_error_rate_selected": 0.005,
+    }
+    experiment = {
+        "arms": {
+            "core_oracle": {
+                "training": {"threshold_qualified": True},
+                "evaluation": {
+                    "policy": control_policy,
+                    "hard_confident_errors": control_tail,
+                    "execution_by_size": {},
+                },
+            },
+            "core_oracle_book": {
+                "training": {"threshold_qualified": True},
+                "evaluation": {
+                    "policy": challenger_policy,
+                    "hard_confident_errors": challenger_tail,
+                    "execution_by_size": {
+                        "vwap10_ten_share": {
+                            "realized_net_expectancy_per_trade": 0.10,
+                            "realized_net_pnl_total": 10.0,
+                        }
+                    },
+                },
+            },
+        },
+        "paired_evaluation": {
+            "checkpoints": {"125": {"accuracy_delta": 0.02}}
+        },
+    }
+
+    selection = _selection_payload({"fixed_125s": experiment}, core)
+    assert selection["selected_candidate"] == "fixed_125s"
+
+    insufficient_coverage = copy.deepcopy(experiment)
+    insufficient_coverage["arms"]["core_oracle_book"]["evaluation"][
+        "policy"
+    ]["coverage"] = 0.59
+    selection = _selection_payload(
+        {"fixed_125s": insufficient_coverage},
+        core,
+    )
+    assert selection["selected_candidate"] is None
