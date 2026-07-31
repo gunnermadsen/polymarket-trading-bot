@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .core_config import (
+    CORE_ORACLE_SOURCE_CONTRACT,
     EQUAL_TOTAL_PER_MARKET_NORMALIZATION,
     CandidateRowWeightScheduleConfig,
     RowWeightScheduleConfig,
@@ -52,6 +53,16 @@ REGIME_ROBUST_FEATURE_CANDIDATE = "histogram_regime_reversal"
 REGIME_ROBUST_REGULARIZED_CANDIDATE = (
     "histogram_mature_reversal_market_regularized"
 )
+MATURE_REVERSAL_ORACLE_CONTROL_CANDIDATE = (
+    "histogram_mature_reversal_recency_28d_oracle_control"
+)
+MATURE_REVERSAL_ORACLE_CANDIDATE = (
+    "histogram_mature_reversal_oracle_recency_28d"
+)
+MATURE_REVERSAL_ORACLE_ACCURACY_CANDIDATES = (
+    MATURE_REVERSAL_ORACLE_CONTROL_CANDIDATE,
+    MATURE_REVERSAL_ORACLE_CANDIDATE,
+)
 REGIME_ROBUST_ACCURACY_CANDIDATES = (
     "histogram_enriched",
     MATURE_REVERSAL_ACCURACY_CANDIDATE,
@@ -66,7 +77,12 @@ BOUNDARY_ALIGNMENT_PROFILE = "boundary_alignment"
 BOUNDARY_REVERSAL_ACCURACY_PROFILE = "boundary_reversal_accuracy"
 RESIDUAL_ADMISSION_SOURCE_PROFILE = "residual_admission_source"
 MATURE_REVERSAL_ACCURACY_PROFILE = "mature_reversal_accuracy"
+MATURE_REVERSAL_ORACLE_ACCURACY_PROFILE = (
+    "mature_reversal_oracle_accuracy"
+)
 REGIME_ROBUST_ACCURACY_PROFILE = "regime_robust_accuracy"
+DEFAULT_FIXED_EVALUATION_SECONDS = (60, 90, 120, 180, 240)
+ORACLE_EARLY_ENTRY_FIXED_EVALUATION_SECONDS = (120, 125, 130, 135, 140)
 REGIME_ROBUST_VALIDATION_STARTS = (
     "2026-06-09T00:00:00+00:00",
     "2026-06-16T00:00:00+00:00",
@@ -107,6 +123,7 @@ class PersistenceBenchmarkConfig:
     evaluation_is_independent: bool
     quantity: float
     early_cutoff_second: int
+    fixed_evaluation_seconds: tuple[int, ...]
     minimum_early_markets: int
     minimum_common_markets: int
     minimum_executable_markets: int
@@ -182,6 +199,12 @@ def load_persistence_benchmark_config(path: Path) -> PersistenceBenchmarkConfig:
         evaluation_is_independent=bool(benchmark["evaluation_is_independent"]),
         quantity=float(benchmark["quantity"]),
         early_cutoff_second=int(benchmark["early_cutoff_second"]),
+        fixed_evaluation_seconds=_parse_fixed_evaluation_seconds(
+            benchmark.get(
+                "fixed_evaluation_seconds",
+                DEFAULT_FIXED_EVALUATION_SECONDS,
+            ),
+        ),
         minimum_early_markets=int(gates["minimum_early_markets"]),
         minimum_common_markets=int(gates["minimum_common_markets"]),
         minimum_executable_markets=int(gates["minimum_executable_markets"]),
@@ -273,6 +296,15 @@ def _parse_walk_forward_timestamp(value: str) -> datetime:
     if parsed.utcoffset() != timedelta(0):
         raise ValueError("walk-forward timestamps must use UTC")
     return parsed.astimezone(UTC)
+
+
+def _parse_fixed_evaluation_seconds(values: Any) -> tuple[int, ...]:
+    if not isinstance(values, (list, tuple)) or any(
+        isinstance(value, bool) or not isinstance(value, int)
+        for value in values
+    ):
+        raise ValueError("fixed evaluation checkpoints must contain only integers")
+    return tuple(values)
 
 
 def validate_persistence_benchmark_config(
@@ -370,6 +402,39 @@ def validate_persistence_benchmark_config(
                 "mature-reversal accuracy benchmark requires its frozen "
                 "accuracy-uplift and diagnostic-tolerance contract"
             )
+    elif config.profile == MATURE_REVERSAL_ORACLE_ACCURACY_PROFILE:
+        if (
+            config.candidate_names
+            != MATURE_REVERSAL_ORACLE_ACCURACY_CANDIDATES
+        ):
+            raise ValueError(
+                "mature-reversal oracle accuracy benchmark requires its "
+                "frozen recency-matched two-candidate matrix"
+            )
+        if config.row_weight_schedules:
+            raise ValueError(
+                "mature-reversal oracle accuracy benchmark preserves equal "
+                "total weight per market"
+            )
+        if (
+            config.hard_confidence_floor != 0.95
+            or config.minimum_hard_confident_error_count_reduction != 1
+            or config.maximum_hard_confident_error_selected_rate_regression
+            != 0.0
+            or config.minimum_accuracy_uplift != 0.001
+            or config.minimum_balanced_accuracy_uplift != 0.001
+            or config.minimum_direction_recall_uplift != 0.0
+            or config.minimum_wilson_lower_uplift != 0.001
+            or config.minimum_coverage_uplift != 0.0
+            or config.maximum_accuracy_regression != 0.0
+            or config.maximum_balanced_accuracy_regression != 0.0
+            or config.maximum_direction_recall_regression != 0.0
+            or config.maximum_median_entry_seconds_regression != 0.0
+        ):
+            raise ValueError(
+                "mature-reversal oracle accuracy benchmark requires its "
+                "frozen accuracy-uplift and hard-error contract"
+            )
     elif config.profile == REGIME_ROBUST_ACCURACY_PROFILE:
         if config.candidate_names != REGIME_ROBUST_ACCURACY_CANDIDATES:
             raise ValueError(
@@ -402,7 +467,7 @@ def validate_persistence_benchmark_config(
     else:
         raise ValueError(f"unsupported persistence benchmark profile: {config.profile}")
     if config.control_candidate != config.candidate_names[0]:
-        raise ValueError("histogram_enriched must remain the control candidate")
+        raise ValueError("the first candidate must remain the control")
     if config.evaluation_is_independent:
         raise ValueError("the consumed development range cannot be independent")
     if not config.evaluation_note:
@@ -411,6 +476,15 @@ def validate_persistence_benchmark_config(
         raise ValueError("execution economics require exactly five shares")
     if config.early_cutoff_second != 120:
         raise ValueError("the early-entry checkpoint must remain 120 seconds")
+    expected_fixed_seconds = (
+        ORACLE_EARLY_ENTRY_FIXED_EVALUATION_SECONDS
+        if config.profile == MATURE_REVERSAL_ORACLE_ACCURACY_PROFILE
+        else DEFAULT_FIXED_EVALUATION_SECONDS
+    )
+    if config.fixed_evaluation_seconds != expected_fixed_seconds:
+        raise ValueError(
+            "fixed evaluation checkpoints do not match the frozen profile"
+        )
     if (
         config.minimum_early_markets < 500
         or config.minimum_common_markets < 500
@@ -419,6 +493,7 @@ def validate_persistence_benchmark_config(
         raise ValueError("sample gates cannot be weakened below 500 markets")
     if config.profile in {
         MATURE_REVERSAL_ACCURACY_PROFILE,
+        MATURE_REVERSAL_ORACLE_ACCURACY_PROFILE,
         REGIME_ROBUST_ACCURACY_PROFILE,
     }:
         weakens_contract = (
@@ -504,6 +579,21 @@ def validate_persistence_benchmark_config(
         raise ValueError("each calibration band requires at least 500 rows")
 
     core = load_core_config(config.core_config)
+    if (
+        config.profile == MATURE_REVERSAL_ORACLE_ACCURACY_PROFILE
+        and (
+            core.data.source_contract != CORE_ORACLE_SOURCE_CONTRACT
+            or core.data.sample_interval_seconds != 5
+            or core.data.min_seconds_after_open != 120
+            or core.data.min_seconds_before_close != 160
+        )
+    ):
+        raise ValueError(
+            "mature-reversal oracle accuracy requires the frozen causal "
+            "oracle contract and exact 120-140 second window"
+        )
+    if config.profile == MATURE_REVERSAL_ORACLE_ACCURACY_PROFILE:
+        _validate_oracle_accuracy_core_contract(core)
     if config.profile == BOUNDARY_REVERSAL_ACCURACY_PROFILE:
         expected_range = (
             "2026-03-21T00:00:00+00:00",
@@ -518,6 +608,7 @@ def validate_persistence_benchmark_config(
         )
     elif config.profile in {
         MATURE_REVERSAL_ACCURACY_PROFILE,
+        MATURE_REVERSAL_ORACLE_ACCURACY_PROFILE,
         REGIME_ROBUST_ACCURACY_PROFILE,
     }:
         expected_range = (
@@ -542,6 +633,7 @@ def validate_persistence_benchmark_config(
     if config.profile in {
         BOUNDARY_REVERSAL_ACCURACY_PROFILE,
         MATURE_REVERSAL_ACCURACY_PROFILE,
+        MATURE_REVERSAL_ORACLE_ACCURACY_PROFILE,
         REGIME_ROBUST_ACCURACY_PROFILE,
     }:
         expected_split = (
@@ -660,15 +752,74 @@ def validate_persistence_benchmark_config(
     expected_fold_count = (
         7 if config.profile == RESIDUAL_ADMISSION_SOURCE_PROFILE else 5
     )
+    expected_random_seed = (
+        20260730
+        if config.profile == MATURE_REVERSAL_ORACLE_ACCURACY_PROFILE
+        else 20260726
+    )
     if (
         core.model.confidence_min != 0.87
         or core.model.confidence_max != 0.91
         or core.model.confidence_step != 0.01
-        or core.model.random_seed != 20260726
+        or core.model.random_seed != expected_random_seed
         or len(core.model.histogram_candidates) != 4
         or len(core.split.validation_windows) != expected_fold_count
     ):
         raise ValueError("model search, seed, threshold, or fold contract changed")
+
+
+def _validate_oracle_accuracy_core_contract(core: Any) -> None:
+    histogram_search = tuple(
+        (
+            candidate.learning_rate,
+            candidate.max_iter,
+            candidate.max_leaf_nodes,
+            candidate.min_samples_leaf,
+            candidate.l2_regularization,
+        )
+        for candidate in core.model.histogram_candidates
+    )
+    expected_histogram_search = (
+        (0.05, 160, 15, 100, 0.10),
+        (0.05, 220, 31, 100, 1.0),
+        (0.08, 160, 15, 150, 1.0),
+        (0.08, 220, 31, 150, 2.0),
+    )
+    gates = core.gates
+    gate_contract = (
+        gates.target_accuracy,
+        gates.target_wilson_lower,
+        gates.target_balanced_accuracy,
+        gates.minimum_direction_recall,
+        gates.minimum_coverage,
+        gates.minimum_holdout_markets,
+        gates.maximum_walk_forward_holdout_gap,
+        gates.minimum_same_time_path_uplift,
+        gates.minimum_nonnegative_uplift_folds,
+        gates.maximum_ece,
+        gates.bootstrap_resamples,
+    )
+    expected_gate_contract = (
+        0.874,
+        0.865,
+        0.874,
+        0.874,
+        0.60,
+        500,
+        0.05,
+        0.0,
+        5,
+        0.05,
+        10_000,
+    )
+    if (
+        histogram_search != expected_histogram_search
+        or gate_contract != expected_gate_contract
+    ):
+        raise ValueError(
+            "mature-reversal oracle accuracy requires the frozen histogram "
+            "search and absolute accuracy gates"
+        )
 
 
 def _validate_residual_admission_core_contract(core: Any) -> None:

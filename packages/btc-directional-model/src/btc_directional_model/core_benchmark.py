@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
+from numbers import Integral
 from typing import Any, Literal
 
 import numpy as np
@@ -147,6 +148,7 @@ def benchmark_predictions(
     minimum_executable_samples: int | None = None,
     quantity: float = 5.0,
     criteria: AdvancementCriteria | None = None,
+    fixed_checkpoints: Sequence[int] = FIXED_CHECKPOINTS,
 ) -> dict[str, Any]:
     """Compare real model predictions without fitting or generating model output.
 
@@ -165,6 +167,7 @@ def benchmark_predictions(
         raise ValueError("the benchmark contract requires a fixed quantity of 5 shares")
     if criteria is None:
         criteria = AdvancementCriteria()
+    checkpoints = _validated_fixed_checkpoints(fixed_checkpoints)
 
     frames = _coerce_candidate_frames(candidate_frames)
     if control_candidate not in frames:
@@ -219,6 +222,7 @@ def benchmark_predictions(
             "checkpoints": _checkpoint_metrics(
                 frame,
                 eligible_markets=len(universe),
+                fixed_checkpoints=checkpoints,
             ),
         }
 
@@ -249,6 +253,7 @@ def benchmark_predictions(
             normalized[name],
             control_name=control_candidate,
             candidate_name=name,
+            fixed_checkpoints=checkpoints,
         )
         for name in candidate_order
         if name != control_candidate
@@ -289,7 +294,7 @@ def benchmark_predictions(
         "minimum_samples": minimum_samples,
         "minimum_executable_samples": minimum_executable_samples,
         "advancement_criteria": asdict(criteria),
-        "fixed_checkpoints": list(FIXED_CHECKPOINTS),
+        "fixed_checkpoints": list(checkpoints),
         "time_bands": [
             {"name": name, "start": start, "end": end}
             for name, start, end in TIME_BANDS
@@ -832,6 +837,10 @@ def _execution_metrics(
     ordered_pnl = economic.sort(["observed_at", "market_id"])[
         "_realized_net_pnl"
     ].to_numpy()
+    ordered_loss_tail = np.sort(net_pnl)
+    worst_one_percent_count = max(1, math.ceil(len(ordered_loss_tail) * 0.01))
+    gross_profit = float(np.sum(net_pnl[net_pnl > 0.0]))
+    gross_loss = float(-np.sum(net_pnl[net_pnl < 0.0]))
     result.update(
         {
             "mean_fee_per_share": float(np.mean(fee_per_share)),
@@ -843,6 +852,20 @@ def _execution_metrics(
             "realized_net_expectancy_per_trade": float(np.mean(net_pnl)),
             "realized_net_expectancy_per_selected_market": float(
                 np.sum(net_pnl) / selected.height
+            ),
+            "gross_profit": gross_profit,
+            "gross_loss": gross_loss,
+            "profit_factor": (
+                gross_profit / gross_loss if gross_loss > 0.0 else None
+            ),
+            "worst_realized_net_pnl": float(ordered_loss_tail[0]),
+            "mean_worst_one_percent_realized_net_pnl": float(
+                np.mean(ordered_loss_tail[:worst_one_percent_count])
+            ),
+            "largest_loss_share_of_gross_profit": (
+                max(0.0, -float(ordered_loss_tail[0])) / gross_profit
+                if gross_profit > 0.0
+                else None
             ),
             "maximum_net_loss_streak": _maximum_loss_streak(
                 ordered_pnl,
@@ -1092,6 +1115,12 @@ def _empty_execution_metrics(
         "realized_net_pnl_total": None,
         "realized_net_expectancy_per_trade": None,
         "realized_net_expectancy_per_selected_market": None,
+        "gross_profit": None,
+        "gross_loss": None,
+        "profit_factor": None,
+        "worst_realized_net_pnl": None,
+        "mean_worst_one_percent_realized_net_pnl": None,
+        "largest_loss_share_of_gross_profit": None,
         "maximum_net_loss_streak": None,
         "maximum_drawdown": None,
     }
@@ -1125,9 +1154,10 @@ def _checkpoint_metrics(
     frame: pl.DataFrame,
     *,
     eligible_markets: int,
+    fixed_checkpoints: Sequence[int] = FIXED_CHECKPOINTS,
 ) -> list[dict[str, Any]]:
     output = []
-    for checkpoint in FIXED_CHECKPOINTS:
+    for checkpoint in _validated_fixed_checkpoints(fixed_checkpoints):
         rows = frame.filter(pl.col("seconds_elapsed") == checkpoint)
         if "model_eligible" in rows.columns:
             rows = rows.filter(pl.col("model_eligible"))
@@ -1149,10 +1179,11 @@ def _common_checkpoint_comparison(
     *,
     control_name: str,
     candidate_name: str,
+    fixed_checkpoints: Sequence[int] = FIXED_CHECKPOINTS,
 ) -> dict[str, Any]:
     comparisons = []
     keys = ["market_id", "observed_at", "seconds_elapsed"]
-    for checkpoint in FIXED_CHECKPOINTS:
+    for checkpoint in _validated_fixed_checkpoints(fixed_checkpoints):
         control_rows = control.filter(pl.col("seconds_elapsed") == checkpoint)
         candidate_rows = candidate.filter(pl.col("seconds_elapsed") == checkpoint)
         if "model_eligible" in control_rows.columns:
@@ -1226,6 +1257,26 @@ def _common_checkpoint_comparison(
         "cohort": "same market_id and exact observed_at at fixed seconds_elapsed",
         "checkpoints": comparisons,
     }
+
+
+def _validated_fixed_checkpoints(
+    fixed_checkpoints: Sequence[int],
+) -> tuple[int, ...]:
+    if any(
+        isinstance(value, bool) or not isinstance(value, Integral)
+        for value in fixed_checkpoints
+    ):
+        raise ValueError("fixed checkpoints must contain only integers")
+    checkpoints = tuple(int(value) for value in fixed_checkpoints)
+    if (
+        not checkpoints
+        or checkpoints != tuple(sorted(set(checkpoints)))
+        or any(value < 0 or value >= 300 for value in checkpoints)
+    ):
+        raise ValueError(
+            "fixed checkpoints must be unique, increasing, and within [0, 300)"
+        )
+    return checkpoints
 
 
 def _comparison_side_rows(frame: pl.DataFrame, prefix: str) -> pl.DataFrame:

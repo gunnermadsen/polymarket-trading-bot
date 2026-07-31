@@ -1,0 +1,46 @@
+[benchmark]
+profile = "mature_reversal_oracle_accuracy"
+core_config = "configs/btc-5m-directional-core-oracle-early-entry-20260321-20260729.toml"
+control_candidate = "histogram_mature_reversal_recency_28d_oracle_control"
+candidate_names = [
+  "histogram_mature_reversal_recency_28d_oracle_control",
+  "histogram_mature_reversal_oracle_recency_28d",
+]
+evaluation_is_independent = false
+evaluation_note = "The exact half-open UTC interval [2026-03-21, 2026-07-29), representing March 21 through July 28 inclusive, is consumed chronological development evidence. Both direct-outcome histogram arms use the same causal oracle-qualified rows, global Platt calibration, equal total weight per market, 28-day estimator recency decay, histogram search, and 120/125/130/135/140-second decision window. The control uses the 71-feature mature-reversal contract; the challenger adds only the 11 causal Polygon Chainlink oracle features. No order-book field, missingness flag, routing field, post-prediction veto, official final price, or runtime trading logic is a model input. Accuracy, balanced accuracy, directional recall, Wilson confidence, coverage, calibration, hard-confident errors, and five-share and ten-share execution economics are reported. A forward cohort beginning only after artifact freeze remains required for independent qualification."
+quantity = 5.0
+early_cutoff_second = 120
+fixed_evaluation_seconds = [120, 125, 130, 135, 140]
+
+[calibration]
+minimum_rows_per_band = 500
+bands = [
+  { name = "60-89", start_second = 60, end_second_exclusive = 90 },
+  { name = "90-119", start_second = 90, end_second_exclusive = 120 },
+  { name = "120-179", start_second = 120, end_second_exclusive = 180 },
+  { name = "180-240", start_second = 180, end_second_exclusive = 241 },
+]
+
+[advancement_gates]
+minimum_early_markets = 500
+minimum_common_markets = 500
+minimum_executable_markets = 500
+minimum_coverage_uplift = 0.0
+hard_confidence_floor = 0.95
+minimum_hard_confident_error_count_reduction = 1
+maximum_hard_confident_error_selected_rate_regression = 0.0
+minimum_accuracy_uplift = 0.001
+minimum_balanced_accuracy_uplift = 0.001
+minimum_direction_recall_uplift = 0.0
+minimum_wilson_lower_uplift = 0.001
+maximum_accuracy_regression = 0.0
+maximum_balanced_accuracy_regression = 0.0
+maximum_direction_recall_regression = 0.0
+maximum_median_entry_seconds_regression = 0.0
+minimum_mean_direct_edge_per_share = 0.0
+minimum_realized_net_per_share = 0.0
+
+[paths]
+prewindow_features = "data/btc-prewindow-mature-reversal-oracle-20260321-20260729/features.parquet"
+execution_evidence = "data/btc-core-oracle-early-entry-20260321-20260729/execution-evidence"
+runs = "runs/btc-mature-reversal-oracle-accuracy-20260321-20260729"

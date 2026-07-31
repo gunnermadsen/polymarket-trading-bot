@@ -21,7 +21,11 @@ from .core_benchmark import (
     CandidatePolicy,
     benchmark_predictions,
 )
-from .core_config import CoreTrainingConfig, load_core_config
+from .core_config import (
+    CORE_ORACLE_SOURCE_CONTRACT,
+    CoreTrainingConfig,
+    load_core_config,
+)
 from .core_evaluation import (
     baseline_metrics,
     block_bootstrap_uplift,
@@ -43,6 +47,7 @@ from .core_features import (
     CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES,
     CORE_ENRICHED_FEATURES,
     CORE_MATURE_REVERSAL_ENRICHED_FEATURES,
+    CORE_MATURE_REVERSAL_ORACLE_FEATURES,
     CORE_REGIME_REVERSAL_ENRICHED_FEATURES,
     load_core_feature_frame,
     validate_core_feature_cache,
@@ -71,6 +76,9 @@ from .persistence_config import (
     FOLD_ROBUST_FREQUENCY_PROFILE,
     MATURE_REVERSAL_ACCURACY_CANDIDATE,
     MATURE_REVERSAL_ACCURACY_PROFILE,
+    MATURE_REVERSAL_ORACLE_ACCURACY_PROFILE,
+    MATURE_REVERSAL_ORACLE_CANDIDATE,
+    MATURE_REVERSAL_ORACLE_CONTROL_CANDIDATE,
     PATH_PERSISTENCE_PROFILE,
     REGIME_ROBUST_ACCURACY_PROFILE,
     REGIME_ROBUST_FEATURE_CANDIDATE,
@@ -138,12 +146,14 @@ class CandidateProfile:
         "core_boundary",
         "core_boundary_reversal",
         "core_mature_reversal",
+        "core_mature_reversal_oracle",
         "core_regime_reversal",
         "core_prewindow",
     ]
     calibration_kind: Literal["global_platt", "time_banded_platt"]
     recency_half_life_days: float | None = None
     fixed_histogram_parameters: FixedHistogramParameters | None = None
+    eligibility_kind: Literal["path", "oracle"] = "path"
 
 
 @dataclass(frozen=True)
@@ -289,6 +299,22 @@ CANDIDATE_PROFILES = {
             ),
         ),
         CandidateProfile(
+            MATURE_REVERSAL_ORACLE_CONTROL_CANDIDATE,
+            "outcome_up",
+            "core_mature_reversal",
+            "global_platt",
+            recency_half_life_days=28.0,
+            eligibility_kind="oracle",
+        ),
+        CandidateProfile(
+            MATURE_REVERSAL_ORACLE_CANDIDATE,
+            "outcome_up",
+            "core_mature_reversal_oracle",
+            "global_platt",
+            recency_half_life_days=28.0,
+            eligibility_kind="oracle",
+        ),
+        CandidateProfile(
             FOLD_ROBUST_FREQUENCY_CANDIDATE,
             "outcome_up",
             "core_prewindow",
@@ -377,6 +403,11 @@ def run_persistence_benchmark(
     _configure_compute(config)
     core_config = load_core_config(config.core_config)
     feature_metadata = validate_core_feature_cache(core_config, "pre_holdout")
+    if config.profile == MATURE_REVERSAL_ORACLE_ACCURACY_PROFILE:
+        _validate_oracle_training_contract(
+            core_config,
+            feature_metadata,
+        )
     _assert_locked_development_range(
         core_config,
         enforce_external_holdout_contract=(config.profile == PATH_PERSISTENCE_PROFILE),
@@ -414,6 +445,8 @@ def run_persistence_benchmark(
     )
 
     candidate_results = _train_candidate_matrix(config, run_dir)
+    if config.profile == MATURE_REVERSAL_ORACLE_ACCURACY_PROFILE:
+        _assert_matched_oracle_candidate_rows(candidate_results, config)
     probability_evidence = write_saved_probability_manifest(
         run_dir,
         candidate_results,
@@ -466,6 +499,7 @@ def run_persistence_benchmark(
         minimum_executable_samples=config.minimum_executable_markets,
         quantity=config.quantity,
         criteria=_advancement_criteria(config, core_config),
+        fixed_checkpoints=config.fixed_evaluation_seconds,
     )
     benchmark["common_selected_execution_comparisons"] = {
         name: common_selected_execution_comparison(
@@ -578,6 +612,11 @@ def run_persistence_benchmark(
             "the challenger's 71-feature mature-reversal schema is not a "
             "runtime-v1 contract; its direct outcome target and global Platt "
             "calibration remain runtime-v1 compatible"
+        )
+    elif config.profile == MATURE_REVERSAL_ORACLE_ACCURACY_PROFILE:
+        runtime_contract_gap = (
+            "the challenger's 82-feature mature-reversal oracle schema "
+            "requires causal live oracle features in the native runtime"
         )
     elif config.profile == REGIME_ROBUST_ACCURACY_PROFILE:
         runtime_contract_gap = (
@@ -903,9 +942,12 @@ def load_execution_evidence(config: ExecutionEvidenceConfig) -> pl.DataFrame:
             "fee_rate",
             "up_ask_vwap_5",
             "down_ask_vwap_5",
+            "up_ask_vwap_10",
+            "down_ask_vwap_10",
             "up_side_fresh",
             "down_side_fresh",
             "strict_both_side_eligible",
+            "strict_both_side_eligible_10",
         )
         .collect()
     )
@@ -915,7 +957,12 @@ def attach_execution_evidence(
     predictions: pl.DataFrame,
     evidence: pl.DataFrame,
 ) -> pl.DataFrame:
-    return predictions.join(
+    optional_ten_share_columns = (
+        "up_ask_vwap_10",
+        "down_ask_vwap_10",
+        "strict_both_side_eligible_10",
+    )
+    joined = predictions.join(
         evidence.select(
             "market_id",
             "observed_at",
@@ -925,11 +972,34 @@ def attach_execution_evidence(
             "up_side_fresh",
             "down_side_fresh",
             "strict_both_side_eligible",
+            *(
+                column
+                for column in optional_ten_share_columns
+                if column in evidence.columns
+            ),
         ),
         on=["market_id", "observed_at"],
         how="left",
         validate="m:1",
-    ).with_columns(
+    )
+    missing_ten_share_columns = [
+        column for column in optional_ten_share_columns if column not in joined.columns
+    ]
+    if missing_ten_share_columns:
+        joined = joined.with_columns(
+            *(
+                pl.lit(
+                    False if column == "strict_both_side_eligible_10" else None,
+                    dtype=(
+                        pl.Boolean
+                        if column == "strict_both_side_eligible_10"
+                        else pl.Float64
+                    ),
+                ).alias(column)
+                for column in missing_ten_share_columns
+            )
+        )
+    return joined.with_columns(
         pl.col("strict_both_side_eligible").is_not_null().alias("execution_evidence_available"),
         (
             pl.col("strict_both_side_eligible").fill_null(False)
@@ -939,6 +1009,14 @@ def attach_execution_evidence(
             pl.col("strict_both_side_eligible").fill_null(False)
             & pl.col("down_side_fresh").fill_null(False)
         ).alias("down_executable"),
+        (
+            pl.col("strict_both_side_eligible_10").fill_null(False)
+            & pl.col("up_side_fresh").fill_null(False)
+        ).alias("up_executable_10"),
+        (
+            pl.col("strict_both_side_eligible_10").fill_null(False)
+            & pl.col("down_side_fresh").fill_null(False)
+        ).alias("down_executable_10"),
     )
 
 
@@ -1055,6 +1133,37 @@ def _train_candidate_matrix(
     return {name: results[name] for name in config.candidate_names}
 
 
+def _assert_matched_oracle_candidate_rows(
+    candidate_results: dict[str, dict[str, Any]],
+    config: PersistenceBenchmarkConfig,
+) -> None:
+    keys = (
+        "fold_index",
+        "market_id",
+        "window_start",
+        "observed_at",
+        "seconds_elapsed",
+        "label_up",
+    )
+    control = candidate_results[config.control_candidate]["scored_rows"].select(
+        keys
+    )
+    if control.select(keys[:-1]).is_duplicated().any():
+        raise RuntimeError("oracle control contains duplicate out-of-fold row keys")
+    control = control.sort(keys)
+    for candidate_name in config.candidate_names:
+        candidate = candidate_results[candidate_name]["scored_rows"].select(keys)
+        if candidate.select(keys[:-1]).is_duplicated().any():
+            raise RuntimeError(
+                f"{candidate_name} contains duplicate out-of-fold row keys"
+            )
+        if not candidate.sort(keys).equals(control):
+            raise RuntimeError(
+                f"{candidate_name} does not use the exact oracle control "
+                "out-of-fold rows"
+            )
+
+
 def _evaluate_candidate_task(
     config_path: Path,
     candidate_name: str,
@@ -1126,7 +1235,10 @@ def _evaluate_fold(
             profile,
         )
         validation_source = range_frame(frame, validation_start, validation_end)
-        universal_validation = _path_eligible_frame(validation_source)
+        universal_validation = _candidate_universe_frame(
+            validation_source,
+            profile,
+        )
         validation = _candidate_eligible_frame(
             validation_source,
             profile,
@@ -1138,7 +1250,10 @@ def _evaluate_fold(
             profile,
         )
         validation_source = range_frame(frame, validation_start, validation_end)
-        universal_validation = _path_eligible_frame(validation_source)
+        universal_validation = _candidate_universe_frame(
+            validation_source,
+            profile,
+        )
         validation = _candidate_eligible_frame(
             validation_source,
             profile,
@@ -1277,7 +1392,10 @@ def _evaluate_fold_robust_agreement(
         validation_start = fold_roles.validation_start
         validation_end = fold_roles.validation_end_exclusive
         validation_source = range_frame(frame, validation_start, validation_end)
-        universal_validation = _path_eligible_frame(validation_source)
+        universal_validation = _candidate_universe_frame(
+            validation_source,
+            profile,
+        )
         challenger_validation = _candidate_eligible_frame(validation_source, profile)
         challenger_fit = _candidate_eligible_frame(
             range_frame(
@@ -1327,7 +1445,10 @@ def _evaluate_fold_robust_agreement(
             validation_start,
         )
         validation_source = range_frame(frame, validation_start, validation_end)
-        universal_validation = _path_eligible_frame(validation_source)
+        universal_validation = _candidate_universe_frame(
+            validation_source,
+            profile,
+        )
         challenger_history = _candidate_eligible_frame(history_source, profile)
         challenger_validation = _candidate_eligible_frame(validation_source, profile)
         challenger_fit, challenger_calibration, challenger_policy = chronological_subsplit(
@@ -1784,6 +1905,13 @@ def _aggregate_candidate(
         "path_behavior": path_behavior,
         "hard_confident_errors": hard_confident_errors,
         "calibration": [fold["calibration"] for fold in folds],
+        "threshold_history": [
+            {
+                "fold_index": int(fold["fold_index"]),
+                "rows": fold["threshold_history"],
+            }
+            for fold in folds
+        ],
         "nonnegative_uplift_folds": nonnegative_folds,
         "qualified_threshold_folds": qualified_threshold_folds,
         "total_folds": len(folds),
@@ -1823,6 +1951,8 @@ def _candidate_spec(
         features = tuple(CORE_BOUNDARY_REVERSAL_ENRICHED_FEATURES)
     elif profile.feature_kind == "core_mature_reversal":
         features = tuple(CORE_MATURE_REVERSAL_ENRICHED_FEATURES)
+    elif profile.feature_kind == "core_mature_reversal_oracle":
+        features = tuple(CORE_MATURE_REVERSAL_ORACLE_FEATURES)
     elif profile.feature_kind == "core_regime_reversal":
         features = tuple(CORE_REGIME_REVERSAL_ENRICHED_FEATURES)
     else:
@@ -1886,12 +2016,30 @@ def _candidate_eligible_frame(
     frame: pl.DataFrame,
     profile: CandidateProfile,
 ) -> pl.DataFrame:
-    eligible = _path_eligible_frame(frame)
+    eligible = _candidate_universe_frame(frame, profile)
     if profile.feature_kind == "core_prewindow":
         eligible = eligible.filter(pl.col("prewindow_model_eligible"))
     if eligible.is_empty():
         raise RuntimeError(f"{profile.name} has no eligible point-in-time rows")
     return eligible
+
+
+def _candidate_universe_frame(
+    frame: pl.DataFrame,
+    profile: CandidateProfile,
+) -> pl.DataFrame:
+    if profile.eligibility_kind == "oracle":
+        if "oracle_model_eligible" not in frame.columns:
+            raise RuntimeError(
+                f"{profile.name} requires oracle_model_eligible routing"
+            )
+        eligible = frame.filter(pl.col("oracle_model_eligible"))
+        if eligible.is_empty():
+            raise RuntimeError(
+                f"{profile.name} has no causal oracle-eligible rows"
+            )
+        return eligible
+    return _path_eligible_frame(frame)
 
 
 def _path_eligible_frame(frame: pl.DataFrame) -> pl.DataFrame:
@@ -2123,6 +2271,7 @@ def _add_training_gates(
         advance = benchmark["candidates"][name]["advance"]
         if config.profile in {
             MATURE_REVERSAL_ACCURACY_PROFILE,
+            MATURE_REVERSAL_ORACLE_ACCURACY_PROFILE,
             REGIME_ROBUST_ACCURACY_PROFILE,
         }:
             _add_accuracy_uplift_gates(
@@ -2301,6 +2450,7 @@ def _add_training_gates(
         advance["deployment_qualified"] = False
     if config.profile in {
         MATURE_REVERSAL_ACCURACY_PROFILE,
+        MATURE_REVERSAL_ORACLE_ACCURACY_PROFILE,
         REGIME_ROBUST_ACCURACY_PROFILE,
     }:
         benchmark["advancement_contract"] = {
@@ -2555,6 +2705,7 @@ def _select_finalist(
     if config.profile in {
         BOUNDARY_REVERSAL_ACCURACY_PROFILE,
         MATURE_REVERSAL_ACCURACY_PROFILE,
+        MATURE_REVERSAL_ORACLE_ACCURACY_PROFILE,
         REGIME_ROBUST_ACCURACY_PROFILE,
     }:
         return max(passing, key=lambda name: _accuracy_finalist_rank(candidate_results[name]))
@@ -2663,7 +2814,10 @@ def _fit_development_finalist(
         core_config.split.policy_selection_start,
         core_config.split.policy_selection_end,
     )
-    policy_universe = _path_eligible_frame(policy_source)
+    policy_universe = _candidate_universe_frame(
+        policy_source,
+        profile,
+    )
     policy = _candidate_eligible_frame(
         policy_source,
         profile,
@@ -2830,6 +2984,35 @@ def _assert_locked_development_range(
         raise RuntimeError("independent holdout access was already recorded")
     if holdout_path.exists():
         raise RuntimeError("independent holdout feature cache exists before candidate freeze")
+
+
+def _validate_oracle_training_contract(
+    core_config: CoreTrainingConfig,
+    feature_metadata: dict[str, Any],
+) -> None:
+    if core_config.data.source_contract != CORE_ORACLE_SOURCE_CONTRACT:
+        raise RuntimeError(
+            "oracle accuracy training requires the btc_core_oracle_v1 contract"
+        )
+    feature_groups = feature_metadata.get("feature_groups", {})
+    if feature_groups.get("histogram_mature_reversal_oracle") != list(
+        CORE_MATURE_REVERSAL_ORACLE_FEATURES
+    ):
+        raise RuntimeError(
+            "oracle accuracy feature metadata does not match the frozen "
+            "82-feature allowlist"
+        )
+    oracle = feature_metadata.get("oracle")
+    if (
+        not isinstance(oracle, dict)
+        or int(oracle.get("unmatched_core_rows", -1)) != 0
+        or int(oracle.get("incomplete_candidate_markets", -1)) != 0
+        or int(oracle.get("complete_candidate_markets", -1))
+        != int(feature_metadata.get("candidate_markets", -2))
+    ):
+        raise RuntimeError(
+            "oracle accuracy training requires complete causal oracle coverage"
+        )
 
 
 def _configure_compute(config: PersistenceBenchmarkConfig) -> None:
