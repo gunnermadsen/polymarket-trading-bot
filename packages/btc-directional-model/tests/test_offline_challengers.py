@@ -15,6 +15,8 @@ from btc_directional_model.offline_challengers import (
     PREOPEN_CANDIDATE,
     STRICT_BOOK_DELTA_FEATURES,
     STRICT_BOOK_FEATURES,
+    STRICT_BOOK_FIVE_SHARE_DELTA_FEATURES,
+    STRICT_BOOK_FIVE_SHARE_V2_FEATURES,
     STRICT_BOOK_TEN_SHARE_FEATURES,
     STRICT_BOOK_V2_FEATURES,
     derive_strict_book_feature_frame,
@@ -121,6 +123,41 @@ def test_causal_book_deltas_never_bridge_an_invalid_gap() -> None:
     assert book["book_up_mid_delta_5s"].item() == pytest.approx(0.02)
     assert "quality_flags" not in book.columns
     assert not any("provider_age" in column for column in book.columns)
+
+
+def test_five_share_book_deltas_do_not_require_vwap10_inputs() -> None:
+    start = datetime(2026, 6, 8, 0, 1, tzinfo=UTC)
+    observed = [start, start + timedelta(seconds=5)]
+    core = pl.DataFrame(
+        {
+            "market_id": ["market", "market"],
+            "observed_at": observed,
+            "label_up": [1, 1],
+        }
+    )
+    evidence = pl.DataFrame(
+        [
+            evidence_row("market", observed[0], strict=True, up_shift=0.00),
+            evidence_row("market", observed[1], strict=True, up_shift=0.02),
+        ]
+    ).drop(
+        "strict_both_side_eligible_10",
+        "up_ask_vwap_10",
+        "down_ask_vwap_10",
+    )
+
+    book = derive_strict_book_feature_frame(
+        core,
+        evidence,
+        require_ten_share=False,
+        include_deltas=True,
+    )
+
+    assert book["observed_at"].to_list() == [observed[1]]
+    assert set(STRICT_BOOK_FIVE_SHARE_V2_FEATURES) <= set(book.columns)
+    assert set(STRICT_BOOK_FIVE_SHARE_DELTA_FEATURES) <= set(book.columns)
+    assert book["book_up_mid_delta_5s"].item() == pytest.approx(0.02)
+    assert not any("vwap_10" in feature for feature in book.columns)
 
 
 def test_offline_candidates_cannot_silently_enter_current_runtime_schema() -> None:

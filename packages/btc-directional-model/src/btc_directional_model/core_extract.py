@@ -457,6 +457,7 @@ def scope_range(
 
 def configure_read_only_connection(connection: psycopg.Connection[Any]) -> None:
     connection.execute("SET default_transaction_read_only = on")
+    connection.execute("SET plan_cache_mode = force_custom_plan")
     connection.execute("SET statement_timeout = '10min'")
     connection.execute("SET lock_timeout = '5s'")
     connection.execute("SET work_mem = '32MB'")

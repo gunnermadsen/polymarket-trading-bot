@@ -86,6 +86,24 @@ STRICT_BOOK_DELTA_SOURCE_FEATURES = [
 STRICT_BOOK_DELTA_FEATURES = [
     f"{feature}_delta_5s" for feature in STRICT_BOOK_DELTA_SOURCE_FEATURES
 ]
+STRICT_BOOK_FIVE_SHARE_DELTA_SOURCE_FEATURES = [
+    feature
+    for feature in STRICT_BOOK_DELTA_SOURCE_FEATURES
+    if feature
+    not in {
+        "book_up_ask_vwap_10",
+        "book_down_ask_vwap_10",
+        "book_vwap_10_complement_residual",
+    }
+]
+STRICT_BOOK_FIVE_SHARE_DELTA_FEATURES = [
+    f"{feature}_delta_5s"
+    for feature in STRICT_BOOK_FIVE_SHARE_DELTA_SOURCE_FEATURES
+]
+STRICT_BOOK_FIVE_SHARE_V2_FEATURES = [
+    *STRICT_BOOK_FEATURES,
+    *STRICT_BOOK_FIVE_SHARE_DELTA_FEATURES,
+]
 STRICT_BOOK_V2_FEATURES = [
     *STRICT_BOOK_FEATURES,
     *STRICT_BOOK_TEN_SHARE_FEATURES,
@@ -223,14 +241,13 @@ def derive_strict_book_feature_frame(
 ) -> pl.DataFrame:
     """Derive model features only after strict point-in-time routing.
 
-    Ten-share eligibility is the v2 fitting contract. Five-share prices remain
-    in the frame for the unchanged five-share economic evaluation. Delta rows
-    exist only when the immediately preceding strict observation for the same
-    market is exactly five seconds earlier.
+    Ten-share eligibility remains the original v2 fitting contract. A
+    five-share fitting cohort can request the same causal deltas without
+    requiring or deriving VWAP10 inputs. Delta rows exist only when the
+    immediately preceding strict observation for the same market is exactly
+    five seconds earlier.
     """
 
-    if include_deltas and not require_ten_share:
-        raise ValueError("causal book deltas require strict ten-share evidence")
     eligibility_column = (
         "strict_both_side_eligible_10"
         if require_ten_share
@@ -334,6 +351,16 @@ def derive_strict_book_feature_frame(
         )
         model_features.extend(STRICT_BOOK_TEN_SHARE_FEATURES)
     if include_deltas:
+        delta_source_features = (
+            STRICT_BOOK_DELTA_SOURCE_FEATURES
+            if require_ten_share
+            else STRICT_BOOK_FIVE_SHARE_DELTA_SOURCE_FEATURES
+        )
+        delta_features = (
+            STRICT_BOOK_DELTA_FEATURES
+            if require_ten_share
+            else STRICT_BOOK_FIVE_SHARE_DELTA_FEATURES
+        )
         previous_columns = [
             pl.col("observed_at")
             .shift(1)
@@ -344,7 +371,7 @@ def derive_strict_book_feature_frame(
                 .shift(1)
                 .over("market_id")
                 .alias(f"_previous_{feature}")
-                for feature in STRICT_BOOK_DELTA_SOURCE_FEATURES
+                for feature in delta_source_features
             ],
         ]
         strict = strict.with_columns(*previous_columns).with_columns(
@@ -356,10 +383,10 @@ def derive_strict_book_feature_frame(
                 .then(pl.col(feature) - pl.col(f"_previous_{feature}"))
                 .otherwise(None)
                 .alias(f"{feature}_delta_5s")
-                for feature in STRICT_BOOK_DELTA_SOURCE_FEATURES
+                for feature in delta_source_features
             ]
         )
-        model_features.extend(STRICT_BOOK_DELTA_FEATURES)
+        model_features.extend(delta_features)
 
     book = strict.select(
         "market_id",
