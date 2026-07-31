@@ -106,6 +106,7 @@ class ExecutionEvidenceConfig:
     sample_interval_seconds: int = 5
     min_seconds_after_open: int = 90
     max_seconds_after_open: int = 140
+    decision_min_seconds_after_open: int | None = None
     freshness_seconds: int = DEFAULT_FRESHNESS_SECONDS
     quantity: float = DEFAULT_EXECUTION_QUANTITY
     snapshot_schema_versions: tuple[str, ...] = CANONICAL_SNAPSHOT_SCHEMA_VERSIONS
@@ -132,6 +133,23 @@ class ExecutionEvidenceConfig:
             or self.max_seconds_after_open % self.sample_interval_seconds
         ):
             raise ValueError("candidate timestamp boundaries must align to the cadence")
+        if self.decision_min_seconds_after_open is not None:
+            if not (
+                self.min_seconds_after_open
+                < self.decision_min_seconds_after_open
+                <= self.max_seconds_after_open
+            ):
+                raise ValueError(
+                    "decision timestamp minimum must follow the first context "
+                    "point and stay within the extraction range"
+                )
+            if (
+                self.decision_min_seconds_after_open
+                % self.sample_interval_seconds
+            ):
+                raise ValueError(
+                    "decision timestamp minimum must align to the cadence"
+                )
         if self.freshness_seconds <= 0:
             raise ValueError("freshness_seconds must be positive")
         if self.quantity != DEFAULT_EXECUTION_QUANTITY:
@@ -141,6 +159,31 @@ class ExecutionEvidenceConfig:
             for schema_version in self.snapshot_schema_versions
         ):
             raise ValueError("snapshot_schema_versions must contain non-empty values")
+
+    @property
+    def context_seconds(self) -> tuple[int, ...]:
+        return tuple(
+            range(
+                self.min_seconds_after_open,
+                self.max_seconds_after_open + 1,
+                self.sample_interval_seconds,
+            )
+        )
+
+    @property
+    def decision_seconds(self) -> tuple[int, ...]:
+        decision_minimum = (
+            self.decision_min_seconds_after_open
+            if self.decision_min_seconds_after_open is not None
+            else EXECUTION_DECISION_SECONDS[0]
+        )
+        return tuple(
+            second
+            for second in self.context_seconds
+            if second >= decision_minimum
+            and second - self.sample_interval_seconds
+            in self.context_seconds
+        )
 
 
 @dataclass(frozen=True)
@@ -334,6 +377,10 @@ def extract_execution_evidence(
         ],
         "query_sha256": hashlib.sha256(query.encode()).hexdigest(),
     }
+    if config.decision_min_seconds_after_open is not None:
+        contract["decision_min_seconds_after_open"] = (
+            config.decision_min_seconds_after_open
+        )
     existing_manifest = _load_existing_manifest(manifest_path, contract, force=force)
     existing_partitions = {
         row["path"]: row for row in (existing_manifest or {}).get("partitions", [])
@@ -353,7 +400,12 @@ def extract_execution_evidence(
                         f"{destination.name} is not recorded in {manifest_path.name}; "
                         "use force only for an intentional isolated rebuild"
                     )
-                summary = execution_partition_summary(destination)
+                summary = execution_partition_summary(
+                    destination,
+                    context_seconds=config.context_seconds,
+                    decision_seconds=config.decision_seconds,
+                    sample_interval_seconds=config.sample_interval_seconds,
+                )
                 sha256 = file_sha256(destination)
                 if expected.get("sha256") != sha256 or expected.get("rows") != summary["rows"]:
                     raise RuntimeError(
@@ -379,7 +431,12 @@ def extract_execution_evidence(
                     batch_end=batch_end,
                     artifact_ids=artifact_ids,
                 )
-                summary = execution_partition_summary(destination)
+                summary = execution_partition_summary(
+                    destination,
+                    context_seconds=config.context_seconds,
+                    decision_seconds=config.decision_seconds,
+                    sample_interval_seconds=config.sample_interval_seconds,
+                )
                 if rows != summary["rows"]:
                     raise RuntimeError("streamed row count does not match Parquet metadata")
                 sha256 = file_sha256(destination)
@@ -391,7 +448,11 @@ def extract_execution_evidence(
         if connection is not None:
             connection.close()
 
-    manifest["totals"] = _aggregate_partition_summaries(manifest["partitions"])
+    manifest["totals"] = _aggregate_partition_summaries(
+        manifest["partitions"],
+        context_seconds=config.context_seconds,
+        decision_seconds=config.decision_seconds,
+    )
     write_json_atomic(manifest_path, manifest)
     return manifest
 
@@ -432,6 +493,10 @@ def load_execution_evidence_manifest(
         "quantity": config.quantity,
         "primary_key": ["market_id", "observed_at"],
     }
+    if config.decision_min_seconds_after_open is not None:
+        expected["decision_min_seconds_after_open"] = (
+            config.decision_min_seconds_after_open
+        )
     mismatches = [
         key for key, value in expected.items() if manifest.get(key) != value
     ]
@@ -482,7 +547,11 @@ def load_execution_evidence_manifest(
             EXECUTION_EVIDENCE_SCHEMA_VERSION,
         )
         and manifest.get("totals")
-        != _aggregate_partition_summaries(partitions)
+        != _aggregate_partition_summaries(
+            partitions,
+            context_seconds=config.context_seconds,
+            decision_seconds=config.decision_seconds,
+        )
     ):
         raise RuntimeError("execution-evidence manifest totals do not match")
     return manifest
@@ -507,6 +576,7 @@ def _extract_execution_partition(
             with connection.transaction():
                 connection.execute("SET LOCAL statement_timeout = '5s'")
                 connection.execute("SET LOCAL work_mem = '16MB'")
+                connection.execute("SET LOCAL plan_cache_mode = force_custom_plan")
                 with connection.cursor(name=cursor_name) as cursor:
                     cursor.execute(
                         query,
@@ -594,7 +664,18 @@ def _execution_artifact_ids(
             return [row[0] for row in cursor.fetchall()]
 
 
-def execution_partition_summary(path: Path) -> dict[str, Any]:
+def execution_partition_summary(
+    path: Path,
+    *,
+    context_seconds: Sequence[int] = EXECUTION_CONTEXT_SECONDS,
+    decision_seconds: Sequence[int] = EXECUTION_DECISION_SECONDS,
+    sample_interval_seconds: int = 5,
+) -> dict[str, Any]:
+    context_seconds, decision_seconds = _validate_summary_seconds(
+        context_seconds,
+        decision_seconds,
+        sample_interval_seconds=sample_interval_seconds,
+    )
     available_columns = set(pq.read_schema(path).names)
     ten_share_eligibility_column = "strict_both_side_eligible_10"
     table = pq.read_table(
@@ -662,7 +743,7 @@ def execution_partition_summary(path: Path) -> dict[str, Any]:
                 strict=True,
             )
         )
-        for second in EXECUTION_CONTEXT_SECONDS
+        for second in context_seconds
     }
     strict_ten_by_second = {
         str(second): sum(
@@ -673,8 +754,13 @@ def execution_partition_summary(path: Path) -> dict[str, Any]:
                 strict=True,
             )
         )
-        for second in EXECUTION_CONTEXT_SECONDS
+        for second in context_seconds
     }
+    strict_five_seconds_by_market = _eligible_seconds_by_market(
+        market_ids,
+        seconds_elapsed,
+        strict_five,
+    )
     strict_ten_seconds_by_market: dict[str, set[int]] = {}
     for market_id, second, eligible in zip(
         market_ids,
@@ -686,19 +772,34 @@ def execution_partition_summary(path: Path) -> dict[str, Any]:
             strict_ten_seconds_by_market.setdefault(market_id, set()).add(
                 int(second)
             )
-    expected_context = set(EXECUTION_CONTEXT_SECONDS)
-    complete_11_point_markets = sum(
+    expected_context = set(context_seconds)
+    complete_five_share_context_markets = sum(
+        observed_seconds == expected_context
+        for observed_seconds in strict_five_seconds_by_market.values()
+    )
+    complete_ten_share_context_markets = sum(
         observed_seconds == expected_context
         for observed_seconds in strict_ten_seconds_by_market.values()
     )
-    point_qualified_by_second = {
+    five_share_point_qualified_by_second = {
         str(second): sum(
-            {second - 5, second}.issubset(observed_seconds)
+            {second - sample_interval_seconds, second}.issubset(
+                observed_seconds
+            )
+            for observed_seconds in strict_five_seconds_by_market.values()
+        )
+        for second in decision_seconds
+    }
+    ten_share_point_qualified_by_second = {
+        str(second): sum(
+            {second - sample_interval_seconds, second}.issubset(
+                observed_seconds
+            )
             for observed_seconds in strict_ten_seconds_by_market.values()
         )
-        for second in EXECUTION_DECISION_SECONDS
+        for second in decision_seconds
     }
-    return {
+    summary = {
         "rows": table.num_rows,
         "markets": len(set(market_ids)),
         "minimum_observed_at": (
@@ -729,13 +830,72 @@ def execution_partition_summary(path: Path) -> dict[str, Any]:
         "strict_both_side_eligible_10_rows_by_second": (
             strict_ten_by_second
         ),
-        "strict_both_side_eligible_10_complete_11_point_markets": (
-            complete_11_point_markets
+        "strict_both_side_eligible_complete_context_markets": (
+            complete_five_share_context_markets
+        ),
+        "strict_both_side_eligible_10_complete_context_markets": (
+            complete_ten_share_context_markets
+        ),
+        "strict_both_side_eligible_point_qualified_markets_by_second": (
+            five_share_point_qualified_by_second
         ),
         "strict_both_side_eligible_10_point_qualified_markets_by_second": (
-            point_qualified_by_second
+            ten_share_point_qualified_by_second
         ),
     }
+    if context_seconds == EXECUTION_CONTEXT_SECONDS:
+        summary[
+            "strict_both_side_eligible_10_complete_11_point_markets"
+        ] = complete_ten_share_context_markets
+    return summary
+
+
+def _validate_summary_seconds(
+    context_seconds: Sequence[int],
+    decision_seconds: Sequence[int],
+    *,
+    sample_interval_seconds: int,
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    context = tuple(int(second) for second in context_seconds)
+    decisions = tuple(int(second) for second in decision_seconds)
+    if sample_interval_seconds <= 0:
+        raise ValueError("sample_interval_seconds must be positive")
+    if not context:
+        raise ValueError("context_seconds must be non-empty")
+    if context != tuple(sorted(set(context))):
+        raise ValueError("context_seconds must be sorted and unique")
+    if decisions != tuple(sorted(set(decisions))):
+        raise ValueError("decision_seconds must be sorted and unique")
+    context_set = set(context)
+    invalid_decisions = [
+        second
+        for second in decisions
+        if second not in context_set
+        or second - sample_interval_seconds not in context_set
+    ]
+    if invalid_decisions:
+        raise ValueError(
+            "decision_seconds require the decision and immediately preceding "
+            "context point"
+        )
+    return context, decisions
+
+
+def _eligible_seconds_by_market(
+    market_ids: Sequence[str],
+    seconds_elapsed: Sequence[int],
+    eligibility: Sequence[bool | None],
+) -> dict[str, set[int]]:
+    seconds_by_market: dict[str, set[int]] = {}
+    for market_id, second, eligible in zip(
+        market_ids,
+        seconds_elapsed,
+        eligibility,
+        strict=True,
+    ):
+        if eligible is True:
+            seconds_by_market.setdefault(market_id, set()).add(int(second))
+    return seconds_by_market
 
 
 def _true_count(values: pa.ChunkedArray) -> int:
@@ -744,7 +904,12 @@ def _true_count(values: pa.ChunkedArray) -> int:
 
 def _aggregate_partition_summaries(
     partitions: Sequence[dict[str, Any]],
+    *,
+    context_seconds: Sequence[int] = EXECUTION_CONTEXT_SECONDS,
+    decision_seconds: Sequence[int] = EXECUTION_DECISION_SECONDS,
 ) -> dict[str, Any]:
+    context_seconds = tuple(context_seconds)
+    decision_seconds = tuple(decision_seconds)
     keys = (
         "rows",
         "markets",
@@ -765,33 +930,69 @@ def _aggregate_partition_summaries(
     ] = _aggregate_counts_by_second(
         partitions,
         "strict_both_side_eligible_rows_by_second",
-        EXECUTION_CONTEXT_SECONDS,
+        context_seconds,
     )
     totals[
         "strict_both_side_eligible_10_rows_by_second"
     ] = _aggregate_counts_by_second(
         partitions,
         "strict_both_side_eligible_10_rows_by_second",
-        EXECUTION_CONTEXT_SECONDS,
+        context_seconds,
     )
-    totals[
-        "strict_both_side_eligible_10_complete_11_point_markets"
-    ] = sum(
-        int(
-            partition[
-                "strict_both_side_eligible_10_complete_11_point_markets"
-            ]
-        )
-        for partition in partitions
+    _aggregate_optional_integer(
+        partitions,
+        totals,
+        "strict_both_side_eligible_complete_context_markets",
+    )
+    _aggregate_optional_integer(
+        partitions,
+        totals,
+        "strict_both_side_eligible_10_complete_context_markets",
+    )
+    _aggregate_optional_counts_by_second(
+        partitions,
+        totals,
+        "strict_both_side_eligible_point_qualified_markets_by_second",
+        decision_seconds,
     )
     totals[
         "strict_both_side_eligible_10_point_qualified_markets_by_second"
     ] = _aggregate_counts_by_second(
         partitions,
         "strict_both_side_eligible_10_point_qualified_markets_by_second",
-        EXECUTION_DECISION_SECONDS,
+        decision_seconds,
+    )
+    _aggregate_optional_integer(
+        partitions,
+        totals,
+        "strict_both_side_eligible_10_complete_11_point_markets",
     )
     return totals
+
+
+def _aggregate_optional_integer(
+    partitions: Sequence[dict[str, Any]],
+    totals: dict[str, Any],
+    key: str,
+) -> None:
+    present = [key in partition for partition in partitions]
+    if any(present) and not all(present):
+        raise RuntimeError(f"partition summaries disagree on {key}")
+    if present and all(present):
+        totals[key] = sum(int(partition[key]) for partition in partitions)
+
+
+def _aggregate_optional_counts_by_second(
+    partitions: Sequence[dict[str, Any]],
+    totals: dict[str, Any],
+    key: str,
+    seconds: Sequence[int],
+) -> None:
+    present = [key in partition for partition in partitions]
+    if any(present) and not all(present):
+        raise RuntimeError(f"partition summaries disagree on {key}")
+    if present and all(present):
+        totals[key] = _aggregate_counts_by_second(partitions, key, seconds)
 
 
 def _aggregate_counts_by_second(

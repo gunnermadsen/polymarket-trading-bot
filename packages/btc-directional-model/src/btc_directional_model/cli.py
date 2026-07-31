@@ -50,6 +50,8 @@ from .persistence_benchmark import run_persistence_benchmark
 from .persistence_config import load_persistence_benchmark_config
 from .policy_benchmark import run_saved_policy_benchmark
 from .policy_config import load_saved_policy_benchmark_config
+from .price_aware_benchmark import run_price_aware_benchmark
+from .price_aware_config import load_price_aware_benchmark_config
 from .report import generate_report
 from .residual_admission_benchmark import run_residual_admission_benchmark
 from .residual_admission_config import load_residual_admission_config
@@ -108,6 +110,9 @@ def main() -> None:
     entry_run.add_argument("--force", action="store_true")
     oracle_book_run = subparsers.add_parser("oracle-book-benchmark-run")
     oracle_book_run.add_argument("--config", type=Path, required=True)
+    price_aware_run = subparsers.add_parser("price-aware-benchmark-run")
+    price_aware_run.add_argument("--config", type=Path, required=True)
+    price_aware_run.add_argument("--force", action="store_true")
     fixed_time_run = subparsers.add_parser("fixed-120-benchmark-run")
     fixed_time_run.add_argument("--config", type=Path, required=True)
     fixed_time_export = subparsers.add_parser("fixed-120-paper-candidate-export")
@@ -264,6 +269,19 @@ def main() -> None:
             "status: "
             f"{benchmark['status']}; runtime export/deployment: disabled"
         )
+        return
+    if args.command == "price-aware-benchmark-run":
+        config = load_price_aware_benchmark_config(args.config)
+        run_dir, benchmark = run_price_aware_benchmark(
+            config,
+            force=args.force,
+        )
+        print(f"report: {run_dir / 'report.html'}")
+        print(
+            "selected development candidate: "
+            f"{benchmark['selection']['selected_candidate'] or 'none'}"
+        )
+        print("runtime export/deployment: disabled")
         return
     if args.command == "fixed-120-benchmark-run":
         config = load_fixed_time_accuracy_config(args.config)

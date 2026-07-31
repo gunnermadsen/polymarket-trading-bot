@@ -8,6 +8,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from btc_directional_model import core_execution
 from btc_directional_model.core_execution import (
     DEFAULT_EXECUTION_QUANTITY,
     EXECUTION_CONTEXT_SECONDS,
@@ -259,6 +260,8 @@ def test_execution_config_is_fixed_to_five_share_vwap() -> None:
     )
 
     assert config.quantity == DEFAULT_EXECUTION_QUANTITY
+    assert config.context_seconds == EXECUTION_CONTEXT_SECONDS
+    assert config.decision_seconds == tuple(range(120, 141, 5))
     with pytest.raises(ValueError, match="five-share VWAP"):
         ExecutionEvidenceConfig(
             range_start=start,
@@ -271,6 +274,30 @@ def test_execution_config_is_fixed_to_five_share_vwap() -> None:
             range_start=datetime(2026, 4, 21, tzinfo=timezone(timedelta(hours=-5))),
             range_end=datetime(2026, 4, 22, tzinfo=timezone(timedelta(hours=-5))),
             output_dir=Path("generated/evidence"),
+        )
+
+
+def test_execution_config_supports_explicit_economic_decision_window() -> None:
+    start = datetime(2026, 4, 21, tzinfo=UTC)
+    config = ExecutionEvidenceConfig(
+        range_start=start,
+        range_end=start + timedelta(days=1),
+        output_dir=Path("generated/economic-evidence"),
+        min_seconds_after_open=115,
+        max_seconds_after_open=220,
+        decision_min_seconds_after_open=120,
+    )
+
+    assert config.context_seconds == tuple(range(115, 221, 5))
+    assert config.decision_seconds == tuple(range(120, 221, 5))
+    with pytest.raises(ValueError, match="must follow the first context point"):
+        ExecutionEvidenceConfig(
+            range_start=start,
+            range_end=start + timedelta(days=1),
+            output_dir=Path("generated/economic-evidence"),
+            min_seconds_after_open=115,
+            max_seconds_after_open=220,
+            decision_min_seconds_after_open=115,
         )
 
 
@@ -335,6 +362,109 @@ def test_execution_summary_requires_exact_11_point_ten_share_set(
     assert summary[
         "strict_both_side_eligible_10_rows_by_second"
     ]["140"] == 1
+    assert summary[
+        "strict_both_side_eligible_complete_context_markets"
+    ] == 1
+    assert summary[
+        "strict_both_side_eligible_10_complete_context_markets"
+    ] == 1
+
+
+def test_default_aggregate_accepts_pre_generalization_partition_summary(
+    tmp_path: Path,
+) -> None:
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    path = tmp_path / "legacy-summary.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                execution_evidence_row(
+                    market_id="market",
+                    window_start=start,
+                    second=second,
+                    strict_five=True,
+                    strict_ten=True,
+                )
+                for second in EXECUTION_CONTEXT_SECONDS
+            ],
+            schema=EXECUTION_EVIDENCE_SCHEMA,
+        ),
+        path,
+    )
+    legacy_partition = execution_partition_summary(path)
+    for key in (
+        "strict_both_side_eligible_complete_context_markets",
+        "strict_both_side_eligible_10_complete_context_markets",
+        "strict_both_side_eligible_point_qualified_markets_by_second",
+    ):
+        legacy_partition.pop(key)
+
+    totals = core_execution._aggregate_partition_summaries(
+        [legacy_partition]
+    )
+
+    assert totals[
+        "strict_both_side_eligible_10_complete_11_point_markets"
+    ] == 1
+    assert "strict_both_side_eligible_complete_context_markets" not in totals
+    assert (
+        "strict_both_side_eligible_point_qualified_markets_by_second"
+        not in totals
+    )
+
+
+def test_execution_summary_uses_expanded_configured_seconds(
+    tmp_path: Path,
+) -> None:
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    context_seconds = tuple(range(115, 221, 5))
+    decision_seconds = tuple(range(120, 221, 5))
+    rows = [
+        execution_evidence_row(
+            market_id=market_id,
+            window_start=start + timedelta(minutes=market_index * 5),
+            second=second,
+            strict_five=True,
+            strict_ten=market_id == "complete-ten" or second != 215,
+        )
+        for market_index, market_id in enumerate(("complete-ten", "five-only"))
+        for second in context_seconds
+    ]
+    path = tmp_path / "expanded.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(rows, schema=EXECUTION_EVIDENCE_SCHEMA),
+        path,
+    )
+
+    summary = execution_partition_summary(
+        path,
+        context_seconds=context_seconds,
+        decision_seconds=decision_seconds,
+    )
+    totals = core_execution._aggregate_partition_summaries(
+        [summary],
+        context_seconds=context_seconds,
+        decision_seconds=decision_seconds,
+    )
+
+    assert summary["strict_both_side_eligible_rows_by_second"]["220"] == 2
+    assert summary["strict_both_side_eligible_10_rows_by_second"]["215"] == 1
+    assert summary[
+        "strict_both_side_eligible_complete_context_markets"
+    ] == 2
+    assert summary[
+        "strict_both_side_eligible_10_complete_context_markets"
+    ] == 1
+    assert summary[
+        "strict_both_side_eligible_point_qualified_markets_by_second"
+    ]["220"] == 2
+    assert summary[
+        "strict_both_side_eligible_10_point_qualified_markets_by_second"
+    ]["220"] == 1
+    assert "strict_both_side_eligible_10_complete_11_point_markets" not in summary
+    assert totals[
+        "strict_both_side_eligible_10_point_qualified_markets_by_second"
+    ]["220"] == 1
 
 
 def test_execution_summary_requires_t_minus_five_for_point_readiness(

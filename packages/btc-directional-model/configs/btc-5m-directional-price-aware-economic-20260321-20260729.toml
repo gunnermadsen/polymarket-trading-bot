@@ -1,0 +1,63 @@
+[benchmark]
+core_config = "configs/btc-5m-directional-core-price-aware-20260321-20260729.toml"
+core_config_sha256 = "8843839682b71bbc9cc5a785e141bd0970b8a725460f9a0050c8099dd3d58832"
+evaluation_note = "July 14-28 is consumed chronological confirmation evidence. July 29 onward remains untouched. Book-source gaps remain unavailable and are neither imputed nor used as model features."
+
+[walk_forward]
+history_start = "2026-03-21T00:00:00Z"
+outcome_calibration_fraction = 0.20
+threshold_block_names = ["validation_jun02", "validation_jun09", "validation_jul03"]
+evaluation_block_name = "confirmation_jul14"
+
+[[walk_forward.blocks]]
+name = "initial_book_history"
+start = "2026-04-13T00:00:00Z"
+end = "2026-05-26T00:00:00Z"
+
+[[walk_forward.blocks]]
+name = "validation_may26"
+start = "2026-05-26T00:00:00Z"
+end = "2026-06-02T00:00:00Z"
+
+[[walk_forward.blocks]]
+name = "validation_jun02"
+start = "2026-06-02T00:00:00Z"
+end = "2026-06-09T00:00:00Z"
+
+[[walk_forward.blocks]]
+name = "validation_jun09"
+start = "2026-06-09T00:00:00Z"
+end = "2026-07-03T00:00:00Z"
+
+[[walk_forward.blocks]]
+name = "validation_jul03"
+start = "2026-07-03T00:00:00Z"
+end = "2026-07-14T00:00:00Z"
+
+[[walk_forward.blocks]]
+name = "confirmation_jul14"
+start = "2026-07-14T00:00:00Z"
+end = "2026-07-29T00:00:00Z"
+
+[model]
+quantity = 5.0
+freshness_seconds = 2
+boundary_confidence_threshold = 0.89
+value_thresholds = [0.00]
+
+[gates]
+target_accuracy = 0.92
+minimum_accuracy = 0.89
+minimum_wilson_lower = 0.87
+minimum_coverage = 0.20
+minimum_evaluation_trades = 200
+minimum_fold_trades = 30
+minimum_fold_direction_trades = 10
+minimum_profit_factor = 1.05
+maximum_expected_calibration_error = 0.08
+maximum_selected_net_bias = 0.03
+
+[paths]
+execution_evidence = "data/btc-price-aware-economic-20260321-20260729/execution-evidence"
+prewindow_features = "data/btc-price-aware-economic-20260321-20260729/continuous-context/features.parquet"
+runs = "runs/btc-price-aware-economic-20260321-20260729"
