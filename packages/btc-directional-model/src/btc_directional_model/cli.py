@@ -18,8 +18,30 @@ from .core_training import develop_core_models, evaluate_core_holdout
 from .entry_benchmark import run_entry_benchmark
 from .extract import extract_source
 from .features import build_features
+from .fixed_time_benchmark import (
+    FIXED_TIME_PAPER_AUTHORIZATION,
+    freeze_and_export_fixed_time_paper_candidate,
+    run_fixed_time_accuracy_benchmark,
+)
+from .fixed_time_config import load_fixed_time_accuracy_config
+from .fixed_time_reversal_benchmark import (
+    FIXED_TIME_REVERSAL_PAPER_AUTHORIZATION,
+    freeze_and_export_fixed_time_reversal_paper_candidate,
+    run_fixed_time_reversal_benchmark,
+)
+from .fixed_time_reversal_config import load_fixed_time_reversal_config
+from .fixed_time_selective_benchmark import (
+    FIXED_TIME_SELECTIVE_PAPER_AUTHORIZATION,
+    freeze_and_export_fixed_time_selective_paper_candidate,
+    run_fixed_time_selective_benchmark,
+)
+from .fixed_time_selective_config import load_fixed_time_selective_config
 from .frequency_policy_benchmark import run_frequency_policy_benchmark
 from .frequency_policy_config import load_frequency_policy_benchmark_config
+from .oracle_book_benchmark import (
+    load_oracle_book_benchmark_config,
+    run_oracle_book_benchmark,
+)
 from .paper_candidate import (
     PAPER_ONLY_AUTHORIZATION,
     run_paper_candidate_export,
@@ -33,6 +55,7 @@ from .residual_admission_benchmark import run_residual_admission_benchmark
 from .residual_admission_config import load_residual_admission_config
 from .runtime_export import export_runtime_model
 from .train import train_models
+from .training_readiness import prepare_training_readiness
 
 
 def main() -> None:
@@ -71,9 +94,73 @@ def main() -> None:
     core_run = subparsers.add_parser("core-run")
     core_run.add_argument("--config", type=Path, required=True)
     core_run.add_argument("--force", action="store_true")
+    core_readiness = subparsers.add_parser("core-training-readiness")
+    core_readiness.add_argument("--config", type=Path, required=True)
+    core_readiness.add_argument(
+        "--execution-output",
+        type=Path,
+        required=True,
+    )
+    core_readiness.add_argument("--output-dir", type=Path, required=True)
+    core_readiness.add_argument("--force", action="store_true")
     entry_run = subparsers.add_parser("entry-benchmark-run")
     entry_run.add_argument("--config", type=Path, required=True)
     entry_run.add_argument("--force", action="store_true")
+    oracle_book_run = subparsers.add_parser("oracle-book-benchmark-run")
+    oracle_book_run.add_argument("--config", type=Path, required=True)
+    fixed_time_run = subparsers.add_parser("fixed-120-benchmark-run")
+    fixed_time_run.add_argument("--config", type=Path, required=True)
+    fixed_time_export = subparsers.add_parser("fixed-120-paper-candidate-export")
+    fixed_time_export.add_argument("--config", type=Path, required=True)
+    fixed_time_export.add_argument(
+        "--benchmark-run",
+        type=Path,
+        required=True,
+    )
+    fixed_time_export.add_argument("--model-key", required=True)
+    fixed_time_export.add_argument(
+        "--authorize-paper-only",
+        action="store_true",
+        help="authorize an exact-120-second model only for paper evaluation",
+    )
+    fixed_time_selective_run = subparsers.add_parser(
+        "fixed-120-selective-benchmark-run"
+    )
+    fixed_time_selective_run.add_argument("--config", type=Path, required=True)
+    fixed_time_selective_export = subparsers.add_parser(
+        "fixed-120-selective-paper-candidate-export"
+    )
+    fixed_time_selective_export.add_argument("--config", type=Path, required=True)
+    fixed_time_selective_export.add_argument(
+        "--benchmark-run",
+        type=Path,
+        required=True,
+    )
+    fixed_time_selective_export.add_argument("--model-key", required=True)
+    fixed_time_selective_export.add_argument(
+        "--authorize-paper-only",
+        action="store_true",
+        help="authorize a selective exact-120 model only for paper evaluation",
+    )
+    fixed_time_reversal_run = subparsers.add_parser(
+        "fixed-120-reversal-benchmark-run"
+    )
+    fixed_time_reversal_run.add_argument("--config", type=Path, required=True)
+    fixed_time_reversal_export = subparsers.add_parser(
+        "fixed-120-reversal-paper-candidate-export"
+    )
+    fixed_time_reversal_export.add_argument("--config", type=Path, required=True)
+    fixed_time_reversal_export.add_argument(
+        "--benchmark-run",
+        type=Path,
+        required=True,
+    )
+    fixed_time_reversal_export.add_argument("--model-key", required=True)
+    fixed_time_reversal_export.add_argument(
+        "--authorize-paper-only",
+        action="store_true",
+        help="authorize an exact-120 reversal model only for paper evaluation",
+    )
     persistence_run = subparsers.add_parser("persistence-benchmark-run")
     persistence_run.add_argument("--config", type=Path, required=True)
     persistence_run.add_argument("--force", action="store_true")
@@ -168,6 +255,115 @@ def main() -> None:
                 else "none"
             )
         )
+        return
+    if args.command == "oracle-book-benchmark-run":
+        config = load_oracle_book_benchmark_config(args.config)
+        run_dir, benchmark = run_oracle_book_benchmark(config)
+        print(f"report: {run_dir / 'report.html'}")
+        print(
+            "status: "
+            f"{benchmark['status']}; runtime export/deployment: disabled"
+        )
+        return
+    if args.command == "fixed-120-benchmark-run":
+        config = load_fixed_time_accuracy_config(args.config)
+        run_dir, benchmark = run_fixed_time_accuracy_benchmark(config)
+        print(f"report: {run_dir / 'report.html'}")
+        print(
+            "paper-freeze qualified: "
+            + str(benchmark["selection"]["paper_candidate_qualified"]).lower()
+        )
+        print("decision: exact 120 seconds; live capital: not authorized")
+        return
+    if args.command == "fixed-120-paper-candidate-export":
+        if not args.authorize_paper_only:
+            parser.error(
+                "fixed-120-paper-candidate-export requires "
+                "--authorize-paper-only"
+            )
+        config = load_fixed_time_accuracy_config(args.config)
+        freeze_dir, runtime_dir, manifest = (
+            freeze_and_export_fixed_time_paper_candidate(
+                config=config,
+                benchmark_run=args.benchmark_run,
+                model_key=args.model_key,
+                authorization=FIXED_TIME_PAPER_AUTHORIZATION,
+            )
+        )
+        print(f"freeze: {freeze_dir}")
+        print(f"runtime model: {runtime_dir}")
+        print(
+            "scope: paper_only; production-qualified: "
+            f"{str(manifest['production_qualified']).lower()}"
+        )
+        return
+    if args.command == "fixed-120-selective-benchmark-run":
+        config = load_fixed_time_selective_config(args.config)
+        run_dir, benchmark = run_fixed_time_selective_benchmark(config)
+        print(f"report: {run_dir / 'report.html'}")
+        print(
+            "development candidate: "
+            f"{benchmark['selection']['selected_candidate'] or 'none'}"
+        )
+        print("evidence: consumed development; July 29 onward excluded")
+        print("live capital: not authorized")
+        return
+    if args.command == "fixed-120-selective-paper-candidate-export":
+        if not args.authorize_paper_only:
+            parser.error(
+                "fixed-120-selective-paper-candidate-export requires "
+                "--authorize-paper-only"
+            )
+        config = load_fixed_time_selective_config(args.config)
+        freeze_dir, runtime_dir, manifest = (
+            freeze_and_export_fixed_time_selective_paper_candidate(
+                config=config,
+                benchmark_run=args.benchmark_run,
+                model_key=args.model_key,
+                authorization=FIXED_TIME_SELECTIVE_PAPER_AUTHORIZATION,
+            )
+        )
+        print(f"freeze: {freeze_dir}")
+        print(f"runtime model: {runtime_dir}")
+        print(
+            "scope: paper_only; production-qualified: "
+            f"{str(manifest['production_qualified']).lower()}"
+        )
+        print("fresh forward evidence: required from July 29, 2026")
+        return
+    if args.command == "fixed-120-reversal-benchmark-run":
+        config = load_fixed_time_reversal_config(args.config)
+        run_dir, benchmark = run_fixed_time_reversal_benchmark(config)
+        print(f"report: {run_dir / 'report.html'}")
+        print(
+            "development candidate: "
+            f"{benchmark['selection']['selected_candidate'] or 'none'}"
+        )
+        print("decision: exact 120 seconds; evidence ends July 28, 2026")
+        print("live capital: not authorized")
+        return
+    if args.command == "fixed-120-reversal-paper-candidate-export":
+        if not args.authorize_paper_only:
+            parser.error(
+                "fixed-120-reversal-paper-candidate-export requires "
+                "--authorize-paper-only"
+            )
+        config = load_fixed_time_reversal_config(args.config)
+        freeze_dir, runtime_dir, manifest = (
+            freeze_and_export_fixed_time_reversal_paper_candidate(
+                config=config,
+                benchmark_run=args.benchmark_run,
+                model_key=args.model_key,
+                authorization=FIXED_TIME_REVERSAL_PAPER_AUTHORIZATION,
+            )
+        )
+        print(f"freeze: {freeze_dir}")
+        print(f"runtime model: {runtime_dir}")
+        print(
+            "scope: paper_only; production-qualified: "
+            f"{str(manifest['production_qualified']).lower()}"
+        )
+        print("fresh forward evidence: required from July 29, 2026")
         return
     if args.command == "persistence-benchmark-run":
         config = load_persistence_benchmark_config(args.config)
@@ -332,6 +528,23 @@ def run_core_command(args: argparse.Namespace) -> None:
         run_dir, metrics = evaluate_core_holdout(config, freeze_dir)
         destination = generate_core_report(run_dir, metrics)
         print(f"report: {destination}")
+    elif args.command == "core-training-readiness":
+        json_path, markdown_path, payload = prepare_training_readiness(
+            config,
+            execution_output_dir=args.execution_output.resolve(),
+            output_dir=args.output_dir.resolve(),
+            force=args.force,
+        )
+        print(f"readiness JSON: {json_path}")
+        print(f"readiness report: {markdown_path}")
+        print(
+            "core + oracle complete markets: "
+            f"{payload['totals']['core_oracle_complete_markets']:,}"
+        )
+        print(
+            "book-complete 11-point markets: "
+            f"{payload['totals']['book_complete_11_point_markets']:,}"
+        )
 
 
 def serve(directory: Path, port: int) -> None:

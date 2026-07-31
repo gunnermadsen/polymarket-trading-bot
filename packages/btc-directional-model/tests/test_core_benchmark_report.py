@@ -28,6 +28,9 @@ def report_record() -> dict:
         "median_seconds_elapsed": 90.0,
         "p90_seconds_elapsed": 120.0,
         "execution": {
+            "quantity": 5.0,
+            "vwap_depth": 5,
+            "economic_markets": 91,
             "execution_evidence_coverage": 0.80,
             "executable_coverage_within_evidence": 0.95,
             "executable_coverage_all_selected": 0.76,
@@ -36,8 +39,27 @@ def report_record() -> dict:
             "mean_fee_per_share": 0.01,
             "mean_direct_edge_per_share": 0.08,
             "realized_net_expectancy_per_trade": 1.45,
+            "realized_net_pnl_total": 131.95,
             "maximum_net_loss_streak": 2,
             "maximum_drawdown": 3.20,
+        },
+    }
+    metrics["execution_by_size"] = {
+        "vwap5_five_share": metrics["execution"],
+        "vwap10_ten_share": {
+            "quantity": 10.0,
+            "vwap_depth": 10,
+            "economic_markets": 88,
+            "execution_evidence_coverage": 0.80,
+            "executable_coverage_within_evidence": 0.92,
+            "executable_coverage_all_selected": 0.736,
+            "median_selected_ask_vwap_10": 0.62,
+            "mean_fee_per_share": 0.011,
+            "mean_direct_edge_per_share": 0.06,
+            "realized_net_expectancy_per_trade": 2.30,
+            "realized_net_pnl_total": 202.40,
+            "maximum_net_loss_streak": 2,
+            "maximum_drawdown": 6.40,
         },
     }
     band = {
@@ -143,6 +165,11 @@ def test_report_is_deterministic_and_labels_non_independent_evidence() -> None:
     assert "Evidence / selected" in first
     assert "Executable / evidence" in first
     assert "Executable / all selected" in first
+    assert "Median VWAP5" in first
+    assert "VWAP5 · 5 shares" in first
+    assert "VWAP10 · 10 shares" in first
+    assert "separate VWAP5/five-share and" in first
+    assert "VWAP10/ten-share economics" in first
     assert "early-core" in first
 
 
@@ -265,6 +292,8 @@ def test_report_renders_strict_book_chronology_without_runtime_claim() -> None:
     assert "Strict-book chronological challenge" in document
     assert "identical strict-valid rows" in document
     assert "strict-book" in document
+    assert "VWAP5/five shares" in document
+    assert "VWAP10/ten shares" in document
     assert "no deployment artifact was exported" in document
 
 

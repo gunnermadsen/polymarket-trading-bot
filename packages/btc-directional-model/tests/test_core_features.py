@@ -15,11 +15,17 @@ from btc_directional_model.core_features import (
     CORE_MATURE_REVERSAL_ENRICHED_FEATURES,
     CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION,
     CORE_MATURE_REVERSAL_FEATURES,
+    CORE_MATURE_REVERSAL_ORACLE_FEATURES,
     CORE_MODEL_FEATURES,
+    CORE_ORACLE_FEATURES,
+    CORE_ORACLE_MODEL_FEATURES,
     CORE_REGIME_REVERSAL_ENRICHED_FEATURES,
     CORE_REGIME_REVERSAL_FEATURE_SCHEMA_VERSION,
     CORE_REGIME_REVERSAL_FEATURES,
+    attach_causal_oracle_rounds,
     derive_core_point_in_time_features,
+    derive_oracle_point_in_time_features,
+    model_feature_groups,
     validate_feature_allowlists,
 )
 
@@ -104,6 +110,36 @@ def mirrored_path_source_frame() -> pl.DataFrame:
                 }
             )
     return pl.DataFrame(rows).sort(["market_id", "seconds_elapsed"])
+
+
+def oracle_rounds_for_core(
+    frame: pl.DataFrame,
+    *,
+    first_offset_seconds: int = -1,
+) -> pl.DataFrame:
+    minimum = frame["observed_at"].min()
+    maximum = frame["observed_at"].max()
+    assert minimum is not None
+    assert maximum is not None
+    first = minimum + timedelta(seconds=first_offset_seconds)
+    rows = []
+    current = first
+    index = 1
+    while current <= maximum + timedelta(seconds=1):
+        rows.append(
+            {
+                "oracle_price": 99_900.0 * math.exp(index * 0.000001),
+                "oracle_source_timestamp": current,
+                "oracle_block_timestamp": current,
+                "oracle_phase_id": 3,
+                "oracle_round_id": index,
+                "oracle_block_number": 50_000_000 + index,
+                "oracle_log_index": 0,
+            }
+        )
+        current += timedelta(seconds=1)
+        index += 1
+    return pl.DataFrame(rows)
 
 
 def test_enriched_core_features_need_no_book_columns() -> None:
@@ -471,3 +507,157 @@ def test_path_sign_normalization_is_symmetric_for_mirrored_paths() -> None:
         assert path_up[feature][0] == pytest.approx(
             path_down[feature][0], abs=1e-9
         )
+
+
+def test_oracle_asof_join_never_attaches_a_future_round() -> None:
+    source = core_source_frame().filter(pl.col("market_id") == "a")
+    start = source["window_start"][0]
+    rounds = pl.DataFrame(
+        [
+            {
+                "oracle_price": 100_000.0,
+                "oracle_source_timestamp": start - timedelta(seconds=1),
+                "oracle_block_timestamp": start - timedelta(seconds=1),
+                "oracle_phase_id": 3,
+                "oracle_round_id": 1,
+                "oracle_block_number": 1,
+                "oracle_log_index": 0,
+            },
+            {
+                "oracle_price": 200_000.0,
+                "oracle_source_timestamp": start + timedelta(seconds=121),
+                "oracle_block_timestamp": start + timedelta(seconds=121),
+                "oracle_phase_id": 3,
+                "oracle_round_id": 2,
+                "oracle_block_number": 2,
+                "oracle_log_index": 0,
+            },
+        ]
+    )
+
+    joined = attach_causal_oracle_rounds(source, rounds)
+
+    assert joined.filter(pl.col("seconds_elapsed") == 120)[
+        "oracle_price"
+    ][0] == 100_000.0
+    assert joined.filter(pl.col("seconds_elapsed") == 121)[
+        "oracle_price"
+    ][0] == 200_000.0
+
+
+def test_oracle_features_are_causal_market_local_and_formula_exact() -> None:
+    source = core_source_frame()
+    rounds = oracle_rounds_for_core(source)
+    features = derive_oracle_point_in_time_features(
+        derive_core_point_in_time_features(
+            attach_causal_oracle_rounds(source, rounds)
+        )
+    )
+    row = features.filter(
+        (pl.col("market_id") == "a") & (pl.col("seconds_elapsed") == 120)
+    )
+    lagged = features.filter(
+        (pl.col("market_id") == "a") & (pl.col("seconds_elapsed") == 90)
+    )
+    first_b = features.filter(
+        (pl.col("market_id") == "b") & (pl.col("seconds_elapsed") == 0)
+    )
+    expected_return = math.log(
+        row["oracle_price"][0] / lagged["oracle_price"][0]
+    ) * 10_000
+
+    assert row["oracle_return_30s_bps"][0] == pytest.approx(
+        expected_return,
+        abs=1e-10,
+    )
+    assert row["oracle_model_eligible"][0] is True
+    assert first_b["oracle_return_30s_bps"][0] is None
+    assert first_b["oracle_update_count_since_open_scaled"][0] == 0.0
+
+
+def test_oracle_features_at_decision_are_invariant_to_future_rounds() -> None:
+    source = core_source_frame().filter(pl.col("market_id") == "a")
+    original_rounds = oracle_rounds_for_core(source)
+    future_mutated = original_rounds.with_columns(
+        pl.when(
+            pl.col("oracle_block_timestamp")
+            > source["window_start"][0] + timedelta(seconds=120)
+        )
+        .then(pl.col("oracle_price") * 2.0)
+        .otherwise(pl.col("oracle_price"))
+        .alias("oracle_price")
+    )
+    before = derive_oracle_point_in_time_features(
+        derive_core_point_in_time_features(
+            attach_causal_oracle_rounds(source, original_rounds)
+        )
+    ).filter(pl.col("seconds_elapsed") == 120)
+    after = derive_oracle_point_in_time_features(
+        derive_core_point_in_time_features(
+            attach_causal_oracle_rounds(source, future_mutated)
+        )
+    ).filter(pl.col("seconds_elapsed") == 120)
+
+    assert before.select(CORE_ORACLE_FEATURES).equals(
+        after.select(CORE_ORACLE_FEATURES),
+        null_equal=True,
+    )
+
+
+def test_missing_opening_oracle_anchor_fails_eligibility_closed() -> None:
+    source = core_source_frame().filter(pl.col("market_id") == "a")
+    rounds = oracle_rounds_for_core(source, first_offset_seconds=1)
+    features = derive_oracle_point_in_time_features(
+        derive_core_point_in_time_features(
+            attach_causal_oracle_rounds(source, rounds)
+        )
+    )
+    decision = features.filter(pl.col("seconds_elapsed") == 120)
+
+    assert decision["oracle_window_open_price"][0] is None
+    assert decision["oracle_model_eligible"][0] is False
+
+
+def test_oracle_allowlist_is_additive_and_excludes_routing_provenance() -> None:
+    source = core_source_frame()
+    features = derive_oracle_point_in_time_features(
+        derive_core_point_in_time_features(
+            attach_causal_oracle_rounds(
+                source,
+                oracle_rounds_for_core(source),
+            )
+        )
+    )
+
+    assert (
+        CORE_MATURE_REVERSAL_ORACLE_FEATURES[
+            : len(CORE_MATURE_REVERSAL_ENRICHED_FEATURES)
+        ]
+        == CORE_MATURE_REVERSAL_ENRICHED_FEATURES
+    )
+    assert (
+        CORE_MATURE_REVERSAL_ORACLE_FEATURES[
+            len(CORE_MATURE_REVERSAL_ENRICHED_FEATURES) :
+        ]
+        == CORE_ORACLE_FEATURES
+    )
+    assert model_feature_groups(include_oracle=False) == CORE_MODEL_FEATURES
+    assert (
+        model_feature_groups(include_oracle=True)[
+            "histogram_mature_reversal_oracle"
+        ]
+        == CORE_MATURE_REVERSAL_ORACLE_FEATURES
+    )
+    assert not {
+        "oracle_price",
+        "oracle_source_timestamp",
+        "oracle_block_timestamp",
+        "oracle_phase_id",
+        "oracle_round_id",
+        "oracle_block_number",
+        "oracle_log_index",
+        "oracle_model_eligible",
+    }.intersection(
+        CORE_ORACLE_MODEL_FEATURES["histogram_mature_reversal_oracle"]
+    )
+    validate_feature_allowlists(features, include_oracle=True)

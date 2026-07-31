@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Any
 
 EQUAL_TOTAL_PER_MARKET_NORMALIZATION = "equal_total_per_market"
+CORE_SOURCE_CONTRACT = "btc_core_v1"
+CORE_ORACLE_SOURCE_CONTRACT = "btc_core_oracle_v1"
+SUPPORTED_CORE_SOURCE_CONTRACTS = (
+    CORE_SOURCE_CONTRACT,
+    CORE_ORACLE_SOURCE_CONTRACT,
+)
 HISTORICAL_CORE_CANDIDATE_NAMES = (
     "logistic_baseline",
     "logistic_enriched",
@@ -293,8 +299,11 @@ def load_core_config(path: Path) -> CoreTrainingConfig:
 def validate_core_config(config: CoreTrainingConfig) -> None:
     data = config.data
     split = config.split
-    if data.source_contract != "btc_core_v1":
-        raise ValueError("data.source_contract must be btc_core_v1")
+    if data.source_contract not in SUPPORTED_CORE_SOURCE_CONTRACTS:
+        raise ValueError(
+            "data.source_contract must be one of "
+            + ", ".join(SUPPORTED_CORE_SOURCE_CONTRACTS)
+        )
     if data.range_end <= data.range_start:
         raise ValueError("data range must be positive")
     if data.sample_interval_seconds <= 0:

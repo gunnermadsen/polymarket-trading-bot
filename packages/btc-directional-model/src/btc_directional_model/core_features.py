@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 import polars as pl
 
-from .core_config import CoreTrainingConfig
+from .core_config import CORE_ORACLE_SOURCE_CONTRACT, CoreTrainingConfig
 from .core_extract import (
     file_sha256,
     load_core_manifest,
@@ -27,6 +27,9 @@ CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION = (
 )
 CORE_REGIME_REVERSAL_FEATURE_SCHEMA_VERSION = (
     "btc-5m-directional-regime-reversal-features-v1"
+)
+CORE_MATURE_REVERSAL_ORACLE_FEATURE_SCHEMA_VERSION = (
+    "btc-5m-directional-mature-reversal-oracle-features-v1"
 )
 
 CORE_BASELINE_FEATURES = [
@@ -168,6 +171,22 @@ CORE_MATURE_REVERSAL_FEATURES = [
 CORE_MATURE_REVERSAL_ENRICHED_FEATURES = (
     CORE_ENRICHED_FEATURES + CORE_MATURE_REVERSAL_FEATURES
 )
+CORE_ORACLE_FEATURES = [
+    "oracle_gap_to_opening_boundary_bps",
+    "oracle_return_from_window_open_bps",
+    "oracle_return_30s_bps",
+    "oracle_return_60s_bps",
+    "oracle_round_age_seconds_scaled",
+    "oracle_update_count_since_open_scaled",
+    "binance_oracle_basis_bps",
+    "binance_oracle_basis_change_30s_bps",
+    "oracle_binance_direction_agreement_30s",
+    "oracle_boundary_binance_path_agreement",
+    "oracle_return_60s_binance_volatility_z",
+]
+CORE_MATURE_REVERSAL_ORACLE_FEATURES = (
+    CORE_MATURE_REVERSAL_ENRICHED_FEATURES + CORE_ORACLE_FEATURES
+)
 CORE_REGIME_REVERSAL_FEATURES = [
     "btc_path_sign_normalized_return_90s_bps",
     "btc_path_sign_normalized_return_120s_bps",
@@ -194,6 +213,136 @@ CORE_MODEL_FEATURES = {
     ),
     "histogram_regime_reversal": CORE_REGIME_REVERSAL_ENRICHED_FEATURES,
 }
+CORE_ORACLE_MODEL_FEATURES = {
+    "histogram_mature_reversal_oracle": (
+        CORE_MATURE_REVERSAL_ORACLE_FEATURES
+    ),
+}
+
+
+def model_feature_groups(*, include_oracle: bool) -> dict[str, list[str]]:
+    groups = dict(CORE_MODEL_FEATURES)
+    if include_oracle:
+        groups.update(CORE_ORACLE_MODEL_FEATURES)
+    return groups
+
+
+ORACLE_JOIN_COLUMNS = [
+    "oracle_price",
+    "oracle_source_timestamp",
+    "oracle_block_timestamp",
+    "oracle_phase_id",
+    "oracle_round_id",
+    "oracle_block_number",
+    "oracle_log_index",
+]
+ORACLE_IDENTITY_COLUMNS = [
+    "oracle_phase_id",
+    "oracle_round_id",
+    "oracle_block_number",
+    "oracle_log_index",
+]
+
+
+def prepare_causal_oracle_rounds(rounds: pl.DataFrame) -> pl.DataFrame:
+    missing = [
+        column for column in ORACLE_JOIN_COLUMNS if column not in rounds.columns
+    ]
+    if missing:
+        raise RuntimeError(
+            "oracle source is missing columns: " + ", ".join(missing)
+        )
+    selected = rounds.select(ORACLE_JOIN_COLUMNS)
+    invalid = selected.filter(
+        pl.any_horizontal(
+            [
+                pl.col(column).is_null()
+                for column in ORACLE_JOIN_COLUMNS
+            ]
+        )
+        | ~pl.col("oracle_price").is_finite()
+        | (pl.col("oracle_price") <= 0)
+        | (
+            pl.col("oracle_source_timestamp")
+            > pl.col("oracle_block_timestamp")
+        )
+    )
+    if invalid.height:
+        raise RuntimeError(
+            "oracle source contains null, non-positive, non-finite, or "
+            "non-causal rounds"
+        )
+
+    exact_unique = selected.unique(maintain_order=True)
+    identity_unique = selected.unique(
+        subset=ORACLE_IDENTITY_COLUMNS,
+        maintain_order=True,
+    )
+    if exact_unique.height != identity_unique.height:
+        raise RuntimeError(
+            "oracle source contains conflicting records for one round identity"
+        )
+
+    return (
+        exact_unique.sort(
+            [
+                "oracle_block_timestamp",
+                "oracle_source_timestamp",
+                "oracle_block_number",
+                "oracle_log_index",
+                "oracle_phase_id",
+                "oracle_round_id",
+            ]
+        )
+        .unique(
+            subset=["oracle_block_timestamp"],
+            keep="last",
+            maintain_order=True,
+        )
+        .sort("oracle_block_timestamp")
+    )
+
+
+def attach_causal_oracle_rounds(
+    frame: pl.DataFrame,
+    rounds: pl.DataFrame,
+) -> pl.DataFrame:
+    required = {"market_id", "observed_at", "seconds_elapsed"}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise RuntimeError(
+            "core source is missing oracle join columns: "
+            + ", ".join(missing)
+        )
+    prepared = prepare_causal_oracle_rounds(rounds)
+    joined = (
+        frame.with_row_index("_oracle_source_row")
+        .sort("observed_at")
+        .join_asof(
+            prepared,
+            left_on="observed_at",
+            right_on="oracle_block_timestamp",
+            strategy="backward",
+        )
+    )
+    violations = joined.filter(
+        pl.col("oracle_price").is_not_null()
+        & (
+            (
+                pl.col("oracle_source_timestamp")
+                > pl.col("oracle_block_timestamp")
+            )
+            | (
+                pl.col("oracle_block_timestamp")
+                > pl.col("observed_at")
+            )
+        )
+    )
+    if violations.height:
+        raise RuntimeError(
+            "causal oracle join attached a round unavailable at observation time"
+        )
+    return joined.sort("_oracle_source_row").drop("_oracle_source_row")
 
 
 def build_core_features(
@@ -203,6 +352,9 @@ def build_core_features(
     force: bool = False,
 ) -> dict[str, Any]:
     manifest = load_core_manifest(config, scope)
+    include_oracle = (
+        config.data.source_contract == CORE_ORACLE_SOURCE_CONTRACT
+    )
     destination = feature_destination(config, scope)
     metadata_path = destination.with_suffix(".metadata.json")
     manifest_path = config.paths.source_data / f"manifest-{scope}.json"
@@ -226,7 +378,49 @@ def build_core_features(
     )
     source_rows = frame.height
     source_markets = frame["market_id"].n_unique()
+    oracle_source_files: list[Path] = []
+    oracle_source_rows = 0
+    oracle_joinable_rounds = 0
+    if include_oracle:
+        oracle_source_files = [
+            config.paths.source_data / partition["path"]
+            for partition in manifest["oracle_partitions"]
+        ]
+        oracle_rounds = pl.scan_parquet(oracle_source_files).collect()
+        oracle_source_rows = oracle_rounds.height
+        prepared_oracle_rounds = prepare_causal_oracle_rounds(
+            oracle_rounds
+        )
+        oracle_joinable_rounds = prepared_oracle_rounds.height
+        frame = attach_causal_oracle_rounds(
+            frame,
+            prepared_oracle_rounds,
+        )
     frame = derive_core_point_in_time_features(frame)
+    if include_oracle:
+        frame = derive_oracle_point_in_time_features(frame)
+        matched_oracle_rows = frame.filter(
+            pl.col("oracle_price").is_not_null()
+        ).height
+        unmatched_oracle_rows = frame.height - matched_oracle_rows
+        maximum_oracle_age_seconds = (
+            frame.filter(pl.col("oracle_price").is_not_null())
+            .select(
+                (
+                    pl.col("observed_at")
+                    - pl.col("oracle_block_timestamp")
+                )
+                .dt.total_seconds()
+                .max()
+            )
+            .item()
+            if matched_oracle_rows
+            else None
+        )
+    else:
+        matched_oracle_rows = 0
+        unmatched_oracle_rows = 0
+        maximum_oracle_age_seconds = None
     final_audit = audit_final_prices(frame)
     mismatch_ids = final_audit.filter(
         pl.col("has_final_price") & ~pl.col("final_price_matches_official")
@@ -271,9 +465,50 @@ def build_core_features(
         )
         .select("market_id")
     )
+    core_complete_candidates = candidates.join(
+        complete_candidates,
+        on="market_id",
+        how="inner",
+    )
+    daily_core_counts = daily_market_counts(core_complete_candidates)
+    core_complete_candidate_rows = core_complete_candidates.height
+    core_complete_candidate_markets = core_complete_candidates[
+        "market_id"
+    ].n_unique()
+    oracle_eligible_candidate_rows = 0
+    oracle_incomplete_candidate_markets = 0
+    if include_oracle:
+        oracle_eligible_candidates = core_complete_candidates.filter(
+            pl.col("oracle_model_eligible")
+        )
+        oracle_eligible_candidate_rows = oracle_eligible_candidates.height
+        oracle_complete_candidates = (
+            oracle_eligible_candidates.group_by("market_id")
+            .agg(
+                pl.len().alias("candidate_rows"),
+                pl.col("seconds_elapsed")
+                .n_unique()
+                .alias("candidate_unique_seconds"),
+            )
+            .filter(
+                (pl.col("candidate_rows") == expected_rows)
+                & (pl.col("candidate_unique_seconds") == expected_rows)
+            )
+            .select("market_id")
+        )
+        candidates = oracle_eligible_candidates.join(
+            oracle_complete_candidates,
+            on="market_id",
+            how="inner",
+        )
+        oracle_incomplete_candidate_markets = (
+            core_complete_candidate_markets
+            - oracle_complete_candidates.height
+        )
+    else:
+        candidates = core_complete_candidates
     candidates = (
-        candidates.join(complete_candidates, on="market_id", how="inner")
-        .drop(
+        candidates.drop(
             "official_outcome",
             "final_price",
             "btc_path_positive",
@@ -282,11 +517,20 @@ def build_core_features(
             "btc_boundary_positive",
             "btc_boundary_crossed",
             "btc_last_boundary_cross_second",
+            "oracle_price",
+            "oracle_source_timestamp",
+            "oracle_block_timestamp",
+            "oracle_phase_id",
+            "oracle_round_id",
+            "oracle_block_number",
+            "oracle_log_index",
+            "oracle_window_open_price",
+            "oracle_round_changed",
             strict=False,
         )
         .sort(["window_start", "seconds_elapsed"])
     )
-    validate_feature_allowlists(candidates)
+    validate_feature_allowlists(candidates, include_oracle=include_oracle)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(".parquet.partial")
@@ -299,40 +543,33 @@ def build_core_features(
     range_start, range_end = scope_range(config, scope)
     audited_with_final = final_audit.filter(pl.col("has_final_price")).height
     audited_matching = final_audit.filter(pl.col("final_price_matches_official")).height
-    daily_counts = (
-        candidates.select("market_id", "window_start", "label_up")
-        .unique(subset=["market_id"])
-        .with_columns(pl.col("window_start").dt.date().cast(pl.String).alias("date"))
-        .group_by("date")
-        .agg(
-            pl.len().alias("markets"),
-            pl.col("label_up").sum().alias("up_markets"),
-        )
-        .with_columns((pl.col("markets") - pl.col("up_markets")).alias("down_markets"))
-        .sort("date")
-        .to_dicts()
-    )
+    daily_counts = daily_market_counts(candidates)
+    candidate_feature_schema_versions = {
+        "histogram_boundary_enriched": CORE_BOUNDARY_FEATURE_SCHEMA_VERSION,
+        "histogram_boundary_reversal": (
+            CORE_BOUNDARY_REVERSAL_FEATURE_SCHEMA_VERSION
+        ),
+        "histogram_mature_reversal": (
+            CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION
+        ),
+        "histogram_mature_reversal_recency_28d": (
+            CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION
+        ),
+        "histogram_mature_reversal_market_regularized": (
+            CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION
+        ),
+        "histogram_regime_reversal": (
+            CORE_REGIME_REVERSAL_FEATURE_SCHEMA_VERSION
+        ),
+    }
+    if include_oracle:
+        candidate_feature_schema_versions[
+            "histogram_mature_reversal_oracle"
+        ] = CORE_MATURE_REVERSAL_ORACLE_FEATURE_SCHEMA_VERSION
     metadata: dict[str, Any] = {
         "build_contract": build_contract,
         "feature_schema_version": CORE_FEATURE_SCHEMA_VERSION,
-        "candidate_feature_schema_versions": {
-            "histogram_boundary_enriched": CORE_BOUNDARY_FEATURE_SCHEMA_VERSION,
-            "histogram_boundary_reversal": (
-                CORE_BOUNDARY_REVERSAL_FEATURE_SCHEMA_VERSION
-            ),
-            "histogram_mature_reversal": (
-                CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION
-            ),
-            "histogram_mature_reversal_recency_28d": (
-                CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION
-            ),
-            "histogram_mature_reversal_market_regularized": (
-                CORE_MATURE_REVERSAL_FEATURE_SCHEMA_VERSION
-            ),
-            "histogram_regime_reversal": (
-                CORE_REGIME_REVERSAL_FEATURE_SCHEMA_VERSION
-            ),
-        },
+        "candidate_feature_schema_versions": candidate_feature_schema_versions,
         "scope": scope,
         "range_start": range_start.isoformat(),
         "range_end": range_end.isoformat(),
@@ -342,6 +579,8 @@ def build_core_features(
         "history_complete_markets": history_complete.height,
         "history_incomplete_markets": history.height - history_complete.height,
         "final_price_mismatch_markets": mismatch_markets,
+        "core_complete_candidate_rows": core_complete_candidate_rows,
+        "core_complete_candidate_markets": core_complete_candidate_markets,
         "candidate_rows": candidates.height,
         "candidate_markets": candidates["market_id"].n_unique(),
         "expected_candidate_rows_per_market": expected_rows,
@@ -353,10 +592,30 @@ def build_core_features(
         ].n_unique(),
         "markets_with_final_price": audited_with_final,
         "matching_final_price_labels": audited_matching,
+        "daily_core_counts": daily_core_counts,
         "daily_counts": daily_counts,
-        "feature_groups": CORE_MODEL_FEATURES,
+        "feature_groups": model_feature_groups(
+            include_oracle=include_oracle
+        ),
         "feature_file_sha256": file_sha256(destination),
     }
+    if include_oracle:
+        metadata["oracle"] = {
+            "source_partitions": len(oracle_source_files),
+            "source_rows_with_daily_anchors": oracle_source_rows,
+            "joinable_rounds": oracle_joinable_rounds,
+            "matched_core_rows": matched_oracle_rows,
+            "unmatched_core_rows": unmatched_oracle_rows,
+            "maximum_round_age_seconds": maximum_oracle_age_seconds,
+            "eligible_candidate_rows": oracle_eligible_candidate_rows,
+            "complete_candidate_markets": candidates[
+                "market_id"
+            ].n_unique(),
+            "incomplete_candidate_markets": (
+                oracle_incomplete_candidate_markets
+            ),
+            "daily_complete_counts": daily_counts,
+        }
     write_json_atomic(metadata_path, metadata)
     print(
         f"core features: wrote {candidates.height:,} rows across "
@@ -931,6 +1190,225 @@ def derive_core_point_in_time_features(frame: pl.DataFrame) -> pl.DataFrame:
     return frame
 
 
+def derive_oracle_point_in_time_features(
+    frame: pl.DataFrame,
+) -> pl.DataFrame:
+    required = {
+        "market_id",
+        "observed_at",
+        "seconds_elapsed",
+        "opening_boundary",
+        "btc_close",
+        "btc_path_from_window_open_bps",
+        "btc_return_30s_bps",
+        "btc_realized_volatility_60s_bps",
+        *ORACLE_JOIN_COLUMNS,
+    }
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise RuntimeError(
+            "oracle feature source is missing columns: " + ", ".join(missing)
+        )
+    frame = frame.sort(["market_id", "seconds_elapsed"])
+    frame = frame.with_columns(
+        pl.first("oracle_price")
+        .over("market_id")
+        .alias("oracle_window_open_price"),
+        (
+            pl.col("oracle_price").is_not_null()
+            & (pl.col("seconds_elapsed") > 0)
+            & (
+                pl.col("oracle_phase_id")
+                .shift(1)
+                .over("market_id")
+                .is_null()
+                | (
+                    pl.col("oracle_phase_id")
+                    != pl.col("oracle_phase_id")
+                    .shift(1)
+                    .over("market_id")
+                )
+                | (
+                    pl.col("oracle_round_id")
+                    != pl.col("oracle_round_id")
+                    .shift(1)
+                    .over("market_id")
+                )
+                | (
+                    pl.col("oracle_block_number")
+                    != pl.col("oracle_block_number")
+                    .shift(1)
+                    .over("market_id")
+                )
+                | (
+                    pl.col("oracle_log_index")
+                    != pl.col("oracle_log_index")
+                    .shift(1)
+                    .over("market_id")
+                )
+            )
+        )
+        .fill_null(False)
+        .alias("oracle_round_changed"),
+        (
+            pl.col("btc_close") / pl.col("oracle_price")
+        )
+        .log()
+        .mul(10_000)
+        .alias("binance_oracle_basis_bps"),
+    )
+    frame = frame.with_columns(
+        (
+            pl.col("oracle_price") / pl.col("opening_boundary")
+        )
+        .log()
+        .mul(10_000)
+        .alias("oracle_gap_to_opening_boundary_bps"),
+        (
+            pl.col("oracle_price") / pl.col("oracle_window_open_price")
+        )
+        .log()
+        .mul(10_000)
+        .alias("oracle_return_from_window_open_bps"),
+        (
+            (
+                pl.col("observed_at")
+                - pl.col("oracle_block_timestamp")
+            )
+            .dt.total_seconds()
+            .cast(pl.Float64)
+            / 300.0
+        ).alias("oracle_round_age_seconds_scaled"),
+        (
+            pl.col("oracle_round_changed")
+            .cast(pl.Int32)
+            .cum_sum()
+            .over("market_id")
+            .cast(pl.Float64)
+            / (pl.col("seconds_elapsed") + 1).cast(pl.Float64)
+        ).alias("oracle_update_count_since_open_scaled"),
+    )
+    for seconds in (30, 60):
+        frame = frame.with_columns(
+            pl.col("oracle_price")
+            .shift(seconds)
+            .over("market_id")
+            .alias(f"_oracle_price_lag_{seconds}s"),
+            pl.col("seconds_elapsed")
+            .shift(seconds)
+            .over("market_id")
+            .alias(f"_oracle_second_lag_{seconds}s"),
+        ).with_columns(
+            pl.when(
+                (
+                    pl.col("seconds_elapsed")
+                    - pl.col(f"_oracle_second_lag_{seconds}s")
+                )
+                == seconds
+            )
+            .then(
+                (
+                    pl.col("oracle_price")
+                    / pl.col(f"_oracle_price_lag_{seconds}s")
+                )
+                .log()
+                .mul(10_000)
+            )
+            .otherwise(None)
+            .alias(f"oracle_return_{seconds}s_bps")
+        )
+    frame = frame.with_columns(
+        pl.col("binance_oracle_basis_bps")
+        .shift(30)
+        .over("market_id")
+        .alias("_binance_oracle_basis_lag_30s"),
+        pl.col("seconds_elapsed")
+        .shift(30)
+        .over("market_id")
+        .alias("_basis_second_lag_30s"),
+    ).with_columns(
+        pl.when(
+            (
+                pl.col("seconds_elapsed")
+                - pl.col("_basis_second_lag_30s")
+            )
+            == 30
+        )
+        .then(
+            pl.col("binance_oracle_basis_bps")
+            - pl.col("_binance_oracle_basis_lag_30s")
+        )
+        .otherwise(None)
+        .alias("binance_oracle_basis_change_30s_bps"),
+        (
+            pl.col("oracle_return_30s_bps").sign()
+            * pl.col("btc_return_30s_bps").sign()
+        ).alias("oracle_binance_direction_agreement_30s"),
+        (
+            pl.col("oracle_gap_to_opening_boundary_bps").sign()
+            * pl.col("btc_path_from_window_open_bps").sign()
+        ).alias("oracle_boundary_binance_path_agreement"),
+        (
+            pl.col("oracle_return_60s_bps")
+            / (pl.col("btc_realized_volatility_60s_bps") + 1e-9)
+        ).alias("oracle_return_60s_binance_volatility_z"),
+    )
+    eligibility_terms = [
+        pl.col(feature).is_not_null() & pl.col(feature).is_finite()
+        for feature in CORE_ORACLE_FEATURES
+    ]
+    frame = frame.with_columns(
+        (
+            pl.col("oracle_price").is_not_null()
+            & (
+                pl.col("oracle_source_timestamp")
+                <= pl.col("oracle_block_timestamp")
+            )
+            & (
+                pl.col("oracle_block_timestamp")
+                <= pl.col("observed_at")
+            )
+            & pl.all_horizontal(eligibility_terms)
+        )
+        .fill_null(False)
+        .alias("oracle_model_eligible")
+    )
+    return frame.drop(
+        [
+            "_oracle_price_lag_30s",
+            "_oracle_price_lag_60s",
+            "_oracle_second_lag_30s",
+            "_oracle_second_lag_60s",
+            "_binance_oracle_basis_lag_30s",
+            "_basis_second_lag_30s",
+        ]
+    )
+
+
+def daily_market_counts(frame: pl.DataFrame) -> list[dict[str, Any]]:
+    if frame.is_empty():
+        return []
+    return (
+        frame.select("market_id", "window_start", "label_up")
+        .unique(subset=["market_id"])
+        .with_columns(
+            pl.col("window_start").dt.date().cast(pl.String).alias("date")
+        )
+        .group_by("date")
+        .agg(
+            pl.len().alias("markets"),
+            pl.col("label_up").sum().alias("up_markets"),
+        )
+        .with_columns(
+            (pl.col("markets") - pl.col("up_markets")).alias(
+                "down_markets"
+            )
+        )
+        .sort("date")
+        .to_dicts()
+    )
+
+
 def audit_final_prices(frame: pl.DataFrame) -> pl.DataFrame:
     return (
         frame.group_by("market_id")
@@ -975,6 +1453,7 @@ def feature_build_contract(
         "feature_schema_version": CORE_FEATURE_SCHEMA_VERSION,
         "feature_builder_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "source_manifest_sha256": file_sha256(source_manifest_path),
+        "source_contract": config.data.source_contract,
         "scope": scope,
         "range_start": range_start.isoformat(),
         "range_end": range_end.isoformat(),
@@ -1003,15 +1482,29 @@ def validate_core_feature_cache(
     return metadata
 
 
-def validate_feature_allowlists(frame: pl.DataFrame) -> None:
+def validate_feature_allowlists(
+    frame: pl.DataFrame,
+    *,
+    include_oracle: bool = False,
+) -> None:
     forbidden = {
         "label_up",
         "official_outcome",
         "final_price",
         "window_end",
         "opening_boundary",
+        "oracle_price",
+        "oracle_source_timestamp",
+        "oracle_block_timestamp",
+        "oracle_phase_id",
+        "oracle_round_id",
+        "oracle_block_number",
+        "oracle_log_index",
+        "oracle_model_eligible",
     }
-    for name, features in CORE_MODEL_FEATURES.items():
+    for name, features in model_feature_groups(
+        include_oracle=include_oracle
+    ).items():
         if forbidden.intersection(features):
             raise RuntimeError(f"{name} feature allowlist contains label/audit data")
         missing = [feature for feature in features if feature not in frame.columns]

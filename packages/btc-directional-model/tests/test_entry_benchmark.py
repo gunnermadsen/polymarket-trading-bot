@@ -24,6 +24,7 @@ from btc_directional_model.core_extract import file_sha256
 from btc_directional_model.core_training import develop_core_models
 from btc_directional_model.entry_benchmark import (
     EARLY_ENTRY_CORE_CANDIDATES,
+    _attach_execution_evidence,
     _chronological_market_halves,
     _chronological_threshold_frame,
     _load_prior_diagnostics,
@@ -198,6 +199,53 @@ def test_non_strict_runner_reuses_supported_v1_execution_cache(
     loaded = _reuse_or_extract_execution_evidence(config, force=False)
 
     assert loaded["source_contract"] == LEGACY_EXECUTION_EVIDENCE_CONTRACT
+
+
+def test_execution_attachment_preserves_both_vwaps_and_strict_size_routes() -> None:
+    observed = datetime(2026, 7, 16, 0, 2, tzinfo=UTC)
+    predictions = pl.DataFrame(
+        {
+            "market_id": ["covered", "uncovered"],
+            "observed_at": [observed, observed + timedelta(minutes=5)],
+        }
+    )
+    evidence = pl.DataFrame(
+        {
+            "market_id": ["covered"],
+            "observed_at": [observed],
+            "fee_rate": [0.20],
+            "up_ask_vwap_5": [0.45],
+            "down_ask_vwap_5": [0.57],
+            "up_ask_vwap_10": [0.46],
+            "down_ask_vwap_10": [0.58],
+            "up_side_fresh": [True],
+            "down_side_fresh": [True],
+            "strict_both_side_eligible": [True],
+            "strict_both_side_eligible_10": [True],
+        }
+    )
+
+    attached = _attach_execution_evidence(predictions, evidence).sort("market_id")
+
+    covered = attached.filter(pl.col("market_id") == "covered").row(
+        0,
+        named=True,
+    )
+    assert covered["up_ask_vwap_5"] == pytest.approx(0.45)
+    assert covered["down_ask_vwap_5"] == pytest.approx(0.57)
+    assert covered["up_ask_vwap_10"] == pytest.approx(0.46)
+    assert covered["down_ask_vwap_10"] == pytest.approx(0.58)
+    assert covered["strict_both_side_eligible"] is True
+    assert covered["strict_both_side_eligible_10"] is True
+    assert covered["execution_evidence_available"] is True
+
+    uncovered = attached.filter(pl.col("market_id") == "uncovered").row(
+        0,
+        named=True,
+    )
+    assert uncovered["strict_both_side_eligible"] is False
+    assert uncovered["strict_both_side_eligible_10"] is False
+    assert uncovered["execution_evidence_available"] is False
 
 
 def test_training_selection_enforces_five_folds_and_bootstrap() -> None:

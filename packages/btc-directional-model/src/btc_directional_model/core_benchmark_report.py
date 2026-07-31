@@ -10,7 +10,11 @@ try:
 except ImportError:  # pragma: no cover - Plotly is an optional report enhancement.
     go = None
 
-from .core_benchmark import BENCHMARK_SCHEMA_VERSION
+from .core_benchmark import (
+    BENCHMARK_SCHEMA_VERSION,
+    VWAP5_FIVE_SHARE_EXECUTION,
+    VWAP10_TEN_SHARE_EXECUTION,
+)
 
 
 def generate_benchmark_report(benchmark: dict[str, Any], destination: Path) -> Path:
@@ -34,7 +38,7 @@ def render_benchmark_report(benchmark: dict[str, Any]) -> str:
             _card("Evidence", evidence_status, _evidence_css(evidence)),
             _card("Control", control_name),
             _card("Eligible markets", f"{benchmark['eligible_markets']:,}"),
-            _card("Quantity", f"{benchmark['quantity']:.0f} shares"),
+            _card("Gate quantity", f"{benchmark['quantity']:.0f} shares"),
             _card(
                 "Benchmark pass",
                 str(len(benchmark["benchmark_passed_candidates"])),
@@ -112,11 +116,14 @@ code {{ color:var(--accent) }} details {{ margin-top:14px }} pre {{ white-space:
 </style></head><body><main>
 <h1>BTC five-minute real-model benchmark</h1>
 <div class="subtitle">{html.escape(evidence['label'])} · own confidence policies ·
-same-market, exact-timestamp checkpoint comparisons · fixed five-share economics</div>
+same-market, exact-timestamp checkpoint comparisons · separate VWAP5/five-share and
+VWAP10/ten-share economics</div>
 <div class="cards">{cards}</div>
 <section class="panel warning">{html.escape(warning)}</section>
 <section class="panel"><h2>Own-policy outcomes</h2><div class="table-wrap">
 {_candidate_table(benchmark, candidate_order)}</div></section>
+<section class="panel" style="margin-top:14px"><h2>Execution economics by size</h2>
+<div class="table-wrap">{_execution_size_table(benchmark, candidate_order)}</div></section>
 {_training_evidence_panel(benchmark)}
 {_strict_book_chronology_panel(benchmark)}
 {_book_residual_panel(benchmark)}
@@ -190,8 +197,9 @@ def _strict_book_chronology_panel(benchmark: dict[str, Any]) -> str:
         "<p>BTC-only and BTC-plus-book models use identical strict-valid rows. "
         "Book quality and provider age route rows but never predict direction. "
         "May–June selects the model policy; July 16–19 is a later, consumed "
-        "development challenge. Ten-share book validity is required while "
-        "economics remain fixed at five shares.</p>"
+        "development challenge. Ten-share book validity is required and "
+        "economics are reported separately at VWAP5/five shares and "
+        "VWAP10/ten shares.</p>"
         + _table(
             (
                 "Candidate",
@@ -599,6 +607,10 @@ def _data_evidence_panel(benchmark: dict[str, Any]) -> str:
             "Strict fresh two-sided rows",
             f"{execution['strict_both_side_eligible_rows']:,}",
         ),
+        (
+            "Strict ten-share two-sided rows",
+            f"{execution.get('strict_both_side_eligible_10_rows', 0):,}",
+        ),
         ("Fresh UP rows", f"{execution['up_side_fresh_rows']:,}"),
         ("Fresh DOWN rows", f"{execution['down_side_fresh_rows']:,}"),
         (
@@ -695,15 +707,15 @@ def _candidate_table(
         "ECE",
         "Median sec",
         "P90 sec",
-        "Evidence / selected",
-        "Executable / evidence",
-        "Executable / all selected",
-        "Median VWAP",
-        "Fee/share",
-        "Direct edge",
-        "Net expectancy",
-        "Loss streak",
-        "Drawdown",
+        "5sh evidence / selected",
+        "5sh executable / evidence",
+        "5sh executable / all selected",
+        "Median VWAP5",
+        "5sh fee/share",
+        "5sh direct edge",
+        "5sh net expectancy",
+        "5sh loss streak",
+        "5sh drawdown",
         "Gate",
     )
     rows = []
@@ -755,6 +767,79 @@ def _candidate_table(
             )
         )
     return _table(headings, rows)
+
+
+def _execution_size_table(
+    benchmark: dict[str, Any],
+    candidate_order: list[str],
+) -> str:
+    labels = {
+        VWAP5_FIVE_SHARE_EXECUTION: "VWAP5 · 5 shares",
+        VWAP10_TEN_SHARE_EXECUTION: "VWAP10 · 10 shares",
+    }
+    rows = []
+    for name in candidate_order:
+        metrics = benchmark["candidates"][name]["own_policy"]
+        by_size = metrics.get("execution_by_size")
+        if not isinstance(by_size, dict):
+            by_size = {VWAP5_FIVE_SHARE_EXECUTION: metrics["execution"]}
+        for contract in (
+            VWAP5_FIVE_SHARE_EXECUTION,
+            VWAP10_TEN_SHARE_EXECUTION,
+        ):
+            execution = by_size.get(contract)
+            if not isinstance(execution, dict):
+                continue
+            default_depth = (
+                5 if contract == VWAP5_FIVE_SHARE_EXECUTION else 10
+            )
+            depth = int(execution.get("vwap_depth", default_depth))
+            rows.append(
+                (
+                    name,
+                    labels[contract],
+                    _number(execution.get("quantity"), 0),
+                    _number(execution.get("economic_markets"), 0),
+                    _percent(execution.get("execution_evidence_coverage")),
+                    _percent(execution.get("executable_coverage_within_evidence")),
+                    _percent(execution.get("executable_coverage_all_selected")),
+                    _currency(
+                        execution.get(f"median_selected_ask_vwap_{depth}"),
+                        4,
+                    ),
+                    _currency(execution.get("mean_fee_per_share"), 5),
+                    _signed_currency(
+                        execution.get("mean_direct_edge_per_share"),
+                        5,
+                    ),
+                    _signed_currency(
+                        execution.get("realized_net_expectancy_per_trade"),
+                        4,
+                    ),
+                    _signed_currency(execution.get("realized_net_pnl_total"), 4),
+                    _number(execution.get("maximum_net_loss_streak"), 0),
+                    _currency(execution.get("maximum_drawdown"), 4),
+                )
+            )
+    return _table(
+        (
+            "Candidate",
+            "Execution contract",
+            "Shares",
+            "Economic markets",
+            "Evidence / selected",
+            "Executable / evidence",
+            "Executable / all selected",
+            "Median VWAP",
+            "Fee/share",
+            "Direct edge/share",
+            "Net/trade",
+            "Total net PnL",
+            "Loss streak",
+            "Drawdown",
+        ),
+        rows,
+    )
 
 
 def _advance_tables(
@@ -892,28 +977,23 @@ def _benchmark_figures(benchmark: dict[str, Any]) -> list[Any]:
     _style(timing, "First accepted prediction timing", "Seconds elapsed")
 
     economics = go.Figure()
-    economics.add_bar(
-        name="Net expectancy / executable trade",
-        x=names,
-        y=[
-            candidates[name]["own_policy"]["execution"][
-                "realized_net_expectancy_per_trade"
-            ]
-            for name in names
-        ],
-    )
-    economics.add_bar(
-        name="Mean direct edge / share",
-        x=names,
-        y=[
-            candidates[name]["own_policy"]["execution"][
-                "mean_direct_edge_per_share"
-            ]
-            for name in names
-        ],
-    )
+    for contract, label in (
+        (VWAP5_FIVE_SHARE_EXECUTION, "VWAP5 · 5-share net/trade"),
+        (VWAP10_TEN_SHARE_EXECUTION, "VWAP10 · 10-share net/trade"),
+    ):
+        economics.add_bar(
+            name=label,
+            x=names,
+            y=[
+                _execution_for_size(
+                    candidates[name]["own_policy"],
+                    contract,
+                ).get("realized_net_expectancy_per_trade")
+                for name in names
+            ],
+        )
     economics.add_hline(y=0, line_color="#9ca9c7")
-    _style(economics, "Five-share execution economics", "USD")
+    _style(economics, "Execution economics by VWAP depth and size", "USD")
 
     checkpoints = go.Figure()
     for name in sorted(benchmark["common_comparisons"]):
@@ -931,6 +1011,22 @@ def _benchmark_figures(benchmark: dict[str, Any]) -> list[Any]:
         "Candidate minus control",
     )
     return [accuracy, timing, economics, checkpoints]
+
+
+def _execution_for_size(
+    metrics: dict[str, Any],
+    contract: str,
+) -> dict[str, Any]:
+    by_size = metrics.get("execution_by_size")
+    if isinstance(by_size, dict):
+        execution = by_size.get(contract)
+        if isinstance(execution, dict):
+            return execution
+    if contract == VWAP5_FIVE_SHARE_EXECUTION:
+        execution = metrics.get("execution")
+        if isinstance(execution, dict):
+            return execution
+    return {}
 
 
 def _style(figure: Any, title: str, y_title: str) -> None:

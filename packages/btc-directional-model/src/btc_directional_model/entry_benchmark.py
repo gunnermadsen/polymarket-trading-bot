@@ -1226,8 +1226,25 @@ def _attach_execution_evidence(
         "fee_rate",
         "up_ask_vwap_5",
         "down_ask_vwap_5",
+        (
+            pl.col("up_ask_vwap_10")
+            if "up_ask_vwap_10" in evidence.columns
+            else pl.lit(None, dtype=pl.Float64).alias("up_ask_vwap_10")
+        ),
+        (
+            pl.col("down_ask_vwap_10")
+            if "down_ask_vwap_10" in evidence.columns
+            else pl.lit(None, dtype=pl.Float64).alias("down_ask_vwap_10")
+        ),
         pl.col("up_side_fresh").alias("up_executable"),
         pl.col("down_side_fresh").alias("down_executable"),
+        "strict_both_side_eligible",
+        (
+            pl.col("strict_both_side_eligible_10")
+            if "strict_both_side_eligible_10" in evidence.columns
+            else pl.lit(False).alias("strict_both_side_eligible_10")
+        ),
+        pl.lit(True).alias("execution_evidence_available"),
     )
     return predictions.join(
         economics,
@@ -1237,6 +1254,9 @@ def _attach_execution_evidence(
     ).with_columns(
         pl.col("up_executable").fill_null(False),
         pl.col("down_executable").fill_null(False),
+        pl.col("strict_both_side_eligible").fill_null(False),
+        pl.col("strict_both_side_eligible_10").fill_null(False),
+        pl.col("execution_evidence_available").fill_null(False),
     )
 
 
