@@ -20,7 +20,7 @@ use crate::{
     execution::{
         LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics, LiveOrderDryRunRequest,
         LivePoly1271FunderProbeRequest, LivePoly1271FunderProbeResponse, LiveVenueStatus,
-        LiveWalletAddressDiagnostics,
+        LiveWalletAddressDiagnostics, ReconciliationReport,
     },
     ingestion::job::{
         BackfillJob as IngestionBackfillJob, BackfillJobEvent as IngestionBackfillJobEvent,
@@ -165,6 +165,25 @@ pub trait ControlApi: Send + Sync + 'static {
 
     async fn live_set_entries_enabled(&self, enabled: bool) -> Result<LiveVenueStatus, HttpError>;
 
+    async fn trading_process_live_preflight(
+        &self,
+        _process_id: Uuid,
+    ) -> Result<TradingProcessLivePreflightResponse, HttpError> {
+        Err(HttpError::not_implemented(
+            "process-scoped live preflight is not wired",
+        ))
+    }
+
+    async fn set_trading_process_live_entries_enabled(
+        &self,
+        _process_id: Uuid,
+        _enabled: bool,
+    ) -> Result<LiveVenueStatus, HttpError> {
+        Err(HttpError::not_implemented(
+            "process-scoped live entry control is not wired",
+        ))
+    }
+
     async fn list_trading_processes(
         &self,
         _request: ListTradingProcessesRequest,
@@ -301,6 +320,18 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .route(
             "/trading-processes/:process_id/start-preview",
             get(preview_trading_process_start),
+        )
+        .route(
+            "/trading-processes/:process_id/live-preflight",
+            post(trading_process_live_preflight),
+        )
+        .route(
+            "/trading-processes/:process_id/live/entries/enable",
+            post(trading_process_live_entries_enable),
+        )
+        .route(
+            "/trading-processes/:process_id/live/entries/disable",
+            post(trading_process_live_entries_disable),
         )
         .route(
             "/trading-processes/:process_id",
@@ -490,6 +521,39 @@ async fn live_entries_disable(
     state
         .control
         .live_set_entries_enabled(false)
+        .await
+        .map(Json)
+}
+
+async fn trading_process_live_preflight(
+    State(state): State<HttpState>,
+    Path(process_id): Path<Uuid>,
+) -> Result<Json<TradingProcessLivePreflightResponse>, HttpError> {
+    state
+        .control
+        .trading_process_live_preflight(process_id)
+        .await
+        .map(Json)
+}
+
+async fn trading_process_live_entries_enable(
+    State(state): State<HttpState>,
+    Path(process_id): Path<Uuid>,
+) -> Result<Json<LiveVenueStatus>, HttpError> {
+    state
+        .control
+        .set_trading_process_live_entries_enabled(process_id, true)
+        .await
+        .map(Json)
+}
+
+async fn trading_process_live_entries_disable(
+    State(state): State<HttpState>,
+    Path(process_id): Path<Uuid>,
+) -> Result<Json<LiveVenueStatus>, HttpError> {
+    state
+        .control
+        .set_trading_process_live_entries_enabled(process_id, false)
         .await
         .map(Json)
 }
@@ -790,6 +854,22 @@ pub struct TradingProcessStartPreviewResponse {
     pub preregistration_sha256: String,
     pub config_hash: String,
     pub frozen_process_config: TradingProcessConfig,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TradingProcessLivePreflightResponse {
+    pub process_id: Uuid,
+    pub account_ref: String,
+    pub credential_connectivity_ready: bool,
+    pub reconciliation_ready: bool,
+    pub trading_disabled: bool,
+    pub ready: bool,
+    pub reasons: Vec<String>,
+    pub identity: LiveIdentityDiagnostics,
+    pub status: LiveVenueStatus,
+    pub reconciliation: Option<ReconciliationReport>,
+    pub reconciliation_error: Option<String>,
+    pub checked_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,4 +1,9 @@
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
@@ -14,10 +19,12 @@ use polymarket_client_sdk_v2::{
             },
             response::{OpenOrderResponse, PostOrderResponse, TradeResponse},
             AssetType, OrderStatusType, OrderType as SdkOrderType, Side as SdkSide, SignatureType,
+            TradeStatusType,
         },
         Client as SdkClient, Config as SdkConfig,
     },
     derive_proxy_wallet, derive_safe_wallet,
+    error::{Kind as SdkErrorKind, Status as SdkStatus},
     types::{Address, Decimal as SdkDecimal, U256},
     POLYGON,
 };
@@ -37,12 +44,14 @@ use crate::{
     config::LiveExecutionConfig,
     data_api::DataApiClient,
     execution::{
-        ExecutionVenue, LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics,
-        LiveOrderDryRunRequest, LivePoly1271FunderProbeCandidate, LivePoly1271FunderProbeRequest,
-        LivePoly1271FunderProbeResponse, LiveVenueStatus, LiveWalletAddressDiagnostics,
-        LiveWalletCandidateAddressDiagnostics, LiveWalletTokenBalances, ReconciliationReport,
+        live_execution_gate_closed_order, ExecutionVenue, LiveExecutionGateReason,
+        LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics, LiveOrderDryRunRequest,
+        LivePoly1271FunderProbeCandidate, LivePoly1271FunderProbeRequest,
+        LivePoly1271FunderProbeResponse, LivePrePostGuard, LiveVenueStatus,
+        LiveWalletAddressDiagnostics, LiveWalletCandidateAddressDiagnostics,
+        LiveWalletTokenBalances, ReconciliationReport,
     },
-    idempotency::{event_hash, order_request_notional_key},
+    idempotency::event_hash,
     models::{FillRecord, OrderRecord, OrderRequest},
     models::{FillSource, OrderSide, OrderState, OrderType},
     store::Store,
@@ -55,6 +64,15 @@ const DEFAULT_RELAYER_BASE_URL: &str = "https://relayer-v2.polymarket.com";
 const PUSD_ADDRESS: &str = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
 const USDC_E_ADDRESS: &str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
 const NATIVE_USDC_ADDRESS: &str = "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359";
+const MAX_PROCESS_NONTERMINAL_ORDERS: usize = 256;
+const CLOB_TERMINAL_CURSOR: &str = "LTE=";
+const MAX_CLOB_RECONCILIATION_PAGES: usize = 32;
+const MAX_CLOB_RECONCILIATION_ROWS: usize = 4_096;
+const MAX_CLOB_RECONCILIATION_ORDER_IDS: usize = 8_192;
+const MAX_CLOB_CURSOR_BYTES: usize = 256;
+const CLOB_ORDER_ID_QUERY_CHUNK: usize = 500;
+const FOK_FILL_RECONCILIATION_SKEW: chrono::Duration = chrono::Duration::hours(1);
+const USER_WS_MAX_TRANSPORT_OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Deserialize)]
 struct RpcResponse {
@@ -68,19 +86,93 @@ pub struct LiveVenue {
     clob_base_url: String,
     store: Option<Store>,
     data_api: Option<DataApiClient>,
-    state: Arc<Mutex<LiveVenueState>>,
+    bound_process_id: Option<Uuid>,
+    bound_account_ref: Option<String>,
+    transport_state: Arc<Mutex<LiveTransportState>>,
+    readiness_state: Arc<Mutex<LiveVenueState>>,
+    global_entry_gate: Arc<Mutex<GlobalLiveEntryGate>>,
+    submit_guard: Arc<Mutex<()>>,
+}
+
+#[derive(Debug, Clone)]
+struct LiveTransportState {
+    live_confirmed: bool,
+    geoblock_readable: bool,
+    geoblock_blocked: Option<bool>,
+    geoblock_country: Option<String>,
+    geoblock_region: Option<String>,
+    geoblock_checked_at: Option<DateTime<Utc>>,
+    user_ws_connected: bool,
+    last_user_ws_pong_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone)]
 struct LiveVenueState {
-    live_confirmed: bool,
-    user_ws_connected: bool,
-    last_user_ws_pong_at: Option<DateTime<Utc>>,
     last_rest_reconcile_at: Option<DateTime<Utc>>,
     idempotency_clean: bool,
     unresolved_live_order_count: usize,
     manual_entries_enabled: bool,
     manual_entries_reason: Option<String>,
+    process_accounting_proven: bool,
+    process_accounting_status: String,
+    credential_account_fingerprint_sha256: Option<String>,
+    reconciled_safety_generation: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct CanonicalLiveAccountIdentity {
+    account_address: String,
+    signer_address: String,
+    signature_type: SignatureType,
+    fingerprint_sha256: String,
+}
+
+#[derive(Debug, Clone)]
+struct GlobalLiveEntryGate {
+    halted: bool,
+    reason: String,
+    safety_generation: u64,
+}
+
+impl LiveTransportState {
+    fn initial() -> Self {
+        Self {
+            live_confirmed: false,
+            geoblock_readable: false,
+            geoblock_blocked: None,
+            geoblock_country: None,
+            geoblock_region: None,
+            geoblock_checked_at: None,
+            user_ws_connected: false,
+            last_user_ws_pong_at: None,
+        }
+    }
+}
+
+impl LiveVenueState {
+    fn fail_closed() -> Self {
+        Self {
+            last_rest_reconcile_at: None,
+            idempotency_clean: false,
+            unresolved_live_order_count: 0,
+            manual_entries_enabled: false,
+            manual_entries_reason: Some("manual_enable_required".to_string()),
+            process_accounting_proven: false,
+            process_accounting_status: "unproven".to_string(),
+            credential_account_fingerprint_sha256: None,
+            reconciled_safety_generation: None,
+        }
+    }
+}
+
+impl GlobalLiveEntryGate {
+    fn fail_closed() -> Self {
+        Self {
+            halted: true,
+            reason: "global_enable_required".to_string(),
+            safety_generation: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -121,16 +213,12 @@ impl LiveVenue {
             clob_base_url,
             store: Some(store),
             data_api: Some(data_api),
-            state: Arc::new(Mutex::new(LiveVenueState {
-                live_confirmed: true,
-                user_ws_connected: false,
-                last_user_ws_pong_at: None,
-                last_rest_reconcile_at: None,
-                idempotency_clean: true,
-                unresolved_live_order_count: 0,
-                manual_entries_enabled: false,
-                manual_entries_reason: Some("manual_enable_required".to_string()),
-            })),
+            bound_process_id: None,
+            bound_account_ref: None,
+            transport_state: Arc::new(Mutex::new(LiveTransportState::initial())),
+            readiness_state: Arc::new(Mutex::new(LiveVenueState::fail_closed())),
+            global_entry_gate: Arc::new(Mutex::new(GlobalLiveEntryGate::fail_closed())),
+            submit_guard: Arc::new(Mutex::new(())),
         };
         venue.spawn_user_ws_task_if_enabled();
         Ok(venue)
@@ -144,17 +232,55 @@ impl LiveVenue {
             clob_base_url: "https://clob-v2.polymarket.com".to_string(),
             store: None,
             data_api: None,
-            state: Arc::new(Mutex::new(LiveVenueState {
-                live_confirmed: true,
-                user_ws_connected: false,
-                last_user_ws_pong_at: None,
-                last_rest_reconcile_at: None,
-                idempotency_clean: true,
-                unresolved_live_order_count: 0,
-                manual_entries_enabled: false,
-                manual_entries_reason: Some("manual_enable_required".to_string()),
-            })),
+            bound_process_id: None,
+            bound_account_ref: None,
+            transport_state: Arc::new(Mutex::new(LiveTransportState::initial())),
+            readiness_state: Arc::new(Mutex::new(LiveVenueState::fail_closed())),
+            global_entry_gate: Arc::new(Mutex::new(GlobalLiveEntryGate::fail_closed())),
+            submit_guard: Arc::new(Mutex::new(())),
         })
+    }
+
+    /// Produces the process-owned execution adapter used by a managed trading process. Transport
+    /// health and the authenticated account connection are shared, while readiness, reconciliation
+    /// and the manual entry gate remain isolated to the process.
+    pub fn bind_process(&self, process_id: Uuid, account_ref: &str) -> Result<Self> {
+        if process_id.is_nil() {
+            bail!("live execution process_id must not be nil");
+        }
+        let account_ref = account_ref.trim();
+        if account_ref.is_empty() {
+            bail!("live execution account_ref must not be blank");
+        }
+        if account_ref.len() > 128 {
+            bail!("live execution account_ref must not exceed 128 bytes");
+        }
+        if account_ref != self.config.account_ref {
+            bail!(
+                "live execution account_ref must match configured credential account_ref {}",
+                self.config.account_ref
+            );
+        }
+        Ok(Self {
+            config: self.config.clone(),
+            clob_base_url: self.clob_base_url.clone(),
+            store: self.store.clone(),
+            data_api: self.data_api.clone(),
+            bound_process_id: Some(process_id),
+            bound_account_ref: Some(account_ref.to_string()),
+            transport_state: self.transport_state.clone(),
+            readiness_state: Arc::new(Mutex::new(LiveVenueState::fail_closed())),
+            global_entry_gate: self.global_entry_gate.clone(),
+            submit_guard: self.submit_guard.clone(),
+        })
+    }
+
+    pub fn bound_process_id(&self) -> Option<Uuid> {
+        self.bound_process_id
+    }
+
+    pub fn bound_account_ref(&self) -> Option<&str> {
+        self.bound_account_ref.as_deref()
     }
 
     pub fn parse_user_event(raw_payload: serde_json::Value) -> LiveVenueEvent {
@@ -201,20 +327,17 @@ impl LiveVenue {
         };
 
         store.insert_fill(&fill).await?;
-        let order_state = if fill.size >= order.request.size {
-            OrderState::Filled
-        } else {
-            OrderState::PartiallyFilled
-        };
+        let cumulative_filled_size = store.order_filled_size(&order.order_id).await?;
         store
-            .mark_order_filled(
+            .mark_order_fill_progress(
                 &order.order_id,
-                order_state,
+                cumulative_filled_size,
                 json!({
                     "source": "user_ws",
                     "event_type": event.event_type,
                     "venue_event_id": event.venue_event_id,
                     "venue_trade_id": event.venue_trade_id,
+                    "cumulative_filled_size": cumulative_filled_size,
                     "raw_payload": event.raw_payload,
                 }),
             )
@@ -226,7 +349,8 @@ impl LiveVenue {
         store: &Store,
         event: &LiveVenueEvent,
     ) -> Result<bool> {
-        if event.event_type != "order" || !is_cancelled_order_status(event.event_status.as_deref())
+        if !matches!(event.event_type.as_str(), "order" | "cancellation")
+            || !is_cancelled_order_status(event.event_status.as_deref())
         {
             return Ok(false);
         }
@@ -257,7 +381,7 @@ impl LiveVenue {
         for event in store.recent_live_trade_events(500).await? {
             if LiveVenue::persist_fill_from_live_event(&store, &event).await? {
                 processed += 1;
-            } else if let Some(account_address) = configured_account_address(&self.config) {
+            } else if let Some(account_address) = configured_account_address(&self.config)? {
                 if let Some(account_trade) = account_trade_from_live_event(&account_address, &event)
                 {
                     store.upsert_account_trade(&account_trade).await?;
@@ -279,15 +403,26 @@ impl LiveVenue {
             return;
         };
         let data_api = self.data_api.clone();
-        let state = self.state.clone();
+        let transport_state = self.transport_state.clone();
+        let global_entry_gate = self.global_entry_gate.clone();
         tokio::spawn(async move {
             loop {
-                if let Err(error) =
-                    run_user_ws_once(&config, &store, data_api.as_ref(), &state).await
+                let result = run_user_ws_once(
+                    &config,
+                    &store,
+                    data_api.as_ref(),
+                    &transport_state,
+                    &global_entry_gate,
+                )
+                .await;
                 {
-                    warn!(error = %error, "Polymarket live user websocket disconnected");
-                    let mut state = state.lock().await;
+                    let mut state = transport_state.lock().await;
                     state.user_ws_connected = false;
+                    state.last_user_ws_pong_at = None;
+                }
+                halt_shared_global_gate(&global_entry_gate, "user_ws_transport_error").await;
+                if let Err(error) = result {
+                    warn!(error = %error, "Polymarket live user websocket disconnected");
                 }
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
@@ -349,29 +484,275 @@ impl LiveVenue {
         Ok(client)
     }
 
-    async fn authenticated_account_address(&self) -> Result<String> {
-        Ok(self
+    async fn refresh_geoblock(&self) -> Result<()> {
+        #[cfg(test)]
+        {
+            // Unit tests explicitly seed bounded geoblock evidence when exercising checked
+            // enable semantics. Production builds always perform the SDK read below.
+            if self
+                .transport_state
+                .lock()
+                .await
+                .geoblock_checked_at
+                .is_some()
+            {
+                return Ok(());
+            }
+        }
+        let result = async {
+            let client = SdkClient::new(&self.clob_base_url, SdkConfig::default())
+                .context("failed to create Polymarket geoblock client")?;
+            client
+                .check_geoblock()
+                .await
+                .context("failed to read Polymarket geoblock status")
+        }
+        .await;
+        let checked_at = Utc::now();
+        match result {
+            Ok(response) => {
+                self.record_geoblock_state(
+                    true,
+                    Some(response.blocked),
+                    bounded_geoblock_component(&response.country),
+                    bounded_geoblock_component(&response.region),
+                    checked_at,
+                )
+                .await;
+                Ok(())
+            }
+            Err(error) => {
+                self.record_geoblock_state(false, None, None, None, checked_at)
+                    .await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn record_geoblock_state(
+        &self,
+        readable: bool,
+        blocked: Option<bool>,
+        country: Option<String>,
+        region: Option<String>,
+        checked_at: DateTime<Utc>,
+    ) {
+        {
+            let mut state = self.transport_state.lock().await;
+            state.geoblock_readable = readable;
+            state.geoblock_blocked = blocked;
+            state.geoblock_country = country;
+            state.geoblock_region = region;
+            state.geoblock_checked_at = Some(checked_at);
+            state.live_confirmed = readable && blocked == Some(false);
+        }
+        if !readable {
+            self.halt_global_entries("live_geoblock_unreadable").await;
+        } else if blocked != Some(false) {
+            self.halt_global_entries("live_geoblock_blocked").await;
+        }
+    }
+
+    async fn halt_global_entries(&self, reason: &str) -> u64 {
+        let mut gate = self.global_entry_gate.lock().await;
+        record_global_entry_halt(&mut gate, reason)
+    }
+
+    async fn all_open_order_responses(
+        &self,
+        client: &AuthenticatedClient,
+    ) -> Result<Vec<OpenOrderResponse>> {
+        let request = OrdersRequest::builder().build();
+        let mut cursor = None;
+        let mut seen_cursors = HashSet::new();
+        let mut orders = Vec::new();
+        for _ in 0..MAX_CLOB_RECONCILIATION_PAGES {
+            let page = client
+                .orders(&request, cursor.clone())
+                .await
+                .context("Polymarket CLOB open orders fetch failed")?;
+            validate_clob_page_metadata("open orders", page.data.len(), page.count, page.limit)?;
+            checked_clob_row_count(orders.len(), page.data.len(), "open orders")?;
+            orders.extend(page.data);
+            let Some(next_cursor) = next_clob_reconciliation_cursor(
+                &page.next_cursor,
+                &mut seen_cursors,
+                "open orders",
+            )?
+            else {
+                return Ok(orders);
+            };
+            cursor = Some(next_cursor);
+        }
+        bail!(
+            "Polymarket CLOB open orders exceed the bounded {}-page reconciliation window",
+            MAX_CLOB_RECONCILIATION_PAGES
+        )
+    }
+
+    async fn all_trade_responses(
+        &self,
+        client: &AuthenticatedClient,
+        request: &TradesRequest,
+    ) -> Result<Vec<TradeResponse>> {
+        let mut cursor = None;
+        let mut seen_cursors = HashSet::new();
+        let mut trades = Vec::new();
+        for _ in 0..MAX_CLOB_RECONCILIATION_PAGES {
+            let page = client
+                .trades(request, cursor.clone())
+                .await
+                .context("Polymarket CLOB trades fetch failed")?;
+            validate_clob_page_metadata("trades", page.data.len(), page.count, page.limit)?;
+            checked_clob_row_count(trades.len(), page.data.len(), "trades")?;
+            trades.extend(page.data);
+            let Some(next_cursor) =
+                next_clob_reconciliation_cursor(&page.next_cursor, &mut seen_cursors, "trades")?
+            else {
+                return Ok(trades);
+            };
+            cursor = Some(next_cursor);
+        }
+        bail!(
+            "Polymarket CLOB trades exceed the bounded {}-page reconciliation window",
+            MAX_CLOB_RECONCILIATION_PAGES
+        )
+    }
+
+    async fn bound_process_venue_order_ids<'a>(
+        &self,
+        store: &Store,
+        process_id: Uuid,
+        venue_order_ids: impl IntoIterator<Item = &'a str>,
+    ) -> Result<HashMap<String, String>> {
+        let mut unique_ids = Vec::new();
+        let mut seen_ids = HashSet::new();
+        for order_id in venue_order_ids {
+            let order_id = order_id.trim();
+            if order_id.is_empty() || order_id.len() > 256 {
+                bail!("Polymarket CLOB reconciliation returned an invalid order identity");
+            }
+            if seen_ids.insert(order_id.to_string()) {
+                unique_ids.push(order_id.to_string());
+                if unique_ids.len() > MAX_CLOB_RECONCILIATION_ORDER_IDS {
+                    bail!(
+                        "Polymarket CLOB reconciliation exceeds the bounded {}-order identity window",
+                        MAX_CLOB_RECONCILIATION_ORDER_IDS
+                    );
+                }
+            }
+        }
+
+        let mut owned_orders = HashMap::new();
+        for chunk in unique_ids.chunks(CLOB_ORDER_ID_QUERY_CHUNK) {
+            for (venue_order_id, local_order_id) in store
+                .process_order_ids_by_venue_order_ids(process_id, chunk)
+                .await?
+            {
+                if owned_orders
+                    .insert(venue_order_id.clone(), local_order_id.clone())
+                    .is_some_and(|existing| existing != local_order_id)
+                {
+                    bail!(
+                        "Polymarket CLOB venue order {} maps to conflicting local order identities",
+                        venue_order_id
+                    );
+                }
+            }
+        }
+        Ok(owned_orders)
+    }
+
+    async fn canonical_live_account_identity(&self) -> Result<CanonicalLiveAccountIdentity> {
+        let identity = canonical_configured_account_identity(&self.config)?;
+        let authenticated_address = self
             .authenticated_client()
             .await?
             .address()
             .to_checksum(None)
-            .to_ascii_lowercase())
+            .to_ascii_lowercase();
+        if authenticated_address != identity.signer_address {
+            bail!("authenticated CLOB address does not match configured live signer identity");
+        }
+        Ok(identity)
     }
 
     async fn run_account_reconcile(
         &self,
         mut request: AccountReconcileRequest,
     ) -> Result<AccountReconcileReport> {
+        let mut canonical_identity = None;
+        if let Some(process_id) = self.bound_process_id {
+            let account_ref = self
+                .bound_account_ref
+                .as_deref()
+                .context("process-bound live venue is missing account_ref")?;
+            if request
+                .process_id
+                .is_some_and(|requested| requested != process_id)
+            {
+                bail!(
+                    "account reconciliation process_id must match bound process {}",
+                    process_id
+                );
+            }
+            if request
+                .account_ref
+                .as_deref()
+                .is_some_and(|requested| requested.trim() != account_ref)
+            {
+                bail!(
+                    "account reconciliation account_ref must match bound account_ref {}",
+                    account_ref
+                );
+            }
+            request.process_id = Some(process_id);
+            request.account_ref = Some(account_ref.to_string());
+            let identity = self.canonical_live_account_identity().await?;
+            if request
+                .account_address
+                .as_deref()
+                .is_some_and(|requested| !requested.eq_ignore_ascii_case(&identity.account_address))
+            {
+                bail!("account reconciliation address does not match canonical bound identity");
+            }
+            if request
+                .credential_account_fingerprint_sha256
+                .as_deref()
+                .is_some_and(|requested| requested != identity.fingerprint_sha256)
+            {
+                bail!(
+                    "account reconciliation credential/account fingerprint does not match bound identity"
+                );
+            }
+            request.account_address = Some(identity.account_address.clone());
+            request.credential_account_fingerprint_sha256 =
+                Some(identity.fingerprint_sha256.clone());
+            canonical_identity = Some(identity);
+        } else if request.process_id.is_some()
+            || request.account_ref.is_some()
+            || request.credential_account_fingerprint_sha256.is_some()
+        {
+            bail!(
+                "wallet-wide live account reconciliation rejects caller-supplied process scope; bind the venue to reconcile a process"
+            );
+        }
         let store = self.store()?;
         let data_api = self
             .data_api
             .as_ref()
             .context("Polymarket Data API client is not configured")?;
         if request.account_address.is_none() {
-            request.account_address = configured_account_address(&self.config);
+            request.account_address = configured_account_address(&self.config)?;
         }
         if request.account_address.is_none() {
-            request.account_address = Some(self.authenticated_account_address().await?);
+            request.account_address = Some(
+                canonical_identity
+                    .as_ref()
+                    .context("live account reconciliation has no canonical account identity")?
+                    .account_address
+                    .clone(),
+            );
         }
         reconcile_account_positions(&store, data_api, request).await
     }
@@ -632,17 +1013,148 @@ impl LiveVenue {
             .context("live persistence store is not configured")
     }
 
-    fn live_submit_unavailable(&self, request: &OrderRequest) -> anyhow::Error {
-        anyhow::anyhow!(
-            "live order submit is disabled or not ready; client_order_id={} notional={} purpose={}",
-            request.client_order_id,
-            order_request_notional_key(request),
-            request
-                .metadata
-                .get("purpose")
-                .and_then(|value| value.as_str())
-                .unwrap_or("unknown")
+    fn require_bound_process_id(&self) -> Result<Uuid> {
+        self.bound_process_id.context(
+            "live order execution requires a process-bound venue; call LiveVenue::bind_process",
         )
+    }
+
+    fn validate_request_process(&self, request: &OrderRequest) -> Result<Uuid> {
+        let process_id = self.require_bound_process_id()?;
+        if request.process_id != Some(process_id) {
+            bail!(
+                "live order process_id must match bound process {}; received {:?}",
+                process_id,
+                request.process_id
+            );
+        }
+        Ok(process_id)
+    }
+
+    async fn bounded_nonterminal_orders(&self, process_id: Uuid) -> Result<Vec<OrderRecord>> {
+        let store = self.store()?;
+        let orders = store
+            .live_process_nonterminal_orders(
+                process_id,
+                (MAX_PROCESS_NONTERMINAL_ORDERS + 1) as i64,
+            )
+            .await?;
+        if orders.len() > MAX_PROCESS_NONTERMINAL_ORDERS {
+            bail!(
+                "live process {} exceeds the bounded {}-order reconciliation window",
+                process_id,
+                MAX_PROCESS_NONTERMINAL_ORDERS
+            );
+        }
+        Ok(orders)
+    }
+
+    async fn enforce_submission_risk(
+        &self,
+        process_id: Uuid,
+        request: &OrderRequest,
+        ignored_client_order_id: Option<Uuid>,
+    ) -> Result<Option<LiveExecutionGateReason>> {
+        let identity = canonical_configured_account_identity(&self.config)?;
+        let (process_accounting_proven, reconciled_fingerprint) = {
+            let state = self.readiness_state.lock().await;
+            (
+                state.process_accounting_proven,
+                state.credential_account_fingerprint_sha256.clone(),
+            )
+        };
+        if !process_accounting_proven {
+            return Ok(Some(LiveExecutionGateReason::ProcessAccountingReadiness));
+        }
+        if reconciled_fingerprint.as_deref() != Some(identity.fingerprint_sha256.as_str()) {
+            bail!("live process reconciliation identity does not match configured credentials");
+        }
+
+        let store = self.store()?;
+        let exposure = store
+            .conservative_live_process_exposure(process_id, ignored_client_order_id)
+            .await?;
+        if exposure.has_unredeemed_settlement {
+            return Ok(Some(LiveExecutionGateReason::SettlementRedemptionUnproven));
+        }
+        let requested_exposure = Store::conservative_live_request_exposure(request)?;
+        let resulting_exposure = exposure
+            .total_exposure_usd
+            .checked_add(requested_exposure.total_exposure_usd)
+            .context("live requested capital exposure overflow")?;
+        if let Some(reason) = live_capital_exposure_gate(
+            resulting_exposure,
+            self.config.max_daily_loss_usd,
+            self.config.max_open_notional_usd,
+        ) {
+            return Ok(Some(reason));
+        }
+
+        let now = Utc::now();
+        let day_start = now
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight is a valid UTC time")
+            .and_utc();
+        let day_end = day_start + chrono::Duration::days(1);
+        let recognized_net_pnl = store
+            .recognized_live_process_net_pnl_for_utc_day(process_id, day_start, day_end, now)
+            .await?;
+        if recognized_net_pnl <= -self.config.max_daily_loss_usd {
+            return Ok(Some(LiveExecutionGateReason::DailyLossLimit));
+        }
+
+        let mut markets = exposure
+            .exposed_market_ids
+            .into_iter()
+            .collect::<HashSet<_>>();
+        markets.insert(request.market_id.clone());
+        if markets.len() > self.config.max_open_positions {
+            return Ok(Some(LiveExecutionGateReason::OpenPositionLimit));
+        }
+        Ok(None)
+    }
+
+    async fn current_entry_gate_reason(&self) -> Result<Option<LiveExecutionGateReason>> {
+        if !self.config.order_submit_enabled {
+            return Ok(Some(LiveExecutionGateReason::OrderSubmissionDisabled));
+        }
+        if !self.config.submit_auth_available() {
+            bail!("live submit auth is incomplete");
+        }
+        if self.live_status().await?.entries_enabled {
+            return Ok(None);
+        }
+        if self.global_entry_gate.lock().await.halted {
+            return Ok(Some(LiveExecutionGateReason::GlobalHalt));
+        }
+        let state = self.readiness_state.lock().await;
+        if !state.manual_entries_enabled {
+            return Ok(Some(LiveExecutionGateReason::ManualEnableRequired));
+        }
+        if !state.process_accounting_proven {
+            return Ok(Some(LiveExecutionGateReason::ProcessAccountingReadiness));
+        }
+        Ok(Some(LiveExecutionGateReason::VenueReadiness))
+    }
+
+    async fn final_submission_gate_reason(
+        &self,
+        process_id: Uuid,
+        request: &OrderRequest,
+    ) -> Result<Option<LiveExecutionGateReason>> {
+        if self.global_entry_gate.lock().await.halted {
+            return Ok(Some(LiveExecutionGateReason::GlobalHalt));
+        }
+        if let Some(reason) = self.current_entry_gate_reason().await? {
+            return Ok(Some(reason));
+        }
+        self.enforce_submission_risk(process_id, request, Some(request.client_order_id))
+            .await
+    }
+
+    async fn mark_idempotency_dirty(&self) {
+        self.readiness_state.lock().await.idempotency_clean = false;
     }
 }
 
@@ -650,49 +1162,78 @@ async fn run_user_ws_once(
     config: &LiveExecutionConfig,
     store: &Store,
     data_api: Option<&DataApiClient>,
-    state: &Arc<Mutex<LiveVenueState>>,
+    state: &Arc<Mutex<LiveTransportState>>,
+    global_entry_gate: &Arc<Mutex<GlobalLiveEntryGate>>,
 ) -> Result<()> {
-    let (mut ws, _) = connect_async(&config.user_ws_url)
-        .await
-        .context("failed to connect Polymarket user websocket")?;
-    ws.send(Message::Text(
-        json!({
-            "auth": {
-                "apiKey": config.clob_api_key.as_deref().unwrap_or(""),
-                "secret": config.clob_secret.as_deref().unwrap_or(""),
-                "passphrase": config.clob_passphrase.as_deref().unwrap_or("")
-            },
-            "markets": &config.user_ws_markets,
-            "type": "user"
-        })
-        .to_string()
-        .into(),
-    ))
-    .await
-    .context("failed to subscribe Polymarket user websocket")?;
+    let subscription = user_ws_subscription_payload(config)?;
     {
         let mut state = state.lock().await;
-        state.user_ws_connected = true;
-        state.last_user_ws_pong_at = Some(Utc::now());
+        state.user_ws_connected = false;
+        state.last_user_ws_pong_at = None;
     }
+    let operation_timeout = config
+        .user_ws_stale
+        .min(USER_WS_MAX_TRANSPORT_OPERATION_TIMEOUT);
+    let (mut ws, _) = tokio::time::timeout(operation_timeout, connect_async(&config.user_ws_url))
+        .await
+        .context("Polymarket user websocket connect timed out")?
+        .context("failed to connect Polymarket user websocket")?;
+    tokio::time::timeout(
+        operation_timeout,
+        ws.send(Message::Text(subscription.to_string().into())),
+    )
+    .await
+    .context("Polymarket user websocket subscription send timed out")?
+    .context("failed to subscribe Polymarket user websocket")?;
 
     let mut heartbeat = tokio::time::interval(Duration::from_secs(10));
+    let mut awaiting_pong_since: Option<tokio::time::Instant> = None;
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
-                ws.send(Message::Ping(Vec::new().into()))
+                if user_ws_heartbeat_ack_timed_out(
+                    awaiting_pong_since.map(|sent_at| sent_at.elapsed()),
+                    config.user_ws_stale,
+                ) {
+                    bail!("Polymarket user websocket heartbeat acknowledgement timed out");
+                }
+                tokio::time::timeout(
+                    operation_timeout,
+                    ws.send(Message::Text("PING".into())),
+                )
                     .await
+                    .context("Polymarket user websocket heartbeat send timed out")?
                     .context("failed to ping Polymarket user websocket")?;
+                awaiting_pong_since.get_or_insert_with(tokio::time::Instant::now);
             }
             message = ws.next() => {
                 let Some(message) = message else {
-                    break;
+                    bail!("Polymarket user websocket ended without a close frame");
                 };
                 match message.context("failed to read Polymarket user websocket")? {
                     Message::Text(text) => {
                         let text = text.to_string();
-                        let payload: serde_json::Value = serde_json::from_str(&text)
-                            .unwrap_or_else(|_| json!({ "event_type": "raw", "message": text }));
+                        let payload = match classify_user_ws_text(&text, &config.user_ws_markets)? {
+                            UserWsText::HeartbeatPong => {
+                                awaiting_pong_since = None;
+                                let mut state = state.lock().await;
+                                state.user_ws_connected = true;
+                                state.last_user_ws_pong_at = Some(Utc::now());
+                                continue;
+                            }
+                            UserWsText::HeartbeatPing => {
+                                tokio::time::timeout(
+                                    operation_timeout,
+                                    ws.send(Message::Text("PONG".into())),
+                                )
+                                    .await
+                                    .context("Polymarket user websocket text PONG send timed out")?
+                                    .context("failed to pong Polymarket user websocket")?;
+                                continue;
+                            }
+                            UserWsText::UserEvent(payload) => payload,
+                        };
+                        halt_shared_global_gate(global_entry_gate, "user_ws_account_event").await;
                         let event = LiveVenue::parse_user_event(payload);
                         let inserted = store.insert_live_venue_event(&event).await?;
                         let bot_fill_persisted = match LiveVenue::persist_fill_from_live_event(&store, &event).await {
@@ -703,7 +1244,7 @@ async fn run_user_ws_once(
                             }
                         };
                         if !bot_fill_persisted {
-                            if let Some(account_address) = configured_account_address(config) {
+                            if let Some(account_address) = configured_account_address(config)? {
                                 if let Some(account_trade) = account_trade_from_live_event(&account_address, &event) {
                                     if let Err(error) = store.upsert_account_trade(&account_trade).await {
                                         warn!(error = %error, "failed to persist Polymarket account trade from user websocket event");
@@ -716,6 +1257,9 @@ async fn run_user_ws_once(
                                             let request = AccountReconcileRequest {
                                                 account_address: Some(account_address),
                                                 lookback_hours: Some(1),
+                                                process_id: None,
+                                                account_ref: None,
+                                                credential_account_fingerprint_sha256: None,
                                                 dry_run: false,
                                                 token_id: Some(token_id),
                                                 source: Some("user_ws".to_string()),
@@ -740,24 +1284,130 @@ async fn run_user_ws_once(
                             );
                         }
                         let mut state = state.lock().await;
-                        state.last_user_ws_pong_at = Some(Utc::now());
+                        state.user_ws_connected = true;
                     }
                     Message::Ping(payload) => {
-                        ws.send(Message::Pong(payload)).await.ok();
-                        let mut state = state.lock().await;
-                        state.last_user_ws_pong_at = Some(Utc::now());
+                        tokio::time::timeout(operation_timeout, ws.send(Message::Pong(payload)))
+                            .await
+                            .context("Polymarket user websocket control PONG send timed out")?
+                            .context("failed to answer websocket control ping")?;
                     }
                     Message::Pong(_) => {
+                        awaiting_pong_since = None;
                         let mut state = state.lock().await;
+                        state.user_ws_connected = true;
                         state.last_user_ws_pong_at = Some(Utc::now());
                     }
-                    Message::Close(_) => break,
+                    Message::Close(_) => bail!("Polymarket user websocket closed"),
+                    Message::Binary(_) => bail!("Polymarket user websocket sent an unsupported binary frame"),
                     _ => {}
                 }
             }
         }
     }
-    Ok(())
+}
+
+#[derive(Debug)]
+enum UserWsText {
+    HeartbeatPong,
+    HeartbeatPing,
+    UserEvent(Value),
+}
+
+fn user_ws_subscription_payload(config: &LiveExecutionConfig) -> Result<Value> {
+    if config.user_ws_markets.len() > 256
+        || config
+            .user_ws_markets
+            .iter()
+            .any(|market| market.trim().is_empty() || market.len() > 128)
+    {
+        bail!("Polymarket user websocket market subscription is invalid or unbounded");
+    }
+    let mut subscription = json!({
+        "auth": {
+            "apiKey": config.clob_api_key.as_deref().unwrap_or(""),
+            "secret": config.clob_secret.as_deref().unwrap_or(""),
+            "passphrase": config.clob_passphrase.as_deref().unwrap_or("")
+        },
+        "type": "user"
+    });
+    if !config.user_ws_markets.is_empty() {
+        subscription
+            .as_object_mut()
+            .expect("user websocket subscription is an object")
+            .insert("markets".to_string(), json!(&config.user_ws_markets));
+    }
+    Ok(subscription)
+}
+
+fn classify_user_ws_text(text: &str, subscribed_markets: &[String]) -> Result<UserWsText> {
+    match text.trim() {
+        "PONG" => return Ok(UserWsText::HeartbeatPong),
+        "PING" => return Ok(UserWsText::HeartbeatPing),
+        _ => {}
+    }
+    let payload: Value = serde_json::from_str(text)
+        .context("failed to decode Polymarket user websocket text payload")?;
+    let object = payload
+        .as_object()
+        .context("Polymarket user websocket payload must be an object")?;
+    let explicit_error = object
+        .get("error")
+        .is_some_and(|value| !value.is_null() && value != &Value::Bool(false))
+        || object
+            .get("success")
+            .and_then(Value::as_bool)
+            .is_some_and(|success| !success)
+        || object
+            .get("status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| {
+                matches!(
+                    status.trim().to_ascii_lowercase().as_str(),
+                    "error" | "failed" | "rejected" | "unauthorized" | "forbidden"
+                )
+            });
+    if explicit_error {
+        bail!("Polymarket user websocket returned an authentication or subscription error");
+    }
+
+    let event_type = object
+        .get("event_type")
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_ascii_lowercase())
+        .context("Polymarket user websocket payload has no recognized event_type")?;
+    if !matches!(event_type.as_str(), "order" | "trade") {
+        bail!("Polymarket user websocket payload has unsupported event_type");
+    }
+    let event_id_present = object
+        .get("id")
+        .or_else(|| object.get("order_id"))
+        .or_else(|| object.get("trade_id"))
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    let market = object
+        .get("market")
+        .or_else(|| object.get("condition_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .context("Polymarket user websocket event is missing its market identity")?;
+    let asset_present = object
+        .get("asset_id")
+        .or_else(|| object.get("asset"))
+        .or_else(|| object.get("token_id"))
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    if !event_id_present || !asset_present {
+        bail!("Polymarket user websocket event is missing an immutable order/trade identity");
+    }
+    if !subscribed_markets.is_empty()
+        && !subscribed_markets
+            .iter()
+            .any(|subscribed| subscribed == market)
+    {
+        bail!("Polymarket user websocket event does not match the configured subscription");
+    }
+    Ok(UserWsText::UserEvent(payload))
 }
 
 fn parse_signature_type(value: Option<&str>) -> Result<SignatureType> {
@@ -770,19 +1420,92 @@ fn parse_signature_type(value: Option<&str>) -> Result<SignatureType> {
     }
 }
 
-fn configured_account_address(config: &LiveExecutionConfig) -> Option<String> {
-    config
+fn configured_account_address(config: &LiveExecutionConfig) -> Result<Option<String>> {
+    if config.private_key.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(
+        canonical_configured_account_identity(config)?.account_address,
+    ))
+}
+
+fn canonical_configured_account_identity(
+    config: &LiveExecutionConfig,
+) -> Result<CanonicalLiveAccountIdentity> {
+    let signature_type = parse_signature_type(config.signature_type.as_deref())?;
+    let private_key = config
+        .private_key
+        .as_deref()
+        .context("missing private key for canonical live account identity")?;
+    let signer = LocalSigner::from_str(private_key)
+        .context("failed to parse POLYMARKET_PRIVATE_KEY")?
+        .with_chain_id(Some(POLYGON));
+    let signer_address = signer.address().to_checksum(None).to_ascii_lowercase();
+    let configured_funder = config
         .funder_address
         .as_deref()
         .filter(|address| !address.trim().is_empty())
-        .map(|address| address.to_ascii_lowercase())
-        .or_else(|| {
-            let private_key = config.private_key.as_deref()?;
-            let signer = LocalSigner::from_str(private_key)
-                .ok()?
-                .with_chain_id(Some(POLYGON));
-            Some(signer.address().to_checksum(None).to_ascii_lowercase())
+        .map(|address| {
+            Address::from_str(address)
+                .context("failed to parse POLYMARKET_FUNDER_ADDRESS")
+                .map(|address| address.to_checksum(None).to_ascii_lowercase())
         })
+        .transpose()?;
+
+    let account_address = match signature_type {
+        SignatureType::Eoa => {
+            if configured_funder
+                .as_deref()
+                .is_some_and(|funder| funder != signer_address)
+            {
+                bail!("EOA live identity has a configured funder different from the signer");
+            }
+            signer_address.clone()
+        }
+        SignatureType::Proxy => {
+            let funder = configured_funder
+                .as_deref()
+                .context("proxy live identity requires POLYMARKET_FUNDER_ADDRESS")?;
+            let expected = derive_proxy_wallet(signer.address(), POLYGON)
+                .context("failed to derive signer proxy wallet")?
+                .to_checksum(None)
+                .to_ascii_lowercase();
+            if funder != expected {
+                bail!("configured proxy funder does not match the signer-derived proxy wallet");
+            }
+            funder.to_string()
+        }
+        SignatureType::GnosisSafe => {
+            let funder = configured_funder
+                .as_deref()
+                .context("safe live identity requires POLYMARKET_FUNDER_ADDRESS")?;
+            let expected = derive_safe_wallet(signer.address(), POLYGON)
+                .context("failed to derive signer safe wallet")?
+                .to_checksum(None)
+                .to_ascii_lowercase();
+            if funder != expected {
+                bail!("configured safe funder does not match the signer-derived safe wallet");
+            }
+            funder.to_string()
+        }
+        SignatureType::Poly1271 => configured_funder
+            .context("POLY_1271 live identity requires POLYMARKET_FUNDER_ADDRESS")?,
+        _ => bail!("unsupported live signature type for canonical account identity"),
+    };
+    let fingerprint_sha256 = event_hash(&json!({
+        "identity_version": "polymarket_live_account_v2",
+        "chain_id": POLYGON,
+        "account_ref": &config.account_ref,
+        "signature_type": signature_type as u8,
+        "signer_address": &signer_address,
+        "account_address": &account_address,
+    }));
+    Ok(CanonicalLiveAccountIdentity {
+        account_address,
+        signer_address,
+        signature_type,
+        fingerprint_sha256,
+    })
 }
 
 fn sdk_decimal(value: Decimal) -> Result<SdkDecimal> {
@@ -884,23 +1607,174 @@ fn order_record_from_open_order(order: OpenOrderResponse) -> Result<OrderRecord>
     })
 }
 
-fn fill_record_from_trade(
-    order_id: &str,
-    process_id: Option<Uuid>,
-    trade: TradeResponse,
+fn is_rest_fill_trade_status(status: &TradeStatusType) -> Result<bool> {
+    match status {
+        TradeStatusType::Matched | TradeStatusType::Mined | TradeStatusType::Confirmed => Ok(true),
+        TradeStatusType::Retrying | TradeStatusType::Failed => Ok(false),
+        TradeStatusType::Unknown(value) => {
+            bail!("Polymarket CLOB trade has unknown status {value}")
+        }
+        _ => bail!("Polymarket CLOB trade has an unsupported status"),
+    }
+}
+
+fn fill_record_from_trade_for_order(
+    order: &OrderRecord,
+    venue_order_id: &str,
+    trade: &TradeResponse,
+    checked_at: DateTime<Utc>,
 ) -> Result<FillRecord> {
-    let price = local_decimal(trade.price)?;
-    let size = local_decimal(trade.size)?;
-    let fee_rate_bps = local_decimal(trade.fee_rate_bps)?;
-    let fee = price * size * fee_rate_bps / Decimal::from(10_000);
+    let process_id = order
+        .request
+        .process_id
+        .context("live REST fill backfill requires process-owned order evidence")?;
+    if venue_order_id.trim().is_empty() || venue_order_id.len() > 256 {
+        bail!("live REST fill backfill has an invalid venue order identity");
+    }
+    if trade.id.trim().is_empty() || trade.id.trim() != trade.id || trade.id.len() > 256 {
+        bail!("live REST fill backfill has an invalid venue trade identity");
+    }
+    if !is_rest_fill_trade_status(&trade.status)? {
+        bail!("live REST fill backfill cannot persist a non-fill trade status");
+    }
+    if order.request.price <= Decimal::ZERO
+        || order.request.price > Decimal::ONE
+        || order.request.size <= Decimal::ZERO
+    {
+        bail!("live REST fill backfill has invalid local order economics");
+    }
+
+    let taker_match = trade.taker_order_id == venue_order_id;
+    let maker_matches = trade
+        .maker_orders
+        .iter()
+        .filter(|maker_order| maker_order.order_id == venue_order_id)
+        .collect::<Vec<_>>();
+    if usize::from(taker_match)
+        .checked_add(maker_matches.len())
+        .context("live REST fill role count overflow")?
+        != 1
+    {
+        bail!(
+            "live REST fill trade {} does not identify exactly one role for venue order {}",
+            trade.id,
+            venue_order_id
+        );
+    }
+
+    let (asset_id, side, price, size, fee_rate_bps) = if taker_match {
+        if !matches!(
+            trade.trader_side,
+            polymarket_client_sdk_v2::clob::types::TraderSide::Taker
+        ) {
+            bail!(
+                "live REST fill trade {} conflicts with its authenticated taker role",
+                trade.id
+            );
+        }
+        (
+            trade.asset_id,
+            trade.side,
+            trade.price,
+            trade.size,
+            trade.fee_rate_bps,
+        )
+    } else {
+        if !matches!(
+            trade.trader_side,
+            polymarket_client_sdk_v2::clob::types::TraderSide::Maker
+        ) {
+            bail!(
+                "live REST fill trade {} conflicts with its authenticated maker role",
+                trade.id
+            );
+        }
+        let maker_order = maker_matches[0];
+        (
+            maker_order.asset_id,
+            maker_order.side,
+            maker_order.price,
+            maker_order.matched_amount,
+            maker_order.fee_rate_bps,
+        )
+    };
+
+    let token_id = asset_id.to_string();
+    if token_id != order.request.token_id {
+        bail!(
+            "live REST fill trade {} token identity does not match local order {}",
+            trade.id,
+            order.order_id
+        );
+    }
+    let side = match side {
+        SdkSide::Buy => OrderSide::Buy,
+        SdkSide::Sell => OrderSide::Sell,
+        _ => bail!("live REST fill trade {} has an unknown side", trade.id),
+    };
+    if side != order.request.side {
+        bail!(
+            "live REST fill trade {} side does not match local order {}",
+            trade.id,
+            order.order_id
+        );
+    }
+
+    let price = local_decimal(price)?;
+    let size = local_decimal(size)?;
+    let fee_rate_bps = local_decimal(fee_rate_bps)?;
+    if price <= Decimal::ZERO || price > Decimal::ONE {
+        bail!("live REST fill trade {} has an invalid price", trade.id);
+    }
+    if size <= Decimal::ZERO || size > order.request.size {
+        bail!("live REST fill trade {} has an invalid size", trade.id);
+    }
+    if fee_rate_bps < Decimal::ZERO || fee_rate_bps > Decimal::from(10_000) {
+        bail!("live REST fill trade {} has an invalid fee rate", trade.id);
+    }
+    let marketable = match order.request.side {
+        OrderSide::Buy => price <= order.request.price,
+        OrderSide::Sell => price >= order.request.price,
+    };
+    if !marketable {
+        bail!(
+            "live REST fill trade {} violates local order limit price",
+            trade.id
+        );
+    }
+    let earliest_match_time = order
+        .created_at
+        .checked_sub_signed(FOK_FILL_RECONCILIATION_SKEW)
+        .context("live REST fill order window underflow")?;
+    let latest_match_time = order
+        .created_at
+        .checked_add_signed(FOK_FILL_RECONCILIATION_SKEW)
+        .context("live REST fill order window overflow")?;
+    if trade.match_time > checked_at
+        || trade.match_time < earliest_match_time
+        || trade.match_time > latest_match_time
+    {
+        bail!(
+            "live REST fill trade {} is outside the bounded order execution window",
+            trade.id
+        );
+    }
+
+    let fee = price
+        .checked_mul(size)
+        .context("live REST fill notional overflow")?
+        .checked_mul(fee_rate_bps)
+        .context("live REST fill fee overflow")?
+        .checked_div(Decimal::from(10_000))
+        .context("live REST fill fee division failed")?;
     Ok(FillRecord {
         fill_id: Uuid::new_v5(
             &Uuid::NAMESPACE_URL,
             format!("polymarket:trade:{}", trade.id).as_bytes(),
         ),
-        process_id,
-        order_id: order_id.to_string(),
-        token_id: trade.asset_id.to_string(),
+        process_id: Some(process_id),
+        order_id: order.order_id.clone(),
+        token_id,
         price,
         size,
         fee,
@@ -909,12 +1783,176 @@ fn fill_record_from_trade(
     })
 }
 
-fn trade_response_matches_order(trade: &TradeResponse, order_id: &str) -> bool {
-    trade.taker_order_id == order_id
-        || trade
-            .maker_orders
-            .iter()
-            .any(|maker_order| maker_order.order_id == order_id)
+fn rest_fill_backfill_plan(
+    process_id: Uuid,
+    local_nonterminal: &[OrderRecord],
+    owned_orders: &HashMap<String, String>,
+    trades: &[TradeResponse],
+    checked_at: DateTime<Utc>,
+) -> Result<Vec<FillRecord>> {
+    if process_id.is_nil() {
+        bail!("live REST fill backfill requires a non-nil process_id");
+    }
+    if local_nonterminal.len() > MAX_PROCESS_NONTERMINAL_ORDERS
+        || owned_orders.len() > MAX_CLOB_RECONCILIATION_ORDER_IDS
+        || trades.len() > MAX_CLOB_RECONCILIATION_ROWS
+    {
+        bail!("live REST fill backfill exceeds its bounded evidence window");
+    }
+
+    let mut local_orders = HashMap::with_capacity(local_nonterminal.len());
+    for order in local_nonterminal {
+        if order.request.process_id != Some(process_id) {
+            bail!("live REST fill backfill crossed process order ownership");
+        }
+        if order.order_id.trim().is_empty() || order.order_id.len() > 256 {
+            bail!("live REST fill backfill has an invalid local order identity");
+        }
+        if local_orders
+            .insert(order.order_id.as_str(), order)
+            .is_some()
+        {
+            bail!("live REST fill backfill has duplicate local order evidence");
+        }
+    }
+
+    let mut seen_trade_ids = HashSet::with_capacity(trades.len());
+    let mut fills = Vec::new();
+    for trade in trades {
+        if trade.id.trim().is_empty() || trade.id.trim() != trade.id || trade.id.len() > 256 {
+            bail!("live REST fill backfill has an invalid venue trade identity");
+        }
+        if !seen_trade_ids.insert(trade.id.as_str()) {
+            bail!(
+                "live REST fill backfill has duplicate venue trade {}",
+                trade.id
+            );
+        }
+        if !is_rest_fill_trade_status(&trade.status)? {
+            continue;
+        }
+
+        let mut candidates = Vec::new();
+        if let Some(local_order_id) = owned_orders.get(&trade.taker_order_id) {
+            if local_orders.contains_key(local_order_id.as_str()) {
+                candidates.push((trade.taker_order_id.as_str(), local_order_id.as_str()));
+            }
+        }
+        for maker_order in &trade.maker_orders {
+            if let Some(local_order_id) = owned_orders.get(&maker_order.order_id) {
+                if local_orders.contains_key(local_order_id.as_str()) {
+                    candidates.push((maker_order.order_id.as_str(), local_order_id.as_str()));
+                }
+            }
+        }
+        if candidates.len() > 1 {
+            bail!(
+                "live REST fill trade {} maps to multiple nonterminal process orders",
+                trade.id
+            );
+        }
+        let Some((venue_order_id, local_order_id)) = candidates.first().copied() else {
+            continue;
+        };
+        let order = local_orders
+            .get(local_order_id)
+            .context("live REST fill ownership points to missing local order")?;
+        fills.push(fill_record_from_trade_for_order(
+            order,
+            venue_order_id,
+            trade,
+            checked_at,
+        )?);
+    }
+    Ok(fills)
+}
+
+fn reconciliation_trade_window_start(
+    local_nonterminal: &[OrderRecord],
+    checked_at: DateTime<Utc>,
+) -> Result<DateTime<Utc>> {
+    if local_nonterminal.len() > MAX_PROCESS_NONTERMINAL_ORDERS {
+        bail!("live reconciliation trade window exceeds its bounded local order evidence");
+    }
+    let oldest_local_created_at = local_nonterminal
+        .iter()
+        .map(|order| order.created_at)
+        .min()
+        .unwrap_or(checked_at);
+    if oldest_local_created_at > checked_at {
+        bail!("live reconciliation found a future-dated local order");
+    }
+    oldest_local_created_at
+        .checked_sub_signed(FOK_FILL_RECONCILIATION_SKEW)
+        .context("live reconciliation trade window underflow")
+}
+
+async fn persist_rest_fill_backfill(
+    store: &Store,
+    process_id: Uuid,
+    local_nonterminal: &[OrderRecord],
+    owned_orders: &HashMap<String, String>,
+    trades: &[TradeResponse],
+    checked_at: DateTime<Utc>,
+) -> Result<Vec<FillRecord>> {
+    let fills = rest_fill_backfill_plan(
+        process_id,
+        local_nonterminal,
+        owned_orders,
+        trades,
+        checked_at,
+    )?;
+    let mut fill_ids_by_order: HashMap<String, Vec<Uuid>> = HashMap::new();
+    for fill in &fills {
+        store.insert_fill(fill).await?;
+        fill_ids_by_order
+            .entry(fill.order_id.clone())
+            .or_default()
+            .push(fill.fill_id);
+    }
+
+    let local_orders = local_nonterminal
+        .iter()
+        .map(|order| (order.order_id.as_str(), order))
+        .collect::<HashMap<_, _>>();
+    for (order_id, fill_ids) in fill_ids_by_order {
+        let order = local_orders
+            .get(order_id.as_str())
+            .context("live REST fill progress points to missing local order")?;
+        let cumulative_filled_size = store.order_filled_size(&order_id).await?;
+        if cumulative_filled_size <= Decimal::ZERO || cumulative_filled_size > order.request.size {
+            bail!(
+                "live REST cumulative fill size is invalid for order {}",
+                order_id
+            );
+        }
+        let updated = store
+            .mark_order_fill_progress(
+                &order_id,
+                cumulative_filled_size,
+                json!({
+                    "source": "rest_reconcile_backfill",
+                    "cumulative_filled_size": cumulative_filled_size,
+                    "fill_ids": fill_ids,
+                }),
+            )
+            .await?
+            .with_context(|| {
+                format!("live REST fill progress could not find local order {order_id}")
+            })?;
+        let expected_state = if cumulative_filled_size >= order.request.size {
+            OrderState::Filled
+        } else {
+            OrderState::PartiallyFilled
+        };
+        if updated.state != expected_state {
+            bail!(
+                "live REST fill progress did not persist expected state for order {}",
+                order_id
+            );
+        }
+    }
+    Ok(fills)
 }
 
 async fn live_fill_record_from_event(
@@ -944,8 +1982,13 @@ async fn live_fill_record_from_event(
         let size = details
             .size
             .unwrap_or(json_decimal(&event.raw_payload, "size")?);
-        let fee_rate_bps =
-            json_decimal(&event.raw_payload, "fee_rate_bps").unwrap_or(Decimal::ZERO);
+        let fee_rate_bps = match details.fee_rate_bps {
+            Some(value) => value,
+            None if event.raw_payload.get("fee_rate_bps").is_some() => {
+                json_decimal(&event.raw_payload, "fee_rate_bps")?
+            }
+            None => Decimal::ZERO,
+        };
         let fee = price * size * fee_rate_bps / Decimal::from(10_000);
         let token_id = details
             .token_id
@@ -982,9 +2025,10 @@ fn is_fill_trade_status(status: Option<&str>) -> bool {
 }
 
 fn is_cancelled_order_status(status: Option<&str>) -> bool {
-    status
-        .map(|value| value.to_ascii_uppercase().starts_with("CANCELED"))
-        .unwrap_or(false)
+    matches!(
+        status.map(|value| value.trim().to_ascii_uppercase()),
+        Some(value) if matches!(value.as_str(), "CANCELLATION" | "CANCELED" | "CANCELLED")
+    )
 }
 
 fn is_nonfatal_live_order_rejection(order_type: OrderType, error_chain: &str) -> bool {
@@ -995,6 +2039,24 @@ fn is_nonfatal_live_order_rejection(order_type: OrderType, error_chain: &str) ->
     let insufficient_balance = normalized.contains("not enough balance / allowance")
         || normalized.contains("the balance is not enough");
     fok_unfilled || insufficient_balance
+}
+
+fn is_definitive_live_submit_error(error: &anyhow::Error) -> bool {
+    for cause in error.chain() {
+        if let Some(status) = cause.downcast_ref::<SdkStatus>() {
+            return status.status_code.is_client_error()
+                && !matches!(status.status_code.as_u16(), 408 | 409 | 425 | 429);
+        }
+        if let Some(error) = cause.downcast_ref::<polymarket_client_sdk_v2::error::Error>() {
+            if matches!(
+                error.kind(),
+                SdkErrorKind::Validation | SdkErrorKind::Geoblock
+            ) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn live_event_order_id_candidates(payload: &Value) -> Vec<String> {
@@ -1019,6 +2081,7 @@ fn live_event_order_id_candidates(payload: &Value) -> Vec<String> {
 struct LiveEventFillDetails {
     price: Option<Decimal>,
     size: Option<Decimal>,
+    fee_rate_bps: Option<Decimal>,
     token_id: Option<String>,
 }
 
@@ -1034,6 +2097,7 @@ fn live_event_fill_details_for_order(
             return Ok(LiveEventFillDetails {
                 price: Some(json_decimal(maker_order, "price")?),
                 size: Some(json_decimal(maker_order, "matched_amount")?),
+                fee_rate_bps: Some(json_decimal(maker_order, "fee_rate_bps")?),
                 token_id: json_str(maker_order, "asset_id").map(str::to_string),
             });
         }
@@ -1171,30 +2235,110 @@ fn push_unique_candidate_address(candidates: &mut Vec<String>, candidate: Option
     candidates.push(candidate.to_string());
 }
 
+async fn persist_pre_submit_gate_rejection(
+    store: &Store,
+    pending: OrderRecord,
+    reason: LiveExecutionGateReason,
+) -> Result<OrderRecord> {
+    let mut rejected = live_execution_gate_closed_order(pending.request.clone(), reason)?;
+    rejected.order_id = pending.order_id;
+    rejected.created_at = pending.created_at;
+    store.mark_order_pre_submit_rejected(&rejected).await
+}
+
+async fn persist_pre_submit_hard_failure(
+    store: &Store,
+    pending: &OrderRecord,
+    error: &anyhow::Error,
+) -> Result<()> {
+    let mut message = format!("{error:#}");
+    message.truncate(512);
+    store
+        .mark_order_submit_failed(
+            pending.request.client_order_id,
+            "local_pre_submit_failure",
+            json!({
+                "error": message,
+                "post_attempted": false,
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
 #[async_trait]
 impl ExecutionVenue for LiveVenue {
+    async fn find_existing_order(&self, request: &OrderRequest) -> Result<Option<OrderRecord>> {
+        self.validate_request_process(request)?;
+        let Some(store) = self.store.as_ref() else {
+            if cfg!(test) {
+                return Ok(None);
+            }
+            bail!("live persistence store is not configured");
+        };
+        if store
+            .find_order_by_client_order_id(request.client_order_id)
+            .await?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let (existing, newly_created) = store.create_pending_order(request).await?;
+        debug_assert!(!newly_created);
+        Ok(Some(existing))
+    }
+
     async fn submit_order(&self, request: OrderRequest) -> Result<OrderRecord> {
+        self.validate_request_process(&request)?;
+        bail!("process-bound live venue submission requires an adjacent pre-POST guard")
+    }
+
+    async fn submit_order_with_pre_post_guard(
+        &self,
+        request: OrderRequest,
+        pre_post_guard: Option<Arc<dyn LivePrePostGuard>>,
+    ) -> Result<OrderRecord> {
+        let process_id = self.validate_request_process(&request)?;
+        let pre_post_guard = pre_post_guard
+            .context("process-bound live venue submission requires an adjacent pre-POST guard")?;
+        let _submit_guard = self.submit_guard.lock().await;
+        if let Some(existing) = self.find_existing_order(&request).await? {
+            return Ok(existing);
+        }
         let notional = request.price * request.size;
         if notional > self.config.max_order_notional_usd {
-            bail!(
-                "live order notional {} exceeds cap {}",
-                notional,
-                self.config.max_order_notional_usd
+            return live_execution_gate_closed_order(
+                request,
+                LiveExecutionGateReason::PerOrderNotionalLimit,
             );
         }
         if !self.config.order_submit_enabled {
-            return Err(self.live_submit_unavailable(&request));
+            return live_execution_gate_closed_order(
+                request,
+                LiveExecutionGateReason::OrderSubmissionDisabled,
+            );
         }
-        if request.intent() != crate::models::OrderIntent::Exit
-            && !self.live_status().await?.entries_enabled
-        {
-            return Err(self.live_submit_unavailable(&request));
+        let global_halted = {
+            let global = self.global_entry_gate.lock().await;
+            global.halted
+        };
+        if global_halted {
+            return live_execution_gate_closed_order(request, LiveExecutionGateReason::GlobalHalt);
+        }
+        if let Some(reason) = self.current_entry_gate_reason().await? {
+            return live_execution_gate_closed_order(request, reason);
         }
         let store = self.store()?;
-        let (pending_order, newly_created) = store.create_pending_order(&request).await?;
-        if !newly_created {
-            return Ok(pending_order);
+        if let Some(reason) = self
+            .enforce_submission_risk(process_id, &request, None)
+            .await?
+        {
+            return live_execution_gate_closed_order(request, reason);
         }
+
+        // Complete all local validation, CLOB metadata reads and signing before claiming a pending
+        // order. The durable row is then written immediately before the only operation whose
+        // outcome can be ambiguous: the venue POST.
         let private_key = self
             .config
             .private_key
@@ -1204,22 +2348,76 @@ impl ExecutionVenue for LiveVenue {
             .context("failed to parse POLYMARKET_PRIVATE_KEY")?
             .with_chain_id(Some(POLYGON));
         let client = self.authenticated_client().await?;
-        let submit_result = async {
-            let token_id =
-                U256::from_str(&request.token_id).context("failed to parse CLOB token_id")?;
-            let response = client
-                .limit_order()
-                .token_id(token_id)
-                .side(sdk_side(request.side))
-                .price(sdk_decimal(request.price)?)
-                .size(sdk_decimal(request.size)?)
-                .order_type(sdk_order_type(request.order_type)?)
-                .build_sign_and_post(&signer)
-                .await
-                .context("Polymarket CLOB order submit failed")?;
-            Ok::<PostOrderResponse, anyhow::Error>(response)
+        let token_id =
+            U256::from_str(&request.token_id).context("failed to parse CLOB token_id")?;
+        let signable = client
+            .limit_order()
+            .token_id(token_id)
+            .side(sdk_side(request.side))
+            .price(sdk_decimal(request.price)?)
+            .size(sdk_decimal(request.size)?)
+            .order_type(sdk_order_type(request.order_type)?)
+            .build()
+            .await
+            .context("failed to build Polymarket CLOB order")?;
+        let signed = client
+            .sign(&signer, signable)
+            .await
+            .context("failed to sign Polymarket CLOB order")?;
+        let (pending_order, newly_created) = store.create_pending_order(&request).await?;
+        if !newly_created {
+            return Ok(pending_order);
         }
-        .await;
+        let final_gate_reason = match self
+            .final_submission_gate_reason(process_id, &request)
+            .await
+        {
+            Ok(reason) => reason,
+            Err(error) => {
+                persist_pre_submit_hard_failure(&store, &pending_order, &error).await?;
+                return Err(error);
+            }
+        };
+        if let Some(reason) = final_gate_reason {
+            return persist_pre_submit_gate_rejection(&store, pending_order, reason).await;
+        }
+        let admitted_safety_generation = {
+            let global = self.global_entry_gate.lock().await;
+            if global.halted || global.safety_generation == u64::MAX {
+                return persist_pre_submit_gate_rejection(
+                    &store,
+                    pending_order,
+                    LiveExecutionGateReason::GlobalHalt,
+                )
+                .await;
+            }
+            global.safety_generation
+        };
+        let guard_reason = match pre_post_guard.validate_pre_post(&request).await {
+            Ok(reason) => reason,
+            Err(error) => {
+                persist_pre_submit_hard_failure(&store, &pending_order, &error).await?;
+                return Err(error);
+            }
+        };
+        if let Some(reason) = guard_reason {
+            return persist_pre_submit_gate_rejection(&store, pending_order, reason).await;
+        }
+        // Commit the one-shot grant after every awaited check and immediately before the venue
+        // POST. A websocket event/error or another halt changes the generation and converts this
+        // pending order into a durable zero-POST rejection.
+        let commit_reason = {
+            let mut state = self.readiness_state.lock().await;
+            let mut global = self.global_entry_gate.lock().await;
+            commit_live_post_attempt(&mut global, &mut state, admitted_safety_generation)
+        };
+        if let Some(reason) = commit_reason {
+            return persist_pre_submit_gate_rejection(&store, pending_order, reason).await;
+        }
+        let submit_result = client
+            .post_order(signed)
+            .await
+            .context("Polymarket CLOB order submit failed");
 
         match submit_result {
             Ok(response) if response.success => {
@@ -1248,19 +2446,32 @@ impl ExecutionVenue for LiveVenue {
             }
             Err(error) => {
                 let error_chain = format!("{error:#}");
-                let failed_order = self
-                    .store()?
-                    .mark_order_submit_failed(
-                        request.client_order_id,
-                        "submit_error",
-                        json!({
-                            "error": error.to_string(),
-                            "error_chain": error_chain
-                        }),
-                    )
-                    .await?;
-                if is_nonfatal_live_order_rejection(request.order_type, &error_chain) {
-                    return Ok(failed_order);
+                if is_definitive_live_submit_error(&error) {
+                    let failed_order = store
+                        .mark_order_submit_failed(
+                            request.client_order_id,
+                            "venue_rejected",
+                            json!({
+                                "error": error.to_string(),
+                                "error_chain": error_chain
+                            }),
+                        )
+                        .await?;
+                    if is_nonfatal_live_order_rejection(request.order_type, &error_chain) {
+                        return Ok(failed_order);
+                    }
+                } else {
+                    store
+                        .mark_order_submit_unknown(
+                            request.client_order_id,
+                            "ambiguous_submit_error",
+                            json!({
+                                "error": error.to_string(),
+                                "error_chain": error_chain
+                            }),
+                        )
+                        .await?;
+                    self.mark_idempotency_dirty().await;
                 }
                 Err(error)
             }
@@ -1269,6 +2480,29 @@ impl ExecutionVenue for LiveVenue {
 
     async fn cancel_order(&self, order_id: &str) -> Result<OrderRecord> {
         let store = self.store()?;
+        if let Some(process_id) = self.bound_process_id {
+            let order = store
+                .find_order_by_venue_order_id(order_id)
+                .await?
+                .with_context(|| {
+                    format!("live process {process_id} cannot cancel an unowned order {order_id}")
+                })?;
+            if order.request.process_id != Some(process_id) {
+                bail!(
+                    "live process {} cannot cancel order {} owned by {:?}",
+                    process_id,
+                    order_id,
+                    order.request.process_id
+                );
+            }
+            if order.order_id.starts_with("live-pending-") {
+                bail!(
+                    "live process {} cannot cancel pending order {} before venue identity reconciliation",
+                    process_id,
+                    order_id
+                );
+            }
+        }
         store
             .mark_cancel_requested(order_id, json!({"requested_at": Utc::now()}))
             .await?;
@@ -1299,6 +2533,25 @@ impl ExecutionVenue for LiveVenue {
     }
 
     async fn cancel_all(&self) -> Result<usize> {
+        if let Some(process_id) = self.bound_process_id {
+            let orders = self.bounded_nonterminal_orders(process_id).await?;
+            let mut cancelled = 0usize;
+            for order in orders {
+                if order.order_id.starts_with("live-pending-") {
+                    self.mark_idempotency_dirty().await;
+                    bail!(
+                        "live process {} has pending order {} without a reconciled venue identity",
+                        process_id,
+                        order.order_id
+                    );
+                }
+                self.cancel_order(&order.order_id).await?;
+                cancelled = cancelled.saturating_add(1);
+            }
+            return Ok(cancelled);
+        }
+
+        // The unbound venue is reserved for the explicitly wallet-wide administrative halt path.
         let store = self.store()?;
         let client = self.authenticated_client().await?;
         let response = client
@@ -1331,113 +2584,377 @@ impl ExecutionVenue for LiveVenue {
 
     async fn get_open_orders(&self) -> Result<Vec<OrderRecord>> {
         let client = self.authenticated_client().await?;
-        let page = client
-            .orders(&OrdersRequest::builder().build(), None)
-            .await
-            .context("Polymarket CLOB open orders fetch failed")?;
-        page.data
+        self.all_open_order_responses(&client)
+            .await?
             .into_iter()
             .map(order_record_from_open_order)
-            .collect()
+            .collect::<Result<Vec<_>>>()
     }
 
     async fn reconcile(&self) -> Result<ReconciliationReport> {
-        let fills_backfilled = self.backfill_fills_from_live_events().await.unwrap_or_else(|error| {
-            warn!(error = %error, "failed to backfill fills from Polymarket live user websocket events");
-            0
-        });
-        let account_reconcile = self
-            .run_account_reconcile(AccountReconcileRequest {
-                account_address: None,
-                lookback_hours: Some(1),
-                dry_run: false,
-                token_id: None,
-                source: Some("poll".to_string()),
-            })
-            .await;
-        if let Err(error) = &account_reconcile {
-            warn!(error = %error, "live account reconciliation polling backup failed");
-        }
-        let open_orders = self.get_open_orders().await.unwrap_or_default();
-        let balances_checked = self.get_balances().await.is_ok();
-        let unresolved = open_orders.len();
-        {
-            let mut state = self.state.lock().await;
-            state.last_rest_reconcile_at = Some(Utc::now());
-            state.unresolved_live_order_count = unresolved;
-            state.idempotency_clean = true;
-        }
-        let report = ReconciliationReport {
-            open_orders: unresolved,
-            balances_checked,
-            mismatches_found: 0,
-            unresolved_count: unresolved,
-            checked_at: Utc::now(),
+        let checked_at = Utc::now();
+        let reconciliation_safety_generation = {
+            let global = self.global_entry_gate.lock().await;
+            if global.safety_generation == u64::MAX {
+                bail!("live safety generation is exhausted; reconciliation remains fail-closed");
+            }
+            global.safety_generation
         };
-        self.store()?
+        let store = self.store()?;
+        let reconcile_result = async {
+            self.refresh_geoblock().await?;
+            let geoblock = self.transport_state.lock().await.clone();
+            if !geoblock.geoblock_readable || geoblock.geoblock_blocked != Some(false) {
+                bail!("Polymarket live reconciliation requires an unblocked readable geoblock status");
+            }
+            let mut fills_backfilled = self
+                .backfill_fills_from_live_events()
+                .await
+                .context("failed to backfill live user websocket fills")?;
+            let account_reconcile = self
+                .run_account_reconcile(AccountReconcileRequest {
+                    account_address: None,
+                    lookback_hours: Some(1),
+                    process_id: self.bound_process_id,
+                    account_ref: self.bound_account_ref.clone(),
+                    credential_account_fingerprint_sha256: None,
+                    dry_run: false,
+                    token_id: None,
+                    source: Some("poll".to_string()),
+                })
+                .await
+                .context("live account reconciliation polling backup failed")?;
+            let open_orders = self.get_open_orders().await?;
+            let mut local_nonterminal = match self.bound_process_id {
+                Some(process_id) => self.bounded_nonterminal_orders(process_id).await?,
+                None => Vec::new(),
+            };
+            let trades = if self.bound_process_id.is_some() {
+                let trade_window_start =
+                    reconciliation_trade_window_start(&local_nonterminal, checked_at)?;
+                let client = self.authenticated_client().await?;
+                let trades_request = TradesRequest::builder()
+                    .after(trade_window_start.timestamp())
+                    .before(checked_at.timestamp())
+                    .build();
+                self.all_trade_responses(&client, &trades_request).await?
+            } else {
+                Vec::new()
+            };
+            let balances = self.get_balances().await?;
+            if balances.is_empty() {
+                bail!("Polymarket CLOB balance reconciliation returned no assets");
+            }
+            let owned_orders = if let Some(process_id) = self.bound_process_id {
+                let mut venue_order_ids = open_orders
+                    .iter()
+                    .map(|order| order.order_id.clone())
+                    .collect::<Vec<_>>();
+                for trade in &trades {
+                    let candidate_count = trade
+                        .maker_orders
+                        .len()
+                        .checked_add(1)
+                        .context("Polymarket CLOB trade order identity count overflow")?;
+                    let total_candidate_count = venue_order_ids
+                        .len()
+                        .checked_add(candidate_count)
+                        .context("Polymarket CLOB reconciliation order identity overflow")?;
+                    if total_candidate_count > MAX_CLOB_RECONCILIATION_ORDER_IDS {
+                        bail!(
+                            "Polymarket CLOB reconciliation exceeds the bounded {}-order identity window",
+                            MAX_CLOB_RECONCILIATION_ORDER_IDS
+                        );
+                    }
+                    venue_order_ids.push(trade.taker_order_id.clone());
+                    venue_order_ids.extend(
+                        trade
+                            .maker_orders
+                            .iter()
+                            .map(|maker_order| maker_order.order_id.clone()),
+                    );
+                }
+                self.bound_process_venue_order_ids(
+                    &store,
+                    process_id,
+                    venue_order_ids.iter().map(String::as_str),
+                )
+                .await?
+            } else {
+                HashMap::new()
+            };
+            if let Some(process_id) = self.bound_process_id {
+                let rest_fills = persist_rest_fill_backfill(
+                    &store,
+                    process_id,
+                    &local_nonterminal,
+                    &owned_orders,
+                    &trades,
+                    checked_at,
+                )
+                .await
+                .context("failed to backfill authenticated CLOB REST fills")?;
+                fills_backfilled = fills_backfilled
+                    .checked_add(rest_fills.len())
+                    .context("live reconciliation fill backfill count overflow")?;
+                // Reconciliation readiness must be derived from the state after REST evidence is
+                // durable and cumulative fill progress has terminalized fully filled orders.
+                local_nonterminal = self.bounded_nonterminal_orders(process_id).await?;
+            }
+            let owned_venue_order_ids = owned_orders
+                .keys()
+                .map(String::as_str)
+                .collect::<HashSet<_>>();
+            let owned_local_order_ids = owned_orders
+                .values()
+                .map(String::as_str)
+                .collect::<HashSet<_>>();
+            let foreign_venue_orders = if self.bound_process_id.is_some() {
+                open_orders
+                    .iter()
+                    .filter(|order| !owned_venue_order_ids.contains(order.order_id.as_str()))
+                    .count()
+            } else {
+                0
+            };
+            let foreign_wallet_trades = trades
+                .iter()
+                .filter(|trade| {
+                    !owned_venue_order_ids.contains(trade.taker_order_id.as_str())
+                        && !trade.maker_orders.iter().any(|maker_order| {
+                            owned_venue_order_ids.contains(maker_order.order_id.as_str())
+                        })
+                })
+                .count();
+            let missing_local_orders = local_nonterminal
+                .iter()
+                .filter(|order| !owned_local_order_ids.contains(order.order_id.as_str()))
+                .count();
+            let unresolved = if self.bound_process_id.is_some() {
+                local_nonterminal.len().max(open_orders.len())
+            } else {
+                open_orders.len()
+            };
+            let mismatches = missing_local_orders
+                .saturating_add(foreign_venue_orders)
+                .saturating_add(foreign_wallet_trades)
+                .saturating_add(account_reconcile.mismatches.len())
+                .saturating_add(account_reconcile.unmatched_trades as usize)
+                .saturating_add(usize::from(
+                    self.bound_process_id.is_some() && !account_reconcile.process_accounting_proven,
+                ));
+            if self.global_entry_gate.lock().await.safety_generation
+                != reconciliation_safety_generation
+            {
+                bail!("live safety generation changed during reconciliation");
+            }
+            Ok::<_, anyhow::Error>((
+                fills_backfilled,
+                account_reconcile,
+                open_orders,
+                unresolved,
+                mismatches,
+                foreign_venue_orders,
+                foreign_wallet_trades,
+            ))
+        }
+        .await;
+
+        let (
+            fills_backfilled,
+            account_reconcile,
+            open_orders,
+            unresolved,
+            mismatches,
+            foreign_venue_orders,
+            foreign_wallet_trades,
+        ) = match reconcile_result {
+            Ok(result) => result,
+            Err(error) => {
+                self.mark_idempotency_dirty().await;
+                self.readiness_state
+                    .lock()
+                    .await
+                    .reconciled_safety_generation = None;
+                self.halt_global_entries("live_reconciliation_failed").await;
+                if let Err(record_error) = store
+                    .insert_live_reconciliation_run(
+                        self.bound_process_id,
+                        self.bound_account_ref.as_deref(),
+                        "failed",
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        1,
+                        json!({
+                            "process_id": self.bound_process_id,
+                            "error": error.to_string(),
+                            "checked_at": checked_at,
+                        }),
+                    )
+                    .await
+                {
+                    warn!(
+                        error = %record_error,
+                        reconciliation_error = %error,
+                        "failed to persist failed live reconciliation run"
+                    );
+                }
+                return Err(error);
+            }
+        };
+
+        let report = ReconciliationReport {
+            open_orders: open_orders.len(),
+            balances_checked: true,
+            mismatches_found: mismatches,
+            unresolved_count: unresolved,
+            checked_at,
+        };
+        let idempotency_clean = report.unresolved_count == 0 && report.mismatches_found == 0;
+        if !idempotency_clean {
+            self.halt_global_entries("live_reconciliation_unclean")
+                .await;
+        }
+        if let Err(error) = store
             .insert_live_reconciliation_run(
+                self.bound_process_id,
+                self.bound_account_ref.as_deref(),
                 "completed",
                 report.open_orders as i32,
                 0,
-                if report.balances_checked { 1 } else { 0 },
+                1,
                 report.mismatches_found as i32,
                 fills_backfilled as i32,
                 report.unresolved_count as i32,
                 serde_json::json!({
+                    "process_id": self.bound_process_id,
                     "venue": report,
-                    "account_reconcile": account_reconcile.as_ref().ok()
+                    "account_reconcile": account_reconcile,
+                    "process_accounting_proof": &account_reconcile.process_accounting_proof,
+                    "credential_account_fingerprint_sha256": &account_reconcile.credential_account_fingerprint_sha256,
+                    "foreign_wallet_open_orders": foreign_venue_orders,
+                    "foreign_wallet_trades": foreign_wallet_trades,
+                    "idempotency_clean": idempotency_clean,
+                    "reconciliation_safety_generation": reconciliation_safety_generation,
                 }),
             )
-            .await?;
+            .await
+        {
+            self.mark_idempotency_dirty().await;
+            self.readiness_state
+                .lock()
+                .await
+                .reconciled_safety_generation = None;
+            self.halt_global_entries("live_reconciliation_persistence_failed")
+                .await;
+            return Err(error);
+        }
+        {
+            let mut state = self.readiness_state.lock().await;
+            let global = self.global_entry_gate.lock().await;
+            state.last_rest_reconcile_at = Some(checked_at);
+            state.unresolved_live_order_count = unresolved;
+            state.idempotency_clean = idempotency_clean;
+            state.process_accounting_proven = account_reconcile.process_accounting_proven;
+            state.process_accounting_status = account_reconcile.process_accounting_status.clone();
+            state.credential_account_fingerprint_sha256 = account_reconcile
+                .credential_account_fingerprint_sha256
+                .clone();
+            if self.bound_process_id.is_some()
+                && idempotency_clean
+                && global.safety_generation == reconciliation_safety_generation
+            {
+                state.reconciled_safety_generation = Some(reconciliation_safety_generation);
+            } else {
+                state.reconciled_safety_generation = None;
+            }
+            if self.bound_process_id.is_some()
+                && idempotency_clean
+                && global.safety_generation != reconciliation_safety_generation
+            {
+                state.idempotency_clean = false;
+                bail!("live safety generation changed before reconciliation commit");
+            }
+        }
         Ok(report)
     }
 
     async fn fills_for_order(&self, order_id: &str) -> Result<Vec<FillRecord>> {
         let store = self.store()?;
         let client = self.authenticated_client().await?;
-        let order_process_id = store
+        let persisted_order = store
             .find_order_by_venue_order_id(order_id)
             .await?
-            .and_then(|order| order.request.process_id);
-        let page = client
-            .trades(&TradesRequest::builder().build(), None)
-            .await
-            .context("Polymarket CLOB trades fetch failed")?;
-        let mut fills = Vec::new();
-        for trade in page
-            .data
-            .into_iter()
-            .filter(|trade| trade_response_matches_order(trade, order_id))
-        {
-            let fill = fill_record_from_trade(order_id, order_process_id, trade)?;
-            store.insert_fill(&fill).await?;
-            fills.push(fill);
+            .with_context(|| format!("cannot reconcile fills for unknown live order {order_id}"))?;
+        if let Some(process_id) = self.bound_process_id {
+            if persisted_order.request.process_id != Some(process_id) {
+                bail!(
+                    "live process {} cannot reconcile fills for order {} owned by {:?}",
+                    process_id,
+                    order_id,
+                    persisted_order.request.process_id
+                );
+            }
         }
-        Ok(fills)
+        let order_process_id = persisted_order
+            .request
+            .process_id
+            .context("cannot reconcile fills for a live order without process ownership")?;
+        let trades_request = TradesRequest::builder()
+            .asset_id(
+                U256::from_str(&persisted_order.request.token_id)
+                    .context("failed to parse persisted CLOB token_id")?,
+            )
+            .after((persisted_order.created_at - FOK_FILL_RECONCILIATION_SKEW).timestamp())
+            .before((persisted_order.created_at + FOK_FILL_RECONCILIATION_SKEW).timestamp())
+            .build();
+        let trades = self.all_trade_responses(&client, &trades_request).await?;
+        let owned_orders =
+            HashMap::from([(order_id.to_string(), persisted_order.order_id.clone())]);
+        persist_rest_fill_backfill(
+            &store,
+            order_process_id,
+            std::slice::from_ref(&persisted_order),
+            &owned_orders,
+            &trades,
+            Utc::now(),
+        )
+        .await
     }
 
     async fn live_status(&self) -> Result<LiveVenueStatus> {
-        let state = self.state.lock().await;
+        let transport = self.transport_state.lock().await;
+        let state = self.readiness_state.lock().await;
+        let global = self.global_entry_gate.lock().await;
         let now = Utc::now();
-        let last_user_ws_pong_age_secs = state
-            .last_user_ws_pong_at
-            .map(|value| (now - value).num_seconds());
-        let last_rest_reconcile_age_secs = state
-            .last_rest_reconcile_at
-            .map(|value| (now - value).num_seconds());
+        let last_user_ws_pong_age_secs = stateful_age_seconds(transport.last_user_ws_pong_at, now);
+        let last_geoblock_check_age_secs = stateful_age_seconds(transport.geoblock_checked_at, now);
+        let last_rest_reconcile_age_secs = stateful_age_seconds(state.last_rest_reconcile_at, now);
         let user_ws_fresh = !self.config.user_ws_enabled
-            || last_user_ws_pong_age_secs
-                .map(|age| age <= self.config.user_ws_stale.as_secs() as i64)
-                .unwrap_or(false);
+            || (transport.user_ws_connected
+                && last_user_ws_pong_age_secs
+                    .map(|age| age <= self.config.user_ws_stale.as_secs() as i64)
+                    .unwrap_or(false));
         let rest_fresh = last_rest_reconcile_age_secs
             .map(|age| age <= self.config.stale_reconcile.as_secs() as i64)
             .unwrap_or(false);
-        let entries_enabled = state.live_confirmed
+        let geoblock_fresh = transport.geoblock_readable
+            && transport.geoblock_blocked == Some(false)
+            && last_geoblock_check_age_secs
+                .is_some_and(|age| age <= self.config.stale_reconcile.as_secs() as i64);
+        let live_confirmed = transport.live_confirmed && geoblock_fresh;
+        let entries_enabled = live_confirmed
             && self.config.order_submit_enabled
             && self.config.submit_auth_available()
+            && !global.halted
             && state.manual_entries_enabled
+            && state.process_accounting_proven
             && user_ws_fresh
             && rest_fresh
+            && self.config.require_idempotency_clean
             && state.idempotency_clean
             && state.unresolved_live_order_count == 0;
         let reason = if entries_enabled {
@@ -1446,16 +2963,29 @@ impl ExecutionVenue for LiveVenue {
             Some("live_order_submit_disabled".to_string())
         } else if !self.config.submit_auth_available() {
             Some("live_submit_auth_missing".to_string())
+        } else if !transport.geoblock_readable {
+            Some("live_geoblock_status_unreadable".to_string())
+        } else if transport.geoblock_blocked != Some(false) {
+            Some("live_geoblock_blocked".to_string())
+        } else if !geoblock_fresh {
+            Some("live_geoblock_status_stale".to_string())
+        } else if global.halted {
+            Some(format!("live_global_halt:{}", global.reason))
         } else if !state.manual_entries_enabled {
             state
                 .manual_entries_reason
                 .clone()
                 .or_else(|| Some("manual_enable_required".to_string()))
+        } else if !state.process_accounting_proven {
+            Some(format!(
+                "live_process_accounting_not_proven:{}",
+                state.process_accounting_status
+            ))
         } else if !user_ws_fresh {
             Some("live_user_ws_stale_or_disconnected".to_string())
         } else if !rest_fresh {
             Some("live_rest_reconcile_stale".to_string())
-        } else if !state.idempotency_clean {
+        } else if !self.config.require_idempotency_clean || !state.idempotency_clean {
             Some("live_idempotency_not_clean".to_string())
         } else if state.unresolved_live_order_count > 0 {
             Some("live_unresolved_orders_present".to_string())
@@ -1464,14 +2994,21 @@ impl ExecutionVenue for LiveVenue {
         };
         Ok(LiveVenueStatus {
             mode: "live".to_string(),
-            live_confirmed: state.live_confirmed,
+            live_confirmed,
+            geoblock_readable: transport.geoblock_readable,
+            geoblock_blocked: transport.geoblock_blocked,
+            geoblock_country: transport.geoblock_country.clone(),
+            geoblock_region: transport.geoblock_region.clone(),
+            last_geoblock_check_age_secs,
             order_submit_enabled: self.config.order_submit_enabled,
             user_ws_enabled: self.config.user_ws_enabled,
-            user_ws_connected: state.user_ws_connected,
+            user_ws_connected: transport.user_ws_connected,
             last_user_ws_pong_age_secs,
             last_rest_reconcile_age_secs,
             idempotency_clean: state.idempotency_clean,
             unresolved_live_order_count: state.unresolved_live_order_count,
+            process_accounting_proven: state.process_accounting_proven,
+            process_accounting_status: state.process_accounting_status.clone(),
             max_order_notional_usd: self.config.max_order_notional_usd,
             max_open_notional_usd: self.config.max_open_notional_usd,
             entries_enabled,
@@ -1480,6 +3017,12 @@ impl ExecutionVenue for LiveVenue {
     }
 
     async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics> {
+        let geoblock_error = self
+            .refresh_geoblock()
+            .await
+            .err()
+            .map(|error| error.to_string().chars().take(256).collect::<String>());
+        let geoblock = self.transport_state.lock().await.clone();
         let signature_type = parse_signature_type(self.config.signature_type.as_deref())?;
         let signer_address = self
             .config
@@ -1515,11 +3058,18 @@ impl ExecutionVenue for LiveVenue {
         let mut diagnostics = LiveIdentityDiagnostics {
             mode: "live".to_string(),
             clob_api_base_url: self.clob_base_url.clone(),
+            geoblock_readable: geoblock.geoblock_readable,
+            geoblock_blocked: geoblock.geoblock_blocked,
+            geoblock_country: geoblock.geoblock_country,
+            geoblock_region: geoblock.geoblock_region,
+            geoblock_error,
             signer_address,
             configured_funder_address: self.config.funder_address.clone(),
             configured_signature_type: self.config.signature_type.clone(),
             resolved_signature_type: Some(format!("{signature_type:?}")),
             authenticated_client_address: None,
+            account_identity_valid: false,
+            account_identity_fingerprint_sha256: None,
             credentials_present,
             api_keys_readable: false,
             api_keys_error: None,
@@ -1542,7 +3092,37 @@ impl ExecutionVenue for LiveVenue {
                 return Ok(diagnostics);
             }
         };
-        diagnostics.authenticated_client_address = Some(client.address().to_checksum(None));
+        let authenticated_client_address = client.address().to_checksum(None);
+        diagnostics.authenticated_client_address = Some(authenticated_client_address.clone());
+        match canonical_configured_account_identity(&self.config) {
+            Ok(identity)
+                if identity.signature_type == signature_type
+                    && authenticated_client_address
+                        .eq_ignore_ascii_case(&identity.signer_address) =>
+            {
+                // The SDK client authenticates as the private-key signer for every signature
+                // type. The canonical trading account is the signer only for EOA; for proxy,
+                // Safe, and POLY_1271 it is the validated maker/funder carried by `identity`.
+                diagnostics.account_identity_valid = true;
+                diagnostics.account_identity_fingerprint_sha256 = Some(identity.fingerprint_sha256);
+            }
+            Ok(_) => {
+                let message =
+                    "authenticated CLOB signer does not match canonical signature-aware identity"
+                        .to_string();
+                diagnostics.api_keys_error = Some(message.clone());
+                diagnostics.balance_allowance_error = Some(message.clone());
+                diagnostics.open_orders_error = Some(message);
+                return Ok(diagnostics);
+            }
+            Err(error) => {
+                let message = error.to_string();
+                diagnostics.api_keys_error = Some(message.clone());
+                diagnostics.balance_allowance_error = Some(message.clone());
+                diagnostics.open_orders_error = Some(message);
+                return Ok(diagnostics);
+            }
+        }
 
         match client.api_keys().await {
             Ok(_) => diagnostics.api_keys_readable = true,
@@ -1565,10 +3145,10 @@ impl ExecutionVenue for LiveVenue {
             Err(error) => diagnostics.balance_allowance_error = Some(error.to_string()),
         }
 
-        match client.orders(&OrdersRequest::builder().build(), None).await {
-            Ok(page) => {
+        match self.all_open_order_responses(&client).await {
+            Ok(orders) => {
                 diagnostics.open_orders_readable = true;
-                diagnostics.open_orders_count = Some(page.data.len());
+                diagnostics.open_orders_count = Some(orders.len());
             }
             Err(error) => diagnostics.open_orders_error = Some(error.to_string()),
         }
@@ -1856,15 +3436,242 @@ impl ExecutionVenue for LiveVenue {
         enabled: bool,
         reason: Option<String>,
     ) -> Result<LiveVenueStatus> {
-        let mut state = self.state.lock().await;
-        state.manual_entries_enabled = enabled;
-        state.manual_entries_reason = if enabled {
-            None
-        } else {
-            Some(reason.unwrap_or_else(|| "manual_disable".to_string()))
-        };
+        if !enabled {
+            if self.bound_process_id.is_none() {
+                let reason = bounded_live_gate_reason(reason.as_deref(), "manual_live_halt");
+                // Close first. A submit that has not passed the global check will observe the
+                // halt, while one already admitted remains serialized behind the barrier below.
+                // Cancellation of this wait cannot reopen the gate.
+                {
+                    let mut global = self.global_entry_gate.lock().await;
+                    record_global_entry_halt(&mut global, &reason);
+                }
+                let mut state = self.readiness_state.lock().await;
+                state.manual_entries_enabled = false;
+                state.manual_entries_reason = Some(reason);
+            } else {
+                let reason = bounded_live_gate_reason(reason.as_deref(), "process_manual_disable");
+                let mut state = self.readiness_state.lock().await;
+                state.manual_entries_enabled = false;
+                state.manual_entries_reason = Some(reason);
+            }
+            let _submit_barrier = self.submit_guard.lock().await;
+            return self.live_status().await;
+        }
+
+        if self.bound_process_id.is_none() {
+            bail!("wallet-wide live entry enable is forbidden; use a checked process-bound enable");
+        }
+        {
+            let mut state = self.readiness_state.lock().await;
+            state.manual_entries_enabled = false;
+            state.manual_entries_reason = Some("checked_enable_revalidation".to_string());
+            state.reconciled_safety_generation = None;
+        }
+        // Revoke the old grant before waiting for an in-flight submit, then hold the shared submit
+        // barrier across the authoritative reconciliation and final compare-and-open commit.
+        let expected_safety_generation = self
+            .halt_global_entries("checked_enable_revalidation")
+            .await;
+        if expected_safety_generation == u64::MAX {
+            bail!("live safety generation is exhausted; checked enable remains fail-closed");
+        }
+        let _submit_guard = self.submit_guard.lock().await;
+        let reconciliation = self.reconcile().await?;
+        if reconciliation.mismatches_found != 0 || reconciliation.unresolved_count != 0 {
+            bail!("checked process-bound live enable requires a clean reconciliation");
+        }
+
+        let now = Utc::now();
+        let transport = self.transport_state.lock().await;
+        let mut state = self.readiness_state.lock().await;
+        let mut global = self.global_entry_gate.lock().await;
+        let user_ws_fresh = !self.config.user_ws_enabled
+            || (transport.user_ws_connected
+                && stateful_age_seconds(transport.last_user_ws_pong_at, now)
+                    .is_some_and(|age| age <= self.config.user_ws_stale.as_secs() as i64));
+        let rest_fresh = stateful_age_seconds(state.last_rest_reconcile_at, now)
+            .is_some_and(|age| age <= self.config.stale_reconcile.as_secs() as i64);
+        let geoblock_fresh = transport.geoblock_readable
+            && transport.geoblock_blocked == Some(false)
+            && stateful_age_seconds(transport.geoblock_checked_at, now)
+                .is_some_and(|age| age <= self.config.stale_reconcile.as_secs() as i64);
+        let configured_identity = canonical_configured_account_identity(&self.config)?;
+        let identity_matches = state.credential_account_fingerprint_sha256.as_deref()
+            == Some(configured_identity.fingerprint_sha256.as_str());
+        if !self.config.order_submit_enabled
+            || !self.config.submit_auth_available()
+            || !geoblock_fresh
+            || !user_ws_fresh
+            || !rest_fresh
+            || !state.process_accounting_proven
+            || !identity_matches
+            || !self.config.require_idempotency_clean
+            || !state.idempotency_clean
+            || state.unresolved_live_order_count != 0
+            || !global.halted
+            || global.safety_generation != expected_safety_generation
+            || state.reconciled_safety_generation != Some(expected_safety_generation)
+        {
+            bail!(
+                "checked process-bound live enable requires an unblocked egress, fresh transport/reconciliation, proven accounting, matching identity, and clean idempotency"
+            );
+        }
+        if !commit_checked_live_enable(&mut global, &mut state, expected_safety_generation) {
+            bail!("live safety generation changed before checked enable commit");
+        }
+        drop(global);
         drop(state);
+        drop(transport);
         self.live_status().await
+    }
+}
+
+fn stateful_age_seconds(value: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Option<i64> {
+    value.and_then(|value| (value <= now).then(|| (now - value).num_seconds()))
+}
+
+fn bounded_live_gate_reason(reason: Option<&str>, fallback: &str) -> String {
+    let reason = reason
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback);
+    reason.chars().take(128).collect()
+}
+
+fn bounded_geoblock_component(value: &str) -> Option<String> {
+    let bounded = value
+        .trim()
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+        .take(16)
+        .collect::<String>();
+    (!bounded.is_empty()).then_some(bounded)
+}
+
+fn next_clob_reconciliation_cursor(
+    next_cursor: &str,
+    seen_cursors: &mut HashSet<String>,
+    resource: &str,
+) -> Result<Option<String>> {
+    if next_cursor == CLOB_TERMINAL_CURSOR {
+        return Ok(None);
+    }
+    if next_cursor.is_empty()
+        || next_cursor.len() > MAX_CLOB_CURSOR_BYTES
+        || next_cursor.trim() != next_cursor
+        || !next_cursor.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '+' | '/' | '=' | '-' | '_')
+        })
+        || !seen_cursors.insert(next_cursor.to_string())
+    {
+        bail!("Polymarket CLOB {resource} returned an invalid pagination cursor");
+    }
+    Ok(Some(next_cursor.to_string()))
+}
+
+fn validate_clob_page_metadata(
+    resource: &str,
+    data_len: usize,
+    count: u64,
+    limit: u64,
+) -> Result<()> {
+    let data_len = u64::try_from(data_len).context("Polymarket CLOB page length overflow")?;
+    if limit == 0
+        || limit > MAX_CLOB_RECONCILIATION_ROWS as u64
+        || count != data_len
+        || count > limit
+    {
+        bail!("Polymarket CLOB {resource} returned inconsistent pagination metadata");
+    }
+    Ok(())
+}
+
+fn checked_clob_row_count(current: usize, page_len: usize, resource: &str) -> Result<usize> {
+    let total = current
+        .checked_add(page_len)
+        .context("Polymarket CLOB reconciliation row count overflow")?;
+    if total > MAX_CLOB_RECONCILIATION_ROWS {
+        bail!(
+            "Polymarket CLOB {resource} exceed the bounded {}-row reconciliation window",
+            MAX_CLOB_RECONCILIATION_ROWS
+        );
+    }
+    Ok(total)
+}
+
+async fn halt_shared_global_gate(gate: &Arc<Mutex<GlobalLiveEntryGate>>, reason: &str) {
+    let mut gate = gate.lock().await;
+    record_global_entry_halt(&mut gate, reason);
+}
+
+fn record_global_entry_halt(gate: &mut GlobalLiveEntryGate, reason: &str) -> u64 {
+    gate.halted = true;
+    if let Some(next_generation) = gate.safety_generation.checked_add(1) {
+        gate.safety_generation = next_generation;
+        gate.reason = bounded_live_gate_reason(Some(reason), "live_global_halt");
+    } else {
+        gate.reason = "safety_generation_exhausted".to_string();
+    }
+    gate.safety_generation
+}
+
+fn commit_checked_live_enable(
+    gate: &mut GlobalLiveEntryGate,
+    state: &mut LiveVenueState,
+    expected_safety_generation: u64,
+) -> bool {
+    if expected_safety_generation == u64::MAX
+        || !gate.halted
+        || gate.safety_generation != expected_safety_generation
+        || state.reconciled_safety_generation != Some(expected_safety_generation)
+    {
+        return false;
+    }
+    state.manual_entries_enabled = true;
+    state.manual_entries_reason = None;
+    gate.halted = false;
+    gate.reason = "process_checked_enable".to_string();
+    true
+}
+
+fn commit_live_post_attempt(
+    gate: &mut GlobalLiveEntryGate,
+    state: &mut LiveVenueState,
+    admitted_safety_generation: u64,
+) -> Option<LiveExecutionGateReason> {
+    if admitted_safety_generation == u64::MAX
+        || gate.halted
+        || gate.safety_generation != admitted_safety_generation
+        || state.reconciled_safety_generation != Some(admitted_safety_generation)
+        || !state.manual_entries_enabled
+    {
+        return Some(LiveExecutionGateReason::GlobalHalt);
+    }
+    let consumed_generation = record_global_entry_halt(gate, "single_post_attempt_consumed");
+    state.manual_entries_enabled = false;
+    state.manual_entries_reason = Some("single_post_attempt_consumed".to_string());
+    (consumed_generation == u64::MAX).then_some(LiveExecutionGateReason::GlobalHalt)
+}
+
+fn user_ws_heartbeat_ack_timed_out(
+    awaiting_pong_elapsed: Option<Duration>,
+    timeout: Duration,
+) -> bool {
+    awaiting_pong_elapsed.is_some_and(|elapsed| elapsed >= timeout)
+}
+
+fn live_capital_exposure_gate(
+    resulting_exposure: Decimal,
+    max_daily_loss_usd: Decimal,
+    max_open_notional_usd: Decimal,
+) -> Option<LiveExecutionGateReason> {
+    if resulting_exposure > max_daily_loss_usd {
+        Some(LiveExecutionGateReason::DailyLossLimit)
+    } else if resulting_exposure > max_open_notional_usd {
+        Some(LiveExecutionGateReason::OpenNotionalLimit)
+    } else {
+        None
     }
 }
 
@@ -2100,8 +3907,32 @@ mod tests {
 
     use super::*;
 
+    struct AlwaysReadyPrePostGuard;
+
+    impl crate::execution::live_pre_post_guard_sealed::Sealed for AlwaysReadyPrePostGuard {}
+
+    #[async_trait]
+    impl LivePrePostGuard for AlwaysReadyPrePostGuard {
+        async fn validate_pre_post(
+            &self,
+            _request: &OrderRequest,
+        ) -> Result<Option<LiveExecutionGateReason>> {
+            Ok(None)
+        }
+    }
+
+    async fn submit_with_test_guard(
+        venue: &LiveVenue,
+        request: OrderRequest,
+    ) -> Result<OrderRecord> {
+        venue
+            .submit_order_with_pre_post_guard(request, Some(Arc::new(AlwaysReadyPrePostGuard)))
+            .await
+    }
+
     fn live_config() -> LiveExecutionConfig {
         LiveExecutionConfig {
+            account_ref: "polymarket-test".to_string(),
             order_submit_enabled: false,
             max_order_notional_usd: dec!(2),
             max_open_notional_usd: dec!(30),
@@ -2116,13 +3947,286 @@ mod tests {
             user_ws_stale: std::time::Duration::from_secs(20),
             reconcile_interval: std::time::Duration::from_secs(30),
             stale_reconcile: std::time::Duration::from_secs(60),
-            clob_api_key: Some("key".to_string()),
+            clob_api_key: Some("00000000-0000-0000-0000-000000000001".to_string()),
             clob_secret: Some("secret".to_string()),
             clob_passphrase: Some("pass".to_string()),
-            private_key: Some("private".to_string()),
-            funder_address: Some("0xabc".to_string()),
-            signature_type: Some("1".to_string()),
+            private_key: Some(format!("0x{:064x}", 1)),
+            funder_address: Some("0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf".to_string()),
+            signature_type: Some("0".to_string()),
         }
+    }
+
+    fn assert_live_gate_rejection(order: &OrderRecord, reason: LiveExecutionGateReason) {
+        assert_eq!(order.state, OrderState::Rejected);
+        assert_eq!(
+            order.request.metadata["reject_reason"],
+            crate::execution::LIVE_EXECUTION_GATE_CLOSED_REASON
+        );
+        assert_eq!(
+            order.request.metadata["live_execution_gate"]["gate_reason"],
+            reason.as_str()
+        );
+        assert_eq!(
+            order.request.metadata["live_execution_gate"]["post_attempted"],
+            false
+        );
+    }
+
+    async fn seed_fresh_unblocked_geoblock(venue: &LiveVenue) {
+        let mut transport = venue.transport_state.lock().await;
+        transport.live_confirmed = true;
+        transport.geoblock_readable = true;
+        transport.geoblock_blocked = Some(false);
+        transport.geoblock_country = Some("US".to_string());
+        transport.geoblock_region = Some("NY".to_string());
+        transport.geoblock_checked_at = Some(Utc::now());
+    }
+
+    fn rest_backfill_order(
+        process_id: Uuid,
+        order_id: &str,
+        side: OrderSide,
+        price: Decimal,
+        size: Decimal,
+        created_at: DateTime<Utc>,
+    ) -> OrderRecord {
+        OrderRecord {
+            order_id: order_id.to_string(),
+            request: OrderRequest {
+                client_order_id: Uuid::new_v4(),
+                process_id: Some(process_id),
+                market_id: "market".to_string(),
+                token_id: "1".to_string(),
+                side,
+                order_type: OrderType::Fok,
+                price,
+                size,
+                metadata: json!({"execution_intent": "entry"}),
+            },
+            state: OrderState::Acknowledged,
+            created_at,
+            updated_at: created_at,
+        }
+    }
+
+    fn taker_trade(
+        trade_id: &str,
+        order_id: &str,
+        price: Decimal,
+        size: Decimal,
+        fee_rate_bps: Decimal,
+        match_time: DateTime<Utc>,
+    ) -> TradeResponse {
+        TradeResponse::builder()
+            .id(trade_id)
+            .taker_order_id(order_id)
+            .market(polymarket_client_sdk_v2::types::B256::ZERO)
+            .asset_id(U256::from(1))
+            .side(SdkSide::Buy)
+            .size(size)
+            .fee_rate_bps(fee_rate_bps)
+            .price(price)
+            .status(TradeStatusType::Matched)
+            .match_time(match_time)
+            .last_update(match_time)
+            .outcome("YES")
+            .bucket_index(0)
+            .owner(Uuid::max())
+            .maker_address(Address::ZERO)
+            .maker_orders(Vec::new())
+            .transaction_hash(polymarket_client_sdk_v2::types::B256::ZERO)
+            .trader_side(polymarket_client_sdk_v2::clob::types::TraderSide::Taker)
+            .build()
+    }
+
+    #[test]
+    fn rest_fill_backfill_recovers_complete_owned_trade_after_hour_long_gap() {
+        let process_id = Uuid::new_v4();
+        let checked_at = Utc::now();
+        let created_at = checked_at - chrono::Duration::minutes(90);
+        let order = rest_backfill_order(
+            process_id,
+            "venue-order-1",
+            OrderSide::Buy,
+            dec!(0.50),
+            dec!(2),
+            created_at,
+        );
+        let trade = taker_trade(
+            "trade-1",
+            "venue-order-1",
+            dec!(0.49),
+            dec!(2),
+            dec!(25),
+            created_at + chrono::Duration::seconds(1),
+        );
+        let owned_orders =
+            HashMap::from([("venue-order-1".to_string(), "venue-order-1".to_string())]);
+
+        let window_start =
+            reconciliation_trade_window_start(std::slice::from_ref(&order), checked_at).unwrap();
+        assert_eq!(window_start, created_at - FOK_FILL_RECONCILIATION_SKEW);
+        assert!(window_start < checked_at - chrono::Duration::hours(1));
+
+        let fills = rest_fill_backfill_plan(
+            process_id,
+            std::slice::from_ref(&order),
+            &owned_orders,
+            std::slice::from_ref(&trade),
+            checked_at,
+        )
+        .unwrap();
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].process_id, Some(process_id));
+        assert_eq!(fills[0].order_id, order.order_id);
+        assert_eq!(fills[0].token_id, "1");
+        assert_eq!(fills[0].price, dec!(0.49));
+        assert_eq!(fills[0].size, order.request.size);
+        assert_eq!(fills[0].fee, dec!(0.00245));
+        assert_eq!(
+            fills[0].fill_id,
+            Uuid::new_v5(&Uuid::NAMESPACE_URL, b"polymarket:trade:trade-1")
+        );
+    }
+
+    #[test]
+    fn rest_fill_backfill_uses_exact_maker_order_economics() {
+        use polymarket_client_sdk_v2::clob::types::response::MakerOrder;
+
+        let process_id = Uuid::new_v4();
+        let checked_at = Utc::now();
+        let order = rest_backfill_order(
+            process_id,
+            "maker-order-1",
+            OrderSide::Sell,
+            dec!(0.40),
+            dec!(1),
+            checked_at - chrono::Duration::seconds(2),
+        );
+        let trade = TradeResponse::builder()
+            .id("maker-trade-1")
+            .taker_order_id("foreign-taker")
+            .market(polymarket_client_sdk_v2::types::B256::ZERO)
+            .asset_id(U256::from(999))
+            .side(SdkSide::Buy)
+            .size(dec!(9))
+            .fee_rate_bps(dec!(99))
+            .price(dec!(0.90))
+            .status(TradeStatusType::Confirmed)
+            .match_time(checked_at - chrono::Duration::seconds(1))
+            .last_update(checked_at)
+            .outcome("YES")
+            .bucket_index(0)
+            .owner(Uuid::max())
+            .maker_address(Address::ZERO)
+            .maker_orders(vec![MakerOrder::builder()
+                .order_id("maker-order-1")
+                .owner(Uuid::max())
+                .maker_address(Address::ZERO)
+                .matched_amount(dec!(1))
+                .price(dec!(0.42))
+                .fee_rate_bps(dec!(7))
+                .asset_id(U256::from(1))
+                .outcome("YES")
+                .side(SdkSide::Sell)
+                .build()])
+            .transaction_hash(polymarket_client_sdk_v2::types::B256::ZERO)
+            .trader_side(polymarket_client_sdk_v2::clob::types::TraderSide::Maker)
+            .build();
+        let owned_orders =
+            HashMap::from([("maker-order-1".to_string(), "maker-order-1".to_string())]);
+
+        let fills = rest_fill_backfill_plan(
+            process_id,
+            std::slice::from_ref(&order),
+            &owned_orders,
+            std::slice::from_ref(&trade),
+            checked_at,
+        )
+        .unwrap();
+
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].token_id, "1");
+        assert_eq!(fills[0].price, dec!(0.42));
+        assert_eq!(fills[0].size, dec!(1));
+        assert_eq!(fills[0].fee, dec!(0.000294));
+    }
+
+    #[tokio::test]
+    async fn future_live_health_timestamps_are_not_treated_as_fresh() {
+        let mut config = live_config();
+        config.order_submit_enabled = true;
+        let venue = LiveVenue::new_for_test(config)
+            .unwrap()
+            .bind_process(Uuid::new_v4(), "polymarket-test")
+            .unwrap();
+        seed_fresh_unblocked_geoblock(&venue).await;
+        {
+            let mut transport = venue.transport_state.lock().await;
+            transport.user_ws_connected = true;
+            transport.last_user_ws_pong_at = Some(Utc::now() + chrono::Duration::minutes(1));
+        }
+        {
+            let mut state = venue.readiness_state.lock().await;
+            state.last_rest_reconcile_at = Some(Utc::now());
+            state.idempotency_clean = true;
+            state.unresolved_live_order_count = 0;
+            state.manual_entries_enabled = true;
+            state.manual_entries_reason = None;
+            state.process_accounting_proven = true;
+            state.process_accounting_status = "proven".to_string();
+        }
+        {
+            let mut global = venue.global_entry_gate.lock().await;
+            global.halted = false;
+            global.reason = "test_checked_enable".to_string();
+        }
+
+        let status = venue.live_status().await.unwrap();
+        assert!(!status.entries_enabled);
+        assert_eq!(status.last_user_ws_pong_age_secs, None);
+        assert_eq!(
+            status.reason.as_deref(),
+            Some("live_user_ws_stale_or_disconnected")
+        );
+
+        venue.transport_state.lock().await.last_user_ws_pong_at = Some(Utc::now());
+        venue.readiness_state.lock().await.last_rest_reconcile_at =
+            Some(Utc::now() + chrono::Duration::minutes(1));
+        let status = venue.live_status().await.unwrap();
+        assert!(!status.entries_enabled);
+        assert_eq!(status.last_rest_reconcile_age_secs, None);
+        assert_eq!(status.reason.as_deref(), Some("live_rest_reconcile_stale"));
+    }
+
+    #[tokio::test]
+    async fn unsafe_geoblock_refresh_revokes_the_shared_live_generation() {
+        let root = LiveVenue::new_for_test(live_config()).unwrap();
+        let venue = root
+            .bind_process(Uuid::new_v4(), "polymarket-test")
+            .unwrap();
+        {
+            let mut global = venue.global_entry_gate.lock().await;
+            global.halted = false;
+            global.reason = "active_test_grant".to_string();
+            global.safety_generation = 7;
+        }
+
+        root.record_geoblock_state(true, Some(true), Some("XX".to_string()), None, Utc::now())
+            .await;
+        {
+            let global = venue.global_entry_gate.lock().await;
+            assert!(global.halted);
+            assert_eq!(global.reason, "live_geoblock_blocked");
+            assert_eq!(global.safety_generation, 8);
+        }
+
+        root.record_geoblock_state(false, None, None, None, Utc::now())
+            .await;
+        let global = venue.global_entry_gate.lock().await;
+        assert!(global.halted);
+        assert_eq!(global.reason, "live_geoblock_unreadable");
+        assert_eq!(global.safety_generation, 9);
     }
 
     #[test]
@@ -2132,6 +4236,212 @@ mod tests {
         assert_eq!(event.hash(), event.hash());
         assert_eq!(event.event_type, "trade");
         assert_eq!(event.venue_trade_id.as_deref(), Some("t1"));
+
+        let cancellation = LiveVenue::parse_user_event(json!({
+            "type": "CANCELLATION",
+            "id": "order-1"
+        }));
+        assert_eq!(cancellation.event_type, "cancellation");
+        assert!(is_cancelled_order_status(
+            cancellation.event_status.as_deref()
+        ));
+        for status in ["CANCELED", "CANCELLED", " cancellation "] {
+            assert!(is_cancelled_order_status(Some(status)));
+        }
+        assert!(!is_cancelled_order_status(Some("CANCELED_BY_SYSTEM")));
+        assert!(!is_cancelled_order_status(Some("CANCEL")));
+    }
+
+    #[test]
+    fn user_ws_omits_empty_market_filter_and_strictly_classifies_health() {
+        let config = live_config();
+        let subscription = user_ws_subscription_payload(&config).unwrap();
+        assert!(subscription.get("markets").is_none());
+        assert!(matches!(
+            classify_user_ws_text("PONG", &[]).unwrap(),
+            UserWsText::HeartbeatPong
+        ));
+        assert!(classify_user_ws_text("not-json", &[]).is_err());
+        assert!(classify_user_ws_text(r#"{"status":"unauthorized"}"#, &[]).is_err());
+
+        let event = json!({
+            "event_type": "trade",
+            "id": "trade-1",
+            "market": "condition-1",
+            "asset_id": "token-1",
+            "status": "CONFIRMED"
+        });
+        assert!(matches!(
+            classify_user_ws_text(&event.to_string(), &[]).unwrap(),
+            UserWsText::UserEvent(_)
+        ));
+        assert!(
+            classify_user_ws_text(&event.to_string(), &["different-condition".to_string()])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn user_ws_heartbeat_requires_an_acknowledgement_within_the_bound() {
+        let timeout = Duration::from_secs(20);
+        assert!(!user_ws_heartbeat_ack_timed_out(None, timeout));
+        assert!(!user_ws_heartbeat_ack_timed_out(
+            Some(Duration::from_secs(19)),
+            timeout
+        ));
+        assert!(user_ws_heartbeat_ack_timed_out(
+            Some(Duration::from_secs(20)),
+            timeout
+        ));
+    }
+
+    #[tokio::test]
+    async fn user_ws_halt_invalidates_the_shared_generation() {
+        let gate = Arc::new(Mutex::new(GlobalLiveEntryGate {
+            halted: false,
+            reason: "process_checked_enable".to_string(),
+            safety_generation: 7,
+        }));
+
+        halt_shared_global_gate(&gate, "user_ws_account_event").await;
+
+        let gate = gate.lock().await;
+        assert!(gate.halted);
+        assert_eq!(gate.reason, "user_ws_account_event");
+        assert_eq!(gate.safety_generation, 8);
+    }
+
+    #[test]
+    fn clob_pagination_fails_closed_on_bad_cursors_metadata_and_overflow() {
+        let mut seen = HashSet::new();
+        assert_eq!(
+            next_clob_reconciliation_cursor(CLOB_TERMINAL_CURSOR, &mut seen, "trades").unwrap(),
+            None
+        );
+        assert_eq!(
+            next_clob_reconciliation_cursor("YWJj", &mut seen, "trades").unwrap(),
+            Some("YWJj".to_string())
+        );
+        assert!(next_clob_reconciliation_cursor("YWJj", &mut seen, "trades").is_err());
+        assert!(next_clob_reconciliation_cursor("", &mut seen, "trades").is_err());
+        assert!(next_clob_reconciliation_cursor(
+            &"A".repeat(MAX_CLOB_CURSOR_BYTES + 1),
+            &mut seen,
+            "trades"
+        )
+        .is_err());
+
+        assert!(validate_clob_page_metadata("trades", 2, 2, 100).is_ok());
+        assert!(validate_clob_page_metadata("trades", 2, 1, 100).is_err());
+        assert!(validate_clob_page_metadata("trades", 0, 0, 0).is_err());
+        assert!(validate_clob_page_metadata(
+            "trades",
+            1,
+            1,
+            MAX_CLOB_RECONCILIATION_ROWS as u64 + 1
+        )
+        .is_err());
+        assert!(checked_clob_row_count(MAX_CLOB_RECONCILIATION_ROWS, 1, "trades").is_err());
+        assert!(checked_clob_row_count(usize::MAX, 1, "trades").is_err());
+    }
+
+    #[test]
+    fn generation_compare_prevents_enable_and_post_races() {
+        let mut gate = GlobalLiveEntryGate {
+            halted: true,
+            reason: "checked_enable_revalidation".to_string(),
+            safety_generation: 11,
+        };
+        let mut state = LiveVenueState::fail_closed();
+        state.reconciled_safety_generation = Some(11);
+        record_global_entry_halt(&mut gate, "user_ws_account_event");
+        assert!(!commit_checked_live_enable(&mut gate, &mut state, 11));
+        assert!(gate.halted);
+        assert!(!state.manual_entries_enabled);
+
+        gate.halted = false;
+        gate.reason = "process_checked_enable".to_string();
+        state.manual_entries_enabled = true;
+        state.reconciled_safety_generation = Some(gate.safety_generation);
+        let admitted_generation = gate.safety_generation;
+        record_global_entry_halt(&mut gate, "user_ws_transport_error");
+        assert_eq!(
+            commit_live_post_attempt(&mut gate, &mut state, admitted_generation),
+            Some(LiveExecutionGateReason::GlobalHalt)
+        );
+
+        gate.halted = false;
+        gate.reason = "process_checked_enable".to_string();
+        state.manual_entries_enabled = true;
+        state.reconciled_safety_generation = Some(gate.safety_generation);
+        let admitted_generation = gate.safety_generation;
+        assert_eq!(
+            commit_live_post_attempt(&mut gate, &mut state, admitted_generation),
+            None
+        );
+        assert!(gate.halted);
+        assert!(!state.manual_entries_enabled);
+        assert_eq!(gate.reason, "single_post_attempt_consumed");
+    }
+
+    #[test]
+    fn cumulative_capital_exposure_enforces_the_daily_hard_cap() {
+        assert_eq!(
+            live_capital_exposure_gate(dec!(10), dec!(10), dec!(30)),
+            None
+        );
+        assert_eq!(
+            live_capital_exposure_gate(dec!(10.01), dec!(10), dec!(30)),
+            Some(LiveExecutionGateReason::DailyLossLimit)
+        );
+        assert_eq!(
+            live_capital_exposure_gate(dec!(5.01), dec!(10), dec!(5)),
+            Some(LiveExecutionGateReason::OpenNotionalLimit)
+        );
+    }
+
+    #[tokio::test]
+    async fn unbound_admin_reconcile_cannot_supply_process_scope() {
+        let venue = LiveVenue::new_for_test(live_config()).unwrap();
+        for request in [
+            AccountReconcileRequest {
+                account_address: None,
+                lookback_hours: Some(1),
+                process_id: Some(Uuid::new_v4()),
+                account_ref: None,
+                credential_account_fingerprint_sha256: None,
+                dry_run: true,
+                token_id: None,
+                source: Some("admin".to_string()),
+            },
+            AccountReconcileRequest {
+                account_address: None,
+                lookback_hours: Some(1),
+                process_id: None,
+                account_ref: Some("polymarket-test".to_string()),
+                credential_account_fingerprint_sha256: None,
+                dry_run: true,
+                token_id: None,
+                source: Some("admin".to_string()),
+            },
+            AccountReconcileRequest {
+                account_address: None,
+                lookback_hours: Some(1),
+                process_id: None,
+                account_ref: None,
+                credential_account_fingerprint_sha256: Some("a".repeat(64)),
+                dry_run: true,
+                token_id: None,
+                source: Some("admin".to_string()),
+            },
+        ] {
+            let error = venue
+                .run_account_reconcile(request)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("rejects caller-supplied process scope"));
+        }
     }
 
     #[tokio::test]
@@ -2143,13 +4453,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disabled_entries_block_entries_but_not_exit_intent_gate() {
+    async fn disabled_entries_block_entry_and_metadata_labeled_exit_intents() {
         let mut config = live_config();
         config.order_submit_enabled = true;
-        let venue = LiveVenue::new_for_test(config).unwrap();
+        let process_id = uuid::Uuid::new_v4();
+        let venue = LiveVenue::new_for_test(config)
+            .unwrap()
+            .bind_process(process_id, "polymarket-test")
+            .unwrap();
+        venue.global_entry_gate.lock().await.halted = false;
         let base = OrderRequest {
             client_order_id: uuid::Uuid::new_v4(),
-            process_id: None,
+            process_id: Some(process_id),
             market_id: "market".to_string(),
             token_id: "1".to_string(),
             side: OrderSide::Buy,
@@ -2159,27 +4474,28 @@ mod tests {
             metadata: json!({"purpose": "entry"}),
         };
 
-        let entry_error = venue
-            .submit_order(base.clone())
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(entry_error.contains("live order submit is disabled or not ready"));
+        let entry = submit_with_test_guard(&venue, base.clone()).await.unwrap();
+        assert_live_gate_rejection(&entry, LiveExecutionGateReason::ManualEnableRequired);
 
         let mut exit = base;
         exit.metadata = json!({"purpose": "exit"});
-        let exit_error = venue.submit_order(exit).await.unwrap_err().to_string();
-        assert!(exit_error.contains("live persistence store is not configured"));
+        let exit = submit_with_test_guard(&venue, exit).await.unwrap();
+        assert_live_gate_rejection(&exit, LiveExecutionGateReason::ManualEnableRequired);
     }
 
     #[tokio::test]
     async fn disabled_entries_block_non_exit_intents() {
         let mut config = live_config();
         config.order_submit_enabled = true;
-        let venue = LiveVenue::new_for_test(config).unwrap();
+        let process_id = uuid::Uuid::new_v4();
+        let venue = LiveVenue::new_for_test(config)
+            .unwrap()
+            .bind_process(process_id, "polymarket-test")
+            .unwrap();
+        venue.global_entry_gate.lock().await.halted = false;
         let mut request = OrderRequest {
             client_order_id: uuid::Uuid::new_v4(),
-            process_id: None,
+            process_id: Some(process_id),
             market_id: "market".to_string(),
             token_id: "1".to_string(),
             side: OrderSide::Buy,
@@ -2192,19 +4508,333 @@ mod tests {
         for intent in ["risk_reduction", "admin_manual"] {
             request.client_order_id = uuid::Uuid::new_v4();
             request.metadata = json!({"execution_intent": intent});
-            let error = venue
-                .submit_order(request.clone())
+            let order = submit_with_test_guard(&venue, request.clone())
                 .await
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains("live order submit is disabled or not ready"));
+                .unwrap();
+            assert_live_gate_rejection(&order, LiveExecutionGateReason::ManualEnableRequired);
         }
+    }
+
+    #[tokio::test]
+    async fn per_order_risk_denial_is_a_zero_post_nonfatal_record() {
+        let mut config = live_config();
+        config.order_submit_enabled = true;
+        let process_id = Uuid::new_v4();
+        let venue = LiveVenue::new_for_test(config)
+            .unwrap()
+            .bind_process(process_id, "polymarket-test")
+            .unwrap();
+        let request = OrderRequest {
+            client_order_id: Uuid::new_v4(),
+            process_id: Some(process_id),
+            market_id: "market".to_string(),
+            token_id: "1".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            price: dec!(0.75),
+            size: dec!(3),
+            metadata: json!({"execution_intent": "entry"}),
+        };
+
+        let order = submit_with_test_guard(&venue, request).await.unwrap();
+
+        assert_live_gate_rejection(&order, LiveExecutionGateReason::PerOrderNotionalLimit);
+    }
+
+    #[tokio::test]
+    async fn process_bound_venue_rejects_missing_or_mismatched_process_identity() {
+        let mut config = live_config();
+        config.order_submit_enabled = true;
+        let process_id = uuid::Uuid::new_v4();
+        let venue = LiveVenue::new_for_test(config)
+            .unwrap()
+            .bind_process(process_id, "polymarket-test")
+            .unwrap();
+        let request = OrderRequest {
+            client_order_id: uuid::Uuid::new_v4(),
+            process_id: Some(uuid::Uuid::new_v4()),
+            market_id: "market".to_string(),
+            token_id: "1".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            price: dec!(0.50),
+            size: dec!(2),
+            metadata: json!({"purpose": "entry"}),
+        };
+        let error = venue.submit_order(request).await.unwrap_err().to_string();
+        assert!(error.contains("must match bound process"));
+    }
+
+    #[tokio::test]
+    async fn manual_enable_remains_fail_closed_before_first_successful_reconcile() {
+        let mut config = live_config();
+        config.order_submit_enabled = true;
+        let venue = LiveVenue::new_for_test(config)
+            .unwrap()
+            .bind_process(uuid::Uuid::new_v4(), "polymarket-test")
+            .unwrap();
+        seed_fresh_unblocked_geoblock(&venue).await;
+
+        let error = venue
+            .set_live_entries_enabled(true, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("live persistence store is not configured"));
+        let status = venue.live_status().await.unwrap();
+        assert!(!status.entries_enabled);
+        assert!(!status.idempotency_clean);
+        assert_eq!(status.last_rest_reconcile_age_secs, None);
+        assert_eq!(
+            status.reason.as_deref(),
+            Some("live_global_halt:checked_enable_revalidation")
+        );
+    }
+
+    #[tokio::test]
+    async fn wallet_wide_halt_closes_every_bound_submit_path() {
+        let mut config = live_config();
+        config.order_submit_enabled = true;
+        let root = LiveVenue::new_for_test(config).unwrap();
+        let process_id = Uuid::new_v4();
+        let bound = root.bind_process(process_id, "polymarket-test").unwrap();
+        let identity = canonical_configured_account_identity(&bound.config).unwrap();
+        seed_fresh_unblocked_geoblock(&bound).await;
+        {
+            let mut transport = bound.transport_state.lock().await;
+            transport.user_ws_connected = true;
+            transport.last_user_ws_pong_at = Some(Utc::now());
+        }
+        {
+            let mut state = bound.readiness_state.lock().await;
+            state.last_rest_reconcile_at = Some(Utc::now());
+            state.idempotency_clean = true;
+            state.unresolved_live_order_count = 0;
+            state.process_accounting_proven = true;
+            state.process_accounting_status = "proven".to_string();
+            state.credential_account_fingerprint_sha256 = Some(identity.fingerprint_sha256);
+            state.reconciled_safety_generation = Some(0);
+            state.manual_entries_enabled = true;
+            state.manual_entries_reason = None;
+        }
+        {
+            let mut global = bound.global_entry_gate.lock().await;
+            global.halted = false;
+            global.reason = "process_checked_enable".to_string();
+        }
+        assert!(bound.live_status().await.unwrap().entries_enabled);
+
+        root.set_live_entries_enabled(false, Some("test_global_halt".to_string()))
+            .await
+            .unwrap();
+        let status = bound.live_status().await.unwrap();
+        assert!(!status.entries_enabled);
+        assert_eq!(
+            status.reason.as_deref(),
+            Some("live_global_halt:test_global_halt")
+        );
+
+        let exit = OrderRequest {
+            client_order_id: Uuid::new_v4(),
+            process_id: Some(process_id),
+            market_id: "market".to_string(),
+            token_id: "1".to_string(),
+            side: OrderSide::Sell,
+            order_type: OrderType::Fok,
+            price: dec!(0.50),
+            size: dec!(1),
+            metadata: json!({"purpose": "exit"}),
+        };
+        let order = submit_with_test_guard(&bound, exit).await.unwrap();
+        assert_live_gate_rejection(&order, LiveExecutionGateReason::GlobalHalt);
+    }
+
+    #[tokio::test]
+    async fn process_bound_live_submit_cannot_bypass_adjacent_guard() {
+        let mut config = live_config();
+        config.order_submit_enabled = true;
+        let process_id = Uuid::new_v4();
+        let venue = LiveVenue::new_for_test(config)
+            .unwrap()
+            .bind_process(process_id, "polymarket-test")
+            .unwrap();
+        let request = OrderRequest {
+            client_order_id: Uuid::new_v4(),
+            process_id: Some(process_id),
+            market_id: "market".to_string(),
+            token_id: "1".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            price: dec!(0.50),
+            size: dec!(1),
+            metadata: json!({"purpose": "entry"}),
+        };
+
+        let error = venue.submit_order(request).await.unwrap_err().to_string();
+
+        assert!(error.contains("requires an adjacent pre-POST guard"));
+    }
+
+    #[tokio::test]
+    async fn process_bound_live_submit_rejects_an_explicitly_missing_guard_before_io() {
+        let mut config = live_config();
+        config.order_submit_enabled = true;
+        let process_id = Uuid::new_v4();
+        let venue = LiveVenue::new_for_test(config)
+            .unwrap()
+            .bind_process(process_id, "polymarket-test")
+            .unwrap();
+        let request = OrderRequest {
+            client_order_id: Uuid::new_v4(),
+            process_id: Some(process_id),
+            market_id: "market".to_string(),
+            token_id: "1".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            price: dec!(0.50),
+            size: dec!(1),
+            metadata: json!({"purpose": "entry"}),
+        };
+
+        let error = venue
+            .submit_order_with_pre_post_guard(request, None)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("requires an adjacent pre-POST guard"));
+    }
+
+    #[tokio::test]
+    async fn repeated_metadata_labeled_exit_attempts_remain_zero_post_while_halted() {
+        let mut config = live_config();
+        config.order_submit_enabled = true;
+        let process_id = Uuid::new_v4();
+        let venue = LiveVenue::new_for_test(config)
+            .unwrap()
+            .bind_process(process_id, "polymarket-test")
+            .unwrap();
+        let request = OrderRequest {
+            client_order_id: Uuid::new_v4(),
+            process_id: Some(process_id),
+            market_id: "market".to_string(),
+            token_id: "1".to_string(),
+            side: OrderSide::Sell,
+            order_type: OrderType::Fok,
+            price: dec!(0.50),
+            size: dec!(1),
+            metadata: json!({"purpose": "exit"}),
+        };
+
+        for _ in 0..2 {
+            let order = submit_with_test_guard(&venue, request.clone())
+                .await
+                .unwrap();
+            assert_live_gate_rejection(&order, LiveExecutionGateReason::GlobalHalt);
+        }
+    }
+
+    #[test]
+    fn canonical_identity_is_signature_aware_and_fingerprint_is_bounded() {
+        let eoa = canonical_configured_account_identity(&live_config()).unwrap();
+        assert_eq!(eoa.account_address, eoa.signer_address);
+        assert_eq!(eoa.fingerprint_sha256.len(), 64);
+
+        let mut poly1271 = live_config();
+        poly1271.signature_type = Some("3".to_string());
+        poly1271.funder_address = Some("0x0000000000000000000000000000000000000002".to_string());
+        let poly1271 = canonical_configured_account_identity(&poly1271).unwrap();
+        assert_ne!(poly1271.account_address, poly1271.signer_address);
+        assert_eq!(
+            poly1271.account_address,
+            "0x0000000000000000000000000000000000000002"
+        );
+        assert_eq!(poly1271.fingerprint_sha256.len(), 64);
+    }
+
+    #[test]
+    fn canonical_identity_fingerprint_survives_api_key_rotation_but_not_account_rotation() {
+        let config = live_config();
+        let baseline = canonical_configured_account_identity(&config)
+            .unwrap()
+            .fingerprint_sha256;
+
+        let mut rotated_api = config.clone();
+        rotated_api.clob_api_key = Some("00000000-0000-0000-0000-000000000002".to_string());
+        rotated_api.clob_secret = Some("rotated-secret".to_string());
+        rotated_api.clob_passphrase = Some("rotated-passphrase".to_string());
+        assert_eq!(
+            canonical_configured_account_identity(&rotated_api)
+                .unwrap()
+                .fingerprint_sha256,
+            baseline
+        );
+
+        let mut rotated_account = config;
+        rotated_account.account_ref = "polymarket-other".to_string();
+        assert_ne!(
+            canonical_configured_account_identity(&rotated_account)
+                .unwrap()
+                .fingerprint_sha256,
+            baseline
+        );
+    }
+
+    #[test]
+    fn only_definitive_client_rejections_are_safe_to_mark_rejected() {
+        use polymarket_client_sdk_v2::error::{Error as SdkError, Method, StatusCode};
+
+        let rejected = anyhow::Error::new(SdkError::status(
+            StatusCode::BAD_REQUEST,
+            Method::POST,
+            "/order".to_string(),
+            "invalid order",
+        ));
+        assert!(is_definitive_live_submit_error(&rejected));
+
+        let duplicate_or_ambiguous = anyhow::Error::new(SdkError::status(
+            StatusCode::CONFLICT,
+            Method::POST,
+            "/order".to_string(),
+            "conflict",
+        ));
+        assert!(!is_definitive_live_submit_error(&duplicate_or_ambiguous));
+        assert!(!is_definitive_live_submit_error(&anyhow::anyhow!(
+            "connection reset after write"
+        )));
+    }
+
+    #[test]
+    fn process_binding_rejects_nil_identity() {
+        let venue = LiveVenue::new_for_test(live_config()).unwrap();
+        assert!(venue.bind_process(Uuid::nil(), "polymarket-test").is_err());
+        assert!(venue.bind_process(Uuid::new_v4(), "   ").is_err());
+
+        let process_id = Uuid::new_v4();
+        assert!(venue
+            .bind_process(process_id, "polymarket-primary")
+            .is_err());
+        let bound = venue
+            .bind_process(process_id, "  polymarket-test  ")
+            .unwrap();
+        assert_eq!(bound.bound_process_id(), Some(process_id));
+        assert_eq!(bound.bound_account_ref(), Some("polymarket-test"));
     }
 
     #[test]
     fn live_config_rejects_unsafe_caps() {
         let mut config = live_config();
         config.max_order_notional_usd = dec!(2.01);
+        assert!(config.validate_for_live().is_err());
+
+        let mut config = live_config();
+        config.order_submit_enabled = true;
+        config.require_idempotency_clean = false;
+        assert!(config.validate_for_live().is_err());
+
+        let mut config = live_config();
+        config.order_submit_enabled = true;
+        config.user_ws_enabled = false;
         assert!(config.validate_for_live().is_err());
     }
 }

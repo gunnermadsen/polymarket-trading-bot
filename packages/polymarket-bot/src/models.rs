@@ -296,6 +296,7 @@ impl TradingProcessConfig {
             }
             effective.execute_signals = config.execute_signals;
             effective.live_capital = config.live_capital;
+            effective.account_ref = config.account_ref.clone();
             if let Some(taker_fee_rate) = config.taker_fee_rate {
                 effective.taker_fee_rate = taker_fee_rate;
             }
@@ -308,6 +309,7 @@ pub struct EffectiveProcessExecutionConfig {
     pub mode: String,
     pub execute_signals: bool,
     pub live_capital: bool,
+    pub account_ref: Option<String>,
     pub taker_fee_rate: Decimal,
 }
 
@@ -317,6 +319,7 @@ impl Default for EffectiveProcessExecutionConfig {
             mode: "unspecified".to_string(),
             execute_signals: false,
             live_capital: false,
+            account_ref: None,
             taker_fee_rate: dec!(0.03),
         }
     }
@@ -330,6 +333,8 @@ pub struct ProcessExecutionConfig {
     pub execute_signals: bool,
     #[serde(default)]
     pub live_capital: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_ref: Option<String>,
     #[serde(default)]
     pub taker_fee_rate: Option<Decimal>,
 }

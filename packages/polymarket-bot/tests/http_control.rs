@@ -11,7 +11,7 @@ use polymarket_bot::{
         LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics, LiveOrderDryRunRequest,
         LivePoly1271FunderProbeCandidate, LivePoly1271FunderProbeRequest,
         LivePoly1271FunderProbeResponse, LiveVenueStatus, LiveWalletAddressDiagnostics,
-        LiveWalletCandidateAddressDiagnostics, LiveWalletTokenBalances,
+        LiveWalletCandidateAddressDiagnostics, LiveWalletTokenBalances, ReconciliationReport,
     },
     http::{self, ControlApi, HttpError, MetricsResponse},
     ingestion::job::{
@@ -162,6 +162,11 @@ impl ControlApi for FakeControlApi {
         Ok(LiveVenueStatus {
             mode: "live".to_string(),
             live_confirmed: false,
+            geoblock_readable: true,
+            geoblock_blocked: Some(false),
+            geoblock_country: Some("PE".to_string()),
+            geoblock_region: Some("LMA".to_string()),
+            last_geoblock_check_age_secs: Some(1),
             order_submit_enabled: false,
             user_ws_enabled: false,
             user_ws_connected: false,
@@ -169,6 +174,8 @@ impl ControlApi for FakeControlApi {
             last_rest_reconcile_age_secs: None,
             idempotency_clean: true,
             unresolved_live_order_count: 0,
+            process_accounting_proven: false,
+            process_accounting_status: "unproven".to_string(),
             max_order_notional_usd: Decimal::ZERO,
             max_open_notional_usd: Decimal::ZERO,
             entries_enabled: false,
@@ -180,6 +187,11 @@ impl ControlApi for FakeControlApi {
         Ok(LiveIdentityDiagnostics {
             mode: "live".to_string(),
             clob_api_base_url: "https://clob.polymarket.com".to_string(),
+            geoblock_readable: true,
+            geoblock_blocked: Some(false),
+            geoblock_country: Some("PE".to_string()),
+            geoblock_region: Some("LMA".to_string()),
+            geoblock_error: None,
             signer_address: Some("0x0000000000000000000000000000000000000001".to_string()),
             configured_funder_address: Some(
                 "0x0000000000000000000000000000000000000002".to_string(),
@@ -189,6 +201,8 @@ impl ControlApi for FakeControlApi {
             authenticated_client_address: Some(
                 "0x0000000000000000000000000000000000000001".to_string(),
             ),
+            account_identity_valid: true,
+            account_identity_fingerprint_sha256: Some("a".repeat(64)),
             credentials_present: true,
             api_keys_readable: true,
             api_keys_error: None,
@@ -409,6 +423,11 @@ impl ControlApi for FakeControlApi {
         Ok(LiveVenueStatus {
             mode: "live".to_string(),
             live_confirmed: true,
+            geoblock_readable: true,
+            geoblock_blocked: Some(false),
+            geoblock_country: Some("PE".to_string()),
+            geoblock_region: Some("LMA".to_string()),
+            last_geoblock_check_age_secs: Some(1),
             order_submit_enabled: true,
             user_ws_enabled: true,
             user_ws_connected: true,
@@ -416,11 +435,47 @@ impl ControlApi for FakeControlApi {
             last_rest_reconcile_age_secs: Some(1),
             idempotency_clean: true,
             unresolved_live_order_count: 0,
+            process_accounting_proven: true,
+            process_accounting_status: "proven".to_string(),
             max_order_notional_usd: Decimal::from(2),
             max_open_notional_usd: Decimal::from(30),
             entries_enabled: enabled,
             reason: (!enabled).then(|| "manual_disable".to_string()),
         })
+    }
+
+    async fn trading_process_live_preflight(
+        &self,
+        process_id: Uuid,
+    ) -> Result<http::TradingProcessLivePreflightResponse, HttpError> {
+        Ok(http::TradingProcessLivePreflightResponse {
+            process_id,
+            account_ref: "polymarket-primary".to_string(),
+            credential_connectivity_ready: true,
+            reconciliation_ready: true,
+            trading_disabled: true,
+            ready: true,
+            reasons: Vec::new(),
+            identity: self.live_identity_diagnostics().await?,
+            status: self.live_status().await?,
+            reconciliation: Some(ReconciliationReport {
+                open_orders: 0,
+                balances_checked: true,
+                mismatches_found: 0,
+                unresolved_count: 0,
+                checked_at: Utc::now(),
+            }),
+            reconciliation_error: None,
+            checked_at: Utc::now(),
+        })
+    }
+
+    async fn set_trading_process_live_entries_enabled(
+        &self,
+        _process_id: Uuid,
+        enabled: bool,
+    ) -> Result<LiveVenueStatus, HttpError> {
+        self.live_set_entries_enabled(enabled).await
     }
 
     async fn list_trading_processes(
@@ -562,6 +617,27 @@ impl ControlApi for FakeControlApi {
             status: serde_json::json!({
                 "orders": {"total": 1},
                 "fills": {"total": 1},
+                "btc_runtime": {
+                    "active": true,
+                    "execution_mode": "live",
+                    "live_status": {
+                        "entries_enabled": false,
+                        "user_ws_enabled": true,
+                        "user_ws_connected": true,
+                        "last_user_ws_pong_age_secs": 1,
+                        "last_rest_reconcile_age_secs": 1,
+                        "process_accounting_proven": true,
+                        "process_accounting_status": "proven",
+                        "idempotency_clean": true,
+                        "unresolved_live_order_count": 0,
+                        "geoblock_readable": true,
+                        "geoblock_blocked": false,
+                        "geoblock_country": "PE",
+                        "geoblock_region": "LMA",
+                        "last_geoblock_check_age_secs": 1,
+                        "reason": "manual_enable_required"
+                    }
+                }
             }),
         })
     }
@@ -586,6 +662,7 @@ impl ControlApi for FakeControlApi {
                     mode: Some("paper".to_string()),
                     execute_signals: true,
                     live_capital: false,
+                    account_ref: None,
                     taker_fee_rate: None,
                 }),
                 raw: serde_json::json!({
@@ -1249,6 +1326,49 @@ async fn authenticated_admin_can_read_live_status_and_halt() {
 }
 
 #[tokio::test]
+async fn authenticated_admin_can_preflight_and_control_process_scoped_live_entries() {
+    let app = http::router(Arc::new(FakeControlApi), "secret");
+    let process_id = Uuid::from_u128(0xeffa3e5e2f5a4f1898ba06e4c0da74ef);
+    let preflight_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/admin/trading-processes/{process_id}/live-preflight"
+                ))
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(preflight_response.status(), StatusCode::OK);
+    let body = to_bytes(preflight_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let report: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(report["process_id"], process_id.to_string());
+    assert_eq!(report["account_ref"], "polymarket-primary");
+    assert_eq!(report["ready"], true);
+
+    let enable_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/admin/trading-processes/{process_id}/live/entries/enable"
+                ))
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(enable_response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn authenticated_admin_can_manage_trading_processes() {
     let app = http::router(Arc::new(FakeControlApi), "secret");
     let retired_create_response = app
@@ -1325,6 +1445,30 @@ async fn authenticated_admin_can_manage_trading_processes() {
         .await
         .unwrap();
     assert_eq!(status_response.status(), StatusCode::OK);
+    let status_body = to_bytes(status_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let status_json: Value = serde_json::from_slice(&status_body).unwrap();
+    assert_eq!(
+        status_json["status"]["btc_runtime"]["execution_mode"],
+        "live"
+    );
+    assert_eq!(
+        status_json["status"]["btc_runtime"]["live_status"]["entries_enabled"],
+        false
+    );
+    assert_eq!(
+        status_json["status"]["btc_runtime"]["live_status"]["user_ws_connected"],
+        true
+    );
+    assert_eq!(
+        status_json["status"]["btc_runtime"]["live_status"]["process_accounting_status"],
+        "proven"
+    );
+    assert_eq!(
+        status_json["status"]["btc_runtime"]["live_status"]["geoblock_blocked"],
+        false
+    );
 
     let update_response = app
         .clone()

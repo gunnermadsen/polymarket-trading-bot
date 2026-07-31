@@ -2,7 +2,9 @@ pub mod admission;
 pub mod directional_features;
 pub mod directional_model;
 pub mod execution_guard;
+pub mod execution_lifecycle;
 pub mod feeds;
+pub mod live_execution;
 pub mod market;
 pub mod paper;
 pub mod predictive_regime_v2;
@@ -55,11 +57,15 @@ pub use execution_guard::{
     BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION, BTC_REFERENCE_EXECUTION_GUARD_METADATA_KEY,
     BTC_REFERENCE_EXECUTION_GUARD_VERSION,
 };
+pub use execution_lifecycle::{
+    BtcExecutionLifecycle, BtcExecutionMode, LiveExecutionLifecycle, PaperExecutionLifecycle,
+};
 pub use feeds::{
     parse_binance_agg_trade, parse_binance_agg_trade_with_details, parse_binance_aggregate_trade,
     parse_clob_messages, parse_rtds_reference_tick, BookRegistry, BookUpdateSide, ClobMessage,
     PriceChange,
 };
+pub use live_execution::BtcLiveExecutionAdapter;
 pub use market::{
     aligned_window_start, discovery_windows, parse_gamma_btc_interval_event, slug_for_window,
     window_start_from_slug,
@@ -74,7 +80,9 @@ pub use predictive_regime_v2::{
     ShadowPredictiveRegimeV2CandidateSource, ShadowPredictiveRegimeV2Evaluation,
     ShadowPredictiveRegimeV2State, SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_V2_SCHEMA_VERSION,
 };
-pub use process_runner::{BtcPaperProcessConfig, BtcPaperProcessRunner};
+pub use process_runner::{
+    BtcPaperProcessConfig, BtcPaperProcessRunner, BtcProcessConfig, BtcProcessRunner,
+};
 pub use repository::{
     BtcMarketLabel, BtcOfficialResolutionWatch, BtcPaperSettlementRecord, BtcRepository,
     BtcRunManifest, FeedSession, PersistedOfficialResolution,

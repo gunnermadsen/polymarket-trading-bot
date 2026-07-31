@@ -145,6 +145,9 @@ pub struct RuntimeDirectionalModel {
     artifact_sha256: String,
     feature_schema_version: String,
     feature_schema_sha256: String,
+    deployment_scope: Option<String>,
+    production_qualified: bool,
+    live_capital_allowed: bool,
     feature_names: Vec<String>,
     imputation_medians: Vec<f64>,
     baseline_logit: f64,
@@ -170,6 +173,24 @@ impl RuntimeDirectionalModel {
 
     pub fn feature_schema_sha256(&self) -> &str {
         &self.feature_schema_sha256
+    }
+
+    pub fn deployment_scope(&self) -> Option<&str> {
+        self.deployment_scope.as_deref()
+    }
+
+    pub fn production_qualified(&self) -> bool {
+        self.production_qualified
+    }
+
+    /// Returns the immutable artifact authorization for live capital. Missing legacy metadata,
+    /// paper-only artifacts, and artifacts without production qualification all fail closed.
+    pub fn live_capital_allowed(&self) -> bool {
+        self.deployment_scope
+            .as_deref()
+            .is_some_and(|scope| scope != "paper_only")
+            && self.production_qualified
+            && self.live_capital_allowed
     }
 
     pub fn feature_names(&self) -> &[String] {
@@ -816,13 +837,13 @@ fn compile_runtime_model(
     if !file.provenance.is_object() {
         bail!("BTC directional runtime model provenance must be a JSON object");
     }
-    match (
+    let (deployment_scope, production_qualified, live_capital_allowed) = match (
         file.deployment.as_ref(),
         manifest.deployment_scope.as_deref(),
         manifest.production_qualified,
         manifest.live_capital_allowed,
     ) {
-        (None, None, None, None) => {}
+        (None, None, None, None) => (None, false, false),
         (Some(deployment), Some(scope), Some(production_qualified), Some(live_capital_allowed))
             if deployment.scope == scope
                 && deployment.production_qualified == production_qualified
@@ -831,11 +852,18 @@ fn compile_runtime_model(
                     &deployment.scope,
                     deployment.production_qualified,
                     deployment.live_capital_allowed,
-                ) => {}
+                ) =>
+        {
+            (
+                Some(deployment.scope.clone()),
+                deployment.production_qualified,
+                deployment.live_capital_allowed,
+            )
+        }
         _ => {
             bail!("BTC directional runtime model deployment metadata does not match its manifest")
         }
-    }
+    };
     let feature_count = file.features.names.len();
     if feature_count == 0
         || feature_count != file.features.imputation_medians.len()
@@ -946,6 +974,9 @@ fn compile_runtime_model(
         artifact_sha256,
         feature_schema_version: file.features.schema_version,
         feature_schema_sha256: file.features.schema_sha256,
+        deployment_scope,
+        production_qualified,
+        live_capital_allowed,
         feature_names: file.features.names,
         imputation_medians: file.features.imputation_medians,
         baseline_logit: estimator.baseline_logit,
@@ -1263,6 +1294,9 @@ mod tests {
             artifact_sha256: "a".repeat(64),
             feature_schema_version: BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION.to_string(),
             feature_schema_sha256: "b".repeat(64),
+            deployment_scope: None,
+            production_qualified: false,
+            live_capital_allowed: false,
             feature_names: vec!["signal".to_string()],
             imputation_medians: vec![0.0],
             baseline_logit: 0.0,
@@ -1407,6 +1441,26 @@ mod tests {
         assert!(!valid_deployment_metadata("production", false, true));
         assert!(valid_deployment_metadata("production", true, true));
         assert!(!valid_deployment_metadata(" ", false, false));
+    }
+
+    #[test]
+    fn runtime_model_live_capital_authorization_is_immutable_and_fail_closed() {
+        let mut model = test_model(0.5);
+        assert_eq!(model.deployment_scope(), None);
+        assert!(!model.production_qualified());
+        assert!(!model.live_capital_allowed());
+
+        model.deployment_scope = Some("paper_only".to_string());
+        model.production_qualified = true;
+        model.live_capital_allowed = true;
+        assert!(!model.live_capital_allowed());
+
+        model.deployment_scope = Some("production".to_string());
+        model.production_qualified = false;
+        assert!(!model.live_capital_allowed());
+
+        model.production_qualified = true;
+        assert!(model.live_capital_allowed());
     }
 
     #[test]
@@ -1619,6 +1673,21 @@ mod tests {
                 feature_schema_sha256: manifest.feature_schema_sha256.clone(),
             };
             let model = registry.load(&selection).unwrap();
+            assert_eq!(
+                model.deployment_scope(),
+                manifest.deployment_scope.as_deref()
+            );
+            assert_eq!(
+                model.production_qualified(),
+                manifest.production_qualified.unwrap_or(false)
+            );
+            let expected_live_capital_allowed = manifest
+                .deployment_scope
+                .as_deref()
+                .is_some_and(|scope| scope != "paper_only")
+                && manifest.production_qualified.unwrap_or(false)
+                && manifest.live_capital_allowed.unwrap_or(false);
+            assert_eq!(model.live_capital_allowed(), expected_live_capital_allowed);
             let vectors: GoldenVectorsFile = serde_json::from_slice(
                 &fs::read(directory.join(&manifest.golden_vectors_file)).unwrap(),
             )

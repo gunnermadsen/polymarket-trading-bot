@@ -1,4 +1,6 @@
-use anyhow::Result;
+use std::collections::{HashMap, HashSet};
+
+use anyhow::{bail, Result};
 use chrono::{TimeZone, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -7,14 +9,26 @@ use uuid::Uuid;
 use crate::{
     data_api::{ActivityQuery, DataApiClient, PositionsQuery},
     execution::live::LiveVenueEvent,
+    idempotency::event_hash,
     models::{DataApiActivity, DataApiPosition},
     store::{AccountPositionSnapshot, AccountTrade, Store},
 };
+
+const DATA_API_RECONCILIATION_PAGE_SIZE: usize = 500;
+const MAX_DATA_API_RECONCILIATION_ROWS: usize = 4_000;
+const MAX_DATA_API_RECONCILIATION_REQUESTS: usize =
+    MAX_DATA_API_RECONCILIATION_ROWS / DATA_API_RECONCILIATION_PAGE_SIZE + 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountReconcileRequest {
     pub account_address: Option<String>,
     pub lookback_hours: Option<i64>,
+    #[serde(default)]
+    pub process_id: Option<Uuid>,
+    #[serde(default)]
+    pub account_ref: Option<String>,
+    #[serde(default)]
+    pub credential_account_fingerprint_sha256: Option<String>,
     #[serde(default)]
     pub dry_run: bool,
     #[serde(default)]
@@ -32,8 +46,22 @@ pub struct AccountPositionMismatch {
     pub mismatch_type: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProcessAccountingProof {
+    pub status: String,
+    pub position_ownership: String,
+    pub realized_pnl: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountReconcileReport {
+    pub process_id: Option<Uuid>,
+    pub account_ref: Option<String>,
+    pub credential_account_fingerprint_sha256: Option<String>,
+    pub process_accounting_proven: bool,
+    pub process_accounting_status: String,
+    pub process_accounting_proof: ProcessAccountingProof,
     pub account_address: String,
     pub source: String,
     pub dry_run: bool,
@@ -59,6 +87,32 @@ pub async fn reconcile_account_positions(
     data_api: &DataApiClient,
     request: AccountReconcileRequest,
 ) -> Result<AccountReconcileReport> {
+    let process_id = request.process_id;
+    if process_id.is_some_and(|process_id| process_id.is_nil()) {
+        bail!("account reconciliation process_id must not be nil");
+    }
+    let account_ref = normalize_account_ref(request.account_ref.as_deref())?;
+    if process_id.is_some() != account_ref.is_some() {
+        bail!("process-scoped account reconciliation requires process_id and account_ref together");
+    }
+    if process_id.is_some() && request.token_id.is_some() {
+        bail!("process-scoped account reconciliation cannot use a token filter");
+    }
+    let credential_account_fingerprint_sha256 = request
+        .credential_account_fingerprint_sha256
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_string);
+    if process_id.is_some() != credential_account_fingerprint_sha256.is_some() {
+        bail!("process-scoped account reconciliation requires a credential/account fingerprint");
+    }
+    if credential_account_fingerprint_sha256
+        .as_deref()
+        .is_some_and(|fingerprint| !is_sha256_hex(fingerprint))
+    {
+        bail!("account reconciliation credential/account fingerprint must be SHA-256 hex");
+    }
+
     let account_address = request
         .account_address
         .as_deref()
@@ -76,15 +130,25 @@ pub async fn reconcile_account_positions(
         "poll" => "poll",
         _ => "data_api",
     };
-    let start = (Utc::now() - chrono::Duration::hours(lookback_hours)).timestamp();
+    // Freeze the activity window before starting offset pagination. Without an upper bound, a
+    // newly inserted account event can shift every later page and make a clean reconciliation
+    // silently skip or duplicate evidence.
+    let activity_window_end = Utc::now();
+    let start = (activity_window_end - chrono::Duration::hours(lookback_hours)).timestamp();
     let mut activity_query = ActivityQuery::for_user(account_address.clone());
-    activity_query.limit = Some(500);
+    activity_query.limit = Some(DATA_API_RECONCILIATION_PAGE_SIZE);
     activity_query.start = Some(start);
+    activity_query.end = Some(activity_window_end.timestamp());
     activity_query.sort_by = Some("timestamp".to_string());
     activity_query.sort_direction = Some("desc".to_string());
-    let activities = data_api.fetch_activity(&activity_query).await?;
+    let activities = fetch_bounded_activity(data_api, activity_query).await?;
+    let external_trade_activities = activities
+        .iter()
+        .filter(|activity| is_trade_activity(activity))
+        .count();
     let mut trades = activities
         .iter()
+        .filter(|activity| is_trade_activity(activity))
         .filter_map(|activity| {
             account_trade_from_activity(&account_address, activity, trade_source)
         })
@@ -98,10 +162,29 @@ pub async fn reconcile_account_positions(
         .collect::<Vec<_>>();
     trades.sort_by_key(|trade| trade.timestamp_utc);
 
+    let unmatched_trades = if let Some(process_id) = process_id {
+        let mut venue_order_ids = trades
+            .iter()
+            .filter_map(|trade| trade.venue_order_id.clone())
+            .collect::<Vec<_>>();
+        venue_order_ids.sort_unstable();
+        venue_order_ids.dedup();
+        let owned_orders =
+            process_owned_orders_for_reconciliation(store, process_id, &venue_order_ids).await?;
+        let unlinked_normalized = link_process_owned_trades(&mut trades, &owned_orders);
+        let unmatched = unlinked_normalized
+            .saturating_add(external_trade_activities.saturating_sub(trades.len()));
+        unmatched as u64
+    } else {
+        // Account-wide administrative reconciliation predates process ownership. Preserve its
+        // reporting contract instead of pretending wallet activity belongs to one process.
+        0
+    };
+
     let mut positions_query = PositionsQuery::for_user(account_address.clone());
-    positions_query.limit = Some(500);
+    positions_query.limit = Some(DATA_API_RECONCILIATION_PAGE_SIZE);
     positions_query.size_threshold = Some(Decimal::ZERO);
-    let positions = data_api.fetch_positions(&positions_query).await?;
+    let positions = fetch_bounded_positions(data_api, positions_query).await?;
     let snapshots = positions
         .iter()
         .filter_map(|position| {
@@ -130,7 +213,30 @@ pub async fn reconcile_account_positions(
         }
     }
 
+    let process_accounting_proof = if process_id.is_some() {
+        ProcessAccountingProof {
+            status: "unproven".to_string(),
+            position_ownership: "unproven".to_string(),
+            realized_pnl: "unproven".to_string(),
+            reason: "account_positions_are_wallet_aggregate".to_string(),
+        }
+    } else {
+        ProcessAccountingProof {
+            status: "legacy_unscoped".to_string(),
+            position_ownership: "not_applicable".to_string(),
+            realized_pnl: "not_applicable".to_string(),
+            reason: "legacy_account_wide_admin_reconciliation".to_string(),
+        }
+    };
+    let process_accounting_proven = false;
+    let process_accounting_status = process_accounting_proof.status.clone();
     let report = AccountReconcileReport {
+        process_id,
+        account_ref,
+        credential_account_fingerprint_sha256,
+        process_accounting_proven,
+        process_accounting_status,
+        process_accounting_proof,
         account_address,
         source: source.clone(),
         dry_run: request.dry_run,
@@ -148,10 +254,94 @@ pub async fn reconcile_account_positions(
         position_adjustments_applied: 0,
         position_adjustment_size_applied: Decimal::ZERO,
         mismatches: Vec::new(),
-        unmatched_trades: 0,
+        unmatched_trades,
     };
     store.insert_account_reconciliation_run(&report).await?;
     Ok(report)
+}
+
+async fn fetch_bounded_activity(
+    data_api: &DataApiClient,
+    mut query: ActivityQuery,
+) -> Result<Vec<DataApiActivity>> {
+    let mut rows = Vec::new();
+    let mut seen_pages = HashSet::new();
+    let mut offset = query.offset.unwrap_or(0);
+    query.limit = Some(DATA_API_RECONCILIATION_PAGE_SIZE);
+    for _ in 0..MAX_DATA_API_RECONCILIATION_REQUESTS {
+        query.offset = Some(offset);
+        let page = data_api.fetch_activity(&query).await?;
+        let continue_paging =
+            append_bounded_data_api_page(&mut rows, &mut seen_pages, page, "activity")?;
+        if !continue_paging {
+            return Ok(rows);
+        }
+        offset = offset
+            .checked_add(DATA_API_RECONCILIATION_PAGE_SIZE)
+            .ok_or_else(|| anyhow::anyhow!("Polymarket Data API activity offset overflow"))?;
+    }
+    bail!(
+        "Polymarket Data API activity exceeds the bounded {}-row reconciliation window",
+        MAX_DATA_API_RECONCILIATION_ROWS
+    )
+}
+
+async fn fetch_bounded_positions(
+    data_api: &DataApiClient,
+    mut query: PositionsQuery,
+) -> Result<Vec<DataApiPosition>> {
+    let mut rows = Vec::new();
+    let mut seen_pages = HashSet::new();
+    let mut offset = query.offset.unwrap_or(0);
+    query.limit = Some(DATA_API_RECONCILIATION_PAGE_SIZE);
+    for _ in 0..MAX_DATA_API_RECONCILIATION_REQUESTS {
+        query.offset = Some(offset);
+        let page = data_api.fetch_positions(&query).await?;
+        let continue_paging =
+            append_bounded_data_api_page(&mut rows, &mut seen_pages, page, "positions")?;
+        if !continue_paging {
+            return Ok(rows);
+        }
+        offset = offset
+            .checked_add(DATA_API_RECONCILIATION_PAGE_SIZE)
+            .ok_or_else(|| anyhow::anyhow!("Polymarket Data API positions offset overflow"))?;
+    }
+    bail!(
+        "Polymarket Data API positions exceed the bounded {}-row reconciliation window",
+        MAX_DATA_API_RECONCILIATION_ROWS
+    )
+}
+
+fn append_bounded_data_api_page<T: Serialize>(
+    rows: &mut Vec<T>,
+    seen_pages: &mut HashSet<String>,
+    page: Vec<T>,
+    resource: &str,
+) -> Result<bool> {
+    if page.len() > DATA_API_RECONCILIATION_PAGE_SIZE {
+        bail!(
+            "Polymarket Data API {} page exceeded the requested {}-row bound",
+            resource,
+            DATA_API_RECONCILIATION_PAGE_SIZE
+        );
+    }
+    if page.is_empty() {
+        return Ok(false);
+    }
+    let page_len = page.len();
+    let page_sha256 = event_hash(&serde_json::to_value(&page)?);
+    if !seen_pages.insert(page_sha256) {
+        bail!("Polymarket Data API {resource} repeated a reconciliation page");
+    }
+    if rows.len().saturating_add(page_len) > MAX_DATA_API_RECONCILIATION_ROWS {
+        bail!(
+            "Polymarket Data API {} exceeds the bounded {}-row reconciliation window",
+            resource,
+            MAX_DATA_API_RECONCILIATION_ROWS
+        );
+    }
+    rows.extend(page);
+    Ok(page_len == DATA_API_RECONCILIATION_PAGE_SIZE)
 }
 
 pub fn account_trade_from_live_event(
@@ -222,11 +412,128 @@ fn account_trade_from_activity(
         size,
         timestamp,
         activity.transaction_hash.clone(),
-        None,
-        None,
+        activity_external_id(
+            activity,
+            &[
+                "venue_order_id",
+                "venueOrderId",
+                "order_id",
+                "orderId",
+                "taker_order_id",
+                "takerOrderId",
+            ],
+        ),
+        activity_external_id(
+            activity,
+            &["venue_trade_id", "venueTradeId", "trade_id", "tradeId"],
+        ),
         source,
         raw_payload,
     ))
+}
+
+fn normalize_account_ref(account_ref: Option<&str>) -> Result<Option<String>> {
+    let Some(account_ref) = account_ref else {
+        return Ok(None);
+    };
+    let account_ref = account_ref.trim();
+    if account_ref.is_empty() {
+        bail!("account reconciliation account_ref must not be blank");
+    }
+    if account_ref.len() > 128 {
+        bail!("account reconciliation account_ref must not exceed 128 bytes");
+    }
+    Ok(Some(account_ref.to_string()))
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_trade_activity(activity: &DataApiActivity) -> bool {
+    activity
+        .activity_type
+        .as_deref()
+        .map(|activity_type| activity_type.eq_ignore_ascii_case("trade"))
+        .unwrap_or_else(|| {
+            activity.side.is_some()
+                && activity.price.is_some()
+                && activity.size.is_some()
+                && activity.asset.is_some()
+        })
+}
+
+fn activity_external_id(activity: &DataApiActivity, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        activity
+            .extra
+            .get(*key)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+/// Attributes a normalized account trade only when its explicit venue order identity resolves to
+/// an order already owned by the requested process. Token and market similarity are deliberately
+/// not considered ownership evidence.
+fn link_process_owned_trades(
+    trades: &mut [AccountTrade],
+    owned_orders: &HashMap<String, String>,
+) -> usize {
+    let mut unmatched = 0usize;
+    for trade in trades {
+        let Some(order_id) = trade
+            .venue_order_id
+            .as_ref()
+            .and_then(|venue_order_id| owned_orders.get(venue_order_id))
+        else {
+            unmatched = unmatched.saturating_add(1);
+            continue;
+        };
+        trade.linked_order_id = Some(order_id.clone());
+    }
+    unmatched
+}
+
+async fn process_owned_orders_for_reconciliation(
+    store: &Store,
+    process_id: Uuid,
+    venue_order_ids: &[String],
+) -> Result<HashMap<String, String>> {
+    if venue_order_ids.len() > MAX_DATA_API_RECONCILIATION_ROWS {
+        bail!(
+            "account reconciliation exceeds the bounded {}-order ownership window",
+            MAX_DATA_API_RECONCILIATION_ROWS
+        );
+    }
+    let mut owned_orders = HashMap::new();
+    for chunk in venue_order_ids.chunks(DATA_API_RECONCILIATION_PAGE_SIZE) {
+        let chunk_owned = store
+            .process_order_ids_by_venue_order_ids(process_id, chunk)
+            .await?;
+        merge_owned_order_evidence(&mut owned_orders, chunk_owned)?;
+    }
+    Ok(owned_orders)
+}
+
+fn merge_owned_order_evidence(
+    owned_orders: &mut HashMap<String, String>,
+    chunk_owned: HashMap<String, String>,
+) -> Result<()> {
+    for (venue_order_id, local_order_id) in chunk_owned {
+        if owned_orders
+            .insert(venue_order_id.clone(), local_order_id.clone())
+            .is_some_and(|existing| existing != local_order_id)
+        {
+            bail!(
+                "venue order {} maps to conflicting local order identities during account reconciliation",
+                venue_order_id
+            );
+        }
+    }
+    Ok(())
 }
 
 fn account_position_snapshot_from_data_api(
@@ -374,5 +681,148 @@ mod tests {
         assert_eq!(trade.side, "buy");
         assert_eq!(trade.price, dec!(0.55));
         assert_eq!(trade.size, dec!(2));
+    }
+
+    #[test]
+    fn legacy_account_reconcile_request_deserializes_without_scope() {
+        let request: AccountReconcileRequest = serde_json::from_value(serde_json::json!({
+            "account_address": "0xabc",
+            "lookback_hours": 1,
+            "dry_run": true
+        }))
+        .unwrap();
+
+        assert_eq!(request.process_id, None);
+        assert_eq!(request.account_ref, None);
+        assert_eq!(request.credential_account_fingerprint_sha256, None);
+    }
+
+    #[test]
+    fn process_trade_linkage_requires_explicit_owned_venue_order_identity() {
+        let activity: DataApiActivity = serde_json::from_value(serde_json::json!({
+            "type": "TRADE",
+            "timestamp": 1710000000,
+            "conditionId": "market-1",
+            "asset": "token-1",
+            "side": "BUY",
+            "price": "0.40",
+            "size": "2",
+            "transactionHash": "0xtrade",
+            "orderId": "venue-owned"
+        }))
+        .unwrap();
+        let owned_trade = account_trade_from_activity("0xabc", &activity, "poll").unwrap();
+        assert_eq!(owned_trade.venue_order_id.as_deref(), Some("venue-owned"));
+
+        let mut same_token_without_order_identity = owned_trade.clone();
+        same_token_without_order_identity.account_trade_id = Uuid::new_v4();
+        same_token_without_order_identity.venue_order_id = None;
+        let mut trades = vec![owned_trade, same_token_without_order_identity];
+        let owned_orders =
+            HashMap::from([("venue-owned".to_string(), "persisted-order".to_string())]);
+
+        let unmatched = link_process_owned_trades(&mut trades, &owned_orders);
+
+        assert_eq!(unmatched, 1);
+        assert_eq!(
+            trades[0].linked_order_id.as_deref(),
+            Some("persisted-order")
+        );
+        assert_eq!(trades[1].linked_order_id, None);
+    }
+
+    #[test]
+    fn process_order_ownership_chunks_are_store_bounded_and_conflicts_fail_closed() {
+        let venue_order_ids = (0..1_201)
+            .map(|index| format!("venue-{index}"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            venue_order_ids
+                .chunks(DATA_API_RECONCILIATION_PAGE_SIZE)
+                .map(|chunk| chunk.len())
+                .collect::<Vec<_>>(),
+            vec![500, 500, 201]
+        );
+
+        let mut merged = HashMap::new();
+        merge_owned_order_evidence(
+            &mut merged,
+            HashMap::from([("venue-1".to_string(), "local-1".to_string())]),
+        )
+        .unwrap();
+        merge_owned_order_evidence(
+            &mut merged,
+            HashMap::from([("venue-1".to_string(), "local-1".to_string())]),
+        )
+        .unwrap();
+        assert!(merge_owned_order_evidence(
+            &mut merged,
+            HashMap::from([("venue-1".to_string(), "local-other".to_string())]),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn account_reference_is_trimmed_bounded_and_nonblank() {
+        assert_eq!(
+            normalize_account_ref(Some("  polymarket-primary  ")).unwrap(),
+            Some("polymarket-primary".to_string())
+        );
+        assert!(normalize_account_ref(Some("   ")).is_err());
+        assert!(normalize_account_ref(Some(&"x".repeat(129))).is_err());
+        assert!(is_sha256_hex(&"a".repeat(64)));
+        assert!(!is_sha256_hex(&"z".repeat(64)));
+    }
+
+    #[test]
+    fn bounded_data_api_pages_stop_on_partial_and_reject_repetition_or_overflow() {
+        let mut rows = Vec::new();
+        let mut seen = HashSet::new();
+        let full_page = (0..DATA_API_RECONCILIATION_PAGE_SIZE)
+            .map(|index| serde_json::json!({"row": index}))
+            .collect::<Vec<_>>();
+        assert!(
+            append_bounded_data_api_page(&mut rows, &mut seen, full_page.clone(), "test").unwrap()
+        );
+        assert_eq!(rows.len(), DATA_API_RECONCILIATION_PAGE_SIZE);
+
+        let mut repeated_rows = Vec::new();
+        let mut repeated_seen = HashSet::new();
+        append_bounded_data_api_page(
+            &mut repeated_rows,
+            &mut repeated_seen,
+            full_page.clone(),
+            "test",
+        )
+        .unwrap();
+        assert!(append_bounded_data_api_page(
+            &mut repeated_rows,
+            &mut repeated_seen,
+            full_page,
+            "test"
+        )
+        .is_err());
+
+        let mut partial_rows = Vec::new();
+        let mut partial_seen = HashSet::new();
+        assert!(!append_bounded_data_api_page(
+            &mut partial_rows,
+            &mut partial_seen,
+            vec![serde_json::json!({"row": 1})],
+            "test"
+        )
+        .unwrap());
+
+        let mut full_rows = (0..MAX_DATA_API_RECONCILIATION_ROWS)
+            .map(|index| serde_json::json!({"existing": index}))
+            .collect::<Vec<_>>();
+        let mut overflow_seen = HashSet::new();
+        assert!(append_bounded_data_api_page(
+            &mut full_rows,
+            &mut overflow_seen,
+            vec![serde_json::json!({"overflow": true})],
+            "test"
+        )
+        .is_err());
     }
 }

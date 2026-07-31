@@ -1,6 +1,6 @@
 pub mod live;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -9,6 +9,90 @@ use tracing::warn;
 
 use crate::account_reconcile::{AccountReconcileReport, AccountReconcileRequest};
 use crate::models::{FillRecord, OrderRecord, OrderRequest, OrderSide, OrderState, OrderType};
+
+pub const LIVE_EXECUTION_GATE_CLOSED_REASON: &str = "live_execution_gate_closed";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveExecutionGateReason {
+    OrderSubmissionDisabled,
+    GlobalHalt,
+    ManualEnableRequired,
+    VenueReadiness,
+    ProcessAccountingReadiness,
+    PerOrderNotionalLimit,
+    DailyLossLimit,
+    OpenNotionalLimit,
+    OpenPositionLimit,
+    SettlementRedemptionUnproven,
+    ReferenceFreshness,
+    OrderbookReadiness,
+    OrderbookFreshness,
+    OrderbookMarketability,
+}
+
+impl LiveExecutionGateReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OrderSubmissionDisabled => "order_submission_disabled",
+            Self::GlobalHalt => "global_halt",
+            Self::ManualEnableRequired => "manual_enable_required",
+            Self::VenueReadiness => "venue_readiness",
+            Self::ProcessAccountingReadiness => "process_accounting_readiness",
+            Self::PerOrderNotionalLimit => "per_order_notional_limit",
+            Self::DailyLossLimit => "daily_loss_limit",
+            Self::OpenNotionalLimit => "open_notional_limit",
+            Self::OpenPositionLimit => "open_position_limit",
+            Self::SettlementRedemptionUnproven => "settlement_redemption_unproven",
+            Self::ReferenceFreshness => "reference_freshness",
+            Self::OrderbookReadiness => "orderbook_readiness",
+            Self::OrderbookFreshness => "orderbook_freshness",
+            Self::OrderbookMarketability => "orderbook_marketability",
+        }
+    }
+}
+
+pub fn live_execution_gate_closed_order(
+    mut request: OrderRequest,
+    gate_reason: LiveExecutionGateReason,
+) -> Result<OrderRecord> {
+    let Some(metadata) = request.metadata.as_object_mut() else {
+        bail!("live execution gate rejection requires object order metadata");
+    };
+    metadata.insert(
+        "reject_reason".to_string(),
+        serde_json::Value::String(LIVE_EXECUTION_GATE_CLOSED_REASON.to_string()),
+    );
+    metadata.insert(
+        "live_execution_gate".to_string(),
+        serde_json::json!({
+            "gate_reason": gate_reason.as_str(),
+            "post_attempted": false,
+        }),
+    );
+    let now = Utc::now();
+    Ok(OrderRecord {
+        order_id: format!("live-pending-{}", request.client_order_id),
+        request,
+        state: OrderState::Rejected,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+/// Process-owned safety check that runs after live order preparation and immediately before the
+/// venue POST. Expected market/readiness denials return a bounded gate reason; corrupt evidence or
+/// invariants remain hard errors.
+pub(crate) mod live_pre_post_guard_sealed {
+    pub trait Sealed {}
+}
+
+#[async_trait]
+pub trait LivePrePostGuard: live_pre_post_guard_sealed::Sealed + Send + Sync {
+    async fn validate_pre_post(
+        &self,
+        request: &OrderRequest,
+    ) -> Result<Option<LiveExecutionGateReason>>;
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ReconciliationReport {
@@ -23,6 +107,11 @@ pub struct ReconciliationReport {
 pub struct LiveVenueStatus {
     pub mode: String,
     pub live_confirmed: bool,
+    pub geoblock_readable: bool,
+    pub geoblock_blocked: Option<bool>,
+    pub geoblock_country: Option<String>,
+    pub geoblock_region: Option<String>,
+    pub last_geoblock_check_age_secs: Option<i64>,
     pub order_submit_enabled: bool,
     pub user_ws_enabled: bool,
     pub user_ws_connected: bool,
@@ -30,6 +119,8 @@ pub struct LiveVenueStatus {
     pub last_rest_reconcile_age_secs: Option<i64>,
     pub idempotency_clean: bool,
     pub unresolved_live_order_count: usize,
+    pub process_accounting_proven: bool,
+    pub process_accounting_status: String,
     pub max_order_notional_usd: Decimal,
     pub max_open_notional_usd: Decimal,
     pub entries_enabled: bool,
@@ -40,11 +131,18 @@ pub struct LiveVenueStatus {
 pub struct LiveIdentityDiagnostics {
     pub mode: String,
     pub clob_api_base_url: String,
+    pub geoblock_readable: bool,
+    pub geoblock_blocked: Option<bool>,
+    pub geoblock_country: Option<String>,
+    pub geoblock_region: Option<String>,
+    pub geoblock_error: Option<String>,
     pub signer_address: Option<String>,
     pub configured_funder_address: Option<String>,
     pub configured_signature_type: Option<String>,
     pub resolved_signature_type: Option<String>,
     pub authenticated_client_address: Option<String>,
+    pub account_identity_valid: bool,
+    pub account_identity_fingerprint_sha256: Option<String>,
     pub credentials_present: bool,
     pub api_keys_readable: bool,
     pub api_keys_error: Option<String>,
@@ -256,7 +354,20 @@ pub async fn execute_order_plan<V: ExecutionVenue + ?Sized>(
 
 #[async_trait]
 pub trait ExecutionVenue: Send + Sync {
+    async fn find_existing_order(&self, _request: &OrderRequest) -> Result<Option<OrderRecord>> {
+        Ok(None)
+    }
     async fn submit_order(&self, request: OrderRequest) -> Result<OrderRecord>;
+    async fn submit_order_with_pre_post_guard(
+        &self,
+        request: OrderRequest,
+        guard: Option<std::sync::Arc<dyn LivePrePostGuard>>,
+    ) -> Result<OrderRecord> {
+        if guard.is_some() {
+            bail!("execution venue does not support an adjacent live pre-POST guard");
+        }
+        self.submit_order(request).await
+    }
     async fn cancel_order(&self, order_id: &str) -> Result<OrderRecord>;
     async fn cancel_all(&self) -> Result<usize>;
     async fn get_balances(&self) -> Result<Vec<(String, Decimal)>>;
