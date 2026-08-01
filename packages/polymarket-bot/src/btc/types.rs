@@ -258,15 +258,16 @@ impl BinanceOneSecondWindow {
             .last_aggregate_trade_id
             .checked_add(1)
             .is_some_and(|expected| expected == trade.aggregate_trade_id);
+        if !contiguous {
+            self.current = Some(current);
+            bail!("Binance aggregate-trade sequence gap requires authoritative recovery");
+        }
         if bucket_open == current.open_timestamp {
             apply_trade_to_kline(&mut current, trade, received_at, contiguous)?;
             self.current = Some(current);
             return Ok(());
         }
 
-        // A missing aggregate-trade ID may belong to either side of the second boundary, so
-        // conservatively invalidate the closing candle as well as the new sequence.
-        current.source_complete &= contiguous;
         let carry_price = current.close_price;
         let carry_trade_id = current.last_aggregate_trade_id;
         let carry_source_timestamp = current.last_source_timestamp;
@@ -747,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_trade_id_gap_invalidates_both_sides_of_boundary() {
+    fn aggregate_trade_id_gap_requires_authoritative_recovery() {
         let mut window = BinanceOneSecondWindow::default();
         window
             .update(
@@ -761,15 +762,18 @@ mod tests {
                 at(1_150),
             )
             .unwrap();
-        window
+        let error = window
             .update(
                 &trade(23, 2_100, dec!(102), dec!(1), 2003, 2003, false),
                 at(2_150),
             )
-            .unwrap();
+            .unwrap_err();
 
-        assert!(!window.completed().back().unwrap().source_complete);
-        assert!(!window.current().unwrap().source_complete);
+        assert!(error
+            .to_string()
+            .contains("sequence gap requires authoritative recovery"));
+        assert_eq!(window.current().unwrap().last_aggregate_trade_id, 21);
+        assert!(window.current().unwrap().source_complete);
     }
 
     #[test]
