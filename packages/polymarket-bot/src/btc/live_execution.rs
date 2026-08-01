@@ -35,6 +35,7 @@ pub struct BtcLiveExecutionAdapter {
     registry: Arc<RwLock<BookRegistry>>,
     expected_process_id: Uuid,
     max_reference_age: Duration,
+    max_directional_feature_age: Option<Duration>,
     max_book_age: Duration,
     max_depth_participation: Decimal,
     submit_guard: Arc<Mutex<()>>,
@@ -61,6 +62,7 @@ impl BtcLiveExecutionAdapter {
         registry: Arc<RwLock<BookRegistry>>,
         expected_process_id: Uuid,
         max_reference_age: Duration,
+        max_directional_feature_age: Option<Duration>,
         max_book_age: Duration,
         max_depth_participation: Decimal,
     ) -> Result<Self> {
@@ -69,6 +71,9 @@ impl BtcLiveExecutionAdapter {
         }
         if max_reference_age <= Duration::zero() {
             bail!("BTC live execution max_reference_age must be positive");
+        }
+        if max_directional_feature_age.is_some_and(|max_age| max_age <= Duration::zero()) {
+            bail!("BTC live execution max_directional_feature_age must be positive");
         }
         if max_book_age <= Duration::zero() {
             bail!("BTC live execution max_book_age must be positive");
@@ -81,6 +86,7 @@ impl BtcLiveExecutionAdapter {
             registry,
             expected_process_id,
             max_reference_age,
+            max_directional_feature_age,
             max_book_age,
             max_depth_participation,
             submit_guard: Arc::new(Mutex::new(())),
@@ -101,6 +107,7 @@ impl BtcLiveExecutionAdapter {
             checked_at,
             self.expected_process_id,
             self.max_reference_age,
+            self.max_directional_feature_age,
         ) {
             Ok(_) => Ok(None),
             Err(reason) => classify_reference_execution_rejection(reason),
@@ -765,6 +772,7 @@ mod tests {
             registry,
             process_id,
             Duration::milliseconds(MAX_REFERENCE_AGE_MS),
+            None,
             Duration::seconds(2),
             dec!(0.50),
         )

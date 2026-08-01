@@ -185,6 +185,7 @@ services:
       POLYMARKET_BTC_PAPER_ENABLED: "true"
       POLYMARKET_BTC_RTDS_WS_URL: "wss://ws-live-data.polymarket.com"
       POLYMARKET_BTC_BINANCE_WS_URL: "wss://stream.binance.com:9443/ws/btcusdt@aggTrade"
+      POLYMARKET_BTC_BINANCE_REST_BASE_URL: "https://data-api.binance.vision"
       POLYMARKET_BTC_CLOB_HEARTBEAT_INTERVAL_SECS: "10"
       POLYMARKET_BTC_CLOB_PONG_TIMEOUT_SECS: "25"
       POLYMARKET_BTC_RTDS_HEARTBEAT_INTERVAL_SECS: "5"

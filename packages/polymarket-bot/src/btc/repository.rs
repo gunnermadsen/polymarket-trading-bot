@@ -2594,6 +2594,10 @@ impl BtcRepository {
             LIMIT 1
             "#,
         )
+        // A cached PostgreSQL generic plan expands this Timescale hypertable across every
+        // compressed and uncompressed chunk before runtime exclusion. Keep this statement
+        // custom-planned so the timestamp bounds prune chunks before relation locks are taken.
+        .persistent(false)
         .bind(token_id)
         .bind(fresh_since)
         .bind(as_of)
@@ -2901,6 +2905,7 @@ impl BtcRepository {
         as_of: DateTime<Utc>,
         max_candidates: u32,
         expected_max_reference_age: Duration,
+        expected_max_directional_feature_age: Option<Duration>,
     ) -> Result<Vec<ShadowPredictiveRegimeV2Candidate>> {
         if process_id.is_nil() {
             bail!("shadow predictive-regime v2 candidate process_id cannot be nil");
@@ -2924,6 +2929,7 @@ impl BtcRepository {
                 shadow_predictive_regime_v2_candidate_from_row(
                     process_id,
                     expected_max_reference_age,
+                    expected_max_directional_feature_age,
                     row,
                 )
             })
@@ -3908,6 +3914,7 @@ fn shadow_predictive_regime_v2_selected_point_probability(
 fn shadow_predictive_regime_v2_candidate_from_row(
     process_id: Uuid,
     expected_max_reference_age: Duration,
+    expected_max_directional_feature_age: Option<Duration>,
     row: ShadowPredictiveRegimeV2CandidateRow,
 ) -> Result<ShadowPredictiveRegimeV2Candidate> {
     if process_id.is_nil() {
@@ -3950,6 +3957,7 @@ fn shadow_predictive_regime_v2_candidate_from_row(
             row.fill_at,
             process_id,
             expected_max_reference_age,
+            expected_max_directional_feature_age,
         )
         .map_err(anyhow::Error::new)
         .context("shadow predictive-regime v2 exposure execution guard failed validation")?;
@@ -5229,6 +5237,7 @@ mod tests {
         let candidate = shadow_predictive_regime_v2_candidate_from_row(
             process_id,
             Duration::milliseconds(60_000),
+            None,
             row,
         )
         .unwrap();
@@ -5256,6 +5265,7 @@ mod tests {
             let fair_value_candidate = shadow_predictive_regime_v2_candidate_from_row(
                 process_id,
                 Duration::milliseconds(60_000),
+                None,
                 fair_value_row,
             )
             .unwrap();
@@ -5273,6 +5283,7 @@ mod tests {
             let directional_candidate = shadow_predictive_regime_v2_candidate_from_row(
                 process_id,
                 Duration::milliseconds(60_000),
+                None,
                 directional_row,
             )
             .unwrap();
@@ -5294,6 +5305,7 @@ mod tests {
         let candidate = shadow_predictive_regime_v2_candidate_from_row(
             process_id,
             Duration::milliseconds(60_000),
+            None,
             exact_interval,
         )
         .unwrap();
@@ -5312,6 +5324,7 @@ mod tests {
             assert!(shadow_predictive_regime_v2_candidate_from_row(
                 process_id,
                 Duration::milliseconds(60_000),
+                None,
                 malformed
             )
             .unwrap_err()
@@ -5329,6 +5342,7 @@ mod tests {
         let candidate = shadow_predictive_regime_v2_candidate_from_row(
             process_id,
             Duration::milliseconds(60_000),
+            None,
             one_quantum,
         )
         .unwrap();
@@ -5340,6 +5354,7 @@ mod tests {
         assert!(shadow_predictive_regime_v2_candidate_from_row(
             process_id,
             Duration::milliseconds(60_000),
+            None,
             two_quanta
         )
         .unwrap_err()
@@ -5356,6 +5371,7 @@ mod tests {
         assert!(shadow_predictive_regime_v2_candidate_from_row(
             process_id,
             Duration::milliseconds(60_000),
+            None,
             tampered_guard
         )
         .is_err());
@@ -5365,6 +5381,7 @@ mod tests {
         assert!(shadow_predictive_regime_v2_candidate_from_row(
             process_id,
             Duration::milliseconds(60_000),
+            None,
             missing_decision
         )
         .unwrap_err()
@@ -5377,6 +5394,7 @@ mod tests {
         assert!(shadow_predictive_regime_v2_candidate_from_row(
             process_id,
             Duration::milliseconds(60_000),
+            None,
             preview
         )
         .is_err());
@@ -5385,6 +5403,7 @@ mod tests {
         assert!(shadow_predictive_regime_v2_candidate_from_row(
             process_id,
             Duration::milliseconds(2_000),
+            None,
             mismatched_age
         )
         .unwrap_err()
@@ -5396,6 +5415,7 @@ mod tests {
         assert!(shadow_predictive_regime_v2_candidate_from_row(
             process_id,
             Duration::milliseconds(60_000),
+            None,
             mismatched_feature_hash
         )
         .unwrap_err()
@@ -5407,6 +5427,7 @@ mod tests {
         assert!(shadow_predictive_regime_v2_candidate_from_row(
             process_id,
             Duration::milliseconds(60_000),
+            None,
             mismatched_probability
         )
         .unwrap_err()
@@ -5421,6 +5442,7 @@ mod tests {
         assert!(shadow_predictive_regime_v2_candidate_from_row(
             process_id,
             Duration::milliseconds(60_000),
+            None,
             wrong_directional_projection
         )
         .unwrap_err()
@@ -5432,6 +5454,7 @@ mod tests {
         assert!(shadow_predictive_regime_v2_candidate_from_row(
             process_id,
             Duration::milliseconds(60_000),
+            None,
             malformed_interval
         )
         .unwrap_err()
@@ -5443,6 +5466,7 @@ mod tests {
         assert!(shadow_predictive_regime_v2_candidate_from_row(
             process_id,
             Duration::milliseconds(60_000),
+            None,
             missing_bound
         )
         .unwrap_err()
@@ -5456,6 +5480,7 @@ mod tests {
         assert!(shadow_predictive_regime_v2_candidate_from_row(
             process_id,
             Duration::milliseconds(60_000),
+            None,
             unsupported_prediction
         )
         .unwrap_err()

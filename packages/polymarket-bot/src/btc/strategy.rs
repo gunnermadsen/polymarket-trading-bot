@@ -172,6 +172,8 @@ pub struct BtcStrategyConfig {
     pub min_seconds_after_open: i64,
     pub min_seconds_before_close: i64,
     pub max_reference_age_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_directional_feature_age_ms: Option<i64>,
     pub max_chainlink_open_delay_ms: i64,
     pub max_book_age_ms: i64,
     pub max_source_skew_ms: i64,
@@ -210,6 +212,7 @@ impl Default for BtcStrategyConfig {
             min_seconds_after_open: 15,
             min_seconds_before_close: 20,
             max_reference_age_ms: 2_000,
+            max_directional_feature_age_ms: None,
             max_chainlink_open_delay_ms: 5_000,
             max_book_age_ms: 2_000,
             max_source_skew_ms: 1_000,
@@ -243,6 +246,30 @@ impl BtcStrategyConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
         validate_config(self)
             .map_err(|_| anyhow::anyhow!("invalid BTC deterministic strategy configuration"))
+    }
+
+    pub fn effective_max_directional_feature_age_ms(&self) -> anyhow::Result<Option<i64>> {
+        let strategy = ResolvedBtcDecisionStrategy::resolve(self)
+            .map_err(|_| anyhow::anyhow!("invalid BTC decision strategy configuration"))?;
+        let ResolvedBtcDecisionStrategy::BtcDirectionalModel {
+            model_key,
+            artifact_sha256,
+            feature_schema_sha256,
+        } = strategy
+        else {
+            return Ok(None);
+        };
+        let selection =
+            btc_directional_model_selection(model_key, artifact_sha256, feature_schema_sha256);
+        let model = runtime_model(&selection)?;
+        let max_age = self
+            .max_directional_feature_age_ms
+            .unwrap_or_else(|| model.prediction_policy().cadence_seconds * 1_000);
+        anyhow::ensure!(
+            max_age > 0 && max_age <= model.prediction_policy().cadence_seconds * 1_000,
+            "BTC directional feature age bound must be positive and no greater than model cadence"
+        );
+        Ok(Some(max_age))
     }
 
     pub fn attribution(&self) -> Option<BtcStrategyAttribution<'_>> {
@@ -585,6 +612,10 @@ pub enum BtcRejectReason {
     BinanceFeedUnhealthy,
     MissingLineage,
     FutureInputTimestamp,
+    InvalidDirectionalFeatureTimestamp,
+    FutureDirectionalFeatures,
+    StaleDirectionalFeatures,
+    DirectionalFeaturesUnavailable,
     StaleChainlinkFeed,
     StaleBinanceFeed,
     SourceTimestampSkew,
@@ -634,6 +665,10 @@ impl BtcRejectReason {
             Self::BinanceFeedUnhealthy => "binance_feed_unhealthy",
             Self::MissingLineage => "missing_lineage",
             Self::FutureInputTimestamp => "future_input_timestamp",
+            Self::InvalidDirectionalFeatureTimestamp => "invalid_directional_feature_timestamp",
+            Self::FutureDirectionalFeatures => "future_directional_features",
+            Self::StaleDirectionalFeatures => "stale_directional_features",
+            Self::DirectionalFeaturesUnavailable => "directional_features_unavailable",
             Self::StaleChainlinkFeed => "stale_chainlink_feed",
             Self::StaleBinanceFeed => "stale_binance_feed",
             Self::SourceTimestampSkew => "source_timestamp_skew",
@@ -1870,6 +1905,9 @@ fn validate_config(config: &BtcStrategyConfig) -> Result<(), BtcRejectReason> {
                     && policy.minimum_seconds_after_open == config.min_seconds_after_open
                     && 300 - policy.maximum_seconds_after_open == config.min_seconds_before_close
                     && policy.cadence_seconds > 0
+                    && config.max_directional_feature_age_ms.is_none_or(|max_age| {
+                        max_age > 0 && max_age <= policy.cadence_seconds * 1_000
+                    })
                     && config.max_reference_age_ms == config.max_book_age_ms
                     && model.probability_up_threshold() == 0.5
                     && model.confidence_threshold() > 0.5
@@ -1884,6 +1922,9 @@ fn validate_config(config: &BtcStrategyConfig) -> Result<(), BtcRejectReason> {
         && config.min_seconds_after_open >= 0
         && config.min_seconds_before_close > 0
         && config.max_reference_age_ms > 0
+        && config
+            .max_directional_feature_age_ms
+            .is_none_or(|max_age| max_age > 0)
         && config.max_chainlink_open_delay_ms > 0
         && config.max_book_age_ms > 0
         && config.max_source_skew_ms >= 0
@@ -2140,11 +2181,17 @@ fn validate_btc_directional_model_snapshot(
     let expected_feature_as_of =
         snapshot.window_start + chrono::Duration::seconds(features.seconds_elapsed);
     let feature_age_ms = (snapshot.observed_at - features.feature_as_of).num_milliseconds();
-    if features.feature_as_of != expected_feature_as_of
-        || feature_age_ms < 0
-        || feature_age_ms > config.max_reference_age_ms
-    {
-        return Err(BtcRejectReason::FutureInputTimestamp);
+    if features.feature_as_of != expected_feature_as_of {
+        return Err(BtcRejectReason::InvalidDirectionalFeatureTimestamp);
+    }
+    if feature_age_ms < 0 {
+        return Err(BtcRejectReason::FutureDirectionalFeatures);
+    }
+    let max_directional_feature_age_ms = config
+        .max_directional_feature_age_ms
+        .unwrap_or_else(|| model.prediction_policy().cadence_seconds * 1_000);
+    if feature_age_ms > max_directional_feature_age_ms {
+        return Err(BtcRejectReason::StaleDirectionalFeatures);
     }
     let input_sha256 = directional_model_input_sha256(
         &selection,
@@ -2617,7 +2664,8 @@ mod tests {
     use super::*;
     use crate::{
         btc::execution_guard::{
-            BtcReferenceExecutionGuard, BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION,
+            BtcExecutionFreshnessBounds, BtcReferenceExecutionGuard,
+            BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION,
         },
         models::{OrderRequest, OrderSide, OrderType},
     };
@@ -3076,7 +3124,12 @@ mod tests {
                 &request,
                 &"a".repeat(64),
                 snapshot.fee_rate.unwrap(),
-                config.max_reference_age_ms,
+                BtcExecutionFreshnessBounds {
+                    max_reference_age_ms: config.max_reference_age_ms,
+                    max_directional_feature_age_ms: config
+                        .effective_max_directional_feature_age_ms()
+                        .unwrap(),
+                },
             )
             .unwrap();
             assert_eq!(
@@ -3097,7 +3150,12 @@ mod tests {
                 &request,
                 &"a".repeat(64),
                 snapshot.fee_rate.unwrap(),
-                config.max_reference_age_ms,
+                BtcExecutionFreshnessBounds {
+                    max_reference_age_ms: config.max_reference_age_ms,
+                    max_directional_feature_age_ms: config
+                        .effective_max_directional_feature_age_ms()
+                        .unwrap(),
+                },
             )
             .is_err());
         }
@@ -3120,12 +3178,67 @@ mod tests {
     }
 
     #[test]
-    fn directional_model_uses_one_frozen_freshness_bound_for_input_and_book_evidence() {
+    fn directional_model_keeps_book_freshness_bound_aligned_with_reference_evidence() {
         let mut config = directional_model_config();
         config.validate().unwrap();
         config.max_book_age_ms += 1;
 
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn directional_model_defaults_feature_freshness_to_its_candidate_cadence() {
+        let config = directional_model_config();
+        let mut within_cadence = directional_model_snapshot("up");
+        within_cadence.observed_at += Duration::milliseconds(4_999);
+
+        let accepted = DeterministicBtcStrategy::evaluate(&config, &within_cadence);
+        assert_ne!(
+            accepted.reject_reason,
+            Some(BtcRejectReason::StaleDirectionalFeatures)
+        );
+
+        let mut beyond_cadence = directional_model_snapshot("up");
+        beyond_cadence.observed_at += Duration::milliseconds(5_001);
+        let rejected = DeterministicBtcStrategy::evaluate(&config, &beyond_cadence);
+        assert_eq!(
+            rejected.reject_reason,
+            Some(BtcRejectReason::StaleDirectionalFeatures)
+        );
+    }
+
+    #[test]
+    fn directional_model_distinguishes_future_and_misaligned_features() {
+        let config = directional_model_config();
+        let mut future = directional_model_snapshot("up");
+        future.observed_at -= Duration::milliseconds(1);
+        assert_eq!(
+            DeterministicBtcStrategy::evaluate(&config, &future).reject_reason,
+            Some(BtcRejectReason::FutureDirectionalFeatures)
+        );
+
+        let mut misaligned = directional_model_snapshot("up");
+        misaligned.directional_model.as_mut().unwrap().feature_as_of += Duration::milliseconds(1);
+        assert_eq!(
+            DeterministicBtcStrategy::evaluate(&config, &misaligned).reject_reason,
+            Some(BtcRejectReason::InvalidDirectionalFeatureTimestamp)
+        );
+    }
+
+    #[test]
+    fn directional_feature_freshness_override_cannot_exceed_model_cadence() {
+        let mut config = directional_model_config();
+        config.max_directional_feature_age_ms = Some(5_001);
+        assert!(config.validate().is_err());
+
+        config.max_directional_feature_age_ms = Some(3_000);
+        config.validate().unwrap();
+        let mut snapshot = directional_model_snapshot("up");
+        snapshot.observed_at += Duration::milliseconds(3_001);
+        assert_eq!(
+            DeterministicBtcStrategy::evaluate(&config, &snapshot).reject_reason,
+            Some(BtcRejectReason::StaleDirectionalFeatures)
+        );
     }
 
     fn decision_sha256(decision: &BtcDecision) -> String {

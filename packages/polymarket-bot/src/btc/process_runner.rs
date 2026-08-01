@@ -32,14 +32,14 @@ use super::{
         ShadowPredictiveRegimeTransition,
     },
     directional_features::{
-        build_directional_features_for_schema_with_boundary, DirectionalFeatureVector,
-        BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION,
+        build_directional_features_for_schema_with_boundary, DirectionalFeatureError,
+        DirectionalFeatureVector, BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION,
     },
     directional_model::{
         directional_model_input_sha256, runtime_model, BtcDirectionalModelFeatureSnapshot,
         RuntimeModelSelection, RuntimePredictionPolicy, BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
     },
-    execution_guard::BtcReferenceExecutionGuard,
+    execution_guard::{BtcExecutionFreshnessBounds, BtcReferenceExecutionGuard},
     execution_lifecycle::{BtcExecutionLifecycle, BtcExecutionMode, PaperExecutionLifecycle},
     feeds::BookRegistry,
     paper::{PaperPreviewConfig, PaperVenue, PAPER_DYNAMIC_FEE_RATE_METADATA_KEY},
@@ -233,6 +233,13 @@ impl Drop for DirectionalModelCandidateLease<'_> {
             runtime.release(&self.market_id, self.feature_as_of);
         }
     }
+}
+
+fn directional_feature_error_metadata(error: &DirectionalFeatureError) -> serde_json::Value {
+    serde_json::json!({
+        "code": error.code(),
+        "detail": error.to_string(),
+    })
 }
 
 fn complete_directional_model_candidate(
@@ -511,6 +518,7 @@ pub struct BtcProcessRunner {
     execution_lifecycle: Arc<dyn BtcExecutionLifecycle>,
     book_registry: Arc<tokio::sync::RwLock<BookRegistry>>,
     config: BtcProcessConfig,
+    max_directional_feature_age_ms: Option<i64>,
     initialized: OnceCell<()>,
     loss_regime_admission: Mutex<Option<LossRegimeAdmissionRuntime>>,
     shadow_predictive_regime_admission:
@@ -576,6 +584,8 @@ impl BtcProcessRunner {
             );
         }
         config.strategy.validate()?;
+        let max_directional_feature_age_ms =
+            config.strategy.effective_max_directional_feature_age_ms()?;
         if config.strategy.attribution().is_none() {
             anyhow::bail!("BTC execution run strategy attribution is invalid");
         }
@@ -636,6 +646,7 @@ impl BtcProcessRunner {
             ),
             high_water_mark_entry_submission: Mutex::new(()),
             config,
+            max_directional_feature_age_ms,
             initialized: OnceCell::new(),
             execution_reconcile_started_at: Mutex::new(None),
             directional_model_runtime: StdMutex::new(DirectionalModelProcessRuntime::default()),
@@ -1052,6 +1063,9 @@ impl BtcProcessRunner {
         let process_id = self.config.process_id;
         let max_reference_age =
             chrono::Duration::milliseconds(self.config.strategy.max_reference_age_ms);
+        let max_directional_feature_age = self
+            .max_directional_feature_age_ms
+            .map(chrono::Duration::milliseconds);
         let market_id = market_id.to_string();
         let handle = tokio::spawn(async move {
             let refreshed = load_shadow_predictive_regime_state_versioned(
@@ -1060,6 +1074,7 @@ impl BtcProcessRunner {
                 &config,
                 as_of,
                 max_reference_age,
+                max_directional_feature_age,
                 base_state,
             )
             .await
@@ -1508,7 +1523,11 @@ impl BtcProcessRunner {
                     }
                     Err(error) => {
                         directional_candidate = Some(candidate);
-                        (feature_as_of, None, Some(error.to_string()))
+                        (
+                            feature_as_of,
+                            None,
+                            Some(directional_feature_error_metadata(&error)),
+                        )
                     }
                 };
                 features
@@ -1560,6 +1579,15 @@ impl BtcProcessRunner {
             self.config.directional_model_entry_policy,
         );
         enforce_runtime_readiness(&mut decision, &observation.readiness, &self.config.strategy);
+        if directional_model_feature_error.is_some() {
+            decision.action = BtcDecisionAction::NoTrade;
+            decision.reject_reason = Some(BtcRejectReason::DirectionalFeaturesUnavailable);
+            decision.fair_value = None;
+            decision.up_edge = None;
+            decision.down_edge = None;
+            decision.approved_intent = None;
+            decision.prediction = None;
+        }
         if decision.approved_intent.is_some()
             && self
                 .repository
@@ -1686,7 +1714,10 @@ impl BtcProcessRunner {
             &request,
             &feature_hash,
             fee_rate,
-            self.config.strategy.max_reference_age_ms,
+            BtcExecutionFreshnessBounds {
+                max_reference_age_ms: self.config.strategy.max_reference_age_ms,
+                max_directional_feature_age_ms: self.max_directional_feature_age_ms,
+            },
         )?;
         reference_execution_guard.insert_into_metadata(&mut request.metadata)?;
         self.insert_process_strategy_decision(
@@ -1839,6 +1870,7 @@ async fn load_shadow_predictive_regime_state_versioned(
     config: &ShadowPredictiveRegimeCircuitBreakerConfigSelector,
     as_of: DateTime<Utc>,
     max_reference_age: chrono::Duration,
+    max_directional_feature_age: Option<chrono::Duration>,
     base_state: Option<ShadowPredictiveRegimeStateVersion>,
 ) -> Result<(
     ShadowPredictiveRegimeStateVersion,
@@ -1885,6 +1917,7 @@ async fn load_shadow_predictive_regime_state_versioned(
                 config,
                 as_of,
                 max_reference_age,
+                max_directional_feature_age,
                 base_state,
             )
             .await?;
@@ -2034,6 +2067,7 @@ async fn load_shadow_predictive_regime_v2_state(
     config: &ShadowPredictiveRegimeCircuitBreakerV2Config,
     as_of: DateTime<Utc>,
     max_reference_age: chrono::Duration,
+    max_directional_feature_age: Option<chrono::Duration>,
     base_state: Option<ShadowPredictiveRegimeV2State>,
 ) -> Result<(
     ShadowPredictiveRegimeV2State,
@@ -2066,6 +2100,7 @@ async fn load_shadow_predictive_regime_v2_state(
             as_of,
             SHADOW_PREDICTIVE_REGIME_REPLAY_FETCH_CANDIDATES,
             max_reference_age,
+            max_directional_feature_age,
         )
         .await?;
     reconcile_shadow_predictive_regime_v2_state(process_id, config, Some(prior_state), &candidates)
@@ -3042,6 +3077,19 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use rust_decimal_macros::dec;
+
+    #[test]
+    fn directional_feature_failures_persist_a_stable_machine_code() {
+        let window_start = Utc.timestamp_opt(1_783_902_600, 0).unwrap();
+        let metadata = directional_feature_error_metadata(
+            &DirectionalFeatureError::IncompletePrewindowHistory { window_start },
+        );
+
+        assert_eq!(metadata["code"], "incomplete_prewindow_history");
+        assert!(metadata["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("is incomplete")));
+    }
 
     use crate::btc::{
         admission::{

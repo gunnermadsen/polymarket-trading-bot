@@ -1,8 +1,9 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     fmt::{self, Write},
     future::Future,
     panic::AssertUnwindSafe,
+    str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -48,9 +49,10 @@ use super::{
         PersistedOfficialResolution,
     },
     types::{
-        BinanceAggregateTrade, BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, MarketFeedEvent,
-        MarketFeedEventType, OrderbookCheckpoint, Readiness, RealtimeState, ReferencePriceSource,
-        ReferencePriceTick,
+        BinanceAggregateTrade, BinanceOneSecondKline, BinanceOneSecondWindow, BtcIntervalMarket,
+        BtcOutcome, FeedIntegrityStatus, MarketFeedEvent, MarketFeedEventType, OrderbookCheckpoint,
+        Readiness, RealtimeState, ReferencePriceSource, ReferencePriceTick,
+        BINANCE_ONE_SECOND_BOOTSTRAP_CAPACITY,
     },
 };
 
@@ -74,6 +76,10 @@ const REFERENCE_SEND_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 // reconnect churn while still detecting an unavailable required source quickly.
 const RTDS_REQUIRED_DATA_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 const BINANCE_REQUIRED_DATA_TIMEOUT: StdDuration = StdDuration::from_secs(5);
+const BINANCE_MODEL_RECOVERY_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+const BINANCE_MODEL_RECOVERY_RETRY_INTERVAL: StdDuration = StdDuration::from_secs(5);
+const BINANCE_MODEL_RECOVERY_PAGE_LIMIT: usize = 1_000;
+const BINANCE_MODEL_RECOVERY_BUFFER_CAPACITY: usize = 50_000;
 const REFERENCE_PONG_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 const REFERENCE_READ_IDLE_TIMEOUT: StdDuration = StdDuration::from_secs(40);
 const REFERENCE_STABLE_RESET_AFTER: StdDuration = StdDuration::from_secs(30);
@@ -139,6 +145,7 @@ pub struct BtcRuntimeConfig {
     pub clob_ws_url: String,
     pub rtds_ws_url: String,
     pub binance_ws_url: String,
+    pub binance_rest_base_url: String,
     pub discovery_interval: StdDuration,
     pub reconnect_initial_delay: StdDuration,
     pub reconnect_max_delay: StdDuration,
@@ -161,6 +168,7 @@ impl Default for BtcRuntimeConfig {
             clob_ws_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market".to_string(),
             rtds_ws_url: "wss://ws-live-data.polymarket.com".to_string(),
             binance_ws_url: "wss://stream.binance.com:9443/ws/btcusdt@aggTrade".to_string(),
+            binance_rest_base_url: "https://data-api.binance.vision".to_string(),
             discovery_interval: StdDuration::from_secs(5),
             reconnect_initial_delay: StdDuration::from_secs(1),
             reconnect_max_delay: StdDuration::from_secs(30),
@@ -211,6 +219,9 @@ impl BtcRuntimeConfig {
         }
         if !self.clob_rest_base_url.starts_with("http") {
             bail!("BTC realtime CLOB REST endpoint must be HTTP(S)");
+        }
+        if !self.binance_rest_base_url.starts_with("http") {
+            bail!("BTC realtime Binance REST endpoint must be HTTP(S)");
         }
         let minimum_resolution_retention =
             StdDuration::from_secs(600).saturating_add(self.official_resolution_audit_grace);
@@ -363,6 +374,17 @@ pub struct BtcRuntimeMetrics {
     pub rtds_chainlink_ticks_received: u64,
     pub rtds_binance_ticks_received: u64,
     pub binance_ticks_received: u64,
+    pub binance_model_recovery_required: bool,
+    pub binance_model_recovery_attempts: u64,
+    pub binance_model_recovery_successes: u64,
+    pub binance_model_recovery_failures: u64,
+    pub binance_model_recovery_gap_resets: u64,
+    pub binance_model_recovery_buffer_overflows: u64,
+    pub binance_model_recovery_candles: u64,
+    pub binance_model_recovery_last_duration_milliseconds: Option<u64>,
+    pub binance_model_recovery_last_started_at: Option<DateTime<Utc>>,
+    pub binance_model_recovery_last_completed_at: Option<DateTime<Utc>>,
+    pub binance_model_recovery_last_error: Option<String>,
     pub strategy_callbacks: u64,
     pub resolution_watches_active: u64,
     pub resolution_watches_rehydrated: u64,
@@ -5954,6 +5976,168 @@ async fn run_rtds_supervisor(
     }
 }
 
+struct BinanceModelRecovery {
+    window: BinanceOneSecondWindow,
+    candle_count: usize,
+    completed_through: DateTime<Utc>,
+}
+
+async fn fetch_binance_model_history(
+    client: &reqwest::Client,
+    base_url: &str,
+) -> Result<BinanceModelRecovery> {
+    let completed_through = DateTime::from_timestamp(Utc::now().timestamp(), 0)
+        .context("Binance model-recovery cutoff is outside the supported range")?;
+    let start = completed_through
+        .checked_sub_signed(Duration::seconds(
+            BINANCE_ONE_SECOND_BOOTSTRAP_CAPACITY as i64,
+        ))
+        .context("Binance model-recovery start timestamp underflowed")?;
+    let final_open = completed_through
+        .checked_sub_signed(Duration::seconds(1))
+        .context("Binance model-recovery final candle timestamp underflowed")?;
+    let mut next_open = start;
+    let mut candles = Vec::with_capacity(BINANCE_ONE_SECOND_BOOTSTRAP_CAPACITY);
+
+    while next_open <= final_open {
+        let remaining = (final_open - next_open).num_seconds() as usize + 1;
+        let limit = remaining.min(BINANCE_MODEL_RECOVERY_PAGE_LIMIT);
+        let page_end = next_open
+            .checked_add_signed(Duration::seconds(limit as i64 - 1))
+            .context("Binance model-recovery page end overflowed")?;
+        let response = client
+            .get(format!("{}/api/v3/klines", base_url.trim_end_matches('/')))
+            .query(&[
+                ("symbol", "BTCUSDT".to_string()),
+                ("interval", "1s".to_string()),
+                ("startTime", next_open.timestamp_millis().to_string()),
+                ("endTime", (page_end.timestamp_millis() + 999).to_string()),
+                ("limit", limit.to_string()),
+            ])
+            .send()
+            .await
+            .context("failed to fetch Binance one-second model history")?
+            .error_for_status()
+            .context("Binance one-second model-history request failed")?;
+        let rows = response
+            .json::<serde_json::Value>()
+            .await
+            .context("failed to decode Binance one-second model history")?;
+        let rows = rows
+            .as_array()
+            .context("Binance one-second model history was not an array")?;
+        if rows.len() != limit {
+            bail!(
+                "Binance one-second model history returned {} rows; expected {limit}",
+                rows.len()
+            );
+        }
+        let recovered_at = Utc::now();
+        for row in rows {
+            let candle = parse_binance_rest_kline(row, recovered_at)?;
+            if candle.open_timestamp != next_open {
+                bail!(
+                    "Binance one-second model history expected {} but received {}",
+                    next_open,
+                    candle.open_timestamp
+                );
+            }
+            next_open = candle.close_timestamp;
+            candles.push(candle);
+        }
+    }
+    if candles.len() != BINANCE_ONE_SECOND_BOOTSTRAP_CAPACITY || next_open != completed_through {
+        bail!("Binance one-second model history did not cover the complete recovery window");
+    }
+    let candle_count = candles.len();
+    let window = BinanceOneSecondWindow::from_completed(candles)
+        .context("Binance one-second model history failed validation")?;
+    Ok(BinanceModelRecovery {
+        window,
+        candle_count,
+        completed_through,
+    })
+}
+
+fn parse_binance_rest_kline(
+    value: &serde_json::Value,
+    recovered_at: DateTime<Utc>,
+) -> Result<BinanceOneSecondKline> {
+    let row = value
+        .as_array()
+        .context("Binance one-second kline was not an array")?;
+    if row.len() < 11 {
+        bail!("Binance one-second kline omitted required fields");
+    }
+    let open_milliseconds = json_i64(&row[0], "open time")?;
+    let venue_close_milliseconds = json_i64(&row[6], "close time")?;
+    let open_timestamp = DateTime::from_timestamp_millis(open_milliseconds)
+        .context("Binance one-second kline open time is outside the supported range")?;
+    let close_timestamp = open_timestamp
+        .checked_add_signed(Duration::seconds(1))
+        .context("Binance one-second kline close time overflowed")?;
+    if venue_close_milliseconds != close_timestamp.timestamp_millis() - 1 {
+        bail!("Binance one-second kline has an invalid close time");
+    }
+    let trade_count = json_u64(&row[8], "trade count")?;
+    Ok(BinanceOneSecondKline {
+        open_timestamp,
+        close_timestamp,
+        open_price: json_decimal(&row[1], "open price")?,
+        high_price: json_decimal(&row[2], "high price")?,
+        low_price: json_decimal(&row[3], "low price")?,
+        close_price: json_decimal(&row[4], "close price")?,
+        base_volume: json_decimal(&row[5], "base volume")?,
+        quote_volume: json_decimal(&row[7], "quote volume")?,
+        trade_count,
+        taker_buy_base_volume: json_decimal(&row[9], "taker-buy base volume")?,
+        taker_buy_quote_volume: json_decimal(&row[10], "taker-buy quote volume")?,
+        first_aggregate_trade_id: 0,
+        last_aggregate_trade_id: 0,
+        first_source_timestamp: open_timestamp,
+        last_source_timestamp: close_timestamp - Duration::milliseconds(1),
+        max_received_at: recovered_at,
+        source_complete: true,
+        synthetic: trade_count == 0,
+    })
+}
+
+fn json_i64(value: &serde_json::Value, field: &str) -> Result<i64> {
+    value
+        .as_i64()
+        .with_context(|| format!("Binance one-second kline {field} was not an integer"))
+}
+
+fn json_u64(value: &serde_json::Value, field: &str) -> Result<u64> {
+    value
+        .as_u64()
+        .with_context(|| format!("Binance one-second kline {field} was not unsigned"))
+}
+
+fn json_decimal(value: &serde_json::Value, field: &str) -> Result<Decimal> {
+    let value = value
+        .as_str()
+        .with_context(|| format!("Binance one-second kline {field} was not a string"))?;
+    Decimal::from_str(value)
+        .with_context(|| format!("Binance one-second kline {field} was invalid"))
+}
+
+fn replay_binance_recovery_buffer(
+    recovery: &mut BinanceModelRecovery,
+    buffer: &VecDeque<(BinanceAggregateTrade, DateTime<Utc>)>,
+) -> Result<()> {
+    for (trade, received_at) in buffer {
+        if trade.transact_time < recovery.completed_through {
+            continue;
+        }
+        recovery
+            .window
+            .update(trade, *received_at)
+            .context("buffered Binance aggregate trade did not join recovered model history")?;
+    }
+    Ok(())
+}
+
 async fn run_binance_supervisor(
     config: BtcRuntimeConfig,
     heartbeat_interval: StdDuration,
@@ -5970,11 +6154,16 @@ async fn run_binance_supervisor(
     let mut reconnect_ordinal = 0i32;
     let mut retry_state = ReferenceRetryState::default();
     let mut recovery_window = ReferenceRecoveryWindow::open(Utc::now(), Instant::now());
-    metrics
-        .write()
-        .await
-        .binance_transport
-        .recovery_unavailable_since = recovery_window.since;
+    let recovery_client = reqwest::Client::builder()
+        .timeout(BINANCE_MODEL_RECOVERY_HTTP_TIMEOUT)
+        .build()
+        .unwrap_or_default();
+    let mut model_recovery_required = true;
+    {
+        let mut runtime_metrics = metrics.write().await;
+        runtime_metrics.binance_transport.recovery_unavailable_since = recovery_window.since;
+        runtime_metrics.binance_model_recovery_required = true;
+    }
     loop {
         if *shutdown.borrow() {
             break;
@@ -6107,6 +6296,11 @@ async fn run_binance_supervisor(
         let mut watchdog = ReferenceFeedWatchdog::new(watchdog_started, kind);
         let mut heartbeat = interval_at(watchdog_started + heartbeat_interval, heartbeat_interval);
         heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut model_recovery_retry = interval(BINANCE_MODEL_RECOVERY_RETRY_INTERVAL);
+        model_recovery_retry.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut model_recovery_task: Option<JoinHandle<Result<BinanceModelRecovery>>> = None;
+        let mut model_recovery_started = None;
+        let mut model_recovery_buffer = VecDeque::with_capacity(1_024);
         let required_data_sleep = sleep(kind.required_data_timeout());
         let read_idle_sleep = sleep(REFERENCE_READ_IDLE_TIMEOUT);
         let pong_sleep = sleep(REFERENCE_PONG_TIMEOUT);
@@ -6160,6 +6354,99 @@ async fn run_binance_supervisor(
                             connection_epoch = reconnect_ordinal,
                             "reference websocket reached stable data health"
                         );
+                    }
+                }
+                _ = model_recovery_retry.tick(), if model_recovery_required && model_recovery_task.is_none() => {
+                    model_recovery_buffer.clear();
+                    let client = recovery_client.clone();
+                    let base_url = config.binance_rest_base_url.clone();
+                    let started_at = Utc::now();
+                    model_recovery_started = Some(Instant::now());
+                    model_recovery_task = Some(tokio::spawn(async move {
+                        fetch_binance_model_history(&client, &base_url).await
+                    }));
+                    let mut runtime_metrics = metrics.write().await;
+                    runtime_metrics.binance_model_recovery_required = true;
+                    runtime_metrics.binance_model_recovery_attempts = runtime_metrics
+                        .binance_model_recovery_attempts
+                        .saturating_add(1);
+                    runtime_metrics.binance_model_recovery_last_started_at = Some(started_at);
+                    runtime_metrics.binance_model_recovery_last_error = None;
+                    tracing::info!(
+                        %connection_id,
+                        connection_epoch = reconnect_ordinal,
+                        "started authoritative Binance model-history recovery"
+                    );
+                }
+                recovery_result = async {
+                    model_recovery_task
+                        .as_mut()
+                        .expect("guarded Binance model-recovery task")
+                        .await
+                }, if model_recovery_task.is_some() => {
+                    model_recovery_task = None;
+                    let recovery_duration = model_recovery_started
+                        .take()
+                        .map(|started| duration_milliseconds(started.elapsed()));
+                    let recovered = match recovery_result {
+                        Ok(Ok(mut recovery)) => {
+                            replay_binance_recovery_buffer(
+                                &mut recovery,
+                                &model_recovery_buffer,
+                            )
+                            .map(|()| recovery)
+                        }
+                        Ok(Err(error)) => Err(error),
+                        Err(error) => Err(anyhow::anyhow!(
+                            "Binance model-recovery task failed: {error}"
+                        )),
+                    };
+                    match recovered {
+                        Ok(recovery) => {
+                            let candle_count = recovery.candle_count;
+                            let completed_through = recovery.completed_through;
+                            state.write().await.binance_one_second_window = recovery.window;
+                            model_recovery_buffer.clear();
+                            model_recovery_required = false;
+                            let completed_at = Utc::now();
+                            let mut runtime_metrics = metrics.write().await;
+                            runtime_metrics.binance_model_recovery_required = false;
+                            runtime_metrics.binance_model_recovery_successes = runtime_metrics
+                                .binance_model_recovery_successes
+                                .saturating_add(1);
+                            runtime_metrics.binance_model_recovery_candles = candle_count as u64;
+                            runtime_metrics.binance_model_recovery_last_duration_milliseconds =
+                                recovery_duration;
+                            runtime_metrics.binance_model_recovery_last_completed_at =
+                                Some(completed_at);
+                            runtime_metrics.binance_model_recovery_last_error = None;
+                            tracing::info!(
+                                %connection_id,
+                                connection_epoch = reconnect_ordinal,
+                                candle_count,
+                                %completed_through,
+                                recovery_duration_ms = recovery_duration,
+                                "atomically restored authoritative Binance model history"
+                            );
+                        }
+                        Err(error) => {
+                            let detail = error.to_string();
+                            let mut runtime_metrics = metrics.write().await;
+                            runtime_metrics.binance_model_recovery_required = true;
+                            runtime_metrics.binance_model_recovery_failures = runtime_metrics
+                                .binance_model_recovery_failures
+                                .saturating_add(1);
+                            runtime_metrics.binance_model_recovery_last_duration_milliseconds =
+                                recovery_duration;
+                            runtime_metrics.binance_model_recovery_last_error =
+                                Some(detail.clone());
+                            tracing::warn!(
+                                %connection_id,
+                                connection_epoch = reconnect_ordinal,
+                                error = %detail,
+                                "authoritative Binance model-history recovery failed"
+                            );
+                        }
                     }
                 }
                 _ = heartbeat.tick() => {
@@ -6232,7 +6519,44 @@ async fn run_binance_supervisor(
                                         });
                                     match parsed {
                                         Ok((tick, trade)) => {
-                                            let (health_progress, aggregation_error) = {
+                                            let buffer_overflow = model_recovery_required
+                                                && model_recovery_buffer.len()
+                                                    >= BINANCE_MODEL_RECOVERY_BUFFER_CAPACITY;
+                                            if buffer_overflow {
+                                                if let Some(task) = model_recovery_task.take() {
+                                                    task.abort();
+                                                }
+                                                model_recovery_started = None;
+                                                model_recovery_buffer.clear();
+                                                let mut runtime_metrics = metrics.write().await;
+                                                runtime_metrics.binance_model_recovery_failures =
+                                                    runtime_metrics
+                                                        .binance_model_recovery_failures
+                                                        .saturating_add(1);
+                                                runtime_metrics
+                                                    .binance_model_recovery_buffer_overflows =
+                                                    runtime_metrics
+                                                        .binance_model_recovery_buffer_overflows
+                                                        .saturating_add(1);
+                                                runtime_metrics.binance_model_recovery_last_error =
+                                                    Some("live aggregate-trade recovery buffer exceeded its bounded capacity".to_string());
+                                            } else if model_recovery_required {
+                                                model_recovery_buffer
+                                                    .push_back((trade.clone(), received_at));
+                                            }
+                                            let (health_progress, aggregation_error) = if model_recovery_required {
+                                                let mut realtime = state.write().await;
+                                                (
+                                                    update_reference_state_and_check_progress(
+                                                        &mut realtime,
+                                                        tick.clone(),
+                                                        ReferenceFeedKind::Binance,
+                                                        received_at,
+                                                        chrono_duration(config.max_reference_age),
+                                                    ),
+                                                    None,
+                                                )
+                                            } else {
                                                 let mut realtime = state.write().await;
                                                 update_binance_reference_and_model_window(
                                                     &mut realtime,
@@ -6243,10 +6567,21 @@ async fn run_binance_supervisor(
                                                 )
                                             };
                                             if let Some(error) = aggregation_error {
+                                                model_recovery_required = true;
+                                                model_recovery_buffer.clear();
+                                                let mut runtime_metrics = metrics.write().await;
+                                                runtime_metrics.binance_model_recovery_required = true;
+                                                runtime_metrics.binance_model_recovery_gap_resets =
+                                                    runtime_metrics
+                                                        .binance_model_recovery_gap_resets
+                                                        .saturating_add(1);
+                                                runtime_metrics.binance_model_recovery_last_error =
+                                                    Some(error.to_string());
+                                                drop(runtime_metrics);
                                                 tracing::warn!(
                                                     error = %error,
                                                     aggregate_trade_id = trade.aggregate_trade_id,
-                                                    "reset invalid Binance one-second model input window"
+                                                    "quarantined invalid Binance model history for authoritative recovery"
                                                 );
                                             }
                                             let first_healthy_transition =
@@ -6370,6 +6705,9 @@ async fn run_binance_supervisor(
                     }
                 }
             }
+        }
+        if let Some(task) = model_recovery_task.take() {
+            task.abort();
         }
         let disconnected_at = Utc::now();
         let disconnected_instant = Instant::now();
@@ -7428,6 +7766,88 @@ mod tests {
 
     use super::*;
     use crate::btc::types::OrderbookLevel;
+
+    #[test]
+    fn binance_rest_kline_maps_to_live_model_candle_contract() {
+        let open = Utc.timestamp_millis_opt(1_783_902_600_000).unwrap();
+        let recovered_at = open + Duration::seconds(2);
+        let candle = parse_binance_rest_kline(
+            &serde_json::json!([
+                open.timestamp_millis(),
+                "100.00",
+                "102.00",
+                "99.00",
+                "101.00",
+                "3.00",
+                open.timestamp_millis() + 999,
+                "302.00",
+                4,
+                "2.00",
+                "201.00",
+                "0"
+            ]),
+            recovered_at,
+        )
+        .unwrap();
+
+        assert_eq!(candle.open_timestamp, open);
+        assert_eq!(candle.close_timestamp, open + Duration::seconds(1));
+        assert_eq!(candle.trade_count, 4);
+        assert_eq!(candle.taker_buy_quote_volume, dec!(201));
+        assert!(candle.source_complete);
+        assert!(!candle.synthetic);
+    }
+
+    #[test]
+    fn authoritative_bootstrap_bridges_no_trade_seconds_before_live_replay() {
+        let open = Utc.timestamp_opt(1_783_902_600, 0).unwrap();
+        let recovered_at = open + Duration::seconds(1);
+        let candle = parse_binance_rest_kline(
+            &serde_json::json!([
+                open.timestamp_millis(),
+                "100",
+                "100",
+                "100",
+                "100",
+                "1",
+                open.timestamp_millis() + 999,
+                "100",
+                1,
+                "1",
+                "100",
+                "0"
+            ]),
+            recovered_at,
+        )
+        .unwrap();
+        let mut window = BinanceOneSecondWindow::from_completed(vec![candle]).unwrap();
+        let trade_at = open + Duration::seconds(3) + Duration::milliseconds(100);
+        window
+            .update(
+                &BinanceAggregateTrade {
+                    aggregate_trade_id: 42,
+                    price: dec!(101),
+                    quantity: dec!(0.5),
+                    first_trade_id: 50,
+                    last_trade_id: 50,
+                    transact_time: trade_at,
+                    is_buyer_maker: false,
+                },
+                trade_at + Duration::milliseconds(10),
+            )
+            .unwrap();
+
+        assert_eq!(window.completed().len(), 3);
+        assert!(window.completed()[1].synthetic);
+        assert!(window.completed()[2].synthetic);
+        assert!(window
+            .completed()
+            .iter()
+            .all(|candle| candle.source_complete));
+        assert!(window
+            .current()
+            .is_some_and(|candle| candle.source_complete));
+    }
 
     struct TaskDropSignal(Arc<AtomicBool>);
 

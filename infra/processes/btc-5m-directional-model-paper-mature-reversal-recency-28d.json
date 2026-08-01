@@ -27,6 +27,7 @@
           "min_seconds_after_open": 60,
           "min_seconds_before_close": 60,
           "max_reference_age_ms": 2000,
+          "max_directional_feature_age_ms": 5000,
           "max_chainlink_open_delay_ms": 5000,
           "max_book_age_ms": 2000,
           "max_source_skew_ms": 1000,
