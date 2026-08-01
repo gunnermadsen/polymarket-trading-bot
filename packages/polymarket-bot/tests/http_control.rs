@@ -832,6 +832,18 @@ async fn authenticated_admin_can_list_generic_ingesters() {
                     "accepts_new_requests": true
                 },
                 {
+                    "key": "chainlink_btcusd_one_minute_candles",
+                    "request_version": 1,
+                    "range_alignment_seconds": 86400,
+                    "accepts_new_requests": true
+                },
+                {
+                    "key": "binance_btcusdt_five_minute_open_interest",
+                    "request_version": 1,
+                    "range_alignment_seconds": 86400,
+                    "accepts_new_requests": true
+                },
+                {
                     "key": "polygon_chainlink_btcusd_oracle_rounds",
                     "request_version": 1,
                     "range_alignment_seconds": 86400,

@@ -66,11 +66,13 @@ pub enum IngesterKey {
     PolymarketBtcFiveMinuteOrderbooks,
     PolymarketBtcFiveMinuteExecutionSnapshots,
     ChainlinkBtcusdReferenceTicks,
+    ChainlinkBtcusdOneMinuteCandles,
+    BinanceBtcusdtFiveMinuteOpenInterest,
     PolygonChainlinkBtcusdOracleRounds,
 }
 
 impl IngesterKey {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::BtcFiveMinuteMarkets,
         Self::BtcFiveMinuteResolutions,
         Self::BinanceBtcusdtAggTrades,
@@ -78,6 +80,8 @@ impl IngesterKey {
         Self::PolymarketBtcFiveMinuteOrderbooks,
         Self::PolymarketBtcFiveMinuteExecutionSnapshots,
         Self::ChainlinkBtcusdReferenceTicks,
+        Self::ChainlinkBtcusdOneMinuteCandles,
+        Self::BinanceBtcusdtFiveMinuteOpenInterest,
         Self::PolygonChainlinkBtcusdOracleRounds,
     ];
 
@@ -92,6 +96,10 @@ impl IngesterKey {
                 "polymarket_btc_five_minute_execution_snapshots"
             }
             Self::ChainlinkBtcusdReferenceTicks => "chainlink_btcusd_reference_ticks",
+            Self::ChainlinkBtcusdOneMinuteCandles => "chainlink_btcusd_one_minute_candles",
+            Self::BinanceBtcusdtFiveMinuteOpenInterest => {
+                "binance_btcusdt_five_minute_open_interest"
+            }
             Self::PolygonChainlinkBtcusdOracleRounds => "polygon_chainlink_btcusd_oracle_rounds",
         }
     }
@@ -112,6 +120,8 @@ impl IngesterKey {
             Self::BinanceBtcusdtAggTrades
             | Self::BinanceBtcusdtOneSecondKlines
             | Self::ChainlinkBtcusdReferenceTicks
+            | Self::ChainlinkBtcusdOneMinuteCandles
+            | Self::BinanceBtcusdtFiveMinuteOpenInterest
             | Self::PolygonChainlinkBtcusdOracleRounds => 86_400,
         }
     }
@@ -149,6 +159,10 @@ impl FromStr for IngesterKey {
                 Ok(Self::PolymarketBtcFiveMinuteExecutionSnapshots)
             }
             "chainlink_btcusd_reference_ticks" => Ok(Self::ChainlinkBtcusdReferenceTicks),
+            "chainlink_btcusd_one_minute_candles" => Ok(Self::ChainlinkBtcusdOneMinuteCandles),
+            "binance_btcusdt_five_minute_open_interest" => {
+                Ok(Self::BinanceBtcusdtFiveMinuteOpenInterest)
+            }
             "polygon_chainlink_btcusd_oracle_rounds" => {
                 Ok(Self::PolygonChainlinkBtcusdOracleRounds)
             }
@@ -736,6 +750,29 @@ pub struct ChainlinkBtcusdArchiveTick {
     pub bid: Decimal,
     pub ask: Decimal,
     pub report_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChainlinkBtcusdOneMinuteCandle {
+    pub symbol: String,
+    pub open_timestamp: DateTime<Utc>,
+    pub close_timestamp: DateTime<Utc>,
+    pub open_price: Decimal,
+    pub high_price: Decimal,
+    pub low_price: Decimal,
+    pub close_price: Decimal,
+    pub volume: Option<Decimal>,
+    pub volume_supported: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinanceBtcusdtOpenInterestRecord {
+    pub symbol: String,
+    pub source_timestamp: DateTime<Utc>,
+    pub period_seconds: i32,
+    pub sum_open_interest: Decimal,
+    pub sum_open_interest_value: Decimal,
+    pub cmc_circulating_supply: Option<Decimal>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
