@@ -2594,6 +2594,10 @@ impl BtcRepository {
             LIMIT 1
             "#,
         )
+        // A cached PostgreSQL generic plan expands this Timescale hypertable across every
+        // compressed and uncompressed chunk before runtime exclusion. Keep this statement
+        // custom-planned so the timestamp bounds prune chunks before relation locks are taken.
+        .persistent(false)
         .bind(token_id)
         .bind(fresh_since)
         .bind(as_of)
