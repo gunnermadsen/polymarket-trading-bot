@@ -910,6 +910,7 @@ fn resume_process_contract_projection(mut config: serde_json::Value) -> serde_js
             runtime.remove("clob_heartbeat_interval");
             runtime.remove("rtds_heartbeat_interval");
             runtime.remove("binance_heartbeat_interval");
+            runtime.remove("binance_rest_base_url");
         }
         if raw
             .get("process_schema_version")
@@ -5188,7 +5189,7 @@ mod lifecycle_tests {
     }
 
     #[test]
-    fn btc_resume_process_contract_ignores_all_system_heartbeat_metadata() {
+    fn btc_resume_process_contract_ignores_system_feed_transport_metadata() {
         let prepared = prepared_btc_definition_with_default_runtime();
         let current = serde_json::to_value(&prepared.frozen_process_config).unwrap();
         assert_eq!(
@@ -5211,6 +5212,7 @@ mod lifecycle_tests {
                 "clob_heartbeat_interval",
                 "rtds_heartbeat_interval",
                 "binance_heartbeat_interval",
+                "binance_rest_base_url",
             ] {
                 durable["raw"]["runtime"][field] = historical_value.clone();
             }
