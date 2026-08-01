@@ -39,7 +39,7 @@ use super::{
         directional_model_input_sha256, runtime_model, BtcDirectionalModelFeatureSnapshot,
         RuntimeModelSelection, RuntimePredictionPolicy, BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
     },
-    execution_guard::BtcReferenceExecutionGuard,
+    execution_guard::{BtcExecutionFreshnessBounds, BtcReferenceExecutionGuard},
     execution_lifecycle::{BtcExecutionLifecycle, BtcExecutionMode, PaperExecutionLifecycle},
     feeds::BookRegistry,
     paper::{PaperPreviewConfig, PaperVenue, PAPER_DYNAMIC_FEE_RATE_METADATA_KEY},
@@ -518,6 +518,7 @@ pub struct BtcProcessRunner {
     execution_lifecycle: Arc<dyn BtcExecutionLifecycle>,
     book_registry: Arc<tokio::sync::RwLock<BookRegistry>>,
     config: BtcProcessConfig,
+    max_directional_feature_age_ms: Option<i64>,
     initialized: OnceCell<()>,
     loss_regime_admission: Mutex<Option<LossRegimeAdmissionRuntime>>,
     shadow_predictive_regime_admission:
@@ -583,6 +584,8 @@ impl BtcProcessRunner {
             );
         }
         config.strategy.validate()?;
+        let max_directional_feature_age_ms =
+            config.strategy.effective_max_directional_feature_age_ms()?;
         if config.strategy.attribution().is_none() {
             anyhow::bail!("BTC execution run strategy attribution is invalid");
         }
@@ -643,6 +646,7 @@ impl BtcProcessRunner {
             ),
             high_water_mark_entry_submission: Mutex::new(()),
             config,
+            max_directional_feature_age_ms,
             initialized: OnceCell::new(),
             execution_reconcile_started_at: Mutex::new(None),
             directional_model_runtime: StdMutex::new(DirectionalModelProcessRuntime::default()),
@@ -1059,6 +1063,9 @@ impl BtcProcessRunner {
         let process_id = self.config.process_id;
         let max_reference_age =
             chrono::Duration::milliseconds(self.config.strategy.max_reference_age_ms);
+        let max_directional_feature_age = self
+            .max_directional_feature_age_ms
+            .map(chrono::Duration::milliseconds);
         let market_id = market_id.to_string();
         let handle = tokio::spawn(async move {
             let refreshed = load_shadow_predictive_regime_state_versioned(
@@ -1067,6 +1074,7 @@ impl BtcProcessRunner {
                 &config,
                 as_of,
                 max_reference_age,
+                max_directional_feature_age,
                 base_state,
             )
             .await
@@ -1706,7 +1714,10 @@ impl BtcProcessRunner {
             &request,
             &feature_hash,
             fee_rate,
-            self.config.strategy.max_reference_age_ms,
+            BtcExecutionFreshnessBounds {
+                max_reference_age_ms: self.config.strategy.max_reference_age_ms,
+                max_directional_feature_age_ms: self.max_directional_feature_age_ms,
+            },
         )?;
         reference_execution_guard.insert_into_metadata(&mut request.metadata)?;
         self.insert_process_strategy_decision(
@@ -1859,6 +1870,7 @@ async fn load_shadow_predictive_regime_state_versioned(
     config: &ShadowPredictiveRegimeCircuitBreakerConfigSelector,
     as_of: DateTime<Utc>,
     max_reference_age: chrono::Duration,
+    max_directional_feature_age: Option<chrono::Duration>,
     base_state: Option<ShadowPredictiveRegimeStateVersion>,
 ) -> Result<(
     ShadowPredictiveRegimeStateVersion,
@@ -1905,6 +1917,7 @@ async fn load_shadow_predictive_regime_state_versioned(
                 config,
                 as_of,
                 max_reference_age,
+                max_directional_feature_age,
                 base_state,
             )
             .await?;
@@ -2054,6 +2067,7 @@ async fn load_shadow_predictive_regime_v2_state(
     config: &ShadowPredictiveRegimeCircuitBreakerV2Config,
     as_of: DateTime<Utc>,
     max_reference_age: chrono::Duration,
+    max_directional_feature_age: Option<chrono::Duration>,
     base_state: Option<ShadowPredictiveRegimeV2State>,
 ) -> Result<(
     ShadowPredictiveRegimeV2State,
@@ -2086,6 +2100,7 @@ async fn load_shadow_predictive_regime_v2_state(
             as_of,
             SHADOW_PREDICTIVE_REGIME_REPLAY_FETCH_CANDIDATES,
             max_reference_age,
+            max_directional_feature_age,
         )
         .await?;
     reconcile_shadow_predictive_regime_v2_state(process_id, config, Some(prior_state), &candidates)

@@ -248,6 +248,30 @@ impl BtcStrategyConfig {
             .map_err(|_| anyhow::anyhow!("invalid BTC deterministic strategy configuration"))
     }
 
+    pub fn effective_max_directional_feature_age_ms(&self) -> anyhow::Result<Option<i64>> {
+        let strategy = ResolvedBtcDecisionStrategy::resolve(self)
+            .map_err(|_| anyhow::anyhow!("invalid BTC decision strategy configuration"))?;
+        let ResolvedBtcDecisionStrategy::BtcDirectionalModel {
+            model_key,
+            artifact_sha256,
+            feature_schema_sha256,
+        } = strategy
+        else {
+            return Ok(None);
+        };
+        let selection =
+            btc_directional_model_selection(model_key, artifact_sha256, feature_schema_sha256);
+        let model = runtime_model(&selection)?;
+        let max_age = self
+            .max_directional_feature_age_ms
+            .unwrap_or_else(|| model.prediction_policy().cadence_seconds * 1_000);
+        anyhow::ensure!(
+            max_age > 0 && max_age <= model.prediction_policy().cadence_seconds * 1_000,
+            "BTC directional feature age bound must be positive and no greater than model cadence"
+        );
+        Ok(Some(max_age))
+    }
+
     pub fn attribution(&self) -> Option<BtcStrategyAttribution<'_>> {
         let family = match ResolvedBtcDecisionStrategy::resolve(self).ok()? {
             ResolvedBtcDecisionStrategy::ChainlinkFairValue => {
@@ -2640,7 +2664,8 @@ mod tests {
     use super::*;
     use crate::{
         btc::execution_guard::{
-            BtcReferenceExecutionGuard, BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION,
+            BtcExecutionFreshnessBounds, BtcReferenceExecutionGuard,
+            BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION,
         },
         models::{OrderRequest, OrderSide, OrderType},
     };
@@ -3099,7 +3124,12 @@ mod tests {
                 &request,
                 &"a".repeat(64),
                 snapshot.fee_rate.unwrap(),
-                config.max_reference_age_ms,
+                BtcExecutionFreshnessBounds {
+                    max_reference_age_ms: config.max_reference_age_ms,
+                    max_directional_feature_age_ms: config
+                        .effective_max_directional_feature_age_ms()
+                        .unwrap(),
+                },
             )
             .unwrap();
             assert_eq!(
@@ -3120,7 +3150,12 @@ mod tests {
                 &request,
                 &"a".repeat(64),
                 snapshot.fee_rate.unwrap(),
-                config.max_reference_age_ms,
+                BtcExecutionFreshnessBounds {
+                    max_reference_age_ms: config.max_reference_age_ms,
+                    max_directional_feature_age_ms: config
+                        .effective_max_directional_feature_age_ms()
+                        .unwrap(),
+                },
             )
             .is_err());
         }

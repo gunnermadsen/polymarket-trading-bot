@@ -1001,6 +1001,9 @@ impl BtcProcessManager {
         paper_venue_config: PaperVenueConfig,
         strategy: &BtcStrategyConfig,
     ) -> Result<BtcExecutionComponents> {
+        let max_directional_feature_age = strategy
+            .effective_max_directional_feature_age_ms()?
+            .map(chrono::Duration::milliseconds);
         match execution_mode {
             BtcExecutionMode::Paper => {
                 let paper_venue = Arc::new(BtcPaperVenue::new_with_reference_execution_guard(
@@ -1009,6 +1012,7 @@ impl BtcProcessManager {
                     strategy.max_depth_participation,
                     process_id,
                     chrono::Duration::milliseconds(strategy.max_reference_age_ms),
+                    max_directional_feature_age,
                 )?);
                 let venue: Arc<dyn ExecutionVenue> = paper_venue.clone();
                 let lifecycle: Arc<dyn BtcExecutionLifecycle> =
@@ -1034,6 +1038,7 @@ impl BtcProcessManager {
                     books,
                     process_id,
                     chrono::Duration::milliseconds(strategy.max_reference_age_ms),
+                    max_directional_feature_age,
                     chrono::Duration::milliseconds(strategy.max_book_age_ms),
                     strategy.max_depth_participation,
                 )?);

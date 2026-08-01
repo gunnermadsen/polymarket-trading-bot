@@ -20,8 +20,16 @@ use crate::models::{OrderRequest, OrderSide, OrderType};
 
 pub const BTC_REFERENCE_EXECUTION_GUARD_METADATA_KEY: &str = "reference_execution_guard";
 pub const BTC_REFERENCE_EXECUTION_GUARD_VERSION: &str = "btc_reference_execution_guard_v1";
-pub const BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION: &str =
+const LEGACY_BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION: &str =
     "btc_reference_execution_guard_directional_model_v1";
+pub const BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION: &str =
+    "btc_reference_execution_guard_directional_model_v2";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BtcExecutionFreshnessBounds {
+    pub max_reference_age_ms: i64,
+    pub max_directional_feature_age_ms: Option<i64>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BtcReferenceTickEvidence {
@@ -87,6 +95,8 @@ pub struct BtcReferenceExecutionGuard {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_book: Option<BtcExecutionBookEvidence>,
     pub max_reference_age_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_directional_feature_age_ms: Option<i64>,
     pub evidence_sha256: String,
 }
 
@@ -96,6 +106,8 @@ pub struct BtcReferenceExecutionAssessment {
     pub evidence_sha256: String,
     pub validated_at: DateTime<Utc>,
     pub max_reference_age_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_directional_feature_age_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chainlink_source_age_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -205,6 +217,36 @@ struct DirectionalModelGuardHashEvidence<'a> {
     max_reference_age_ms: i64,
 }
 
+#[derive(Serialize)]
+struct DirectionalModelGuardHashEvidenceV2<'a> {
+    guard_version: &'a str,
+    process_id: Uuid,
+    intent_id: Uuid,
+    decision_id: Uuid,
+    decision_at: DateTime<Utc>,
+    snapshot_id: Uuid,
+    feature_as_of: DateTime<Utc>,
+    market_id: &'a str,
+    token_id: &'a str,
+    outcome: BtcOutcome,
+    strategy_version: &'a str,
+    feature_schema_version: &'a str,
+    lineage_version: &'a str,
+    feature_sha256: &'a str,
+    client_order_id: Uuid,
+    side: OrderSide,
+    order_type: OrderType,
+    limit_price: Decimal,
+    size: Decimal,
+    signal_id: Option<Uuid>,
+    dynamic_fee_rate: Decimal,
+    directional_model: &'a BtcDirectionalModelExecutionEvidence,
+    binance: &'a BtcReferenceTickEvidence,
+    selected_book: &'a BtcExecutionBookEvidence,
+    max_reference_age_ms: i64,
+    max_directional_feature_age_ms: i64,
+}
+
 impl BtcReferenceExecutionGuard {
     pub fn from_snapshot(
         snapshot: &BtcFeatureSnapshot,
@@ -213,8 +255,12 @@ impl BtcReferenceExecutionGuard {
         request: &OrderRequest,
         feature_sha256: &str,
         dynamic_fee_rate: Decimal,
-        max_reference_age_ms: i64,
+        freshness_bounds: BtcExecutionFreshnessBounds,
     ) -> Result<Self> {
+        let BtcExecutionFreshnessBounds {
+            max_reference_age_ms,
+            max_directional_feature_age_ms,
+        } = freshness_bounds;
         ensure!(
             max_reference_age_ms > 0,
             "reference execution age bound must be positive"
@@ -267,6 +313,17 @@ impl BtcReferenceExecutionGuard {
 
         let directional_model_strategy =
             intent.strategy_version == BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION;
+        if directional_model_strategy {
+            ensure!(
+                max_directional_feature_age_ms.is_some_and(|max_age| max_age > 0),
+                "directional-model execution age bound must be positive"
+            );
+        } else {
+            ensure!(
+                max_directional_feature_age_ms.is_none(),
+                "non-model execution cannot carry a directional feature age bound"
+            );
+        }
         let directional_model = if directional_model_strategy {
             let features = snapshot
                 .directional_model
@@ -350,6 +407,7 @@ impl BtcReferenceExecutionGuard {
             directional_model,
             selected_book,
             max_reference_age_ms,
+            max_directional_feature_age_ms,
             evidence_sha256: String::new(),
         };
         guard.validate_causality().map_err(anyhow::Error::new)?;
@@ -394,11 +452,14 @@ impl BtcReferenceExecutionGuard {
         checked_at: DateTime<Utc>,
         expected_process_id: Uuid,
         expected_max_reference_age: Duration,
+        expected_max_directional_feature_age: Option<Duration>,
     ) -> std::result::Result<BtcReferenceExecutionAssessment, BtcReferenceExecutionRejectReason>
     {
         if !matches!(
             self.guard_version.as_str(),
-            BTC_REFERENCE_EXECUTION_GUARD_VERSION | BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
+            BTC_REFERENCE_EXECUTION_GUARD_VERSION
+                | LEGACY_BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
+                | BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
         ) || !supported_lineage_version(&self.lineage_version)
         {
             return Err(BtcReferenceExecutionRejectReason::UnsupportedVersion);
@@ -496,11 +557,37 @@ impl BtcReferenceExecutionGuard {
             };
         let directional_model_feature_age_ms = if let Some(model) = self.directional_model.as_ref()
         {
+            let max_directional_feature_age =
+                if self.guard_version == LEGACY_BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION {
+                    if self.max_directional_feature_age_ms.is_some() {
+                        return Err(BtcReferenceExecutionRejectReason::InvalidGuard);
+                    }
+                    max_reference_age
+                } else {
+                    let max_age = self
+                        .max_directional_feature_age_ms
+                        .and_then(Duration::try_milliseconds)
+                        .filter(|duration| *duration > Duration::zero())
+                        .ok_or(BtcReferenceExecutionRejectReason::InvalidFreshnessBound)?;
+                    if expected_max_directional_feature_age != Some(max_age) {
+                        return Err(BtcReferenceExecutionRejectReason::InvalidFreshnessBound);
+                    }
+                    max_age
+                };
             Some(
-                bounded_timestamp_age(model.feature_as_of, checked_at, max_reference_age)?
-                    .num_milliseconds(),
+                bounded_timestamp_age(
+                    model.feature_as_of,
+                    checked_at,
+                    max_directional_feature_age,
+                )?
+                .num_milliseconds(),
             )
         } else {
+            if self.max_directional_feature_age_ms.is_some()
+                || expected_max_directional_feature_age.is_some()
+            {
+                return Err(BtcReferenceExecutionRejectReason::InvalidFreshnessBound);
+            }
             None
         };
         let (selected_book_source_age_ms, selected_book_receive_age_ms) =
@@ -521,6 +608,7 @@ impl BtcReferenceExecutionGuard {
             evidence_sha256: self.evidence_sha256.clone(),
             validated_at: checked_at,
             max_reference_age_ms: self.max_reference_age_ms,
+            max_directional_feature_age_ms: self.max_directional_feature_age_ms,
             chainlink_source_age_ms,
             chainlink_receive_age_ms,
             binance_source_age_ms: binance_source_age.num_milliseconds(),
@@ -548,6 +636,7 @@ impl BtcReferenceExecutionGuard {
                 if self.strategy_version == BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION
                     || self.directional_model.is_some()
                     || self.selected_book.is_some()
+                    || self.max_directional_feature_age_ms.is_some()
                     || [chainlink_open, chainlink].into_iter().any(|evidence| {
                         evidence.tick_id == Uuid::nil() || evidence.ingest_sequence == 0
                     })
@@ -555,7 +644,8 @@ impl BtcReferenceExecutionGuard {
                     return Err(BtcReferenceExecutionRejectReason::InvalidGuard);
                 }
             }
-            BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION => {
+            LEGACY_BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
+            | BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION => {
                 let model = self
                     .directional_model
                     .as_ref()
@@ -581,6 +671,12 @@ impl BtcReferenceExecutionGuard {
                     || book.checkpoint_id == Uuid::nil()
                     || book.connection_id == Uuid::nil()
                     || book.ingest_sequence == 0
+                    || (self.guard_version == LEGACY_BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
+                        && self.max_directional_feature_age_ms.is_some())
+                    || (self.guard_version == BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
+                        && self
+                            .max_directional_feature_age_ms
+                            .is_none_or(|max_age| max_age <= 0))
                 {
                     return Err(BtcReferenceExecutionRejectReason::InvalidGuard);
                 }
@@ -645,7 +741,8 @@ impl BtcReferenceExecutionGuard {
                     return Err(BtcReferenceExecutionRejectReason::NoncausalEvidence);
                 }
             }
-            BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION => {
+            LEGACY_BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
+            | BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION => {
                 let model = self
                     .directional_model
                     .as_ref()
@@ -704,7 +801,7 @@ impl BtcReferenceExecutionGuard {
                 };
                 serde_json::to_vec(&evidence)?
             }
-            BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION => {
+            LEGACY_BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION => {
                 let evidence = DirectionalModelGuardHashEvidence {
                     guard_version: &self.guard_version,
                     process_id: self.process_id,
@@ -737,6 +834,45 @@ impl BtcReferenceExecutionGuard {
                         .as_ref()
                         .context("directional-model guard book evidence is missing")?,
                     max_reference_age_ms: self.max_reference_age_ms,
+                };
+                serde_json::to_vec(&evidence)?
+            }
+            BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION => {
+                let evidence = DirectionalModelGuardHashEvidenceV2 {
+                    guard_version: &self.guard_version,
+                    process_id: self.process_id,
+                    intent_id: self.intent_id,
+                    decision_id: self.decision_id,
+                    decision_at: self.decision_at,
+                    snapshot_id: self.snapshot_id,
+                    feature_as_of: self.feature_as_of,
+                    market_id: &self.market_id,
+                    token_id: &self.token_id,
+                    outcome: self.outcome,
+                    strategy_version: &self.strategy_version,
+                    feature_schema_version: &self.feature_schema_version,
+                    lineage_version: &self.lineage_version,
+                    feature_sha256: &self.feature_sha256,
+                    client_order_id: self.client_order_id,
+                    side: self.side,
+                    order_type: self.order_type,
+                    limit_price: self.limit_price,
+                    size: self.size,
+                    signal_id: self.legacy_signal_id,
+                    dynamic_fee_rate: self.dynamic_fee_rate,
+                    directional_model: self
+                        .directional_model
+                        .as_ref()
+                        .context("directional-model guard evidence is missing")?,
+                    binance: &self.binance,
+                    selected_book: self
+                        .selected_book
+                        .as_ref()
+                        .context("directional-model guard book evidence is missing")?,
+                    max_reference_age_ms: self.max_reference_age_ms,
+                    max_directional_feature_age_ms: self
+                        .max_directional_feature_age_ms
+                        .context("directional-model guard feature age bound is missing")?,
                 };
                 serde_json::to_vec(&evidence)?
             }
@@ -939,6 +1075,7 @@ mod tests {
             directional_model: None,
             selected_book: None,
             max_reference_age_ms: 2_000,
+            max_directional_feature_age_ms: None,
             evidence_sha256: String::new(),
         };
         guard.evidence_sha256 = guard.calculate_evidence_sha256().unwrap();
@@ -996,6 +1133,7 @@ mod tests {
                 ingest_sequence: 21,
             }),
             max_reference_age_ms: 2_000,
+            max_directional_feature_age_ms: Some(5_000),
             evidence_sha256: String::new(),
         };
         guard.evidence_sha256 = guard.calculate_evidence_sha256().unwrap();
@@ -1094,6 +1232,7 @@ mod tests {
                 checked_at,
                 guard.process_id,
                 Duration::seconds(2),
+                None,
             )
             .is_ok());
         assert!(serde_json::to_value(legacy_request)
@@ -1112,6 +1251,7 @@ mod tests {
                     checked_at,
                     guard.process_id,
                     Duration::seconds(2),
+                    None,
                 )
                 .unwrap_err(),
             BtcReferenceExecutionRejectReason::InvalidGuard
@@ -1130,6 +1270,7 @@ mod tests {
                 checked_at,
                 guard.process_id,
                 Duration::seconds(2),
+                Some(Duration::seconds(5)),
             )
             .unwrap();
 
@@ -1141,6 +1282,7 @@ mod tests {
         assert_eq!(assessment.chainlink_source_age_ms, None);
         assert_eq!(assessment.chainlink_receive_age_ms, None);
         assert_eq!(assessment.directional_model_feature_age_ms, Some(0));
+        assert_eq!(assessment.max_directional_feature_age_ms, Some(5_000));
         assert_eq!(assessment.selected_book_source_age_ms, Some(70));
         assert_eq!(assessment.selected_book_receive_age_ms, Some(60));
 
@@ -1153,6 +1295,7 @@ mod tests {
                     checked_at,
                     guard.process_id,
                     Duration::seconds(2),
+                    Some(Duration::seconds(5)),
                 )
                 .unwrap_err(),
             BtcReferenceExecutionRejectReason::IdentityMismatch
@@ -1167,6 +1310,7 @@ mod tests {
                     checked_at,
                     guard.process_id,
                     Duration::seconds(2),
+                    Some(Duration::seconds(5)),
                 )
                 .unwrap_err(),
             BtcReferenceExecutionRejectReason::IdentityMismatch
@@ -1181,9 +1325,140 @@ mod tests {
                     checked_at,
                     guard.process_id,
                     Duration::seconds(2),
+                    Some(Duration::seconds(5)),
                 )
                 .unwrap_err(),
             BtcReferenceExecutionRejectReason::EvidenceHashMismatch
+        );
+
+        let mut tampered_bound = guard.clone();
+        tampered_bound.max_directional_feature_age_ms = Some(6_000);
+        assert_eq!(
+            tampered_bound
+                .validate_for_request(
+                    &guarded_request,
+                    checked_at,
+                    guard.process_id,
+                    Duration::seconds(2),
+                    Some(Duration::seconds(5)),
+                )
+                .unwrap_err(),
+            BtcReferenceExecutionRejectReason::EvidenceHashMismatch
+        );
+    }
+
+    #[test]
+    fn directional_model_guard_uses_separate_model_and_reference_freshness_bounds() {
+        let checked_at = Utc.with_ymd_and_hms(2026, 7, 27, 12, 0, 0).unwrap();
+        let mut guard = sealed_directional_model_guard(checked_at);
+        let model = guard.directional_model.as_mut().unwrap();
+        model.feature_as_of = checked_at - Duration::milliseconds(2_900);
+        model.window_start = model.feature_as_of - Duration::seconds(model.seconds_elapsed);
+        guard.reseal_for_test();
+        let guarded_request = directional_model_request(&guard);
+
+        let assessment = guard
+            .validate_for_request(
+                &guarded_request,
+                checked_at,
+                guard.process_id,
+                Duration::seconds(2),
+                Some(Duration::seconds(5)),
+            )
+            .unwrap();
+        assert_eq!(assessment.directional_model_feature_age_ms, Some(2_900));
+
+        let mut stale_model = sealed_directional_model_guard(checked_at);
+        let model = stale_model.directional_model.as_mut().unwrap();
+        model.feature_as_of = checked_at - Duration::milliseconds(5_001);
+        model.window_start = model.feature_as_of - Duration::seconds(model.seconds_elapsed);
+        stale_model.reseal_for_test();
+        let stale_model_request = directional_model_request(&stale_model);
+        assert_eq!(
+            stale_model
+                .validate_for_request(
+                    &stale_model_request,
+                    checked_at,
+                    stale_model.process_id,
+                    Duration::seconds(2),
+                    Some(Duration::seconds(5)),
+                )
+                .unwrap_err(),
+            BtcReferenceExecutionRejectReason::StaleEvidence
+        );
+
+        let mut stale_reference = sealed_directional_model_guard(checked_at);
+        stale_reference.binance.source_timestamp = checked_at - Duration::milliseconds(2_001);
+        stale_reference.reseal_for_test();
+        let stale_reference_request = directional_model_request(&stale_reference);
+        assert_eq!(
+            stale_reference
+                .validate_for_request(
+                    &stale_reference_request,
+                    checked_at,
+                    stale_reference.process_id,
+                    Duration::seconds(2),
+                    Some(Duration::seconds(5)),
+                )
+                .unwrap_err(),
+            BtcReferenceExecutionRejectReason::StaleEvidence
+        );
+
+        let mut stale_book = sealed_directional_model_guard(checked_at);
+        stale_book.selected_book.as_mut().unwrap().received_at =
+            checked_at - Duration::milliseconds(2_001);
+        stale_book.reseal_for_test();
+        let stale_book_request = directional_model_request(&stale_book);
+        assert_eq!(
+            stale_book
+                .validate_for_request(
+                    &stale_book_request,
+                    checked_at,
+                    stale_book.process_id,
+                    Duration::seconds(2),
+                    Some(Duration::seconds(5)),
+                )
+                .unwrap_err(),
+            BtcReferenceExecutionRejectReason::StaleEvidence
+        );
+    }
+
+    #[test]
+    fn legacy_directional_guard_keeps_the_original_hash_and_freshness_contract() {
+        let checked_at = Utc.with_ymd_and_hms(2026, 7, 27, 12, 0, 0).unwrap();
+        let mut guard = sealed_directional_model_guard(checked_at);
+        guard.guard_version = LEGACY_BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION.to_string();
+        guard.max_directional_feature_age_ms = None;
+        guard.reseal_for_test();
+        let guarded_request = directional_model_request(&guard);
+
+        assert!(guard
+            .validate_for_request(
+                &guarded_request,
+                checked_at,
+                guard.process_id,
+                Duration::seconds(2),
+                Some(Duration::seconds(5)),
+            )
+            .is_ok());
+
+        let mut stale = guard;
+        let model = stale.directional_model.as_mut().unwrap();
+        model.feature_as_of = checked_at - Duration::milliseconds(2_001);
+        model.window_start = model.feature_as_of - Duration::seconds(model.seconds_elapsed);
+        stale.reseal_for_test();
+        let stale_request = directional_model_request(&stale);
+        assert_eq!(
+            stale
+                .validate_for_request(
+                    &stale_request,
+                    checked_at,
+                    stale.process_id,
+                    Duration::seconds(2),
+                    Some(Duration::seconds(5)),
+                )
+                .unwrap_err(),
+            BtcReferenceExecutionRejectReason::StaleEvidence
         );
     }
 
@@ -1206,6 +1481,7 @@ mod tests {
                     checked_at,
                     guard.process_id,
                     Duration::seconds(2),
+                    Some(Duration::seconds(5)),
                 )
                 .unwrap_err(),
             BtcReferenceExecutionRejectReason::InvalidGuard
@@ -1227,6 +1503,7 @@ mod tests {
                     checked_at,
                     guard.process_id,
                     Duration::seconds(2),
+                    Some(Duration::seconds(5)),
                 )
                 .unwrap_err(),
             BtcReferenceExecutionRejectReason::InvalidGuard
@@ -1243,6 +1520,7 @@ mod tests {
                     checked_at,
                     invalid_freshness.process_id,
                     Duration::seconds(2),
+                    Some(Duration::seconds(5)),
                 )
                 .unwrap_err(),
             BtcReferenceExecutionRejectReason::InvalidFreshnessBound
@@ -1260,6 +1538,7 @@ mod tests {
                 checked_at,
                 guard.process_id,
                 Duration::seconds(2),
+                None,
             )
             .is_ok());
 
@@ -1272,6 +1551,7 @@ mod tests {
                 checked_at,
                 guard.process_id,
                 Duration::seconds(2),
+                None,
             )
             .is_ok());
         assert_eq!(
@@ -1281,6 +1561,7 @@ mod tests {
                     checked_at + Duration::milliseconds(1),
                     guard.process_id,
                     Duration::seconds(2),
+                    None,
                 )
                 .unwrap_err(),
             BtcReferenceExecutionRejectReason::StaleEvidence
@@ -1303,6 +1584,7 @@ mod tests {
                     checked_at,
                     guard.process_id,
                     Duration::seconds(2),
+                    None,
                 )
                 .unwrap_err(),
             BtcReferenceExecutionRejectReason::StaleEvidence
@@ -1320,6 +1602,7 @@ mod tests {
                     checked_at,
                     guard.process_id,
                     Duration::seconds(2),
+                    None,
                 )
                 .unwrap_err(),
             BtcReferenceExecutionRejectReason::FutureEvidence
@@ -1340,6 +1623,7 @@ mod tests {
                     checked_at,
                     guard.process_id,
                     Duration::seconds(2),
+                    None,
                 )
                 .unwrap_err(),
             BtcReferenceExecutionRejectReason::IdentityMismatch
@@ -1355,6 +1639,7 @@ mod tests {
                     checked_at,
                     changed.process_id,
                     Duration::seconds(2),
+                    None,
                 )
                 .unwrap_err(),
             BtcReferenceExecutionRejectReason::EvidenceHashMismatch
@@ -1370,6 +1655,7 @@ mod tests {
                     checked_at,
                     unsupported.process_id,
                     Duration::seconds(2),
+                    None,
                 )
                 .unwrap_err(),
             BtcReferenceExecutionRejectReason::UnsupportedVersion
@@ -1386,6 +1672,7 @@ mod tests {
                     checked_at,
                     noncausal.process_id,
                     Duration::seconds(2),
+                    None,
                 )
                 .unwrap_err(),
             BtcReferenceExecutionRejectReason::NoncausalEvidence

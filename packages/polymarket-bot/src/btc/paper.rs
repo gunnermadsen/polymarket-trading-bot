@@ -144,6 +144,7 @@ pub struct PaperVenue {
 struct ReferenceExecutionPolicy {
     expected_process_id: Uuid,
     max_reference_age: chrono::Duration,
+    max_directional_feature_age: Option<chrono::Duration>,
 }
 
 #[derive(Debug, Default)]
@@ -194,12 +195,16 @@ impl PaperVenue {
         max_depth_participation: Decimal,
         expected_process_id: Uuid,
         max_reference_age: chrono::Duration,
+        max_directional_feature_age: Option<chrono::Duration>,
     ) -> Result<Self> {
         if expected_process_id == Uuid::nil() {
             bail!("paper reference execution process_id must not be nil");
         }
         if max_reference_age <= chrono::Duration::zero() {
             bail!("paper max_reference_age must be positive");
+        }
+        if max_directional_feature_age.is_some_and(|max_age| max_age <= chrono::Duration::zero()) {
+            bail!("paper max_directional_feature_age must be positive");
         }
         Self::new_inner(
             registry,
@@ -208,6 +213,7 @@ impl PaperVenue {
             Some(ReferenceExecutionPolicy {
                 expected_process_id,
                 max_reference_age,
+                max_directional_feature_age,
             }),
         )
     }
@@ -253,6 +259,7 @@ impl PaperVenue {
             checked_at,
             policy.expected_process_id,
             policy.max_reference_age,
+            policy.max_directional_feature_age,
         )?;
         Ok(Some((guard, assessment)))
     }
@@ -272,6 +279,7 @@ impl PaperVenue {
             checked_at,
             policy.expected_process_id,
             policy.max_reference_age,
+            policy.max_directional_feature_age,
         )
     }
 
@@ -1375,6 +1383,7 @@ mod tests {
         registry: Arc<RwLock<BookRegistry>>,
         arrival_latency: Duration,
         max_reference_age: ChronoDuration,
+        max_directional_feature_age: Option<ChronoDuration>,
     ) -> PaperVenue {
         PaperVenue::new_with_reference_execution_guard(
             registry,
@@ -1387,6 +1396,7 @@ mod tests {
             Decimal::ONE,
             Uuid::from_u128(201),
             max_reference_age,
+            max_directional_feature_age,
         )
         .unwrap()
     }
@@ -1446,6 +1456,7 @@ mod tests {
     fn directional_model_guarded_request(
         at: DateTime<Utc>,
         max_reference_age: ChronoDuration,
+        directional_feature_age: ChronoDuration,
     ) -> OrderRequest {
         let mut request = request(dec!(2), dec!(0.40));
         let tick = BtcReferenceTickEvidence {
@@ -1482,8 +1493,8 @@ mod tests {
                 "artifact_sha256": BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256,
                 "feature_schema_sha256": BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256,
                 "input_sha256": "c".repeat(64),
-                "window_start": at - ChronoDuration::seconds(180),
-                "feature_as_of": at,
+                "window_start": at - directional_feature_age - ChronoDuration::seconds(180),
+                "feature_as_of": at - directional_feature_age,
                 "seconds_elapsed": 180,
             },
             "selected_book": {
@@ -1496,6 +1507,7 @@ mod tests {
                 "ingest_sequence": 409,
             },
             "max_reference_age_ms": max_reference_age.num_milliseconds(),
+            "max_directional_feature_age_ms": 5_000,
             "evidence_sha256": "",
         }))
         .unwrap();
@@ -1533,6 +1545,7 @@ mod tests {
             ),
             Duration::ZERO,
             ChronoDuration::seconds(2),
+            None,
         );
 
         let order = venue
@@ -1565,12 +1578,14 @@ mod tests {
             ),
             Duration::ZERO,
             max_reference_age,
+            Some(ChronoDuration::seconds(5)),
         );
 
         let order = venue
             .submit_order(directional_model_guarded_request(
                 Utc::now(),
                 max_reference_age,
+                ChronoDuration::milliseconds(2_900),
             ))
             .await
             .unwrap();
@@ -1580,6 +1595,12 @@ mod tests {
         assert_eq!(status.order_count, 1);
         assert_eq!(status.fill_count, 1);
         assert!(status.entry_debits_usd > Decimal::ZERO);
+        assert!(
+            order.request.metadata["reference_execution_submit"]["assessment"]
+                ["directional_model_feature_age_ms"]
+                .as_i64()
+                .is_some_and(|age_ms| age_ms >= 2_900)
+        );
         assert_eq!(
             order.request.metadata["reference_execution_submit"]["assessment"]["guard_version"],
             BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
@@ -1609,6 +1630,7 @@ mod tests {
             ),
             Duration::from_millis(150),
             max_reference_age,
+            None,
         );
         let order = venue
             .submit_order(guarded_request(Utc::now(), max_reference_age))
@@ -1647,6 +1669,7 @@ mod tests {
             ),
             Duration::ZERO,
             max_reference_age,
+            None,
         );
         let original_request = guarded_request(Utc::now(), max_reference_age);
         let original = venue.submit_order(original_request.clone()).await.unwrap();
