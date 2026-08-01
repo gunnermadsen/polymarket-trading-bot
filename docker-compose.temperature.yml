@@ -1,0 +1,130 @@
+name: capitonic-temperature-expectancy
+
+x-weather-environment: &weather-environment
+  POSTGRES_HOST: "temperature-postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: "postgres"
+  POSTGRES_DB: "temperature_expectancy"
+  WEATHER_CACHE_DIR: "/var/lib/weather/cache"
+  WEATHER_MODEL_DIR: "/var/lib/weather/models"
+  WEATHER_REPORT_DIR: "/var/lib/weather/reports"
+  POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
+  POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
+  POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://r2v2.pmxt.dev"
+  IEM_ASOS_METAR_URL: "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
+  IEM_ASOS_ONE_MINUTE_URL: "https://mesonet.agron.iastate.edu/cgi-bin/request/asos1min.py"
+  WEATHER_WORKER_POLL_SECONDS: "2"
+  WEATHER_WORKER_LEASE_SECONDS: "1800"
+  HRRR_DOWNLOAD_ATTEMPTS: "8"
+  HRRR_RETRY_BASE_MS: "1000"
+  HRRR_RETRY_MAX_MS: "30000"
+  HRRR_REQUEST_INTERVAL_MS: "500"
+  HRRR_SOURCE_PRIORITY: "google,aws,nomads"
+  HERBIE_CONFIG_PATH: "/tmp/herbie-config.toml"
+
+x-weather-worker: &weather-worker
+  build:
+    context: .
+    dockerfile: packages/nyc-temperature-model/Dockerfile
+  image: capitonic/nyc-temperature-model:local
+  init: true
+  mem_limit: 3g
+  cpus: "2"
+  pids_limit: 192
+  read_only: true
+  tmpfs:
+    - /tmp:size=512m,mode=1777
+  volumes:
+    - ${WEATHER_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/temperature-expectancy}:/var/lib/weather
+  networks:
+    - temperature-data
+    - temperature-sources
+  depends_on:
+    temperature-db-migrate:
+      condition: service_completed_successfully
+  restart: unless-stopped
+
+services:
+  temperature-postgres:
+    image: postgres:16-alpine
+    shm_size: 256m
+    mem_limit: 2g
+    cpus: "1.5"
+    environment:
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "temperature_expectancy"
+      POSTGRES_HOST_AUTH_METHOD: "trust"
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1GB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - max_connections=20
+    volumes:
+      - ${WEATHER_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/temperature-expectancy}/postgres:/var/lib/postgresql/data
+    networks:
+      - temperature-data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d temperature_expectancy"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+
+  temperature-db-migrate:
+    build:
+      context: .
+      dockerfile: packages/db-migrate/Dockerfile
+    image: capitonic/temperature-db-migrate:local
+    command: ["npm", "run", "weather:migration:run"]
+    mem_limit: 256m
+    cpus: "0.25"
+    environment:
+      POSTGRES_HOST: "temperature-postgres"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "temperature_expectancy"
+    networks:
+      - temperature-data
+    depends_on:
+      temperature-postgres:
+        condition: service_healthy
+    restart: "no"
+
+  temperature-worker-1:
+    <<: *weather-worker
+    command: ["worker"]
+    environment:
+      <<: *weather-environment
+      WEATHER_WORKER_ID: "temperature-worker-1"
+      WEATHER_CACHE_DIR: "/var/lib/weather/cache/worker-1"
+
+  temperature-worker-2:
+    <<: *weather-worker
+    command: ["worker"]
+    environment:
+      <<: *weather-environment
+      WEATHER_WORKER_ID: "temperature-worker-2"
+      WEATHER_CACHE_DIR: "/var/lib/weather/cache/worker-2"
+
+  temperature-model:
+    <<: *weather-worker
+    profiles: ["tools"]
+    command: ["readiness"]
+    environment:
+      <<: *weather-environment
+      WEATHER_WORKER_ID: "temperature-model-runner"
+      WEATHER_CACHE_DIR: "/var/lib/weather/cache/tools"
+    restart: "no"
+
+networks:
+  temperature-data:
+    internal: true
+  temperature-sources:
