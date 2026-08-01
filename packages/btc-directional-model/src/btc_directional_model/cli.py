@@ -9,6 +9,8 @@ from pathlib import Path
 from .admission_benchmark import run_admission_benchmark
 from .admission_config import load_admission_benchmark_config
 from .benchmark_config import load_entry_benchmark_config
+from .champion_vwap_benchmark import run_champion_vwap_benchmark
+from .champion_vwap_config import load_champion_vwap_config
 from .config import load_config
 from .core_config import load_core_config
 from .core_extract import extract_core_source, snapshot_residual_admission_source
@@ -118,6 +120,8 @@ def main() -> None:
     loss_tail_run = subparsers.add_parser("loss-tail-benchmark-run")
     loss_tail_run.add_argument("--config", type=Path, required=True)
     loss_tail_run.add_argument("--force", action="store_true")
+    champion_vwap_run = subparsers.add_parser("champion-vwap-calibration-run")
+    champion_vwap_run.add_argument("--config", type=Path, required=True)
     fixed_time_run = subparsers.add_parser("fixed-120-benchmark-run")
     fixed_time_run.add_argument("--config", type=Path, required=True)
     fixed_time_export = subparsers.add_parser("fixed-120-paper-candidate-export")
@@ -300,6 +304,16 @@ def main() -> None:
             f"{benchmark['selection']['selected_candidate'] or 'none'}"
         )
         print("runtime export/deployment: disabled")
+        return
+    if args.command == "champion-vwap-calibration-run":
+        config = load_champion_vwap_config(args.config)
+        run_dir, benchmark = run_champion_vwap_benchmark(config)
+        print(f"report: {run_dir / 'report.html'}")
+        print(
+            "promotion result: "
+            f"{benchmark['promotion']['selected_candidate'] or 'champion retained'}"
+        )
+        print("runtime changed: false")
         return
     if args.command == "fixed-120-benchmark-run":
         config = load_fixed_time_accuracy_config(args.config)
