@@ -38,6 +38,8 @@ from .fixed_time_selective_benchmark import (
 from .fixed_time_selective_config import load_fixed_time_selective_config
 from .frequency_policy_benchmark import run_frequency_policy_benchmark
 from .frequency_policy_config import load_frequency_policy_benchmark_config
+from .loss_tail_benchmark import run_loss_tail_benchmark
+from .loss_tail_config import load_loss_tail_benchmark_config
 from .oracle_book_benchmark import (
     load_oracle_book_benchmark_config,
     run_oracle_book_benchmark,
@@ -113,6 +115,9 @@ def main() -> None:
     price_aware_run = subparsers.add_parser("price-aware-benchmark-run")
     price_aware_run.add_argument("--config", type=Path, required=True)
     price_aware_run.add_argument("--force", action="store_true")
+    loss_tail_run = subparsers.add_parser("loss-tail-benchmark-run")
+    loss_tail_run.add_argument("--config", type=Path, required=True)
+    loss_tail_run.add_argument("--force", action="store_true")
     fixed_time_run = subparsers.add_parser("fixed-120-benchmark-run")
     fixed_time_run.add_argument("--config", type=Path, required=True)
     fixed_time_export = subparsers.add_parser("fixed-120-paper-candidate-export")
@@ -273,6 +278,19 @@ def main() -> None:
     if args.command == "price-aware-benchmark-run":
         config = load_price_aware_benchmark_config(args.config)
         run_dir, benchmark = run_price_aware_benchmark(
+            config,
+            force=args.force,
+        )
+        print(f"report: {run_dir / 'report.html'}")
+        print(
+            "selected development candidate: "
+            f"{benchmark['selection']['selected_candidate'] or 'none'}"
+        )
+        print("runtime export/deployment: disabled")
+        return
+    if args.command == "loss-tail-benchmark-run":
+        config = load_loss_tail_benchmark_config(args.config)
+        run_dir, benchmark = run_loss_tail_benchmark(
             config,
             force=args.force,
         )

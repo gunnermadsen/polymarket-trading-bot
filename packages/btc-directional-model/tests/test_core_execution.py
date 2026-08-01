@@ -17,6 +17,7 @@ from btc_directional_model.core_execution import (
     EXECUTION_EVIDENCE_SCHEMA_VERSION,
     LEGACY_EXECUTION_EVIDENCE_CONTRACT,
     LEGACY_EXECUTION_EVIDENCE_SCHEMA_VERSION,
+    LEGACY_SNAPSHOT_SCHEMA_VERSION,
     QUALITY_DOWN_INSUFFICIENT_DEPTH,
     QUALITY_UP_CROSSED,
     QUALITY_UP_STALE,
@@ -96,6 +97,29 @@ def execution_evidence_row(
             "down_stale_initialized": False,
             "strict_both_side_eligible": strict_five,
             "strict_both_side_eligible_10": strict_ten,
+        }
+    )
+    return row
+
+
+def resumable_execution_evidence_row(
+    *,
+    market_id: str,
+    window_start: datetime,
+    second: int,
+) -> dict[str, object]:
+    row = execution_evidence_row(
+        market_id=market_id,
+        window_start=window_start,
+        second=second,
+        strict_five=True,
+        strict_ten=True,
+    )
+    row.update(
+        {
+            "artifact_id": "artifact-1",
+            "schema_version": LEGACY_SNAPSHOT_SCHEMA_VERSION,
+            "quality_flags": 0,
         }
     )
     return row
@@ -543,3 +567,196 @@ def test_zero_event_execution_partition_has_zero_readiness_counts(
             "strict_both_side_eligible_10_rows_by_second"
         ].values()
     )
+
+
+def test_extract_resumes_valid_unmanifested_daily_partition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    config = ExecutionEvidenceConfig(
+        range_start=start,
+        range_end=start + timedelta(days=2),
+        output_dir=tmp_path,
+    )
+    completed = tmp_path / "2026-07-01.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                resumable_execution_evidence_row(
+                    market_id="market-1",
+                    window_start=start,
+                    second=120,
+                )
+            ],
+            schema=EXECUTION_EVIDENCE_SCHEMA,
+        ),
+        completed,
+    )
+    stale_partial = tmp_path / "2026-07-02.parquet.partial"
+    stale_partial.write_bytes(b"interrupted")
+
+    class FakeConnection:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    connection = FakeConnection()
+    extracted: list[str] = []
+
+    monkeypatch.setattr(core_execution, "database_connection", lambda: connection)
+    monkeypatch.setattr(
+        core_execution,
+        "configure_read_only_connection",
+        lambda _: None,
+    )
+    monkeypatch.setattr(
+        core_execution,
+        "_execution_artifact_ids",
+        lambda *args, **kwargs: [],
+    )
+
+    def extract_missing(
+        unused_connection: object,
+        unused_query: str,
+        destination: Path,
+        **unused_kwargs: object,
+    ) -> int:
+        extracted.append(destination.name)
+        pq.write_table(
+            pa.Table.from_pylist([], schema=EXECUTION_EVIDENCE_SCHEMA),
+            destination,
+        )
+        return 0
+
+    monkeypatch.setattr(
+        core_execution,
+        "_extract_execution_partition",
+        extract_missing,
+    )
+
+    manifest = core_execution.extract_execution_evidence(config)
+
+    assert extracted == ["2026-07-02.parquet"]
+    assert connection.closed
+    assert [row["path"] for row in manifest["partitions"]] == [
+        "2026-07-01.parquet",
+        "2026-07-02.parquet",
+    ]
+    assert manifest["partitions"][0]["sha256"] == core_execution.file_sha256(
+        completed
+    )
+    assert stale_partial.exists()
+    assert load_execution_evidence_manifest(config) == manifest
+
+
+def test_extract_rejects_unmanifested_partition_with_wrong_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    config = ExecutionEvidenceConfig(
+        range_start=start,
+        range_end=start + timedelta(days=1),
+        output_dir=tmp_path,
+    )
+    pq.write_table(
+        pa.table({"market_id": ["market-1"]}),
+        tmp_path / "2026-07-01.parquet",
+    )
+    monkeypatch.setattr(
+        core_execution,
+        "database_connection",
+        lambda: pytest.fail("invalid cached file must fail before database access"),
+    )
+
+    with pytest.raises(RuntimeError, match="Arrow schema"):
+        core_execution.extract_execution_evidence(config)
+
+
+def test_extract_rejects_unmanifested_partition_outside_daily_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    config = ExecutionEvidenceConfig(
+        range_start=start,
+        range_end=start + timedelta(days=1),
+        output_dir=tmp_path,
+    )
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                resumable_execution_evidence_row(
+                    market_id="market-1",
+                    window_start=start + timedelta(days=1),
+                    second=120,
+                )
+            ],
+            schema=EXECUTION_EVIDENCE_SCHEMA,
+        ),
+        tmp_path / "2026-07-01.parquet",
+    )
+    monkeypatch.setattr(
+        core_execution,
+        "database_connection",
+        lambda: pytest.fail("invalid cached file must fail before database access"),
+    )
+
+    with pytest.raises(RuntimeError, match="outside its daily market range"):
+        core_execution.extract_execution_evidence(config)
+
+
+def test_extract_rejects_unexpected_unmanifested_partition_name(
+    tmp_path: Path,
+) -> None:
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    config = ExecutionEvidenceConfig(
+        range_start=start,
+        range_end=start + timedelta(days=1),
+        output_dir=tmp_path,
+    )
+    pq.write_table(
+        pa.Table.from_pylist([], schema=EXECUTION_EVIDENCE_SCHEMA),
+        tmp_path / "2026-06-30.parquet",
+    )
+
+    with pytest.raises(RuntimeError, match="outside the configured daily range"):
+        core_execution.extract_execution_evidence(config)
+
+
+def test_resumable_partition_hash_must_be_stable_during_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    config = ExecutionEvidenceConfig(
+        range_start=start,
+        range_end=start + timedelta(days=1),
+        output_dir=tmp_path,
+    )
+    path = tmp_path / "2026-07-01.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                resumable_execution_evidence_row(
+                    market_id="market-1",
+                    window_start=start,
+                    second=120,
+                )
+            ],
+            schema=EXECUTION_EVIDENCE_SCHEMA,
+        ),
+        path,
+    )
+    hashes = iter(("before", "after"))
+    monkeypatch.setattr(core_execution, "file_sha256", lambda _: next(hashes))
+
+    with pytest.raises(RuntimeError, match="changed while it was being validated"):
+        core_execution._validate_resumable_execution_partition(
+            path,
+            config=config,
+            batch_start=start,
+            batch_end=start + timedelta(days=1),
+        )

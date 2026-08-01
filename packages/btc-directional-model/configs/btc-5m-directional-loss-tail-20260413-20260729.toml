@@ -1,0 +1,133 @@
+[benchmark]
+core_config = "configs/btc-5m-directional-core-price-aware-20260321-20260729.toml"
+core_config_sha256 = "8843839682b71bbc9cc5a785e141bd0970b8a725460f9a0050c8099dd3d58832"
+evaluation_note = "July 14-28 is consumed chronological confirmation evidence. July 29-31 live results were already inspected and are not independent evidence. New paper observations begin only after the benchmark artifact is frozen. Known PMXT gaps stay unavailable; book values are neither imputed nor represented through missingness features."
+
+[walk_forward]
+history_start = "2026-03-21T00:00:00Z"
+
+[[walk_forward.blocks]]
+name = "book_history_apr13"
+start = "2026-04-13T00:00:00Z"
+end = "2026-05-26T00:00:00Z"
+
+[[walk_forward.blocks]]
+name = "calibration_may26"
+start = "2026-05-26T00:00:00Z"
+end = "2026-06-02T00:00:00Z"
+
+[[walk_forward.blocks]]
+name = "calibration_jun02"
+start = "2026-06-02T00:00:00Z"
+end = "2026-06-09T00:00:00Z"
+
+[[walk_forward.blocks]]
+name = "evaluation_jun09"
+start = "2026-06-09T00:00:00Z"
+end = "2026-07-03T00:00:00Z"
+
+[[walk_forward.blocks]]
+name = "evaluation_jul03"
+start = "2026-07-03T00:00:00Z"
+end = "2026-07-14T00:00:00Z"
+
+[[walk_forward.blocks]]
+name = "confirmation_jul14"
+start = "2026-07-14T00:00:00Z"
+end = "2026-07-29T00:00:00Z"
+
+[[walk_forward.folds]]
+name = "walk_forward_jun09"
+fit_block_names = ["book_history_apr13", "calibration_may26"]
+calibration_block_name = "calibration_jun02"
+evaluation_block_name = "evaluation_jun09"
+
+[[walk_forward.folds]]
+name = "walk_forward_jul03"
+fit_block_names = ["book_history_apr13", "calibration_may26", "calibration_jun02"]
+calibration_block_name = "evaluation_jun09"
+evaluation_block_name = "evaluation_jul03"
+
+[[walk_forward.folds]]
+name = "walk_forward_jul14"
+fit_block_names = ["book_history_apr13", "calibration_may26", "calibration_jun02", "evaluation_jun09"]
+calibration_block_name = "evaluation_jul03"
+evaluation_block_name = "confirmation_jul14"
+
+[data]
+decision_start_seconds = 60
+decision_end_seconds = 240
+decision_interval_seconds = 5
+context_start_seconds = 55
+quantity = 5.0
+book_freshness_seconds = 2
+strict_book_required = true
+allow_book_imputation = false
+allow_missingness_features = false
+require_complete_paths_for_strategy = false
+allow_point_qualified_row_metrics = true
+
+[features]
+direct_profile = "loss_tail_direct_124"
+correctness_profile = "boundary_disagreement_correctness"
+boundary_feature_count = 68
+mature_reversal_feature_count = 13
+oracle_feature_count = 11
+strict_book_feature_count = 32
+
+[[candidates]]
+name = "boundary-alignment-residual-economic-hgb-v1"
+estimator = "histogram_gradient_boosting"
+target = "boundary_direction_correct"
+feature_profile = "boundary_disagreement_correctness"
+row_weighting = "incorrect_proposal_debit_odds_capped"
+probability_calibration = "platt"
+calibration_weighting = "unweighted"
+direction_policy = "boundary_locked_economic_action"
+requires_causal_oof_sources = true
+random_seed = 20260731
+
+[weighting]
+normalization = "one_proposal_equal_base"
+minimum_multiplier = 1.0
+maximum_multiplier = 10.0
+denominator_floor = 0.05
+fee_inclusive_debit = true
+
+[resources]
+workers = 1
+threads_per_worker = 3
+memory_limit_gib = 8
+
+[gates]
+minimum_selected_accuracy = 0.89
+minimum_wilson_lower = 0.87
+maximum_control_accuracy_regression = 0.005
+maximum_expected_calibration_error = 0.05
+maximum_wins_per_average_loss = 6.34
+maximum_gross_loss_profit_ratio = 0.712
+minimum_profit_factor = 1.265
+minimum_pnl_per_all_core_market = 0.02044
+minimum_total_pnl = 283.15
+maximum_mean_selected_price = 0.8697
+minimum_book_qualified_coverage = 0.371
+minimum_pooled_trades = 500
+minimum_confirmation_trades = 200
+minimum_fold_direction_trades = 10
+minimum_worst_trade = -4.90686
+minimum_mean_worst_one_percent = -4.79185
+maximum_drawdown = 38.69
+required_nonnegative_expectancy_folds = 3
+minimum_loss_improvement_folds = 2
+minimum_gross_loss_reduction = 0.30
+minimum_gross_profit_retention = 0.70
+high_debit_threshold = 0.90
+minimum_high_debit_loss_recall = 0.30
+require_highest_price_band_positive = true
+allow_fallback_winner = false
+
+[paths]
+core_features = "data/btc-price-aware-economic-20260321-20260729/features/development.parquet"
+execution_evidence = "data/btc-price-aware-economic-20260321-20260729/execution-evidence"
+shared_cache = "data/btc-boundary-loss-tail-20260413-20260729/direct-core-oracle-book-cache"
+runs = "runs/btc-boundary-loss-tail-20260413-20260729"
