@@ -113,7 +113,7 @@ def claim(settings: Settings) -> Job | None:
                       AND dependency.status='completed'
                   )
                 )
-              ORDER BY next_attempt_at, requested_at, job_id
+              ORDER BY requested_at, next_attempt_at, job_id
               FOR UPDATE SKIP LOCKED
               LIMIT 1
             )
