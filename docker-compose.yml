@@ -427,7 +427,7 @@ services:
       POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://r2v2.pmxt.dev"
       POLYMARKET_CHAINLINK_DATA_STREAMS_REST_URL: "https://api.dataengine.chain.link"
       POLYMARKET_CHAINLINK_DATA_STREAMS_FEED_ID: "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "1000"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "100"
       POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY:-}"
       POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET:-}"
       POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-4"
@@ -485,7 +485,7 @@ services:
       POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://r2v2.pmxt.dev"
       POLYMARKET_CHAINLINK_DATA_STREAMS_REST_URL: "https://api.dataengine.chain.link"
       POLYMARKET_CHAINLINK_DATA_STREAMS_FEED_ID: "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "1000"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "100"
       POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY:-}"
       POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET:-}"
       POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-5"
@@ -543,7 +543,7 @@ services:
       POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://r2v2.pmxt.dev"
       POLYMARKET_CHAINLINK_DATA_STREAMS_REST_URL: "https://api.dataengine.chain.link"
       POLYMARKET_CHAINLINK_DATA_STREAMS_FEED_ID: "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "1000"
+      POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "100"
       POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY:-}"
       POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET:-}"
       POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-6"
@@ -569,33 +569,6 @@ services:
       - /tmp:size=16m,mode=1777
     stop_grace_period: 60s
     restart: unless-stopped
-
-  polymarket-backfill-worker-4:
-    extends:
-      service: polymarket-backfill-worker
-    container_name: polymarket-backfill-worker-4
-    hostname: polymarket-backfill-worker-4
-    environment:
-      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-4"
-      POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-4"
-
-  polymarket-backfill-worker-5:
-    extends:
-      service: polymarket-backfill-worker
-    container_name: polymarket-backfill-worker-5
-    hostname: polymarket-backfill-worker-5
-    environment:
-      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-5"
-      POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-5"
-
-  polymarket-backfill-worker-6:
-    extends:
-      service: polymarket-backfill-worker
-    container_name: polymarket-backfill-worker-6
-    hostname: polymarket-backfill-worker-6
-    environment:
-      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-6"
-      POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-6"
 
   kraken-timescaledb:
     image: timescale/timescaledb:2.14.2-pg14
