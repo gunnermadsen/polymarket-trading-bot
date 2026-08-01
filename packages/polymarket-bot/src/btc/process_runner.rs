@@ -32,8 +32,8 @@ use super::{
         ShadowPredictiveRegimeTransition,
     },
     directional_features::{
-        build_directional_features_for_schema_with_boundary, DirectionalFeatureVector,
-        BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION,
+        build_directional_features_for_schema_with_boundary, DirectionalFeatureError,
+        DirectionalFeatureVector, BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION,
     },
     directional_model::{
         directional_model_input_sha256, runtime_model, BtcDirectionalModelFeatureSnapshot,
@@ -233,6 +233,13 @@ impl Drop for DirectionalModelCandidateLease<'_> {
             runtime.release(&self.market_id, self.feature_as_of);
         }
     }
+}
+
+fn directional_feature_error_metadata(error: &DirectionalFeatureError) -> serde_json::Value {
+    serde_json::json!({
+        "code": error.code(),
+        "detail": error.to_string(),
+    })
 }
 
 fn complete_directional_model_candidate(
@@ -1508,7 +1515,11 @@ impl BtcProcessRunner {
                     }
                     Err(error) => {
                         directional_candidate = Some(candidate);
-                        (feature_as_of, None, Some(error.to_string()))
+                        (
+                            feature_as_of,
+                            None,
+                            Some(directional_feature_error_metadata(&error)),
+                        )
                     }
                 };
                 features
@@ -1560,6 +1571,15 @@ impl BtcProcessRunner {
             self.config.directional_model_entry_policy,
         );
         enforce_runtime_readiness(&mut decision, &observation.readiness, &self.config.strategy);
+        if directional_model_feature_error.is_some() {
+            decision.action = BtcDecisionAction::NoTrade;
+            decision.reject_reason = Some(BtcRejectReason::DirectionalFeaturesUnavailable);
+            decision.fair_value = None;
+            decision.up_edge = None;
+            decision.down_edge = None;
+            decision.approved_intent = None;
+            decision.prediction = None;
+        }
         if decision.approved_intent.is_some()
             && self
                 .repository
@@ -3042,6 +3062,19 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use rust_decimal_macros::dec;
+
+    #[test]
+    fn directional_feature_failures_persist_a_stable_machine_code() {
+        let window_start = Utc.timestamp_opt(1_783_902_600, 0).unwrap();
+        let metadata = directional_feature_error_metadata(
+            &DirectionalFeatureError::IncompletePrewindowHistory { window_start },
+        );
+
+        assert_eq!(metadata["code"], "incomplete_prewindow_history");
+        assert!(metadata["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("is incomplete")));
+    }
 
     use crate::btc::{
         admission::{

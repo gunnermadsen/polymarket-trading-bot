@@ -178,6 +178,7 @@ fn shared_market_data_config_compatible(left: &BtcRuntimeConfig, right: &BtcRunt
         && left.clob_ws_url == right.clob_ws_url
         && left.rtds_ws_url == right.rtds_ws_url
         && left.binance_ws_url == right.binance_ws_url
+        && left.binance_rest_base_url == right.binance_rest_base_url
         && left.discovery_interval == right.discovery_interval
         && left.reconnect_initial_delay == right.reconnect_initial_delay
         && left.reconnect_max_delay == right.reconnect_max_delay
@@ -314,6 +315,10 @@ fn resolve_btc_strategy(
         serde_json::Value::Null,
     );
     strategy_object.insert("decision_strategy".to_string(), serde_json::Value::Null);
+    strategy_object.insert(
+        "max_directional_feature_age_ms".to_string(),
+        serde_json::Value::Null,
+    );
     for (key, value) in strategy_overrides {
         let Some(slot) = strategy_object.get_mut(key) else {
             return Err(HttpError::bad_request(format!(
@@ -1316,6 +1321,7 @@ impl BtcProcessManager {
             clob_ws_url: self.config.clob_ws_url.clone(),
             rtds_ws_url: self.config.btc.rtds_ws_url.clone(),
             binance_ws_url: self.config.btc.binance_ws_url.clone(),
+            binance_rest_base_url: self.config.btc.binance_rest_base_url.clone(),
             strategy_interval: Duration::from_millis(control.runtime.strategy_interval_ms),
             max_book_age: Duration::from_millis(strategy.max_book_age_ms as u64),
             max_reference_age: Duration::from_millis(strategy.max_reference_age_ms as u64),
@@ -3859,6 +3865,7 @@ mod lifecycle_tests {
                     paper_enabled: true,
                     rtds_ws_url: String::new(),
                     binance_ws_url: String::new(),
+                    binance_rest_base_url: String::new(),
                     data_source_heartbeat: polymarket_bot::btc::BtcHeartbeatConfig::default(),
                 },
                 gamma_base_url: String::new(),
@@ -4052,7 +4059,8 @@ mod lifecycle_tests {
                         polymarket_bot::btc::BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256
                 },
                 "min_seconds_after_open": 60,
-                "min_seconds_before_close": 60
+                "min_seconds_before_close": 60,
+                "max_directional_feature_age_ms": 5000
             }),
             ..BtcRealtimePaperControlConfig::default()
         };
@@ -4071,6 +4079,7 @@ mod lifecycle_tests {
             strategy.decision_strategy,
             Some(BtcDecisionStrategyConfig::BtcDirectionalModel { .. })
         ));
+        assert_eq!(strategy.max_directional_feature_age_ms, Some(5_000));
         assert!(strategy.volatility_continuation.is_none());
     }
 

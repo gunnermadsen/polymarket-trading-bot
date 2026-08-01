@@ -10,7 +10,7 @@ pub const BTC_INTERVAL_SECONDS: i64 = 300;
 pub const BTC_INTERVAL_SLUG_PREFIX: &str = "btc-updown-5m-";
 pub const BINANCE_ONE_SECOND_WINDOW_CAPACITY: usize = 305;
 pub const BINANCE_PREWINDOW_SUMMARY_CAPACITY: usize = 12;
-const BINANCE_ONE_SECOND_BOOTSTRAP_CAPACITY: usize =
+pub const BINANCE_ONE_SECOND_BOOTSTRAP_CAPACITY: usize =
     BINANCE_ONE_SECOND_WINDOW_CAPACITY + BINANCE_PREWINDOW_SUMMARY_CAPACITY * 300;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,7 +199,52 @@ impl BinanceOneSecondWindow {
         validate_binance_aggregate_trade(trade, received_at)?;
         let bucket_open = one_second_bucket(trade.transact_time)?;
         let Some(mut current) = self.current.take() else {
-            self.current = Some(kline_from_trade(bucket_open, trade, received_at, false)?);
+            let authoritative_bootstrap = self.completed.back().cloned();
+            if let Some(previous) = authoritative_bootstrap.as_ref() {
+                if bucket_open < previous.close_timestamp {
+                    bail!(
+                        "Binance aggregate trade predates the authoritative one-second bootstrap"
+                    );
+                }
+                let missing_seconds = (bucket_open - previous.close_timestamp).num_seconds();
+                if missing_seconds > BINANCE_ONE_SECOND_WINDOW_CAPACITY as i64 {
+                    bail!("Binance aggregate-trade gap exceeds the bounded model window");
+                }
+                let mut next_open = previous.close_timestamp;
+                let carry_trade_id = trade.aggregate_trade_id.saturating_sub(1);
+                while next_open < bucket_open {
+                    let next_close = next_open
+                        .checked_add_signed(chrono::Duration::seconds(1))
+                        .context("Binance bootstrap bridge timestamp overflowed")?;
+                    self.push_completed(BinanceOneSecondKline {
+                        open_timestamp: next_open,
+                        close_timestamp: next_close,
+                        open_price: previous.close_price,
+                        high_price: previous.close_price,
+                        low_price: previous.close_price,
+                        close_price: previous.close_price,
+                        base_volume: Decimal::ZERO,
+                        quote_volume: Decimal::ZERO,
+                        trade_count: 0,
+                        taker_buy_base_volume: Decimal::ZERO,
+                        taker_buy_quote_volume: Decimal::ZERO,
+                        first_aggregate_trade_id: carry_trade_id,
+                        last_aggregate_trade_id: carry_trade_id,
+                        first_source_timestamp: previous.last_source_timestamp,
+                        last_source_timestamp: previous.last_source_timestamp,
+                        max_received_at: received_at,
+                        source_complete: true,
+                        synthetic: true,
+                    })?;
+                    next_open = next_close;
+                }
+            }
+            self.current = Some(kline_from_trade(
+                bucket_open,
+                trade,
+                received_at,
+                authoritative_bootstrap.is_some(),
+            )?);
             return Ok(());
         };
 

@@ -56,6 +56,7 @@ pub struct BtcConfig {
     pub paper_enabled: bool,
     pub rtds_ws_url: String,
     pub binance_ws_url: String,
+    pub binance_rest_base_url: String,
     pub data_source_heartbeat: BtcHeartbeatConfig,
 }
 
@@ -162,6 +163,10 @@ impl AppConfig {
             binance_ws_url: env_or(
                 "POLYMARKET_BTC_BINANCE_WS_URL",
                 "wss://stream.binance.com:9443/ws/btcusdt@aggTrade",
+            ),
+            binance_rest_base_url: env_or(
+                "POLYMARKET_BTC_BINANCE_REST_BASE_URL",
+                "https://data-api.binance.vision",
             ),
             data_source_heartbeat: BtcHeartbeatConfig {
                 clob_interval: parse_positive_duration_secs(

@@ -426,6 +426,26 @@ impl fmt::Display for DirectionalFeatureError {
     }
 }
 
+impl DirectionalFeatureError {
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidTiming { .. } => "invalid_timing",
+            Self::MissingHistory { .. } => "missing_history",
+            Self::GappedHistory { .. } => "gapped_history",
+            Self::DuplicateOrOutOfOrderHistory { .. } => "duplicate_or_out_of_order_history",
+            Self::IncompleteCandle { .. } => "incomplete_candle",
+            Self::InvalidCandle { .. } => "invalid_candle",
+            Self::NonFiniteFeature { .. } => "non_finite_feature",
+            Self::UnsupportedFeatureSchema { .. } => "unsupported_feature_schema",
+            Self::MissingPrewindowHistory { .. } => "missing_prewindow_history",
+            Self::GappedPrewindowHistory { .. } => "gapped_prewindow_history",
+            Self::IncompletePrewindowHistory { .. } => "incomplete_prewindow_history",
+            Self::MissingOpeningBoundary => "missing_opening_boundary",
+            Self::InvalidOpeningBoundary => "invalid_opening_boundary",
+        }
+    }
+}
+
 impl std::error::Error for DirectionalFeatureError {}
 
 /// Builds the frozen 58-value feature vector from closed Binance one-second candles.
