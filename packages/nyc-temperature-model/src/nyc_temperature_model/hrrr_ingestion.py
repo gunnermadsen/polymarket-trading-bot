@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import math
+import random
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any, TypeVar
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -15,6 +20,21 @@ from .sources import file_sha256
 
 NYC = ZoneInfo("America/New_York")
 HRRR_ARCHIVE_START = datetime(2014, 7, 30, tzinfo=UTC)
+T = TypeVar("T")
+
+
+class HrrrDownloadExhausted(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class HrrrField:
+    temperature_f: float
+    latitude: float
+    longitude: float
+    local_path: Path
+    source_uri: str
+    archive_source: str
 
 
 def _model_run_for_decision(decision_time: datetime, availability_lag_minutes: int) -> datetime:
@@ -70,6 +90,143 @@ def _point_temperature_f(dataset) -> tuple[float, float, float]:
     return (kelvin - 273.15) * 9 / 5 + 32, point_lat, point_lon
 
 
+def _source_order(sources: tuple[str, ...], attempt: int) -> tuple[str, ...]:
+    offset = (attempt - 1) % len(sources)
+    return sources[offset:] + sources[:offset]
+
+
+def _is_transient_hrrr_error(error: BaseException) -> bool:
+    if isinstance(error, (ConnectionError, TimeoutError, OSError)):
+        return True
+    message = str(error).lower()
+    return any(
+        token in message
+        for token in (
+            "connection aborted",
+            "connection broken",
+            "connection reset",
+            "httpsconnectionpool",
+            "incompleteread",
+            "max retries exceeded",
+            "remote end closed",
+            "ssl",
+            "timed out",
+            "unexpected_eof",
+            "unexpected eof",
+        )
+    )
+
+
+def _run_with_retry(
+    operation: Callable[[tuple[str, ...], bool], T],
+    *,
+    attempts: int,
+    sources: tuple[str, ...],
+    retry_base_ms: int,
+    retry_max_ms: int,
+    sleep: Callable[[float], Any] = time.sleep,
+    jitter: Callable[[float, float], float] = random.uniform,
+) -> T:
+    last_error: BaseException | None = None
+    only_not_found = True
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation(_source_order(sources, attempt), attempt > 1)
+        except FileNotFoundError as error:
+            last_error = error
+        except Exception as error:
+            only_not_found = False
+            if not _is_transient_hrrr_error(error):
+                raise
+            last_error = error
+        if attempt < attempts:
+            base_delay = min(retry_max_ms, retry_base_ms * 2 ** (attempt - 1)) / 1000
+            sleep(base_delay + jitter(0, base_delay * 0.25))
+    if only_not_found and isinstance(last_error, FileNotFoundError):
+        raise last_error
+    raise HrrrDownloadExhausted(
+        f"HRRR field exhausted {attempts} attempts across {','.join(sources)}: {last_error}"
+    ) from last_error
+
+
+def _download_field(
+    settings: Settings,
+    herbie_factory,
+    model_run: datetime,
+    lead_hours: int,
+    search: str,
+) -> HrrrField:
+    def operation(priority: tuple[str, ...], overwrite: bool) -> HrrrField:
+        herbie = herbie_factory(
+            model_run.replace(tzinfo=None),
+            model="hrrr",
+            product="sfc",
+            fxx=lead_hours,
+            priority=list(priority),
+            save_dir=settings.cache_directory / "hrrr",
+            overwrite=overwrite,
+            verbose=False,
+        )
+        local_path = Path(herbie.download(search, verbose=False, errors="raise"))
+        dataset = herbie.xarray(search, remove_grib=False, verbose=False)
+        try:
+            temperature_f, point_lat, point_lon = _point_temperature_f(dataset)
+        finally:
+            dataset.close()
+        return HrrrField(
+            temperature_f=temperature_f,
+            latitude=point_lat,
+            longitude=point_lon,
+            local_path=local_path,
+            source_uri=str(getattr(herbie, "grib", "")),
+            archive_source=str(getattr(herbie, "grib_source", priority[0])).lower(),
+        )
+
+    field = _run_with_retry(
+        operation,
+        attempts=settings.hrrr_download_attempts,
+        sources=settings.hrrr_source_priority,
+        retry_base_ms=settings.hrrr_retry_base_ms,
+        retry_max_ms=settings.hrrr_retry_max_ms,
+    )
+    if settings.hrrr_request_interval_ms:
+        time.sleep(settings.hrrr_request_interval_ms / 1000)
+    return field
+
+
+def _valid_times(decision_time: datetime, model_run: datetime) -> list[datetime]:
+    local_date = decision_time.astimezone(NYC).date()
+    local_end = datetime.combine(
+        local_date + timedelta(days=1), datetime.min.time(), NYC
+    ).astimezone(UTC)
+    first_valid = max(model_run, decision_time)
+    valid_at = first_valid.replace(minute=0, second=0, microsecond=0)
+    if valid_at < first_valid:
+        valid_at += timedelta(hours=1)
+    output = []
+    while valid_at < local_end:
+        output.append(valid_at)
+        valid_at += timedelta(hours=1)
+    return output
+
+
+def _existing_valid_times(
+    settings: Settings, decision_time: datetime, model_run: datetime
+) -> set[datetime]:
+    with connection(settings.database_url) as conn:
+        return {
+            row["valid_at"]
+            for row in conn.execute(
+                """
+                SELECT valid_at
+                FROM weather.hrrr_point_forecasts
+                WHERE station_id=%s AND decision_time=%s AND model_run=%s
+                """,
+                (STATION_ID, decision_time, model_run),
+            )
+        }
+
+
 def ingest_hrrr(settings: Settings, job: Job) -> dict:
     if job.range_start < HRRR_ARCHIVE_START:
         raise ValueError("HRRR ingestion cannot begin before 2014-07-30")
@@ -83,45 +240,32 @@ def ingest_hrrr(settings: Settings, job: Job) -> dict:
         raise RuntimeError("herbie-data is required for HRRR ingestion") from error
 
     decisions = _decision_times(job.range_start, job.range_end)
-    forecast_rows = 0
+    downloaded_rows = 0
+    reused_rows = 0
     missing = 0
+    exhausted_fields: list[str] = []
     for decision_index, decision_time in enumerate(decisions, start=1):
         model_run = _model_run_for_decision(decision_time, availability_lag)
-        local_date = decision_time.astimezone(NYC).date()
-        local_end = datetime.combine(
-            local_date + timedelta(days=1), datetime.min.time(), NYC
-        ).astimezone(UTC)
-        first_valid = max(model_run, decision_time)
-        valid_at = first_valid.replace(minute=0, second=0, microsecond=0)
-        if valid_at < first_valid:
-            valid_at += timedelta(hours=1)
-        rows = []
-        while valid_at < local_end:
+        expected_valid_times = _valid_times(decision_time, model_run)
+        existing = _existing_valid_times(settings, decision_time, model_run)
+        reused_rows += len(existing.intersection(expected_valid_times))
+        decision_rows = len(existing.intersection(expected_valid_times))
+        for valid_at in expected_valid_times:
+            if valid_at in existing:
+                continue
             lead_hours = int((valid_at - model_run).total_seconds() // 3600)
             try:
-                herbie = Herbie(
-                    model_run.replace(tzinfo=None),
-                    model="hrrr",
-                    product="sfc",
-                    fxx=lead_hours,
-                    save_dir=settings.cache_directory / "hrrr",
-                    overwrite=False,
-                    verbose=False,
-                )
-                local_path = Path(herbie.download(search, verbose=False))
-                dataset = herbie.xarray(search, remove_grib=False, verbose=False)
-                temperature_f, point_lat, point_lon = _point_temperature_f(dataset)
-                dataset.close()
-                digest, size = file_sha256(local_path)
+                field = _download_field(settings, Herbie, model_run, lead_hours, search)
+                digest, size = file_sha256(field.local_path)
                 logical_key = (
                     f"noaa:hrrr:sfc:{model_run:%Y%m%dT%H}:f{lead_hours:02d}:tmp2m"
                 )
                 with connection(settings.database_url) as conn, conn.transaction():
                     artifact_id = insert_artifact(
                         conn,
-                        provider="noaa_hrrr_aws",
+                        provider="noaa_hrrr_open_data",
                         logical_key=logical_key,
-                        source_uri=str(getattr(herbie, "grib", "")),
+                        source_uri=field.source_uri,
                         sha256=digest,
                         compressed_bytes=size,
                         record_count=1,
@@ -131,6 +275,7 @@ def ingest_hrrr(settings: Settings, job: Job) -> dict:
                             "search": search,
                             "lead_hours": lead_hours,
                             "availability_lag_minutes": availability_lag,
+                            "archive_source": field.archive_source,
                         },
                         source_start=valid_at,
                         source_end=valid_at + timedelta(hours=1),
@@ -152,32 +297,45 @@ def ingest_hrrr(settings: Settings, job: Job) -> dict:
                             model_run,
                             valid_at,
                             lead_hours,
-                            temperature_f,
-                            point_lat,
-                            point_lon,
+                            field.temperature_f,
+                            field.latitude,
+                            field.longitude,
                             artifact_id,
                         ),
                     )
-                rows.append(valid_at)
-                forecast_rows += 1
+                decision_rows += 1
+                downloaded_rows += 1
             except FileNotFoundError:
                 missing += 1
-            valid_at += timedelta(hours=1)
+            except HrrrDownloadExhausted as error:
+                exhausted_fields.append(
+                    f"{model_run:%Y-%m-%dT%H}:f{lead_hours:02d}:{error}"
+                )
         update_progress(
             settings,
             job,
             {
                 "decisions_completed": decision_index,
                 "decisions_total": len(decisions),
-                "forecast_rows": forecast_rows,
+                "downloaded_rows": downloaded_rows,
+                "reused_rows": reused_rows,
+                "forecast_rows_available": downloaded_rows + reused_rows,
                 "missing_fields": missing,
+                "exhausted_fields": len(exhausted_fields),
                 "last_decision_time": decision_time.isoformat(),
-                "last_decision_forecasts": len(rows),
+                "last_decision_forecasts": decision_rows,
             },
+        )
+    if exhausted_fields:
+        raise HrrrDownloadExhausted(
+            f"{len(exhausted_fields)} fields remain after decision-level retries; "
+            f"first={exhausted_fields[0]}"
         )
     return {
         "decisions": len(decisions),
-        "forecast_rows": forecast_rows,
+        "downloaded_rows": downloaded_rows,
+        "reused_rows": reused_rows,
+        "forecast_rows_available": downloaded_rows + reused_rows,
         "missing_fields": missing,
         "availability_lag_minutes": availability_lag,
     }

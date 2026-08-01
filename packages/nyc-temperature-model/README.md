@@ -33,9 +33,11 @@ complete days.
 
 The HRRR worker assumes a 75-minute publication allowance and selects only model cycles available
 before each decision. It retrieves only two-metre-temperature GRIB byte ranges for the KLGA grid
-point. The PMXT worker reconstructs the immediately available YES and NO asks using provider receipt
-time, never events received after the decision. Each worker has an independent cache namespace;
-large PMXT transport files are removed only after compact snapshots and checksums commit.
+point. Completed decision fields are reused after interruption. Individual downloads rotate through
+Google, AWS, and NOMADS archives with bounded exponential retry and request pacing before a monthly
+job is retried. The PMXT worker reconstructs the immediately available YES and NO asks using provider
+receipt time, never events received after the decision. Each worker has an independent cache
+namespace; large PMXT transport files are removed only after compact snapshots and checksums commit.
 
 ## Reconcile, train, and benchmark
 

@@ -12,6 +12,13 @@ def _env_int(name: str, default: int) -> int:
     return value
 
 
+def _env_nonnegative_int(name: str, default: int) -> int:
+    value = int(os.environ.get(name, str(default)))
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str
@@ -26,6 +33,11 @@ class Settings:
     pmxt_base_url: str
     iem_asos_metar_url: str
     iem_asos_one_minute_url: str
+    hrrr_download_attempts: int
+    hrrr_retry_base_ms: int
+    hrrr_retry_max_ms: int
+    hrrr_request_interval_ms: int
+    hrrr_source_priority: tuple[str, ...]
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -41,6 +53,17 @@ class Settings:
         cache = Path(os.environ.get("WEATHER_CACHE_DIR", "/var/lib/weather/cache"))
         models = Path(os.environ.get("WEATHER_MODEL_DIR", "/var/lib/weather/models"))
         reports = Path(os.environ.get("WEATHER_REPORT_DIR", "/var/lib/weather/reports"))
+        hrrr_retry_base_ms = _env_int("HRRR_RETRY_BASE_MS", 1000)
+        hrrr_retry_max_ms = _env_int("HRRR_RETRY_MAX_MS", 30000)
+        if hrrr_retry_max_ms < hrrr_retry_base_ms:
+            raise ValueError("HRRR_RETRY_MAX_MS must be at least HRRR_RETRY_BASE_MS")
+        hrrr_source_priority = tuple(
+            source.strip().lower()
+            for source in os.environ.get("HRRR_SOURCE_PRIORITY", "google,aws,nomads").split(",")
+            if source.strip()
+        )
+        if not hrrr_source_priority:
+            raise ValueError("HRRR_SOURCE_PRIORITY must contain at least one source")
         return cls(
             database_url=database_url,
             cache_directory=cache,
@@ -66,6 +89,11 @@ class Settings:
                 "IEM_ASOS_ONE_MINUTE_URL",
                 "https://mesonet.agron.iastate.edu/cgi-bin/request/asos1min.py",
             ),
+            hrrr_download_attempts=_env_int("HRRR_DOWNLOAD_ATTEMPTS", 8),
+            hrrr_retry_base_ms=hrrr_retry_base_ms,
+            hrrr_retry_max_ms=hrrr_retry_max_ms,
+            hrrr_request_interval_ms=_env_nonnegative_int("HRRR_REQUEST_INTERVAL_MS", 500),
+            hrrr_source_priority=hrrr_source_priority,
         )
 
     def prepare_directories(self) -> None:

@@ -15,6 +15,11 @@ x-weather-environment: &weather-environment
   IEM_ASOS_ONE_MINUTE_URL: "https://mesonet.agron.iastate.edu/cgi-bin/request/asos1min.py"
   WEATHER_WORKER_POLL_SECONDS: "2"
   WEATHER_WORKER_LEASE_SECONDS: "1800"
+  HRRR_DOWNLOAD_ATTEMPTS: "8"
+  HRRR_RETRY_BASE_MS: "1000"
+  HRRR_RETRY_MAX_MS: "30000"
+  HRRR_REQUEST_INTERVAL_MS: "500"
+  HRRR_SOURCE_PRIORITY: "google,aws,nomads"
   HERBIE_CONFIG_PATH: "/tmp/herbie-config.toml"
 
 x-weather-worker: &weather-worker
