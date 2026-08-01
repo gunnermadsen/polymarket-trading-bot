@@ -1,6 +1,10 @@
 import pytest
 
-from nyc_temperature_model.market_ingestion import parse_bucket, validate_bucket_partition
+from nyc_temperature_model.market_ingestion import (
+    _eligible_resolution_source,
+    parse_bucket,
+    validate_bucket_partition,
+)
 
 
 def test_temperature_bucket_parser_handles_all_shapes():
@@ -20,3 +24,16 @@ def test_temperature_buckets_must_form_one_contiguous_partition():
     invalid = [valid[0], {"bucket_lower_f": 70, "bucket_upper_f": 71}, valid[2]]
     with pytest.raises(ValueError, match="contiguous"):
         validate_bucket_partition(invalid)
+
+
+def test_historical_event_without_canonical_source_is_ineligible():
+    event = {"resolutionSource": ""}
+    assert not _eligible_resolution_source(event, {"resolutionSource": ""})
+    assert _eligible_resolution_source(
+        event,
+        {
+            "resolutionSource": (
+                "https://www.wunderground.com/history/daily/us/ny/new-york-city/KLGA"
+            )
+        },
+    )

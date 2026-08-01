@@ -108,13 +108,13 @@ def _fee_rate_bps(market: dict[str, Any]) -> int | None:
 def _market_rows(event: dict[str, Any]) -> list[dict[str, Any]]:
     if not TITLE_PATTERN.search(str(event.get("title") or "")):
         return []
+    markets = event.get("markets") or []
+    if not markets or any(not _eligible_resolution_source(event, market) for market in markets):
+        return []
     event_date = parse_event_date(event)
     rows = []
-    for market in event.get("markets") or []:
+    for market in markets:
         question = str(market.get("question") or "")
-        resolution_url = str(market.get("resolutionSource") or event.get("resolutionSource") or "")
-        if "wunderground.com/history/daily" not in resolution_url.lower() or "klga" not in resolution_url.lower():
-            raise ValueError(f"NYC temperature market has an ineligible resolution source: {resolution_url}")
         lower, upper = parse_bucket(question)
         tokens = [str(value) for value in _json_array(market.get("clobTokenIds", []))]
         outcomes = [str(value).strip().lower() for value in _json_array(market.get("outcomes", []))]
@@ -155,6 +155,12 @@ def _market_rows(event: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _eligible_resolution_source(event: dict[str, Any], market: dict[str, Any]) -> bool:
+    resolution_url = str(market.get("resolutionSource") or event.get("resolutionSource") or "")
+    normalized = resolution_url.lower()
+    return "wunderground.com/history/daily" in normalized and "klga" in normalized
+
+
 def validate_bucket_partition(rows: list[dict[str, Any]]) -> None:
     if len(rows) < 3:
         raise ValueError("NYC temperature event must expose at least three buckets")
@@ -176,6 +182,7 @@ def validate_bucket_partition(rows: list[dict[str, Any]]) -> None:
 def ingest_markets(settings: Settings, job: Job) -> dict[str, Any]:
     records = 0
     pages = 0
+    ineligible_events = 0
     seen_markets: set[str] = set()
     cache = settings.cache_directory / "gamma"
     with source_client() as client:
@@ -201,6 +208,12 @@ def ingest_markets(settings: Settings, job: Job) -> dict[str, Any]:
                 digest, size = atomic_write(path, encoded)
                 rows = []
                 for event in payload:
+                    markets = event.get("markets") or []
+                    if TITLE_PATTERN.search(str(event.get("title") or "")) and (
+                        not markets
+                        or any(not _eligible_resolution_source(event, market) for market in markets)
+                    ):
+                        ineligible_events += 1
                     for row in _market_rows(event):
                         if row["market_id"] not in seen_markets:
                             seen_markets.add(row["market_id"])
@@ -252,11 +265,19 @@ def ingest_markets(settings: Settings, job: Job) -> dict[str, Any]:
                         )
                 records += len(rows)
                 pages += 1
-                update_progress(settings, job, {"pages": pages, "markets": records})
+                update_progress(
+                    settings,
+                    job,
+                    {
+                        "pages": pages,
+                        "markets": records,
+                        "ineligible_events": ineligible_events,
+                    },
+                )
                 if len(payload) < 100:
                     break
                 offset += 100
-    return {"pages": pages, "markets": records}
+    return {"pages": pages, "markets": records, "ineligible_events": ineligible_events}
 
 
 def ingest_price_history(settings: Settings, job: Job) -> dict[str, Any]:
