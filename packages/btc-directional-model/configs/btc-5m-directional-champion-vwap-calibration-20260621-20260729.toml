@@ -1,0 +1,53 @@
+[benchmark]
+source_process_id = "3d8a8efd-fea6-41ec-b885-36ecf7877f4c"
+champion_model_key = "btc-5m-directional-histogram-enriched-20260421-20260620-v1"
+champion_model_sha256 = "e07160295cac3df02d9bec631e96ce34fa66a71a72d04e79e4bcf0fd0f8336b7"
+champion_feature_schema_sha256 = "392aac87ecbc6704929b0ab91aed5de90dff26daf40edfa4e22d2c78a9d03dfc"
+evaluation_note = "Only champion scores after its frozen 2026-06-21 holdout boundary may fit a challenger. July 14-28 is the untouched benchmark holdout. Missing VWAP rows are excluded and never imputed."
+
+[data]
+source_range_start = "2026-03-21T00:00:00Z"
+source_range_end = "2026-07-29T00:00:00Z"
+order_book_coverage_start = "2026-04-13T00:00:00Z"
+out_of_sample_score_start = "2026-06-21T00:00:00Z"
+calibration_end = "2026-07-14T00:00:00Z"
+holdout_end = "2026-07-29T00:00:00Z"
+
+[model]
+quantity = 5.0
+confidence_threshold = 0.89
+minimum_seconds_after_open = 60
+maximum_seconds_after_open = 240
+cadence_seconds = 5
+logistic_c = 1000000.0
+maximum_iterations = 1000
+
+[promotion]
+accuracy_tolerance = 0.01
+minimum_champion_coverage = 0.80
+minimum_improving_folds = 2
+minimum_calibration_rows = 300
+minimum_holdout_rows = 300
+
+[[folds]]
+name = "through_july03_to_july05"
+fit_end = "2026-07-04T00:00:00Z"
+evaluation_end = "2026-07-06T00:00:00Z"
+
+[[folds]]
+name = "through_july05_to_july07"
+fit_end = "2026-07-06T00:00:00Z"
+evaluation_end = "2026-07-08T00:00:00Z"
+
+[[folds]]
+name = "through_july07_to_july08"
+fit_end = "2026-07-08T00:00:00Z"
+evaluation_end = "2026-07-09T00:00:00Z"
+
+[paths]
+features = "data/btc-price-aware-economic-20260321-20260729/features/development.parquet"
+feature_metadata = "data/btc-price-aware-economic-20260321-20260729/features/development.metadata.json"
+execution_evidence = "data/btc-price-aware-economic-20260321-20260729/execution-evidence"
+champion_model = "runtime-models/btc-5m-directional-histogram-enriched-20260421-20260620-v1/model.json"
+champion_manifest = "runtime-models/btc-5m-directional-histogram-enriched-20260421-20260620-v1/manifest.json"
+runs = "runs/btc-champion-vwap-calibration-20260621-20260729"
