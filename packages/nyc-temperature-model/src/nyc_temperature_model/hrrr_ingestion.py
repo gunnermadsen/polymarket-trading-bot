@@ -129,11 +129,16 @@ def _run_with_retry(
 ) -> T:
     last_error: BaseException | None = None
     only_not_found = True
+    not_found_attempts = 0
+    not_found_limit = min(attempts, len(sources))
     for attempt in range(1, attempts + 1):
         try:
             return operation(_source_order(sources, attempt), attempt > 1)
         except FileNotFoundError as error:
             last_error = error
+            not_found_attempts += 1
+            if not_found_attempts >= not_found_limit:
+                raise
         except Exception as error:
             only_not_found = False
             if not _is_transient_hrrr_error(error):
@@ -167,6 +172,11 @@ def _download_field(
             overwrite=overwrite,
             verbose=False,
         )
+        if getattr(herbie, "grib", None) is None:
+            raise FileNotFoundError(
+                f"HRRR archive field is unavailable for "
+                f"{model_run:%Y-%m-%dT%H:%MZ} f{lead_hours:02d}"
+            )
         local_path = Path(herbie.download(search, verbose=False, errors="raise"))
         dataset = herbie.xarray(search, remove_grib=False, verbose=False)
         try:
