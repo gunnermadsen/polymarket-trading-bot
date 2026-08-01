@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from btc_directional_model.loss_tail_config import (
-    BOUNDARY_CORRECTNESS_LOGISTIC_CANDIDATE,
+    BOUNDARY_RESIDUAL_ECONOMIC_HGB_CANDIDATE,
     LOSS_TAIL_CANDIDATE_NAMES,
     LOSS_TAIL_CONTEXT_SECONDS,
     LOSS_TAIL_DECISION_SECONDS,
@@ -67,26 +67,21 @@ def test_loss_tail_config_freezes_candidate_and_resource_contract() -> None:
     config = load_loss_tail_benchmark_config(CONFIG_PATH)
 
     assert config.candidate_names == LOSS_TAIL_CANDIDATE_NAMES
+    assert config.candidate_names == (BOUNDARY_RESIDUAL_ECONOMIC_HGB_CANDIDATE,)
     assert config.features.direct_feature_count == 124
     assert tuple(candidate.estimator for candidate in config.candidates) == (
         "histogram_gradient_boosting",
-        "extra_trees",
-        "logistic_regression",
     )
-    correctness = next(
-        candidate
-        for candidate in config.candidates
-        if candidate.name == BOUNDARY_CORRECTNESS_LOGISTIC_CANDIDATE
-    )
-    assert correctness.direction_policy == "boundary_locked"
+    correctness = config.candidates[0]
+    assert correctness.direction_policy == "boundary_locked_economic_action"
     assert correctness.requires_causal_oof_sources
     assert all(candidate.calibration_weighting == "unweighted" for candidate in config.candidates)
-    assert config.weighting.normalization == "equal_total_per_market"
+    assert config.weighting.normalization == "one_proposal_equal_base"
     assert config.weighting.minimum_multiplier == pytest.approx(1.0)
     assert config.weighting.maximum_multiplier == pytest.approx(10.0)
     assert config.weighting.denominator_floor == pytest.approx(0.05)
     assert config.weighting.fee_inclusive_debit
-    assert (config.resources.workers, config.resources.threads_per_worker) == (3, 3)
+    assert (config.resources.workers, config.resources.threads_per_worker) == (1, 3)
     assert config.resources.memory_limit_gib == 8
 
 
@@ -96,17 +91,21 @@ def test_loss_tail_config_freezes_promotion_gates() -> None:
     assert gates.minimum_selected_accuracy == pytest.approx(0.89)
     assert gates.minimum_wilson_lower == pytest.approx(0.87)
     assert gates.maximum_control_accuracy_regression == pytest.approx(0.005)
-    assert gates.maximum_control_balanced_accuracy_regression == pytest.approx(0.005)
-    assert gates.maximum_control_up_recall_regression == pytest.approx(0.005)
-    assert gates.maximum_control_down_recall_regression == pytest.approx(0.005)
     assert gates.maximum_expected_calibration_error == pytest.approx(0.05)
-    assert gates.maximum_mean_loss_win_ratio_relative_to_control == pytest.approx(0.90)
-    assert gates.maximum_gross_loss_profit_ratio_relative_to_control == pytest.approx(0.90)
-    assert gates.minimum_relative_control_coverage == pytest.approx(0.70)
+    assert gates.maximum_wins_per_average_loss == pytest.approx(6.34)
+    assert gates.maximum_gross_loss_profit_ratio == pytest.approx(0.712)
+    assert gates.minimum_profit_factor == pytest.approx(1.265)
+    assert gates.minimum_pnl_per_all_core_market == pytest.approx(0.02044)
+    assert gates.minimum_total_pnl == pytest.approx(283.15)
+    assert gates.maximum_mean_selected_price == pytest.approx(0.8697)
+    assert gates.minimum_book_qualified_coverage == pytest.approx(0.371)
     assert gates.minimum_pooled_trades == 500
     assert gates.minimum_confirmation_trades == 200
     assert gates.required_nonnegative_expectancy_folds == 3
     assert gates.minimum_loss_improvement_folds == 2
+    assert gates.minimum_gross_loss_reduction == pytest.approx(0.30)
+    assert gates.minimum_gross_profit_retention == pytest.approx(0.70)
+    assert gates.minimum_high_debit_loss_recall == pytest.approx(0.30)
     assert not gates.allow_fallback_winner
 
 
@@ -159,7 +158,7 @@ def test_loss_tail_config_rejects_candidate_drift() -> None:
         candidates=(replace(candidates[0], estimator="logistic_regression"), *candidates[1:]),
     )
 
-    with pytest.raises(ValueError, match="candidate contracts"):
+    with pytest.raises(ValueError, match="candidate contract"):
         validate_loss_tail_benchmark_config(drifted)
 
 
@@ -170,7 +169,7 @@ def test_loss_tail_config_rejects_resource_drift() -> None:
         resources=replace(config.resources, threads_per_worker=4),
     )
 
-    with pytest.raises(ValueError, match="three threads and 8 GiB"):
+    with pytest.raises(ValueError, match="one worker with three threads and 8 GiB"):
         validate_loss_tail_benchmark_config(drifted)
 
 

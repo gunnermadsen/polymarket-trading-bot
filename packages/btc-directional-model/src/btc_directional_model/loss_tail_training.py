@@ -35,6 +35,8 @@ from .offline_challengers import STRICT_BOOK_FIVE_SHARE_V2_FEATURES
 DIRECT_LOSS_TAIL_HGB_CANDIDATE = "direct_loss_tail_hgb"
 EXTRA_TREES_RARE_REGIME_CANDIDATE = "extra_trees_rare_regime"
 BOUNDARY_CORRECTNESS_LOGISTIC_CANDIDATE = "boundary_correctness_logistic"
+BOUNDARY_RESIDUAL_ECONOMIC_HGB_CANDIDATE = "boundary-alignment-residual-economic-hgb-v1"
+BOUNDARY_CONTROL_CONFIDENCE = 0.89
 
 EXPECTED_LOSS_TAIL_FEATURE_COUNT = 124
 LOSS_TAIL_FEATURES = (
@@ -94,6 +96,207 @@ class CalibratedCandidateResult:
 
     def probability(self, frame: pl.DataFrame) -> np.ndarray:
         return self.calibrator.probability(self.model.raw_logit(frame))
+
+
+def materialize_boundary_proposals(
+    frame: pl.DataFrame,
+    *,
+    confidence_threshold: float = BOUNDARY_CONTROL_CONFIDENCE,
+    matched_evaluation: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    """Freeze the first executable proposal made by the causal boundary head.
+
+    The input contains point-in-time OOF boundary predictions.  The output is
+    deliberately one row per market: the predecessor's first proposal at its
+    frozen operating point.  Markets where the predecessor stayed NoTrade are
+    absent, so the residual head cannot create trades or alter entry timing.
+    """
+
+    from .loss_tail_oof import BOUNDARY_CORRECTNESS_FEATURES
+
+    if not 0.5 <= confidence_threshold <= 1.0:
+        raise ValueError("boundary proposal confidence threshold must be in [0.5, 1]")
+    required = {
+        "market_id",
+        "window_start",
+        "observed_at",
+        "seconds_elapsed",
+        "walk_forward_block",
+        "label_up",
+        "oof_boundary_probability_up",
+        "oof_boundary_confidence",
+        "oof_boundary_predicted_up",
+        "oof_boundary_no_trade",
+        "boundary_direction_correct",
+        "up_ask_vwap_5",
+        "down_ask_vwap_5",
+        "up_fee_per_share",
+        "down_fee_per_share",
+        "up_entry_debit_per_share",
+        "down_entry_debit_per_share",
+        "realized_up_net_per_share",
+        "realized_down_net_per_share",
+        *BOUNDARY_CORRECTNESS_FEATURES,
+    }
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError("boundary proposal frame is missing columns: " + ", ".join(missing))
+    if frame.select("market_id", "observed_at", "seconds_elapsed").is_duplicated().any():
+        raise ValueError("boundary proposal source contains duplicate decision keys")
+
+    eligible = frame.filter(
+        (pl.col("oof_boundary_no_trade") == 0)
+        & (pl.col("oof_boundary_confidence") >= confidence_threshold)
+    )
+    oof_proposals = (
+        eligible.sort(["market_id", "seconds_elapsed", "observed_at"])
+        .group_by("market_id", maintain_order=True)
+        .first()
+        .sort(["window_start", "market_id", "seconds_elapsed"])
+    )
+    oof_proposals = oof_proposals.with_columns(
+        pl.col("oof_boundary_probability_up").alias("boundary_proposal_probability_up"),
+        pl.col("oof_boundary_confidence").alias("boundary_proposal_confidence"),
+    )
+    if matched_evaluation is None:
+        proposals = oof_proposals
+    else:
+        matched_required = {
+            "market_id",
+            "window_start",
+            "observed_at",
+            "seconds_elapsed",
+            "walk_forward_block",
+            "predicted_up",
+            "probability_up",
+            "policy_selected",
+        }
+        matched_missing = sorted(matched_required - set(matched_evaluation.columns))
+        if matched_missing:
+            raise ValueError(
+                "matched boundary evaluation is missing columns: " + ", ".join(matched_missing)
+            )
+        matched_keys = matched_evaluation.filter(pl.col("policy_selected")).select(
+            "market_id",
+            "window_start",
+            "observed_at",
+            "seconds_elapsed",
+            "walk_forward_block",
+            pl.col("predicted_up").alias("matched_boundary_direction"),
+            pl.col("probability_up").alias("matched_boundary_probability_up"),
+        )
+        if matched_keys.is_empty() or matched_keys["market_id"].n_unique() != matched_keys.height:
+            raise RuntimeError("matched boundary evaluation must select one proposal per market")
+        matched_blocks = matched_keys["walk_forward_block"].unique().to_list()
+        matched_proposals = matched_keys.join(
+            frame,
+            on=[
+                "market_id",
+                "window_start",
+                "observed_at",
+                "seconds_elapsed",
+                "walk_forward_block",
+            ],
+            how="inner",
+            validate="1:1",
+        )
+        if matched_proposals.height != matched_keys.height:
+            raise RuntimeError(
+                "matched boundary proposal keys are not covered by the immutable cache"
+            )
+        if (
+            matched_proposals["matched_boundary_direction"]
+            != matched_proposals["oof_boundary_predicted_up"]
+        ).any():
+            raise RuntimeError(
+                "matched predecessor direction disagrees with the causal OOF direction"
+            )
+        matched_proposals = matched_proposals.with_columns(
+            pl.col("matched_boundary_probability_up").alias("boundary_proposal_probability_up"),
+            pl.max_horizontal(
+                "matched_boundary_probability_up",
+                1.0 - pl.col("matched_boundary_probability_up"),
+            ).alias("boundary_proposal_confidence"),
+        )
+        proposals = pl.concat(
+            [
+                oof_proposals.filter(~pl.col("walk_forward_block").is_in(matched_blocks)),
+                matched_proposals.select(
+                    *frame.columns,
+                    "boundary_proposal_probability_up",
+                    "boundary_proposal_confidence",
+                ),
+            ],
+            how="vertical",
+        ).sort(["window_start", "market_id", "seconds_elapsed"])
+    if proposals.is_empty():
+        raise RuntimeError("causal boundary head did not produce any executable proposals")
+    if proposals["market_id"].n_unique() != proposals.height:
+        raise RuntimeError("boundary proposal materialization did not produce one row per market")
+
+    direction = pl.col("oof_boundary_predicted_up").cast(pl.Int8)
+    selected_vwap = (
+        pl.when(direction == 1).then(pl.col("up_ask_vwap_5")).otherwise(pl.col("down_ask_vwap_5"))
+    )
+    selected_fee = (
+        pl.when(direction == 1)
+        .then(pl.col("up_fee_per_share"))
+        .otherwise(pl.col("down_fee_per_share"))
+    )
+    selected_debit = (
+        pl.when(direction == 1)
+        .then(pl.col("up_entry_debit_per_share"))
+        .otherwise(pl.col("down_entry_debit_per_share"))
+    )
+    realized_return = (
+        pl.when(direction == 1)
+        .then(pl.col("realized_up_net_per_share"))
+        .otherwise(pl.col("realized_down_net_per_share"))
+    )
+    proposals = proposals.with_columns(
+        pl.col("label_up").cast(pl.Int8).alias("official_label"),
+        direction.alias("boundary_direction"),
+        selected_vwap.alias("selected_ask_vwap_5"),
+        selected_fee.alias("selected_fee_per_share"),
+        selected_debit.alias("fee_inclusive_debit"),
+        realized_return.alias("realized_trade_return"),
+        pl.lit(0.0).alias("no_trade_return"),
+    )
+    mismatched_target = proposals.filter(
+        pl.col("boundary_direction_correct")
+        != (pl.col("boundary_direction") == pl.col("official_label")).cast(pl.Int8)
+    )
+    if mismatched_target.height:
+        raise RuntimeError("boundary proposal correctness target does not match the official label")
+    if not proposals["fee_inclusive_debit"].is_between(0.0, 1.0, closed="right").all():
+        raise RuntimeError("boundary proposal fee-inclusive debit is outside (0, 1]")
+    return proposals
+
+
+def incorrect_proposal_economic_severity(
+    frame: pl.DataFrame,
+    *,
+    target_column: str = "boundary_direction_correct",
+    debit_column: str = "fee_inclusive_debit",
+) -> np.ndarray:
+    """Return the exact capped debit-odds multiplier for incorrect proposals."""
+
+    labels = _validated_binary_target(frame, target_column)
+    debit = _validated_debit(frame, debit_column)
+    debit_odds = np.clip(debit / np.maximum(1.0 - debit, 0.05), 1.0, 10.0)
+    return np.where(labels == 0, debit_odds, 1.0)
+
+
+def boundary_residual_training_weights(
+    frame: pl.DataFrame,
+    *,
+    target_column: str = "boundary_direction_correct",
+) -> np.ndarray:
+    """Give every proposal unit base weight and severity-weight only errors."""
+
+    if frame["market_id"].n_unique() != frame.height:
+        raise ValueError("boundary residual training requires exactly one proposal per market")
+    return incorrect_proposal_economic_severity(frame, target_column=target_column)
 
 
 def validate_loss_tail_feature_contract(
@@ -269,6 +472,38 @@ def fit_boundary_correctness_logistic(
     )
 
 
+def fit_boundary_residual_economic_hgb(
+    fit_frame: pl.DataFrame,
+    calibration_frame: pl.DataFrame,
+    *,
+    feature_names: tuple[str, ...],
+    core_config: CoreTrainingConfig,
+    target_column: str = "boundary_direction_correct",
+    candidate_name: str = BOUNDARY_RESIDUAL_ECONOMIC_HGB_CANDIDATE,
+) -> CalibratedCandidateResult:
+    """Fit calibrated nonlinear correctness on actual boundary proposals only."""
+
+    _validate_feature_names(feature_names)
+    _validate_feature_frame(fit_frame, feature_names)
+    _validate_feature_frame(calibration_frame, feature_names)
+    parameter_candidates = tuple(
+        histogram_parameters(candidate) for candidate in core_config.model.histogram_candidates
+    )
+    return _fit_tuned_candidate(
+        fit_frame,
+        calibration_frame,
+        candidate_name=candidate_name,
+        family="histogram",
+        feature_names=feature_names,
+        target_column=target_column,
+        parameter_candidates=parameter_candidates,
+        random_seed=core_config.model.random_seed,
+        threads_per_fit=core_config.compute.threads_per_fit,
+        training_weight_kind="incorrect_proposal_severity",
+        extra_trees_n_jobs=None,
+    )
+
+
 def fit_unweighted_platt_calibrator(
     model: FittedCoreModel,
     calibration_frame: pl.DataFrame,
@@ -435,7 +670,11 @@ def _fit_tuned_candidate(
             "training_weight_formula": (
                 "equal_total_per_market_x_fee_inclusive_wrong_side_debit_odds_capped_1_10"
                 if training_weight_kind == "loss_tail"
-                else "equal_total_per_market"
+                else (
+                    "one_proposal_equal_base_x_incorrect_fee_inclusive_debit_odds_capped_1_10"
+                    if training_weight_kind == "incorrect_proposal_severity"
+                    else "equal_total_per_market"
+                )
             ),
             "calibration_weighting": "unweighted_rows",
         },
@@ -541,6 +780,8 @@ def _training_weights(
         return loss_tail_training_weights(frame)
     if kind == "market_equal":
         return market_equal_weights(frame)
+    if kind == "incorrect_proposal_severity":
+        return boundary_residual_training_weights(frame, target_column=target_column)
     raise ValueError(f"unsupported training weight kind: {kind}")
 
 

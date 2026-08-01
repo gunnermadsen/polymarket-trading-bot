@@ -13,14 +13,8 @@ from .core_config import load_core_config, parse_utc_day
 LOSS_TAIL_DECISION_SECONDS = tuple(range(60, 241, 5))
 LOSS_TAIL_CONTEXT_SECONDS = tuple(range(55, 241, 5))
 
-LOSS_TAIL_HGB_CANDIDATE = "loss_tail_hgb"
-LOSS_TAIL_EXTRA_TREES_CANDIDATE = "loss_tail_extra_trees"
-BOUNDARY_CORRECTNESS_LOGISTIC_CANDIDATE = "boundary_correctness_logistic"
-LOSS_TAIL_CANDIDATE_NAMES = (
-    LOSS_TAIL_HGB_CANDIDATE,
-    LOSS_TAIL_EXTRA_TREES_CANDIDATE,
-    BOUNDARY_CORRECTNESS_LOGISTIC_CANDIDATE,
-)
+BOUNDARY_RESIDUAL_ECONOMIC_HGB_CANDIDATE = "boundary-alignment-residual-economic-hgb-v1"
+LOSS_TAIL_CANDIDATE_NAMES = (BOUNDARY_RESIDUAL_ECONOMIC_HGB_CANDIDATE,)
 
 
 @dataclass(frozen=True)
@@ -134,22 +128,27 @@ class LossTailGateConfig:
     minimum_selected_accuracy: float
     minimum_wilson_lower: float
     maximum_control_accuracy_regression: float
-    maximum_control_balanced_accuracy_regression: float
-    maximum_control_up_recall_regression: float
-    maximum_control_down_recall_regression: float
     maximum_expected_calibration_error: float
-    maximum_mean_loss_win_ratio_relative_to_control: float
-    maximum_gross_loss_profit_ratio_relative_to_control: float
-    require_profit_factor_improvement: bool
-    require_pnl_per_core_market_improvement: bool
-    require_worst_trade_noninferiority: bool
-    require_worst_one_percent_noninferiority: bool
-    minimum_relative_control_coverage: float
+    maximum_wins_per_average_loss: float
+    maximum_gross_loss_profit_ratio: float
+    minimum_profit_factor: float
+    minimum_pnl_per_all_core_market: float
+    minimum_total_pnl: float
+    maximum_mean_selected_price: float
+    minimum_book_qualified_coverage: float
     minimum_pooled_trades: int
     minimum_confirmation_trades: int
     minimum_fold_direction_trades: int
+    minimum_worst_trade: float
+    minimum_mean_worst_one_percent: float
+    maximum_drawdown: float
     required_nonnegative_expectancy_folds: int
     minimum_loss_improvement_folds: int
+    minimum_gross_loss_reduction: float
+    minimum_gross_profit_retention: float
+    high_debit_threshold: float
+    minimum_high_debit_loss_recall: float
+    require_highest_price_band_positive: bool
     allow_fallback_winner: bool
 
 
@@ -217,36 +216,14 @@ _EXPECTED_FOLDS = (
 )
 _EXPECTED_CANDIDATES = (
     (
-        LOSS_TAIL_HGB_CANDIDATE,
+        BOUNDARY_RESIDUAL_ECONOMIC_HGB_CANDIDATE,
         "histogram_gradient_boosting",
-        "official_direction",
-        "loss_tail_direct_124",
-        "wrong_side_debit_odds_capped",
-        "platt",
-        "unweighted",
-        "model_direction",
-        False,
-    ),
-    (
-        LOSS_TAIL_EXTRA_TREES_CANDIDATE,
-        "extra_trees",
-        "official_direction",
-        "loss_tail_direct_124",
-        "wrong_side_debit_odds_capped",
-        "platt",
-        "unweighted",
-        "model_direction",
-        False,
-    ),
-    (
-        BOUNDARY_CORRECTNESS_LOGISTIC_CANDIDATE,
-        "logistic_regression",
         "boundary_direction_correct",
         "boundary_disagreement_correctness",
-        "equal_total_per_market",
+        "incorrect_proposal_debit_odds_capped",
         "platt",
         "unweighted",
-        "boundary_locked",
+        "boundary_locked_economic_action",
         True,
     ),
 )
@@ -345,38 +322,29 @@ def load_loss_tail_benchmark_config(path: Path) -> LossTailBenchmarkConfig:
             minimum_selected_accuracy=float(gates["minimum_selected_accuracy"]),
             minimum_wilson_lower=float(gates["minimum_wilson_lower"]),
             maximum_control_accuracy_regression=float(gates["maximum_control_accuracy_regression"]),
-            maximum_control_balanced_accuracy_regression=float(
-                gates["maximum_control_balanced_accuracy_regression"]
-            ),
-            maximum_control_up_recall_regression=float(
-                gates["maximum_control_up_recall_regression"]
-            ),
-            maximum_control_down_recall_regression=float(
-                gates["maximum_control_down_recall_regression"]
-            ),
             maximum_expected_calibration_error=float(gates["maximum_expected_calibration_error"]),
-            maximum_mean_loss_win_ratio_relative_to_control=float(
-                gates["maximum_mean_loss_win_ratio_relative_to_control"]
-            ),
-            maximum_gross_loss_profit_ratio_relative_to_control=float(
-                gates["maximum_gross_loss_profit_ratio_relative_to_control"]
-            ),
-            require_profit_factor_improvement=bool(gates["require_profit_factor_improvement"]),
-            require_pnl_per_core_market_improvement=bool(
-                gates["require_pnl_per_core_market_improvement"]
-            ),
-            require_worst_trade_noninferiority=bool(gates["require_worst_trade_noninferiority"]),
-            require_worst_one_percent_noninferiority=bool(
-                gates["require_worst_one_percent_noninferiority"]
-            ),
-            minimum_relative_control_coverage=float(gates["minimum_relative_control_coverage"]),
+            maximum_wins_per_average_loss=float(gates["maximum_wins_per_average_loss"]),
+            maximum_gross_loss_profit_ratio=float(gates["maximum_gross_loss_profit_ratio"]),
+            minimum_profit_factor=float(gates["minimum_profit_factor"]),
+            minimum_pnl_per_all_core_market=float(gates["minimum_pnl_per_all_core_market"]),
+            minimum_total_pnl=float(gates["minimum_total_pnl"]),
+            maximum_mean_selected_price=float(gates["maximum_mean_selected_price"]),
+            minimum_book_qualified_coverage=float(gates["minimum_book_qualified_coverage"]),
             minimum_pooled_trades=int(gates["minimum_pooled_trades"]),
             minimum_confirmation_trades=int(gates["minimum_confirmation_trades"]),
             minimum_fold_direction_trades=int(gates["minimum_fold_direction_trades"]),
+            minimum_worst_trade=float(gates["minimum_worst_trade"]),
+            minimum_mean_worst_one_percent=float(gates["minimum_mean_worst_one_percent"]),
+            maximum_drawdown=float(gates["maximum_drawdown"]),
             required_nonnegative_expectancy_folds=int(
                 gates["required_nonnegative_expectancy_folds"]
             ),
             minimum_loss_improvement_folds=int(gates["minimum_loss_improvement_folds"]),
+            minimum_gross_loss_reduction=float(gates["minimum_gross_loss_reduction"]),
+            minimum_gross_profit_retention=float(gates["minimum_gross_profit_retention"]),
+            high_debit_threshold=float(gates["high_debit_threshold"]),
+            minimum_high_debit_loss_recall=float(gates["minimum_high_debit_loss_recall"]),
+            require_highest_price_band_positive=bool(gates["require_highest_price_band_positive"]),
             allow_fallback_winner=bool(gates["allow_fallback_winner"]),
         ),
         paths=LossTailPathConfig(
@@ -502,14 +470,14 @@ def _validate_candidate_contract(
         for candidate in candidates
     )
     if observed != _EXPECTED_CANDIDATES:
-        raise ValueError("the three loss-tail candidate contracts must remain frozen")
+        raise ValueError("the residual economic HGB candidate contract must remain frozen")
     if any(candidate.random_seed != _EXPECTED_RANDOM_SEED for candidate in candidates):
         raise ValueError("loss-tail candidate random seeds must remain frozen")
 
 
 def _validate_weighting_contract(config: LossTailWeightingConfig) -> None:
     if (
-        config.normalization != "equal_total_per_market"
+        config.normalization != "one_proposal_equal_base"
         or not math.isclose(config.minimum_multiplier, 1.0)
         or not math.isclose(config.maximum_multiplier, 10.0)
         or not math.isclose(config.denominator_floor, 0.05)
@@ -519,8 +487,8 @@ def _validate_weighting_contract(config: LossTailWeightingConfig) -> None:
 
 
 def _validate_resource_contract(config: LossTailResourceConfig) -> None:
-    if (config.workers, config.threads_per_worker, config.memory_limit_gib) != (3, 3, 8):
-        raise ValueError("loss-tail workers require three threads and 8 GiB each")
+    if (config.workers, config.threads_per_worker, config.memory_limit_gib) != (1, 3, 8):
+        raise ValueError("loss-tail training requires one worker with three threads and 8 GiB")
 
 
 def _validate_gate_contract(config: LossTailGateConfig, fold_count: int) -> None:
@@ -528,13 +496,17 @@ def _validate_gate_contract(config: LossTailGateConfig, fold_count: int) -> None
         (config.minimum_selected_accuracy, 0.89),
         (config.minimum_wilson_lower, 0.87),
         (config.maximum_control_accuracy_regression, 0.005),
-        (config.maximum_control_balanced_accuracy_regression, 0.005),
-        (config.maximum_control_up_recall_regression, 0.005),
-        (config.maximum_control_down_recall_regression, 0.005),
         (config.maximum_expected_calibration_error, 0.05),
-        (config.maximum_mean_loss_win_ratio_relative_to_control, 0.90),
-        (config.maximum_gross_loss_profit_ratio_relative_to_control, 0.90),
-        (config.minimum_relative_control_coverage, 0.70),
+        (config.maximum_wins_per_average_loss, 6.34),
+        (config.maximum_gross_loss_profit_ratio, 0.712),
+        (config.minimum_profit_factor, 1.265),
+        (config.minimum_pnl_per_all_core_market, 0.02044),
+        (config.maximum_mean_selected_price, 0.8697),
+        (config.minimum_book_qualified_coverage, 0.371),
+        (config.minimum_gross_loss_reduction, 0.30),
+        (config.minimum_gross_profit_retention, 0.70),
+        (config.high_debit_threshold, 0.90),
+        (config.minimum_high_debit_loss_recall, 0.30),
     )
     if any(not math.isclose(observed, expected) for observed, expected in exact_probabilities):
         raise ValueError(
@@ -553,11 +525,16 @@ def _validate_gate_contract(config: LossTailGateConfig, fold_count: int) -> None
         or config.minimum_loss_improvement_folds != 2
     ):
         raise ValueError("loss-tail fold robustness gates are frozen")
+    exact_economics = (
+        (config.minimum_total_pnl, 283.15),
+        (config.minimum_worst_trade, -4.90686),
+        (config.minimum_mean_worst_one_percent, -4.79185),
+        (config.maximum_drawdown, 38.69),
+    )
+    if any(not math.isclose(observed, expected) for observed, expected in exact_economics):
+        raise ValueError("loss-tail absolute economic gates are frozen")
     required_flags = (
-        config.require_profit_factor_improvement,
-        config.require_pnl_per_core_market_improvement,
-        config.require_worst_trade_noninferiority,
-        config.require_worst_one_percent_noninferiority,
+        config.require_highest_price_band_positive,
         not config.allow_fallback_winner,
     )
     if not all(required_flags):

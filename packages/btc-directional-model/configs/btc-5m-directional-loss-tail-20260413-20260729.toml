@@ -76,50 +76,26 @@ oracle_feature_count = 11
 strict_book_feature_count = 32
 
 [[candidates]]
-name = "loss_tail_hgb"
+name = "boundary-alignment-residual-economic-hgb-v1"
 estimator = "histogram_gradient_boosting"
-target = "official_direction"
-feature_profile = "loss_tail_direct_124"
-row_weighting = "wrong_side_debit_odds_capped"
-probability_calibration = "platt"
-calibration_weighting = "unweighted"
-direction_policy = "model_direction"
-requires_causal_oof_sources = false
-random_seed = 20260731
-
-[[candidates]]
-name = "loss_tail_extra_trees"
-estimator = "extra_trees"
-target = "official_direction"
-feature_profile = "loss_tail_direct_124"
-row_weighting = "wrong_side_debit_odds_capped"
-probability_calibration = "platt"
-calibration_weighting = "unweighted"
-direction_policy = "model_direction"
-requires_causal_oof_sources = false
-random_seed = 20260731
-
-[[candidates]]
-name = "boundary_correctness_logistic"
-estimator = "logistic_regression"
 target = "boundary_direction_correct"
 feature_profile = "boundary_disagreement_correctness"
-row_weighting = "equal_total_per_market"
+row_weighting = "incorrect_proposal_debit_odds_capped"
 probability_calibration = "platt"
 calibration_weighting = "unweighted"
-direction_policy = "boundary_locked"
+direction_policy = "boundary_locked_economic_action"
 requires_causal_oof_sources = true
 random_seed = 20260731
 
 [weighting]
-normalization = "equal_total_per_market"
+normalization = "one_proposal_equal_base"
 minimum_multiplier = 1.0
 maximum_multiplier = 10.0
 denominator_floor = 0.05
 fee_inclusive_debit = true
 
 [resources]
-workers = 3
+workers = 1
 threads_per_worker = 3
 memory_limit_gib = 8
 
@@ -127,22 +103,27 @@ memory_limit_gib = 8
 minimum_selected_accuracy = 0.89
 minimum_wilson_lower = 0.87
 maximum_control_accuracy_regression = 0.005
-maximum_control_balanced_accuracy_regression = 0.005
-maximum_control_up_recall_regression = 0.005
-maximum_control_down_recall_regression = 0.005
 maximum_expected_calibration_error = 0.05
-maximum_mean_loss_win_ratio_relative_to_control = 0.90
-maximum_gross_loss_profit_ratio_relative_to_control = 0.90
-require_profit_factor_improvement = true
-require_pnl_per_core_market_improvement = true
-require_worst_trade_noninferiority = true
-require_worst_one_percent_noninferiority = true
-minimum_relative_control_coverage = 0.70
+maximum_wins_per_average_loss = 6.34
+maximum_gross_loss_profit_ratio = 0.712
+minimum_profit_factor = 1.265
+minimum_pnl_per_all_core_market = 0.02044
+minimum_total_pnl = 283.15
+maximum_mean_selected_price = 0.8697
+minimum_book_qualified_coverage = 0.371
 minimum_pooled_trades = 500
 minimum_confirmation_trades = 200
 minimum_fold_direction_trades = 10
+minimum_worst_trade = -4.90686
+minimum_mean_worst_one_percent = -4.79185
+maximum_drawdown = 38.69
 required_nonnegative_expectancy_folds = 3
 minimum_loss_improvement_folds = 2
+minimum_gross_loss_reduction = 0.30
+minimum_gross_profit_retention = 0.70
+high_debit_threshold = 0.90
+minimum_high_debit_loss_recall = 0.30
+require_highest_price_band_positive = true
 allow_fallback_winner = false
 
 [paths]
