@@ -7,6 +7,7 @@ Think of Capitonic as a vision to generate income through systems with automatio
 
 ## Code
 - rebuild docker image after each code change, ensuring new rust change build as packages with the image.
+- build the polymarket bot with provenance env var: POLYMARKET_GIT_REVISION=<GIT_COMMIT_HASH> docker compose build polymarket-bot
 - do not rebuild polymarket-bot or rust-related packages on grafana dashboard changes or database configuration changes.
 - put sensitive secrets in .env files
 - put non-sensitive runtime configuration in docker-compose files
