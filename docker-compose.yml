@@ -16,6 +16,50 @@ x-grafana-env-file: &grafana-env-file
   path: ./.env.grafana
   required: false
 
+x-kraken-worker-env: &kraken-worker-env
+  RUST_LOG: "info,sqlx=error"
+  POSTGRES_HOST: "kraken-timescaledb"
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: "postgres"
+  POSTGRES_DB: "kraken_archive"
+  POSTGRES_SSL_MODE: "disable"
+  POSTGRES_SSL_CA_FILE: ""
+  KRAKEN_FUTURES_BASE_URL: "https://futures.kraken.com"
+  KRAKEN_DATA_LAKE_ROOT: "/var/lib/kraken-data"
+  KRAKEN_BACKFILL_POLL_INTERVAL_MS: "1000"
+  KRAKEN_BACKFILL_LEASE_DURATION_SECS: "120"
+  KRAKEN_BACKFILL_HEARTBEAT_INTERVAL_SECS: "20"
+  KRAKEN_BACKFILL_DB_POOL_MAX_CONNECTIONS: "1"
+
+x-kraken-worker: &kraken-worker
+  build:
+    context: .
+    dockerfile: packages/polymarket-bot/Dockerfile
+    args:
+      POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
+  image: polymarket/kraken-ingestion:latest
+  entrypoint:
+    - /usr/local/bin/kraken-backfill-worker
+  init: true
+  mem_limit: 512m
+  cpus: "0.35"
+  pids_limit: 128
+  logging: *default-logging
+  env_file:
+    - *postgres-env-file
+  volumes:
+    - /Volumes/docker-data/kraken-data:/var/lib/kraken-data
+  depends_on:
+    kraken-db-migrate:
+      condition: service_completed_successfully
+    kraken-timescaledb:
+      condition: service_healthy
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  stop_grace_period: 60s
+  restart: unless-stopped
+
 services:
   timescaledb-0:
     image: timescale/timescaledb:2.14.2-pg14
@@ -377,6 +421,159 @@ services:
     environment:
       POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-6"
       POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-6"
+
+  kraken-timescaledb:
+    image: timescale/timescaledb:2.14.2-pg14
+    container_name: kraken-timescaledb
+    hostname: kraken-timescaledb
+    mem_limit: 2g
+    cpus: "1.5"
+    logging: *default-logging
+    env_file:
+      - *postgres-env-file
+    environment:
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "kraken_archive"
+      TS_TUNE_MEMORY: "2GB"
+      TS_TUNE_NUM_CPUS: "2"
+      TS_TUNE_MAX_CONNS: "20"
+      TS_TUNE_MAX_BG_WORKERS: "2"
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1GB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - max_connections=20
+      - -c
+      - max_parallel_workers=1
+      - -c
+      - max_parallel_workers_per_gather=1
+      - -c
+      - max_worker_processes=4
+      - -c
+      - timescaledb.max_background_workers=2
+    ports:
+      - "127.0.0.1:${KRAKEN_POSTGRES_HOST_PORT:-55434}:5432"
+    volumes:
+      - /Volumes/docker-data/kraken-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d kraken_archive"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  kraken-db-migrate:
+    build:
+      context: .
+      dockerfile: packages/db-migrate/Dockerfile
+    image: polymarket/db-migrate:latest
+    container_name: kraken-db-migrate
+    hostname: kraken-db-migrate
+    mem_limit: 256m
+    cpus: "0.25"
+    logging: *default-logging
+    env_file:
+      - *postgres-env-file
+    environment:
+      NODE_ENV: "development"
+      POSTGRES_HOST: "kraken-timescaledb"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "kraken_archive"
+      POSTGRES_SSL_MODE: "disable"
+      POSTGRES_SSL_CA_FILE: ""
+      POSTGRES_SSL_CERT_FILE: ""
+      POSTGRES_SSL_KEY_FILE: ""
+      DB_MIGRATIONS_PATTERN: "migrations/kraken/*.{ts,js}"
+    depends_on:
+      kraken-timescaledb:
+        condition: service_healthy
+    restart: "no"
+
+  kraken-backfill-plan:
+    build:
+      context: .
+      dockerfile: packages/polymarket-bot/Dockerfile
+      args:
+        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
+    image: polymarket/kraken-ingestion:latest
+    entrypoint:
+      - /usr/local/bin/kraken-backfill-plan
+    profiles:
+      - kraken-plan
+    mem_limit: 256m
+    cpus: "0.25"
+    logging: *default-logging
+    env_file:
+      - *postgres-env-file
+    environment:
+      <<: *kraken-worker-env
+      KRAKEN_BACKFILL_SYMBOL: "PF_XBTUSD"
+    depends_on:
+      kraken-db-migrate:
+        condition: service_completed_successfully
+      kraken-timescaledb:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    restart: "no"
+
+  kraken-backfill-worker-1:
+    <<: *kraken-worker
+    container_name: kraken-backfill-worker-1
+    hostname: kraken-backfill-worker-1
+    environment:
+      <<: *kraken-worker-env
+      KRAKEN_BACKFILL_WORKER_ID: "kraken-backfill-worker-1"
+
+  kraken-backfill-worker-2:
+    <<: *kraken-worker
+    container_name: kraken-backfill-worker-2
+    hostname: kraken-backfill-worker-2
+    environment:
+      <<: *kraken-worker-env
+      KRAKEN_BACKFILL_WORKER_ID: "kraken-backfill-worker-2"
+
+  kraken-backfill-worker-3:
+    <<: *kraken-worker
+    container_name: kraken-backfill-worker-3
+    hostname: kraken-backfill-worker-3
+    environment:
+      <<: *kraken-worker-env
+      KRAKEN_BACKFILL_WORKER_ID: "kraken-backfill-worker-3"
+
+  kraken-backfill-worker-4:
+    <<: *kraken-worker
+    container_name: kraken-backfill-worker-4
+    hostname: kraken-backfill-worker-4
+    environment:
+      <<: *kraken-worker-env
+      KRAKEN_BACKFILL_WORKER_ID: "kraken-backfill-worker-4"
+
+  kraken-backfill-worker-5:
+    <<: *kraken-worker
+    container_name: kraken-backfill-worker-5
+    hostname: kraken-backfill-worker-5
+    environment:
+      <<: *kraken-worker-env
+      KRAKEN_BACKFILL_WORKER_ID: "kraken-backfill-worker-5"
+
+  kraken-backfill-worker-6:
+    <<: *kraken-worker
+    container_name: kraken-backfill-worker-6
+    hostname: kraken-backfill-worker-6
+    environment:
+      <<: *kraken-worker-env
+      KRAKEN_BACKFILL_WORKER_ID: "kraken-backfill-worker-6"
 
   grafana:
     image: grafana/grafana:${GRAFANA_VERSION:-12.4.2}
