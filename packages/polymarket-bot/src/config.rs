@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
-use crate::btc::BtcHeartbeatConfig;
+use crate::btc::{BtcHeartbeatConfig, DirectionalExternalRuntimeConfig};
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -58,6 +58,7 @@ pub struct BtcConfig {
     pub binance_ws_url: String,
     pub binance_rest_base_url: String,
     pub data_source_heartbeat: BtcHeartbeatConfig,
+    pub directional_external: DirectionalExternalRuntimeConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -186,6 +187,7 @@ impl AppConfig {
                     heartbeat_defaults.binance_interval.as_secs(),
                 )?,
             },
+            directional_external: DirectionalExternalRuntimeConfig::from_env()?,
         };
         if btc.paper_enabled && !btc.realtime_enabled {
             bail!("POLYMARKET_BTC_PAPER_ENABLED requires POLYMARKET_BTC_REALTIME_ENABLED");

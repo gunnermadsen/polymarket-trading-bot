@@ -1,4 +1,5 @@
 pub mod admission;
+pub mod directional_external_runtime;
 pub mod directional_features;
 pub mod directional_model;
 pub mod execution_guard;
@@ -26,6 +27,11 @@ pub use admission::{
     DAILY_REALIZED_PNL_HIGH_WATER_MARK_SCHEMA_VERSION, LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION,
     SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE,
     SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION,
+};
+pub use directional_external_runtime::{
+    BinanceOpenInterestPoint, ChainlinkMidPoint, ChainlinkRefPricePoint,
+    DirectionalExternalRuntimeConfig, DirectionalExternalSourceStatus, DirectionalExternalState,
+    PolygonOraclePoint,
 };
 pub use directional_features::{
     build_directional_features, build_directional_features_for_schema,

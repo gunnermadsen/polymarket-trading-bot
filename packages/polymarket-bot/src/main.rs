@@ -1112,6 +1112,7 @@ impl BtcProcessManager {
         )));
         let heartbeat = self.config.btc.data_source_heartbeat;
         let runtime = BtcRuntime::new(config.clone(), heartbeat, self.repository.clone())
+            .with_directional_external(self.config.btc.directional_external.clone())
             .with_shared_state(state.clone())
             .with_shared_book_registry(books.clone())
             .start()
@@ -3873,6 +3874,8 @@ mod lifecycle_tests {
                     binance_ws_url: String::new(),
                     binance_rest_base_url: String::new(),
                     data_source_heartbeat: polymarket_bot::btc::BtcHeartbeatConfig::default(),
+                    directional_external:
+                        polymarket_bot::btc::DirectionalExternalRuntimeConfig::default(),
                 },
                 gamma_base_url: String::new(),
                 clob_rest_base_url: String::new(),

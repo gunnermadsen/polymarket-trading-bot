@@ -16,6 +16,15 @@ pub const BTC_DIRECTIONAL_MATURE_REVERSAL_FEATURE_COUNT: usize = 71;
 pub const BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION: &str =
     "btc-5m-directional-boundary-features-v1";
 pub const BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT: usize = 68;
+pub const BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_SCHEMA_VERSION: &str =
+    "btc-5m-directional-boundary-oracle-chainlink-candle-features-v1";
+pub const BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_COUNT: usize = 87;
+pub const BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_SCHEMA_VERSION: &str =
+    "btc-5m-directional-boundary-oracle-chainlink-refprice-candle-features-v1";
+pub const BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_COUNT: usize = 97;
+pub const BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_SCHEMA_VERSION:
+    &str = "btc-5m-directional-boundary-oracle-chainlink-refprice-candle-oi-features-v1";
+pub const BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_COUNT: usize = 106;
 pub const BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SCHEMA_VERSION: &str =
     "btc-5m-directional-path-persistence-prewindow-features-v1";
 pub const BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_COUNT: usize = 100;
@@ -26,6 +35,10 @@ pub const BTC_DIRECTIONAL_CANDIDATE_CADENCE_SECONDS: i64 = 5;
 const MARKET_WINDOW_SECONDS: i64 = 300;
 const EPSILON: f64 = 1e-9;
 const BPS: f64 = 10_000.0;
+pub const BTC_DIRECTIONAL_REFPRICE_MAX_AGE_SECONDS: i64 = 5;
+pub const BTC_DIRECTIONAL_CHAINLINK_CANDLE_MAX_AGE_SECONDS: i64 = 120;
+pub const BTC_DIRECTIONAL_OPEN_INTEREST_MAX_AGE_SECONDS: i64 = 600;
+pub const BTC_DIRECTIONAL_ORACLE_MAX_AGE_SECONDS: i64 = 3_600;
 
 /// Frozen feature order consumed by the deployed model artifact.
 ///
@@ -163,6 +176,138 @@ const fn boundary_feature_names() -> [&'static str; BTC_DIRECTIONAL_BOUNDARY_FEA
 pub const BTC_DIRECTIONAL_BOUNDARY_FEATURE_NAMES: [&str; BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT] =
     boundary_feature_names();
 
+pub const BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES: [&str; 11] = [
+    "oracle_gap_to_opening_boundary_bps",
+    "oracle_return_from_window_open_bps",
+    "oracle_return_30s_bps",
+    "oracle_return_60s_bps",
+    "oracle_round_age_seconds_scaled",
+    "oracle_update_count_since_open_scaled",
+    "binance_oracle_basis_bps",
+    "binance_oracle_basis_change_30s_bps",
+    "oracle_binance_direction_agreement_30s",
+    "oracle_boundary_binance_path_agreement",
+    "oracle_return_60s_binance_volatility_z",
+];
+
+pub const BTC_DIRECTIONAL_CHAINLINK_REFPRICE_FEATURE_NAMES: [&str; 10] = [
+    "chainlink_ref_return_1s_bps",
+    "chainlink_ref_return_5s_bps",
+    "chainlink_ref_return_15s_bps",
+    "chainlink_ref_return_30s_bps",
+    "chainlink_ref_return_60s_bps",
+    "chainlink_ref_binance_basis_bps",
+    "chainlink_ref_boundary_gap_bps",
+    "chainlink_ref_spread_bps",
+    "chainlink_ref_spread_change_30s_bps",
+    "chainlink_ref_binance_direction_agreement_30s",
+];
+
+pub const BTC_DIRECTIONAL_CHAINLINK_CANDLE_FEATURE_NAMES: [&str; 8] = [
+    "chainlink_candle_return_5m_bps",
+    "chainlink_candle_return_15m_bps",
+    "chainlink_candle_return_30m_bps",
+    "chainlink_candle_return_60m_bps",
+    "chainlink_candle_realized_volatility_15m_bps",
+    "chainlink_candle_realized_volatility_60m_bps",
+    "chainlink_candle_range_15m_bps",
+    "chainlink_candle_range_60m_bps",
+];
+
+pub const BTC_DIRECTIONAL_BINANCE_OPEN_INTEREST_FEATURE_NAMES: [&str; 9] = [
+    "binance_oi_change_5m_bps",
+    "binance_oi_change_15m_bps",
+    "binance_oi_change_30m_bps",
+    "binance_oi_change_60m_bps",
+    "binance_oi_value_change_15m_bps",
+    "binance_oi_value_change_60m_bps",
+    "binance_oi_acceleration_5_vs_30_bps",
+    "binance_oi_path_agreement_15m",
+    "binance_oi_path_agreement_60m",
+];
+
+const fn append_feature_names<const OUTPUT: usize, const SUFFIX: usize>(
+    mut names: [&'static str; OUTPUT],
+    mut index: usize,
+    suffix: [&'static str; SUFFIX],
+) -> [&'static str; OUTPUT] {
+    let mut suffix_index = 0;
+    while suffix_index < SUFFIX {
+        names[index] = suffix[suffix_index];
+        index += 1;
+        suffix_index += 1;
+    }
+    names
+}
+
+const fn boundary_oracle_chainlink_candle_feature_names(
+) -> [&'static str; BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_COUNT] {
+    let mut names = [""; BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_COUNT];
+    let mut index = 0;
+    while index < BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT {
+        names[index] = BTC_DIRECTIONAL_BOUNDARY_FEATURE_NAMES[index];
+        index += 1;
+    }
+    names = append_feature_names(names, index, BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES);
+    index += BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES.len();
+    append_feature_names(names, index, BTC_DIRECTIONAL_CHAINLINK_CANDLE_FEATURE_NAMES)
+}
+
+const fn boundary_oracle_chainlink_refprice_candle_feature_names(
+) -> [&'static str; BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_COUNT] {
+    let mut names = [""; BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_COUNT];
+    let mut index = 0;
+    while index < BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT {
+        names[index] = BTC_DIRECTIONAL_BOUNDARY_FEATURE_NAMES[index];
+        index += 1;
+    }
+    names = append_feature_names(names, index, BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES);
+    index += BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES.len();
+    names = append_feature_names(
+        names,
+        index,
+        BTC_DIRECTIONAL_CHAINLINK_REFPRICE_FEATURE_NAMES,
+    );
+    index += BTC_DIRECTIONAL_CHAINLINK_REFPRICE_FEATURE_NAMES.len();
+    append_feature_names(names, index, BTC_DIRECTIONAL_CHAINLINK_CANDLE_FEATURE_NAMES)
+}
+
+const fn boundary_oracle_chainlink_refprice_candle_oi_feature_names(
+) -> [&'static str; BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_COUNT] {
+    let mut names =
+        [""; BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_COUNT];
+    let mut index = 0;
+    while index < BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT {
+        names[index] = BTC_DIRECTIONAL_BOUNDARY_FEATURE_NAMES[index];
+        index += 1;
+    }
+    names = append_feature_names(names, index, BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES);
+    index += BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES.len();
+    names = append_feature_names(
+        names,
+        index,
+        BTC_DIRECTIONAL_CHAINLINK_REFPRICE_FEATURE_NAMES,
+    );
+    index += BTC_DIRECTIONAL_CHAINLINK_REFPRICE_FEATURE_NAMES.len();
+    names = append_feature_names(names, index, BTC_DIRECTIONAL_CHAINLINK_CANDLE_FEATURE_NAMES);
+    index += BTC_DIRECTIONAL_CHAINLINK_CANDLE_FEATURE_NAMES.len();
+    append_feature_names(
+        names,
+        index,
+        BTC_DIRECTIONAL_BINANCE_OPEN_INTEREST_FEATURE_NAMES,
+    )
+}
+
+pub const BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_NAMES: [&str;
+    BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_COUNT] =
+    boundary_oracle_chainlink_candle_feature_names();
+pub const BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_NAMES: [&str;
+    BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_COUNT] =
+    boundary_oracle_chainlink_refprice_candle_feature_names();
+pub const BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_NAMES: [&str;
+    BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_COUNT] =
+    boundary_oracle_chainlink_refprice_candle_oi_feature_names();
+
 pub const BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SUFFIX_NAMES: [&str;
     BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_COUNT - BTC_DIRECTIONAL_FEATURE_COUNT] = [
     "prewindow_return_5m_bps",
@@ -238,6 +383,15 @@ pub fn directional_feature_names(schema_version: &str) -> Option<&'static [&'sta
         BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION => {
             Some(&BTC_DIRECTIONAL_BOUNDARY_FEATURE_NAMES)
         }
+        BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_SCHEMA_VERSION => {
+            Some(&BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_NAMES)
+        }
+        BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_SCHEMA_VERSION => {
+            Some(&BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_NAMES)
+        }
+        BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_SCHEMA_VERSION => {
+            Some(&BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_NAMES)
+        }
         BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SCHEMA_VERSION => {
             Some(&BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_NAMES)
         }
@@ -269,6 +423,108 @@ impl DirectionalFeatureVector {
             .position(|candidate| *candidate == name)
             .map(|index| self.values[index])
     }
+}
+
+/// One causally available Polygon Chainlink round. `available_at` is the local receipt clock;
+/// callers must never substitute archive insertion time for live availability.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DirectionalOracleRound {
+    pub phase_id: i32,
+    pub aggregator_round_id: i64,
+    pub source_timestamp: DateTime<Utc>,
+    pub block_timestamp: DateTime<Utc>,
+    /// Archive-only provenance. Runtime `latestRoundData` observations retain neither field.
+    /// The pair must be either fully present or fully absent and is never a learned feature.
+    pub block_number: Option<i64>,
+    pub log_index: Option<i32>,
+    pub price: Decimal,
+    pub available_at: DateTime<Utc>,
+}
+
+/// One signed Chainlink RefPrice report decoded by the runtime source adapter.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DirectionalChainlinkRefPrice {
+    pub source_timestamp: DateTime<Utc>,
+    pub valid_from_timestamp: DateTime<Utc>,
+    pub price: Decimal,
+    pub bid: Decimal,
+    pub ask: Decimal,
+    pub available_at: DateTime<Utc>,
+}
+
+/// One closed Chainlink one-minute candle. Its timestamp contract matches the training table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DirectionalChainlinkCandle {
+    pub open_timestamp: DateTime<Utc>,
+    pub close_timestamp: DateTime<Utc>,
+    pub open_price: Decimal,
+    pub high_price: Decimal,
+    pub low_price: Decimal,
+    pub close_price: Decimal,
+    pub available_at: DateTime<Utc>,
+}
+
+/// One completed Binance Futures five-minute open-interest observation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DirectionalBinanceOpenInterest {
+    pub source_timestamp: DateTime<Utc>,
+    pub period_seconds: i32,
+    pub sum_open_interest: Decimal,
+    pub sum_open_interest_value: Decimal,
+    pub available_at: DateTime<Utc>,
+}
+
+/// Bounded, ascending source histories captured at the same immutable decision boundary.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DirectionalExternalFeatureInputs<'a> {
+    pub oracle_rounds: &'a [DirectionalOracleRound],
+    pub refprice_reports: &'a [DirectionalChainlinkRefPrice],
+    pub chainlink_candles: &'a [DirectionalChainlinkCandle],
+    pub open_interest: &'a [DirectionalBinanceOpenInterest],
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DirectionalExternalFeatureRequirements {
+    pub oracle: bool,
+    pub refprice: bool,
+    pub chainlink_candles: bool,
+    pub open_interest: bool,
+}
+
+pub fn directional_external_feature_requirements(
+    schema_version: &str,
+) -> DirectionalExternalFeatureRequirements {
+    match schema_version {
+        BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_SCHEMA_VERSION => {
+            DirectionalExternalFeatureRequirements {
+                oracle: true,
+                chainlink_candles: true,
+                ..DirectionalExternalFeatureRequirements::default()
+            }
+        }
+        BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_SCHEMA_VERSION => {
+            DirectionalExternalFeatureRequirements {
+                oracle: true,
+                refprice: true,
+                chainlink_candles: true,
+                open_interest: false,
+            }
+        }
+        BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_SCHEMA_VERSION => {
+            DirectionalExternalFeatureRequirements {
+                oracle: true,
+                refprice: true,
+                chainlink_candles: true,
+                open_interest: true,
+            }
+        }
+        _ => DirectionalExternalFeatureRequirements::default(),
+    }
+}
+
+pub fn directional_schema_requires_opening_boundary(schema_version: &str) -> bool {
+    schema_version == BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION
+        || directional_external_feature_requirements(schema_version).oracle
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -330,6 +586,10 @@ pub enum DirectionalFeatureError {
     },
     MissingOpeningBoundary,
     InvalidOpeningBoundary,
+    ExternalFeatureUnavailable {
+        source: &'static str,
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for DirectionalFeatureError {
@@ -422,6 +682,10 @@ impl fmt::Display for DirectionalFeatureError {
             Self::InvalidOpeningBoundary => {
                 write!(formatter, "directional feature opening boundary must be positive")
             }
+            Self::ExternalFeatureUnavailable { source, reason } => write!(
+                formatter,
+                "directional external feature source {source} is unavailable: {reason}"
+            ),
         }
     }
 }
@@ -442,6 +706,7 @@ impl DirectionalFeatureError {
             Self::IncompletePrewindowHistory { .. } => "incomplete_prewindow_history",
             Self::MissingOpeningBoundary => "missing_opening_boundary",
             Self::InvalidOpeningBoundary => "invalid_opening_boundary",
+            Self::ExternalFeatureUnavailable { .. } => "external_feature_unavailable",
         }
     }
 }
@@ -490,12 +755,30 @@ pub fn build_directional_features_for_schema_with_boundary(
     schema_version: &str,
     opening_boundary: Option<Decimal>,
 ) -> Result<DirectionalFeatureVector, DirectionalFeatureError> {
+    build_directional_features_for_schema_with_external(
+        window,
+        window_start,
+        feature_as_of,
+        schema_version,
+        opening_boundary,
+        None,
+    )
+}
+
+pub fn build_directional_features_for_schema_with_external(
+    window: &BinanceOneSecondWindow,
+    window_start: DateTime<Utc>,
+    feature_as_of: DateTime<Utc>,
+    schema_version: &str,
+    opening_boundary: Option<Decimal>,
+    external: Option<&DirectionalExternalFeatureInputs<'_>>,
+) -> Result<DirectionalFeatureVector, DirectionalFeatureError> {
     let schema_version = canonical_feature_schema_version(schema_version).ok_or_else(|| {
         DirectionalFeatureError::UnsupportedFeatureSchema {
             schema_version: schema_version.to_string(),
         }
     })?;
-    let opening_boundary = if schema_version == BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION {
+    let opening_boundary = if directional_schema_requires_opening_boundary(schema_version) {
         let boundary = opening_boundary.ok_or(DirectionalFeatureError::MissingOpeningBoundary)?;
         Some(
             boundary
@@ -520,14 +803,59 @@ pub fn build_directional_features_for_schema_with_boundary(
         .into_iter()
         .map(NumericCandle::try_from)
         .collect::<Result<Vec<_>, _>>()?;
-    derive_directional_features(
+    let base_schema = if directional_external_feature_requirements(schema_version)
+        != DirectionalExternalFeatureRequirements::default()
+    {
+        BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION
+    } else {
+        schema_version
+    };
+    let mut features = derive_directional_features(
         &numeric,
         feature_as_of,
         seconds_elapsed,
-        schema_version,
+        base_schema,
         opening_boundary,
         prewindow_summaries.as_ref(),
-    )
+    )?;
+    let requirements = directional_external_feature_requirements(schema_version);
+    if requirements != DirectionalExternalFeatureRequirements::default() {
+        let external = external.ok_or(DirectionalFeatureError::ExternalFeatureUnavailable {
+            source: "external",
+            reason: "required source histories were not supplied",
+        })?;
+        append_external_features(
+            &mut features.values,
+            requirements,
+            external,
+            &numeric,
+            window_start,
+            feature_as_of,
+            seconds_elapsed,
+            opening_boundary.expect("external schemas require an opening boundary"),
+        )?;
+        features.schema_version = schema_version;
+    }
+    let names = directional_feature_names(schema_version)
+        .expect("feature schema was canonicalized before derivation");
+    if features.values.len() != names.len() {
+        return Err(DirectionalFeatureError::ExternalFeatureUnavailable {
+            source: "external",
+            reason: "derived feature width does not match its frozen schema",
+        });
+    }
+    if let Some((index, _)) = features
+        .values
+        .iter()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+    {
+        return Err(DirectionalFeatureError::NonFiniteFeature {
+            index,
+            name: names[index],
+        });
+    }
+    Ok(features)
 }
 
 fn canonical_feature_schema_version(schema_version: &str) -> Option<&'static str> {
@@ -538,6 +866,17 @@ fn canonical_feature_schema_version(schema_version: &str) -> Option<&'static str
         }
         BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION => {
             Some(BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION)
+        }
+        BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_SCHEMA_VERSION => {
+            Some(BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_SCHEMA_VERSION)
+        }
+        BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_SCHEMA_VERSION => {
+            Some(BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_SCHEMA_VERSION)
+        }
+        BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_SCHEMA_VERSION => {
+            Some(
+                BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_SCHEMA_VERSION,
+            )
         }
         BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SCHEMA_VERSION => {
             Some(BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SCHEMA_VERSION)
@@ -813,6 +1152,623 @@ fn invalid_candle(candle: &BinanceOneSecondKline, field: &'static str) -> Direct
         open_timestamp: candle.open_timestamp,
         field,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_external_features(
+    values: &mut Vec<f64>,
+    requirements: DirectionalExternalFeatureRequirements,
+    external: &DirectionalExternalFeatureInputs<'_>,
+    binance: &[NumericCandle],
+    window_start: DateTime<Utc>,
+    feature_as_of: DateTime<Utc>,
+    seconds_elapsed: i64,
+    opening_boundary: f64,
+) -> Result<(), DirectionalFeatureError> {
+    let btc_close = binance
+        .last()
+        .expect("validated directional history is non-empty")
+        .close;
+    let btc_close_30s = binance
+        .get(binance.len().saturating_sub(31))
+        .expect("directional candidates always contain 30 seconds of history")
+        .close;
+    let btc_return_30s_bps = (btc_close / btc_close_30s).ln() * BPS;
+    let btc_path_from_window_open_bps = values[2];
+    let btc_realized_volatility_60s_bps = values[11];
+
+    values.extend_from_slice(&derive_oracle_features(
+        external.oracle_rounds,
+        window_start,
+        feature_as_of,
+        seconds_elapsed,
+        opening_boundary,
+        btc_close,
+        btc_close_30s,
+        btc_return_30s_bps,
+        btc_path_from_window_open_bps,
+        btc_realized_volatility_60s_bps,
+    )?);
+    if requirements.refprice {
+        values.extend_from_slice(&derive_refprice_features(
+            external.refprice_reports,
+            feature_as_of,
+            opening_boundary,
+            btc_close,
+            btc_return_30s_bps,
+        )?);
+    }
+    values.extend_from_slice(&derive_chainlink_candle_features(
+        external.chainlink_candles,
+        feature_as_of,
+    )?);
+    if requirements.open_interest {
+        values.extend_from_slice(&derive_open_interest_features(
+            external.open_interest,
+            feature_as_of,
+            btc_path_from_window_open_bps,
+        )?);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OracleIdentity {
+    phase_id: i32,
+    aggregator_round_id: i64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derive_oracle_features(
+    rounds: &[DirectionalOracleRound],
+    window_start: DateTime<Utc>,
+    feature_as_of: DateTime<Utc>,
+    seconds_elapsed: i64,
+    opening_boundary: f64,
+    btc_close: f64,
+    btc_close_30s: f64,
+    btc_return_30s_bps: f64,
+    btc_path_from_window_open_bps: f64,
+    btc_realized_volatility_60s_bps: f64,
+) -> Result<[f64; 11], DirectionalFeatureError> {
+    validate_oracle_rounds(rounds)?;
+    let current = oracle_at(rounds, feature_as_of, feature_as_of).ok_or_else(|| {
+        unavailable(
+            "polygon_oracle",
+            "no causal round exists at the decision time",
+        )
+    })?;
+    let age_seconds = duration_seconds(current.block_timestamp, feature_as_of)?;
+    if !(0.0..=BTC_DIRECTIONAL_ORACLE_MAX_AGE_SECONDS as f64).contains(&age_seconds) {
+        return Err(unavailable(
+            "polygon_oracle",
+            "latest causal round exceeds the freshness bound",
+        ));
+    }
+    let opening = oracle_at(rounds, window_start, feature_as_of).ok_or_else(|| {
+        unavailable(
+            "polygon_oracle",
+            "no causal round exists at the market open",
+        )
+    })?;
+    let anchor_30 = oracle_at(
+        rounds,
+        feature_as_of - chrono::Duration::seconds(30),
+        feature_as_of,
+    )
+    .ok_or_else(|| unavailable("polygon_oracle", "the 30-second anchor is unavailable"))?;
+    let anchor_60 = oracle_at(
+        rounds,
+        feature_as_of - chrono::Duration::seconds(60),
+        feature_as_of,
+    )
+    .ok_or_else(|| unavailable("polygon_oracle", "the 60-second anchor is unavailable"))?;
+
+    let current_price = positive_external_decimal(current.price, "polygon_oracle", "price")?;
+    let opening_price = positive_external_decimal(opening.price, "polygon_oracle", "price")?;
+    let price_30 = positive_external_decimal(anchor_30.price, "polygon_oracle", "price")?;
+    let price_60 = positive_external_decimal(anchor_60.price, "polygon_oracle", "price")?;
+    let oracle_return_30s_bps = (current_price / price_30).ln() * BPS;
+    let oracle_return_60s_bps = (current_price / price_60).ln() * BPS;
+    let binance_oracle_basis_bps = (btc_close / current_price).ln() * BPS;
+    let prior_binance_oracle_basis_bps = (btc_close_30s / price_30).ln() * BPS;
+
+    let mut update_count = 0_u32;
+    let mut previous = oracle_identity(opening);
+    for second in 1..=seconds_elapsed {
+        let at = window_start + chrono::Duration::seconds(second);
+        let selected = oracle_at(rounds, at, feature_as_of).ok_or_else(|| {
+            unavailable(
+                "polygon_oracle",
+                "the market-window causal round path is incomplete",
+            )
+        })?;
+        let identity = oracle_identity(selected);
+        if identity != previous {
+            update_count += 1;
+            previous = identity;
+        }
+    }
+
+    let oracle_gap_to_opening_boundary_bps = (current_price / opening_boundary).ln() * BPS;
+    Ok([
+        oracle_gap_to_opening_boundary_bps,
+        (current_price / opening_price).ln() * BPS,
+        oracle_return_30s_bps,
+        oracle_return_60s_bps,
+        age_seconds / MARKET_WINDOW_SECONDS as f64,
+        update_count as f64 / (seconds_elapsed + 1) as f64,
+        binance_oracle_basis_bps,
+        binance_oracle_basis_bps - prior_binance_oracle_basis_bps,
+        sign(oracle_return_30s_bps) * sign(btc_return_30s_bps),
+        sign(oracle_gap_to_opening_boundary_bps) * sign(btc_path_from_window_open_bps),
+        oracle_return_60s_bps / (btc_realized_volatility_60s_bps + EPSILON),
+    ])
+}
+
+fn validate_oracle_rounds(
+    rounds: &[DirectionalOracleRound],
+) -> Result<(), DirectionalFeatureError> {
+    if rounds.is_empty() {
+        return Err(unavailable("polygon_oracle", "round history is empty"));
+    }
+    let mut previous = None;
+    for round in rounds {
+        let valid_provenance = match (round.block_number, round.log_index) {
+            (Some(block_number), Some(log_index)) => block_number > 0 && log_index >= 0,
+            (None, None) => true,
+            _ => false,
+        };
+        if round.phase_id <= 0
+            || round.aggregator_round_id <= 0
+            || !valid_provenance
+            || round.source_timestamp > round.block_timestamp
+        {
+            return Err(unavailable(
+                "polygon_oracle",
+                "round history contains an invalid or non-causal row",
+            ));
+        }
+        positive_external_decimal(round.price, "polygon_oracle", "price")?;
+        let order = (
+            round.block_timestamp,
+            round.source_timestamp,
+            round.block_number,
+            round.log_index,
+            round.phase_id,
+            round.aggregator_round_id,
+        );
+        if previous.is_some_and(|previous| previous >= order) {
+            return Err(unavailable(
+                "polygon_oracle",
+                "round history is duplicate or out of order",
+            ));
+        }
+        previous = Some(order);
+    }
+    Ok(())
+}
+
+fn oracle_at(
+    rounds: &[DirectionalOracleRound],
+    target: DateTime<Utc>,
+    available_at: DateTime<Utc>,
+) -> Option<&DirectionalOracleRound> {
+    rounds
+        .iter()
+        .filter(|round| round.block_timestamp <= target && round.available_at <= available_at)
+        .max_by_key(|round| {
+            (
+                round.block_timestamp,
+                round.source_timestamp,
+                round.block_number,
+                round.log_index,
+                round.phase_id,
+                round.aggregator_round_id,
+            )
+        })
+}
+
+fn oracle_identity(round: &DirectionalOracleRound) -> OracleIdentity {
+    OracleIdentity {
+        phase_id: round.phase_id,
+        aggregator_round_id: round.aggregator_round_id,
+    }
+}
+
+fn derive_refprice_features(
+    reports: &[DirectionalChainlinkRefPrice],
+    feature_as_of: DateTime<Utc>,
+    opening_boundary: f64,
+    btc_close: f64,
+    btc_return_30s_bps: f64,
+) -> Result<[f64; 10], DirectionalFeatureError> {
+    validate_refprice_reports(reports)?;
+    let current = refprice_before(reports, feature_as_of, feature_as_of).ok_or_else(|| {
+        unavailable(
+            "chainlink_refprice",
+            "no causal report exists before the decision",
+        )
+    })?;
+    let current_age = duration_seconds(current.source_timestamp, feature_as_of)?;
+    if current_age <= 0.0 || current_age > BTC_DIRECTIONAL_REFPRICE_MAX_AGE_SECONDS as f64 {
+        return Err(unavailable(
+            "chainlink_refprice",
+            "latest causal report exceeds the freshness bound",
+        ));
+    }
+    let mut anchors = [current; 5];
+    for (index, seconds) in [1_i64, 5, 15, 30, 60].into_iter().enumerate() {
+        let target = feature_as_of - chrono::Duration::seconds(seconds);
+        let anchor = refprice_at_or_before(reports, target, feature_as_of).ok_or_else(|| {
+            unavailable(
+                "chainlink_refprice",
+                "a required return anchor is unavailable",
+            )
+        })?;
+        let age = duration_seconds(anchor.source_timestamp, target)?;
+        if age < 0.0 || age > BTC_DIRECTIONAL_REFPRICE_MAX_AGE_SECONDS as f64 {
+            return Err(unavailable(
+                "chainlink_refprice",
+                "a required return anchor exceeds the freshness bound",
+            ));
+        }
+        anchors[index] = anchor;
+    }
+    let current_price = refprice_values(current)?.0;
+    let mut returns = [0.0; 5];
+    for (index, anchor) in anchors.into_iter().enumerate() {
+        returns[index] = (current_price / refprice_values(anchor)?.0).ln() * BPS;
+    }
+    let current_spread = refprice_values(current)?.1;
+    let spread_30s = refprice_values(anchors[3])?.1;
+    Ok([
+        returns[0],
+        returns[1],
+        returns[2],
+        returns[3],
+        returns[4],
+        (current_price / btc_close).ln() * BPS,
+        (current_price / opening_boundary).ln() * BPS,
+        current_spread,
+        current_spread - spread_30s,
+        sign(btc_return_30s_bps) * sign(returns[3]),
+    ])
+}
+
+fn validate_refprice_reports(
+    reports: &[DirectionalChainlinkRefPrice],
+) -> Result<(), DirectionalFeatureError> {
+    if reports.is_empty() {
+        return Err(unavailable("chainlink_refprice", "report history is empty"));
+    }
+    let mut previous = None;
+    for report in reports {
+        let (price, _) = refprice_values(report)?;
+        let bid = positive_external_decimal(report.bid, "chainlink_refprice", "bid")?;
+        let ask = positive_external_decimal(report.ask, "chainlink_refprice", "ask")?;
+        if report.valid_from_timestamp > report.source_timestamp || bid > price || price > ask {
+            return Err(unavailable(
+                "chainlink_refprice",
+                "report history contains an invalid signed price row",
+            ));
+        }
+        if previous.is_some_and(|previous| previous >= report.source_timestamp) {
+            return Err(unavailable(
+                "chainlink_refprice",
+                "report history is duplicate or out of order",
+            ));
+        }
+        previous = Some(report.source_timestamp);
+    }
+    Ok(())
+}
+
+fn refprice_before(
+    reports: &[DirectionalChainlinkRefPrice],
+    target: DateTime<Utc>,
+    available_at: DateTime<Utc>,
+) -> Option<&DirectionalChainlinkRefPrice> {
+    reports
+        .iter()
+        .rev()
+        .find(|report| report.source_timestamp < target && report.available_at <= available_at)
+}
+
+fn refprice_at_or_before(
+    reports: &[DirectionalChainlinkRefPrice],
+    target: DateTime<Utc>,
+    available_at: DateTime<Utc>,
+) -> Option<&DirectionalChainlinkRefPrice> {
+    reports
+        .iter()
+        .rev()
+        .find(|report| report.source_timestamp <= target && report.available_at <= available_at)
+}
+
+fn refprice_values(
+    report: &DirectionalChainlinkRefPrice,
+) -> Result<(f64, f64), DirectionalFeatureError> {
+    let price = positive_external_decimal(report.price, "chainlink_refprice", "price")?;
+    let bid = positive_external_decimal(report.bid, "chainlink_refprice", "bid")?;
+    let ask = positive_external_decimal(report.ask, "chainlink_refprice", "ask")?;
+    Ok((price, (ask - bid) / price * BPS))
+}
+
+fn derive_chainlink_candle_features(
+    candles: &[DirectionalChainlinkCandle],
+    feature_as_of: DateTime<Utc>,
+) -> Result<[f64; 8], DirectionalFeatureError> {
+    validate_chainlink_candles(candles)?;
+    let eligible = candles
+        .iter()
+        .filter(|candle| {
+            candle.close_timestamp <= feature_as_of && candle.available_at <= feature_as_of
+        })
+        .collect::<Vec<_>>();
+    let current = eligible
+        .last()
+        .copied()
+        .ok_or_else(|| unavailable("chainlink_candles", "closed candle history is empty"))?;
+    let age = duration_seconds(current.close_timestamp, feature_as_of)?;
+    if !(0.0..BTC_DIRECTIONAL_CHAINLINK_CANDLE_MAX_AGE_SECONDS as f64).contains(&age) {
+        return Err(unavailable(
+            "chainlink_candles",
+            "latest closed candle exceeds the freshness bound",
+        ));
+    }
+    if eligible.len() < 61 {
+        return Err(unavailable(
+            "chainlink_candles",
+            "61 contiguous closed candles are required",
+        ));
+    }
+    let selected = &eligible[eligible.len() - 61..];
+    if selected.windows(2).any(|pair| {
+        pair[1].close_timestamp - pair[0].close_timestamp != chrono::Duration::minutes(1)
+    }) {
+        return Err(unavailable(
+            "chainlink_candles",
+            "required closed candle history is gapped",
+        ));
+    }
+    let close = candle_price(current, "close_price", current.close_price)?;
+    let mut returns = [0.0; 4];
+    for (index, minutes) in [5_usize, 15, 30, 60].into_iter().enumerate() {
+        let anchor = selected[selected.len() - 1 - minutes];
+        returns[index] =
+            (close / candle_price(anchor, "close_price", anchor.close_price)?).ln() * BPS;
+    }
+    let volatility_15 = candle_realized_volatility_bps(selected, 15)?;
+    let volatility_60 = candle_realized_volatility_bps(selected, 60)?;
+    let range_15 = candle_range_bps(selected, 15)?;
+    let range_60 = candle_range_bps(selected, 60)?;
+    Ok([
+        returns[0],
+        returns[1],
+        returns[2],
+        returns[3],
+        volatility_15,
+        volatility_60,
+        range_15,
+        range_60,
+    ])
+}
+
+fn validate_chainlink_candles(
+    candles: &[DirectionalChainlinkCandle],
+) -> Result<(), DirectionalFeatureError> {
+    let mut previous = None;
+    for candle in candles {
+        let open = candle_price(candle, "open_price", candle.open_price)?;
+        let high = candle_price(candle, "high_price", candle.high_price)?;
+        let low = candle_price(candle, "low_price", candle.low_price)?;
+        let close = candle_price(candle, "close_price", candle.close_price)?;
+        if candle.close_timestamp - candle.open_timestamp != chrono::Duration::minutes(1)
+            || high < open.max(close)
+            || high < low
+            || low > open.min(close)
+        {
+            return Err(unavailable(
+                "chainlink_candles",
+                "candle history contains an invalid row",
+            ));
+        }
+        if previous.is_some_and(|previous| previous >= candle.close_timestamp) {
+            return Err(unavailable(
+                "chainlink_candles",
+                "candle history is duplicate or out of order",
+            ));
+        }
+        previous = Some(candle.close_timestamp);
+    }
+    Ok(())
+}
+
+fn candle_price(
+    _candle: &DirectionalChainlinkCandle,
+    field: &'static str,
+    value: Decimal,
+) -> Result<f64, DirectionalFeatureError> {
+    positive_external_decimal(value, "chainlink_candles", field)
+}
+
+fn candle_realized_volatility_bps(
+    selected: &[&DirectionalChainlinkCandle],
+    minutes: usize,
+) -> Result<f64, DirectionalFeatureError> {
+    let start = selected.len() - 1 - minutes;
+    let mut returns = Vec::with_capacity(minutes);
+    for pair in selected[start..].windows(2) {
+        let prior = candle_price(pair[0], "close_price", pair[0].close_price)?;
+        let current = candle_price(pair[1], "close_price", pair[1].close_price)?;
+        returns.push((current / prior).ln());
+    }
+    let mean = returns.iter().sum::<f64>() / returns.len() as f64;
+    let variance = returns
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
+        / (returns.len() - 1) as f64;
+    Ok(variance.sqrt() * BPS)
+}
+
+fn candle_range_bps(
+    selected: &[&DirectionalChainlinkCandle],
+    minutes: usize,
+) -> Result<f64, DirectionalFeatureError> {
+    let start = selected.len() - minutes;
+    let mut high = f64::NEG_INFINITY;
+    let mut low = f64::INFINITY;
+    for candle in &selected[start..] {
+        high = high.max(candle_price(candle, "high_price", candle.high_price)?);
+        low = low.min(candle_price(candle, "low_price", candle.low_price)?);
+    }
+    Ok((high / low).ln() * BPS)
+}
+
+fn derive_open_interest_features(
+    rows: &[DirectionalBinanceOpenInterest],
+    feature_as_of: DateTime<Utc>,
+    btc_path_from_window_open_bps: f64,
+) -> Result<[f64; 9], DirectionalFeatureError> {
+    validate_open_interest(rows)?;
+    let eligible = rows
+        .iter()
+        .filter(|row| row.source_timestamp < feature_as_of && row.available_at <= feature_as_of)
+        .collect::<Vec<_>>();
+    let current = eligible
+        .last()
+        .copied()
+        .ok_or_else(|| unavailable("binance_open_interest", "observation history is empty"))?;
+    let age = duration_seconds(current.source_timestamp, feature_as_of)?;
+    if age <= 0.0 || age > BTC_DIRECTIONAL_OPEN_INTEREST_MAX_AGE_SECONDS as f64 {
+        return Err(unavailable(
+            "binance_open_interest",
+            "latest observation exceeds the freshness bound",
+        ));
+    }
+    if eligible.len() < 13 {
+        return Err(unavailable(
+            "binance_open_interest",
+            "13 contiguous observations are required",
+        ));
+    }
+    let selected = &eligible[eligible.len() - 13..];
+    if selected.windows(2).any(|pair| {
+        pair[1].source_timestamp - pair[0].source_timestamp != chrono::Duration::minutes(5)
+    }) {
+        return Err(unavailable(
+            "binance_open_interest",
+            "required observation history is gapped",
+        ));
+    }
+    let current_oi = positive_external_decimal(
+        current.sum_open_interest,
+        "binance_open_interest",
+        "sum_open_interest",
+    )?;
+    let current_value = positive_external_decimal(
+        current.sum_open_interest_value,
+        "binance_open_interest",
+        "sum_open_interest_value",
+    )?;
+    let mut changes = [0.0; 4];
+    for (index, steps) in [1_usize, 3, 6, 12].into_iter().enumerate() {
+        let anchor = selected[selected.len() - 1 - steps];
+        let anchor_oi = positive_external_decimal(
+            anchor.sum_open_interest,
+            "binance_open_interest",
+            "sum_open_interest",
+        )?;
+        changes[index] = (current_oi / anchor_oi).ln() * BPS;
+    }
+    let value_15 = positive_external_decimal(
+        selected[selected.len() - 4].sum_open_interest_value,
+        "binance_open_interest",
+        "sum_open_interest_value",
+    )?;
+    let value_60 = positive_external_decimal(
+        selected[0].sum_open_interest_value,
+        "binance_open_interest",
+        "sum_open_interest_value",
+    )?;
+    let value_change_15 = (current_value / value_15).ln() * BPS;
+    let value_change_60 = (current_value / value_60).ln() * BPS;
+    Ok([
+        changes[0],
+        changes[1],
+        changes[2],
+        changes[3],
+        value_change_15,
+        value_change_60,
+        changes[0] - changes[2] / 6.0,
+        sign(changes[1]) * sign(btc_path_from_window_open_bps),
+        sign(changes[3]) * sign(btc_path_from_window_open_bps),
+    ])
+}
+
+fn validate_open_interest(
+    rows: &[DirectionalBinanceOpenInterest],
+) -> Result<(), DirectionalFeatureError> {
+    let mut previous = None;
+    for row in rows {
+        if row.period_seconds != 300 {
+            return Err(unavailable(
+                "binance_open_interest",
+                "observation period is not five minutes",
+            ));
+        }
+        positive_external_decimal(
+            row.sum_open_interest,
+            "binance_open_interest",
+            "sum_open_interest",
+        )?;
+        positive_external_decimal(
+            row.sum_open_interest_value,
+            "binance_open_interest",
+            "sum_open_interest_value",
+        )?;
+        if previous.is_some_and(|previous| previous >= row.source_timestamp) {
+            return Err(unavailable(
+                "binance_open_interest",
+                "observation history is duplicate or out of order",
+            ));
+        }
+        previous = Some(row.source_timestamp);
+    }
+    Ok(())
+}
+
+fn positive_external_decimal(
+    value: Decimal,
+    source: &'static str,
+    _field: &'static str,
+) -> Result<f64, DirectionalFeatureError> {
+    value
+        .to_f64()
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .ok_or_else(|| {
+            unavailable(
+                source,
+                "source history contains a non-positive numeric value",
+            )
+        })
+}
+
+fn duration_seconds(
+    earlier: DateTime<Utc>,
+    later: DateTime<Utc>,
+) -> Result<f64, DirectionalFeatureError> {
+    later
+        .signed_duration_since(earlier)
+        .num_microseconds()
+        .map(|microseconds| microseconds as f64 / 1_000_000.0)
+        .ok_or_else(|| unavailable("external", "source timestamp distance overflowed"))
+}
+
+fn unavailable(source: &'static str, reason: &'static str) -> DirectionalFeatureError {
+    DirectionalFeatureError::ExternalFeatureUnavailable { source, reason }
 }
 
 fn derive_directional_features(
@@ -1653,6 +2609,379 @@ mod tests {
     }
 
     #[test]
+    fn external_schemas_have_exact_frozen_orders_and_requirements() {
+        assert_eq!(
+            &BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_NAMES
+                [..BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT],
+            &BTC_DIRECTIONAL_BOUNDARY_FEATURE_NAMES
+        );
+        assert_eq!(
+            &BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_NAMES
+                [BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT
+                    ..BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT
+                        + BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES.len()],
+            &BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES
+        );
+        assert_eq!(
+            &BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_NAMES
+                [BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT
+                    + BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES.len()..],
+            &BTC_DIRECTIONAL_CHAINLINK_CANDLE_FEATURE_NAMES
+        );
+
+        assert_eq!(
+            &BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_NAMES
+                [..BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT],
+            &BTC_DIRECTIONAL_BOUNDARY_FEATURE_NAMES
+        );
+        assert_eq!(
+            &BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_NAMES
+                [BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT
+                    ..BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT
+                        + BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES.len()],
+            &BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES
+        );
+        assert_eq!(
+            &BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_NAMES
+                [BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT + BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES.len()
+                    ..BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT
+                        + BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES.len()
+                        + BTC_DIRECTIONAL_CHAINLINK_REFPRICE_FEATURE_NAMES.len()],
+            &BTC_DIRECTIONAL_CHAINLINK_REFPRICE_FEATURE_NAMES
+        );
+        assert_eq!(
+            &BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_NAMES
+                [BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT
+                    + BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES.len()
+                    + BTC_DIRECTIONAL_CHAINLINK_REFPRICE_FEATURE_NAMES.len()..],
+            &BTC_DIRECTIONAL_CHAINLINK_CANDLE_FEATURE_NAMES
+        );
+
+        assert_eq!(
+            &BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_NAMES
+                [..BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_COUNT],
+            &BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_NAMES
+        );
+        assert_eq!(
+            &BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_NAMES
+                [BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_COUNT..],
+            &BTC_DIRECTIONAL_BINANCE_OPEN_INTEREST_FEATURE_NAMES
+        );
+
+        assert_eq!(
+            directional_external_feature_requirements(
+                BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_SCHEMA_VERSION
+            ),
+            DirectionalExternalFeatureRequirements {
+                oracle: true,
+                refprice: false,
+                chainlink_candles: true,
+                open_interest: false,
+            }
+        );
+        assert_eq!(
+            directional_external_feature_requirements(
+                BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_SCHEMA_VERSION
+            ),
+            DirectionalExternalFeatureRequirements {
+                oracle: true,
+                refprice: true,
+                chainlink_candles: true,
+                open_interest: false,
+            }
+        );
+        assert_eq!(
+            directional_external_feature_requirements(
+                BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_SCHEMA_VERSION
+            ),
+            DirectionalExternalFeatureRequirements {
+                oracle: true,
+                refprice: true,
+                chainlink_candles: true,
+                open_interest: true,
+            }
+        );
+    }
+
+    #[test]
+    fn external_schemas_derive_causal_exact_width_feature_vectors() {
+        let window_start = Utc.with_ymd_and_hms(2026, 7, 10, 12, 35, 0).unwrap();
+        let as_of = window_start + Duration::seconds(240);
+        let opening_boundary = Decimal::new(100_010, 0);
+        let window = BinanceOneSecondWindow::from_completed(
+            (0..=240)
+                .map(|second| fixture_candle(window_start, second))
+                .collect(),
+        )
+        .unwrap();
+        let (oracle, refprice, candles, open_interest) = external_fixture(window_start, as_of);
+        let external = DirectionalExternalFeatureInputs {
+            oracle_rounds: &oracle,
+            refprice_reports: &refprice,
+            chainlink_candles: &candles,
+            open_interest: &open_interest,
+        };
+        let boundary = build_directional_features_for_schema_with_boundary(
+            &window,
+            window_start,
+            as_of,
+            BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION,
+            Some(opening_boundary),
+        )
+        .unwrap();
+        let long = build_directional_features_for_schema_with_external(
+            &window,
+            window_start,
+            as_of,
+            BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_SCHEMA_VERSION,
+            Some(opening_boundary),
+            Some(&external),
+        )
+        .unwrap();
+        let full = build_directional_features_for_schema_with_external(
+            &window,
+            window_start,
+            as_of,
+            BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_SCHEMA_VERSION,
+            Some(opening_boundary),
+            Some(&external),
+        )
+        .unwrap();
+        let full_oi = build_directional_features_for_schema_with_external(
+            &window,
+            window_start,
+            as_of,
+            BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_SCHEMA_VERSION,
+            Some(opening_boundary),
+            Some(&external),
+        )
+        .unwrap();
+
+        assert_eq!(
+            long.values.len(),
+            BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_COUNT
+        );
+        assert_eq!(
+            full.values.len(),
+            BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_COUNT
+        );
+        assert_eq!(
+            full_oi.values.len(),
+            BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_COUNT
+        );
+        assert_eq!(
+            &long.values[..BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT],
+            boundary.values.as_slice()
+        );
+        assert_eq!(
+            &full.values[..BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT],
+            boundary.values.as_slice()
+        );
+        assert_eq!(
+            &full_oi.values
+                [..BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_COUNT],
+            full.values.as_slice()
+        );
+        assert_eq!(
+            &long.values[BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT
+                ..BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT
+                    + BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES.len()],
+            &full.values[BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT
+                ..BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT
+                    + BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES.len()]
+        );
+        assert_eq!(
+            &long.values[BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT
+                + BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES.len()..],
+            &full.values[BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT
+                + BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES.len()
+                + BTC_DIRECTIONAL_CHAINLINK_REFPRICE_FEATURE_NAMES.len()..]
+        );
+        assert!(full_oi.values.iter().all(|value| value.is_finite()));
+
+        let oracle_offset = BTC_DIRECTIONAL_BOUNDARY_FEATURE_COUNT;
+        assert_close(
+            long.values[oracle_offset],
+            (99_836.0_f64 / 100_010.0).ln() * BPS,
+        );
+        assert_close(long.values[oracle_offset + 4], 0.0);
+        assert_close(long.values[oracle_offset + 5], 24.0 / 241.0);
+
+        let refprice_offset = oracle_offset + BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES.len();
+        assert_close(full.values[refprice_offset], 0.0);
+        assert_close(
+            full.values[refprice_offset + 1],
+            (100_069.0_f64 / 100_065.0).ln() * BPS,
+        );
+        assert_close(full.values[refprice_offset + 7], 1.0 / 100_069.0 * BPS);
+
+        let oi_offset = BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_FEATURE_COUNT;
+        assert_close(
+            full_oi.values[oi_offset],
+            (1_013_000.0_f64 / 1_012_000.0).ln() * BPS,
+        );
+        assert_close(
+            full_oi.values[oi_offset + 3],
+            (1_013_000.0_f64 / 1_001_000.0).ln() * BPS,
+        );
+    }
+
+    #[test]
+    fn external_feature_builder_ignores_future_source_rows() {
+        let window_start = Utc.with_ymd_and_hms(2026, 7, 10, 12, 35, 0).unwrap();
+        let as_of = window_start + Duration::seconds(240);
+        let window = BinanceOneSecondWindow::from_completed(
+            (0..=240)
+                .map(|second| fixture_candle(window_start, second))
+                .collect(),
+        )
+        .unwrap();
+        let (mut oracle, mut refprice, mut candles, mut open_interest) =
+            external_fixture(window_start, as_of);
+        let baseline_external = DirectionalExternalFeatureInputs {
+            oracle_rounds: &oracle,
+            refprice_reports: &refprice,
+            chainlink_candles: &candles,
+            open_interest: &open_interest,
+        };
+        let baseline = build_directional_features_for_schema_with_external(
+            &window,
+            window_start,
+            as_of,
+            BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_SCHEMA_VERSION,
+            Some(Decimal::new(100_010, 0)),
+            Some(&baseline_external),
+        )
+        .unwrap();
+
+        oracle.last_mut().unwrap().price = Decimal::new(200_000, 0);
+        for report in refprice.iter_mut().rev().take(2) {
+            report.price = Decimal::new(200_000, 0);
+            report.bid = Decimal::new(199_999, 0);
+            report.ask = Decimal::new(200_001, 0);
+        }
+        let future_candle = candles.last_mut().unwrap();
+        future_candle.open_price = Decimal::new(200_000, 0);
+        future_candle.high_price = Decimal::new(200_001, 0);
+        future_candle.low_price = Decimal::new(199_999, 0);
+        future_candle.close_price = Decimal::new(200_000, 0);
+        let future_oi = open_interest.last_mut().unwrap();
+        future_oi.sum_open_interest = Decimal::new(2_000_000, 0);
+        future_oi.sum_open_interest_value = Decimal::new(20_000_000, 0);
+        let with_future_external = DirectionalExternalFeatureInputs {
+            oracle_rounds: &oracle,
+            refprice_reports: &refprice,
+            chainlink_candles: &candles,
+            open_interest: &open_interest,
+        };
+        let with_future = build_directional_features_for_schema_with_external(
+            &window,
+            window_start,
+            as_of,
+            BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_SCHEMA_VERSION,
+            Some(Decimal::new(100_010, 0)),
+            Some(&with_future_external),
+        )
+        .unwrap();
+
+        assert_eq!(baseline, with_future);
+    }
+
+    #[test]
+    fn required_external_sources_fail_closed_when_missing_stale_or_gapped() {
+        let window_start = Utc.with_ymd_and_hms(2026, 7, 10, 12, 35, 0).unwrap();
+        let as_of = window_start + Duration::seconds(240);
+        let window = BinanceOneSecondWindow::from_completed(
+            (0..=240)
+                .map(|second| fixture_candle(window_start, second))
+                .collect(),
+        )
+        .unwrap();
+        assert!(matches!(
+            build_directional_features_for_schema_with_external(
+                &window,
+                window_start,
+                as_of,
+                BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_SCHEMA_VERSION,
+                Some(Decimal::new(100_010, 0)),
+                None,
+            ),
+            Err(DirectionalFeatureError::ExternalFeatureUnavailable {
+                source: "external",
+                ..
+            })
+        ));
+
+        let (oracle, refprice, mut candles, mut open_interest) =
+            external_fixture(window_start, as_of);
+        candles.remove(candles.len() - 20);
+        let gapped = DirectionalExternalFeatureInputs {
+            oracle_rounds: &oracle,
+            refprice_reports: &refprice,
+            chainlink_candles: &candles,
+            open_interest: &open_interest,
+        };
+        assert!(matches!(
+            build_directional_features_for_schema_with_external(
+                &window,
+                window_start,
+                as_of,
+                BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_CANDLE_FEATURE_SCHEMA_VERSION,
+                Some(Decimal::new(100_010, 0)),
+                Some(&gapped),
+            ),
+            Err(DirectionalFeatureError::ExternalFeatureUnavailable {
+                source: "chainlink_candles",
+                ..
+            })
+        ));
+
+        open_interest.truncate(open_interest.len() - 3);
+        let (_, _, complete_candles, _) = external_fixture(window_start, as_of);
+        let stale = DirectionalExternalFeatureInputs {
+            oracle_rounds: &oracle,
+            refprice_reports: &refprice,
+            chainlink_candles: &complete_candles,
+            open_interest: &open_interest,
+        };
+        assert!(matches!(
+            build_directional_features_for_schema_with_external(
+                &window,
+                window_start,
+                as_of,
+                BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_SCHEMA_VERSION,
+                Some(Decimal::new(100_010, 0)),
+                Some(&stale),
+            ),
+            Err(DirectionalFeatureError::ExternalFeatureUnavailable {
+                source: "binance_open_interest",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn oracle_archive_provenance_is_paired_and_optional_for_runtime_rounds() {
+        let window_start = Utc.with_ymd_and_hms(2026, 7, 10, 12, 35, 0).unwrap();
+        let as_of = window_start + Duration::seconds(240);
+        let (mut oracle, _, _, _) = external_fixture(window_start, as_of);
+        for round in &mut oracle {
+            round.block_number = None;
+            round.log_index = None;
+        }
+        assert!(validate_oracle_rounds(&oracle).is_ok());
+
+        oracle[0].block_number = Some(1);
+        assert!(matches!(
+            validate_oracle_rounds(&oracle),
+            Err(DirectionalFeatureError::ExternalFeatureUnavailable {
+                source: "polygon_oracle",
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn path_prewindow_schema_is_compact_and_matches_python() {
         assert_eq!(BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_NAMES.len(), 100);
         assert_eq!(
@@ -1929,6 +3258,86 @@ mod tests {
             source_complete: true,
             synthetic: false,
         }
+    }
+
+    fn external_fixture(
+        window_start: DateTime<Utc>,
+        feature_as_of: DateTime<Utc>,
+    ) -> (
+        Vec<DirectionalOracleRound>,
+        Vec<DirectionalChainlinkRefPrice>,
+        Vec<DirectionalChainlinkCandle>,
+        Vec<DirectionalBinanceOpenInterest>,
+    ) {
+        let oracle_start = window_start - Duration::seconds(120);
+        let oracle = (0..=37)
+            .map(|index| {
+                let block_timestamp = oracle_start + Duration::seconds(index * 10);
+                DirectionalOracleRound {
+                    phase_id: 1,
+                    aggregator_round_id: index + 1,
+                    source_timestamp: block_timestamp - Duration::seconds(1),
+                    block_timestamp,
+                    block_number: Some(1_000 + index),
+                    log_index: Some(0),
+                    price: Decimal::new(99_800_000 + index * 1_000, 3),
+                    available_at: block_timestamp,
+                }
+            })
+            .collect();
+        let refprice_start = feature_as_of - Duration::seconds(70);
+        let refprice = (0..=71)
+            .map(|index| {
+                let source_timestamp = refprice_start + Duration::seconds(index);
+                let price = Decimal::new(100_000_000 + index * 1_000, 3);
+                DirectionalChainlinkRefPrice {
+                    source_timestamp,
+                    valid_from_timestamp: source_timestamp - Duration::milliseconds(100),
+                    price,
+                    bid: price - Decimal::new(500, 3),
+                    ask: price + Decimal::new(500, 3),
+                    available_at: source_timestamp,
+                }
+            })
+            .collect();
+        let candle_start = feature_as_of - Duration::minutes(70);
+        let candles = (0..=71)
+            .map(|index| {
+                let close_timestamp = candle_start + Duration::minutes(index);
+                let close_price = Decimal::new(99_000_000 + index * 10_000, 3);
+                DirectionalChainlinkCandle {
+                    open_timestamp: close_timestamp - Duration::minutes(1),
+                    close_timestamp,
+                    open_price: close_price,
+                    high_price: close_price + Decimal::ONE,
+                    low_price: close_price - Decimal::ONE,
+                    close_price,
+                    available_at: close_timestamp,
+                }
+            })
+            .collect();
+        let open_interest_start = feature_as_of - Duration::minutes(70);
+        let open_interest = (0..=14)
+            .map(|index| {
+                let source_timestamp = open_interest_start + Duration::minutes(index * 5);
+                DirectionalBinanceOpenInterest {
+                    source_timestamp,
+                    period_seconds: 300,
+                    sum_open_interest: Decimal::new(1_000_000 + index * 1_000, 0),
+                    sum_open_interest_value: Decimal::new(10_000_000 + index * 10_000, 0),
+                    available_at: source_timestamp,
+                }
+            })
+            .collect();
+        (oracle, refprice, candles, open_interest)
+    }
+
+    fn assert_close(actual: f64, expected: f64) {
+        let tolerance = 2e-10_f64.max(expected.abs() * 2e-11);
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "actual={actual:.17}, expected={expected:.17}, tolerance={tolerance:.3e}"
+        );
     }
 
     fn prewindow_fixture_candle(window_start: DateTime<Utc>, index: i64) -> BinanceOneSecondKline {

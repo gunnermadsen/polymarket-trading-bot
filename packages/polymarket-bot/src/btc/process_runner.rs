@@ -31,9 +31,13 @@ use super::{
         ShadowPredictiveRegimeEvaluation, ShadowPredictiveRegimeState,
         ShadowPredictiveRegimeTransition,
     },
+    directional_external_runtime::DirectionalExternalState,
     directional_features::{
-        build_directional_features_for_schema_with_boundary, DirectionalFeatureError,
-        DirectionalFeatureVector, BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION,
+        build_directional_features_for_schema_with_external,
+        directional_external_feature_requirements, directional_schema_requires_opening_boundary,
+        DirectionalBinanceOpenInterest, DirectionalChainlinkCandle, DirectionalChainlinkRefPrice,
+        DirectionalExternalFeatureInputs, DirectionalFeatureError, DirectionalFeatureVector,
+        DirectionalOracleRound,
     },
     directional_model::{
         directional_model_input_sha256, runtime_model, BtcDirectionalModelFeatureSnapshot,
@@ -240,6 +244,311 @@ fn directional_feature_error_metadata(error: &DirectionalFeatureError) -> serde_
         "code": error.code(),
         "detail": error.to_string(),
     })
+}
+
+#[derive(Debug)]
+struct DirectionalExternalDecisionSnapshot {
+    oracle_rounds: Vec<DirectionalOracleRound>,
+    refprice_reports: Vec<DirectionalChainlinkRefPrice>,
+    chainlink_candles: Vec<DirectionalChainlinkCandle>,
+    open_interest: Vec<DirectionalBinanceOpenInterest>,
+}
+
+impl DirectionalExternalDecisionSnapshot {
+    fn inputs(&self) -> DirectionalExternalFeatureInputs<'_> {
+        DirectionalExternalFeatureInputs {
+            oracle_rounds: &self.oracle_rounds,
+            refprice_reports: &self.refprice_reports,
+            chainlink_candles: &self.chainlink_candles,
+            open_interest: &self.open_interest,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ChainlinkCandleAccumulator {
+    first_timestamp: DateTime<Utc>,
+    last_timestamp: DateTime<Utc>,
+    open: Decimal,
+    high: Decimal,
+    low: Decimal,
+    close: Decimal,
+    available_at: DateTime<Utc>,
+}
+
+impl ChainlinkCandleAccumulator {
+    fn new(source_timestamp: DateTime<Utc>, available_at: DateTime<Utc>, price: Decimal) -> Self {
+        Self {
+            first_timestamp: source_timestamp,
+            last_timestamp: source_timestamp,
+            open: price,
+            high: price,
+            low: price,
+            close: price,
+            available_at,
+        }
+    }
+
+    fn observe(
+        &mut self,
+        source_timestamp: DateTime<Utc>,
+        available_at: DateTime<Utc>,
+        price: Decimal,
+    ) {
+        if source_timestamp < self.first_timestamp {
+            self.first_timestamp = source_timestamp;
+            self.open = price;
+        }
+        if source_timestamp >= self.last_timestamp {
+            self.last_timestamp = source_timestamp;
+            self.close = price;
+        }
+        self.high = self.high.max(price);
+        self.low = self.low.min(price);
+        self.available_at = self.available_at.max(available_at);
+    }
+}
+
+fn directional_external_decision_snapshot(
+    state: &DirectionalExternalState,
+    feature_as_of: DateTime<Utc>,
+    schema_version: &str,
+) -> Result<Option<DirectionalExternalDecisionSnapshot>, DirectionalFeatureError> {
+    let requirements = directional_external_feature_requirements(schema_version);
+    if requirements == Default::default() {
+        return Ok(None);
+    }
+
+    let oracle_rounds = if requirements.oracle {
+        state
+            .oracle
+            .iter()
+            .filter(|point| {
+                point.source_timestamp <= feature_as_of
+                    && point.block_timestamp <= feature_as_of
+                    && point.available_at <= feature_as_of
+            })
+            .map(|point| {
+                let aggregator_round_id = i64::try_from(point.round_id).map_err(|_| {
+                    external_snapshot_error(
+                        "polygon_oracle",
+                        "runtime round identity exceeded the feature contract",
+                    )
+                })?;
+                if point.phase_id == 0 || aggregator_round_id <= 0 {
+                    return Err(external_snapshot_error(
+                        "polygon_oracle",
+                        "runtime round identity was invalid",
+                    ));
+                }
+                Ok(DirectionalOracleRound {
+                    phase_id: i32::from(point.phase_id),
+                    aggregator_round_id,
+                    source_timestamp: point.source_timestamp,
+                    block_timestamp: point.block_timestamp,
+                    // latestRoundData exposes the signed round identity but not its transaction
+                    // provenance. Preserve that distinction instead of fabricating block fields.
+                    block_number: None,
+                    log_index: None,
+                    price: external_decimal_value(
+                        point.price,
+                        "polygon_oracle",
+                        "runtime price was invalid",
+                    )?,
+                    available_at: point.available_at,
+                })
+            })
+            .collect::<Result<Vec<_>, DirectionalFeatureError>>()?
+    } else {
+        Vec::new()
+    };
+
+    let refprice_reports = if requirements.refprice {
+        state
+            .refprice
+            .iter()
+            .filter(|point| {
+                point.source_timestamp <= feature_as_of && point.available_at <= feature_as_of
+            })
+            .map(|point| {
+                Ok(DirectionalChainlinkRefPrice {
+                    source_timestamp: point.source_timestamp,
+                    valid_from_timestamp: point.valid_from_timestamp,
+                    price: external_decimal_value(
+                        point.price,
+                        "chainlink_refprice",
+                        "runtime price was invalid",
+                    )?,
+                    bid: external_decimal_value(
+                        point.bid,
+                        "chainlink_refprice",
+                        "runtime bid was invalid",
+                    )?,
+                    ask: external_decimal_value(
+                        point.ask,
+                        "chainlink_refprice",
+                        "runtime ask was invalid",
+                    )?,
+                    available_at: point.available_at,
+                })
+            })
+            .collect::<Result<Vec<_>, DirectionalFeatureError>>()?
+    } else {
+        Vec::new()
+    };
+
+    let chainlink_candles = if requirements.chainlink_candles {
+        derive_closed_chainlink_candles(state, feature_as_of)?
+    } else {
+        Vec::new()
+    };
+
+    let open_interest = if requirements.open_interest {
+        state
+            .open_interest
+            .iter()
+            .filter(|point| {
+                point.source_timestamp < feature_as_of && point.available_at <= feature_as_of
+            })
+            .map(|point| {
+                Ok(DirectionalBinanceOpenInterest {
+                    source_timestamp: point.source_timestamp,
+                    period_seconds: 300,
+                    sum_open_interest: external_decimal_value(
+                        point.sum_open_interest,
+                        "binance_open_interest",
+                        "runtime open interest was invalid",
+                    )?,
+                    sum_open_interest_value: external_decimal_value(
+                        point.sum_open_interest_value,
+                        "binance_open_interest",
+                        "runtime open-interest value was invalid",
+                    )?,
+                    available_at: point.available_at,
+                })
+            })
+            .collect::<Result<Vec<_>, DirectionalFeatureError>>()?
+    } else {
+        Vec::new()
+    };
+
+    Ok(Some(DirectionalExternalDecisionSnapshot {
+        oracle_rounds,
+        refprice_reports,
+        chainlink_candles,
+        open_interest,
+    }))
+}
+
+fn derive_closed_chainlink_candles(
+    state: &DirectionalExternalState,
+    feature_as_of: DateTime<Utc>,
+) -> Result<Vec<DirectionalChainlinkCandle>, DirectionalFeatureError> {
+    const REQUIRED_CANDLES: usize = 61;
+    let latest_close = DateTime::from_timestamp(feature_as_of.timestamp().div_euclid(60) * 60, 0)
+        .ok_or_else(|| {
+        external_snapshot_error(
+            "chainlink_candles",
+            "decision timestamp could not be minute-aligned",
+        )
+    })?;
+    let earliest_open = latest_close - chrono::Duration::minutes(REQUIRED_CANDLES as i64);
+    let mut accumulators: Vec<Option<ChainlinkCandleAccumulator>> = vec![None; REQUIRED_CANDLES];
+
+    for point in &state.chainlink_mid {
+        if point.available_at > feature_as_of
+            || point.source_timestamp < earliest_open
+            || point.source_timestamp >= latest_close
+        {
+            continue;
+        }
+        if point.price <= Decimal::ZERO {
+            return Err(external_snapshot_error(
+                "chainlink_candles",
+                "runtime midpoint history contained an invalid price",
+            ));
+        }
+        let bucket = (point.source_timestamp - earliest_open).num_seconds() / 60;
+        let index = usize::try_from(bucket).map_err(|_| {
+            external_snapshot_error(
+                "chainlink_candles",
+                "runtime midpoint fell outside the required candle window",
+            )
+        })?;
+        let accumulator = accumulators.get_mut(index).ok_or_else(|| {
+            external_snapshot_error(
+                "chainlink_candles",
+                "runtime midpoint fell outside the required candle window",
+            )
+        })?;
+        match accumulator {
+            Some(accumulator) => {
+                accumulator.observe(point.source_timestamp, point.available_at, point.price)
+            }
+            slot @ None => {
+                *slot = Some(ChainlinkCandleAccumulator::new(
+                    point.source_timestamp,
+                    point.available_at,
+                    point.price,
+                ));
+            }
+        }
+    }
+
+    accumulators
+        .into_iter()
+        .enumerate()
+        .map(|(index, accumulator)| {
+            let accumulator = accumulator.ok_or_else(|| {
+                external_snapshot_error(
+                    "chainlink_candles",
+                    "61 contiguous closed RTDS midpoint candles are unavailable at the decision time",
+                )
+            })?;
+            let open_timestamp = earliest_open
+                + chrono::Duration::minutes(i64::try_from(index).expect("61 candles fit i64"));
+            Ok(DirectionalChainlinkCandle {
+                open_timestamp,
+                close_timestamp: open_timestamp + chrono::Duration::minutes(1),
+                open_price: external_decimal_value(
+                    accumulator.open,
+                    "chainlink_candles",
+                    "derived open price was invalid",
+                )?,
+                high_price: external_decimal_value(
+                    accumulator.high,
+                    "chainlink_candles",
+                    "derived high price was invalid",
+                )?,
+                low_price: external_decimal_value(
+                    accumulator.low,
+                    "chainlink_candles",
+                    "derived low price was invalid",
+                )?,
+                close_price: external_decimal_value(
+                    accumulator.close,
+                    "chainlink_candles",
+                    "derived close price was invalid",
+                )?,
+                available_at: accumulator.available_at,
+            })
+        })
+        .collect()
+}
+
+fn external_decimal_value(
+    value: Decimal,
+    source: &'static str,
+    reason: &'static str,
+) -> Result<Decimal, DirectionalFeatureError> {
+    if value <= Decimal::ZERO {
+        return Err(external_snapshot_error(source, reason));
+    }
+    Ok(value)
+}
+
+fn external_snapshot_error(source: &'static str, reason: &'static str) -> DirectionalFeatureError {
+    DirectionalFeatureError::ExternalFeatureUnavailable { source, reason }
 }
 
 fn complete_directional_model_candidate(
@@ -1487,30 +1796,39 @@ impl BtcProcessRunner {
                         return Ok(());
                     }
                 }
-                let opening_reference = if model.feature_schema_version()
-                    == BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION
-                {
-                    self.repository
-                        .load_directional_model_opening_reference(
-                            market,
-                            feature_as_of,
-                            chrono::Duration::milliseconds(
-                                self.config.strategy.max_chainlink_open_delay_ms,
-                            ),
-                        )
-                        .await?
-                } else {
-                    None
-                };
+                let opening_reference =
+                    if directional_schema_requires_opening_boundary(model.feature_schema_version())
+                    {
+                        self.repository
+                            .load_directional_model_opening_reference(
+                                market,
+                                feature_as_of,
+                                chrono::Duration::milliseconds(
+                                    self.config.strategy.max_chainlink_open_delay_ms,
+                                ),
+                            )
+                            .await?
+                    } else {
+                        None
+                    };
                 let opening_boundary = opening_reference.as_ref().map(|tick| tick.price);
                 directional_opening_reference = opening_reference;
-                let features = match build_directional_features_for_schema_with_boundary(
-                    &observation.state.binance_one_second_window,
-                    market.window_start,
+                let features = match directional_external_decision_snapshot(
+                    &observation.state.directional_external,
                     feature_as_of,
                     model.feature_schema_version(),
-                    opening_boundary,
-                ) {
+                )
+                .and_then(|external| {
+                    let external_inputs = external.as_ref().map(|snapshot| snapshot.inputs());
+                    build_directional_features_for_schema_with_external(
+                        &observation.state.binance_one_second_window,
+                        market.window_start,
+                        feature_as_of,
+                        model.feature_schema_version(),
+                        opening_boundary,
+                        external_inputs.as_ref(),
+                    )
+                }) {
                     Ok(features) => {
                         directional_candidate = Some(candidate);
                         (
@@ -3102,6 +3420,14 @@ mod tests {
             SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE,
             SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION,
         },
+        directional_external_runtime::{
+            BinanceOpenInterestPoint, ChainlinkMidPoint, ChainlinkRefPricePoint,
+            DirectionalExternalState, PolygonOraclePoint,
+        },
+        directional_features::{
+            BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_SCHEMA_VERSION,
+            BTC_DIRECTIONAL_FEATURE_SCHEMA_VERSION,
+        },
         directional_model::{
             BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION, BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256,
             BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256, BTC_DIRECTIONAL_MODEL_V1_KEY,
@@ -3125,6 +3451,137 @@ mod tests {
         },
         types::{BookReadiness, Readiness},
     };
+
+    fn external_midpoint_state(feature_as_of: DateTime<Utc>) -> DirectionalExternalState {
+        let latest_close =
+            DateTime::from_timestamp(feature_as_of.timestamp().div_euclid(60) * 60, 0).unwrap();
+        let earliest_open = latest_close - chrono::Duration::minutes(61);
+        let mut state = DirectionalExternalState::default();
+        for minute in 0..61_i64 {
+            let open = earliest_open + chrono::Duration::minutes(minute);
+            let base = Decimal::new(6_000_000 + minute * 100, 2);
+            state.chainlink_mid.push_back(ChainlinkMidPoint {
+                source_timestamp: open + chrono::Duration::seconds(5),
+                available_at: open + chrono::Duration::seconds(6),
+                price: base,
+            });
+            state.chainlink_mid.push_back(ChainlinkMidPoint {
+                source_timestamp: open + chrono::Duration::seconds(50),
+                available_at: open + chrono::Duration::seconds(51),
+                price: base + dec!(1.25),
+            });
+        }
+        state
+    }
+
+    #[test]
+    fn runtime_chainlink_candles_use_only_available_closed_midpoints() {
+        let feature_as_of = Utc.with_ymd_and_hms(2026, 8, 1, 12, 34, 30).unwrap();
+        let mut state = external_midpoint_state(feature_as_of);
+        let latest_close =
+            DateTime::from_timestamp(feature_as_of.timestamp().div_euclid(60) * 60, 0).unwrap();
+        state.chainlink_mid.push_back(ChainlinkMidPoint {
+            source_timestamp: latest_close - chrono::Duration::seconds(5),
+            available_at: feature_as_of + chrono::Duration::milliseconds(1),
+            price: dec!(999999),
+        });
+
+        let candles = derive_closed_chainlink_candles(&state, feature_as_of).unwrap();
+
+        assert_eq!(candles.len(), 61);
+        assert_eq!(candles.last().unwrap().close_timestamp, latest_close);
+        assert_eq!(candles.last().unwrap().high_price, dec!(60061.25));
+        assert_eq!(candles.last().unwrap().close_price, dec!(60061.25));
+        assert!(candles
+            .iter()
+            .all(|candle| candle.available_at <= feature_as_of));
+    }
+
+    #[test]
+    fn runtime_chainlink_candles_fail_closed_on_one_missing_minute() {
+        let feature_as_of = Utc.with_ymd_and_hms(2026, 8, 1, 12, 34, 30).unwrap();
+        let mut state = external_midpoint_state(feature_as_of);
+        let latest_close =
+            DateTime::from_timestamp(feature_as_of.timestamp().div_euclid(60) * 60, 0).unwrap();
+        let missing_open = latest_close - chrono::Duration::minutes(20);
+        state.chainlink_mid.retain(|point| {
+            point.source_timestamp < missing_open
+                || point.source_timestamp >= missing_open + chrono::Duration::minutes(1)
+        });
+
+        let error = derive_closed_chainlink_candles(&state, feature_as_of).unwrap_err();
+
+        assert_eq!(error.code(), "external_feature_unavailable");
+        assert!(error.to_string().contains("61 contiguous closed"));
+    }
+
+    #[test]
+    fn external_decision_snapshot_preserves_source_values_and_archive_absence() {
+        let feature_as_of = Utc.with_ymd_and_hms(2026, 8, 1, 12, 34, 30).unwrap();
+        let mut state = external_midpoint_state(feature_as_of);
+        let oracle_at = feature_as_of - chrono::Duration::seconds(10);
+        state.oracle.push_back(PolygonOraclePoint {
+            phase_id: 7,
+            round_id: 42,
+            source_timestamp: oracle_at,
+            block_timestamp: oracle_at,
+            available_at: oracle_at + chrono::Duration::milliseconds(250),
+            price: dec!(63123.12345678),
+        });
+        let ref_at = feature_as_of - chrono::Duration::seconds(1);
+        let valid_from = ref_at - chrono::Duration::milliseconds(250);
+        state.refprice.push_back(ChainlinkRefPricePoint {
+            source_timestamp: ref_at,
+            valid_from_timestamp: valid_from,
+            available_at: ref_at + chrono::Duration::milliseconds(500),
+            price: dec!(63124.123456789012345678),
+            bid: dec!(63123.9),
+            ask: dec!(63124.3),
+        });
+        let oi_at = feature_as_of - chrono::Duration::minutes(5);
+        state.open_interest.push_back(BinanceOpenInterestPoint {
+            source_timestamp: oi_at,
+            available_at: oi_at + chrono::Duration::seconds(1),
+            sum_open_interest: dec!(123456.12345678),
+            sum_open_interest_value: dec!(7654321.12345678),
+        });
+
+        let snapshot = directional_external_decision_snapshot(
+            &state,
+            feature_as_of,
+            BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_SCHEMA_VERSION,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(snapshot.oracle_rounds[0].block_number, None);
+        assert_eq!(snapshot.oracle_rounds[0].log_index, None);
+        assert_eq!(snapshot.oracle_rounds[0].price, dec!(63123.12345678));
+        assert_eq!(
+            snapshot.refprice_reports[0].valid_from_timestamp,
+            valid_from
+        );
+        assert_eq!(
+            snapshot.refprice_reports[0].price,
+            dec!(63124.123456789012345678)
+        );
+        assert_eq!(
+            snapshot.open_interest[0].sum_open_interest,
+            dec!(123456.12345678)
+        );
+    }
+
+    #[test]
+    fn existing_directional_schema_does_not_require_external_state() {
+        let feature_as_of = Utc.with_ymd_and_hms(2026, 8, 1, 12, 34, 30).unwrap();
+        assert!(directional_external_decision_snapshot(
+            &DirectionalExternalState::default(),
+            feature_as_of,
+            BTC_DIRECTIONAL_FEATURE_SCHEMA_VERSION,
+        )
+        .unwrap()
+        .is_none());
+    }
 
     #[test]
     fn directional_model_candidate_recovers_latest_eligible_cadence() {

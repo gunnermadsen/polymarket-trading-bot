@@ -1,0 +1,15 @@
+{
+  "deployment_scope": "paper_only",
+  "feature_schema_sha256": "a69ee1fefc2bbe312d35f5704a49e2d1296453caa6aff0f5bc94a8a63955e4da",
+  "feature_schema_version": "btc-5m-directional-boundary-oracle-chainlink-candle-features-v1",
+  "golden_vectors_file": "golden-vectors.json",
+  "golden_vectors_sha256": "d1c55294038eef82a319abdf2a38f63f66e21f6175315b653d635f3c0af8a0e6",
+  "live_capital_allowed": false,
+  "model_file": "model.json",
+  "model_key": "btc-5m-directional-long-history-candle-20260321-20260713-paper-v1",
+  "model_sha256": "6685c1995bb6a938fb7b99a8164e7586ada0ed256fbbf5c605c9bdea71abfed3",
+  "production_qualified": false,
+  "schema_version": "capitonic-btc-directional-runtime-manifest-v1",
+  "source_freeze_manifest_sha256": "a85c5da6e2c7cc6477cdd2f8a1ea66e73e488fdb1a17cd264ad2eafa2eb42cf0",
+  "source_training_model_sha256": "413fdf1a02bd743f39ad3c74c27afaebd819cae48a833324270721dc59784aae"
+}

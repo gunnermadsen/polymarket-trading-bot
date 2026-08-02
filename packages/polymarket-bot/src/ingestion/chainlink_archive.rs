@@ -183,7 +183,10 @@ pub fn sign_request(
     Ok(hex::encode(mac.finalize().into_bytes()))
 }
 
-fn decode_report(envelope: &Report, expected_feed_id: &str) -> Result<ChainlinkBtcusdArchiveTick> {
+pub(crate) fn decode_report(
+    envelope: &Report,
+    expected_feed_id: &str,
+) -> Result<ChainlinkBtcusdArchiveTick> {
     let bytes = hex::decode(envelope.full_report.trim_start_matches("0x"))
         .context("Chainlink fullReport was not valid hex")?;
     let (_, blob) = decode_full_report(&bytes).context("failed to decode Chainlink full report")?;
