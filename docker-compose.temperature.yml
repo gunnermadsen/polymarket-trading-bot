@@ -155,6 +155,28 @@ services:
       WEATHER_WORKER_INGESTERS: "polymarket_temperature_price_history"
       WEATHER_CACHE_DIR: "/var/lib/weather/cache/price-history-worker-2"
 
+  temperature-price-history-worker-3:
+    <<: *weather-worker
+    command: ["worker"]
+    mem_limit: 768m
+    cpus: "0.5"
+    environment:
+      <<: *weather-environment
+      WEATHER_WORKER_ID: "temperature-price-history-worker-3"
+      WEATHER_WORKER_INGESTERS: "polymarket_temperature_price_history"
+      WEATHER_CACHE_DIR: "/var/lib/weather/cache/price-history-worker-3"
+
+  temperature-price-history-worker-4:
+    <<: *weather-worker
+    command: ["worker"]
+    mem_limit: 768m
+    cpus: "0.5"
+    environment:
+      <<: *weather-environment
+      WEATHER_WORKER_ID: "temperature-price-history-worker-4"
+      WEATHER_WORKER_INGESTERS: "polymarket_temperature_price_history"
+      WEATHER_CACHE_DIR: "/var/lib/weather/cache/price-history-worker-4"
+
   temperature-model:
     <<: *weather-worker
     profiles: ["tools"]

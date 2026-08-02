@@ -8,7 +8,7 @@ The runtime is isolated in `docker-compose.temperature.yml`:
 
 - a private PostgreSQL database with no published host port;
 - a weather-only migration command whose migrations are not loaded by the normal bot migrator;
-- four leased weather/archive workers and two dedicated CLOB price-history workers with public
+- four leased weather/archive workers and four dedicated CLOB price-history workers with public
   read-only source access;
 - an on-demand offline model runner;
 - SSD-backed cache, database, model, and report directories under
