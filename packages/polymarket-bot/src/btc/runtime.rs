@@ -35,6 +35,9 @@ use tokio_tungstenite::{
 use uuid::Uuid;
 
 use super::{
+    directional_external_runtime::{
+        run_directional_external_supervisor, DirectionalExternalRuntimeConfig,
+    },
     feeds::{
         parse_binance_agg_trade_with_details, parse_clob_messages, parse_rtds_reference_tick,
         BookRegistry, ClobMessage,
@@ -1421,6 +1424,7 @@ pub struct BtcRuntime {
     repository: BtcRepository,
     books: Option<Arc<RwLock<BookRegistry>>>,
     state: Option<Arc<RwLock<RealtimeState>>>,
+    directional_external: DirectionalExternalRuntimeConfig,
 }
 
 impl BtcRuntime {
@@ -1435,12 +1439,19 @@ impl BtcRuntime {
             repository,
             books: None,
             state: None,
+            directional_external: DirectionalExternalRuntimeConfig::default(),
         }
     }
 
     /// Uses caller-owned shared state so every playbook observes one canonical feed runtime.
     pub fn with_shared_state(mut self, state: Arc<RwLock<RealtimeState>>) -> Self {
         self.state = Some(state);
+        self
+    }
+
+    /// Binds global, secret-bearing source configuration outside the immutable process config.
+    pub fn with_directional_external(mut self, config: DirectionalExternalRuntimeConfig) -> Self {
+        self.directional_external = config;
         self
     }
 
@@ -1454,10 +1465,38 @@ impl BtcRuntime {
         self.config.validate()?;
         self.heartbeat.validate()?;
         self.repository.healthcheck().await?;
+        self.directional_external.validate()?;
 
         let state = self
             .state
             .unwrap_or_else(|| Arc::new(RwLock::new(RealtimeState::default())));
+        if self.directional_external.enabled {
+            let bootstrap_end = Utc::now();
+            let bootstrap_start = bootstrap_end - chrono::Duration::minutes(62);
+            match self
+                .repository
+                .load_directional_external_chainlink_mid_history(bootstrap_start, bootstrap_end)
+                .await
+            {
+                Ok(ticks) => {
+                    let mut realtime = state.write().await;
+                    for tick in ticks {
+                        if let Err(error) =
+                            realtime.directional_external.observe_rtds_chainlink(&tick)
+                        {
+                            tracing::warn!(
+                                error = %error,
+                                "directional Chainlink midpoint bootstrap rejected a tick"
+                            );
+                        }
+                    }
+                }
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    "directional Chainlink midpoint bootstrap failed closed"
+                ),
+            }
+        }
         let books = self
             .books
             .unwrap_or_else(|| Arc::new(RwLock::new(BookRegistry::new(Uuid::new_v4()))));
@@ -1529,6 +1568,16 @@ impl BtcRuntime {
                     writer_tx.clone(),
                     state.clone(),
                     metrics.clone(),
+                    shutdown_rx.clone(),
+                ),
+                running.clone(),
+                metrics.clone(),
+            ),
+            spawn_runtime_task(
+                "directional_external",
+                run_directional_external_supervisor(
+                    self.directional_external,
+                    state.clone(),
                     shutdown_rx.clone(),
                 ),
                 running.clone(),
@@ -5725,16 +5774,27 @@ async fn run_rtds_supervisor(
                                                 });
                                             match parsed {
                                                 Ok(Some(tick)) => {
-                                                    let health_progress = {
+                                                    let (health_progress, external_error) = {
                                                         let mut realtime = state.write().await;
-                                                        update_reference_state_and_check_progress(
+                                                        let external_error = realtime
+                                                            .directional_external
+                                                            .observe_rtds_chainlink(&tick)
+                                                            .err();
+                                                        let health_progress = update_reference_state_and_check_progress(
                                                             &mut realtime,
                                                             tick.clone(),
                                                             kind,
                                                             received_at,
                                                             chrono_duration(config.max_reference_age),
-                                                        )
+                                                        );
+                                                        (health_progress, external_error)
                                                     };
+                                                    if let Some(error) = external_error {
+                                                        tracing::warn!(
+                                                            error = %error,
+                                                            "RTDS Chainlink directional history rejected a tick"
+                                                        );
+                                                    }
                                                     let first_healthy_transition =
                                                         health_progress && !stats.healthy_epoch;
                                                     let unavailable_milliseconds = if first_healthy_transition {

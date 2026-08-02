@@ -6,6 +6,8 @@ use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::directional_external_runtime::DirectionalExternalState;
+
 pub const BTC_INTERVAL_SECONDS: i64 = 300;
 pub const BTC_INTERVAL_SLUG_PREFIX: &str = "btc-updown-5m-";
 pub const BINANCE_ONE_SECOND_WINDOW_CAPACITY: usize = 305;
@@ -654,6 +656,9 @@ pub struct RealtimeState {
     /// public realtime-state JSON contract.
     #[serde(skip)]
     pub binance_one_second_window: BinanceOneSecondWindow,
+    /// Bounded, inference-only external context shared by every directional-model process.
+    #[serde(skip)]
+    pub directional_external: DirectionalExternalState,
     pub resolved_outcome: Option<BtcOutcome>,
     pub last_updated_at: Option<DateTime<Utc>>,
 }

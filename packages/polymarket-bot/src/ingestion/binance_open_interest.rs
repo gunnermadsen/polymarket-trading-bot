@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use chrono::{NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -107,55 +107,107 @@ impl BinanceOpenInterestConfig {
             u64::try_from(body.len()).context("open-interest response overflow")?;
         let payload: Vec<RawOpenInterestRecord> =
             serde_json::from_slice(&body).context("invalid Binance open-interest history JSON")?;
-        let mut records = Vec::with_capacity(payload.len());
-        for row in payload {
-            let source_timestamp = Utc
-                .timestamp_millis_opt(row.timestamp)
-                .single()
-                .context("invalid Binance open-interest timestamp")?;
-            if source_timestamp < day_start
-                || source_timestamp >= day_start + chrono::Duration::days(1)
-                || row.timestamp.rem_euclid(300_000) != 0
-            {
-                bail!("Binance open-interest row escaped its UTC day or five-minute alignment");
-            }
-            let sum_open_interest = decimal(&row.sum_open_interest, "sumOpenInterest")?;
-            let sum_open_interest_value =
-                decimal(&row.sum_open_interest_value, "sumOpenInterestValue")?;
-            let cmc_circulating_supply = row
-                .cmc_circulating_supply
-                .as_deref()
-                .map(|value| decimal(value, "CMCCirculatingSupply"))
-                .transpose()?;
-            if row.symbol != self.symbol
-                || sum_open_interest < Decimal::ZERO
-                || sum_open_interest_value < Decimal::ZERO
-                || cmc_circulating_supply.is_some_and(|value| value < Decimal::ZERO)
-            {
-                bail!("Binance open-interest row contained invalid values");
-            }
-            records.push(BinanceBtcusdtOpenInterestRecord {
-                symbol: row.symbol,
-                source_timestamp,
-                period_seconds: BINANCE_OPEN_INTEREST_PERIOD_SECONDS,
-                sum_open_interest,
-                sum_open_interest_value,
-                cmc_circulating_supply,
-            });
-        }
-        records.sort_unstable_by_key(|record| record.source_timestamp);
-        if records
-            .windows(2)
-            .any(|rows| rows[0].source_timestamp >= rows[1].source_timestamp)
-        {
-            bail!("Binance open-interest history contained duplicate timestamps");
-        }
+        let records = decode_open_interest_records(payload, &self.symbol, Some(day_start), false)?;
         Ok(BinanceOpenInterestDay {
             records,
             sha256: format!("{:x}", Sha256::digest(&body)),
             response_bytes,
         })
     }
+
+    /// Loads the latest bounded five-minute observations for causal runtime features.
+    ///
+    /// This uses the same decoder and validation contract as the historical ingester but does
+    /// not persist rows or create backfill lineage. Callers must retain the observation receipt
+    /// time and must not expose a row to a decision made before that receipt.
+    pub(crate) async fn fetch_latest(
+        &self,
+        client: &reqwest::Client,
+        limit: usize,
+    ) -> Result<Vec<BinanceBtcusdtOpenInterestRecord>> {
+        self.validate()?;
+        if !(13..=500).contains(&limit) {
+            bail!("Binance open-interest runtime limit must be between 13 and 500");
+        }
+        let limit = limit.to_string();
+        let response = client
+            .get(format!(
+                "{}/futures/data/openInterestHist",
+                self.base_url.trim_end_matches('/')
+            ))
+            .query(&[
+                ("symbol", self.symbol.as_str()),
+                ("period", "5m"),
+                ("limit", limit.as_str()),
+            ])
+            .send()
+            .await
+            .context("failed to request latest Binance open-interest history")?
+            .error_for_status()
+            .context("latest Binance open-interest history request was rejected")?;
+        let payload = response
+            .json::<Vec<RawOpenInterestRecord>>()
+            .await
+            .context("invalid latest Binance open-interest history JSON")?;
+        decode_open_interest_records(payload, &self.symbol, None, true)
+    }
+}
+
+fn decode_open_interest_records(
+    payload: Vec<RawOpenInterestRecord>,
+    expected_symbol: &str,
+    utc_day_start: Option<DateTime<Utc>>,
+    require_positive: bool,
+) -> Result<Vec<BinanceBtcusdtOpenInterestRecord>> {
+    let mut records = Vec::with_capacity(payload.len());
+    for row in payload {
+        let source_timestamp = Utc
+            .timestamp_millis_opt(row.timestamp)
+            .single()
+            .context("invalid Binance open-interest timestamp")?;
+        if row.timestamp.rem_euclid(300_000) != 0
+            || utc_day_start.is_some_and(|day_start| {
+                source_timestamp < day_start
+                    || source_timestamp >= day_start + chrono::Duration::days(1)
+            })
+        {
+            bail!("Binance open-interest row escaped its requested range or five-minute alignment");
+        }
+        let sum_open_interest = decimal(&row.sum_open_interest, "sumOpenInterest")?;
+        let sum_open_interest_value =
+            decimal(&row.sum_open_interest_value, "sumOpenInterestValue")?;
+        let cmc_circulating_supply = row
+            .cmc_circulating_supply
+            .as_deref()
+            .map(|value| decimal(value, "CMCCirculatingSupply"))
+            .transpose()?;
+        let non_positive = require_positive
+            && (sum_open_interest <= Decimal::ZERO || sum_open_interest_value <= Decimal::ZERO);
+        if row.symbol != expected_symbol
+            || non_positive
+            || sum_open_interest < Decimal::ZERO
+            || sum_open_interest_value < Decimal::ZERO
+            || cmc_circulating_supply.is_some_and(|value| value < Decimal::ZERO)
+        {
+            bail!("Binance open-interest row contained invalid values");
+        }
+        records.push(BinanceBtcusdtOpenInterestRecord {
+            symbol: row.symbol,
+            source_timestamp,
+            period_seconds: BINANCE_OPEN_INTEREST_PERIOD_SECONDS,
+            sum_open_interest,
+            sum_open_interest_value,
+            cmc_circulating_supply,
+        });
+    }
+    records.sort_unstable_by_key(|record| record.source_timestamp);
+    if records
+        .windows(2)
+        .any(|rows| rows[0].source_timestamp >= rows[1].source_timestamp)
+    {
+        bail!("Binance open-interest history contained duplicate timestamps");
+    }
+    Ok(records)
 }
 
 fn decimal(value: &str, field: &str) -> Result<Decimal> {

@@ -2474,6 +2474,49 @@ impl BtcRepository {
         .transpose()
     }
 
+    /// Hydrates the bounded RTDS midpoint history used to construct closed Chainlink candles.
+    /// Duplicate reconnect deliveries are collapsed by source timestamp, retaining the first
+    /// causally received value exactly as the historical training source does.
+    pub(crate) async fn load_directional_external_chainlink_mid_history(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<ReferencePriceTick>> {
+        if start >= end || (end - start) > chrono::Duration::hours(2) {
+            bail!("directional Chainlink midpoint bootstrap range is invalid");
+        }
+        let rows = sqlx::query_as::<_, ReferenceTickRow>(
+            r#"
+            SELECT tick_id, source_timestamp, received_at, source, symbol, price,
+              envelope_timestamp, connection_id, ingest_sequence, source_event_id,
+              dedup_key, raw_payload
+            FROM (
+              SELECT DISTINCT ON (source_timestamp)
+                tick_id, source_timestamp, received_at, source, symbol, price,
+                envelope_timestamp, connection_id, ingest_sequence, source_event_id,
+                dedup_key, raw_payload
+              FROM polymarket.reference_price_ticks
+              WHERE source = 'rtds_chainlink'
+                AND symbol = 'BTCUSD'
+                AND integrity_status = 'ok'
+                AND source_timestamp >= $1
+                AND source_timestamp <= $2
+                AND received_at <= $2
+              ORDER BY source_timestamp ASC, received_at ASC, ingest_sequence ASC, tick_id ASC
+            ) history
+            ORDER BY source_timestamp ASC
+            LIMIT 5000
+            "#,
+        )
+        .persistent(false)
+        .bind(start)
+        .bind(end)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to hydrate directional Chainlink midpoint history")?;
+        rows.into_iter().map(reference_tick_from_row).collect()
+    }
+
     /// Loads only the immutable execution evidence needed after native directional-model
     /// inference. Model features come from the runtime's bounded one-second Binance window, so
     /// this path deliberately avoids rebuilding unused reference histories from Postgres.
