@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import UTC, date, datetime, time
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -11,6 +12,11 @@ from .admission_config import load_admission_benchmark_config
 from .benchmark_config import load_entry_benchmark_config
 from .chainlink_oi_benchmark import run_chainlink_oi_benchmark
 from .chainlink_oi_config import load_chainlink_oi_benchmark_config
+from .chainlink_oi_forward_score import run_chainlink_oi_forward_score
+from .chainlink_oi_paper_export import (
+    PAPER_ONLY_AUTHORIZATION as CHAINLINK_OI_PAPER_AUTHORIZATION,
+)
+from .chainlink_oi_paper_export import export_chainlink_oi_paper_candidates
 from .champion_vwap_benchmark import run_champion_vwap_benchmark
 from .champion_vwap_config import load_champion_vwap_config
 from .config import load_config
@@ -128,6 +134,38 @@ def main() -> None:
         "chainlink-oi-champion-benchmark-run"
     )
     chainlink_oi_run.add_argument("--config", type=Path, required=True)
+    chainlink_oi_export = subparsers.add_parser(
+        "chainlink-oi-paper-candidates-export"
+    )
+    chainlink_oi_export.add_argument("--config", type=Path, required=True)
+    chainlink_oi_export.add_argument(
+        "--benchmark-run",
+        type=Path,
+        required=True,
+    )
+    chainlink_oi_export.add_argument(
+        "--freeze-root",
+        type=Path,
+        required=True,
+    )
+    chainlink_oi_export.add_argument(
+        "--runtime-output-root",
+        type=Path,
+        required=True,
+    )
+    chainlink_oi_export.add_argument(
+        "--authorize-paper-only",
+        action="store_true",
+        help="authorize all three challengers exclusively for paper evaluation",
+    )
+    chainlink_oi_forward = subparsers.add_parser(
+        "chainlink-oi-forward-score"
+    )
+    chainlink_oi_forward.add_argument("--config", type=Path, required=True)
+    chainlink_oi_forward.add_argument("--start", type=_parse_utc_day, required=True)
+    chainlink_oi_forward.add_argument("--end", type=_parse_utc_day, required=True)
+    chainlink_oi_forward.add_argument("--output-root", type=Path, required=True)
+    chainlink_oi_forward.add_argument("--runtime-model-root", type=Path)
     fixed_time_run = subparsers.add_parser("fixed-120-benchmark-run")
     fixed_time_run.add_argument("--config", type=Path, required=True)
     fixed_time_export = subparsers.add_parser("fixed-120-paper-candidate-export")
@@ -331,6 +369,42 @@ def main() -> None:
             f"{benchmark.get('selected_candidate') or 'none'}"
         )
         print("runtime/deployment: unchanged")
+        return
+    if args.command == "chainlink-oi-forward-score":
+        config = load_chainlink_oi_benchmark_config(args.config)
+        run_dir, result = run_chainlink_oi_forward_score(
+            config,
+            range_start=args.start,
+            range_end=args.end,
+            output_root=args.output_root,
+            runtime_model_root=args.runtime_model_root,
+        )
+        print(f"report: {run_dir / 'report.html'}")
+        print(f"status: {result['status']}")
+        print(f"blockers: {len(result['blockers'])}")
+        print("training/process/database changes: none")
+        return
+    if args.command == "chainlink-oi-paper-candidates-export":
+        if not args.authorize_paper_only:
+            parser.error(
+                "chainlink-oi-paper-candidates-export requires "
+                "--authorize-paper-only"
+            )
+        config = load_chainlink_oi_benchmark_config(args.config)
+        results = export_chainlink_oi_paper_candidates(
+            config=config,
+            benchmark_run=args.benchmark_run,
+            freeze_root=args.freeze_root,
+            runtime_output_root=args.runtime_output_root,
+            authorization=CHAINLINK_OI_PAPER_AUTHORIZATION,
+        )
+        for result in results:
+            print(f"candidate: {result.candidate}")
+            print(f"freeze: {result.freeze_dir}")
+            print(f"runtime model: {result.runtime_dir}")
+            print(f"model SHA-256: {result.model_sha256}")
+            print(f"feature schema SHA-256: {result.feature_schema_sha256}")
+        print("scope: paper_only; production-qualified: false")
         return
     if args.command == "fixed-120-benchmark-run":
         config = load_fixed_time_accuracy_config(args.config)
@@ -626,6 +700,16 @@ def serve(directory: Path, port: int) -> None:
         pass
     finally:
         server.server_close()
+
+
+def _parse_utc_day(value: str) -> datetime:
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("expected UTC date in YYYY-MM-DD form") from error
+    if parsed.isoformat() != value:
+        raise argparse.ArgumentTypeError("expected UTC date in YYYY-MM-DD form")
+    return datetime.combine(parsed, time.min, UTC)
 
 
 if __name__ == "__main__":
