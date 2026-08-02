@@ -119,7 +119,9 @@ def _is_transient_hrrr_error(error: BaseException) -> bool:
 
 def _is_mirror_specific_hrrr_error(error: BaseException) -> bool:
     message = str(error).lower()
-    return "416 client error" in message and "requested range not satisfiable" in message
+    return (
+        "416 client error" in message and "requested range not satisfiable" in message
+    ) or "cannot set a dataframe without columns to the column search_this" in message
 
 
 def _run_with_retry(

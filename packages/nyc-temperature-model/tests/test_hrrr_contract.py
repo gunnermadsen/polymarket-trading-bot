@@ -98,6 +98,31 @@ def test_hrrr_field_retry_rotates_after_mirror_range_mismatch():
     assert sleeps == [1]
 
 
+def test_hrrr_field_retry_rotates_after_empty_mirror_inventory():
+    calls = []
+
+    def operation(priority, overwrite):
+        calls.append((priority, overwrite))
+        if len(calls) == 1:
+            raise ValueError("Cannot set a DataFrame without columns to the column search_this")
+        return "downloaded-from-aws"
+
+    result = _run_with_retry(
+        operation,
+        attempts=8,
+        sources=("google", "aws", "nomads"),
+        retry_base_ms=0,
+        retry_max_ms=0,
+        sleep=lambda _delay: None,
+    )
+
+    assert result == "downloaded-from-aws"
+    assert calls == [
+        (("google", "aws", "nomads"), False),
+        (("aws", "nomads", "google"), True),
+    ]
+
+
 def test_hrrr_field_retry_bounds_verified_archive_misses_by_source_count():
     calls = []
     sleeps = []
