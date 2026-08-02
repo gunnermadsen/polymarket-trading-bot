@@ -60,6 +60,7 @@ use super::{
 };
 
 const BOUNDARY_LABEL_VERSION: &str = "chainlink_first_tick_at_or_after_boundary_v1";
+const BOUNDARY_HYDRATION_RETRY_MAX_DELAY: StdDuration = StdDuration::from_secs(30);
 const CRITICAL_WRITE_ATTEMPTS: usize = 3;
 const CRITICAL_WRITE_INITIAL_BACKOFF: StdDuration = StdDuration::from_millis(25);
 const GAMMA_RESOLUTION_RETRY_INITIAL_BACKOFF: StdDuration = StdDuration::from_secs(30);
@@ -395,6 +396,10 @@ pub struct BtcRuntimeMetrics {
     pub official_resolutions_rest: u64,
     pub resolution_reconciliation_errors: u64,
     pub resolution_watches_expired: u64,
+    #[serde(default)]
+    pub boundary_hydration_read_errors: u64,
+    #[serde(default)]
+    pub boundary_hydration_consecutive_failures: u32,
     pub last_error: Option<String>,
 }
 
@@ -1924,6 +1929,7 @@ async fn run_discovery(
     let mut ticker = interval(config.discovery_interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut gamma_resolution_retries = HashMap::new();
+    let mut boundary_hydration_retry_at = None;
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
@@ -2051,6 +2057,15 @@ async fn run_discovery(
                     }
                 }
                 recovery_markets.sort_by_key(|market| market.window_start);
+                publish_market_subscriptions_if_changed(&market_sender, &pending_markets);
+                {
+                    let mut runtime_metrics = metrics.write().await;
+                    runtime_metrics.markets_discovered = fresh_markets.len() as u64;
+                    runtime_metrics.resolution_watches_active = pending_markets.len() as u64;
+                }
+                if boundary_hydration_retry_at.is_some_and(|retry_at| Instant::now() < retry_at) {
+                    continue;
+                }
                 let max_delay = chrono_duration(config.boundary_tick_max_delay);
                 let durable = tokio::try_join!(
                     repository.load_market_open_references(&recovery_markets),
@@ -2060,11 +2075,47 @@ async fn run_discovery(
                 let (durable_opens, durable_closes, durable_labels) = match durable {
                     Ok(value) => value,
                     Err(error) => {
-                        record_critical_persistence_error(&metrics, error).await;
-                        return;
+                        let failure = {
+                            let mut runtime_metrics = metrics.write().await;
+                            classify_boundary_hydration_read_failure(error, &mut runtime_metrics)
+                        };
+                        match failure {
+                            BoundaryHydrationReadFailure::Retry {
+                                error,
+                                entered_degraded_state,
+                                consecutive_failures,
+                            } => {
+                                let retry_delay = boundary_hydration_retry_delay(
+                                    config.discovery_interval,
+                                    consecutive_failures,
+                                );
+                                boundary_hydration_retry_at = Some(Instant::now() + retry_delay);
+                                if entered_degraded_state {
+                                    tracing::warn!(
+                                        error = ?error,
+                                        retry_delay_ms = duration_milliseconds(retry_delay),
+                                        "BTC boundary hydration is temporarily unavailable; shared market data remains active"
+                                    );
+                                } else {
+                                    tracing::debug!(
+                                        error = ?error,
+                                        retry_delay_ms = duration_milliseconds(retry_delay),
+                                        "BTC boundary hydration retry remains unavailable"
+                                    );
+                                }
+                                continue;
+                            }
+                            BoundaryHydrationReadFailure::Fatal(error) => {
+                                record_critical_persistence_error(&metrics, error).await;
+                                return;
+                            }
+                        }
                     }
                 };
                 let hydration = {
+                    // Boundary observation remains fail-closed until every durable read has
+                    // succeeded. Publishing CLOB subscriptions above is independent of this
+                    // immutable boundary-state transition.
                     let mut tracker = boundaries.write().await;
                     tracker.update_markets(&recovery_markets);
                     tracker
@@ -2087,12 +2138,14 @@ async fn run_discovery(
                     record_critical_persistence_error(&metrics, error).await;
                     return;
                 }
-                if !same_market_subscriptions(&market_sender.borrow(), &pending_markets) {
-                    let _ = market_sender.send(pending_markets.clone());
+                boundary_hydration_retry_at = None;
+                let recovered = {
+                    let mut runtime_metrics = metrics.write().await;
+                    mark_boundary_hydration_recovered(&mut runtime_metrics)
+                };
+                if recovered {
+                    tracing::info!("BTC boundary hydration recovered without restarting shared market data");
                 }
-                let mut runtime_metrics = metrics.write().await;
-                runtime_metrics.markets_discovered = fresh_markets.len() as u64;
-                runtime_metrics.resolution_watches_active = pending_markets.len() as u64;
             }
         }
     }
@@ -7663,6 +7716,15 @@ fn same_market_subscriptions(left: &[BtcIntervalMarket], right: &[BtcIntervalMar
     })
 }
 
+fn publish_market_subscriptions_if_changed(
+    sender: &watch::Sender<Vec<BtcIntervalMarket>>,
+    markets: &[BtcIntervalMarket],
+) {
+    if !same_market_subscriptions(&sender.borrow(), markets) {
+        let _ = sender.send(markets.to_vec());
+    }
+}
+
 fn same_market_subscription(left: &BtcIntervalMarket, right: &BtcIntervalMarket) -> bool {
     left.market_id == right.market_id
         && left.condition_id == right.condition_id
@@ -7746,6 +7808,81 @@ fn duration_milliseconds(duration: StdDuration) -> u64 {
 
 async fn record_error(metrics: &Arc<RwLock<BtcRuntimeMetrics>>, error: anyhow::Error) {
     metrics.write().await.last_error = Some(error.to_string());
+}
+
+fn retryable_postgres_boundary_hydration_sqlstate(code: &str) -> bool {
+    code.starts_with("08")
+        || code.starts_with("40")
+        || code.starts_with("53")
+        || code.starts_with("58")
+        || matches!(code, "55P03" | "57014" | "57P01" | "57P02" | "57P03")
+}
+
+fn boundary_hydration_retry_delay(
+    discovery_interval: StdDuration,
+    consecutive_failures: u32,
+) -> StdDuration {
+    let initial_delay = discovery_interval.max(StdDuration::from_secs(1));
+    let maximum_delay = BOUNDARY_HYDRATION_RETRY_MAX_DELAY.max(initial_delay);
+    let exponent = consecutive_failures.saturating_sub(1).min(10);
+    initial_delay
+        .saturating_mul(2u32.saturating_pow(exponent))
+        .min(maximum_delay)
+}
+
+fn is_retryable_boundary_hydration_read_error(error: &anyhow::Error) -> bool {
+    let Some(sqlx_error) = error.downcast_ref::<sqlx::Error>() else {
+        return false;
+    };
+    match sqlx_error {
+        sqlx::Error::Database(error) => error
+            .code()
+            .as_deref()
+            .is_some_and(retryable_postgres_boundary_hydration_sqlstate),
+        sqlx::Error::Io(_) | sqlx::Error::Tls(_) | sqlx::Error::PoolTimedOut => true,
+        _ => false,
+    }
+}
+
+#[derive(Debug)]
+enum BoundaryHydrationReadFailure {
+    Retry {
+        error: anyhow::Error,
+        entered_degraded_state: bool,
+        consecutive_failures: u32,
+    },
+    Fatal(anyhow::Error),
+}
+
+fn classify_boundary_hydration_read_failure(
+    error: anyhow::Error,
+    metrics: &mut BtcRuntimeMetrics,
+) -> BoundaryHydrationReadFailure {
+    if !is_retryable_boundary_hydration_read_error(&error) {
+        return BoundaryHydrationReadFailure::Fatal(error);
+    }
+    let entered_degraded_state = mark_boundary_hydration_read_failure(metrics);
+    BoundaryHydrationReadFailure::Retry {
+        error,
+        entered_degraded_state,
+        consecutive_failures: metrics.boundary_hydration_consecutive_failures,
+    }
+}
+
+fn mark_boundary_hydration_read_failure(metrics: &mut BtcRuntimeMetrics) -> bool {
+    let entered_degraded_state = metrics.boundary_hydration_consecutive_failures == 0;
+    metrics.boundary_hydration_read_errors =
+        metrics.boundary_hydration_read_errors.saturating_add(1);
+    metrics.boundary_hydration_consecutive_failures = metrics
+        .boundary_hydration_consecutive_failures
+        .saturating_add(1);
+    entered_degraded_state
+}
+
+fn mark_boundary_hydration_recovered(metrics: &mut BtcRuntimeMetrics) -> bool {
+    let recovered = metrics.boundary_hydration_consecutive_failures > 0;
+    metrics.boundary_hydration_consecutive_failures = 0;
+    recovered
 }
 
 async fn record_critical_persistence_error(
@@ -9609,6 +9746,129 @@ mod tests {
             metrics.read().await.last_error.as_deref(),
             Some("critical write failed: database unavailable")
         );
+    }
+
+    #[test]
+    fn boundary_hydration_retry_classification_is_limited_to_availability_failures() {
+        for code in [
+            "08006", "40001", "40P01", "53200", "53300", "55P03", "57014", "57P01", "57P02",
+            "57P03", "58030",
+        ] {
+            assert!(
+                retryable_postgres_boundary_hydration_sqlstate(code),
+                "{code} must remain retryable"
+            );
+        }
+        for code in ["22000", "23505", "42601", "42P01"] {
+            assert!(
+                !retryable_postgres_boundary_hydration_sqlstate(code),
+                "{code} must remain fatal"
+            );
+        }
+
+        let retryable = anyhow::Error::new(sqlx::Error::PoolTimedOut)
+            .context("failed to load durable BTC closing references");
+        assert!(is_retryable_boundary_hydration_read_error(&retryable));
+
+        let fatal = anyhow::Error::new(sqlx::Error::ColumnNotFound("source".to_string()))
+            .context("failed to decode durable BTC closing references");
+        assert!(!is_retryable_boundary_hydration_read_error(&fatal));
+        assert!(!is_retryable_boundary_hydration_read_error(
+            &anyhow::Error::new(sqlx::Error::PoolClosed)
+        ));
+        assert!(!is_retryable_boundary_hydration_read_error(
+            &anyhow::Error::new(sqlx::Error::WorkerCrashed)
+        ));
+        assert!(!is_retryable_boundary_hydration_read_error(
+            &anyhow::anyhow!("durable BTC boundary identity conflict")
+        ));
+    }
+
+    #[test]
+    fn boundary_hydration_retry_delay_is_bounded_and_exponential() {
+        let discovery_interval = StdDuration::from_secs(5);
+        assert_eq!(
+            boundary_hydration_retry_delay(discovery_interval, 1),
+            StdDuration::from_secs(5)
+        );
+        assert_eq!(
+            boundary_hydration_retry_delay(discovery_interval, 2),
+            StdDuration::from_secs(10)
+        );
+        assert_eq!(
+            boundary_hydration_retry_delay(discovery_interval, 3),
+            StdDuration::from_secs(20)
+        );
+        assert_eq!(
+            boundary_hydration_retry_delay(discovery_interval, 4),
+            BOUNDARY_HYDRATION_RETRY_MAX_DELAY
+        );
+        assert_eq!(
+            boundary_hydration_retry_delay(discovery_interval, u32::MAX),
+            BOUNDARY_HYDRATION_RETRY_MAX_DELAY
+        );
+    }
+
+    #[test]
+    fn retryable_boundary_hydration_control_does_not_poison_primary_runtime_health() {
+        let mut metrics = BtcRuntimeMetrics::default();
+
+        let first = classify_boundary_hydration_read_failure(
+            anyhow::Error::new(sqlx::Error::PoolTimedOut)
+                .context("failed to load durable BTC opening references"),
+            &mut metrics,
+        );
+        assert!(matches!(
+            first,
+            BoundaryHydrationReadFailure::Retry {
+                entered_degraded_state: true,
+                consecutive_failures: 1,
+                ..
+            }
+        ));
+
+        let second = classify_boundary_hydration_read_failure(
+            anyhow::Error::new(sqlx::Error::PoolTimedOut)
+                .context("failed to load durable BTC closing references"),
+            &mut metrics,
+        );
+        assert!(matches!(
+            second,
+            BoundaryHydrationReadFailure::Retry {
+                entered_degraded_state: false,
+                consecutive_failures: 2,
+                ..
+            }
+        ));
+
+        assert_eq!(metrics.boundary_hydration_read_errors, 2);
+        assert_eq!(metrics.boundary_hydration_consecutive_failures, 2);
+        assert_eq!(metrics.persistence_errors, 0);
+        assert!(metrics.last_error.is_none());
+        assert!(primary_runtime_failure(&metrics).is_none());
+
+        assert!(mark_boundary_hydration_recovered(&mut metrics));
+        assert_eq!(metrics.boundary_hydration_read_errors, 2);
+        assert_eq!(metrics.boundary_hydration_consecutive_failures, 0);
+        assert!(!mark_boundary_hydration_recovered(&mut metrics));
+        assert!(primary_runtime_failure(&metrics).is_none());
+    }
+
+    #[test]
+    fn market_subscription_publication_is_independent_of_boundary_hydration() {
+        let market = market();
+        let (sender, mut receiver) = watch::channel(Vec::new());
+
+        publish_market_subscriptions_if_changed(&sender, std::slice::from_ref(&market));
+        assert!(receiver.has_changed().unwrap());
+        let published = receiver.borrow_and_update().clone();
+        assert!(same_market_subscriptions(
+            &published,
+            std::slice::from_ref(&market)
+        ));
+
+        publish_market_subscriptions_if_changed(&sender, std::slice::from_ref(&market));
+        assert!(!receiver.has_changed().unwrap());
     }
 
     #[derive(Debug)]
