@@ -34,6 +34,7 @@ use super::types::{RealtimeState, ReferencePriceSource, ReferencePriceTick};
 
 const REFPRICE_HISTORY_SECONDS: i64 = 70;
 const ORACLE_HISTORY_SECONDS: i64 = 600;
+const REFPRICE_PAGE_LIMIT: usize = 100;
 const REFPRICE_CAPACITY: usize = 256;
 const RTDS_MID_CAPACITY: usize = 4_096;
 const ORACLE_CAPACITY: usize = 512;
@@ -439,10 +440,7 @@ impl RefPricePoller {
         let start = self
             .next_timestamp
             .unwrap_or_else(|| at.timestamp().saturating_sub(REFPRICE_HISTORY_SECONDS));
-        let path = format!(
-            "/api/v1/reports/page?feedID={}&startTimestamp={}&limit={REFPRICE_CAPACITY}",
-            self.feed_id, start
-        );
+        let path = refprice_reports_page_path(&self.feed_id, start);
         let timestamp_ms = current_timestamp_millis()?;
         let signature = sign_request(&self.credentials, "GET", &path, timestamp_ms)?;
         let response = client
@@ -487,6 +485,12 @@ impl RefPricePoller {
         }
         Ok(points)
     }
+}
+
+fn refprice_reports_page_path(feed_id: &str, start_timestamp: i64) -> String {
+    format!(
+        "/api/v1/reports/page?feedID={feed_id}&startTimestamp={start_timestamp}&limit={REFPRICE_PAGE_LIMIT}"
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -784,6 +788,15 @@ fn current_timestamp_millis() -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refprice_page_request_respects_chainlink_limit() {
+        assert_eq!(
+            refprice_reports_page_path("feed", 1_700_000_000),
+            "/api/v1/reports/page?feedID=feed&startTimestamp=1700000000&limit=100"
+        );
+        assert!(REFPRICE_PAGE_LIMIT <= REFPRICE_CAPACITY);
+    }
 
     #[test]
     fn abi_round_data_decoding_preserves_phase_and_round_identity() {
