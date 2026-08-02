@@ -549,8 +549,8 @@ export class AddBtcChainlinkOiPaperProcesses1785638500000
         SELECT
           count(*)::text AS process_count,
           count(DISTINCT (
-            process.config #> '{raw,btc_realtime_paper,strategy}'
-            - 'decision_strategy'
+            (process.config #> '{raw,btc_realtime_paper,strategy}')
+            - 'decision_strategy'::text
           ))::text AS strategy_parameter_variants,
           count(DISTINCT process.config #>
             '{raw,btc_realtime_paper,runtime}'
