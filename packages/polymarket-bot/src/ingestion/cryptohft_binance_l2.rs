@@ -1061,11 +1061,45 @@ async fn validate_persisted_manifest(path: &Path, expected: &HourlyArchiveManife
     Ok(())
 }
 
-async fn make_read_only(path: &Path) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadOnlyDisposition {
+    AlreadyReadOnly,
+    Updated,
+}
+
+async fn make_read_only(path: &Path) -> Result<ReadOnlyDisposition> {
     let mut permissions = fs::metadata(path).await?.permissions();
+    if permissions.readonly() {
+        return Ok(ReadOnlyDisposition::AlreadyReadOnly);
+    }
     permissions.set_readonly(true);
-    fs::set_permissions(path, permissions).await?;
-    Ok(())
+    match fs::set_permissions(path, permissions).await {
+        Ok(()) => Ok(ReadOnlyDisposition::Updated),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            let current = fs::metadata(path).await.with_context(|| {
+                format!(
+                    "failed to verify permissions for immutable CryptoHFT file {}",
+                    path.display()
+                )
+            })?;
+            read_only_postcondition(path, error, &current.permissions())
+        }
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to make CryptoHFT file read-only {}", path.display())),
+    }
+}
+
+fn read_only_postcondition(
+    path: &Path,
+    permission_error: io::Error,
+    current_permissions: &std_fs::Permissions,
+) -> Result<ReadOnlyDisposition> {
+    if current_permissions.readonly() {
+        Ok(ReadOnlyDisposition::AlreadyReadOnly)
+    } else {
+        Err(permission_error)
+            .with_context(|| format!("failed to make CryptoHFT file read-only {}", path.display()))
+    }
 }
 
 fn sync_parent_directory(parent: &Path) -> Result<()> {
@@ -2788,6 +2822,49 @@ mod tests {
         assert!(validate_downloaded_content_length(Some(0), 24_232_760).is_err());
     }
 
+    #[tokio::test]
+    async fn making_an_immutable_file_read_only_is_idempotent() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("immutable-archive");
+        std_fs::write(&path, b"archive").unwrap();
+
+        assert_eq!(
+            make_read_only(&path).await.unwrap(),
+            ReadOnlyDisposition::Updated
+        );
+        assert_eq!(
+            make_read_only(&path).await.unwrap(),
+            ReadOnlyDisposition::AlreadyReadOnly
+        );
+    }
+
+    #[test]
+    fn permission_denied_requires_a_proven_read_only_postcondition() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("immutable-archive");
+        std_fs::write(&path, b"archive").unwrap();
+        let writable = std_fs::metadata(&path).unwrap().permissions();
+        let mut read_only = writable.clone();
+        read_only.set_readonly(true);
+
+        assert_eq!(
+            read_only_postcondition(
+                &path,
+                io::Error::from(io::ErrorKind::PermissionDenied),
+                &read_only,
+            )
+            .unwrap(),
+            ReadOnlyDisposition::AlreadyReadOnly
+        );
+        let error = read_only_postcondition(
+            &path,
+            io::Error::from(io::ErrorKind::PermissionDenied),
+            &writable,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains(path.to_str().unwrap()));
+    }
+
     #[test]
     fn hourly_spec_matches_cryptohft_object_identity() {
         let temporary = tempfile::tempdir().unwrap();
@@ -2833,11 +2910,20 @@ mod tests {
             0,
             false,
         );
+        let local_manifest_path = manifest_path(&spec).unwrap();
         std_fs::write(
-            manifest_path(&spec).unwrap(),
+            &local_manifest_path,
             serde_json::to_vec_pretty(&manifest).unwrap(),
         )
         .unwrap();
+        assert_eq!(
+            make_read_only(&spec.archive_path).await.unwrap(),
+            ReadOnlyDisposition::Updated
+        );
+        assert_eq!(
+            make_read_only(&local_manifest_path).await.unwrap(),
+            ReadOnlyDisposition::Updated
+        );
 
         let reused = reuse_hour(&config, &spec, &ArchiveCancellation::default())
             .await
@@ -2852,6 +2938,14 @@ mod tests {
                 panic!("matching cache was classified as corrupt: {error:#}")
             }
         }
+        assert_eq!(
+            make_read_only(&spec.archive_path).await.unwrap(),
+            ReadOnlyDisposition::AlreadyReadOnly
+        );
+        assert_eq!(
+            make_read_only(&local_manifest_path).await.unwrap(),
+            ReadOnlyDisposition::AlreadyReadOnly
+        );
     }
 
     #[tokio::test]
