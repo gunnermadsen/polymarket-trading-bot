@@ -13,9 +13,17 @@ use crate::config::AppConfig;
 
 use super::{
     binance_archive::ArchiveCancellation,
+    binance_open_interest::{
+        BinanceOpenInterestConfig, DEFAULT_BINANCE_FUTURES_DATA_BASE_URL,
+        DEFAULT_BINANCE_OPEN_INTEREST_SYMBOL,
+    },
     chainlink_archive::{
         ChainlinkArchiveConfig, ChainlinkCredentials, DEFAULT_CHAINLINK_BTCUSD_FEED_ID,
         DEFAULT_CHAINLINK_REST_URL,
+    },
+    chainlink_candlestick::{
+        ChainlinkCandlestickConfig, ChainlinkCandlestickCredentials,
+        DEFAULT_CHAINLINK_CANDLESTICK_BASE_URL, DEFAULT_CHAINLINK_CANDLESTICK_SYMBOL,
     },
     executor::{IngestionExecutor, IngestionExecutorConfig},
     job::{BackfillEventLevel, BackfillFailureKind, BackfillJobSummary, ClaimedJob, WorkerControl},
@@ -153,6 +161,27 @@ impl BackfillWorker {
                     ),
                     page_limit: env_usize("POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT", 1_000)?,
                     credentials: chainlink_credentials_from_env()?,
+                },
+                chainlink_candlesticks: ChainlinkCandlestickConfig {
+                    base_url: env_string(
+                        "POLYMARKET_CHAINLINK_CANDLESTICK_BASE_URL",
+                        DEFAULT_CHAINLINK_CANDLESTICK_BASE_URL,
+                    ),
+                    symbol: env_string(
+                        "POLYMARKET_CHAINLINK_CANDLESTICK_SYMBOL",
+                        DEFAULT_CHAINLINK_CANDLESTICK_SYMBOL,
+                    ),
+                    credentials: chainlink_candlestick_credentials_from_env()?,
+                },
+                binance_open_interest: BinanceOpenInterestConfig {
+                    base_url: env_string(
+                        "POLYMARKET_BINANCE_FUTURES_DATA_BASE_URL",
+                        DEFAULT_BINANCE_FUTURES_DATA_BASE_URL,
+                    ),
+                    symbol: env_string(
+                        "POLYMARKET_BINANCE_OPEN_INTEREST_SYMBOL",
+                        DEFAULT_BINANCE_OPEN_INTEREST_SYMBOL,
+                    ),
                 },
                 polygon_chainlink: PolygonChainlinkOracleConfig {
                     rpc_url: env_string("POLYMARKET_POLYGON_RPC_URL", DEFAULT_POLYGON_RPC_URL),
@@ -474,6 +503,24 @@ fn chainlink_credentials_from_env() -> Result<Option<ChainlinkCredentials>> {
         })),
         _ => bail!(
             "POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY and POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET must be configured together"
+        ),
+    }
+}
+
+fn chainlink_candlestick_credentials_from_env() -> Result<Option<ChainlinkCandlestickCredentials>> {
+    let login = env::var("POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let api_key = env::var("POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    match (login, api_key) {
+        (_, None) => Ok(None),
+        (Some(login), Some(api_key)) => {
+            Ok(Some(ChainlinkCandlestickCredentials { login, api_key }))
+        }
+        (None, Some(_)) => bail!(
+            "POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY must accompany POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY"
         ),
     }
 }

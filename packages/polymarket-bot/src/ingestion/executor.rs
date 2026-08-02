@@ -14,7 +14,9 @@ use super::{
         ArchiveCancellation, ArchiveDownloadLimits, ArchiveParseSummary, BinanceArchiveKind,
         BinanceArchiveSpec, BINANCE_ARCHIVE_PROVIDER,
     },
+    binance_open_interest::{BinanceOpenInterestConfig, BINANCE_OPEN_INTEREST_PROVIDER},
     chainlink_archive::{ChainlinkArchiveConfig, CHAINLINK_ARCHIVE_PROVIDER},
+    chainlink_candlestick::{ChainlinkCandlestickConfig, CHAINLINK_CANDLESTICK_PROVIDER},
     execution_snapshots::{
         ExecutionMarketSeed, ExecutionSnapshotReconstructor, EXECUTION_SNAPSHOTS_PER_MARKET,
         EXECUTION_SNAPSHOT_END_MILLIS, EXECUTION_SNAPSHOT_INTERVAL_MILLIS,
@@ -48,6 +50,8 @@ pub struct IngestionExecutorConfig {
     pub binance_archive_base_url: String,
     pub pmxt_archive_base_url: String,
     pub chainlink: ChainlinkArchiveConfig,
+    pub chainlink_candlesticks: ChainlinkCandlestickConfig,
+    pub binance_open_interest: BinanceOpenInterestConfig,
     pub polygon_chainlink: PolygonChainlinkOracleConfig,
     pub cache_directory: PathBuf,
     pub batch_rows: usize,
@@ -65,6 +69,8 @@ impl IngestionExecutorConfig {
             bail!("backfill source base URLs must not be empty");
         }
         self.chainlink.validate()?;
+        self.chainlink_candlesticks.validate()?;
+        self.binance_open_interest.validate()?;
         self.polygon_chainlink.validate()?;
         if !(1..=4_000).contains(&self.batch_rows) {
             bail!("POLYMARKET_BACKFILL_BATCH_ROWS must be between 1 and 4000");
@@ -200,6 +206,26 @@ impl IngestionExecutor {
             IngesterKey::ChainlinkBtcusdReferenceTicks => {
                 self.ingest_chainlink(claim, range_start, range_end, progress, &cancellation)
                     .await
+            }
+            IngesterKey::ChainlinkBtcusdOneMinuteCandles => {
+                self.ingest_chainlink_candlesticks(
+                    claim,
+                    range_start,
+                    range_end,
+                    progress,
+                    &cancellation,
+                )
+                .await
+            }
+            IngesterKey::BinanceBtcusdtFiveMinuteOpenInterest => {
+                self.ingest_binance_open_interest(
+                    claim,
+                    range_start,
+                    range_end,
+                    progress,
+                    &cancellation,
+                )
+                .await
             }
             IngesterKey::PolygonChainlinkBtcusdOracleRounds => {
                 self.ingest_polygon_chainlink_oracle(
@@ -1580,6 +1606,285 @@ impl IngestionExecutor {
         Ok(summary)
     }
 
+    async fn ingest_chainlink_candlesticks(
+        &self,
+        claim: &ClaimedJob,
+        range_start: DateTime<Utc>,
+        range_end: DateTime<Utc>,
+        mut progress: BackfillProgress,
+        cancellation: &ArchiveCancellation,
+    ) -> std::result::Result<BackfillJobSummary, IngestionExecutionError> {
+        if self.config.chainlink_candlesticks.credentials.is_none() {
+            return Err(IngestionExecutionError::permanent(
+                "Chainlink Candlestick credentials are not configured for this worker",
+            ));
+        }
+        let mut summary = summary_from_progress(&progress);
+        let mut date = checkpoint_date(claim).unwrap_or(range_start.date_naive());
+        let end_date = range_end.date_naive();
+        while date < end_date {
+            self.ensure_continue(claim, cancellation).await?;
+            let logical_key = self.config.chainlink_candlesticks.logical_key(date);
+            let source_uri = self.config.chainlink_candlesticks.source_uri(date);
+            progress.current_logical_key = Some(logical_key.clone());
+            let prepared = self
+                .repository
+                .prepare_artifact(
+                    claim,
+                    &ArtifactSpec {
+                        job_id: claim.job.job_id,
+                        ingester: IngesterKey::ChainlinkBtcusdOneMinuteCandles,
+                        logical_key,
+                        provider: CHAINLINK_CANDLESTICK_PROVIDER.to_string(),
+                        source_uri,
+                        source_date: Some(date),
+                        expected_checksum: None,
+                        metadata: serde_json::json!({
+                            "symbol": self.config.chainlink_candlesticks.symbol,
+                            "resolution": "1m",
+                            "price_decimals": 18,
+                            "volume_supported": false,
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            if prepared.disposition == ArtifactDisposition::AlreadyCompleted {
+                observe_reused_artifact(&mut progress, &mut summary, &prepared.artifact);
+                date += ChronoDuration::days(1);
+                self.finish_work_unit(claim, &mut progress, range_end, Some(date))
+                    .await?;
+                continue;
+            }
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Downloading,
+            )
+            .await?;
+            let day = match self
+                .config
+                .chainlink_candlesticks
+                .fetch_day(&self.client, date, cancellation)
+                .await
+            {
+                Ok(day) => day,
+                Err(error) => {
+                    let _ = self
+                        .repository
+                        .fail_artifact(claim, prepared.artifact.artifact_id, &error.to_string())
+                        .await;
+                    return Err(classify_chainlink_error(error));
+                }
+            };
+            if day.records.is_empty() {
+                let message =
+                    format!("Chainlink returned no BTC/USD one-minute candles for {date}");
+                let _ = self
+                    .repository
+                    .fail_artifact(claim, prepared.artifact.artifact_id, &message)
+                    .await;
+                return Err(IngestionExecutionError::permanent(message));
+            }
+            progress.bytes_downloaded =
+                progress.bytes_downloaded.saturating_add(day.response_bytes);
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Downloaded,
+            )
+            .await?;
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Verified,
+            )
+            .await?;
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Ingesting,
+            )
+            .await?;
+            for batch in day.records.chunks(self.config.batch_rows) {
+                self.ensure_continue(claim, cancellation).await?;
+                let result = self
+                    .repository
+                    .insert_chainlink_candle_batch(claim, prepared.artifact.artifact_id, batch)
+                    .await
+                    .map_err(IngestionExecutionError::transient)?;
+                observe_batch(&mut progress, &mut summary, result);
+                self.update_batch_checkpoint(claim, &progress, date).await?;
+            }
+            let minimum_source_timestamp = day.records.first().map(|row| row.open_timestamp);
+            let maximum_source_timestamp = day.records.last().map(|row| row.open_timestamp);
+            let missing_minutes = 1_440usize.saturating_sub(day.records.len());
+            self.repository
+                .complete_artifact(
+                    claim,
+                    prepared.artifact.artifact_id,
+                    &ArtifactCompletion {
+                        actual_checksum: day.sha256,
+                        compressed_bytes: day.response_bytes,
+                        record_count: u64::try_from(day.records.len())
+                            .map_err(IngestionExecutionError::permanent)?,
+                        minimum_source_timestamp,
+                        maximum_source_timestamp,
+                        metadata: serde_json::json!({
+                            "symbol": self.config.chainlink_candlesticks.symbol,
+                            "resolution": "1m",
+                            "expected_records": 1440,
+                            "missing_minutes": missing_minutes,
+                            "volume_supported": false,
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            summary.artifacts_completed = summary.artifacts_completed.saturating_add(1);
+            date += ChronoDuration::days(1);
+            self.finish_work_unit(claim, &mut progress, range_end, Some(date))
+                .await?;
+        }
+        summary.completed_work_units = progress.completed_work_units;
+        Ok(summary)
+    }
+
+    async fn ingest_binance_open_interest(
+        &self,
+        claim: &ClaimedJob,
+        range_start: DateTime<Utc>,
+        range_end: DateTime<Utc>,
+        mut progress: BackfillProgress,
+        cancellation: &ArchiveCancellation,
+    ) -> std::result::Result<BackfillJobSummary, IngestionExecutionError> {
+        let mut summary = summary_from_progress(&progress);
+        let mut date = checkpoint_date(claim).unwrap_or(range_start.date_naive());
+        let end_date = range_end.date_naive();
+        while date < end_date {
+            self.ensure_continue(claim, cancellation).await?;
+            let logical_key = self.config.binance_open_interest.logical_key(date);
+            let source_uri = self.config.binance_open_interest.source_uri(date);
+            progress.current_logical_key = Some(logical_key.clone());
+            let prepared = self
+                .repository
+                .prepare_artifact(
+                    claim,
+                    &ArtifactSpec {
+                        job_id: claim.job.job_id,
+                        ingester: IngesterKey::BinanceBtcusdtFiveMinuteOpenInterest,
+                        logical_key,
+                        provider: BINANCE_OPEN_INTEREST_PROVIDER.to_string(),
+                        source_uri,
+                        source_date: Some(date),
+                        expected_checksum: None,
+                        metadata: serde_json::json!({
+                            "symbol": self.config.binance_open_interest.symbol,
+                            "period": "5m",
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            if prepared.disposition == ArtifactDisposition::AlreadyCompleted {
+                observe_reused_artifact(&mut progress, &mut summary, &prepared.artifact);
+                date += ChronoDuration::days(1);
+                self.finish_work_unit(claim, &mut progress, range_end, Some(date))
+                    .await?;
+                continue;
+            }
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Downloading,
+            )
+            .await?;
+            let day = match self
+                .config
+                .binance_open_interest
+                .fetch_day(&self.client, date, cancellation)
+                .await
+            {
+                Ok(day) => day,
+                Err(error) => {
+                    let _ = self
+                        .repository
+                        .fail_artifact(claim, prepared.artifact.artifact_id, &error.to_string())
+                        .await;
+                    return Err(classify_public_http_error(error));
+                }
+            };
+            if day.records.is_empty() {
+                let message = format!("Binance returned no BTCUSDT open-interest rows for {date}");
+                let _ = self
+                    .repository
+                    .fail_artifact(claim, prepared.artifact.artifact_id, &message)
+                    .await;
+                return Err(IngestionExecutionError::permanent(message));
+            }
+            progress.bytes_downloaded =
+                progress.bytes_downloaded.saturating_add(day.response_bytes);
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Downloaded,
+            )
+            .await?;
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Verified,
+            )
+            .await?;
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Ingesting,
+            )
+            .await?;
+            for batch in day.records.chunks(self.config.batch_rows) {
+                self.ensure_continue(claim, cancellation).await?;
+                let result = self
+                    .repository
+                    .insert_binance_open_interest_batch(claim, prepared.artifact.artifact_id, batch)
+                    .await
+                    .map_err(IngestionExecutionError::transient)?;
+                observe_batch(&mut progress, &mut summary, result);
+                self.update_batch_checkpoint(claim, &progress, date).await?;
+            }
+            let minimum_source_timestamp = day.records.first().map(|row| row.source_timestamp);
+            let maximum_source_timestamp = day.records.last().map(|row| row.source_timestamp);
+            let missing_intervals = 288usize.saturating_sub(day.records.len());
+            self.repository
+                .complete_artifact(
+                    claim,
+                    prepared.artifact.artifact_id,
+                    &ArtifactCompletion {
+                        actual_checksum: day.sha256,
+                        compressed_bytes: day.response_bytes,
+                        record_count: u64::try_from(day.records.len())
+                            .map_err(IngestionExecutionError::permanent)?,
+                        minimum_source_timestamp,
+                        maximum_source_timestamp,
+                        metadata: serde_json::json!({
+                            "symbol": self.config.binance_open_interest.symbol,
+                            "period": "5m",
+                            "expected_records": 288,
+                            "missing_intervals": missing_intervals,
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            summary.artifacts_completed = summary.artifacts_completed.saturating_add(1);
+            date += ChronoDuration::days(1);
+            self.finish_work_unit(claim, &mut progress, range_end, Some(date))
+                .await?;
+        }
+        summary.completed_work_units = progress.completed_work_units;
+        Ok(summary)
+    }
+
     async fn ingest_polygon_chainlink_oracle(
         &self,
         claim: &ClaimedJob,
@@ -1931,6 +2236,27 @@ fn classify_chainlink_error(error: anyhow::Error) -> IngestionExecutionError {
         || error.to_string().contains("credentials are not configured")
         || error.to_string().contains("invalid Chainlink")
         || error.to_string().contains("failed to decode Chainlink")
+    {
+        IngestionExecutionError::permanent(error)
+    } else {
+        IngestionExecutionError::transient(error)
+    }
+}
+
+fn classify_public_http_error(error: anyhow::Error) -> IngestionExecutionError {
+    let permanent_http_error = error.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .and_then(reqwest::Error::status)
+            .filter(|status| {
+                status.is_client_error()
+                    && *status != reqwest::StatusCode::TOO_MANY_REQUESTS
+                    && *status != reqwest::StatusCode::REQUEST_TIMEOUT
+            })
+    });
+    if permanent_http_error.is_some()
+        || error.to_string().contains("invalid Binance")
+        || error.to_string().contains("contained invalid")
     {
         IngestionExecutionError::permanent(error)
     } else {
@@ -2582,6 +2908,17 @@ mod tests {
                     .to_string(),
                 page_limit: 1_000,
                 credentials: None,
+            },
+            chainlink_candlesticks: ChainlinkCandlestickConfig {
+                base_url: "https://candles.example".to_string(),
+                symbol: super::super::chainlink_candlestick::DEFAULT_CHAINLINK_CANDLESTICK_SYMBOL
+                    .to_string(),
+                credentials: None,
+            },
+            binance_open_interest: BinanceOpenInterestConfig {
+                base_url: "https://futures.example".to_string(),
+                symbol: super::super::binance_open_interest::DEFAULT_BINANCE_OPEN_INTEREST_SYMBOL
+                    .to_string(),
             },
             polygon_chainlink: PolygonChainlinkOracleConfig {
                 rpc_url: "https://polygon.example".to_string(),
