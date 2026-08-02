@@ -28,8 +28,8 @@ x-weather-worker: &weather-worker
     dockerfile: packages/nyc-temperature-model/Dockerfile
   image: capitonic/nyc-temperature-model:local
   init: true
-  mem_limit: 3g
-  cpus: "2"
+  mem_limit: 2g
+  cpus: "1.5"
   pids_limit: 192
   read_only: true
   tmpfs:
@@ -113,6 +113,22 @@ services:
       <<: *weather-environment
       WEATHER_WORKER_ID: "temperature-worker-2"
       WEATHER_CACHE_DIR: "/var/lib/weather/cache/worker-2"
+
+  temperature-worker-3:
+    <<: *weather-worker
+    command: ["worker"]
+    environment:
+      <<: *weather-environment
+      WEATHER_WORKER_ID: "temperature-worker-3"
+      WEATHER_CACHE_DIR: "/var/lib/weather/cache/worker-3"
+
+  temperature-worker-4:
+    <<: *weather-worker
+    command: ["worker"]
+    environment:
+      <<: *weather-environment
+      WEATHER_WORKER_ID: "temperature-worker-4"
+      WEATHER_CACHE_DIR: "/var/lib/weather/cache/worker-4"
 
   temperature-model:
     <<: *weather-worker
