@@ -48,6 +48,7 @@ LABEL org.opencontainers.image.source="https://github.com/gunnermadsen/polymarke
 
 COPY --from=builder /app/target/release/polymarket-bot /usr/local/bin/polymarket-bot
 COPY --from=builder /app/target/release/polymarket-backfill-worker /usr/local/bin/polymarket-backfill-worker
+COPY --from=builder /app/target/release/binance-l2-backfill-plan /usr/local/bin/binance-l2-backfill-plan
 COPY --from=builder /app/target/release/kraken-backfill-worker /usr/local/bin/kraken-backfill-worker
 COPY --from=builder /app/target/release/kraken-backfill-plan /usr/local/bin/kraken-backfill-plan
 COPY --from=builder /app/target/release/derive-clob-creds /usr/local/bin/derive-clob-creds

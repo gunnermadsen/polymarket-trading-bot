@@ -4,10 +4,10 @@ use anyhow::{anyhow, ensure, Context, Result};
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
 use polymarket_bot::ingestion::{
     job::{
-        ArtifactDisposition, ArtifactSpec, BackfillArtifactStatus, BackfillJobStatus,
-        BackfillJobSummary, BackfillRequest, BinanceAggregateTradeRecord,
-        BinanceOneSecondKlineRecord, IngesterKey, ValidatedBackfillRequest, WorkerControl,
-        BACKFILL_REQUEST_VERSION,
+        ArtifactCompletion, ArtifactDisposition, ArtifactSpec, BackfillArtifactStatus,
+        BackfillJobStatus, BackfillJobSummary, BackfillRequest, BinanceAggregateTradeRecord,
+        BinanceL2OneSecondFeature, BinanceOneSecondKlineRecord, IngesterKey,
+        ValidatedBackfillRequest, WorkerControl, BACKFILL_REQUEST_VERSION,
     },
     repository::IngestionRepository,
 };
@@ -347,6 +347,167 @@ async fn completed_artifacts_reject_updates_and_deletes() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn cryptohft_request_budget_is_global_across_independent_pools() -> Result<()> {
+    let _guard = test_serializer().lock().await;
+    let Some(first_pool) = connect_test_database().await? else {
+        return Ok(());
+    };
+    let second_pool = connect_additional_test_database().await?;
+    let first_repository = IngestionRepository::from_pool(first_pool.clone());
+    let second_repository = IngestionRepository::from_pool(second_pool.clone());
+
+    let (first_slot, second_slot) = tokio::try_join!(
+        first_repository.reserve_cryptohft_request_slot(),
+        second_repository.reserve_cryptohft_request_slot(),
+    )?;
+    let separation_milliseconds = (second_slot - first_slot).num_milliseconds().abs();
+    ensure!(
+        separation_milliseconds >= 1_100,
+        "independent pools reserved CryptoHFT request slots only {separation_milliseconds}ms apart"
+    );
+
+    first_pool.close().await;
+    second_pool.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_l2_artifact_clears_staging_without_publishing() -> Result<()> {
+    let _guard = test_serializer().lock().await;
+    let Some(pool) = connect_test_database().await? else {
+        return Ok(());
+    };
+    let repository = IngestionRepository::from_pool(pool.clone());
+    let tag = unique_tag();
+
+    let outcome = async {
+        assert_no_runnable_jobs(&pool).await?;
+        let day_start = l2_day_start();
+        let queued = repository
+            .enqueue(&request(
+                IngesterKey::BinanceBtcusdtL2OneSecondFeatures,
+                day_start,
+                day_start + ChronoDuration::days(1),
+                format!("{tag}l2-failure-job"),
+            )?)
+            .await?;
+        let claim = repository
+            .claim_next(&format!("{tag}l2-failure-worker"), ACTIVE_LEASE)
+            .await?
+            .context("worker did not claim the Binance L2 failure test job")?;
+        ensure!(claim.job.job_id == queued.job_id);
+        let prepared = prepare_ingesting_artifact(
+            &repository,
+            &claim,
+            IngesterKey::BinanceBtcusdtL2OneSecondFeatures,
+            &tag,
+            "l2-failure",
+            day_start.date_naive(),
+        )
+        .await?;
+        let artifact_id = prepared.artifact.artifact_id;
+        let feature = l2_feature(day_start + ChronoDuration::seconds(1));
+
+        repository
+            .stage_binance_l2_one_second_feature_batch(&claim, artifact_id, &[feature.clone()])
+            .await?;
+        ensure!(l2_staging_count(&pool, artifact_id).await? == 1);
+        ensure!(l2_final_count(&pool, artifact_id).await? == 0);
+        ensure!(l2_training_count(&pool, &feature).await? == 0);
+
+        let failed = repository
+            .fail_binance_l2_artifact(&claim, artifact_id, "expected test failure")
+            .await?;
+        ensure!(failed.status == BackfillArtifactStatus::Failed);
+        ensure!(l2_staging_count(&pool, artifact_id).await? == 0);
+        ensure!(l2_final_count(&pool, artifact_id).await? == 0);
+        ensure!(l2_training_count(&pool, &feature).await? == 0);
+        repository
+            .complete(&claim, &BackfillJobSummary::default())
+            .await?;
+        Ok(())
+    }
+    .await;
+
+    finish_committed_test(pool, &tag, outcome).await
+}
+
+#[tokio::test]
+async fn l2_publication_is_atomic_training_visible_and_immutable() -> Result<()> {
+    let _guard = test_serializer().lock().await;
+    let Some(pool) = connect_test_database().await? else {
+        return Ok(());
+    };
+    let repository = IngestionRepository::from_pool(pool.clone());
+    let tag = unique_tag();
+
+    assert_no_runnable_jobs(&pool).await?;
+    let day_start = l2_day_start();
+    let queued = repository
+        .enqueue(&request(
+            IngesterKey::BinanceBtcusdtL2OneSecondFeatures,
+            day_start,
+            day_start + ChronoDuration::days(1),
+            format!("{tag}l2-publish-job"),
+        )?)
+        .await?;
+    let claim = repository
+        .claim_next(&format!("{tag}l2-publish-worker"), ACTIVE_LEASE)
+        .await?
+        .context("worker did not claim the Binance L2 publication test job")?;
+    ensure!(claim.job.job_id == queued.job_id);
+    let prepared = prepare_ingesting_artifact(
+        &repository,
+        &claim,
+        IngesterKey::BinanceBtcusdtL2OneSecondFeatures,
+        &tag,
+        "l2-publish",
+        day_start.date_naive(),
+    )
+    .await?;
+    let artifact_id = prepared.artifact.artifact_id;
+    let feature = l2_feature(day_start + ChronoDuration::seconds(2));
+
+    repository
+        .stage_binance_l2_one_second_feature_batch(&claim, artifact_id, &[feature.clone()])
+        .await?;
+    ensure!(l2_staging_count(&pool, artifact_id).await? == 1);
+    ensure!(l2_final_count(&pool, artifact_id).await? == 0);
+    ensure!(l2_training_count(&pool, &feature).await? == 0);
+
+    let completed = repository
+        .publish_binance_l2_one_second_features(
+            &claim,
+            artifact_id,
+            &ArtifactCompletion {
+                actual_checksum: "b".repeat(64),
+                compressed_bytes: 1_024,
+                record_count: 1,
+                minimum_source_timestamp: Some(feature.source_event_timestamp),
+                maximum_source_timestamp: Some(feature.source_event_timestamp),
+                metadata: json!({
+                    "materialization_contract":
+                        "cryptohft-binance-futures-btcusdt-l2-features-v1"
+                }),
+            },
+        )
+        .await?;
+    ensure!(completed.status == BackfillArtifactStatus::Completed);
+    ensure!(l2_staging_count(&pool, artifact_id).await? == 0);
+    ensure!(l2_final_count(&pool, artifact_id).await? == 1);
+    ensure!(l2_training_count(&pool, &feature).await? == 1);
+    repository
+        .complete(&claim, &BackfillJobSummary::default())
+        .await?;
+
+    assert_l2_feature_mutation_rejected(&pool, artifact_id, L2FeatureMutation::Update).await?;
+    assert_l2_feature_mutation_rejected(&pool, artifact_id, L2FeatureMutation::Delete).await?;
+
+    pool.close().await;
+    Ok(())
+}
+
 fn test_serializer() -> &'static Mutex<()> {
     TEST_SERIALIZER.get_or_init(|| Mutex::new(()))
 }
@@ -371,6 +532,15 @@ async fn connect_test_database() -> Result<Option<PgPool>> {
           AND to_regclass('polymarket.backfill_artifacts') IS NOT NULL
           AND to_regclass('polymarket.binance_aggregate_trades') IS NOT NULL
           AND to_regclass('polymarket.binance_one_second_klines') IS NOT NULL
+          AND to_regclass('polymarket.binance_btcusdt_l2_one_second_features') IS NOT NULL
+          AND to_regclass('polymarket.binance_btcusdt_l2_one_second_features_staging') IS NOT NULL
+          AND to_regclass('polymarket.binance_btcusdt_l2_training_features') IS NOT NULL
+          AND to_regclass('polymarket.cryptohft_request_budget') IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM polymarket.cryptohft_request_budget
+            WHERE provider = 'cryptohftdata' AND spacing_milliseconds = 1100
+          )
         "#,
     )
     .fetch_one(&pool)
@@ -381,6 +551,17 @@ async fn connect_test_database() -> Result<Option<PgPool>> {
         "{TEST_DATABASE_ENV} must point to a migrated disposable test database"
     );
     Ok(Some(pool))
+}
+
+async fn connect_additional_test_database() -> Result<PgPool> {
+    let database_url = env::var(TEST_DATABASE_ENV)
+        .with_context(|| format!("{TEST_DATABASE_ENV} disappeared during the test"))?;
+    PgPoolOptions::new()
+        .max_connections(2)
+        .acquire_timeout(StdDuration::from_secs(10))
+        .connect(&database_url)
+        .await
+        .with_context(|| format!("failed to open a second pool using {TEST_DATABASE_ENV}"))
 }
 
 fn unique_tag() -> String {
@@ -396,6 +577,14 @@ fn unique_day_start() -> DateTime<Utc> {
 
 fn unique_five_minute_start() -> DateTime<Utc> {
     unique_day_start() + ChronoDuration::minutes(5)
+}
+
+fn l2_day_start() -> DateTime<Utc> {
+    NaiveDate::from_ymd_opt(2026, 4, 14)
+        .expect("valid Binance L2 test date")
+        .and_hms_opt(0, 0, 0)
+        .expect("valid UTC midnight")
+        .and_utc()
 }
 
 fn unique_positive_i64() -> i64 {
@@ -514,6 +703,100 @@ fn one_second_kline(open_timestamp: DateTime<Utc>) -> BinanceOneSecondKlineRecor
     }
 }
 
+fn l2_feature(second_start: DateTime<Utc>) -> BinanceL2OneSecondFeature {
+    BinanceL2OneSecondFeature {
+        symbol: "BTCUSDT".to_string(),
+        second_start,
+        source_event_timestamp: second_start + ChronoDuration::milliseconds(100),
+        provider_received_at: second_start + ChronoDuration::milliseconds(150),
+        available_at: second_start + ChronoDuration::milliseconds(250),
+        source_update_id: unique_positive_i64(),
+        feature_schema_version: "binance-btcusdt-l2-one-second-features-v1".to_string(),
+        quality_status: "qualified".to_string(),
+        midpoint: dec!(50000),
+        microprice: dec!(50000.01),
+        spread_bps: dec!(0.2),
+        bid_depth_5: dec!(1),
+        ask_depth_5: dec!(1),
+        imbalance_5: dec!(0),
+        bid_depth_10: dec!(2),
+        ask_depth_10: dec!(2),
+        imbalance_10: dec!(0),
+        bid_depth_20: dec!(3),
+        ask_depth_20: dec!(3),
+        imbalance_20: dec!(0),
+        bid_depth_slope_20: dec!(0.1),
+        ask_depth_slope_20: dec!(0.1),
+        bid_depth_concentration_20: dec!(0.5),
+        ask_depth_concentration_20: dec!(0.5),
+        bid_quote_replenishment_1s: dec!(0),
+        ask_quote_replenishment_1s: dec!(0),
+        bid_quote_churn_1s: dec!(0),
+        ask_quote_churn_1s: dec!(0),
+        midpoint_change_bps_1s: dec!(0),
+        spread_bps_delta_1s: dec!(0),
+        depth_20_change_bps_1s: dec!(0),
+        imbalance_20_delta_1s: dec!(0),
+        midpoint_change_bps_5s: dec!(0),
+        spread_bps_delta_5s: dec!(0),
+        depth_20_change_bps_5s: dec!(0),
+        imbalance_20_delta_5s: dec!(0),
+        midpoint_change_bps_15s: dec!(0),
+        spread_bps_delta_15s: dec!(0),
+        depth_20_change_bps_15s: dec!(0),
+        imbalance_20_delta_15s: dec!(0),
+        midpoint_change_bps_30s: dec!(0),
+        spread_bps_delta_30s: dec!(0),
+        depth_20_change_bps_30s: dec!(0),
+        imbalance_20_delta_30s: dec!(0),
+        midpoint_change_bps_60s: dec!(0),
+        spread_bps_delta_60s: dec!(0),
+        depth_20_change_bps_60s: dec!(0),
+        imbalance_20_delta_60s: dec!(0),
+    }
+}
+
+async fn l2_staging_count(pool: &PgPool, artifact_id: Uuid) -> Result<i64> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT count(*)::bigint
+        FROM polymarket.binance_btcusdt_l2_one_second_features_staging
+        WHERE artifact_id = $1
+        "#,
+    )
+    .bind(artifact_id)
+    .fetch_one(pool)
+    .await?)
+}
+
+async fn l2_final_count(pool: &PgPool, artifact_id: Uuid) -> Result<i64> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT count(*)::bigint
+        FROM polymarket.binance_btcusdt_l2_one_second_features
+        WHERE artifact_id = $1
+        "#,
+    )
+    .bind(artifact_id)
+    .fetch_one(pool)
+    .await?)
+}
+
+async fn l2_training_count(pool: &PgPool, feature: &BinanceL2OneSecondFeature) -> Result<i64> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT count(*)::bigint
+        FROM polymarket.binance_btcusdt_l2_training_features
+        WHERE symbol = $1 AND second_start = $2 AND source_update_id = $3
+        "#,
+    )
+    .bind(&feature.symbol)
+    .bind(feature.second_start)
+    .bind(feature.source_update_id)
+    .fetch_one(pool)
+    .await?)
+}
+
 async fn finish_committed_test(pool: PgPool, tag: &str, outcome: Result<()>) -> Result<()> {
     let cleanup = cleanup_tagged_rows(&pool, tag).await;
     pool.close().await;
@@ -547,6 +830,39 @@ async fn cleanup_tagged_rows(pool: &PgPool, tag: &str) -> Result<()> {
         immutable_facts == 0,
         "test cleanup cannot remove {immutable_facts} immutable reference fact(s)"
     );
+
+    let immutable_l2_features = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT count(*)
+        FROM polymarket.binance_btcusdt_l2_one_second_features AS feature
+        JOIN polymarket.backfill_artifacts AS artifact
+          ON artifact.artifact_id = feature.artifact_id
+        JOIN polymarket.backfill_jobs AS job ON job.job_id = artifact.job_id
+        WHERE job.idempotency_key LIKE $1
+        "#,
+    )
+    .bind(&pattern)
+    .fetch_one(&mut *transaction)
+    .await?;
+    ensure!(
+        immutable_l2_features == 0,
+        "test cleanup cannot remove {immutable_l2_features} immutable Binance L2 feature(s)"
+    );
+
+    sqlx::query(
+        r#"
+        DELETE FROM polymarket.binance_btcusdt_l2_one_second_features_staging
+        WHERE artifact_id IN (
+          SELECT artifact.artifact_id
+          FROM polymarket.backfill_artifacts AS artifact
+          JOIN polymarket.backfill_jobs AS job ON job.job_id = artifact.job_id
+          WHERE job.idempotency_key LIKE $1
+        )
+        "#,
+    )
+    .bind(&pattern)
+    .execute(&mut *transaction)
+    .await?;
 
     sqlx::query(
         r#"
@@ -606,6 +922,71 @@ async fn cleanup_tagged_rows(pool: &PgPool, tag: &str) -> Result<()> {
 enum CompletedArtifactMutation {
     Update,
     Delete,
+}
+
+#[derive(Clone, Copy)]
+enum L2FeatureMutation {
+    Update,
+    Delete,
+}
+
+impl L2FeatureMutation {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Update => "update",
+            Self::Delete => "delete",
+        }
+    }
+}
+
+async fn assert_l2_feature_mutation_rejected(
+    pool: &PgPool,
+    artifact_id: Uuid,
+    mutation: L2FeatureMutation,
+) -> Result<()> {
+    let mutation_result = match mutation {
+        L2FeatureMutation::Update => {
+            sqlx::query(
+                r#"
+                UPDATE polymarket.binance_btcusdt_l2_one_second_features
+                SET midpoint = midpoint + 1
+                WHERE artifact_id = $1
+                "#,
+            )
+            .bind(artifact_id)
+            .execute(pool)
+            .await
+        }
+        L2FeatureMutation::Delete => sqlx::query(
+            "DELETE FROM polymarket.binance_btcusdt_l2_one_second_features WHERE artifact_id = $1",
+        )
+        .bind(artifact_id)
+        .execute(pool)
+        .await,
+    };
+    let sql_state = mutation_result
+        .as_ref()
+        .err()
+        .and_then(sqlx::Error::as_database_error)
+        .and_then(|error| error.code())
+        .map(|code| code.into_owned());
+    ensure!(
+        mutation_result.is_err(),
+        "immutable Binance L2 feature {} unexpectedly succeeded",
+        mutation.name()
+    );
+    ensure!(
+        sql_state.as_deref() == Some("23000"),
+        "immutable Binance L2 feature {} returned SQLSTATE {:?}, expected 23000",
+        mutation.name(),
+        sql_state
+    );
+    ensure!(
+        l2_final_count(pool, artifact_id).await? == 1,
+        "immutable Binance L2 feature disappeared after rejected {}",
+        mutation.name()
+    );
+    Ok(())
 }
 
 impl CompletedArtifactMutation {

@@ -7,16 +7,17 @@ use serde_json::Value;
 use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Row, Transaction};
 use uuid::Uuid;
 
+use crate::ingestion::cryptohft_binance_l2::validate_representative_day_quality;
 use crate::ingestion::job::{
     ArtifactCompletion, ArtifactDisposition, ArtifactSpec, BackfillArtifact,
     BackfillArtifactStatus, BackfillCheckpoint, BackfillEventLevel, BackfillFailureKind,
     BackfillJob, BackfillJobEvent, BackfillJobStatus, BackfillJobSummary, BackfillProgress,
     BatchWriteResult, BinanceAggregateTradeRecord, BinanceBtcusdtOpenInterestRecord,
-    BinanceOneSecondKlineRecord, BtcExecutionSnapshot, BtcIntervalMarket, BtcOrderbookArchiveEvent,
-    BtcOrderbookMarketScope, BtcOutcome, BtcReferenceFact, BtcResolutionCandidate,
-    ChainlinkBtcusdArchiveTick, ChainlinkBtcusdOneMinuteCandle, ClaimedJob, IngesterKey,
-    PolygonChainlinkBtcusdOracleRound, PreparedArtifact, TrainingReadiness,
-    ValidatedBackfillRequest, WorkerControl,
+    BinanceL2OneSecondFeature, BinanceOneSecondKlineRecord, BtcExecutionSnapshot,
+    BtcIntervalMarket, BtcOrderbookArchiveEvent, BtcOrderbookMarketScope, BtcOutcome,
+    BtcReferenceFact, BtcResolutionCandidate, ChainlinkBtcusdArchiveTick,
+    ChainlinkBtcusdOneMinuteCandle, ClaimedJob, IngesterKey, PolygonChainlinkBtcusdOracleRound,
+    PreparedArtifact, TrainingReadiness, ValidatedBackfillRequest, WorkerControl,
 };
 
 const MAX_DATABASE_BATCH_ROWS: usize = 4_000;
@@ -30,6 +31,8 @@ const MAX_EXECUTION_SNAPSHOT_INSERT_ROWS: usize =
 const POLYGON_CHAINLINK_INSERT_COLUMNS: usize = 15;
 const MAX_POLYGON_CHAINLINK_INSERT_ROWS: usize =
     POSTGRES_MAX_BIND_PARAMETERS / POLYGON_CHAINLINK_INSERT_COLUMNS;
+const BINANCE_L2_FEATURE_INSERT_COLUMNS: usize = 49;
+const MAX_BINANCE_L2_FEATURE_INSERT_ROWS: usize = 1_000;
 
 #[derive(Clone)]
 pub struct IngestionRepository {
@@ -51,6 +54,76 @@ pub struct RawOrderbookEventPage {
 impl IngestionRepository {
     pub fn from_pool(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    pub async fn reserve_cryptohft_request_slot(&self) -> Result<DateTime<Utc>> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin CryptoHFT request-budget transaction")?;
+        let row = sqlx::query(
+            r#"
+            SELECT GREATEST(next_request_at, clock_timestamp()) AS scheduled_at,
+              spacing_milliseconds
+            FROM polymarket.cryptohft_request_budget
+            WHERE provider = 'cryptohftdata'
+            FOR UPDATE
+            "#,
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .context("failed to lock the CryptoHFT request budget")?;
+        let scheduled_at: DateTime<Utc> = row.try_get("scheduled_at")?;
+        let spacing_milliseconds: i32 = row.try_get("spacing_milliseconds")?;
+        if spacing_milliseconds != 1_100 {
+            bail!("CryptoHFT request budget does not match the materialization contract");
+        }
+        let updated = sqlx::query(
+            r#"
+            UPDATE polymarket.cryptohft_request_budget
+            SET next_request_at = $1 + ($2 * interval '1 millisecond'), updated_at = now()
+            WHERE provider = 'cryptohftdata'
+            "#,
+        )
+        .bind(scheduled_at)
+        .bind(spacing_milliseconds)
+        .execute(&mut *tx)
+        .await
+        .context("failed to reserve the CryptoHFT request slot")?;
+        if updated.rows_affected() != 1 {
+            bail!("CryptoHFT request budget row was not updated");
+        }
+        tx.commit()
+            .await
+            .context("failed to commit the CryptoHFT request slot")?;
+        Ok(scheduled_at)
+    }
+
+    pub async fn require_binance_l2_representative_source_gate(
+        &self,
+        representative_logical_key: &str,
+    ) -> Result<()> {
+        let metadata = sqlx::query_scalar::<_, Value>(
+            r#"
+            SELECT metadata
+            FROM polymarket.backfill_artifacts
+            WHERE ingester_key = 'binance_btcusdt_l2_one_second_features'
+              AND provider = 'cryptohftdata'
+              AND logical_key = $1
+              AND status = 'completed'
+            "#,
+        )
+        .bind(representative_logical_key)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to inspect the Binance L2 representative source audit")?
+        .with_context(|| {
+            format!(
+                "Binance L2 representative source audit {representative_logical_key} is not completed"
+            )
+        })?;
+        validate_representative_day_quality(&metadata)
     }
 
     pub async fn enqueue(&self, request: &ValidatedBackfillRequest) -> Result<BackfillJob> {
@@ -1915,6 +1988,421 @@ impl IngestionRepository {
         })
     }
 
+    pub async fn stage_binance_l2_one_second_feature_batch(
+        &self,
+        claim: &ClaimedJob,
+        artifact_id: Uuid,
+        records: &[BinanceL2OneSecondFeature],
+    ) -> Result<BatchWriteResult> {
+        if records.is_empty() {
+            return Ok(BatchWriteResult::default());
+        }
+        if records.len() > MAX_BINANCE_L2_FEATURE_INSERT_ROWS {
+            bail!("Binance L2 feature batch exceeds {MAX_BINANCE_L2_FEATURE_INSERT_ROWS} rows");
+        }
+        debug_assert!(
+            MAX_BINANCE_L2_FEATURE_INSERT_ROWS * BINANCE_L2_FEATURE_INSERT_COLUMNS
+                <= POSTGRES_MAX_BIND_PARAMETERS
+        );
+        validate_binance_l2_one_second_feature_batch(records)?;
+
+        let mut tx = self.pool.begin().await?;
+        require_active_lease(&mut tx, claim).await?;
+        lock_writable_artifact_for_staging(&mut tx, claim, artifact_id).await?;
+
+        let timestamps = records
+            .iter()
+            .map(|record| record.second_start)
+            .collect::<Vec<_>>();
+        let candidates = records
+            .iter()
+            .map(|record| (record.second_start, record))
+            .collect::<BTreeMap<_, _>>();
+        let existing = sqlx::query_as::<_, ExistingBinanceL2OneSecondFeatureRow>(
+            r#"
+            SELECT symbol, second_start, source_event_timestamp, provider_received_at,
+              available_at, source_update_id, feature_schema_version, quality_status,
+              midpoint, microprice, spread_bps, bid_depth_5, ask_depth_5, imbalance_5,
+              bid_depth_10, ask_depth_10, imbalance_10, bid_depth_20, ask_depth_20,
+              imbalance_20, bid_depth_slope_20, ask_depth_slope_20,
+              bid_depth_concentration_20, ask_depth_concentration_20,
+              bid_quote_replenishment_1s, ask_quote_replenishment_1s,
+              bid_quote_churn_1s, ask_quote_churn_1s, midpoint_change_bps_1s,
+              spread_bps_delta_1s, depth_20_change_bps_1s, imbalance_20_delta_1s,
+              midpoint_change_bps_5s, spread_bps_delta_5s, depth_20_change_bps_5s,
+              imbalance_20_delta_5s, midpoint_change_bps_15s, spread_bps_delta_15s,
+              depth_20_change_bps_15s, imbalance_20_delta_15s,
+              midpoint_change_bps_30s, spread_bps_delta_30s, depth_20_change_bps_30s,
+              imbalance_20_delta_30s, midpoint_change_bps_60s, spread_bps_delta_60s,
+              depth_20_change_bps_60s, imbalance_20_delta_60s, artifact_id
+            FROM polymarket.binance_btcusdt_l2_one_second_features_staging
+            WHERE artifact_id = $1 AND symbol = 'BTCUSDT' AND second_start = ANY($2)
+            "#,
+        )
+        .bind(artifact_id)
+        .bind(&timestamps)
+        .fetch_all(&mut *tx)
+        .await
+        .context("failed to inspect existing Binance L2 one-second features")?;
+        for stored in &existing {
+            let candidate = candidates.get(&stored.second_start).with_context(|| {
+                format!(
+                    "stored Binance L2 feature identity {} was absent from its candidate batch",
+                    stored.second_start
+                )
+            })?;
+            if !stored.same_as(candidate, artifact_id) {
+                bail!(
+                    "immutable Binance L2 one-second feature conflict for {}:{}",
+                    stored.symbol,
+                    stored.second_start
+                );
+            }
+        }
+
+        let mut query = QueryBuilder::<Postgres>::new(
+            "INSERT INTO polymarket.binance_btcusdt_l2_one_second_features_staging (symbol, \
+             second_start, source_event_timestamp, provider_received_at, available_at, \
+             source_update_id, feature_schema_version, quality_status, midpoint, microprice, \
+             spread_bps, bid_depth_5, ask_depth_5, imbalance_5, bid_depth_10, ask_depth_10, \
+             imbalance_10, bid_depth_20, ask_depth_20, imbalance_20, bid_depth_slope_20, \
+             ask_depth_slope_20, bid_depth_concentration_20, ask_depth_concentration_20, \
+             bid_quote_replenishment_1s, ask_quote_replenishment_1s, bid_quote_churn_1s, \
+             ask_quote_churn_1s, midpoint_change_bps_1s, spread_bps_delta_1s, \
+             depth_20_change_bps_1s, imbalance_20_delta_1s, midpoint_change_bps_5s, \
+             spread_bps_delta_5s, depth_20_change_bps_5s, imbalance_20_delta_5s, \
+             midpoint_change_bps_15s, spread_bps_delta_15s, depth_20_change_bps_15s, \
+             imbalance_20_delta_15s, midpoint_change_bps_30s, spread_bps_delta_30s, \
+             depth_20_change_bps_30s, imbalance_20_delta_30s, midpoint_change_bps_60s, \
+             spread_bps_delta_60s, depth_20_change_bps_60s, imbalance_20_delta_60s, \
+             artifact_id) ",
+        );
+        query.push_values(records, |mut row, record| {
+            row.push_bind(&record.symbol)
+                .push_bind(record.second_start)
+                .push_bind(record.source_event_timestamp)
+                .push_bind(record.provider_received_at)
+                .push_bind(record.available_at)
+                .push_bind(record.source_update_id)
+                .push_bind(&record.feature_schema_version)
+                .push_bind(&record.quality_status)
+                .push_bind(record.midpoint)
+                .push_bind(record.microprice)
+                .push_bind(record.spread_bps)
+                .push_bind(record.bid_depth_5)
+                .push_bind(record.ask_depth_5)
+                .push_bind(record.imbalance_5)
+                .push_bind(record.bid_depth_10)
+                .push_bind(record.ask_depth_10)
+                .push_bind(record.imbalance_10)
+                .push_bind(record.bid_depth_20)
+                .push_bind(record.ask_depth_20)
+                .push_bind(record.imbalance_20)
+                .push_bind(record.bid_depth_slope_20)
+                .push_bind(record.ask_depth_slope_20)
+                .push_bind(record.bid_depth_concentration_20)
+                .push_bind(record.ask_depth_concentration_20)
+                .push_bind(record.bid_quote_replenishment_1s)
+                .push_bind(record.ask_quote_replenishment_1s)
+                .push_bind(record.bid_quote_churn_1s)
+                .push_bind(record.ask_quote_churn_1s)
+                .push_bind(record.midpoint_change_bps_1s)
+                .push_bind(record.spread_bps_delta_1s)
+                .push_bind(record.depth_20_change_bps_1s)
+                .push_bind(record.imbalance_20_delta_1s)
+                .push_bind(record.midpoint_change_bps_5s)
+                .push_bind(record.spread_bps_delta_5s)
+                .push_bind(record.depth_20_change_bps_5s)
+                .push_bind(record.imbalance_20_delta_5s)
+                .push_bind(record.midpoint_change_bps_15s)
+                .push_bind(record.spread_bps_delta_15s)
+                .push_bind(record.depth_20_change_bps_15s)
+                .push_bind(record.imbalance_20_delta_15s)
+                .push_bind(record.midpoint_change_bps_30s)
+                .push_bind(record.spread_bps_delta_30s)
+                .push_bind(record.depth_20_change_bps_30s)
+                .push_bind(record.imbalance_20_delta_30s)
+                .push_bind(record.midpoint_change_bps_60s)
+                .push_bind(record.spread_bps_delta_60s)
+                .push_bind(record.depth_20_change_bps_60s)
+                .push_bind(record.imbalance_20_delta_60s)
+                .push_bind(artifact_id);
+        });
+        query.push(" ON CONFLICT (artifact_id, symbol, second_start) DO NOTHING");
+        let inserted = query
+            .build()
+            .execute(&mut *tx)
+            .await
+            .context("failed to stage Binance L2 one-second feature batch")?
+            .rows_affected();
+        tx.commit().await?;
+        batch_write_result(
+            records.len(),
+            inserted,
+            "staged Binance L2 one-second feature",
+        )
+    }
+
+    pub async fn reset_binance_l2_feature_staging(
+        &self,
+        claim: &ClaimedJob,
+        artifact_id: Uuid,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        require_active_lease(&mut tx, claim).await?;
+        lock_writable_artifact_for_staging(&mut tx, claim, artifact_id).await?;
+        sqlx::query(
+            "DELETE FROM polymarket.binance_btcusdt_l2_one_second_features_staging WHERE artifact_id = $1",
+        )
+        .bind(artifact_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to reset staged Binance L2 features")?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn fail_binance_l2_artifact(
+        &self,
+        claim: &ClaimedJob,
+        artifact_id: Uuid,
+        error: &str,
+    ) -> Result<BackfillArtifact> {
+        let mut tx = self.pool.begin().await?;
+        require_active_lease(&mut tx, claim).await?;
+        let current = sqlx::query_as::<_, BackfillArtifactRow>(
+            r#"
+            SELECT artifact_id, job_id, ingester_key, logical_key, provider, source_uri,
+              source_date, checksum_algorithm, expected_checksum, actual_checksum,
+              compressed_bytes, record_count, minimum_source_timestamp, maximum_source_timestamp,
+              status, metadata, created_at, updated_at, completed_at
+            FROM polymarket.backfill_artifacts
+            WHERE artifact_id = $1 AND job_id = $2
+            FOR UPDATE
+            "#,
+        )
+        .bind(artifact_id)
+        .bind(claim.job.job_id)
+        .fetch_one(&mut *tx)
+        .await
+        .context("failed to lock Binance L2 artifact for failure cleanup")?;
+        if current.ingester_key != IngesterKey::BinanceBtcusdtL2OneSecondFeatures.as_str() {
+            bail!("artifact is not a Binance L2 materialization");
+        }
+        if current.status == "completed" {
+            bail!("completed Binance L2 artifact {artifact_id} is immutable");
+        }
+        sqlx::query(
+            "DELETE FROM polymarket.binance_btcusdt_l2_one_second_features_staging WHERE artifact_id = $1",
+        )
+        .bind(artifact_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to clear staged Binance L2 features")?;
+        let row = sqlx::query_as::<_, BackfillArtifactRow>(
+            r#"
+            UPDATE polymarket.backfill_artifacts
+            SET status = 'failed', metadata = metadata || $3, updated_at = now()
+            WHERE artifact_id = $1 AND job_id = $2 AND status <> 'completed'
+            RETURNING artifact_id, job_id, ingester_key, logical_key, provider, source_uri,
+              source_date, checksum_algorithm, expected_checksum, actual_checksum,
+              compressed_bytes, record_count, minimum_source_timestamp, maximum_source_timestamp,
+              status, metadata, created_at, updated_at, completed_at
+            "#,
+        )
+        .bind(artifact_id)
+        .bind(claim.job.job_id)
+        .bind(serde_json::json!({"error": error}))
+        .fetch_one(&mut *tx)
+        .await
+        .context("failed to mark Binance L2 artifact failed")?;
+        tx.commit()
+            .await
+            .context("failed to commit Binance L2 failure cleanup")?;
+        row.try_into()
+    }
+
+    pub async fn publish_binance_l2_one_second_features(
+        &self,
+        claim: &ClaimedJob,
+        artifact_id: Uuid,
+        completion: &ArtifactCompletion,
+    ) -> Result<BackfillArtifact> {
+        validate_sha256(&completion.actual_checksum, "actual checksum")?;
+        require_json_object(&completion.metadata, "artifact completion metadata")?;
+        if completion.minimum_source_timestamp.is_some()
+            != completion.maximum_source_timestamp.is_some()
+        {
+            bail!("artifact source timestamp bounds must both be present or both be absent");
+        }
+        if completion.minimum_source_timestamp > completion.maximum_source_timestamp {
+            bail!("artifact maximum source timestamp precedes its minimum");
+        }
+        let compressed_bytes = i64::try_from(completion.compressed_bytes)
+            .context("artifact compressed byte count exceeds Postgres bigint")?;
+        let record_count = i64::try_from(completion.record_count)
+            .context("artifact record count exceeds Postgres bigint")?;
+        let mut tx = self.pool.begin().await?;
+        require_active_lease(&mut tx, claim).await?;
+        let current = sqlx::query_as::<_, BackfillArtifactRow>(
+            r#"
+            SELECT artifact_id, job_id, ingester_key, logical_key, provider, source_uri,
+              source_date, checksum_algorithm, expected_checksum, actual_checksum,
+              compressed_bytes, record_count, minimum_source_timestamp, maximum_source_timestamp,
+              status, metadata, created_at, updated_at, completed_at
+            FROM polymarket.backfill_artifacts
+            WHERE artifact_id = $1 AND job_id = $2
+            FOR UPDATE
+            "#,
+        )
+        .bind(artifact_id)
+        .bind(claim.job.job_id)
+        .fetch_one(&mut *tx)
+        .await
+        .context("failed to lock Binance L2 artifact for publication")?;
+        if current.ingester_key != IngesterKey::BinanceBtcusdtL2OneSecondFeatures.as_str() {
+            bail!("artifact is not a Binance L2 materialization");
+        }
+        if let Some(expected) = current.expected_checksum.as_deref() {
+            if expected != completion.actual_checksum {
+                bail!(
+                    "artifact {artifact_id} checksum conflict: expected {expected}, received {}",
+                    completion.actual_checksum
+                );
+            }
+        }
+        if current.status == "completed" {
+            require_same_completed_artifact(&current, completion, compressed_bytes, record_count)?;
+            tx.commit().await?;
+            return current.try_into();
+        }
+        if current.status != "ingesting" {
+            bail!("Binance L2 artifact must be ingesting before atomic publication");
+        }
+        let source_date = current
+            .source_date
+            .context("Binance L2 artifact must have a source date")?;
+        let day_start = source_date
+            .and_hms_opt(0, 0, 0)
+            .context("Binance L2 source date could not be aligned to UTC midnight")?
+            .and_utc();
+        let day_end = day_start + chrono::Duration::days(1);
+        let staged_outside_day = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT EXISTS (
+              SELECT 1
+              FROM polymarket.binance_btcusdt_l2_one_second_features_staging
+              WHERE artifact_id = $1
+                AND (second_start < $2 OR second_start >= $3)
+            )
+            "#,
+        )
+        .bind(artifact_id)
+        .bind(day_start)
+        .bind(day_end)
+        .fetch_one(&mut *tx)
+        .await
+        .context("failed to validate the staged Binance L2 UTC day")?;
+        if staged_outside_day {
+            bail!("staged Binance L2 features escaped their artifact UTC day");
+        }
+        let staged_count = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*)::bigint FROM polymarket.binance_btcusdt_l2_one_second_features_staging WHERE artifact_id = $1",
+        )
+        .bind(artifact_id)
+        .fetch_one(&mut *tx)
+        .await
+        .context("failed to count staged Binance L2 features")?;
+        if staged_count != record_count {
+            bail!(
+                "staged Binance L2 row count {staged_count} did not match artifact count {record_count}"
+            );
+        }
+
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO polymarket.binance_btcusdt_l2_one_second_features (
+              symbol, second_start, source_event_timestamp, provider_received_at, available_at,
+              source_update_id, feature_schema_version, quality_status, midpoint, microprice,
+              spread_bps, bid_depth_5, ask_depth_5, imbalance_5, bid_depth_10, ask_depth_10,
+              imbalance_10, bid_depth_20, ask_depth_20, imbalance_20, bid_depth_slope_20,
+              ask_depth_slope_20, bid_depth_concentration_20, ask_depth_concentration_20,
+              bid_quote_replenishment_1s, ask_quote_replenishment_1s, bid_quote_churn_1s,
+              ask_quote_churn_1s, midpoint_change_bps_1s, spread_bps_delta_1s,
+              depth_20_change_bps_1s, imbalance_20_delta_1s, midpoint_change_bps_5s,
+              spread_bps_delta_5s, depth_20_change_bps_5s, imbalance_20_delta_5s,
+              midpoint_change_bps_15s, spread_bps_delta_15s, depth_20_change_bps_15s,
+              imbalance_20_delta_15s, midpoint_change_bps_30s, spread_bps_delta_30s,
+              depth_20_change_bps_30s, imbalance_20_delta_30s, midpoint_change_bps_60s,
+              spread_bps_delta_60s, depth_20_change_bps_60s, imbalance_20_delta_60s,
+              artifact_id
+            )
+            SELECT symbol, second_start, source_event_timestamp, provider_received_at, available_at,
+              source_update_id, feature_schema_version, quality_status, midpoint, microprice,
+              spread_bps, bid_depth_5, ask_depth_5, imbalance_5, bid_depth_10, ask_depth_10,
+              imbalance_10, bid_depth_20, ask_depth_20, imbalance_20, bid_depth_slope_20,
+              ask_depth_slope_20, bid_depth_concentration_20, ask_depth_concentration_20,
+              bid_quote_replenishment_1s, ask_quote_replenishment_1s, bid_quote_churn_1s,
+              ask_quote_churn_1s, midpoint_change_bps_1s, spread_bps_delta_1s,
+              depth_20_change_bps_1s, imbalance_20_delta_1s, midpoint_change_bps_5s,
+              spread_bps_delta_5s, depth_20_change_bps_5s, imbalance_20_delta_5s,
+              midpoint_change_bps_15s, spread_bps_delta_15s, depth_20_change_bps_15s,
+              imbalance_20_delta_15s, midpoint_change_bps_30s, spread_bps_delta_30s,
+              depth_20_change_bps_30s, imbalance_20_delta_30s, midpoint_change_bps_60s,
+              spread_bps_delta_60s, depth_20_change_bps_60s, imbalance_20_delta_60s,
+              artifact_id
+            FROM polymarket.binance_btcusdt_l2_one_second_features_staging
+            WHERE artifact_id = $1
+            ORDER BY symbol, second_start
+            "#,
+        )
+        .bind(artifact_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to atomically publish Binance L2 features")?
+        .rows_affected();
+        if inserted != u64::try_from(record_count).context("negative Binance L2 record count")? {
+            bail!("published Binance L2 row count did not match the staged row count");
+        }
+
+        let row = sqlx::query_as::<_, BackfillArtifactRow>(
+            r#"
+            UPDATE polymarket.backfill_artifacts
+            SET status = 'completed', actual_checksum = $3, compressed_bytes = $4,
+                record_count = $5, minimum_source_timestamp = $6,
+                maximum_source_timestamp = $7, metadata = metadata || $8,
+                completed_at = now(), updated_at = now()
+            WHERE artifact_id = $1 AND job_id = $2 AND status = 'ingesting'
+            RETURNING artifact_id, job_id, ingester_key, logical_key, provider, source_uri,
+              source_date, checksum_algorithm, expected_checksum, actual_checksum,
+              compressed_bytes, record_count, minimum_source_timestamp, maximum_source_timestamp,
+              status, metadata, created_at, updated_at, completed_at
+            "#,
+        )
+        .bind(artifact_id)
+        .bind(claim.job.job_id)
+        .bind(&completion.actual_checksum)
+        .bind(compressed_bytes)
+        .bind(record_count)
+        .bind(completion.minimum_source_timestamp)
+        .bind(completion.maximum_source_timestamp)
+        .bind(&completion.metadata)
+        .fetch_one(&mut *tx)
+        .await
+        .context("failed to complete Binance L2 artifact during publication")?;
+        sqlx::query(
+            "DELETE FROM polymarket.binance_btcusdt_l2_one_second_features_staging WHERE artifact_id = $1",
+        )
+        .bind(artifact_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to clear published Binance L2 staging rows")?;
+        tx.commit()
+            .await
+            .context("failed to commit atomic Binance L2 publication")?;
+        row.try_into()
+    }
+
     pub async fn training_readiness(
         &self,
         range_start: DateTime<Utc>,
@@ -2400,6 +2888,113 @@ impl ExistingKlineRow {
 }
 
 #[derive(Debug, FromRow)]
+struct ExistingBinanceL2OneSecondFeatureRow {
+    symbol: String,
+    second_start: DateTime<Utc>,
+    source_event_timestamp: DateTime<Utc>,
+    provider_received_at: DateTime<Utc>,
+    available_at: DateTime<Utc>,
+    source_update_id: i64,
+    feature_schema_version: String,
+    quality_status: String,
+    midpoint: Decimal,
+    microprice: Decimal,
+    spread_bps: Decimal,
+    bid_depth_5: Decimal,
+    ask_depth_5: Decimal,
+    imbalance_5: Decimal,
+    bid_depth_10: Decimal,
+    ask_depth_10: Decimal,
+    imbalance_10: Decimal,
+    bid_depth_20: Decimal,
+    ask_depth_20: Decimal,
+    imbalance_20: Decimal,
+    bid_depth_slope_20: Decimal,
+    ask_depth_slope_20: Decimal,
+    bid_depth_concentration_20: Decimal,
+    ask_depth_concentration_20: Decimal,
+    bid_quote_replenishment_1s: Decimal,
+    ask_quote_replenishment_1s: Decimal,
+    bid_quote_churn_1s: Decimal,
+    ask_quote_churn_1s: Decimal,
+    midpoint_change_bps_1s: Decimal,
+    spread_bps_delta_1s: Decimal,
+    depth_20_change_bps_1s: Decimal,
+    imbalance_20_delta_1s: Decimal,
+    midpoint_change_bps_5s: Decimal,
+    spread_bps_delta_5s: Decimal,
+    depth_20_change_bps_5s: Decimal,
+    imbalance_20_delta_5s: Decimal,
+    midpoint_change_bps_15s: Decimal,
+    spread_bps_delta_15s: Decimal,
+    depth_20_change_bps_15s: Decimal,
+    imbalance_20_delta_15s: Decimal,
+    midpoint_change_bps_30s: Decimal,
+    spread_bps_delta_30s: Decimal,
+    depth_20_change_bps_30s: Decimal,
+    imbalance_20_delta_30s: Decimal,
+    midpoint_change_bps_60s: Decimal,
+    spread_bps_delta_60s: Decimal,
+    depth_20_change_bps_60s: Decimal,
+    imbalance_20_delta_60s: Decimal,
+    artifact_id: Uuid,
+}
+
+impl ExistingBinanceL2OneSecondFeatureRow {
+    fn same_as(&self, row: &BinanceL2OneSecondFeature, artifact_id: Uuid) -> bool {
+        self.symbol == row.symbol
+            && self.second_start == row.second_start
+            && self.source_event_timestamp == row.source_event_timestamp
+            && self.provider_received_at == row.provider_received_at
+            && self.available_at == row.available_at
+            && self.source_update_id == row.source_update_id
+            && self.feature_schema_version == row.feature_schema_version
+            && self.quality_status == row.quality_status
+            && self.midpoint == row.midpoint
+            && self.microprice == row.microprice
+            && self.spread_bps == row.spread_bps
+            && self.bid_depth_5 == row.bid_depth_5
+            && self.ask_depth_5 == row.ask_depth_5
+            && self.imbalance_5 == row.imbalance_5
+            && self.bid_depth_10 == row.bid_depth_10
+            && self.ask_depth_10 == row.ask_depth_10
+            && self.imbalance_10 == row.imbalance_10
+            && self.bid_depth_20 == row.bid_depth_20
+            && self.ask_depth_20 == row.ask_depth_20
+            && self.imbalance_20 == row.imbalance_20
+            && self.bid_depth_slope_20 == row.bid_depth_slope_20
+            && self.ask_depth_slope_20 == row.ask_depth_slope_20
+            && self.bid_depth_concentration_20 == row.bid_depth_concentration_20
+            && self.ask_depth_concentration_20 == row.ask_depth_concentration_20
+            && self.bid_quote_replenishment_1s == row.bid_quote_replenishment_1s
+            && self.ask_quote_replenishment_1s == row.ask_quote_replenishment_1s
+            && self.bid_quote_churn_1s == row.bid_quote_churn_1s
+            && self.ask_quote_churn_1s == row.ask_quote_churn_1s
+            && self.midpoint_change_bps_1s == row.midpoint_change_bps_1s
+            && self.spread_bps_delta_1s == row.spread_bps_delta_1s
+            && self.depth_20_change_bps_1s == row.depth_20_change_bps_1s
+            && self.imbalance_20_delta_1s == row.imbalance_20_delta_1s
+            && self.midpoint_change_bps_5s == row.midpoint_change_bps_5s
+            && self.spread_bps_delta_5s == row.spread_bps_delta_5s
+            && self.depth_20_change_bps_5s == row.depth_20_change_bps_5s
+            && self.imbalance_20_delta_5s == row.imbalance_20_delta_5s
+            && self.midpoint_change_bps_15s == row.midpoint_change_bps_15s
+            && self.spread_bps_delta_15s == row.spread_bps_delta_15s
+            && self.depth_20_change_bps_15s == row.depth_20_change_bps_15s
+            && self.imbalance_20_delta_15s == row.imbalance_20_delta_15s
+            && self.midpoint_change_bps_30s == row.midpoint_change_bps_30s
+            && self.spread_bps_delta_30s == row.spread_bps_delta_30s
+            && self.depth_20_change_bps_30s == row.depth_20_change_bps_30s
+            && self.imbalance_20_delta_30s == row.imbalance_20_delta_30s
+            && self.midpoint_change_bps_60s == row.midpoint_change_bps_60s
+            && self.spread_bps_delta_60s == row.spread_bps_delta_60s
+            && self.depth_20_change_bps_60s == row.depth_20_change_bps_60s
+            && self.imbalance_20_delta_60s == row.imbalance_20_delta_60s
+            && self.artifact_id == artifact_id
+    }
+}
+
+#[derive(Debug, FromRow)]
 struct BtcOrderbookMarketScopeRow {
     market_id: String,
     condition_id: String,
@@ -2679,6 +3274,33 @@ async fn require_writable_artifact(
     Ok(())
 }
 
+async fn lock_writable_artifact_for_staging(
+    transaction: &mut Transaction<'_, Postgres>,
+    claim: &ClaimedJob,
+    artifact_id: Uuid,
+) -> Result<()> {
+    let artifact = sqlx::query_scalar::<_, Uuid>(
+        r#"
+        SELECT artifact_id
+        FROM polymarket.backfill_artifacts
+        WHERE artifact_id = $1 AND job_id = $2 AND status = 'ingesting'
+        FOR SHARE
+        "#,
+    )
+    .bind(artifact_id)
+    .bind(claim.job.job_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .context("failed to lock writable Binance L2 artifact")?;
+    if artifact.is_none() {
+        bail!(
+            "artifact {artifact_id} is not writable by job {}",
+            claim.job.job_id
+        );
+    }
+    Ok(())
+}
+
 fn decimal_json_field(value: &Value, keys: &[&str]) -> Option<Decimal> {
     let raw = keys.iter().find_map(|key| value.get(*key))?;
     match raw {
@@ -2747,6 +3369,103 @@ fn validate_kline_batch(records: &[BinanceOneSecondKlineRecord]) -> Result<()> {
             bail!("kline batch timestamps must be strictly increasing");
         }
         previous = Some(record.open_timestamp);
+    }
+    Ok(())
+}
+
+fn validate_binance_l2_one_second_feature_batch(
+    records: &[BinanceL2OneSecondFeature],
+) -> Result<()> {
+    let valid_imbalance = |value: Decimal| value >= -Decimal::ONE && value <= Decimal::ONE;
+    let valid_imbalance_delta =
+        |value: Decimal| value >= Decimal::from(-2_i32) && value <= Decimal::from(2_i32);
+    let valid_concentration = |value: Decimal| value >= Decimal::ZERO && value <= Decimal::ONE;
+    let mut previous = None;
+    for record in records {
+        let numeric_values = [
+            record.midpoint,
+            record.microprice,
+            record.spread_bps,
+            record.bid_depth_5,
+            record.ask_depth_5,
+            record.imbalance_5,
+            record.bid_depth_10,
+            record.ask_depth_10,
+            record.imbalance_10,
+            record.bid_depth_20,
+            record.ask_depth_20,
+            record.imbalance_20,
+            record.bid_depth_slope_20,
+            record.ask_depth_slope_20,
+            record.bid_depth_concentration_20,
+            record.ask_depth_concentration_20,
+            record.bid_quote_replenishment_1s,
+            record.ask_quote_replenishment_1s,
+            record.bid_quote_churn_1s,
+            record.ask_quote_churn_1s,
+            record.midpoint_change_bps_1s,
+            record.spread_bps_delta_1s,
+            record.depth_20_change_bps_1s,
+            record.imbalance_20_delta_1s,
+            record.midpoint_change_bps_5s,
+            record.spread_bps_delta_5s,
+            record.depth_20_change_bps_5s,
+            record.imbalance_20_delta_5s,
+            record.midpoint_change_bps_15s,
+            record.spread_bps_delta_15s,
+            record.depth_20_change_bps_15s,
+            record.imbalance_20_delta_15s,
+            record.midpoint_change_bps_30s,
+            record.spread_bps_delta_30s,
+            record.depth_20_change_bps_30s,
+            record.imbalance_20_delta_30s,
+            record.midpoint_change_bps_60s,
+            record.spread_bps_delta_60s,
+            record.depth_20_change_bps_60s,
+            record.imbalance_20_delta_60s,
+        ];
+        if record.symbol != "BTCUSDT"
+            || record.second_start.timestamp_subsec_nanos() != 0
+            || record.source_event_timestamp > record.available_at
+            || record.provider_received_at > record.available_at
+            || record.available_at < record.second_start
+            || record.available_at >= record.second_start + chrono::Duration::seconds(1)
+            || record.source_update_id < 0
+            || record.feature_schema_version != "binance-btcusdt-l2-one-second-features-v1"
+            || record.quality_status != "qualified"
+            || record.midpoint <= Decimal::ZERO
+            || record.microprice <= Decimal::ZERO
+            || record.spread_bps < Decimal::ZERO
+            || record.bid_depth_5 <= Decimal::ZERO
+            || record.ask_depth_5 <= Decimal::ZERO
+            || record.bid_depth_10 < record.bid_depth_5
+            || record.ask_depth_10 < record.ask_depth_5
+            || record.bid_depth_20 < record.bid_depth_10
+            || record.ask_depth_20 < record.ask_depth_10
+            || !valid_imbalance(record.imbalance_5)
+            || !valid_imbalance(record.imbalance_10)
+            || !valid_imbalance(record.imbalance_20)
+            || !valid_imbalance_delta(record.imbalance_20_delta_1s)
+            || !valid_imbalance_delta(record.imbalance_20_delta_5s)
+            || !valid_imbalance_delta(record.imbalance_20_delta_15s)
+            || !valid_imbalance_delta(record.imbalance_20_delta_30s)
+            || !valid_imbalance_delta(record.imbalance_20_delta_60s)
+            || record.bid_depth_slope_20 < Decimal::ZERO
+            || record.ask_depth_slope_20 < Decimal::ZERO
+            || !valid_concentration(record.bid_depth_concentration_20)
+            || !valid_concentration(record.ask_depth_concentration_20)
+            || record.bid_quote_replenishment_1s < Decimal::ZERO
+            || record.ask_quote_replenishment_1s < Decimal::ZERO
+            || record.bid_quote_churn_1s < Decimal::ZERO
+            || record.ask_quote_churn_1s < Decimal::ZERO
+            || numeric_values.iter().any(|value| value.scale() > 10)
+        {
+            bail!("invalid qualified Binance L2 one-second feature record");
+        }
+        if previous.is_some_and(|timestamp| record.second_start <= timestamp) {
+            bail!("Binance L2 feature timestamps must be strictly increasing within a batch");
+        }
+        previous = Some(record.second_start);
     }
     Ok(())
 }
@@ -3072,4 +3791,96 @@ fn fenced_error(claim: &ClaimedJob, action: &str) -> anyhow::Error {
         "backfill job {} lost lease fencing before {action}",
         claim.job.job_id
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::TimeZone;
+    use rust_decimal_macros::dec;
+
+    use super::*;
+
+    fn valid_l2_feature() -> BinanceL2OneSecondFeature {
+        let second_start = Utc.with_ymd_and_hms(2026, 3, 21, 0, 0, 0).single().unwrap();
+        BinanceL2OneSecondFeature {
+            symbol: "BTCUSDT".to_string(),
+            second_start,
+            source_event_timestamp: second_start + chrono::Duration::milliseconds(100),
+            provider_received_at: second_start + chrono::Duration::milliseconds(150),
+            available_at: second_start + chrono::Duration::milliseconds(250),
+            source_update_id: 1,
+            feature_schema_version: "binance-btcusdt-l2-one-second-features-v1".to_string(),
+            quality_status: "qualified".to_string(),
+            midpoint: dec!(50000),
+            microprice: dec!(50000.01),
+            spread_bps: dec!(0.2),
+            bid_depth_5: dec!(1),
+            ask_depth_5: dec!(1),
+            imbalance_5: Decimal::ZERO,
+            bid_depth_10: dec!(2),
+            ask_depth_10: dec!(2),
+            imbalance_10: Decimal::ZERO,
+            bid_depth_20: dec!(3),
+            ask_depth_20: dec!(3),
+            imbalance_20: Decimal::ZERO,
+            bid_depth_slope_20: dec!(0.1),
+            ask_depth_slope_20: dec!(0.1),
+            bid_depth_concentration_20: dec!(0.5),
+            ask_depth_concentration_20: dec!(0.5),
+            bid_quote_replenishment_1s: Decimal::ZERO,
+            ask_quote_replenishment_1s: Decimal::ZERO,
+            bid_quote_churn_1s: Decimal::ZERO,
+            ask_quote_churn_1s: Decimal::ZERO,
+            midpoint_change_bps_1s: Decimal::ZERO,
+            spread_bps_delta_1s: Decimal::ZERO,
+            depth_20_change_bps_1s: Decimal::ZERO,
+            imbalance_20_delta_1s: Decimal::ZERO,
+            midpoint_change_bps_5s: Decimal::ZERO,
+            spread_bps_delta_5s: Decimal::ZERO,
+            depth_20_change_bps_5s: Decimal::ZERO,
+            imbalance_20_delta_5s: Decimal::ZERO,
+            midpoint_change_bps_15s: Decimal::ZERO,
+            spread_bps_delta_15s: Decimal::ZERO,
+            depth_20_change_bps_15s: Decimal::ZERO,
+            imbalance_20_delta_15s: Decimal::ZERO,
+            midpoint_change_bps_30s: Decimal::ZERO,
+            spread_bps_delta_30s: Decimal::ZERO,
+            depth_20_change_bps_30s: Decimal::ZERO,
+            imbalance_20_delta_30s: Decimal::ZERO,
+            midpoint_change_bps_60s: Decimal::ZERO,
+            spread_bps_delta_60s: Decimal::ZERO,
+            depth_20_change_bps_60s: Decimal::ZERO,
+            imbalance_20_delta_60s: Decimal::ZERO,
+        }
+    }
+
+    #[test]
+    fn validates_qualified_causal_l2_features() {
+        assert!(validate_binance_l2_one_second_feature_batch(&[valid_l2_feature()]).is_ok());
+    }
+
+    #[test]
+    fn rejects_noncausal_or_malformed_l2_features() {
+        let mut noncausal = valid_l2_feature();
+        noncausal.available_at = noncausal.second_start + chrono::Duration::seconds(1);
+        assert!(validate_binance_l2_one_second_feature_batch(&[noncausal]).is_err());
+
+        let mut non_nested = valid_l2_feature();
+        non_nested.bid_depth_10 = dec!(0.5);
+        assert!(validate_binance_l2_one_second_feature_batch(&[non_nested]).is_err());
+
+        let mut out_of_bounds = valid_l2_feature();
+        out_of_bounds.imbalance_20_delta_60s = dec!(2.1);
+        assert!(validate_binance_l2_one_second_feature_batch(&[out_of_bounds]).is_err());
+
+        let mut excessive_scale = valid_l2_feature();
+        excessive_scale.midpoint = dec!(50000.00000000001);
+        assert!(validate_binance_l2_one_second_feature_batch(&[excessive_scale]).is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_l2_feature_seconds_within_a_batch() {
+        let record = valid_l2_feature();
+        assert!(validate_binance_l2_one_second_feature_batch(&[record.clone(), record]).is_err());
+    }
 }

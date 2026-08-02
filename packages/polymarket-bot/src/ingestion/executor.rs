@@ -1,7 +1,7 @@
 use std::{fmt, path::PathBuf};
 
 use anyhow::{bail, Context, Result};
-use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Timelike, Utc};
 use rust_decimal::Decimal;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -17,6 +17,13 @@ use super::{
     binance_open_interest::{BinanceOpenInterestConfig, BINANCE_OPEN_INTEREST_PROVIDER},
     chainlink_archive::{ChainlinkArchiveConfig, CHAINLINK_ARCHIVE_PROVIDER},
     chainlink_candlestick::{ChainlinkCandlestickConfig, CHAINLINK_CANDLESTICK_PROVIDER},
+    cryptohft_binance_l2::{
+        day_artifact_logical_key, download_hour as download_cryptohft_hour,
+        spawn_day_parser as spawn_cryptohft_day_parser, CryptoHftBinanceL2Config,
+        CryptoHftDayParseRequest, CryptoHftHourlySpec, HourlyArchiveManifest,
+        BINANCE_L2_MATERIALIZATION_CONTRACT, CRYPTOHFT_ARCHIVE_PROVIDER,
+        CRYPTOHFT_EARLIEST_CONTEXT_HOUR_EPOCH, MAX_CONTEXT_LOOKBACK_HOURS,
+    },
     execution_snapshots::{
         ExecutionMarketSeed, ExecutionSnapshotReconstructor, EXECUTION_SNAPSHOTS_PER_MARKET,
         EXECUTION_SNAPSHOT_END_MILLIS, EXECUTION_SNAPSHOT_INTERVAL_MILLIS,
@@ -27,6 +34,7 @@ use super::{
         BackfillCheckpoint, BackfillFailureKind, BackfillJobSummary, BackfillProgress,
         BtcExecutionSnapshot, BtcIntervalMarket, BtcOutcome, BtcReferenceFact,
         BtcReferenceFactType, ClaimedJob, IngesterKey, WorkerControl,
+        BINANCE_L2_HISTORICAL_END_EPOCH, BINANCE_L2_HISTORICAL_START_EPOCH,
     },
     pmxt_archive::{
         download_archive as download_pmxt_archive,
@@ -53,6 +61,7 @@ pub struct IngestionExecutorConfig {
     pub chainlink_candlesticks: ChainlinkCandlestickConfig,
     pub binance_open_interest: BinanceOpenInterestConfig,
     pub polygon_chainlink: PolygonChainlinkOracleConfig,
+    pub cryptohft_binance_l2: Option<CryptoHftBinanceL2Config>,
     pub cache_directory: PathBuf,
     pub batch_rows: usize,
     pub pmxt_prefetch_concurrency: usize,
@@ -72,6 +81,9 @@ impl IngestionExecutorConfig {
         self.chainlink_candlesticks.validate()?;
         self.binance_open_interest.validate()?;
         self.polygon_chainlink.validate()?;
+        if let Some(config) = &self.cryptohft_binance_l2 {
+            config.validate()?;
+        }
         if !(1..=4_000).contains(&self.batch_rows) {
             bail!("POLYMARKET_BACKFILL_BATCH_ROWS must be between 1 and 4000");
         }
@@ -174,6 +186,16 @@ impl IngestionExecutor {
                     range_end,
                     progress,
                     BinanceArchiveKind::AggregateTrades,
+                    cancellation,
+                )
+                .await
+            }
+            IngesterKey::BinanceBtcusdtL2OneSecondFeatures => {
+                self.ingest_cryptohft_binance_l2(
+                    claim,
+                    range_start,
+                    range_end,
+                    progress,
                     cancellation,
                 )
                 .await
@@ -282,6 +304,11 @@ impl IngestionExecutor {
                     .await?;
                 continue;
             }
+            progress.records_read = 0;
+            progress.records_committed = 0;
+            summary.records_read = 0;
+            summary.records_committed = 0;
+            summary.duplicate_records = 0;
             self.set_artifact_status(
                 claim,
                 prepared.artifact.artifact_id,
@@ -761,6 +788,406 @@ impl IngestionExecutor {
                     )
                     .await;
             }
+            date += ChronoDuration::days(1);
+            self.finish_work_unit(claim, &mut progress, range_end, Some(date))
+                .await?;
+        }
+        summary.completed_work_units = progress.completed_work_units;
+        Ok(summary)
+    }
+
+    async fn ingest_cryptohft_binance_l2(
+        &self,
+        claim: &ClaimedJob,
+        range_start: DateTime<Utc>,
+        range_end: DateTime<Utc>,
+        mut progress: BackfillProgress,
+        cancellation: ArchiveCancellation,
+    ) -> std::result::Result<BackfillJobSummary, IngestionExecutionError> {
+        if range_start.timestamp() < BINANCE_L2_HISTORICAL_START_EPOCH
+            || range_end.timestamp() > BINANCE_L2_HISTORICAL_END_EPOCH
+            || range_end - range_start != ChronoDuration::days(1)
+        {
+            return Err(IngestionExecutionError::permanent(
+                "Binance L2 execution requires one approved UTC day within [2026-04-14, 2026-08-02)",
+            ));
+        }
+        let config = self.config.cryptohft_binance_l2.clone().ok_or_else(|| {
+            IngestionExecutionError::permanent(
+                "POLYMARKET_BINANCE_L2_ARCHIVE_ROOT is required for Binance L2 ingestion",
+            )
+        })?;
+        if range_start.timestamp() > BINANCE_L2_HISTORICAL_START_EPOCH {
+            let representative_date =
+                DateTime::<Utc>::from_timestamp(BINANCE_L2_HISTORICAL_START_EPOCH, 0)
+                    .ok_or_else(|| {
+                        IngestionExecutionError::permanent(
+                            "Binance L2 representative timestamp is invalid",
+                        )
+                    })?
+                    .date_naive();
+            self.repository
+                .require_binance_l2_representative_source_gate(&day_artifact_logical_key(
+                    representative_date,
+                ))
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+        }
+        let preflight = config
+            .preflight()
+            .await
+            .map_err(IngestionExecutionError::transient)?;
+        let mut summary = summary_from_progress(&progress);
+        let mut date = checkpoint_date(claim).unwrap_or(range_start.date_naive());
+        let end_date = range_end.date_naive();
+        while date < end_date {
+            self.ensure_continue(claim, &cancellation).await?;
+            let first_target_spec = CryptoHftHourlySpec::new(&config, date, 0)
+                .map_err(IngestionExecutionError::permanent)?;
+            let logical_key = day_artifact_logical_key(date);
+            progress.current_logical_key = Some(logical_key.clone());
+            let prepared = self
+                .repository
+                .prepare_artifact(
+                    claim,
+                    &ArtifactSpec {
+                        job_id: claim.job.job_id,
+                        ingester: IngesterKey::BinanceBtcusdtL2OneSecondFeatures,
+                        logical_key,
+                        provider: CRYPTOHFT_ARCHIVE_PROVIDER.to_string(),
+                        source_uri: first_target_spec.source_uri.clone(),
+                        source_date: Some(date),
+                        expected_checksum: None,
+                        metadata: serde_json::json!({
+                            "exchange": "binance_futures",
+                            "symbol": "BTCUSDT",
+                            "source_objects": 24,
+                            "source_cadence": "hourly",
+                            "maximum_context_lookback_hours": MAX_CONTEXT_LOOKBACK_HOURS,
+                            "vendor_checksum_available": false,
+                            "feature_schema_version": "binance-btcusdt-l2-one-second-features-v1",
+                            "materialization_contract": BINANCE_L2_MATERIALIZATION_CONTRACT,
+                            "availability_offset_ms": config.availability_offset_ms,
+                            "maximum_stale_ms": config.max_stale_ms,
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            if prepared.disposition == ArtifactDisposition::AlreadyCompleted {
+                observe_reused_artifact(&mut progress, &mut summary, &prepared.artifact);
+                date += ChronoDuration::days(1);
+                self.finish_work_unit(claim, &mut progress, range_end, Some(date))
+                    .await?;
+                continue;
+            }
+
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Downloading,
+            )
+            .await?;
+            let target_start = date
+                .and_hms_opt(0, 0, 0)
+                .ok_or_else(|| IngestionExecutionError::permanent("invalid L2 target date"))?
+                .and_utc();
+            let mut context_hour = target_start - ChronoDuration::hours(1);
+            let mut context_archives = Vec::with_capacity(MAX_CONTEXT_LOOKBACK_HOURS);
+            for _ in 0..MAX_CONTEXT_LOOKBACK_HOURS {
+                self.ensure_continue(claim, &cancellation).await?;
+                if context_hour.timestamp() < CRYPTOHFT_EARLIEST_CONTEXT_HOUR_EPOCH {
+                    break;
+                }
+                let context_spec = CryptoHftHourlySpec::new(
+                    &config,
+                    context_hour.date_naive(),
+                    u8::try_from(context_hour.hour())
+                        .map_err(IngestionExecutionError::permanent)?,
+                )
+                .map_err(IngestionExecutionError::permanent)?;
+                let context_archive = match download_cryptohft_hour(
+                    &self.client,
+                    &self.repository,
+                    &config,
+                    &context_spec,
+                    &cancellation,
+                )
+                .await
+                {
+                    Ok(archive) => archive,
+                    Err(error) => {
+                        let _ = self
+                            .repository
+                            .fail_binance_l2_artifact(
+                                claim,
+                                prepared.artifact.artifact_id,
+                                &error.to_string(),
+                            )
+                            .await;
+                        return Err(IngestionExecutionError::transient(error));
+                    }
+                };
+                if !context_archive.reused_archive {
+                    progress.bytes_downloaded = progress
+                        .bytes_downloaded
+                        .saturating_add(context_archive.compressed_bytes);
+                }
+                let has_snapshot = context_archive.validated_snapshot_events > 0;
+                context_archives.push(context_archive);
+                if has_snapshot {
+                    break;
+                }
+                context_hour -= ChronoDuration::hours(1);
+            }
+            if !context_archives
+                .iter()
+                .any(|archive| archive.validated_snapshot_events > 0)
+            {
+                let error = anyhow::anyhow!(
+                    "CryptoHFT context did not contain a structurally valid snapshot between the target day and the pinned 2026-04-13T23:00:00Z anchor"
+                );
+                let _ = self
+                    .repository
+                    .fail_binance_l2_artifact(
+                        claim,
+                        prepared.artifact.artifact_id,
+                        &error.to_string(),
+                    )
+                    .await;
+                return Err(IngestionExecutionError::permanent(error));
+            }
+
+            let mut target_archives = Vec::with_capacity(24);
+            for hour in 0u8..24 {
+                self.ensure_continue(claim, &cancellation).await?;
+                let spec = CryptoHftHourlySpec::new(&config, date, hour)
+                    .map_err(IngestionExecutionError::permanent)?;
+                let archive = match download_cryptohft_hour(
+                    &self.client,
+                    &self.repository,
+                    &config,
+                    &spec,
+                    &cancellation,
+                )
+                .await
+                {
+                    Ok(archive) => archive,
+                    Err(error) => {
+                        let _ = self
+                            .repository
+                            .fail_binance_l2_artifact(
+                                claim,
+                                prepared.artifact.artifact_id,
+                                &error.to_string(),
+                            )
+                            .await;
+                        return Err(IngestionExecutionError::transient(error));
+                    }
+                };
+                if !archive.reused_archive {
+                    progress.bytes_downloaded = progress
+                        .bytes_downloaded
+                        .saturating_add(archive.compressed_bytes);
+                }
+                target_archives.push(archive);
+            }
+            let manifest = cryptohft_day_manifest(&context_archives, &target_archives)
+                .map_err(IngestionExecutionError::permanent)?;
+            let actual_checksum =
+                sha256(&serde_json::to_vec(&manifest).map_err(IngestionExecutionError::permanent)?);
+            let target_compressed_bytes = target_archives.iter().fold(0u64, |total, archive| {
+                total.saturating_add(archive.compressed_bytes)
+            });
+
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Downloaded,
+            )
+            .await?;
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Verified,
+            )
+            .await?;
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Ingesting,
+            )
+            .await?;
+            self.repository
+                .reset_binance_l2_feature_staging(claim, prepared.artifact.artifact_id)
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+
+            let (mut receiver, parser) = spawn_cryptohft_day_parser(
+                config.clone(),
+                CryptoHftDayParseRequest {
+                    target_date: date,
+                    context_archives,
+                    target_archives,
+                    output_batch_rows: self.config.batch_rows.min(1_000),
+                    cancellation: cancellation.clone(),
+                },
+            );
+            let mut staged_input_records = 0u64;
+            let mut staged_duplicate_records = 0u64;
+            while let Some(batch) = receiver.recv().await {
+                if let Err(error) = self.ensure_continue(claim, &cancellation).await {
+                    cancellation.cancel();
+                    let _ = self
+                        .repository
+                        .fail_binance_l2_artifact(
+                            claim,
+                            prepared.artifact.artifact_id,
+                            &error.to_string(),
+                        )
+                        .await;
+                    return Err(error);
+                }
+                let result = match self
+                    .repository
+                    .stage_binance_l2_one_second_feature_batch(
+                        claim,
+                        prepared.artifact.artifact_id,
+                        &batch,
+                    )
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(error) => {
+                        cancellation.cancel();
+                        let _ = self
+                            .repository
+                            .fail_binance_l2_artifact(
+                                claim,
+                                prepared.artifact.artifact_id,
+                                &error.to_string(),
+                            )
+                            .await;
+                        return Err(IngestionExecutionError::transient(error));
+                    }
+                };
+                staged_input_records = staged_input_records.saturating_add(result.input_records);
+                staged_duplicate_records =
+                    staged_duplicate_records.saturating_add(result.duplicate_records);
+            }
+            let parse_summary = match parser.await {
+                Ok(Ok(parse_summary)) => parse_summary,
+                Ok(Err(error)) => {
+                    let _ = self
+                        .repository
+                        .fail_binance_l2_artifact(
+                            claim,
+                            prepared.artifact.artifact_id,
+                            &error.to_string(),
+                        )
+                        .await;
+                    return Err(IngestionExecutionError::permanent(error));
+                }
+                Err(error) => {
+                    let _ = self
+                        .repository
+                        .fail_binance_l2_artifact(
+                            claim,
+                            prepared.artifact.artifact_id,
+                            &error.to_string(),
+                        )
+                        .await;
+                    return Err(IngestionExecutionError::transient(error));
+                }
+            };
+            if staged_input_records != parse_summary.emitted_feature_rows {
+                let error = anyhow::anyhow!(
+                    "staged Binance L2 input count {staged_input_records} did not match parser output {}",
+                    parse_summary.emitted_feature_rows
+                );
+                let _ = self
+                    .repository
+                    .fail_binance_l2_artifact(
+                        claim,
+                        prepared.artifact.artifact_id,
+                        &error.to_string(),
+                    )
+                    .await;
+                return Err(IngestionExecutionError::permanent(error));
+            }
+            if parse_summary.no_snapshot_bootstrap {
+                increment_missing(&mut summary, "cryptohft_no_snapshot_bootstrap");
+            }
+            if parse_summary.sequence_gaps > 0 {
+                increment_missing(&mut summary, "cryptohft_sequence_discontinuity");
+            }
+            if parse_summary.unavailable_seconds > 0 {
+                increment_missing(&mut summary, "unavailable_l2_seconds");
+            }
+            summary.details = serde_json::json!({
+                "latest_l2_source_date": date,
+                "latest_l2_day": parse_summary,
+            });
+            let completion = ArtifactCompletion {
+                actual_checksum,
+                compressed_bytes: target_compressed_bytes,
+                record_count: parse_summary.emitted_feature_rows,
+                minimum_source_timestamp: parse_summary.minimum_source_timestamp,
+                maximum_source_timestamp: parse_summary.maximum_source_timestamp,
+                metadata: serde_json::json!({
+                    "hourly_manifest": manifest,
+                    "raw_rows": parse_summary.raw_rows,
+                    "logical_events": parse_summary.logical_events,
+                    "snapshots": parse_summary.snapshot_events,
+                    "updates": parse_summary.update_events,
+                    "updates_before_snapshot": parse_summary.updates_before_snapshot,
+                    "sequence_gaps": parse_summary.sequence_gaps,
+                    "invalid_book_events": parse_summary.invalid_book_events,
+                    "qualified_seconds": parse_summary.emitted_feature_rows,
+                    "unavailable_seconds": parse_summary.unavailable_seconds,
+                    "no_snapshot_bootstrap": parse_summary.no_snapshot_bootstrap,
+                    "batches": parse_summary.batches,
+                    "maximum_batch_rows": parse_summary.maximum_batch_rows,
+                    "ssd_available_bytes_at_start": preflight.available_bytes,
+                    "ssd_available_fraction_at_start": preflight.available_fraction,
+                    "ssd_measured_write_bytes_per_second": preflight.measured_write_bytes_per_second,
+                }),
+            };
+            if let Err(error) = self
+                .repository
+                .publish_binance_l2_one_second_features(
+                    claim,
+                    prepared.artifact.artifact_id,
+                    &completion,
+                )
+                .await
+            {
+                let _ = self
+                    .repository
+                    .fail_binance_l2_artifact(
+                        claim,
+                        prepared.artifact.artifact_id,
+                        &error.to_string(),
+                    )
+                    .await;
+                return Err(IngestionExecutionError::transient(error));
+            }
+            progress.records_read = progress
+                .records_read
+                .saturating_add(parse_summary.emitted_feature_rows);
+            progress.records_committed = progress
+                .records_committed
+                .saturating_add(parse_summary.emitted_feature_rows);
+            summary.records_read = summary
+                .records_read
+                .saturating_add(parse_summary.emitted_feature_rows);
+            summary.records_committed = summary
+                .records_committed
+                .saturating_add(parse_summary.emitted_feature_rows);
+            summary.duplicate_records = summary
+                .duplicate_records
+                .saturating_add(staged_duplicate_records);
+            summary.artifacts_completed = summary.artifacts_completed.saturating_add(1);
             date += ChronoDuration::days(1);
             self.finish_work_unit(claim, &mut progress, range_end, Some(date))
                 .await?;
@@ -2435,6 +2862,41 @@ fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+fn cryptohft_day_manifest(
+    context: &[HourlyArchiveManifest],
+    target: &[HourlyArchiveManifest],
+) -> Result<Value> {
+    if context.is_empty() || context.len() > MAX_CONTEXT_LOOKBACK_HOURS {
+        bail!("CryptoHFT daily manifest context was outside its bounded lookback");
+    }
+    if target.len() != 24 {
+        bail!("CryptoHFT daily manifest requires 24 target objects");
+    }
+    let object = |archive: &HourlyArchiveManifest| {
+        serde_json::json!({
+            "provider": archive.provider,
+            "source_uri": archive.source_uri,
+            "remote_file": archive.remote_file,
+            "sha256": archive.sha256,
+            "compressed_bytes": archive.compressed_bytes,
+            "raw_rows": archive.raw_rows,
+            "snapshot_events": archive.snapshot_events,
+            "validated_snapshot_events": archive.validated_snapshot_events,
+            "audited_anchor_snapshot_verified": archive.audited_anchor_snapshot_verified,
+            "update_events": archive.update_events,
+            "minimum_provider_received_at": archive.minimum_provider_received_at,
+            "maximum_provider_received_at": archive.maximum_provider_received_at,
+            "receipt_rows_outside_exact_hour": archive.receipt_rows_outside_exact_hour,
+            "vendor_checksum": archive.vendor_checksum,
+            "integrity_basis": archive.integrity_basis,
+        })
+    };
+    Ok(serde_json::json!({
+        "context": context.iter().map(object).collect::<Vec<_>>(),
+        "target": target.iter().map(object).collect::<Vec<_>>(),
+    }))
+}
+
 #[derive(Debug)]
 struct ClobOfficialResolution {
     winning_token_id: String,
@@ -2928,6 +3390,7 @@ mod tests {
                         .to_string(),
                 maximum_block_range: 2_000,
             },
+            cryptohft_binance_l2: None,
             cache_directory: PathBuf::from("/tmp/cache"),
             batch_rows: 4_000,
             pmxt_prefetch_concurrency: 4,
