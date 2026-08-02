@@ -1943,25 +1943,28 @@ impl BtcProcessManager {
                 &strategy,
             )?;
             let live_process_venue = components.live_venue.clone();
-            let process_runner = Arc::new(BtcProcessRunner::new_with_execution(
-                self.repository.clone(),
-                self.store.clone(),
-                components.venue,
-                books,
-                components.lifecycle,
-                BtcProcessConfig {
-                    run_id,
-                    run_key: run_key.clone(),
-                    process_id,
-                    config_hash: config_hash.clone(),
-                    frozen_process_config: frozen_process_config_value,
-                    strategy,
-                    entry_admission,
-                    directional_model_entry_policy,
-                    execution_enabled: true,
-                    paper_stress_previews,
-                },
-            )?);
+            let process_runner = Arc::new(
+                BtcProcessRunner::new_with_execution(
+                    self.repository.clone(),
+                    self.store.clone(),
+                    components.venue,
+                    books,
+                    components.lifecycle,
+                    BtcProcessConfig {
+                        run_id,
+                        run_key: run_key.clone(),
+                        process_id,
+                        config_hash: config_hash.clone(),
+                        frozen_process_config: frozen_process_config_value,
+                        strategy,
+                        entry_admission,
+                        directional_model_entry_policy,
+                        execution_enabled: true,
+                        paper_stress_previews,
+                    },
+                )?
+                .with_primary_persistence_state(state.clone()),
+            );
             process_runner
                 .resume()
                 .await
@@ -2109,25 +2112,28 @@ impl BtcProcessManager {
                 &strategy,
             )?;
             let live_process_venue = components.live_venue.clone();
-            let process_runner = Arc::new(BtcProcessRunner::new_with_execution(
-                self.repository.clone(),
-                self.store.clone(),
-                components.venue,
-                books,
-                components.lifecycle,
-                BtcProcessConfig {
-                    run_id,
-                    run_key: run_key.clone(),
-                    process_id,
-                    config_hash: config_hash.clone(),
-                    frozen_process_config: frozen_process_config_value,
-                    strategy: strategy.clone(),
-                    entry_admission: entry_admission.clone(),
-                    directional_model_entry_policy,
-                    execution_enabled: true,
-                    paper_stress_previews: paper_stress_previews.clone(),
-                },
-            )?);
+            let process_runner = Arc::new(
+                BtcProcessRunner::new_with_execution(
+                    self.repository.clone(),
+                    self.store.clone(),
+                    components.venue,
+                    books,
+                    components.lifecycle,
+                    BtcProcessConfig {
+                        run_id,
+                        run_key: run_key.clone(),
+                        process_id,
+                        config_hash: config_hash.clone(),
+                        frozen_process_config: frozen_process_config_value,
+                        strategy: strategy.clone(),
+                        entry_admission: entry_admission.clone(),
+                        directional_model_entry_policy,
+                        execution_enabled: true,
+                        paper_stress_previews: paper_stress_previews.clone(),
+                    },
+                )?
+                .with_primary_persistence_state(state.clone()),
+            );
             process_runner
                 .initialize()
                 .await

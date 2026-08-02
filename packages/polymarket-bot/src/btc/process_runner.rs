@@ -10,7 +10,7 @@ use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::{
-    sync::{Mutex, OnceCell},
+    sync::{Mutex, OnceCell, RwLock},
     time::{Duration as TokioDuration, Instant},
 };
 use tracing::warn;
@@ -66,7 +66,7 @@ use super::{
         BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_FAMILY,
     },
     types::{
-        BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, OrderbookCheckpoint,
+        BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, OrderbookCheckpoint, RealtimeState,
         ReferencePriceSource, ReferencePriceTick,
     },
 };
@@ -836,6 +836,7 @@ pub struct BtcProcessRunner {
     high_water_mark_entry_submission: Mutex<()>,
     execution_reconcile_started_at: Mutex<Option<Instant>>,
     directional_model_runtime: StdMutex<DirectionalModelProcessRuntime>,
+    primary_persistence_state: Option<Arc<RwLock<RealtimeState>>>,
 }
 
 pub type BtcPaperProcessRunner = BtcProcessRunner;
@@ -959,7 +960,20 @@ impl BtcProcessRunner {
             initialized: OnceCell::new(),
             execution_reconcile_started_at: Mutex::new(None),
             directional_model_runtime: StdMutex::new(DirectionalModelProcessRuntime::default()),
+            primary_persistence_state: None,
         })
+    }
+
+    pub fn with_primary_persistence_state(mut self, state: Arc<RwLock<RealtimeState>>) -> Self {
+        self.primary_persistence_state = Some(state);
+        self
+    }
+
+    async fn primary_persistence_available(&self) -> bool {
+        let Some(state) = self.primary_persistence_state.as_ref() else {
+            return !self.config.execution_enabled;
+        };
+        state.read().await.primary_persistence_available()
     }
 
     pub fn execution_mode(&self) -> BtcExecutionMode {
@@ -1717,6 +1731,9 @@ impl BtcProcessRunner {
     }
 
     async fn observe(&self, observation: StrategyObservation) -> Result<()> {
+        if !self.primary_persistence_available().await {
+            return Ok(());
+        }
         self.initialize().await?;
         let high_water_mark_configured = self
             .config
@@ -2038,21 +2055,40 @@ impl BtcProcessRunner {
             },
         )?;
         reference_execution_guard.insert_into_metadata(&mut request.metadata)?;
+        if !self.primary_persistence_available().await {
+            return Ok(());
+        }
         self.insert_process_strategy_decision(
             &snapshot.market_id,
             &decision,
             entry_admission_evidence,
             Some(plan_id),
-            "approved",
+            // This write-ahead state deliberately is not treated as an entry. The
+            // adjacent persistence gate below may still defer venue mutation.
+            "execution_pending",
         )
         .await?;
-        complete_directional_model_candidate(&mut directional_candidate, &decision)?;
         let preview_futures = self
             .config
             .paper_stress_previews
             .iter()
             .map(|preview| self.execution_lifecycle.preview_order(&request, preview));
         let primary_request = request.clone();
+        if !self.primary_persistence_available().await {
+            return Ok(());
+        }
+        // Once this durable reservation succeeds, execution must proceed. A
+        // crash after authorization cannot permit a different entry for the
+        // same process and market on resume.
+        self.repository
+            .authorize_pending_strategy_decision(
+                self.config.process_id,
+                self.config.run_id,
+                decision.decision_id,
+                decision.evaluated_at,
+            )
+            .await?;
+        complete_directional_model_candidate(&mut directional_candidate, &decision)?;
         let (report, preview_results) = tokio::join!(
             execute_order_plan(
                 self.execution_venue.as_ref(),
@@ -5337,6 +5373,7 @@ mod tests {
             "missing_book:up",
             "book_integrity:up",
             "market_not_in_trade_window",
+            "primary_persistence_unavailable",
         ] {
             let readiness = Readiness {
                 ready: false,
