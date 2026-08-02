@@ -95,15 +95,18 @@ model inputs.
 
 `binance-l2-backfill-plan` uses one idempotent job per UTC day. On its first invocation it
 enqueues only the first day as a representative source audit. It refuses to enqueue the
-remaining 109 days unless that completed artifact has a snapshot bootstrap, zero sequence
-gaps, a complete 24-object target manifest, no invalid book events, at least 86,000 qualified
-seconds, and at most 400 unavailable seconds.
+remaining 109 days unless that completed artifact has the pinned validated snapshot
+bootstrap, a complete 24-object target manifest with verified local checksums, no invalid
+book events, at least one qualified second, and exact classification of all 86,400 seconds as
+qualified or unavailable. Recorded source sequence gaps remain unavailable coverage and do
+not authorize reconstruction or forward-fill.
 
-The April 14 boundary audit passed: the April 13 23:00 archive contains a valid 1,000-level
-snapshot, its first subsequent update spans the snapshot sequence, and continuity is exact
-across the 00:00 and 01:00 hourly boundaries. The representative job still replays and
-validates all 24 April 14 hours before the other 109 shards can be queued. If a terminal
-representative job must be retried, increment
+The April 14 boundary audit found a valid 1,000-level snapshot in the April 13 23:00 archive
+and exact continuity across the 00:00 and 01:00 hourly boundaries. A source sequence gap at
+11:10:39 UTC leaves 40,239 qualified seconds through 11:10:38 and 46,161 unavailable seconds;
+the ingester publishes no state after that gap without a later full-depth snapshot. The
+representative job replays and validates all 24 April 14 hours before the other 109 shards can
+be queued. If a terminal representative job must be retried, increment
 `POLYMARKET_BINANCE_L2_RETRY_GENERATION`; the generation is part of the job idempotency key.
 
 All workers reserve anonymous CryptoHFT request slots through a single PostgreSQL budget

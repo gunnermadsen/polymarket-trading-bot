@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
     match representative {
         Some((status, metadata)) if status == "completed" => {
             validate_representative_day_quality(&metadata).context(
-                "representative CryptoHFT source audit is not full-day qualified; refusing to enqueue the full Binance L2 backfill",
+                "representative CryptoHFT source audit is not causally classified; refusing to enqueue the full Binance L2 backfill",
             )?;
         }
         _ => {

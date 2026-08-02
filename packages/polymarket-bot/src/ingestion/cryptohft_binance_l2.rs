@@ -49,8 +49,6 @@ pub const DEFAULT_DOWNLOAD_CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(60
 pub const BINANCE_L2_FEATURE_SCHEMA_VERSION: &str = "binance-btcusdt-l2-one-second-features-v1";
 pub const BINANCE_L2_MATERIALIZATION_CONTRACT: &str =
     "cryptohft-binance-futures-btcusdt-l2-features-v1";
-pub const MIN_REPRESENTATIVE_QUALIFIED_SECONDS: u64 = 86_000;
-pub const MAX_REPRESENTATIVE_UNAVAILABLE_SECONDS: u64 = 400;
 pub const CRYPTOHFT_EARLIEST_CONTEXT_HOUR_EPOCH: i64 = 1_776_121_200;
 pub const MAX_CONTEXT_LOOKBACK_HOURS: usize = 2_617;
 pub const CRYPTOHFT_AUDITED_ANCHOR_REMOTE_FILE: &str =
@@ -280,14 +278,13 @@ pub fn validate_representative_day_quality(metadata: &serde_json::Value) -> Resu
         .unwrap_or(true);
     if no_snapshot_bootstrap
         || snapshots == 0
-        || sequence_gaps != 0
+        || sequence_gaps == u64::MAX
         || invalid_book_events != 0
-        || qualified_seconds < MIN_REPRESENTATIVE_QUALIFIED_SECONDS
-        || unavailable_seconds > MAX_REPRESENTATIVE_UNAVAILABLE_SECONDS
-        || qualified_seconds.saturating_add(unavailable_seconds) != 86_400
+        || qualified_seconds == 0
+        || qualified_seconds.checked_add(unavailable_seconds) != Some(86_400)
     {
         bail!(
-            "Binance L2 representative source audit was not full-day qualified: qualified={qualified_seconds}, unavailable={unavailable_seconds}, snapshots={snapshots}, sequence_gaps={sequence_gaps}, invalid_book_events={invalid_book_events}, no_snapshot_bootstrap={no_snapshot_bootstrap}"
+            "Binance L2 representative source audit was not causally classified: qualified={qualified_seconds}, unavailable={unavailable_seconds}, snapshots={snapshots}, sequence_gaps={sequence_gaps}, invalid_book_events={invalid_book_events}, no_snapshot_bootstrap={no_snapshot_bootstrap}"
         );
     }
     Ok(())
@@ -3488,7 +3485,7 @@ mod tests {
     }
 
     #[test]
-    fn representative_gate_requires_full_day_quality_and_complete_lineage() {
+    fn representative_gate_accepts_classified_gaps_and_requires_complete_lineage() {
         let manifest_object =
             |remote_file: &str,
              sha256: String,
@@ -3526,17 +3523,24 @@ mod tests {
                     false,
                 )).collect::<Vec<_>>(),
             },
-            "qualified_seconds": 86_340,
-            "unavailable_seconds": 60,
+            "qualified_seconds": 40_239,
+            "unavailable_seconds": 46_161,
             "snapshots": 1,
-            "sequence_gaps": 0,
+            "sequence_gaps": 1,
             "invalid_book_events": 0,
             "no_snapshot_bootstrap": false,
         });
         assert!(validate_representative_day_quality(&metadata).is_ok());
 
-        metadata["qualified_seconds"] = serde_json::json!(1);
-        metadata["unavailable_seconds"] = serde_json::json!(86_399);
+        let mut missing_gap_metric = metadata.clone();
+        missing_gap_metric
+            .as_object_mut()
+            .unwrap()
+            .remove("sequence_gaps");
+        assert!(validate_representative_day_quality(&missing_gap_metric).is_err());
+
+        metadata["qualified_seconds"] = serde_json::json!(0);
+        metadata["unavailable_seconds"] = serde_json::json!(86_400);
         assert!(validate_representative_day_quality(&metadata).is_err());
     }
 
