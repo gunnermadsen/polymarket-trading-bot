@@ -637,10 +637,8 @@ pub async fn download_hour(
         .with_context(|| format!("failed to request {}", spec.source_uri))?
         .error_for_status()
         .with_context(|| format!("CryptoHFT rejected {}", spec.source_uri))?;
-    if response
-        .content_length()
-        .is_some_and(|bytes| bytes > config.maximum_compressed_bytes)
-    {
+    let expected_content_length = response.content_length();
+    if expected_content_length.is_some_and(|bytes| bytes > config.maximum_compressed_bytes) {
         bail!("CryptoHFT archive exceeded the compressed size limit");
     }
 
@@ -687,12 +685,7 @@ pub async fn download_hour(
     if leading_bytes != [0x28, 0xb5, 0x2f, 0xfd] {
         bail!("CryptoHFT response did not have a Zstandard frame header");
     }
-    if response
-        .content_length()
-        .is_some_and(|expected| expected != compressed_bytes)
-    {
-        bail!("CryptoHFT response length did not match Content-Length");
-    }
+    validate_downloaded_content_length(expected_content_length, compressed_bytes)?;
     output.sync_all().await?;
     drop(output);
     check_cancelled(cancellation)?;
@@ -746,6 +739,13 @@ pub async fn download_hour(
     };
     persist_manifest(spec, &manifest).await?;
     Ok(manifest)
+}
+
+fn validate_downloaded_content_length(expected: Option<u64>, actual: u64) -> Result<()> {
+    if expected.is_some_and(|expected| expected != actual) {
+        bail!("CryptoHFT response length did not match Content-Length");
+    }
+    Ok(())
 }
 
 async fn quarantine_cached_hour(spec: &CryptoHftHourlySpec, cause: &anyhow::Error) -> Result<()> {
@@ -2782,6 +2782,13 @@ mod tests {
         let mut unsafe_rate = config;
         unsafe_rate.request_minimum_interval = Duration::from_millis(999);
         assert!(unsafe_rate.validate().is_err());
+    }
+
+    #[test]
+    fn downloaded_content_length_uses_the_initial_response_size() {
+        assert!(validate_downloaded_content_length(Some(24_232_760), 24_232_760).is_ok());
+        assert!(validate_downloaded_content_length(None, 24_232_760).is_ok());
+        assert!(validate_downloaded_content_length(Some(0), 24_232_760).is_err());
     }
 
     #[test]
