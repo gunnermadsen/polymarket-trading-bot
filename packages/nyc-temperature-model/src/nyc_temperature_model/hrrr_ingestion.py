@@ -117,6 +117,11 @@ def _is_transient_hrrr_error(error: BaseException) -> bool:
     )
 
 
+def _is_mirror_specific_hrrr_error(error: BaseException) -> bool:
+    message = str(error).lower()
+    return "416 client error" in message and "requested range not satisfiable" in message
+
+
 def _run_with_retry(
     operation: Callable[[tuple[str, ...], bool], T],
     *,
@@ -128,27 +133,34 @@ def _run_with_retry(
     jitter: Callable[[float, float], float] = random.uniform,
 ) -> T:
     last_error: BaseException | None = None
-    only_not_found = True
-    not_found_attempts = 0
-    not_found_limit = min(attempts, len(sources))
+    only_archive_unavailable = True
+    archive_unavailable_attempts = 0
+    archive_unavailable_limit = min(attempts, len(sources))
     for attempt in range(1, attempts + 1):
         try:
             return operation(_source_order(sources, attempt), attempt > 1)
         except FileNotFoundError as error:
             last_error = error
-            not_found_attempts += 1
-            if not_found_attempts >= not_found_limit:
-                raise
+            archive_unavailable_attempts += 1
         except Exception as error:
-            only_not_found = False
-            if not _is_transient_hrrr_error(error):
+            if _is_mirror_specific_hrrr_error(error):
+                archive_unavailable_attempts += 1
+            elif _is_transient_hrrr_error(error):
+                only_archive_unavailable = False
+            else:
                 raise
             last_error = error
+        if archive_unavailable_attempts >= archive_unavailable_limit:
+            if isinstance(last_error, FileNotFoundError):
+                raise last_error
+            raise FileNotFoundError(
+                f"HRRR field is unavailable after {archive_unavailable_limit} mirror checks"
+            ) from last_error
         if attempt < attempts:
             base_delay = min(retry_max_ms, retry_base_ms * 2 ** (attempt - 1)) / 1000
             sleep(base_delay + jitter(0, base_delay * 0.25))
-    if only_not_found and isinstance(last_error, FileNotFoundError):
-        raise last_error
+    if only_archive_unavailable:
+        raise FileNotFoundError("HRRR field is unavailable across configured mirrors") from last_error
     raise HrrrDownloadExhausted(
         f"HRRR field exhausted {attempts} attempts across {','.join(sources)}: {last_error}"
     ) from last_error
@@ -178,6 +190,11 @@ def _download_field(
                 f"{model_run:%Y-%m-%dT%H:%MZ} f{lead_hours:02d}"
             )
         local_path = Path(herbie.download(search, verbose=False, errors="raise"))
+        if not local_path.is_file():
+            raise FileNotFoundError(
+                f"HRRR archive did not return a subset for "
+                f"{model_run:%Y-%m-%dT%H:%MZ} f{lead_hours:02d}"
+            )
         dataset = herbie.xarray(search, remove_grib=False, verbose=False)
         try:
             temperature_f, point_lat, point_lon = _point_temperature_f(dataset)
