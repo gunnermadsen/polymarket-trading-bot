@@ -9,6 +9,8 @@ from pathlib import Path
 from .admission_benchmark import run_admission_benchmark
 from .admission_config import load_admission_benchmark_config
 from .benchmark_config import load_entry_benchmark_config
+from .chainlink_oi_benchmark import run_chainlink_oi_benchmark
+from .chainlink_oi_config import load_chainlink_oi_benchmark_config
 from .champion_vwap_benchmark import run_champion_vwap_benchmark
 from .champion_vwap_config import load_champion_vwap_config
 from .config import load_config
@@ -122,6 +124,10 @@ def main() -> None:
     loss_tail_run.add_argument("--force", action="store_true")
     champion_vwap_run = subparsers.add_parser("champion-vwap-calibration-run")
     champion_vwap_run.add_argument("--config", type=Path, required=True)
+    chainlink_oi_run = subparsers.add_parser(
+        "chainlink-oi-champion-benchmark-run"
+    )
+    chainlink_oi_run.add_argument("--config", type=Path, required=True)
     fixed_time_run = subparsers.add_parser("fixed-120-benchmark-run")
     fixed_time_run.add_argument("--config", type=Path, required=True)
     fixed_time_export = subparsers.add_parser("fixed-120-paper-candidate-export")
@@ -314,6 +320,17 @@ def main() -> None:
             f"{benchmark['promotion']['selected_candidate'] or 'champion retained'}"
         )
         print("runtime changed: false")
+        return
+    if args.command == "chainlink-oi-champion-benchmark-run":
+        config = load_chainlink_oi_benchmark_config(args.config)
+        run_dir, benchmark = run_chainlink_oi_benchmark(config)
+        print(f"report: {run_dir / 'report.html'}")
+        print(f"status: {benchmark['status']}")
+        print(
+            "selected candidate: "
+            f"{benchmark.get('selected_candidate') or 'none'}"
+        )
+        print("runtime/deployment: unchanged")
         return
     if args.command == "fixed-120-benchmark-run":
         config = load_fixed_time_accuracy_config(args.config)

@@ -1,0 +1,135 @@
+[benchmark]
+profile = "chainlink_oi_champion_feature_ablation"
+source_schema_revision = "f1ff0094753967b91e6dca90e38ce29359af3f3b"
+control_candidate = "frozen_boundary_alignment_champion"
+evaluation_note = "The frozen boundary-alignment champion remains the control. Chainlink-full and Chainlink-full-plus-OI use identical strict common July rows; the long-history candle challenger tests sample depth without fabricating unavailable RefPrice or OI history. Economic confirmation uses qualified executable-book rows, while the July 21-29 directional stress interval never imputes known PMXT gaps."
+
+[champion]
+model_key = "btc-5m-directional-boundary-alignment-20260421-20260720-paper-v1"
+model_sha256 = "c0778189865ca97a748a9f76cbe72d13268fd6e76db683ea727ad142b0576bc4"
+manifest_sha256 = "f4c2a5fa95e856105d732b5e9578df72e16033c5b2b9ae33f81874b214f8a8f7"
+feature_schema_sha256 = "d2cadbff9ae97e20d2cbeb562310e27af80279f9ecbdbec85221af82ef4b9eea"
+
+[windows]
+source_range_start = "2026-03-21T00:00:00Z"
+source_range_end = "2026-07-29T00:00:00Z"
+short_fit_start = "2026-07-03T00:00:00Z"
+short_fit_end = "2026-07-14T00:00:00Z"
+calibration_start = "2026-07-14T00:00:00Z"
+calibration_end = "2026-07-16T00:00:00Z"
+economic_confirmation_start = "2026-07-16T00:00:00Z"
+economic_confirmation_end = "2026-07-21T00:00:00Z"
+directional_stress_start = "2026-07-21T00:00:00Z"
+directional_stress_end = "2026-07-29T00:00:00Z"
+
+[sources]
+market_table = "polymarket.btc_interval_markets"
+reference_facts_table = "polymarket.btc_market_reference_facts"
+binance_klines_table = "polymarket.binance_one_second_klines"
+refprice_table = "polymarket.chainlink_btcusd_archive_ticks"
+oracle_table = "polymarket.polygon_chainlink_btcusd_oracle_rounds"
+candles_table = "polymarket.chainlink_btcusd_one_minute_candles"
+open_interest_table = "polymarket.binance_btcusdt_five_minute_open_interest"
+execution_snapshots_table = "polymarket.btc_market_execution_snapshots"
+refprice_feed_id = "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
+polygon_chain_id = 137
+polygon_oracle_proxy = "0xc907e116054ad103354f2d350fd2514433d57f6f"
+candle_symbol = "BTCUSD"
+open_interest_symbol = "BTCUSDT"
+
+[features]
+core_profile = "boundary_alignment_v1"
+refprice_return_seconds = [1, 5, 15, 30, 60]
+candle_return_minutes = [5, 15, 30, 60]
+open_interest_return_minutes = [5, 15, 30, 60]
+
+[[candidates]]
+name = "chainlink_full"
+fit_window = "short_common"
+feature_profile = "boundary_plus_chainlink_full"
+include_refprice = true
+include_oracle = true
+include_candles = true
+include_open_interest = false
+
+[[candidates]]
+name = "chainlink_full_oi"
+fit_window = "short_common"
+feature_profile = "boundary_plus_chainlink_full_oi"
+include_refprice = true
+include_oracle = true
+include_candles = true
+include_open_interest = true
+
+[[candidates]]
+name = "long_history_candle"
+fit_window = "long_history"
+feature_profile = "boundary_plus_oracle_candles"
+include_refprice = false
+include_oracle = true
+include_candles = true
+include_open_interest = false
+
+[model]
+estimator = "histogram_gradient_boosting"
+target = "official_up_outcome"
+confidence_threshold = 0.89
+minimum_seconds_after_open = 60
+maximum_seconds_after_open = 240
+cadence_seconds = 5
+quantity = 5.0
+learning_rate = 0.05
+max_iter = 160
+max_leaf_nodes = 15
+min_samples_leaf = 100
+l2_regularization = 0.1
+probability_calibration = "four_time_band_platt"
+random_seed = 20260801
+
+[causality]
+decision_clock = "observed_at"
+split_unit = "utc_day_market"
+require_source_at_or_before_decision = true
+require_closed_candles = true
+require_completed_open_interest_bucket = true
+strict_common_rows_for_short_candidates = true
+allow_imputation = false
+allow_missingness_features = false
+allow_market_rows_across_splits = false
+
+[staleness]
+binance_klines_seconds = 2
+refprice_seconds = 5
+oracle_seconds = 3600
+candles_seconds = 120
+open_interest_seconds = 600
+execution_book_seconds = 2
+
+[promotion]
+maximum_accuracy_regression = 0.01
+minimum_champion_coverage_ratio = 0.80
+minimum_loss_capture_rate = 0.20
+minimum_win_retention_rate = 0.80
+minimum_gross_loss_reduction = 0.10
+minimum_saved_loss_to_forgone_win_ratio = 1.0
+minimum_net_expectancy_delta = 0.0
+minimum_profit_factor_delta = 0.0
+maximum_expected_calibration_error = 0.05
+minimum_economic_confirmation_trades = 50
+minimum_directional_stress_markets = 1000
+minimum_confirmation_days = 3
+require_nonworse_worst_trade = true
+require_nonworse_worst_one_percent = true
+paper_only = true
+allow_fallback_winner = false
+
+[paths]
+core_config = "configs/btc-5m-directional-core-chainlink-oi-20260321-20260729.toml"
+refprice_source_sql = "sql/btc-chainlink-refprice-source.sql"
+candles_source_sql = "sql/btc-chainlink-one-minute-candles-source.sql"
+open_interest_source_sql = "sql/btc-binance-five-minute-open-interest-source.sql"
+shared_cache = "data/btc-chainlink-oi-champion-20260321-20260729"
+execution_evidence = "data/btc-chainlink-oi-champion-benchmark/execution-evidence"
+runs = "runs/btc-chainlink-oi-champion-20260321-20260729"
+champion_model = "runtime-models/btc-5m-directional-boundary-alignment-20260421-20260720-paper-v1/model.json"
+champion_manifest = "runtime-models/btc-5m-directional-boundary-alignment-20260421-20260720-paper-v1/manifest.json"

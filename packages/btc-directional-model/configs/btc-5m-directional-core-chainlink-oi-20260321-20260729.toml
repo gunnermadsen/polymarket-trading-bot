@@ -1,0 +1,77 @@
+[data]
+source_contract = "btc_core_oracle_v1"
+range_start = "2026-03-21T00:00:00Z"
+range_end = "2026-07-29T00:00:00Z"
+sample_interval_seconds = 5
+min_seconds_after_open = 60
+min_seconds_before_close = 60
+strict_final_price_audit = false
+
+[split]
+development_start = "2026-03-21T00:00:00Z"
+development_end = "2026-07-14T00:00:00Z"
+probability_calibration_start = "2026-07-14T00:00:00Z"
+probability_calibration_end = "2026-07-16T00:00:00Z"
+policy_selection_start = "2026-07-16T00:00:00Z"
+policy_selection_end = "2026-07-29T00:00:00Z"
+holdout_start = "2026-07-29T00:00:00Z"
+holdout_end = "2026-07-29T00:00:00Z"
+validation_starts = [
+  "2026-05-26T00:00:00Z",
+  "2026-06-02T00:00:00Z",
+  "2026-06-09T00:00:00Z",
+  "2026-06-16T00:00:00Z",
+  "2026-06-23T00:00:00Z",
+]
+validation_ends = [
+  "2026-06-02T00:00:00Z",
+  "2026-06-09T00:00:00Z",
+  "2026-06-16T00:00:00Z",
+  "2026-06-23T00:00:00Z",
+  "2026-06-30T00:00:00Z",
+]
+
+[model]
+c_candidates = [1.0]
+confidence_min = 0.89
+confidence_max = 0.89
+confidence_step = 0.01
+random_seed = 20260801
+candidate_names = ["histogram_enriched"]
+
+[[model.histogram_candidates]]
+learning_rate = 0.05
+max_iter = 160
+max_leaf_nodes = 15
+min_samples_leaf = 100
+l2_regularization = 0.10
+
+[[model.row_weight_schedules]]
+candidate = "histogram_enriched"
+multiplier = 1.0
+normalization = "equal_total_per_market"
+
+[gates]
+target_accuracy = 0.874
+target_wilson_lower = 0.80
+target_balanced_accuracy = 0.85
+minimum_direction_recall = 0.80
+minimum_coverage = 0.50
+minimum_holdout_markets = 300
+maximum_walk_forward_holdout_gap = 0.05
+minimum_same_time_path_uplift = 0.00
+minimum_nonnegative_uplift_folds = 3
+maximum_ece = 0.05
+bootstrap_resamples = 10000
+
+[compute]
+max_parallel_fits = 3
+threads_per_fit = 1
+polars_threads = 6
+
+[paths]
+source_data = "data/btc-core-chainlink-oi-20260321-20260729/source"
+development_feature_data = "data/btc-core-chainlink-oi-20260321-20260729/features/development.parquet"
+holdout_feature_data = "data/btc-core-chainlink-oi-20260321-20260729/features/holdout-not-configured.parquet"
+runs = "runs/btc-core-chainlink-oi-20260321-20260729"
+artifacts = "artifacts/btc-core-chainlink-oi-20260321-20260729"
