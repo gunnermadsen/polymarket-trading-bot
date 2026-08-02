@@ -652,6 +652,8 @@ pub struct RealtimeState {
     pub current_market: Option<BtcIntervalMarket>,
     pub books: BTreeMap<String, BookReadiness>,
     pub reference_prices: BTreeMap<ReferencePriceSource, ReferencePriceTick>,
+    #[serde(default)]
+    pub primary_persistence_degraded: bool,
     /// Internal inference-only accumulator. It is deliberately excluded from the
     /// public realtime-state JSON contract.
     #[serde(skip)]
@@ -661,6 +663,12 @@ pub struct RealtimeState {
     pub directional_external: DirectionalExternalState,
     pub resolved_outcome: Option<BtcOutcome>,
     pub last_updated_at: Option<DateTime<Utc>>,
+}
+
+impl RealtimeState {
+    pub fn primary_persistence_available(&self) -> bool {
+        !self.primary_persistence_degraded
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -681,6 +689,15 @@ mod tests {
 
     fn at(milliseconds: i64) -> DateTime<Utc> {
         DateTime::from_timestamp_millis(milliseconds).unwrap()
+    }
+
+    #[test]
+    fn primary_persistence_is_available_unless_degraded() {
+        let mut state = RealtimeState::default();
+        assert!(state.primary_persistence_available());
+
+        state.primary_persistence_degraded = true;
+        assert!(!state.primary_persistence_available());
     }
 
     fn trade(
