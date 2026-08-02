@@ -1,5 +1,13 @@
 FROM python:3.12-slim
 
+ARG POLYMARKET_GIT_REVISION
+RUN case "$POLYMARKET_GIT_REVISION" in \
+      [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; \
+      *) echo "POLYMARKET_GIT_REVISION must be a 40-character lowercase Git commit ID" >&2; exit 1 ;; \
+    esac
+
+LABEL org.opencontainers.image.revision="$POLYMARKET_GIT_REVISION"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1

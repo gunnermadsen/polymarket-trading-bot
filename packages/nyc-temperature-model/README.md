@@ -8,7 +8,8 @@ The runtime is isolated in `docker-compose.temperature.yml`:
 
 - a private PostgreSQL database with no published host port;
 - a weather-only migration command whose migrations are not loaded by the normal bot migrator;
-- two leased ingestion workers with public read-only source access;
+- four leased weather/archive workers and two dedicated CLOB price-history workers with public
+  read-only source access;
 - an on-demand offline model runner;
 - SSD-backed cache, database, model, and report directories under
   `/Volumes/docker-data/polymarket-bot/temperature-expectancy` by default.
@@ -38,6 +39,8 @@ Google, AWS, and NOMADS archives with bounded exponential retry and request paci
 job is retried. The PMXT worker reconstructs the immediately available YES and NO asks using provider
 receipt time, never events received after the decision. Each worker has an independent cache
 namespace; large PMXT transport files are removed only after compact snapshots and checksums commit.
+Workers use validated ingester allowlists so the CLOB price-history pool cannot consume HRRR or PMXT
+jobs, while the general pool cannot consume price-history jobs.
 
 ## Reconcile, train, and benchmark
 

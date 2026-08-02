@@ -15,6 +15,7 @@ x-weather-environment: &weather-environment
   IEM_ASOS_ONE_MINUTE_URL: "https://mesonet.agron.iastate.edu/cgi-bin/request/asos1min.py"
   WEATHER_WORKER_POLL_SECONDS: "2"
   WEATHER_WORKER_LEASE_SECONDS: "1800"
+  WEATHER_WORKER_INGESTERS: "polymarket_temperature_markets,asos_station_observations,asos_resolution_observations,asos_one_minute_observations,hrrr_point_forecasts,pmxt_temperature_execution"
   HRRR_DOWNLOAD_ATTEMPTS: "8"
   HRRR_RETRY_BASE_MS: "1000"
   HRRR_RETRY_MAX_MS: "30000"
@@ -26,6 +27,8 @@ x-weather-worker: &weather-worker
   build:
     context: .
     dockerfile: packages/nyc-temperature-model/Dockerfile
+    args:
+      POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
   image: capitonic/nyc-temperature-model:local
   init: true
   mem_limit: 2g
@@ -129,6 +132,28 @@ services:
       <<: *weather-environment
       WEATHER_WORKER_ID: "temperature-worker-4"
       WEATHER_CACHE_DIR: "/var/lib/weather/cache/worker-4"
+
+  temperature-price-history-worker-1:
+    <<: *weather-worker
+    command: ["worker"]
+    mem_limit: 768m
+    cpus: "0.5"
+    environment:
+      <<: *weather-environment
+      WEATHER_WORKER_ID: "temperature-price-history-worker-1"
+      WEATHER_WORKER_INGESTERS: "polymarket_temperature_price_history"
+      WEATHER_CACHE_DIR: "/var/lib/weather/cache/price-history-worker-1"
+
+  temperature-price-history-worker-2:
+    <<: *weather-worker
+    command: ["worker"]
+    mem_limit: 768m
+    cpus: "0.5"
+    environment:
+      <<: *weather-environment
+      WEATHER_WORKER_ID: "temperature-price-history-worker-2"
+      WEATHER_WORKER_INGESTERS: "polymarket_temperature_price_history"
+      WEATHER_CACHE_DIR: "/var/lib/weather/cache/price-history-worker-2"
 
   temperature-model:
     <<: *weather-worker
