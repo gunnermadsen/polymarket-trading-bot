@@ -2712,6 +2712,17 @@ mod tests {
                 .ready
         );
 
+        let stale_binance = state.readiness(
+            now + Duration::milliseconds(2_001),
+            Duration::seconds(2),
+            Duration::seconds(2),
+        );
+        assert!(!stale_binance.ready);
+        assert!(stale_binance
+            .reasons
+            .iter()
+            .any(|reason| reason == "stale_reference:direct_binance"));
+
         let up_book = state.books.get_mut("up").unwrap();
         up_book.source_timestamp = Some(now - Duration::milliseconds(2_500));
         up_book.received_at = Some(now - Duration::milliseconds(1));

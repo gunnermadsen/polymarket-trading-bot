@@ -80,7 +80,6 @@ const REFERENCE_SEND_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 // Chainlink updates can have legitimate multi-second gaps; this bound avoids
 // reconnect churn while still detecting an unavailable required source quickly.
 const RTDS_REQUIRED_DATA_TIMEOUT: StdDuration = StdDuration::from_secs(10);
-const BINANCE_REQUIRED_DATA_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const BINANCE_MODEL_RECOVERY_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 const BINANCE_MODEL_RECOVERY_RETRY_INTERVAL: StdDuration = StdDuration::from_secs(5);
 const BINANCE_MODEL_RECOVERY_PAGE_LIMIT: usize = 1_000;
@@ -1188,10 +1187,14 @@ impl ReferenceFeedKind {
         }
     }
 
-    fn required_data_timeout(self) -> StdDuration {
+    /// A required-data timeout is a transport watchdog only for feeds whose
+    /// protocol does not provide an independent liveness signal. Binance
+    /// freshness is instead enforced at the trading/readiness boundary, while
+    /// EOF, PONG, and frame-idle failures continue to reconnect its socket.
+    fn required_data_disconnect_timeout(self) -> Option<StdDuration> {
         match self {
-            Self::Rtds => RTDS_REQUIRED_DATA_TIMEOUT,
-            Self::Binance => BINANCE_REQUIRED_DATA_TIMEOUT,
+            Self::Rtds => Some(RTDS_REQUIRED_DATA_TIMEOUT),
+            Self::Binance => None,
         }
     }
 
@@ -1270,7 +1273,7 @@ enum ReferencePongExpectation {
 
 #[derive(Debug)]
 struct ReferenceFeedWatchdog {
-    required_data_deadline: Instant,
+    required_data_deadline: Option<Instant>,
     read_idle_deadline: Instant,
     pong_deadline: Option<Instant>,
     stable_deadline: Option<Instant>,
@@ -1281,7 +1284,9 @@ struct ReferenceFeedWatchdog {
 impl ReferenceFeedWatchdog {
     fn new(now: Instant, kind: ReferenceFeedKind) -> Self {
         Self {
-            required_data_deadline: now + kind.required_data_timeout(),
+            required_data_deadline: kind
+                .required_data_disconnect_timeout()
+                .map(|timeout| now + timeout),
             read_idle_deadline: now + REFERENCE_READ_IDLE_TIMEOUT,
             pong_deadline: None,
             stable_deadline: None,
@@ -1295,7 +1300,9 @@ impl ReferenceFeedWatchdog {
     }
 
     fn on_required_tick(&mut self, now: Instant, kind: ReferenceFeedKind) {
-        self.required_data_deadline = now + kind.required_data_timeout();
+        if let Some(timeout) = kind.required_data_disconnect_timeout() {
+            self.required_data_deadline = Some(now + timeout);
+        }
         if self.stable_deadline.is_none() && !self.stable {
             self.stable_deadline = Some(now + REFERENCE_STABLE_RESET_AFTER);
         }
@@ -5936,14 +5943,18 @@ async fn run_rtds_supervisor(
                 let mut heartbeat =
                     interval_at(watchdog_started + heartbeat_interval, heartbeat_interval);
                 heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
-                let required_data_sleep = sleep(kind.required_data_timeout());
+                let required_data_timeout = kind
+                    .required_data_disconnect_timeout()
+                    .expect("RTDS required-data watchdog must be enabled");
+                let required_data_sleep = sleep(required_data_timeout);
                 let read_idle_sleep = sleep(REFERENCE_READ_IDLE_TIMEOUT);
                 let stable_sleep = sleep(REFERENCE_STABLE_RESET_AFTER);
                 tokio::pin!(required_data_sleep, read_idle_sleep, stable_sleep);
                 'connection: loop {
-                    required_data_sleep
-                        .as_mut()
-                        .reset(watchdog.required_data_deadline);
+                    let required_data_deadline = watchdog
+                        .required_data_deadline
+                        .expect("RTDS required-data watchdog deadline must be armed");
+                    required_data_sleep.as_mut().reset(required_data_deadline);
                     read_idle_sleep.as_mut().reset(watchdog.read_idle_deadline);
                     if let Some(deadline) = watchdog.stable_deadline {
                         stable_sleep.as_mut().reset(deadline);
@@ -6666,21 +6677,12 @@ async fn run_binance_supervisor(
         let mut model_recovery_task: Option<JoinHandle<Result<BinanceModelRecovery>>> = None;
         let mut model_recovery_started = None;
         let mut model_recovery_buffer = VecDeque::with_capacity(1_024);
-        let required_data_sleep = sleep(kind.required_data_timeout());
         let read_idle_sleep = sleep(REFERENCE_READ_IDLE_TIMEOUT);
         let pong_sleep = sleep(REFERENCE_PONG_TIMEOUT);
         let stable_sleep = sleep(REFERENCE_STABLE_RESET_AFTER);
-        tokio::pin!(
-            required_data_sleep,
-            read_idle_sleep,
-            pong_sleep,
-            stable_sleep
-        );
+        tokio::pin!(read_idle_sleep, pong_sleep, stable_sleep);
         let mut heartbeat_sequence = 0u64;
         'connection: loop {
-            required_data_sleep
-                .as_mut()
-                .reset(watchdog.required_data_deadline);
             read_idle_sleep.as_mut().reset(watchdog.read_idle_deadline);
             if let Some(deadline) = watchdog.pong_deadline {
                 pong_sleep.as_mut().reset(deadline);
@@ -6692,10 +6694,6 @@ async fn run_binance_supervisor(
                 biased;
                 _ = shutdown.changed() => {
                     disconnect_reason = ReferenceDisconnectReason::Shutdown;
-                    break;
-                }
-                _ = &mut required_data_sleep => {
-                    disconnect_reason = ReferenceDisconnectReason::RequiredDataIdleTimeout;
                     break;
                 }
                 _ = &mut pong_sleep, if watchdog.pong_deadline.is_some() => {
@@ -11897,7 +11895,7 @@ mod tests {
         let mut watchdog = ReferenceFeedWatchdog::new(started_at, ReferenceFeedKind::Rtds);
         assert_eq!(
             watchdog.required_data_deadline,
-            started_at + RTDS_REQUIRED_DATA_TIMEOUT
+            Some(started_at + RTDS_REQUIRED_DATA_TIMEOUT)
         );
         assert_eq!(
             watchdog.read_idle_deadline,
@@ -11914,14 +11912,14 @@ mod tests {
         );
         assert_eq!(
             watchdog.required_data_deadline,
-            started_at + RTDS_REQUIRED_DATA_TIMEOUT
+            Some(started_at + RTDS_REQUIRED_DATA_TIMEOUT)
         );
 
         let data_at = started_at + StdDuration::from_secs(3);
         watchdog.on_required_tick(data_at, ReferenceFeedKind::Rtds);
         assert_eq!(
             watchdog.required_data_deadline,
-            data_at + RTDS_REQUIRED_DATA_TIMEOUT
+            Some(data_at + RTDS_REQUIRED_DATA_TIMEOUT)
         );
         assert_eq!(
             watchdog.stable_deadline,
@@ -11955,6 +11953,35 @@ mod tests {
         assert!(watchdog.stable);
         assert!(watchdog.stable_deadline.is_none());
         assert!(!watchdog.mark_stable());
+    }
+
+    #[test]
+    fn binance_watchdog_keeps_freshness_separate_from_transport_liveness() {
+        let started_at = Instant::now();
+        let mut watchdog = ReferenceFeedWatchdog::new(started_at, ReferenceFeedKind::Binance);
+
+        assert_eq!(
+            ReferenceFeedKind::Rtds.required_data_disconnect_timeout(),
+            Some(RTDS_REQUIRED_DATA_TIMEOUT)
+        );
+        assert_eq!(
+            ReferenceFeedKind::Binance.required_data_disconnect_timeout(),
+            None
+        );
+        assert!(watchdog.required_data_deadline.is_none());
+        assert_eq!(
+            watchdog.read_idle_deadline,
+            started_at + REFERENCE_READ_IDLE_TIMEOUT
+        );
+
+        let data_at = started_at + StdDuration::from_secs(3);
+        watchdog.on_required_tick(data_at, ReferenceFeedKind::Binance);
+
+        assert!(watchdog.required_data_deadline.is_none());
+        assert_eq!(
+            watchdog.stable_deadline,
+            Some(data_at + REFERENCE_STABLE_RESET_AFTER)
+        );
     }
 
     #[test]
