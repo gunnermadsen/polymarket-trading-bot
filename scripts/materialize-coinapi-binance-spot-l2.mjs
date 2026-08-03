@@ -15,6 +15,7 @@ const MAX_STALE_MS = 1_000;
 const MAX_RESPONSE_SNAPSHOTS = 100_000;
 const CONNECT_TIMEOUT_SECONDS = 30;
 const DOWNLOAD_TIMEOUT_SECONDS = 900;
+const COINAPI_API_ORIGIN = process.env.COINAPI_API_ORIGIN ?? 'https://api-ncsa.coinapi.io';
 
 class SnapshotValidationError extends Error {
   constructor(reason, message) {
@@ -276,12 +277,20 @@ function featureColumns() {
 }
 
 async function loadPayload(url, archivePath) {
-  if (existsSync(archivePath)) return readFileSync(archivePath);
+  if (existsSync(archivePath)) {
+    const archivedPayload = readFileSync(archivePath);
+    try {
+      JSON.parse(archivedPayload.toString('utf8'));
+      return archivedPayload;
+    } catch {
+      unlinkSync(archivePath);
+    }
+  }
   const temporaryPath = `${archivePath}.${process.pid}.part`;
   const curlConfigPath = join('/tmp', `coinapi-curl-${process.pid}-${randomUUID()}.conf`);
   try {
     writeFileSync(curlConfigPath, [
-      'fail-with-body', 'silent', 'show-error', 'location',
+      'fail-with-body', 'silent', 'show-error', 'location', 'http1.1',
       `connect-timeout = ${CONNECT_TIMEOUT_SECONDS}`,
       `max-time = ${DOWNLOAD_TIMEOUT_SECONDS}`,
       `header = "X-CoinAPI-Key: ${process.env.COIN_API_KEY}"`,
@@ -291,8 +300,10 @@ async function loadPayload(url, archivePath) {
     execFileSync('curl', [
       '--config', curlConfigPath,
     ], { stdio: ['ignore', 'ignore', 'inherit'] });
+    const downloadedPayload = readFileSync(temporaryPath);
+    JSON.parse(downloadedPayload.toString('utf8'));
     renameSync(temporaryPath, archivePath);
-    return readFileSync(archivePath);
+    return downloadedPayload;
   } finally {
     if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
     if (existsSync(curlConfigPath)) unlinkSync(curlConfigPath);
@@ -454,7 +465,7 @@ async function main() {
   const archiveRoot = process.env.POLYMARKET_COINAPI_ARCHIVE_ROOT;
   if (!archiveRoot) throw new Error('POLYMARKET_COINAPI_ARCHIVE_ROOT is required');
   const queryStart = start - LOOKBACK_SECONDS * 1_000;
-  const url = new URL(`https://rest.coinapi.io/v1/orderbooks/${COINAPI_SYMBOL}/history`);
+  const url = new URL(`/v1/orderbooks/${COINAPI_SYMBOL}/history`, COINAPI_API_ORIGIN);
   url.searchParams.set('time_start', iso(queryStart));
   url.searchParams.set('time_end', iso(end));
   url.searchParams.set('limit', String(MAX_RESPONSE_SNAPSHOTS));
