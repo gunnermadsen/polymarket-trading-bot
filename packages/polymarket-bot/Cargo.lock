@@ -3294,6 +3294,7 @@ dependencies = [
  "num-bigint",
  "paste",
  "seq-macro",
+ "snap",
  "thrift",
  "twox-hash",
  "zstd",
