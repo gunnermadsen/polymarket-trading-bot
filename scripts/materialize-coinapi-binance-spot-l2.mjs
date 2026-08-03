@@ -258,17 +258,23 @@ function featureColumns() {
 async function loadPayload(url, archivePath) {
   if (existsSync(archivePath)) return readFileSync(archivePath);
   const temporaryPath = `${archivePath}.${process.pid}.part`;
+  const curlConfigPath = join('/tmp', `coinapi-curl-${process.pid}-${randomUUID()}.conf`);
   try {
+    writeFileSync(curlConfigPath, [
+      'fail-with-body', 'silent', 'show-error', 'location',
+      'connect-timeout = 10', 'max-time = 120',
+      `header = "X-CoinAPI-Key: ${process.env.COIN_API_KEY}"`,
+      `output = "${temporaryPath.replaceAll('"', '\\"')}"`,
+      `url = "${url.toString().replaceAll('"', '\\"')}"`,
+    ].join('\n'), { mode: 0o600, flag: 'wx' });
     execFileSync('curl', [
-      '--fail-with-body', '--silent', '--show-error', '--location',
-      '--connect-timeout', '10', '--max-time', '120',
-      '--header', `X-CoinAPI-Key: ${process.env.COIN_API_KEY}`,
-      '--output', temporaryPath, url.toString(),
+      '--config', curlConfigPath,
     ], { stdio: ['ignore', 'ignore', 'inherit'] });
     renameSync(temporaryPath, archivePath);
     return readFileSync(archivePath);
   } finally {
     if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
+    if (existsSync(curlConfigPath)) unlinkSync(curlConfigPath);
   }
 }
 
