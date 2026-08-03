@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -19,6 +20,7 @@ from .sources import download_atomic, file_sha256, source_client
 NYC = ZoneInfo("America/New_York")
 PMXT_COVERAGE_START = datetime(2026, 4, 13, 19, tzinfo=UTC)
 MAXIMUM_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
+ARCHIVE_DECODE_ERRORS = (OSError, pa.ArrowInvalid)
 
 
 @dataclass
@@ -133,6 +135,25 @@ def _filtered_events(paths: list[Path], condition_ids: list[str]) -> list[dict[s
     return events
 
 
+def _decode_archive_with_redownload(
+    path: Path,
+    condition_ids: list[str],
+    redownload: Callable[[], Path],
+    *,
+    decoder: Callable[[list[Path], list[str]], list[dict[str, Any]]] = _filtered_events,
+) -> tuple[list[dict[str, Any]], Path, bool]:
+    try:
+        return decoder([path], condition_ids), path, False
+    except ARCHIVE_DECODE_ERRORS:
+        path.unlink(missing_ok=True)
+    replacement = redownload()
+    try:
+        return decoder([replacement], condition_ids), replacement, True
+    except ARCHIVE_DECODE_ERRORS:
+        replacement.unlink(missing_ok=True)
+        raise
+
+
 def _decision_groups(settings: Settings, job: Job):
     with connection(settings.database_url) as conn:
         rows = conn.execute(
@@ -157,36 +178,152 @@ def _decision_groups(settings: Settings, job: Job):
     return sorted(grouped.items())
 
 
+def _completed_decision_times(settings: Settings, job: Job, groups) -> set[datetime]:
+    # Job progress is advisory and can lag after a worker dies. A decision group is
+    # complete only when all three configured quantities exist for every market.
+    expected = {decision_time: len(markets) * 3 for decision_time, markets in groups}
+    with connection(settings.database_url) as conn:
+        rows = conn.execute(
+            """
+            SELECT decision_time, count(*)::int AS snapshot_count
+            FROM weather.execution_snapshots
+            WHERE decision_time >= %s AND decision_time < %s
+            GROUP BY decision_time
+            """,
+            (job.range_start, job.range_end),
+        ).fetchall()
+    return {
+        row["decision_time"]
+        for row in rows
+        if expected.get(row["decision_time"]) == row["snapshot_count"]
+    }
+
+
+def _archive_flag(availability: str, archive_hour: datetime) -> str:
+    return f"pmxt_archive_{availability}_{archive_hour:%Y-%m-%dT%H}Z"
+
+
+def _record_archive(
+    settings: Settings,
+    archive_hour: datetime,
+    uri: str,
+    *,
+    availability: str,
+    digest: str | None = None,
+    size: int | None = None,
+    error: BaseException | None = None,
+) -> str:
+    metadata = {"archive_hour": archive_hour.isoformat(), "availability": availability}
+    if error is not None:
+        metadata["error"] = f"{type(error).__name__}: {error}"[:2000]
+    with connection(settings.database_url) as conn, conn.transaction():
+        return insert_artifact(
+            conn,
+            provider="pmxt_v2",
+            logical_key=f"pmxt:v2:polymarket_orderbook:{archive_hour:%Y-%m-%dT%H}",
+            source_uri=uri,
+            sha256=digest,
+            compressed_bytes=size,
+            record_count=0,
+            metadata=metadata,
+            source_start=archive_hour,
+            source_end=archive_hour + timedelta(hours=1),
+        )
+
+
+def _load_archive_events(
+    settings: Settings,
+    archive_hour: datetime,
+    condition_ids: list[str],
+) -> tuple[list[dict[str, Any]], str, str | None]:
+    uri, _ = _archive_spec(settings.pmxt_base_url, archive_hour)
+    state: dict[str, Any] = {}
+
+    def fetch() -> Path:
+        path, digest, size, source_uri = _ensure_archive(settings, archive_hour)
+        state.update(path=path, digest=digest, size=size, uri=source_uri)
+        return path
+
+    try:
+        path = fetch()
+        events, path, recovered = _decode_archive_with_redownload(
+            path, condition_ids, fetch
+        )
+    except FileNotFoundError as error:
+        artifact_id = _record_archive(
+            settings, archive_hour, uri, availability="missing", error=error
+        )
+        return [], artifact_id, _archive_flag("missing", archive_hour)
+    except ARCHIVE_DECODE_ERRORS as error:
+        artifact_id = _record_archive(
+            settings,
+            archive_hour,
+            state.get("uri", uri),
+            availability="corrupt",
+            digest=state.get("digest"),
+            size=state.get("size"),
+            error=error,
+        )
+        return [], artifact_id, _archive_flag("corrupt", archive_hour)
+    artifact_id = _record_archive(
+        settings,
+        archive_hour,
+        state["uri"],
+        availability="recovered" if recovered else "available",
+        digest=state["digest"],
+        size=state["size"],
+    )
+    path.unlink(missing_ok=True)
+    return events, artifact_id, None
+
+
 def ingest_pmxt_execution(settings: Settings, job: Job) -> dict:
     groups = _decision_groups(settings, job)
-    snapshots = 0
+    completed_decisions = _completed_decision_times(settings, job, groups)
+    snapshots = sum(
+        len(markets) * 3
+        for decision_time, markets in groups
+        if decision_time in completed_decisions
+    )
+    reused_decision_groups = len(completed_decisions)
     archives_seen: set[str] = set()
-    for index, (decision_time, markets) in enumerate(groups, start=1):
+    archive_gaps: set[str] = set()
+    if completed_decisions:
+        update_progress(
+            settings,
+            job,
+            {
+                "decision_groups_completed": len(completed_decisions),
+                "decision_groups_total": len(groups),
+                "snapshots": snapshots,
+                "archives": 0,
+                "archive_gaps": 0,
+                "reused_decision_groups": reused_decision_groups,
+                "last_decision_time": max(completed_decisions).isoformat(),
+            },
+        )
+    for decision_time, markets in groups:
+        if decision_time in completed_decisions:
+            continue
         hour = decision_time.replace(minute=0, second=0, microsecond=0)
         archive_hours = [hour - timedelta(hours=1), hour]
-        paths = []
         artifact_ids = []
+        archive_flags = []
+        events = []
+        condition_ids = [market["condition_id"] for market in markets]
         for archive_hour in archive_hours:
             if archive_hour < PMXT_COVERAGE_START.replace(minute=0):
                 continue
-            path, digest, size, uri = _ensure_archive(settings, archive_hour)
-            with connection(settings.database_url) as conn, conn.transaction():
-                artifact_id = insert_artifact(
-                    conn,
-                    provider="pmxt_v2",
-                    logical_key=f"pmxt:v2:polymarket_orderbook:{archive_hour:%Y-%m-%dT%H}",
-                    source_uri=uri,
-                    sha256=digest,
-                    compressed_bytes=size,
-                    record_count=0,
-                    metadata={"archive_hour": archive_hour.isoformat()},
-                    source_start=archive_hour,
-                    source_end=archive_hour + timedelta(hours=1),
-                )
-            paths.append(path)
+            archive_events, artifact_id, archive_flag = _load_archive_events(
+                settings, archive_hour, condition_ids
+            )
+            events.extend(archive_events)
             artifact_ids.append(artifact_id)
-            archives_seen.add(str(path))
-        events = _filtered_events(paths, [market["condition_id"] for market in markets])
+            archives_seen.add(_archive_spec(settings.pmxt_base_url, archive_hour)[0])
+            if archive_flag:
+                archive_flags.append(archive_flag)
+                archive_gaps.add(archive_flag)
+        events.sort(key=lambda row: (row["timestamp_received"], row["timestamp"]))
         books: dict[str, Book] = {}
         for event in events:
             received = event["timestamp_received"]
@@ -201,7 +338,7 @@ def ingest_pmxt_execution(settings: Settings, job: Job) -> dict:
                 yes = books.get(market["yes_token_id"], Book())
                 no = books.get(market["no_token_id"], Book())
                 for quantity in (Decimal(1), Decimal(5), Decimal(10)):
-                    flags = []
+                    flags = list(archive_flags)
                     if not yes.seeded:
                         flags.append("missing_yes_book_seed")
                     if not no.seeded:
@@ -249,16 +386,17 @@ def ingest_pmxt_execution(settings: Settings, job: Job) -> dict:
                         ),
                     )
                     snapshots += 1
-        for path in paths:
-            path.unlink(missing_ok=True)
+        completed_decisions.add(decision_time)
         update_progress(
             settings,
             job,
             {
-                "decision_groups_completed": index,
+                "decision_groups_completed": len(completed_decisions),
                 "decision_groups_total": len(groups),
                 "snapshots": snapshots,
                 "archives": len(archives_seen),
+                "archive_gaps": len(archive_gaps),
+                "reused_decision_groups": reused_decision_groups,
                 "last_decision_time": decision_time.isoformat(),
             },
         )
@@ -266,4 +404,5 @@ def ingest_pmxt_execution(settings: Settings, job: Job) -> dict:
         "decision_groups": len(groups),
         "snapshots": snapshots,
         "archives": len(archives_seen),
+        "archive_gaps": sorted(archive_gaps),
     }

@@ -49,6 +49,10 @@ x-weather-worker: &weather-worker
       condition: service_completed_successfully
   restart: unless-stopped
 
+x-pmxt-worker: &pmxt-worker
+  <<: *weather-worker
+  image: capitonic/nyc-temperature-pmxt-worker:${PMXT_WORKER_IMAGE_TAG:-archive-integrity-v2}
+
 services:
   temperature-postgres:
     image: postgres:16-alpine
@@ -104,7 +108,7 @@ services:
     restart: "no"
 
   temperature-worker-1:
-    <<: *weather-worker
+    <<: *pmxt-worker
     command: ["worker"]
     environment:
       <<: *weather-environment
@@ -112,7 +116,7 @@ services:
       WEATHER_CACHE_DIR: "/var/lib/weather/cache/worker-1"
 
   temperature-worker-2:
-    <<: *weather-worker
+    <<: *pmxt-worker
     command: ["worker"]
     environment:
       <<: *weather-environment
@@ -120,7 +124,7 @@ services:
       WEATHER_CACHE_DIR: "/var/lib/weather/cache/worker-2"
 
   temperature-worker-3:
-    <<: *weather-worker
+    <<: *pmxt-worker
     command: ["worker"]
     environment:
       <<: *weather-environment
@@ -128,7 +132,7 @@ services:
       WEATHER_CACHE_DIR: "/var/lib/weather/cache/worker-3"
 
   temperature-worker-4:
-    <<: *weather-worker
+    <<: *pmxt-worker
     command: ["worker"]
     environment:
       <<: *weather-environment

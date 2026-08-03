@@ -247,6 +247,8 @@ def run_benchmark(
     eligible = []
     for row in price_rows:
         flags = set(row["quality_flags"] or [])
+        if any(flag.startswith("pmxt_archive_") for flag in flags):
+            continue
         if "crossed_yes_book" in flags or any(
             flag.startswith(("missing_yes", "insufficient_yes")) for flag in flags
         ):
