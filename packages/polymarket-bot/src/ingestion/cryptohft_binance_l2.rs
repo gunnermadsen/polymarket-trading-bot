@@ -1657,6 +1657,7 @@ pub struct BinanceL2DaySummary {
     pub update_events: u64,
     pub updates_before_snapshot: u64,
     pub sequence_gaps: u64,
+    pub source_row_groups_skipped: u64,
     pub invalid_book_events: u64,
     pub emitted_feature_rows: u64,
     pub unavailable_seconds: u64,
@@ -2826,6 +2827,23 @@ impl BinanceSpotL2RangeReplay {
             }
         }
         self.inner.process_event(LogicalEvent { key, levels })
+    }
+
+    pub(crate) fn mark_source_gap(&mut self) {
+        self.inner.pending_event = None;
+        self.inner.book_ready = false;
+        self.inner.last_sequence = None;
+        self.inner.awaiting_snapshot_bridge = false;
+        self.inner.pending_second = None;
+        self.inner.current_flow_second = None;
+        self.inner.current_flow = QuoteFlow::default();
+        self.inner.rolling.clear();
+        self.inner.summary.sequence_gaps = self.inner.summary.sequence_gaps.saturating_add(1);
+        self.inner.summary.source_row_groups_skipped = self
+            .inner
+            .summary
+            .source_row_groups_skipped
+            .saturating_add(1);
     }
 
     pub(crate) fn finish(self) -> Result<BinanceL2DaySummary> {

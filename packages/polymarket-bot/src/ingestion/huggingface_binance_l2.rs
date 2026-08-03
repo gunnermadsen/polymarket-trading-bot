@@ -139,7 +139,7 @@ pub fn goooddy_month_spec(
             depth: GoooddySourceObjectSpec {
                 remote_path: "depth/binance/BTCUSDT/2026-06.parquet",
                 expected_sha256:
-                    "e6339adc0edfae9b62bc49f2056c8596bb431f58e99c516cba9916063a15470d",
+                    "6a8ca39bef7b8ec05329bb7c13a2f674a9bb6fdd60191e728d892bee17c45450",
                 expected_bytes: 385_932_069,
             },
             snapshots: GoooddySourceObjectSpec {
@@ -156,7 +156,7 @@ pub fn goooddy_month_spec(
             depth: GoooddySourceObjectSpec {
                 remote_path: "depth/binance/BTCUSDT/2026-07.parquet",
                 expected_sha256:
-                    "4a5d581db337201f0a2446ee7d59baaf1e5c54363f9760b52759b7dc6ac1779c",
+                    "27c87c42dbc420cbb80b0c82b9bfe29e3998ef3fdf7bf06106fe76231b369504",
                 expected_bytes: 317_605_448,
             },
             snapshots: GoooddySourceObjectSpec {
@@ -407,38 +407,38 @@ fn replay_goooddy_month(
     let mut snapshot_index = 0usize;
     let mut raw_rows = snapshot_rows;
     let mut last_update_key: Option<(i64, i64)> = None;
-    stream_depth_events(
-        &request.depth_archive.archive_path,
-        &cancellation,
-        |event, event_rows| {
-            let update_key = (
-                event.event_time_ms,
-                event
-                    .final_update_id
-                    .context("Goooddy update did not have a final update id")?,
+    stream_depth_events(&request.depth_archive.archive_path, &cancellation, |item| {
+        let DepthStreamItem::Event(event, event_rows) = item else {
+            replay.mark_source_gap();
+            return Ok(());
+        };
+        let update_key = (
+            event.event_time_ms,
+            event
+                .final_update_id
+                .context("Goooddy update did not have a final update id")?,
+        );
+        if last_update_key.is_some_and(|previous| update_key < previous) {
+            bail!("Goooddy depth events were not monotonic");
+        }
+        last_update_key = Some(update_key);
+        while let Some(snapshot) = snapshots.get(snapshot_index) {
+            let snapshot_key = (
+                snapshot.event_time_ms,
+                snapshot
+                    .last_update_id
+                    .context("Goooddy snapshot did not have a last update id")?,
             );
-            if last_update_key.is_some_and(|previous| update_key < previous) {
-                bail!("Goooddy depth events were not monotonic");
+            if snapshot_key > update_key {
+                break;
             }
-            last_update_key = Some(update_key);
-            while let Some(snapshot) = snapshots.get(snapshot_index) {
-                let snapshot_key = (
-                    snapshot.event_time_ms,
-                    snapshot
-                        .last_update_id
-                        .context("Goooddy snapshot did not have a last update id")?,
-                );
-                if snapshot_key > update_key {
-                    break;
-                }
-                replay.process(snapshot.clone())?;
-                snapshot_index += 1;
-            }
-            replay.process(event)?;
-            raw_rows = raw_rows.saturating_add(event_rows);
-            Ok(())
-        },
-    )?;
+            replay.process(snapshot.clone())?;
+            snapshot_index += 1;
+        }
+        replay.process(event)?;
+        raw_rows = raw_rows.saturating_add(event_rows);
+        Ok(())
+    })?;
     for snapshot in snapshots.into_iter().skip(snapshot_index) {
         replay.process(snapshot)?;
     }
@@ -457,11 +457,18 @@ fn read_snapshot_events(
     let mut raw_rows = 0u64;
     for row_group_index in 0..reader.num_row_groups() {
         check_cancelled(cancellation)?;
-        let row_group = reader.get_row_group(row_group_index)?;
-        let rows = row_group.get_row_iter(None)?;
-        for row in rows {
+        let row_group = reader.get_row_group(row_group_index).with_context(|| {
+            format!("failed to open Goooddy snapshot row group {row_group_index}")
+        })?;
+        let rows = row_group.get_row_iter(None).with_context(|| {
+            format!("failed to stream Goooddy snapshot row group {row_group_index}")
+        })?;
+        for (row_ordinal, row) in rows.enumerate() {
             check_cancelled(cancellation)?;
-            let (key, level) = parse_snapshot_row(row?)?;
+            let row = row.with_context(|| {
+                format!("failed to decode Goooddy snapshot row group {row_group_index}, row {row_ordinal}")
+            })?;
+            let (key, level) = parse_snapshot_row(row)?;
             raw_rows = raw_rows.saturating_add(1);
             push_grouped_event(&mut events, &mut pending, key, level)?;
         }
@@ -477,21 +484,47 @@ fn read_snapshot_events(
     Ok((events, raw_rows))
 }
 
+enum DepthStreamItem {
+    Event(BinanceSpotL2ReplayEvent, u64),
+    Gap,
+}
+
 fn stream_depth_events(
     path: &Path,
     cancellation: &ArchiveCancellation,
-    mut consumer: impl FnMut(BinanceSpotL2ReplayEvent, u64) -> Result<()>,
+    mut consumer: impl FnMut(DepthStreamItem) -> Result<()>,
 ) -> Result<()> {
     let reader = open_validated_reader(path, &DEPTH_COLUMNS)?;
     let mut pending: Option<BinanceSpotL2ReplayEvent> = None;
     let mut pending_rows = 0u64;
     for row_group_index in 0..reader.num_row_groups() {
         check_cancelled(cancellation)?;
-        let row_group = reader.get_row_group(row_group_index)?;
-        let rows = row_group.get_row_iter(None)?;
-        for row in rows {
+        let row_group = reader
+            .get_row_group(row_group_index)
+            .with_context(|| format!("failed to open Goooddy depth row group {row_group_index}"))?;
+        let rows = match row_group.get_row_iter(None) {
+            Ok(rows) => rows,
+            Err(_) => {
+                pending = None;
+                pending_rows = 0;
+                consumer(DepthStreamItem::Gap)?;
+                continue;
+            }
+        };
+        let mut row_group_failed = false;
+        for (_row_ordinal, row) in rows.enumerate() {
             check_cancelled(cancellation)?;
-            let (key, level) = parse_depth_row(row?)?;
+            let row = match row {
+                Ok(row) => row,
+                Err(_) => {
+                    pending = None;
+                    pending_rows = 0;
+                    consumer(DepthStreamItem::Gap)?;
+                    row_group_failed = true;
+                    break;
+                }
+            };
+            let (key, level) = parse_depth_row(row)?;
             match pending.as_mut() {
                 Some(event) if same_replay_event(event, &key) => {
                     push_level(event, level)?;
@@ -501,7 +534,7 @@ fn stream_depth_events(
                     let complete = pending
                         .take()
                         .context("pending Goooddy event disappeared")?;
-                    consumer(complete, pending_rows)?;
+                    consumer(DepthStreamItem::Event(complete, pending_rows))?;
                     pending = Some(event_with_level(key, level));
                     pending_rows = 1;
                 }
@@ -511,9 +544,12 @@ fn stream_depth_events(
                 }
             }
         }
+        if row_group_failed {
+            continue;
+        }
     }
     if let Some(event) = pending {
-        consumer(event, pending_rows)?;
+        consumer(DepthStreamItem::Event(event, pending_rows))?;
     }
     Ok(())
 }
@@ -743,5 +779,56 @@ mod tests {
             utc_midnight(2026, 7, 1).unwrap(),
         )
         .is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires downloaded immutable Goooddy Parquet fixtures"]
+    async fn downloaded_months_decode_and_replay() {
+        let Ok(root) = std::env::var("POLYMARKET_HUGGINGFACE_TEST_ARCHIVE_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let config = HuggingFaceBinanceL2Config {
+            base_url: DEFAULT_HUGGINGFACE_GOOODDY_BASE_URL.to_string(),
+            storage: CryptoHftBinanceL2Config::new(root, PathBuf::from("/tmp/goooddy-l2-test")),
+        };
+        for (start, end) in [((2026, 6, 3), (2026, 7, 1)), ((2026, 7, 1), (2026, 8, 1))] {
+            let spec = goooddy_month_spec(
+                utc_midnight(start.0, start.1, start.2).unwrap(),
+                utc_midnight(end.0, end.1, end.2).unwrap(),
+            )
+            .unwrap();
+            let (mut receiver, parser) = spawn_goooddy_parser(
+                config.clone(),
+                GoooddyParseRequest {
+                    target_start: spec.target_start,
+                    target_end: spec.target_end,
+                    depth_archive: HuggingFaceArchiveManifest {
+                        source_uri: spec.depth.source_uri(&config),
+                        archive_path: spec.depth.archive_path(&config),
+                        sha256: spec.depth.expected_sha256.to_string(),
+                        bytes: spec.depth.expected_bytes,
+                        reused_archive: true,
+                    },
+                    snapshot_archive: HuggingFaceArchiveManifest {
+                        source_uri: spec.snapshots.source_uri(&config),
+                        archive_path: spec.snapshots.archive_path(&config),
+                        sha256: spec.snapshots.expected_sha256.to_string(),
+                        bytes: spec.snapshots.expected_bytes,
+                        reused_archive: true,
+                    },
+                    output_batch_rows: 1_000,
+                    cancellation: ArchiveCancellation::default(),
+                },
+            );
+            let mut rows = 0u64;
+            while let Some(batch) = receiver.recv().await {
+                rows = rows.saturating_add(u64::try_from(batch.len()).unwrap());
+            }
+            let summary = parser.await.unwrap().unwrap();
+            eprintln!("{}: {summary:?}", spec.source_month);
+            assert_eq!(rows, summary.emitted_feature_rows);
+            assert!(summary.snapshot_events > 0);
+        }
     }
 }

@@ -19,6 +19,7 @@ const SHARDS: [(&str, &str, &str); 2] = [
     ("2026-06", "2026-06-03T00:00:00Z", "2026-07-01T00:00:00Z"),
     ("2026-07", "2026-07-01T00:00:00Z", "2026-08-01T00:00:00Z"),
 ];
+const RETRY_GENERATION: u32 = 2;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -55,7 +56,7 @@ fn shard_request(
         range_end: end.parse::<DateTime<Utc>>()?,
         parameters: json!({"strategy": HUGGINGFACE_GOOODDY_STRATEGY}),
         idempotency_key: format!(
-            "binance-spot-btcusdt-l2:huggingface-goooddy:{month}:{HUGGINGFACE_GOOODDY_MATERIALIZATION_CONTRACT}"
+            "binance-spot-btcusdt-l2:huggingface-goooddy:{month}:{HUGGINGFACE_GOOODDY_MATERIALIZATION_CONTRACT}:retry-{RETRY_GENERATION}"
         ),
     }
     .validate()

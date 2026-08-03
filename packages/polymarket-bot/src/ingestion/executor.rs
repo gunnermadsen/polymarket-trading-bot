@@ -1546,6 +1546,7 @@ impl IngestionExecutor {
                 "snapshots": parse_summary.snapshot_events,
                 "updates": parse_summary.update_events,
                 "sequence_gaps": parse_summary.sequence_gaps,
+                "source_row_groups_skipped": parse_summary.source_row_groups_skipped,
                 "invalid_book_events": parse_summary.invalid_book_events,
                 "qualified_source_seconds": parse_summary.emitted_feature_rows,
                 "newly_published_gap_seconds": published_rows,
@@ -1572,6 +1573,7 @@ impl IngestionExecutor {
             "newly_published_gap_seconds": published_rows,
             "unavailable_source_seconds": parse_summary.unavailable_seconds,
             "sequence_gaps": parse_summary.sequence_gaps,
+            "source_row_groups_skipped": parse_summary.source_row_groups_skipped,
         });
         progress.completed_work_units = progress.expected_work_units;
         self.repository
