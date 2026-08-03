@@ -1174,9 +1174,13 @@ async fn validate_archive_payload(
     let parquet = decompress_hour_to_temporary_parquet(config, &provisional, cancellation).await?;
     let expected_date = spec.date;
     let expected_hour = spec.hour;
+    let remote_file = spec.remote_file.clone();
     let cancellation = cancellation.clone();
     tokio::task::spawn_blocking(move || {
         validate_hourly_parquet_payload(parquet.path(), expected_date, expected_hour, &cancellation)
+            .with_context(|| {
+                format!("CryptoHFT source object {remote_file} failed payload validation")
+            })
     })
     .await
     .context("CryptoHFT payload-validation task failed")?
@@ -1223,10 +1227,9 @@ fn validate_hourly_parquet_payload(
     let mut audited_anchor_snapshot_verified = false;
     let mut update_events = 0u64;
     let mut outside_exact_hour = 0u64;
+    let mut inside_exact_hour = 0u64;
     let mut minimum_received_at = None;
     let mut maximum_received_at = None;
-    let mut minimum_inside_hour = None;
-    let mut maximum_inside_hour = None;
     let mut last_event_key: Option<EventKey> = None;
     let mut pending_snapshot: Option<LogicalEvent> = None;
     for row_group_index in 0..reader.num_row_groups() {
@@ -1237,11 +1240,9 @@ fn validate_hourly_parquet_payload(
             check_cancelled(cancellation)?;
             let (key, level) = parse_cryptohft_row(row?, has_order_count)?;
             let received_at = timestamp_from_nanoseconds(key.received_time_ns)?;
-            if received_at < tolerated_start || received_at >= tolerated_end {
-                bail!(
-                    "CryptoHFT archive row receipt time {received_at} escaped tolerated hour [{tolerated_start}, {tolerated_end})"
-                );
-            }
+            let event_at = DateTime::from_timestamp_millis(key.event_time_ms)
+                .context("CryptoHFT event_time was outside the supported UTC range")?;
+            validate_hourly_row_causal_time(received_at, event_at, tolerated_start, tolerated_end)?;
             minimum_received_at = Some(
                 minimum_received_at
                     .map_or(received_at, |value: DateTime<Utc>| value.min(received_at)),
@@ -1253,14 +1254,7 @@ fn validate_hourly_parquet_payload(
             if received_at < expected_start || received_at >= expected_end {
                 outside_exact_hour = outside_exact_hour.saturating_add(1);
             } else {
-                minimum_inside_hour = Some(
-                    minimum_inside_hour
-                        .map_or(received_at, |value: DateTime<Utc>| value.min(received_at)),
-                );
-                maximum_inside_hour = Some(
-                    maximum_inside_hour
-                        .map_or(received_at, |value: DateTime<Utc>| value.max(received_at)),
-                );
+                inside_exact_hour = inside_exact_hour.saturating_add(1);
             }
             match last_event_key.as_mut() {
                 Some(previous) if previous.same_logical_event(&key) => {
@@ -1309,18 +1303,7 @@ fn validate_hourly_parquet_payload(
     if i64::try_from(decoded_rows).context("CryptoHFT row count exceeded i64")? != expected_rows {
         bail!("CryptoHFT decoded {decoded_rows} Parquet rows; metadata declared {expected_rows}");
     }
-    if outside_exact_hour.saturating_mul(1_000) > decoded_rows {
-        bail!("fewer than 99.9% of CryptoHFT receipt rows belonged to the requested UTC hour");
-    }
-    let minimum_inside_hour = minimum_inside_hour
-        .context("CryptoHFT archive had no receipt rows inside the requested UTC hour")?;
-    let maximum_inside_hour = maximum_inside_hour
-        .context("CryptoHFT archive had no receipt rows inside the requested UTC hour")?;
-    if minimum_inside_hour > expected_start + TimeDelta::minutes(1)
-        || maximum_inside_hour < expected_end - TimeDelta::minutes(1)
-    {
-        bail!("CryptoHFT archive did not cover both boundaries of its requested UTC hour");
-    }
+    validate_hourly_receipt_distribution(decoded_rows, inside_exact_hour, outside_exact_hour)?;
     if update_events == 0 {
         bail!("CryptoHFT archive contained no logical depth updates");
     }
@@ -1342,6 +1325,38 @@ fn validate_hourly_parquet_payload(
             .context("CryptoHFT archive receipt maximum was unavailable")?,
         receipt_rows_outside_exact_hour: outside_exact_hour,
     })
+}
+
+fn validate_hourly_row_causal_time(
+    received_at: DateTime<Utc>,
+    event_at: DateTime<Utc>,
+    tolerated_start: DateTime<Utc>,
+    tolerated_end: DateTime<Utc>,
+) -> Result<()> {
+    let causal_at = received_at.max(event_at);
+    if causal_at < tolerated_start || causal_at >= tolerated_end {
+        bail!(
+            "CryptoHFT archive row causal time {causal_at} from receipt time {received_at} and event time {event_at} escaped tolerated hour [{tolerated_start}, {tolerated_end})"
+        );
+    }
+    Ok(())
+}
+
+fn validate_hourly_receipt_distribution(
+    decoded_rows: u64,
+    inside_exact_hour: u64,
+    outside_exact_hour: u64,
+) -> Result<()> {
+    if inside_exact_hour.checked_add(outside_exact_hour) != Some(decoded_rows) {
+        bail!("CryptoHFT receipt-hour classification did not match the decoded row count");
+    }
+    if inside_exact_hour == 0 {
+        bail!("CryptoHFT archive had no receipt rows inside the requested UTC hour");
+    }
+    if outside_exact_hour.saturating_mul(1_000) > decoded_rows {
+        bail!("fewer than 99.9% of CryptoHFT receipt rows belonged to the requested UTC hour");
+    }
+    Ok(())
 }
 
 fn finish_hourly_validation_event(
@@ -2822,6 +2837,95 @@ mod tests {
         assert!(validate_downloaded_content_length(Some(0), 24_232_760).is_err());
     }
 
+    #[test]
+    fn hourly_validation_uses_effective_causal_time_for_partition_membership() {
+        let expected_start = NaiveDate::from_ymd_opt(2026, 6, 30)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap()
+            .and_utc();
+        let tolerated_start = expected_start - TimeDelta::seconds(1);
+        let tolerated_end = expected_start + TimeDelta::hours(1) + TimeDelta::seconds(1);
+        let early_receipt = DateTime::parse_from_rfc3339("2026-06-30T08:51:13.791143607Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let in_hour_event = DateTime::parse_from_rfc3339("2026-06-30T09:00:16.651Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        assert!(validate_hourly_row_causal_time(
+            early_receipt,
+            in_hour_event,
+            tolerated_start,
+            tolerated_end,
+        )
+        .is_ok());
+
+        let wrong_hour = validate_hourly_row_causal_time(
+            early_receipt,
+            early_receipt,
+            tolerated_start,
+            tolerated_end,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(wrong_hour.contains("causal time"));
+        assert!(wrong_hour.contains("receipt time"));
+        assert!(wrong_hour.contains("event time"));
+
+        let tolerated_tail = expected_start + TimeDelta::hours(1) + TimeDelta::milliseconds(999);
+        assert!(validate_hourly_row_causal_time(
+            tolerated_tail,
+            in_hour_event,
+            tolerated_start,
+            tolerated_end,
+        )
+        .is_ok());
+
+        let late_receipt = expected_start + TimeDelta::hours(1) + TimeDelta::seconds(1);
+        assert!(validate_hourly_row_causal_time(
+            late_receipt,
+            in_hour_event,
+            tolerated_start,
+            tolerated_end,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn hourly_validation_classifies_sparse_boundaries_as_unavailable_coverage() {
+        let expected_start = NaiveDate::from_ymd_opt(2026, 5, 18)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap()
+            .and_utc();
+        let tolerated_start = expected_start - TimeDelta::seconds(1);
+        let tolerated_end = expected_start + TimeDelta::hours(1) + TimeDelta::seconds(1);
+
+        for observed_at in [
+            expected_start + TimeDelta::minutes(5),
+            expected_start + TimeDelta::minutes(49),
+        ] {
+            assert!(validate_hourly_row_causal_time(
+                observed_at,
+                observed_at,
+                tolerated_start,
+                tolerated_end,
+            )
+            .is_ok());
+        }
+        assert!(validate_hourly_receipt_distribution(2, 2, 0).is_ok());
+    }
+
+    #[test]
+    fn hourly_validation_retains_receipt_spill_and_in_hour_evidence_gates() {
+        assert!(validate_hourly_receipt_distribution(1_000, 999, 1).is_ok());
+        assert!(validate_hourly_receipt_distribution(1_000, 998, 2).is_err());
+        assert!(validate_hourly_receipt_distribution(1, 0, 1).is_err());
+        assert!(validate_hourly_receipt_distribution(4_955_548, 4_954_548, 1_000).is_ok());
+        assert!(validate_hourly_receipt_distribution(1_000, 998, 1).is_err());
+    }
+
     #[tokio::test]
     async fn making_an_immutable_file_read_only_is_idempotent() {
         let temporary = tempfile::tempdir().unwrap();
@@ -3260,6 +3364,31 @@ mod tests {
     }
 
     #[test]
+    fn early_provider_receipt_never_moves_availability_before_event_time() {
+        let date = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+        let event_at = date.and_hms_milli_opt(9, 0, 16, 651).unwrap().and_utc();
+        let received_at = DateTime::parse_from_rfc3339("2026-06-30T08:51:13.791143607Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let (mut replay, _receiver) = replay_for_test(date);
+        let mut event = snapshot(event_at, 100);
+        event.key.received_time_ns = received_at.timestamp_nanos_opt().unwrap();
+
+        replay.process_event(event).unwrap();
+
+        let state = replay
+            .pending_second
+            .as_ref()
+            .unwrap()
+            .latest_state
+            .as_ref()
+            .unwrap();
+        assert_eq!(state.provider_received_at, received_at);
+        assert_eq!(state.source_event_timestamp, event_at);
+        assert_eq!(state.available_at, event_at + TimeDelta::milliseconds(100));
+    }
+
+    #[test]
     fn continuous_sixty_second_history_emits_only_qualified_rows() {
         let date = NaiveDate::from_ymd_opt(2026, 3, 21).unwrap();
         let start = date.and_hms_opt(0, 0, 0).unwrap().and_utc();
@@ -3298,6 +3427,49 @@ mod tests {
         assert!(batch
             .windows(2)
             .all(|rows| rows[0].second_start < rows[1].second_start));
+    }
+
+    #[test]
+    fn multi_minute_source_gap_emits_no_rows_and_resets_rolling_history() {
+        let date = NaiveDate::from_ymd_opt(2026, 5, 18).unwrap();
+        let start = date.and_hms_opt(0, 0, 0).unwrap().and_utc();
+        let (mut replay, _receiver) = replay_for_test(date);
+        replay.process_event(snapshot(start, 100)).unwrap();
+        for second in 1..=61 {
+            let event = if second == 1 {
+                update_range(start + TimeDelta::seconds(second), 100, 101, 99, 2)
+            } else {
+                update(
+                    start + TimeDelta::seconds(second),
+                    100 + second,
+                    99 + second,
+                    2,
+                )
+            };
+            replay.process_event(event).unwrap();
+        }
+        assert_eq!(replay.summary.emitted_feature_rows, 1);
+
+        replay
+            .process_event(update(start + TimeDelta::minutes(10), 162, 161, 3))
+            .unwrap();
+        replay
+            .process_event(update(
+                start + TimeDelta::minutes(10) + TimeDelta::seconds(1),
+                163,
+                162,
+                4,
+            ))
+            .unwrap();
+
+        assert_eq!(replay.summary.sequence_gaps, 0);
+        assert_eq!(replay.summary.emitted_feature_rows, 2);
+        assert_eq!(replay.output_batch.len(), 2);
+        assert_eq!(replay.rolling.len(), 1);
+        assert_eq!(
+            replay.rolling.back().unwrap().second_start,
+            start + TimeDelta::minutes(10)
+        );
     }
 
     #[test]

@@ -13,6 +13,7 @@ services:
   db-migrate:
     volumes:
       - ./packages/db-migrate/src/migrations/1785685200000-AddBinanceBtcusdtL2OneSecondFeatures.ts:/usr/src/app/src/migrations/1785685200000-AddBinanceBtcusdtL2OneSecondFeatures.ts:ro
+      - ./packages/db-migrate/src/migrations/1785688800000-QueueFailedBinanceBtcusdtL2Retries.ts:/usr/src/app/src/migrations/1785688800000-QueueFailedBinanceBtcusdtL2Retries.ts:ro
 
   polymarket-backfill-worker:
     environment:
