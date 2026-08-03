@@ -13,6 +13,16 @@ const ROLLING_HORIZONS = [1, 5, 15, 30, 60];
 const LOOKBACK_SECONDS = 61;
 const MAX_STALE_MS = 1_000;
 const MAX_RESPONSE_SNAPSHOTS = 100_000;
+const CONNECT_TIMEOUT_SECONDS = 30;
+const DOWNLOAD_TIMEOUT_SECONDS = 900;
+
+class SnapshotValidationError extends Error {
+  constructor(reason, message) {
+    super(message);
+    this.name = 'SnapshotValidationError';
+    this.reason = reason;
+  }
+}
 
 function usage(message) {
   console.error(message);
@@ -62,8 +72,16 @@ function sqlLiteral(value) {
 
 function numeric(value, label) {
   const parsed = Number(value);
-  if (!Number.isFinite(parsed)) throw new Error(`${label} was not finite`);
+  if (!Number.isFinite(parsed)) throw new SnapshotValidationError('non_finite_level', `${label} was not finite`);
   return parsed;
+}
+
+function snapshotTimestamp(value, label) {
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds) || typeof value !== 'string' || !value.endsWith('Z')) {
+    throw new SnapshotValidationError('invalid_timestamp', `${label} was not a UTC timestamp`);
+  }
+  return milliseconds;
 }
 
 function fixed(value, label) {
@@ -103,7 +121,7 @@ function existingArtifact(logicalKey) {
 
 function validateLevels(levels, side) {
   if (!Array.isArray(levels) || levels.length < 20) {
-    throw new Error(`${side} did not contain 20 levels`);
+    throw new SnapshotValidationError('insufficient_depth', `${side} did not contain 20 levels`);
   }
   const result = levels.slice(0, 20).map((level, index) => ({
     price: numeric(level.price, `${side}[${index}].price`),
@@ -111,13 +129,13 @@ function validateLevels(levels, side) {
   }));
   for (let index = 0; index < result.length; index += 1) {
     if (result[index].price <= 0 || result[index].size <= 0) {
-      throw new Error(`${side}[${index}] was not positive`);
+      throw new SnapshotValidationError('non_positive_level', `${side}[${index}] was not positive`);
     }
     if (index > 0) {
       const ordered = side === 'bids'
         ? result[index - 1].price > result[index].price
         : result[index - 1].price < result[index].price;
-      if (!ordered) throw new Error(`${side} prices were not strictly ordered`);
+      if (!ordered) throw new SnapshotValidationError('unordered_levels', `${side} prices were not strictly ordered`);
     }
   }
   return result;
@@ -139,16 +157,18 @@ function snapshotState(snapshot, sourceUpdateId) {
   if (snapshot.symbol_id !== COINAPI_SYMBOL) {
     throw new Error(`unexpected CoinAPI symbol: ${snapshot.symbol_id}`);
   }
-  const sourceMillis = parseUtc(snapshot.time_exchange);
-  const receivedMillis = parseUtc(snapshot.time_coinapi);
+  const sourceMillis = snapshotTimestamp(snapshot.time_exchange, 'time_exchange');
+  const receivedMillis = snapshotTimestamp(snapshot.time_coinapi, 'time_coinapi');
   if (receivedMillis < sourceMillis || receivedMillis - sourceMillis > MAX_STALE_MS) {
-    throw new Error(`snapshot latency was outside [0, ${MAX_STALE_MS}]ms`);
+    throw new SnapshotValidationError('stale_snapshot', `snapshot latency was outside [0, ${MAX_STALE_MS}]ms`);
   }
   const bids = validateLevels(snapshot.bids, 'bids');
   const asks = validateLevels(snapshot.asks, 'asks');
   const bestBid = bids[0];
   const bestAsk = asks[0];
-  if (bestBid.price >= bestAsk.price) throw new Error('snapshot book was crossed or locked');
+  if (bestBid.price >= bestAsk.price) {
+    throw new SnapshotValidationError('crossed_or_locked', 'snapshot book was crossed or locked');
+  }
   const midpoint = (bestBid.price + bestAsk.price) / 2;
   const topSize = bestBid.size + bestAsk.size;
   const bidDepth5 = sumDepth(bids, 5);
@@ -262,7 +282,8 @@ async function loadPayload(url, archivePath) {
   try {
     writeFileSync(curlConfigPath, [
       'fail-with-body', 'silent', 'show-error', 'location',
-      'connect-timeout = 10', 'max-time = 120',
+      `connect-timeout = ${CONNECT_TIMEOUT_SECONDS}`,
+      `max-time = ${DOWNLOAD_TIMEOUT_SECONDS}`,
       `header = "X-CoinAPI-Key: ${process.env.COIN_API_KEY}"`,
       `output = "${temporaryPath.replaceAll('"', '\\"')}"`,
       `url = "${url.toString().replaceAll('"', '\\"')}"`,
@@ -280,14 +301,22 @@ async function loadPayload(url, archivePath) {
 
 function materializeSnapshots(payload, start, end, existingSeconds) {
   const snapshots = JSON.parse(payload.toString('utf8'));
-  if (!Array.isArray(snapshots) || snapshots.length === 0) throw new Error('CoinAPI returned no snapshots');
+  if (!Array.isArray(snapshots)) throw new Error('CoinAPI response was not a snapshot array');
   if (snapshots.length >= MAX_RESPONSE_SNAPSHOTS) {
     throw new Error(`CoinAPI response reached the ${MAX_RESPONSE_SNAPSHOTS} snapshot cap; split this interval`);
   }
   const selected = new Map();
+  const rejectedSnapshots = {};
   let previousSourceMillis = Number.NEGATIVE_INFINITY;
   snapshots.forEach((snapshot, index) => {
-    const state = snapshotState(snapshot, index);
+    let state;
+    try {
+      state = snapshotState(snapshot, index);
+    } catch (error) {
+      if (!(error instanceof SnapshotValidationError)) throw error;
+      rejectedSnapshots[error.reason] = (rejectedSnapshots[error.reason] ?? 0) + 1;
+      return;
+    }
     if (state.sourceMillis < previousSourceMillis) throw new Error('CoinAPI exchange timestamps were not monotonic');
     previousSourceMillis = state.sourceMillis;
     const current = selected.get(state.secondStart);
@@ -311,15 +340,21 @@ function materializeSnapshots(payload, start, end, existingSeconds) {
     }
     if (continuous) features.push(featureFromState(current, priorByHorizon));
   }
-  return { snapshots, states, features };
+  return { snapshots, states, features, rejectedSnapshots };
 }
 
-function applyFeatures({ artifactId, jobId, logicalKey, checksum, archivePath, sourceUri, start, end, snapshots, states, features }) {
+function applyFeatures({ artifactId, jobId, logicalKey, checksum, archivePath, sourceUri, start, end, snapshots, states, features, rejectedSnapshots }) {
   const csvPath = join(dirname(archivePath), `.${basename(archivePath)}.${artifactId}.csv`);
   const copyRows = features.map((feature) => [...feature, artifactId].map(csvEscape).join(',')).join('\n');
   writeFileSync(csvPath, copyRows.length > 0 ? `${copyRows}\n` : '', { flag: 'wx' });
   const minimumSource = states.reduce((minimum, state) => Math.min(minimum, state.sourceMillis), Number.POSITIVE_INFINITY);
   const maximumSource = states.reduce((maximum, state) => Math.max(maximum, state.sourceMillis), Number.NEGATIVE_INFINITY);
+  const minimumSourceSql = Number.isFinite(minimumSource)
+    ? `${sqlLiteral(iso(minimumSource))}::timestamptz`
+    : 'NULL';
+  const maximumSourceSql = Number.isFinite(maximumSource)
+    ? `${sqlLiteral(iso(maximumSource))}::timestamptz`
+    : 'NULL';
   const metadata = JSON.stringify({
     materialization_contract: MATERIALIZATION_CONTRACT,
     source_market: 'binance-spot',
@@ -330,6 +365,7 @@ function applyFeatures({ artifactId, jobId, logicalKey, checksum, archivePath, s
     rolling_features_require_contiguous_coinapi_seconds: true,
     flow_basis: 'adjacent_snapshot_top_20_quote_delta_proxy',
     source_snapshot_count: snapshots.length,
+    rejected_snapshots: rejectedSnapshots,
     candidate_feature_rows: features.length,
     archive_path: archivePath,
     query_range_start: iso(start),
@@ -362,7 +398,7 @@ function applyFeatures({ artifactId, jobId, logicalKey, checksum, archivePath, s
         ${sqlLiteral(sourceUri)}, ${sqlLiteral(iso(start).slice(0, 10))}::date,
         'sha256', ${sqlLiteral(checksum)}, ${sqlLiteral(checksum)},
         ${readFileSync(archivePath).length}, 0,
-        ${sqlLiteral(iso(minimumSource))}::timestamptz, ${sqlLiteral(iso(maximumSource))}::timestamptz,
+        ${minimumSourceSql}, ${maximumSourceSql},
         'ingesting', ${sqlLiteral(metadata)}::jsonb, now(), now(), NULL
       );
       CREATE TEMP TABLE coinapi_feature_stage
@@ -401,6 +437,11 @@ function applyFeatures({ artifactId, jobId, logicalKey, checksum, archivePath, s
       WHERE artifact.artifact_id = ${sqlLiteral(artifactId)}::uuid;
       COMMIT;
     `);
+    const completed = existingArtifact(logicalKey);
+    if (!completed || completed.status !== 'completed') {
+      throw new Error(`CoinAPI artifact ${logicalKey} was not completed after publication`);
+    }
+    return Number(completed.recordCount);
   } finally {
     if (existsSync(csvPath)) unlinkSync(csvPath);
   }
@@ -435,14 +476,18 @@ async function main() {
     return;
   }
   const existingSeconds = queryExistingSeconds(start, end);
-  const { snapshots, states, features } = materializeSnapshots(payload, start, end, existingSeconds);
+  const { snapshots, states, features, rejectedSnapshots } = materializeSnapshots(payload, start, end, existingSeconds);
   const artifactId = randomUUID();
   const jobId = randomUUID();
-  applyFeatures({ artifactId, jobId, logicalKey, checksum, archivePath, sourceUri: url.toString(), start, end, snapshots, states, features });
+  const insertedRows = applyFeatures({
+    artifactId, jobId, logicalKey, checksum, archivePath, sourceUri: url.toString(),
+    start, end, snapshots, states, features, rejectedSnapshots,
+  });
   console.log(JSON.stringify({
     status: 'completed', artifact_id: artifactId, raw_archive: archivePath,
     source_snapshots: snapshots.length, selected_one_second_states: states.length,
-    existing_seconds_skipped: existingSeconds.size, inserted_feature_rows: features.length,
+    existing_seconds_skipped: existingSeconds.size, rejected_snapshots: rejectedSnapshots,
+    candidate_feature_rows: features.length, inserted_feature_rows: insertedRows,
   }));
 }
 
