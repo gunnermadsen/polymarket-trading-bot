@@ -1149,7 +1149,10 @@ impl IngestionExecutor {
                             &error.to_string(),
                         )
                         .await;
-                    return Err(IngestionExecutionError::permanent(error));
+                    // The source archive completed payload validation before replay. A later
+                    // decompression or Parquet-reader failure is therefore retried from the
+                    // immutable cached objects before it can be classified as terminal.
+                    return Err(IngestionExecutionError::transient(error));
                 }
                 Err(error) => {
                     let _ = self

@@ -1705,10 +1705,13 @@ pub fn spawn_day_parser(
         )?;
         for manifest in archives.into_values() {
             check_cancelled(&cancellation)?;
+            let remote_file = manifest.remote_file.clone();
             let parquet =
                 decompress_hour_to_temporary_parquet(&config, &manifest, &cancellation).await?;
             replay = tokio::task::spawn_blocking(move || {
-                replay.parse_parquet(parquet.path())?;
+                replay.parse_parquet(parquet.path()).with_context(|| {
+                    format!("failed to replay CryptoHFT source object {remote_file}")
+                })?;
                 Ok::<_, anyhow::Error>(replay)
             })
             .await
