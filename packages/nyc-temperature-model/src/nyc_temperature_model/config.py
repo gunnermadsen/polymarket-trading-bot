@@ -29,6 +29,13 @@ def _env_nonnegative_int(name: str, default: int) -> int:
     return value
 
 
+def _env_nonnegative_float(name: str, default: float) -> float:
+    value = float(os.environ.get(name, str(default)))
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return value
+
+
 def _env_worker_ingesters() -> tuple[str, ...]:
     raw = os.environ.get("WEATHER_WORKER_INGESTERS")
     if raw is None:
@@ -64,6 +71,8 @@ class Settings:
     hrrr_retry_max_ms: int
     hrrr_request_interval_ms: int
     hrrr_source_priority: tuple[str, ...]
+    pmxt_download_attempts: int
+    pmxt_retry_base_seconds: float
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -121,6 +130,8 @@ class Settings:
             hrrr_retry_max_ms=hrrr_retry_max_ms,
             hrrr_request_interval_ms=_env_nonnegative_int("HRRR_REQUEST_INTERVAL_MS", 500),
             hrrr_source_priority=hrrr_source_priority,
+            pmxt_download_attempts=_env_int("PMXT_DOWNLOAD_ATTEMPTS", 6),
+            pmxt_retry_base_seconds=_env_nonnegative_float("PMXT_RETRY_BASE_SECONDS", 2.0),
         )
 
     def prepare_directories(self) -> None:

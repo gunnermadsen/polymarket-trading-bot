@@ -97,7 +97,14 @@ def _ensure_archive(settings: Settings, hour: datetime) -> tuple[Path, str, int,
         digest, size = file_sha256(path)
     else:
         with source_client() as client:
-            digest, size = download_atomic(client, uri, path, MAXIMUM_ARCHIVE_BYTES)
+            digest, size = download_atomic(
+                client,
+                uri,
+                path,
+                MAXIMUM_ARCHIVE_BYTES,
+                attempts=settings.pmxt_download_attempts,
+                retry_base_seconds=settings.pmxt_retry_base_seconds,
+            )
     return path, digest, size, uri
 
 

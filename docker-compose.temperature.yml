@@ -21,6 +21,8 @@ x-weather-environment: &weather-environment
   HRRR_RETRY_MAX_MS: "30000"
   HRRR_REQUEST_INTERVAL_MS: "500"
   HRRR_SOURCE_PRIORITY: "google,aws,nomads"
+  PMXT_DOWNLOAD_ATTEMPTS: "6"
+  PMXT_RETRY_BASE_SECONDS: "2"
   HERBIE_CONFIG_PATH: "/tmp/herbie-config.toml"
 
 x-weather-worker: &weather-worker
