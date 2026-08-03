@@ -5,6 +5,7 @@ pub mod chainlink_candlestick;
 pub mod cryptohft_binance_l2;
 pub mod execution_snapshots;
 pub mod executor;
+pub mod huggingface_binance_l2;
 pub mod job;
 pub mod pmxt_archive;
 pub mod polygon_chainlink_oracle;

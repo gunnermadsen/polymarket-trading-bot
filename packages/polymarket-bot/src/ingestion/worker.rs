@@ -27,6 +27,7 @@ use super::{
     },
     cryptohft_binance_l2::{CryptoHftBinanceL2Config, DEFAULT_CRYPTOHFT_BASE_URL},
     executor::{IngestionExecutor, IngestionExecutorConfig},
+    huggingface_binance_l2::{HuggingFaceBinanceL2Config, DEFAULT_HUGGINGFACE_GOOODDY_BASE_URL},
     job::{BackfillEventLevel, BackfillFailureKind, BackfillJobSummary, ClaimedJob, WorkerControl},
     pmxt_archive::DEFAULT_PMXT_ARCHIVE_URL,
     polygon_chainlink_oracle::{
@@ -140,6 +141,17 @@ impl BackfillWorker {
             .user_agent("polymarket-bot-backfill-worker/1")
             .build()
             .context("failed to build backfill source client")?;
+        let cryptohft_binance_spot_l2 = cryptohft_binance_spot_l2_config_from_env(&config)?;
+        let huggingface_binance_spot_l2 =
+            cryptohft_binance_spot_l2
+                .clone()
+                .map(|storage| HuggingFaceBinanceL2Config {
+                    base_url: env_string(
+                        "POLYMARKET_BINANCE_SPOT_L2_HUGGINGFACE_BASE_URL",
+                        DEFAULT_HUGGINGFACE_GOOODDY_BASE_URL,
+                    ),
+                    storage,
+                });
         let executor = IngestionExecutor::new(
             repository.clone(),
             client,
@@ -185,7 +197,8 @@ impl BackfillWorker {
                     ),
                 },
                 cryptohft_binance_l2: cryptohft_binance_l2_config_from_env(&config)?,
-                cryptohft_binance_spot_l2: cryptohft_binance_spot_l2_config_from_env(&config)?,
+                cryptohft_binance_spot_l2,
+                huggingface_binance_spot_l2,
                 polygon_chainlink: PolygonChainlinkOracleConfig {
                     rpc_url: env_string("POLYMARKET_POLYGON_RPC_URL", DEFAULT_POLYGON_RPC_URL),
                     archive_log_rpc_url: env_string(

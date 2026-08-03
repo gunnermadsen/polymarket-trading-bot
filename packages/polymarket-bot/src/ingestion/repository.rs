@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, str::FromStr, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    str::FromStr,
+    time::Duration,
+};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
@@ -2348,6 +2352,52 @@ impl IngestionRepository {
         )
     }
 
+    pub async fn stage_binance_spot_l2_gap_feature_batch(
+        &self,
+        claim: &ClaimedJob,
+        artifact_id: Uuid,
+        records: &[BinanceL2OneSecondFeature],
+    ) -> Result<BatchWriteResult> {
+        require_claim_ingester(
+            claim,
+            IngesterKey::BinanceSpotBtcusdtL2OneSecondFeatures,
+            "Binance spot L2",
+        )?;
+        if records.is_empty() {
+            return Ok(BatchWriteResult::default());
+        }
+        let timestamps = records
+            .iter()
+            .map(|record| record.second_start)
+            .collect::<Vec<_>>();
+        let existing = sqlx::query_scalar::<_, DateTime<Utc>>(
+            r#"
+            SELECT second_start
+            FROM polymarket.binance_spot_btcusdt_l2_one_second_features
+            WHERE symbol = 'BTCUSDT' AND second_start = ANY($1)
+            "#,
+        )
+        .bind(&timestamps)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to inspect qualified Binance spot L2 seconds")?
+        .into_iter()
+        .collect::<HashSet<_>>();
+        let gaps = records
+            .iter()
+            .filter(|record| !existing.contains(&record.second_start))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut result = self
+            .stage_binance_spot_l2_one_second_feature_batch(claim, artifact_id, &gaps)
+            .await?;
+        result.input_records = u64::try_from(records.len())?;
+        result.duplicate_records = result
+            .duplicate_records
+            .saturating_add(u64::try_from(records.len().saturating_sub(gaps.len()))?);
+        Ok(result)
+    }
+
     pub async fn reset_binance_l2_feature_staging(
         &self,
         claim: &ClaimedJob,
@@ -2725,14 +2775,17 @@ impl IngestionRepository {
         )?;
         validate_sha256(&completion.actual_checksum, "actual checksum")?;
         require_json_object(&completion.metadata, "artifact completion metadata")?;
-        if completion
+        let contract = completion
             .metadata
             .get("materialization_contract")
-            .and_then(Value::as_str)
-            != Some("cryptohft-binance-spot-btcusdt-l2-features-v1")
-        {
-            bail!("Binance spot L2 artifact completion contract was invalid");
-        }
+            .and_then(Value::as_str);
+        let expected_provider = match contract {
+            Some("cryptohft-binance-spot-btcusdt-l2-features-v1") => "cryptohftdata",
+            Some("huggingface-goooddy-binance-spot-btcusdt-l2-features-v1") => "huggingface",
+            _ => {
+                bail!("Binance spot L2 artifact completion contract was invalid");
+            }
+        };
         if completion.minimum_source_timestamp.is_some()
             != completion.maximum_source_timestamp.is_some()
         {
@@ -2766,8 +2819,8 @@ impl IngestionRepository {
         if current.ingester_key != IngesterKey::BinanceSpotBtcusdtL2OneSecondFeatures.as_str() {
             bail!("artifact is not a Binance spot L2 materialization");
         }
-        if current.provider != "cryptohftdata" {
-            bail!("Binance spot L2 artifact provider was not CryptoHFT");
+        if current.provider != expected_provider {
+            bail!("Binance spot L2 artifact provider did not match its materialization contract");
         }
         if let Some(expected) = current.expected_checksum.as_deref() {
             if expected != completion.actual_checksum {
@@ -2785,14 +2838,27 @@ impl IngestionRepository {
         if current.status != "ingesting" {
             bail!("Binance spot L2 artifact must be ingesting before atomic publication");
         }
-        let source_date = current
-            .source_date
-            .context("Binance spot L2 artifact must have a source date")?;
-        let day_start = source_date
-            .and_hms_opt(0, 0, 0)
-            .context("Binance spot L2 source date could not be aligned to UTC midnight")?
-            .and_utc();
-        let day_end = day_start + chrono::Duration::days(1);
+        let (day_start, day_end) = if expected_provider == "huggingface" {
+            (
+                claim
+                    .job
+                    .range_start
+                    .context("Hugging Face job was missing range_start")?,
+                claim
+                    .job
+                    .range_end
+                    .context("Hugging Face job was missing range_end")?,
+            )
+        } else {
+            let source_date = current
+                .source_date
+                .context("Binance spot L2 artifact must have a source date")?;
+            let day_start = source_date
+                .and_hms_opt(0, 0, 0)
+                .context("Binance spot L2 source date could not be aligned to UTC midnight")?
+                .and_utc();
+            (day_start, day_start + chrono::Duration::days(1))
+        };
         let staged_outside_day = sqlx::query_scalar::<_, bool>(
             r#"
             SELECT EXISTS (

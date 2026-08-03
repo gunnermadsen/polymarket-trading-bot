@@ -31,6 +31,11 @@ use super::{
         EXECUTION_SNAPSHOT_END_MILLIS, EXECUTION_SNAPSHOT_INTERVAL_MILLIS,
         EXECUTION_SNAPSHOT_SCHEMA_VERSION, EXECUTION_SNAPSHOT_START_MILLIS,
     },
+    huggingface_binance_l2::{
+        download_goooddy_object, goooddy_month_spec, spawn_goooddy_parser, GoooddyParseRequest,
+        HuggingFaceBinanceL2Config, HUGGINGFACE_ARCHIVE_PROVIDER,
+        HUGGINGFACE_GOOODDY_MATERIALIZATION_CONTRACT, HUGGINGFACE_GOOODDY_STRATEGY,
+    },
     job::{
         ArtifactCompletion, ArtifactDisposition, ArtifactSpec, BackfillArtifactStatus,
         BackfillCheckpoint, BackfillFailureKind, BackfillJobSummary, BackfillProgress,
@@ -66,6 +71,7 @@ pub struct IngestionExecutorConfig {
     pub polygon_chainlink: PolygonChainlinkOracleConfig,
     pub cryptohft_binance_l2: Option<CryptoHftBinanceL2Config>,
     pub cryptohft_binance_spot_l2: Option<CryptoHftBinanceL2Config>,
+    pub huggingface_binance_spot_l2: Option<HuggingFaceBinanceL2Config>,
     pub cache_directory: PathBuf,
     pub batch_rows: usize,
     pub pmxt_prefetch_concurrency: usize,
@@ -89,6 +95,9 @@ impl IngestionExecutorConfig {
             config.validate()?;
         }
         if let Some(config) = &self.cryptohft_binance_spot_l2 {
+            config.validate()?;
+        }
+        if let Some(config) = &self.huggingface_binance_spot_l2 {
             config.validate()?;
         }
         if !(1..=4_000).contains(&self.batch_rows) {
@@ -209,15 +218,33 @@ impl IngestionExecutor {
                 .await
             }
             IngesterKey::BinanceSpotBtcusdtL2OneSecondFeatures => {
-                self.ingest_cryptohft_binance_l2(
-                    claim,
-                    range_start,
-                    range_end,
-                    progress,
-                    cancellation,
-                    CryptoHftBinanceMarket::Spot,
-                )
-                .await
+                if claim
+                    .job
+                    .request
+                    .get("parameters")
+                    .and_then(|parameters| parameters.get("strategy"))
+                    .and_then(Value::as_str)
+                    == Some(HUGGINGFACE_GOOODDY_STRATEGY)
+                {
+                    self.ingest_huggingface_goooddy_binance_spot_l2(
+                        claim,
+                        range_start,
+                        range_end,
+                        progress,
+                        cancellation,
+                    )
+                    .await
+                } else {
+                    self.ingest_cryptohft_binance_l2(
+                        claim,
+                        range_start,
+                        range_end,
+                        progress,
+                        cancellation,
+                        CryptoHftBinanceMarket::Spot,
+                    )
+                    .await
+                }
             }
             IngesterKey::BinanceBtcusdtOneSecondKlines => {
                 self.ingest_binance(
@@ -1344,6 +1371,224 @@ impl IngestionExecutor {
                 .await
                 .map(|_| ()),
         }
+    }
+
+    async fn ingest_huggingface_goooddy_binance_spot_l2(
+        &self,
+        claim: &ClaimedJob,
+        range_start: DateTime<Utc>,
+        range_end: DateTime<Utc>,
+        mut progress: BackfillProgress,
+        cancellation: ArchiveCancellation,
+    ) -> std::result::Result<BackfillJobSummary, IngestionExecutionError> {
+        let config = self
+            .config
+            .huggingface_binance_spot_l2
+            .clone()
+            .ok_or_else(|| {
+                IngestionExecutionError::permanent(
+                    "POLYMARKET_BINANCE_SPOT_L2_ARCHIVE_ROOT is required for Hugging Face L2 ingestion",
+                )
+            })?;
+        let spec = goooddy_month_spec(range_start, range_end)
+            .map_err(IngestionExecutionError::permanent)?;
+        let preflight = config
+            .storage
+            .preflight()
+            .await
+            .map_err(IngestionExecutionError::permanent)?;
+        let mut summary = summary_from_progress(&progress);
+        progress.current_logical_key = Some(spec.logical_key());
+        let prepared = self
+            .repository
+            .prepare_artifact(
+                claim,
+                &ArtifactSpec {
+                    job_id: claim.job.job_id,
+                    ingester: IngesterKey::BinanceSpotBtcusdtL2OneSecondFeatures,
+                    logical_key: spec.logical_key(),
+                    provider: HUGGINGFACE_ARCHIVE_PROVIDER.to_string(),
+                    source_uri: spec.depth.source_uri(&config),
+                    source_date: Some(range_start.date_naive()),
+                    expected_checksum: Some(spec.combined_checksum()),
+                    metadata: serde_json::json!({
+                        "dataset": "Goooddy/crypto-lob-stream",
+                        "license": "mit",
+                        "exchange": "binance_spot",
+                        "symbol": "BTCUSDT",
+                        "source_month": spec.source_month,
+                        "source_objects": [
+                            {"uri": spec.depth.source_uri(&config), "sha256": spec.depth.expected_sha256, "bytes": spec.depth.expected_bytes},
+                            {"uri": spec.snapshots.source_uri(&config), "sha256": spec.snapshots.expected_sha256, "bytes": spec.snapshots.expected_bytes}
+                        ],
+                        "materialization_contract": HUGGINGFACE_GOOODDY_MATERIALIZATION_CONTRACT,
+                        "feature_schema_version": BINANCE_SPOT_L2_FEATURE_SCHEMA_VERSION,
+                        "availability_offset_ms": config.storage.availability_offset_ms,
+                        "gap_only_publication": true,
+                    }),
+                },
+            )
+            .await
+            .map_err(IngestionExecutionError::transient)?;
+        if prepared.disposition == ArtifactDisposition::AlreadyCompleted {
+            observe_reused_artifact(&mut progress, &mut summary, &prepared.artifact);
+            progress.completed_work_units = progress.expected_work_units;
+            self.repository
+                .update_progress(
+                    claim,
+                    &progress,
+                    &BackfillCheckpoint {
+                        logical_key: progress.current_logical_key.clone(),
+                        source_date: Some(range_end.date_naive()),
+                        committed_record_ordinal: progress.records_read,
+                        details: serde_json::json!({"next_window_start": range_end}),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            summary.completed_work_units = progress.completed_work_units;
+            return Ok(summary);
+        }
+
+        self.set_artifact_status(
+            claim,
+            prepared.artifact.artifact_id,
+            BackfillArtifactStatus::Downloading,
+        )
+        .await?;
+        self.ensure_continue(claim, &cancellation).await?;
+        let downloads = tokio::try_join!(
+            download_goooddy_object(&self.client, &config, &spec.depth, &cancellation),
+            download_goooddy_object(&self.client, &config, &spec.snapshots, &cancellation),
+        );
+        let (depth_archive, snapshot_archive) = match downloads {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = self
+                    .repository
+                    .fail_binance_spot_l2_artifact(
+                        claim,
+                        prepared.artifact.artifact_id,
+                        &error.to_string(),
+                    )
+                    .await;
+                return Err(IngestionExecutionError::transient(error));
+            }
+        };
+        for archive in [&depth_archive, &snapshot_archive] {
+            if !archive.reused_archive {
+                progress.bytes_downloaded = progress.bytes_downloaded.saturating_add(archive.bytes);
+            }
+        }
+        self.set_artifact_status(
+            claim,
+            prepared.artifact.artifact_id,
+            BackfillArtifactStatus::Downloaded,
+        )
+        .await?;
+        self.set_artifact_status(
+            claim,
+            prepared.artifact.artifact_id,
+            BackfillArtifactStatus::Verified,
+        )
+        .await?;
+        self.set_artifact_status(
+            claim,
+            prepared.artifact.artifact_id,
+            BackfillArtifactStatus::Ingesting,
+        )
+        .await?;
+        self.repository
+            .reset_binance_spot_l2_feature_staging(claim, prepared.artifact.artifact_id)
+            .await
+            .map_err(IngestionExecutionError::transient)?;
+
+        let (mut receiver, parser) = spawn_goooddy_parser(
+            config.clone(),
+            GoooddyParseRequest {
+                target_start: range_start,
+                target_end: range_end,
+                depth_archive: depth_archive.clone(),
+                snapshot_archive: snapshot_archive.clone(),
+                output_batch_rows: self.config.batch_rows.min(1_000),
+                cancellation: cancellation.clone(),
+            },
+        );
+        let mut published_rows = 0u64;
+        while let Some(batch) = receiver.recv().await {
+            self.ensure_continue(claim, &cancellation).await?;
+            let result = self
+                .repository
+                .stage_binance_spot_l2_gap_feature_batch(
+                    claim,
+                    prepared.artifact.artifact_id,
+                    &batch,
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            published_rows = published_rows.saturating_add(result.inserted_records);
+            observe_batch(&mut progress, &mut summary, result);
+        }
+        let parse_summary = parser
+            .await
+            .map_err(IngestionExecutionError::transient)?
+            .map_err(IngestionExecutionError::transient)?;
+        let completion = ArtifactCompletion {
+            actual_checksum: spec.combined_checksum(),
+            compressed_bytes: depth_archive.bytes.saturating_add(snapshot_archive.bytes),
+            record_count: published_rows,
+            minimum_source_timestamp: parse_summary.minimum_source_timestamp,
+            maximum_source_timestamp: parse_summary.maximum_source_timestamp,
+            metadata: serde_json::json!({
+                "materialization_contract": HUGGINGFACE_GOOODDY_MATERIALIZATION_CONTRACT,
+                "raw_rows": parse_summary.raw_rows,
+                "logical_events": parse_summary.logical_events,
+                "snapshots": parse_summary.snapshot_events,
+                "updates": parse_summary.update_events,
+                "sequence_gaps": parse_summary.sequence_gaps,
+                "invalid_book_events": parse_summary.invalid_book_events,
+                "qualified_source_seconds": parse_summary.emitted_feature_rows,
+                "newly_published_gap_seconds": published_rows,
+                "unavailable_source_seconds": parse_summary.unavailable_seconds,
+                "no_snapshot_bootstrap": parse_summary.no_snapshot_bootstrap,
+                "ssd_available_bytes_at_start": preflight.available_bytes,
+                "ssd_available_fraction_at_start": preflight.available_fraction,
+                "ssd_measured_write_bytes_per_second": preflight.measured_write_bytes_per_second,
+            }),
+        };
+        self.repository
+            .publish_binance_spot_l2_one_second_features(
+                claim,
+                prepared.artifact.artifact_id,
+                &completion,
+            )
+            .await
+            .map_err(IngestionExecutionError::transient)?;
+        summary.artifacts_completed = summary.artifacts_completed.saturating_add(1);
+        summary.details = serde_json::json!({
+            "source": "Goooddy/crypto-lob-stream",
+            "source_month": spec.source_month,
+            "qualified_source_seconds": parse_summary.emitted_feature_rows,
+            "newly_published_gap_seconds": published_rows,
+            "unavailable_source_seconds": parse_summary.unavailable_seconds,
+            "sequence_gaps": parse_summary.sequence_gaps,
+        });
+        progress.completed_work_units = progress.expected_work_units;
+        self.repository
+            .update_progress(
+                claim,
+                &progress,
+                &BackfillCheckpoint {
+                    logical_key: progress.current_logical_key.clone(),
+                    source_date: Some(range_end.date_naive()),
+                    committed_record_ordinal: progress.records_read,
+                    details: serde_json::json!({"next_window_start": range_end}),
+                },
+            )
+            .await
+            .map_err(IngestionExecutionError::transient)?;
+        summary.completed_work_units = progress.completed_work_units;
+        Ok(summary)
     }
 
     async fn ingest_pmxt_orderbooks(
@@ -3542,6 +3787,7 @@ mod tests {
             },
             cryptohft_binance_l2: None,
             cryptohft_binance_spot_l2: None,
+            huggingface_binance_spot_l2: None,
             cache_directory: PathBuf::from("/tmp/cache"),
             batch_rows: 4_000,
             pmxt_prefetch_concurrency: 4,

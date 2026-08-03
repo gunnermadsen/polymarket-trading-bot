@@ -2015,6 +2015,7 @@ struct DayReplay {
     market: CryptoHftBinanceMarket,
     target_start: DateTime<Utc>,
     target_end: DateTime<Utc>,
+    target_seconds: u64,
     availability_offset: TimeDelta,
     max_stale: TimeDelta,
     output_batch_rows: usize,
@@ -2045,13 +2046,6 @@ impl DayReplay {
         sender: mpsc::Sender<Vec<BinanceL2OneSecondFeature>>,
         cancellation: ArchiveCancellation,
     ) -> Result<Self> {
-        if !(1..=1_000).contains(&output_batch_rows) {
-            bail!("CryptoHFT feature output batches must contain between 1 and 1000 rows");
-        }
-        let availability_offset_ms = i64::try_from(config.availability_offset_ms)
-            .context("CryptoHFT availability offset exceeded i64")?;
-        let max_stale_ms = i64::try_from(config.max_stale_ms)
-            .context("CryptoHFT maximum stale duration exceeded i64")?;
         let target_start = target_date
             .and_hms_opt(0, 0, 0)
             .context("CryptoHFT target date could not form midnight")?
@@ -2059,10 +2053,43 @@ impl DayReplay {
         let target_end = target_start
             .checked_add_signed(TimeDelta::days(1))
             .context("CryptoHFT target date overflow")?;
+        Self::new_range(
+            config,
+            market,
+            target_start,
+            target_end,
+            output_batch_rows,
+            sender,
+            cancellation,
+        )
+    }
+
+    fn new_range(
+        config: &CryptoHftBinanceL2Config,
+        market: CryptoHftBinanceMarket,
+        target_start: DateTime<Utc>,
+        target_end: DateTime<Utc>,
+        output_batch_rows: usize,
+        sender: mpsc::Sender<Vec<BinanceL2OneSecondFeature>>,
+        cancellation: ArchiveCancellation,
+    ) -> Result<Self> {
+        if !(1..=1_000).contains(&output_batch_rows) {
+            bail!("CryptoHFT feature output batches must contain between 1 and 1000 rows");
+        }
+        let target_seconds = u64::try_from((target_end - target_start).num_seconds())
+            .context("Binance L2 replay target range was negative")?;
+        if target_seconds == 0 || target_seconds > 31 * TARGET_SECONDS_PER_DAY {
+            bail!("Binance L2 replay target range must contain between one second and 31 days");
+        }
+        let availability_offset_ms = i64::try_from(config.availability_offset_ms)
+            .context("CryptoHFT availability offset exceeded i64")?;
+        let max_stale_ms = i64::try_from(config.max_stale_ms)
+            .context("CryptoHFT maximum stale duration exceeded i64")?;
         Ok(Self {
             market,
             target_start,
             target_end,
+            target_seconds,
             availability_offset: TimeDelta::milliseconds(availability_offset_ms),
             max_stale: TimeDelta::milliseconds(max_stale_ms),
             output_batch_rows,
@@ -2144,11 +2171,9 @@ impl DayReplay {
         self.finalize_pending_second()?;
         self.flush_batch()?;
         self.summary.no_snapshot_bootstrap = !self.saw_snapshot;
-        self.summary.unavailable_seconds = TARGET_SECONDS_PER_DAY.saturating_sub(
-            self.summary
-                .emitted_feature_rows
-                .min(TARGET_SECONDS_PER_DAY),
-        );
+        self.summary.unavailable_seconds = self
+            .target_seconds
+            .saturating_sub(self.summary.emitted_feature_rows.min(self.target_seconds));
         Ok(self.summary)
     }
 
@@ -2704,6 +2729,107 @@ impl DayReplay {
             ))
             .context("CryptoHFT feature consumer stopped")?;
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BinanceSpotL2ReplaySide {
+    Bid,
+    Ask,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct BinanceSpotL2ReplayLevel {
+    pub side: BinanceSpotL2ReplaySide,
+    pub price: Decimal,
+    pub quantity: Decimal,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct BinanceSpotL2ReplayEvent {
+    pub event_time_ms: i64,
+    pub first_update_id: Option<i64>,
+    pub final_update_id: Option<i64>,
+    pub last_update_id: Option<i64>,
+    pub levels: Vec<BinanceSpotL2ReplayLevel>,
+}
+
+pub(crate) struct BinanceSpotL2RangeReplay {
+    inner: DayReplay,
+}
+
+impl BinanceSpotL2RangeReplay {
+    pub(crate) fn new(
+        config: &CryptoHftBinanceL2Config,
+        target_start: DateTime<Utc>,
+        target_end: DateTime<Utc>,
+        output_batch_rows: usize,
+        sender: mpsc::Sender<Vec<BinanceL2OneSecondFeature>>,
+        cancellation: ArchiveCancellation,
+    ) -> Result<Self> {
+        Ok(Self {
+            inner: DayReplay::new_range(
+                config,
+                CryptoHftBinanceMarket::Spot,
+                target_start,
+                target_end,
+                output_batch_rows,
+                sender,
+                cancellation,
+            )?,
+        })
+    }
+
+    pub(crate) fn process(&mut self, event: BinanceSpotL2ReplayEvent) -> Result<()> {
+        if event.levels.is_empty() {
+            bail!("Binance spot L2 replay event contained no price levels");
+        }
+        let event_type = match (
+            event.first_update_id,
+            event.final_update_id,
+            event.last_update_id,
+        ) {
+            (None, None, Some(_)) => EventType::Snapshot,
+            (Some(_), Some(_), None) => EventType::Update,
+            _ => bail!("Binance spot L2 replay event had an invalid sequence identity"),
+        };
+        let received_time_ns = event
+            .event_time_ms
+            .checked_mul(1_000_000)
+            .context("Binance spot L2 replay receipt timestamp overflow")?;
+        let key = EventKey {
+            received_time_ns,
+            event_time_ms: event.event_time_ms,
+            transaction_time_ms: None,
+            event_type,
+            first_update_id: event.first_update_id,
+            final_update_id: event.final_update_id,
+            previous_final_update_id: None,
+            last_update_id: event.last_update_id,
+        };
+        let mut levels = BTreeMap::new();
+        for level in event.levels {
+            let side = match level.side {
+                BinanceSpotL2ReplaySide::Bid => BookSide::Bid,
+                BinanceSpotL2ReplaySide::Ask => BookSide::Ask,
+            };
+            let key = (side, level.price);
+            let price_level = PriceLevel {
+                side,
+                price: level.price,
+                quantity: level.quantity,
+            };
+            if let Some(existing) = levels.insert(key, price_level.clone()) {
+                if existing.quantity != price_level.quantity {
+                    bail!("Binance spot L2 replay event repeated a conflicting price level");
+                }
+            }
+        }
+        self.inner.process_event(LogicalEvent { key, levels })
+    }
+
+    pub(crate) fn finish(self) -> Result<BinanceL2DaySummary> {
+        self.inner.finish()
     }
 }
 

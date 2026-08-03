@@ -206,6 +206,13 @@ pub struct BackfillRequest {
 
 impl BackfillRequest {
     pub fn validate(self) -> Result<ValidatedBackfillRequest, BackfillRequestValidationError> {
+        let is_huggingface_goooddy = self.ingester
+            == IngesterKey::BinanceSpotBtcusdtL2OneSecondFeatures
+            && self.parameters.as_object().is_some_and(|parameters| {
+                parameters.len() == 1
+                    && parameters.get("strategy").and_then(Value::as_str)
+                        == Some("huggingface_goooddy")
+            });
         if !self.ingester.accepts_new_requests() {
             return Err(BackfillRequestValidationError::new(
                 "raw PMXT orderbook ingestion is deprecated; use polymarket_btc_five_minute_execution_snapshots",
@@ -239,6 +246,7 @@ impl BackfillRequest {
             .parameters
             .as_object()
             .is_some_and(|parameters| !parameters.is_empty())
+            && !is_huggingface_goooddy
         {
             return Err(BackfillRequestValidationError::new(format!(
                 "ingester {} request_version {} does not accept parameters",
@@ -294,11 +302,23 @@ impl BackfillRequest {
             self.ingester,
             IngesterKey::BinanceBtcusdtL2OneSecondFeatures
                 | IngesterKey::BinanceSpotBtcusdtL2OneSecondFeatures
-        ) && expected_work_units != 1
+        ) && !is_huggingface_goooddy
+            && expected_work_units != 1
         {
             return Err(BackfillRequestValidationError::new(
                 "Binance BTCUSDT L2 requests must contain exactly one UTC-day shard",
             ));
+        }
+        if is_huggingface_goooddy {
+            let valid_range = (self.range_start.timestamp(), self.range_end.timestamp());
+            if !matches!(
+                valid_range,
+                (1780444800, 1782864000) | (1782864000, 1785542400)
+            ) {
+                return Err(BackfillRequestValidationError::new(
+                    "Hugging Face Goooddy requests must be one pinned source shard: [2026-06-03T00:00:00Z, 2026-07-01T00:00:00Z) or [2026-07-01T00:00:00Z, 2026-08-01T00:00:00Z)",
+                ));
+            }
         }
 
         Ok(ValidatedBackfillRequest {
