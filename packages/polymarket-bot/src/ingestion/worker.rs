@@ -185,6 +185,7 @@ impl BackfillWorker {
                     ),
                 },
                 cryptohft_binance_l2: cryptohft_binance_l2_config_from_env(&config)?,
+                cryptohft_binance_spot_l2: cryptohft_binance_spot_l2_config_from_env(&config)?,
                 polygon_chainlink: PolygonChainlinkOracleConfig {
                     rpc_url: env_string("POLYMARKET_POLYGON_RPC_URL", DEFAULT_POLYGON_RPC_URL),
                     archive_log_rpc_url: env_string(
@@ -536,6 +537,57 @@ fn cryptohft_binance_l2_config_from_env(
         )?,
         download_chunk_idle_timeout: Duration::from_secs(env_u64(
             "POLYMARKET_BINANCE_L2_DOWNLOAD_CHUNK_IDLE_TIMEOUT_SECS",
+            60,
+        )?),
+    }))
+}
+
+fn cryptohft_binance_spot_l2_config_from_env(
+    worker: &BackfillWorkerConfig,
+) -> Result<Option<CryptoHftBinanceL2Config>> {
+    let Some(archive_root) = env::var("POLYMARKET_BINANCE_SPOT_L2_ARCHIVE_ROOT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let minimum_free_fraction = env_f64("POLYMARKET_BINANCE_SPOT_L2_MINIMUM_FREE_FRACTION", 0.25)?;
+    if minimum_free_fraction <= 0.0 || minimum_free_fraction >= 1.0 {
+        bail!("POLYMARKET_BINANCE_SPOT_L2_MINIMUM_FREE_FRACTION must be greater than zero and less than one");
+    }
+
+    Ok(Some(CryptoHftBinanceL2Config {
+        base_url: env_string(
+            "POLYMARKET_BINANCE_SPOT_L2_CRYPTOHFT_BASE_URL",
+            DEFAULT_CRYPTOHFT_BASE_URL,
+        ),
+        archive_root: PathBuf::from(archive_root),
+        temporary_directory: worker.cache_directory.join("cryptohft-spot-l2-working"),
+        availability_offset_ms: super::cryptohft_binance_l2::DEFAULT_AVAILABILITY_OFFSET_MS,
+        max_stale_ms: super::cryptohft_binance_l2::DEFAULT_MAX_STALE_MS,
+        minimum_free_fraction,
+        minimum_free_bytes: env_u64(
+            "POLYMARKET_BINANCE_SPOT_L2_MINIMUM_FREE_BYTES",
+            64 * 1024 * 1024 * 1024,
+        )?,
+        minimum_write_bytes_per_second: env_u64(
+            "POLYMARKET_BINANCE_SPOT_L2_MINIMUM_WRITE_BYTES_PER_SECOND",
+            20 * 1024 * 1024,
+        )?,
+        request_minimum_interval: Duration::from_millis(env_u64(
+            "POLYMARKET_BINANCE_SPOT_L2_REQUEST_MINIMUM_INTERVAL_MS",
+            1_100,
+        )?),
+        maximum_compressed_bytes: env_u64(
+            "POLYMARKET_BINANCE_SPOT_L2_MAXIMUM_COMPRESSED_BYTES",
+            1024 * 1024 * 1024,
+        )?,
+        maximum_decoded_bytes: env_u64(
+            "POLYMARKET_BINANCE_SPOT_L2_MAXIMUM_DECODED_BYTES",
+            8 * 1024 * 1024 * 1024,
+        )?,
+        download_chunk_idle_timeout: Duration::from_secs(env_u64(
+            "POLYMARKET_BINANCE_SPOT_L2_DOWNLOAD_CHUNK_IDLE_TIMEOUT_SECS",
             60,
         )?),
     }))

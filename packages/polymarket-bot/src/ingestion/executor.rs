@@ -18,10 +18,12 @@ use super::{
     chainlink_archive::{ChainlinkArchiveConfig, CHAINLINK_ARCHIVE_PROVIDER},
     chainlink_candlestick::{ChainlinkCandlestickConfig, CHAINLINK_CANDLESTICK_PROVIDER},
     cryptohft_binance_l2::{
-        day_artifact_logical_key, download_hour as download_cryptohft_hour,
+        day_artifact_logical_key_for_market, download_hour as download_cryptohft_hour,
         spawn_day_parser as spawn_cryptohft_day_parser, CryptoHftBinanceL2Config,
-        CryptoHftDayParseRequest, CryptoHftHourlySpec, HourlyArchiveManifest,
-        BINANCE_L2_MATERIALIZATION_CONTRACT, CRYPTOHFT_ARCHIVE_PROVIDER,
+        CryptoHftBinanceMarket, CryptoHftDayParseRequest, CryptoHftHourlySpec,
+        HourlyArchiveManifest, BINANCE_L2_FEATURE_SCHEMA_VERSION,
+        BINANCE_L2_MATERIALIZATION_CONTRACT, BINANCE_SPOT_L2_FEATURE_SCHEMA_VERSION,
+        BINANCE_SPOT_L2_MATERIALIZATION_CONTRACT, CRYPTOHFT_ARCHIVE_PROVIDER,
         CRYPTOHFT_EARLIEST_CONTEXT_HOUR_EPOCH, MAX_CONTEXT_LOOKBACK_HOURS,
     },
     execution_snapshots::{
@@ -32,9 +34,10 @@ use super::{
     job::{
         ArtifactCompletion, ArtifactDisposition, ArtifactSpec, BackfillArtifactStatus,
         BackfillCheckpoint, BackfillFailureKind, BackfillJobSummary, BackfillProgress,
-        BtcExecutionSnapshot, BtcIntervalMarket, BtcOutcome, BtcReferenceFact,
-        BtcReferenceFactType, ClaimedJob, IngesterKey, WorkerControl,
+        BatchWriteResult, BinanceL2OneSecondFeature, BtcExecutionSnapshot, BtcIntervalMarket,
+        BtcOutcome, BtcReferenceFact, BtcReferenceFactType, ClaimedJob, IngesterKey, WorkerControl,
         BINANCE_L2_HISTORICAL_END_EPOCH, BINANCE_L2_HISTORICAL_START_EPOCH,
+        BINANCE_SPOT_L2_HISTORICAL_END_EPOCH, BINANCE_SPOT_L2_HISTORICAL_START_EPOCH,
     },
     pmxt_archive::{
         download_archive as download_pmxt_archive,
@@ -62,6 +65,7 @@ pub struct IngestionExecutorConfig {
     pub binance_open_interest: BinanceOpenInterestConfig,
     pub polygon_chainlink: PolygonChainlinkOracleConfig,
     pub cryptohft_binance_l2: Option<CryptoHftBinanceL2Config>,
+    pub cryptohft_binance_spot_l2: Option<CryptoHftBinanceL2Config>,
     pub cache_directory: PathBuf,
     pub batch_rows: usize,
     pub pmxt_prefetch_concurrency: usize,
@@ -82,6 +86,9 @@ impl IngestionExecutorConfig {
         self.binance_open_interest.validate()?;
         self.polygon_chainlink.validate()?;
         if let Some(config) = &self.cryptohft_binance_l2 {
+            config.validate()?;
+        }
+        if let Some(config) = &self.cryptohft_binance_spot_l2 {
             config.validate()?;
         }
         if !(1..=4_000).contains(&self.batch_rows) {
@@ -197,6 +204,18 @@ impl IngestionExecutor {
                     range_end,
                     progress,
                     cancellation,
+                    CryptoHftBinanceMarket::Futures,
+                )
+                .await
+            }
+            IngesterKey::BinanceSpotBtcusdtL2OneSecondFeatures => {
+                self.ingest_cryptohft_binance_l2(
+                    claim,
+                    range_start,
+                    range_end,
+                    progress,
+                    cancellation,
+                    CryptoHftBinanceMarket::Spot,
                 )
                 .await
             }
@@ -803,35 +822,75 @@ impl IngestionExecutor {
         range_end: DateTime<Utc>,
         mut progress: BackfillProgress,
         cancellation: ArchiveCancellation,
+        market: CryptoHftBinanceMarket,
     ) -> std::result::Result<BackfillJobSummary, IngestionExecutionError> {
-        if range_start.timestamp() < BINANCE_L2_HISTORICAL_START_EPOCH
-            || range_end.timestamp() > BINANCE_L2_HISTORICAL_END_EPOCH
+        let (
+            historical_start,
+            historical_end,
+            config,
+            ingester,
+            exchange,
+            feature_schema_version,
+            materialization_contract,
+            archive_root_env,
+        ) = match market {
+            CryptoHftBinanceMarket::Futures => (
+                BINANCE_L2_HISTORICAL_START_EPOCH,
+                BINANCE_L2_HISTORICAL_END_EPOCH,
+                self.config.cryptohft_binance_l2.clone(),
+                IngesterKey::BinanceBtcusdtL2OneSecondFeatures,
+                "binance_futures",
+                BINANCE_L2_FEATURE_SCHEMA_VERSION,
+                BINANCE_L2_MATERIALIZATION_CONTRACT,
+                "POLYMARKET_BINANCE_L2_ARCHIVE_ROOT",
+            ),
+            CryptoHftBinanceMarket::Spot => (
+                BINANCE_SPOT_L2_HISTORICAL_START_EPOCH,
+                BINANCE_SPOT_L2_HISTORICAL_END_EPOCH,
+                self.config.cryptohft_binance_spot_l2.clone(),
+                IngesterKey::BinanceSpotBtcusdtL2OneSecondFeatures,
+                "binance_spot",
+                BINANCE_SPOT_L2_FEATURE_SCHEMA_VERSION,
+                BINANCE_SPOT_L2_MATERIALIZATION_CONTRACT,
+                "POLYMARKET_BINANCE_SPOT_L2_ARCHIVE_ROOT",
+            ),
+        };
+        if range_start.timestamp() < historical_start
+            || range_end.timestamp() > historical_end
             || range_end - range_start != ChronoDuration::days(1)
         {
             return Err(IngestionExecutionError::permanent(
-                "Binance L2 execution requires one approved UTC day within [2026-04-14, 2026-08-02)",
+                "Binance BTCUSDT L2 execution requires one approved UTC day within [2026-04-14, 2026-08-02)",
             ));
         }
-        let config = self.config.cryptohft_binance_l2.clone().ok_or_else(|| {
-            IngestionExecutionError::permanent(
-                "POLYMARKET_BINANCE_L2_ARCHIVE_ROOT is required for Binance L2 ingestion",
-            )
+        let config = config.ok_or_else(|| {
+            IngestionExecutionError::permanent(format!(
+                "{archive_root_env} is required for Binance {exchange} L2 ingestion"
+            ))
         })?;
-        if range_start.timestamp() > BINANCE_L2_HISTORICAL_START_EPOCH {
-            let representative_date =
-                DateTime::<Utc>::from_timestamp(BINANCE_L2_HISTORICAL_START_EPOCH, 0)
-                    .ok_or_else(|| {
-                        IngestionExecutionError::permanent(
-                            "Binance L2 representative timestamp is invalid",
-                        )
-                    })?
-                    .date_naive();
-            self.repository
-                .require_binance_l2_representative_source_gate(&day_artifact_logical_key(
-                    representative_date,
-                ))
-                .await
-                .map_err(IngestionExecutionError::transient)?;
+        if range_start.timestamp() > historical_start {
+            let representative_date = DateTime::<Utc>::from_timestamp(historical_start, 0)
+                .ok_or_else(|| {
+                    IngestionExecutionError::permanent(
+                        "Binance L2 representative timestamp is invalid",
+                    )
+                })?
+                .date_naive();
+            let representative_key =
+                day_artifact_logical_key_for_market(market, representative_date);
+            match market {
+                CryptoHftBinanceMarket::Futures => {
+                    self.repository
+                        .require_binance_l2_representative_source_gate(&representative_key)
+                        .await
+                }
+                CryptoHftBinanceMarket::Spot => {
+                    self.repository
+                        .require_binance_spot_l2_representative_source_gate(&representative_key)
+                        .await
+                }
+            }
+            .map_err(IngestionExecutionError::transient)?;
         }
         let preflight = config
             .preflight()
@@ -842,9 +901,9 @@ impl IngestionExecutor {
         let end_date = range_end.date_naive();
         while date < end_date {
             self.ensure_continue(claim, &cancellation).await?;
-            let first_target_spec = CryptoHftHourlySpec::new(&config, date, 0)
+            let first_target_spec = CryptoHftHourlySpec::new_for_market(&config, market, date, 0)
                 .map_err(IngestionExecutionError::permanent)?;
-            let logical_key = day_artifact_logical_key(date);
+            let logical_key = day_artifact_logical_key_for_market(market, date);
             progress.current_logical_key = Some(logical_key.clone());
             let prepared = self
                 .repository
@@ -852,21 +911,21 @@ impl IngestionExecutor {
                     claim,
                     &ArtifactSpec {
                         job_id: claim.job.job_id,
-                        ingester: IngesterKey::BinanceBtcusdtL2OneSecondFeatures,
+                        ingester,
                         logical_key,
                         provider: CRYPTOHFT_ARCHIVE_PROVIDER.to_string(),
                         source_uri: first_target_spec.source_uri.clone(),
                         source_date: Some(date),
                         expected_checksum: None,
                         metadata: serde_json::json!({
-                            "exchange": "binance_futures",
+                            "exchange": exchange,
                             "symbol": "BTCUSDT",
                             "source_objects": 24,
                             "source_cadence": "hourly",
                             "maximum_context_lookback_hours": MAX_CONTEXT_LOOKBACK_HOURS,
                             "vendor_checksum_available": false,
-                            "feature_schema_version": "binance-btcusdt-l2-one-second-features-v1",
-                            "materialization_contract": BINANCE_L2_MATERIALIZATION_CONTRACT,
+                            "feature_schema_version": feature_schema_version,
+                            "materialization_contract": materialization_contract,
                             "availability_offset_ms": config.availability_offset_ms,
                             "maximum_stale_ms": config.max_stale_ms,
                         }),
@@ -899,8 +958,9 @@ impl IngestionExecutor {
                 if context_hour.timestamp() < CRYPTOHFT_EARLIEST_CONTEXT_HOUR_EPOCH {
                     break;
                 }
-                let context_spec = CryptoHftHourlySpec::new(
+                let context_spec = CryptoHftHourlySpec::new_for_market(
                     &config,
+                    market,
                     context_hour.date_naive(),
                     u8::try_from(context_hour.hour())
                         .map_err(IngestionExecutionError::permanent)?,
@@ -918,8 +978,8 @@ impl IngestionExecutor {
                     Ok(archive) => archive,
                     Err(error) => {
                         let _ = self
-                            .repository
-                            .fail_binance_l2_artifact(
+                            .fail_cryptohft_binance_l2_artifact(
+                                market,
                                 claim,
                                 prepared.artifact.artifact_id,
                                 &error.to_string(),
@@ -948,8 +1008,8 @@ impl IngestionExecutor {
                     "CryptoHFT context did not contain a structurally valid snapshot between the target day and the pinned 2026-04-13T23:00:00Z anchor"
                 );
                 let _ = self
-                    .repository
-                    .fail_binance_l2_artifact(
+                    .fail_cryptohft_binance_l2_artifact(
+                        market,
                         claim,
                         prepared.artifact.artifact_id,
                         &error.to_string(),
@@ -961,7 +1021,7 @@ impl IngestionExecutor {
             let mut target_archives = Vec::with_capacity(24);
             for hour in 0u8..24 {
                 self.ensure_continue(claim, &cancellation).await?;
-                let spec = CryptoHftHourlySpec::new(&config, date, hour)
+                let spec = CryptoHftHourlySpec::new_for_market(&config, market, date, hour)
                     .map_err(IngestionExecutionError::permanent)?;
                 let archive = match download_cryptohft_hour(
                     &self.client,
@@ -975,8 +1035,8 @@ impl IngestionExecutor {
                     Ok(archive) => archive,
                     Err(error) => {
                         let _ = self
-                            .repository
-                            .fail_binance_l2_artifact(
+                            .fail_cryptohft_binance_l2_artifact(
+                                market,
                                 claim,
                                 prepared.artifact.artifact_id,
                                 &error.to_string(),
@@ -1018,10 +1078,13 @@ impl IngestionExecutor {
                 BackfillArtifactStatus::Ingesting,
             )
             .await?;
-            self.repository
-                .reset_binance_l2_feature_staging(claim, prepared.artifact.artifact_id)
-                .await
-                .map_err(IngestionExecutionError::transient)?;
+            self.reset_cryptohft_binance_l2_feature_staging(
+                market,
+                claim,
+                prepared.artifact.artifact_id,
+            )
+            .await
+            .map_err(IngestionExecutionError::transient)?;
 
             let (mut receiver, parser) = spawn_cryptohft_day_parser(
                 config.clone(),
@@ -1039,8 +1102,8 @@ impl IngestionExecutor {
                 if let Err(error) = self.ensure_continue(claim, &cancellation).await {
                     cancellation.cancel();
                     let _ = self
-                        .repository
-                        .fail_binance_l2_artifact(
+                        .fail_cryptohft_binance_l2_artifact(
+                            market,
                             claim,
                             prepared.artifact.artifact_id,
                             &error.to_string(),
@@ -1049,8 +1112,8 @@ impl IngestionExecutor {
                     return Err(error);
                 }
                 let result = match self
-                    .repository
-                    .stage_binance_l2_one_second_feature_batch(
+                    .stage_cryptohft_binance_l2_one_second_feature_batch(
+                        market,
                         claim,
                         prepared.artifact.artifact_id,
                         &batch,
@@ -1061,8 +1124,8 @@ impl IngestionExecutor {
                     Err(error) => {
                         cancellation.cancel();
                         let _ = self
-                            .repository
-                            .fail_binance_l2_artifact(
+                            .fail_cryptohft_binance_l2_artifact(
+                                market,
                                 claim,
                                 prepared.artifact.artifact_id,
                                 &error.to_string(),
@@ -1079,8 +1142,8 @@ impl IngestionExecutor {
                 Ok(Ok(parse_summary)) => parse_summary,
                 Ok(Err(error)) => {
                     let _ = self
-                        .repository
-                        .fail_binance_l2_artifact(
+                        .fail_cryptohft_binance_l2_artifact(
+                            market,
                             claim,
                             prepared.artifact.artifact_id,
                             &error.to_string(),
@@ -1090,8 +1153,8 @@ impl IngestionExecutor {
                 }
                 Err(error) => {
                     let _ = self
-                        .repository
-                        .fail_binance_l2_artifact(
+                        .fail_cryptohft_binance_l2_artifact(
+                            market,
                             claim,
                             prepared.artifact.artifact_id,
                             &error.to_string(),
@@ -1106,8 +1169,8 @@ impl IngestionExecutor {
                     parse_summary.emitted_feature_rows
                 );
                 let _ = self
-                    .repository
-                    .fail_binance_l2_artifact(
+                    .fail_cryptohft_binance_l2_artifact(
+                        market,
                         claim,
                         prepared.artifact.artifact_id,
                         &error.to_string(),
@@ -1135,6 +1198,7 @@ impl IngestionExecutor {
                 minimum_source_timestamp: parse_summary.minimum_source_timestamp,
                 maximum_source_timestamp: parse_summary.maximum_source_timestamp,
                 metadata: serde_json::json!({
+                    "materialization_contract": materialization_contract,
                     "hourly_manifest": manifest,
                     "raw_rows": parse_summary.raw_rows,
                     "logical_events": parse_summary.logical_events,
@@ -1154,8 +1218,8 @@ impl IngestionExecutor {
                 }),
             };
             if let Err(error) = self
-                .repository
-                .publish_binance_l2_one_second_features(
+                .publish_cryptohft_binance_l2_one_second_features(
+                    market,
                     claim,
                     prepared.artifact.artifact_id,
                     &completion,
@@ -1163,8 +1227,8 @@ impl IngestionExecutor {
                 .await
             {
                 let _ = self
-                    .repository
-                    .fail_binance_l2_artifact(
+                    .fail_cryptohft_binance_l2_artifact(
+                        market,
                         claim,
                         prepared.artifact.artifact_id,
                         &error.to_string(),
@@ -1194,6 +1258,89 @@ impl IngestionExecutor {
         }
         summary.completed_work_units = progress.completed_work_units;
         Ok(summary)
+    }
+
+    async fn reset_cryptohft_binance_l2_feature_staging(
+        &self,
+        market: CryptoHftBinanceMarket,
+        claim: &ClaimedJob,
+        artifact_id: uuid::Uuid,
+    ) -> Result<()> {
+        match market {
+            CryptoHftBinanceMarket::Futures => {
+                self.repository
+                    .reset_binance_l2_feature_staging(claim, artifact_id)
+                    .await
+            }
+            CryptoHftBinanceMarket::Spot => {
+                self.repository
+                    .reset_binance_spot_l2_feature_staging(claim, artifact_id)
+                    .await
+            }
+        }
+    }
+
+    async fn stage_cryptohft_binance_l2_one_second_feature_batch(
+        &self,
+        market: CryptoHftBinanceMarket,
+        claim: &ClaimedJob,
+        artifact_id: uuid::Uuid,
+        records: &[BinanceL2OneSecondFeature],
+    ) -> Result<BatchWriteResult> {
+        match market {
+            CryptoHftBinanceMarket::Futures => {
+                self.repository
+                    .stage_binance_l2_one_second_feature_batch(claim, artifact_id, records)
+                    .await
+            }
+            CryptoHftBinanceMarket::Spot => {
+                self.repository
+                    .stage_binance_spot_l2_one_second_feature_batch(claim, artifact_id, records)
+                    .await
+            }
+        }
+    }
+
+    async fn fail_cryptohft_binance_l2_artifact(
+        &self,
+        market: CryptoHftBinanceMarket,
+        claim: &ClaimedJob,
+        artifact_id: uuid::Uuid,
+        error: &str,
+    ) -> Result<()> {
+        match market {
+            CryptoHftBinanceMarket::Futures => self
+                .repository
+                .fail_binance_l2_artifact(claim, artifact_id, error)
+                .await
+                .map(|_| ()),
+            CryptoHftBinanceMarket::Spot => self
+                .repository
+                .fail_binance_spot_l2_artifact(claim, artifact_id, error)
+                .await
+                .map(|_| ()),
+        }
+    }
+
+    async fn publish_cryptohft_binance_l2_one_second_features(
+        &self,
+        market: CryptoHftBinanceMarket,
+        claim: &ClaimedJob,
+        artifact_id: uuid::Uuid,
+        completion: &ArtifactCompletion,
+    ) -> Result<()> {
+        match market {
+            CryptoHftBinanceMarket::Futures => self
+                .repository
+                .publish_binance_l2_one_second_features(claim, artifact_id, completion)
+                .await
+                .map(|_| ()),
+            CryptoHftBinanceMarket::Spot => self
+                .repository
+                .publish_binance_spot_l2_one_second_features(claim, artifact_id, completion)
+                .await
+                .map(|_| ()),
+        }
     }
 
     async fn ingest_pmxt_orderbooks(
@@ -3391,6 +3538,7 @@ mod tests {
                 maximum_block_range: 2_000,
             },
             cryptohft_binance_l2: None,
+            cryptohft_binance_spot_l2: None,
             cache_directory: PathBuf::from("/tmp/cache"),
             batch_rows: 4_000,
             pmxt_prefetch_concurrency: 4,

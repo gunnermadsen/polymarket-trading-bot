@@ -10,6 +10,8 @@ pub const BACKFILL_REQUEST_VERSION: i32 = 1;
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 255;
 pub const BINANCE_L2_HISTORICAL_START_EPOCH: i64 = 1_776_124_800;
 pub const BINANCE_L2_HISTORICAL_END_EPOCH: i64 = 1_785_628_800;
+pub const BINANCE_SPOT_L2_HISTORICAL_START_EPOCH: i64 = BINANCE_L2_HISTORICAL_START_EPOCH;
+pub const BINANCE_SPOT_L2_HISTORICAL_END_EPOCH: i64 = BINANCE_L2_HISTORICAL_END_EPOCH;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -65,6 +67,7 @@ pub enum IngesterKey {
     BtcFiveMinuteResolutions,
     BinanceBtcusdtAggTrades,
     BinanceBtcusdtL2OneSecondFeatures,
+    BinanceSpotBtcusdtL2OneSecondFeatures,
     BinanceBtcusdtOneSecondKlines,
     PolymarketBtcFiveMinuteOrderbooks,
     PolymarketBtcFiveMinuteExecutionSnapshots,
@@ -75,11 +78,12 @@ pub enum IngesterKey {
 }
 
 impl IngesterKey {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::BtcFiveMinuteMarkets,
         Self::BtcFiveMinuteResolutions,
         Self::BinanceBtcusdtAggTrades,
         Self::BinanceBtcusdtL2OneSecondFeatures,
+        Self::BinanceSpotBtcusdtL2OneSecondFeatures,
         Self::BinanceBtcusdtOneSecondKlines,
         Self::PolymarketBtcFiveMinuteOrderbooks,
         Self::PolymarketBtcFiveMinuteExecutionSnapshots,
@@ -95,6 +99,9 @@ impl IngesterKey {
             Self::BtcFiveMinuteResolutions => "btc_five_minute_resolutions",
             Self::BinanceBtcusdtAggTrades => "binance_btcusdt_agg_trades",
             Self::BinanceBtcusdtL2OneSecondFeatures => "binance_btcusdt_l2_one_second_features",
+            Self::BinanceSpotBtcusdtL2OneSecondFeatures => {
+                "binance_spot_btcusdt_l2_one_second_features"
+            }
             Self::BinanceBtcusdtOneSecondKlines => "binance_btcusdt_one_second_klines",
             Self::PolymarketBtcFiveMinuteOrderbooks => "polymarket_btc_five_minute_orderbooks",
             Self::PolymarketBtcFiveMinuteExecutionSnapshots => {
@@ -124,6 +131,7 @@ impl IngesterKey {
             | Self::PolymarketBtcFiveMinuteExecutionSnapshots => 3_600,
             Self::BinanceBtcusdtAggTrades
             | Self::BinanceBtcusdtL2OneSecondFeatures
+            | Self::BinanceSpotBtcusdtL2OneSecondFeatures
             | Self::BinanceBtcusdtOneSecondKlines
             | Self::ChainlinkBtcusdReferenceTicks
             | Self::ChainlinkBtcusdOneMinuteCandles
@@ -160,6 +168,9 @@ impl FromStr for IngesterKey {
             "btc_five_minute_resolutions" => Ok(Self::BtcFiveMinuteResolutions),
             "binance_btcusdt_agg_trades" => Ok(Self::BinanceBtcusdtAggTrades),
             "binance_btcusdt_l2_one_second_features" => Ok(Self::BinanceBtcusdtL2OneSecondFeatures),
+            "binance_spot_btcusdt_l2_one_second_features" => {
+                Ok(Self::BinanceSpotBtcusdtL2OneSecondFeatures)
+            }
             "binance_btcusdt_one_second_klines" => Ok(Self::BinanceBtcusdtOneSecondKlines),
             "polymarket_btc_five_minute_orderbooks" => Ok(Self::PolymarketBtcFiveMinuteOrderbooks),
             "polymarket_btc_five_minute_execution_snapshots" => {
@@ -250,13 +261,24 @@ impl BackfillRequest {
         let alignment_seconds = self.ingester.alignment_seconds();
         validate_aligned_timestamp(self.range_start, alignment_seconds, "range_start")?;
         validate_aligned_timestamp(self.range_end, alignment_seconds, "range_end")?;
-        if self.ingester == IngesterKey::BinanceBtcusdtL2OneSecondFeatures
-            && (self.range_start.timestamp() < BINANCE_L2_HISTORICAL_START_EPOCH
-                || self.range_end.timestamp() > BINANCE_L2_HISTORICAL_END_EPOCH)
-        {
-            return Err(BackfillRequestValidationError::new(
-                "Binance BTCUSDT L2 historical requests must remain within [2026-04-14T00:00:00Z, 2026-08-02T00:00:00Z)",
-            ));
+        match self.ingester {
+            IngesterKey::BinanceBtcusdtL2OneSecondFeatures
+                if self.range_start.timestamp() < BINANCE_L2_HISTORICAL_START_EPOCH
+                    || self.range_end.timestamp() > BINANCE_L2_HISTORICAL_END_EPOCH =>
+            {
+                return Err(BackfillRequestValidationError::new(
+                    "Binance BTCUSDT L2 historical requests must remain within [2026-04-14T00:00:00Z, 2026-08-02T00:00:00Z)",
+                ));
+            }
+            IngesterKey::BinanceSpotBtcusdtL2OneSecondFeatures
+                if self.range_start.timestamp() < BINANCE_SPOT_L2_HISTORICAL_START_EPOCH
+                    || self.range_end.timestamp() > BINANCE_SPOT_L2_HISTORICAL_END_EPOCH =>
+            {
+                return Err(BackfillRequestValidationError::new(
+                    "Binance spot BTCUSDT L2 historical requests must remain within [2026-04-14T00:00:00Z, 2026-08-02T00:00:00Z)",
+                ));
+            }
+            _ => {}
         }
 
         let seconds = (self.range_end - self.range_start).num_seconds();
@@ -268,8 +290,11 @@ impl BackfillRequest {
                 "requested range does not contain a complete work unit",
             ));
         }
-        if self.ingester == IngesterKey::BinanceBtcusdtL2OneSecondFeatures
-            && expected_work_units != 1
+        if matches!(
+            self.ingester,
+            IngesterKey::BinanceBtcusdtL2OneSecondFeatures
+                | IngesterKey::BinanceSpotBtcusdtL2OneSecondFeatures
+        ) && expected_work_units != 1
         {
             return Err(BackfillRequestValidationError::new(
                 "Binance BTCUSDT L2 requests must contain exactly one UTC-day shard",
@@ -987,61 +1012,76 @@ mod tests {
     fn binance_l2_accepts_the_first_and_last_historical_daily_shards() {
         const UTC_DAY_SECONDS: i64 = 86_400;
 
-        let april_14 = request(
+        for ingester in [
             IngesterKey::BinanceBtcusdtL2OneSecondFeatures,
-            BINANCE_L2_HISTORICAL_START_EPOCH,
-            BINANCE_L2_HISTORICAL_START_EPOCH + UTC_DAY_SECONDS,
-        )
-        .validate()
-        .unwrap();
-        assert_eq!(april_14.expected_work_units, 1);
+            IngesterKey::BinanceSpotBtcusdtL2OneSecondFeatures,
+        ] {
+            let april_14 = request(
+                ingester,
+                BINANCE_L2_HISTORICAL_START_EPOCH,
+                BINANCE_L2_HISTORICAL_START_EPOCH + UTC_DAY_SECONDS,
+            )
+            .validate()
+            .unwrap();
+            assert_eq!(april_14.expected_work_units, 1);
 
-        let august_1 = request(
-            IngesterKey::BinanceBtcusdtL2OneSecondFeatures,
-            BINANCE_L2_HISTORICAL_END_EPOCH - UTC_DAY_SECONDS,
-            BINANCE_L2_HISTORICAL_END_EPOCH,
-        )
-        .validate()
-        .unwrap();
-        assert_eq!(august_1.expected_work_units, 1);
+            let august_1 = request(
+                ingester,
+                BINANCE_L2_HISTORICAL_END_EPOCH - UTC_DAY_SECONDS,
+                BINANCE_L2_HISTORICAL_END_EPOCH,
+            )
+            .validate()
+            .unwrap();
+            assert_eq!(august_1.expected_work_units, 1);
+        }
     }
 
     #[test]
     fn binance_l2_rejects_daily_shards_outside_the_historical_boundary() {
         const UTC_DAY_SECONDS: i64 = 86_400;
 
-        let april_13 = request(
+        for ingester in [
             IngesterKey::BinanceBtcusdtL2OneSecondFeatures,
-            BINANCE_L2_HISTORICAL_START_EPOCH - UTC_DAY_SECONDS,
-            BINANCE_L2_HISTORICAL_START_EPOCH,
-        );
-        assert!(april_13.validate().is_err());
+            IngesterKey::BinanceSpotBtcusdtL2OneSecondFeatures,
+        ] {
+            let april_13 = request(
+                ingester,
+                BINANCE_L2_HISTORICAL_START_EPOCH - UTC_DAY_SECONDS,
+                BINANCE_L2_HISTORICAL_START_EPOCH,
+            );
+            assert!(april_13.validate().is_err());
 
-        let august_2 = request(
-            IngesterKey::BinanceBtcusdtL2OneSecondFeatures,
-            BINANCE_L2_HISTORICAL_END_EPOCH,
-            BINANCE_L2_HISTORICAL_END_EPOCH + UTC_DAY_SECONDS,
-        );
-        assert!(august_2.validate().is_err());
+            let august_2 = request(
+                ingester,
+                BINANCE_L2_HISTORICAL_END_EPOCH,
+                BINANCE_L2_HISTORICAL_END_EPOCH + UTC_DAY_SECONDS,
+            );
+            assert!(august_2.validate().is_err());
+        }
     }
 
     #[test]
     fn binance_l2_rejects_multi_day_and_sub_day_shards() {
         const UTC_DAY_SECONDS: i64 = 86_400;
 
-        let multi_day = request(
+        for ingester in [
             IngesterKey::BinanceBtcusdtL2OneSecondFeatures,
-            BINANCE_L2_HISTORICAL_START_EPOCH,
-            BINANCE_L2_HISTORICAL_START_EPOCH + (2 * UTC_DAY_SECONDS),
-        );
-        assert!(multi_day.validate().is_err());
+            IngesterKey::BinanceSpotBtcusdtL2OneSecondFeatures,
+        ] {
+            let multi_day = request(
+                ingester,
+                BINANCE_L2_HISTORICAL_START_EPOCH,
+                BINANCE_L2_HISTORICAL_START_EPOCH + (2 * UTC_DAY_SECONDS),
+            );
+            assert!(multi_day.validate().is_err());
 
-        let sub_day = request(
-            IngesterKey::BinanceBtcusdtL2OneSecondFeatures,
-            BINANCE_L2_HISTORICAL_START_EPOCH,
-            BINANCE_L2_HISTORICAL_START_EPOCH + (UTC_DAY_SECONDS / 2),
-        );
-        assert!(sub_day.validate().is_err());
+            let sub_day = request(
+                ingester,
+                BINANCE_L2_HISTORICAL_START_EPOCH,
+                BINANCE_L2_HISTORICAL_START_EPOCH + (UTC_DAY_SECONDS / 2),
+            );
+            assert!(sub_day.validate().is_err());
+        }
     }
 
     #[test]

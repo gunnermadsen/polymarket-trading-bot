@@ -49,6 +49,10 @@ pub const DEFAULT_DOWNLOAD_CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(60
 pub const BINANCE_L2_FEATURE_SCHEMA_VERSION: &str = "binance-btcusdt-l2-one-second-features-v1";
 pub const BINANCE_L2_MATERIALIZATION_CONTRACT: &str =
     "cryptohft-binance-futures-btcusdt-l2-features-v1";
+pub const BINANCE_SPOT_L2_FEATURE_SCHEMA_VERSION: &str =
+    "binance-spot-btcusdt-l2-one-second-features-v1";
+pub const BINANCE_SPOT_L2_MATERIALIZATION_CONTRACT: &str =
+    "cryptohft-binance-spot-btcusdt-l2-features-v1";
 pub const CRYPTOHFT_EARLIEST_CONTEXT_HOUR_EPOCH: i64 = 1_776_121_200;
 pub const MAX_CONTEXT_LOOKBACK_HOURS: usize = 2_617;
 pub const CRYPTOHFT_AUDITED_ANCHOR_REMOTE_FILE: &str =
@@ -57,6 +61,12 @@ pub const CRYPTOHFT_AUDITED_ANCHOR_SHA256: &str =
     "9e5557a44fe0c414feb353ad64f22ea232bd5e895f01f32f17fb1bd8d36e5174";
 pub const CRYPTOHFT_AUDITED_SNAPSHOT_EVENT_MILLIS: i64 = 1_776_121_519_649;
 pub const CRYPTOHFT_AUDITED_SNAPSHOT_LAST_UPDATE_ID: i64 = 10_318_083_192_958;
+pub const CRYPTOHFT_SPOT_AUDITED_ANCHOR_REMOTE_FILE: &str =
+    "binance_spot/2026-04-13/23/BTCUSDT_orderbook.parquet.zst";
+pub const CRYPTOHFT_SPOT_AUDITED_ANCHOR_SHA256: &str =
+    "5d967980778289c0ff4970de576a8e3cf047861fdffbdc8356c2d762100d960e";
+pub const CRYPTOHFT_SPOT_AUDITED_SNAPSHOT_EVENT_MILLIS: i64 = 1_776_121_357_739;
+pub const CRYPTOHFT_SPOT_AUDITED_SNAPSHOT_LAST_UPDATE_ID: i64 = 91_924_965_391;
 
 const WRITE_PROBE_BYTES: usize = 16 * 1024 * 1024;
 const IO_BUFFER_BYTES: usize = 1024 * 1024;
@@ -64,10 +74,88 @@ const MAX_CONFIGURED_DOWNLOAD_WORKERS: u64 = 6;
 const STALE_WORK_FILE_AGE: Duration = Duration::from_secs(6 * 60 * 60);
 const MAX_LOGICAL_EVENT_LEVELS: usize = 10_000;
 const MAX_BOOK_LEVELS_PER_SIDE: usize = 100_000;
-const MIN_FULL_DEPTH_SNAPSHOT_LEVELS: usize = 1_000;
+const MIN_FUTURES_FULL_DEPTH_SNAPSHOT_LEVELS: usize = 1_000;
+const MIN_SPOT_FULL_DEPTH_SNAPSHOT_LEVELS: usize = 200;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const STORAGE_SENTINEL_FILE: &str = ".cryptohft-l2-storage";
 const STORAGE_SENTINEL_CONTENT: &str = "cryptohft-btcusdt-l2-archive-v1\n";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CryptoHftBinanceMarket {
+    Futures,
+    Spot,
+}
+
+impl CryptoHftBinanceMarket {
+    fn archive_directory(self) -> &'static str {
+        match self {
+            Self::Futures => "binance_futures",
+            Self::Spot => "binance_spot",
+        }
+    }
+
+    fn logical_market(self) -> &'static str {
+        match self {
+            Self::Futures => "binance-futures",
+            Self::Spot => "binance-spot",
+        }
+    }
+
+    pub fn feature_schema_version(self) -> &'static str {
+        match self {
+            Self::Futures => BINANCE_L2_FEATURE_SCHEMA_VERSION,
+            Self::Spot => BINANCE_SPOT_L2_FEATURE_SCHEMA_VERSION,
+        }
+    }
+
+    pub fn materialization_contract(self) -> &'static str {
+        match self {
+            Self::Futures => BINANCE_L2_MATERIALIZATION_CONTRACT,
+            Self::Spot => BINANCE_SPOT_L2_MATERIALIZATION_CONTRACT,
+        }
+    }
+
+    fn audited_anchor_remote_file(self) -> &'static str {
+        match self {
+            Self::Futures => CRYPTOHFT_AUDITED_ANCHOR_REMOTE_FILE,
+            Self::Spot => CRYPTOHFT_SPOT_AUDITED_ANCHOR_REMOTE_FILE,
+        }
+    }
+
+    fn audited_anchor_sha256(self) -> &'static str {
+        match self {
+            Self::Futures => CRYPTOHFT_AUDITED_ANCHOR_SHA256,
+            Self::Spot => CRYPTOHFT_SPOT_AUDITED_ANCHOR_SHA256,
+        }
+    }
+
+    fn audited_snapshot_identity(self) -> (i64, i64) {
+        match self {
+            Self::Futures => (
+                CRYPTOHFT_AUDITED_SNAPSHOT_EVENT_MILLIS,
+                CRYPTOHFT_AUDITED_SNAPSHOT_LAST_UPDATE_ID,
+            ),
+            Self::Spot => (
+                CRYPTOHFT_SPOT_AUDITED_SNAPSHOT_EVENT_MILLIS,
+                CRYPTOHFT_SPOT_AUDITED_SNAPSHOT_LAST_UPDATE_ID,
+            ),
+        }
+    }
+
+    fn minimum_full_depth_snapshot_levels(self) -> usize {
+        match self {
+            Self::Futures => MIN_FUTURES_FULL_DEPTH_SNAPSHOT_LEVELS,
+            Self::Spot => MIN_SPOT_FULL_DEPTH_SNAPSHOT_LEVELS,
+        }
+    }
+
+    fn minimum_full_depth_snapshot_levels_per_side(self) -> usize {
+        match self {
+            Self::Futures => 20,
+            Self::Spot => 100,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct CryptoHftBinanceL2Config {
@@ -145,16 +233,32 @@ impl CryptoHftBinanceL2Config {
 }
 
 pub fn day_artifact_logical_key(date: NaiveDate) -> String {
+    day_artifact_logical_key_for_market(CryptoHftBinanceMarket::Futures, date)
+}
+
+pub fn day_artifact_logical_key_for_market(
+    market: CryptoHftBinanceMarket,
+    date: NaiveDate,
+) -> String {
     format!(
-        "cryptohftdata:binance-futures:{CRYPTOHFT_SYMBOL}:l2-day:{BINANCE_L2_MATERIALIZATION_CONTRACT}:{date}"
+        "cryptohftdata:{}:{CRYPTOHFT_SYMBOL}:l2-day:{}:{date}",
+        market.logical_market(),
+        market.materialization_contract()
     )
 }
 
 pub fn validate_representative_day_quality(metadata: &serde_json::Value) -> Result<()> {
+    validate_representative_day_quality_for_market(CryptoHftBinanceMarket::Futures, metadata)
+}
+
+pub fn validate_representative_day_quality_for_market(
+    market: CryptoHftBinanceMarket,
+    metadata: &serde_json::Value,
+) -> Result<()> {
     if metadata
         .get("materialization_contract")
         .and_then(serde_json::Value::as_str)
-        != Some(BINANCE_L2_MATERIALIZATION_CONTRACT)
+        != Some(market.materialization_contract())
         || metadata
             .get("source_objects")
             .and_then(serde_json::Value::as_u64)
@@ -230,8 +334,8 @@ pub fn validate_representative_day_quality(metadata: &serde_json::Value) -> Resu
             && object
                 .get("remote_file")
                 .and_then(serde_json::Value::as_str)
-                == Some(CRYPTOHFT_AUDITED_ANCHOR_REMOTE_FILE)
-            && checksum == CRYPTOHFT_AUDITED_ANCHOR_SHA256
+                == Some(market.audited_anchor_remote_file())
+            && checksum == market.audited_anchor_sha256()
             && object
                 .get("audited_anchor_snapshot_verified")
                 .and_then(serde_json::Value::as_bool)
@@ -312,13 +416,27 @@ pub struct CryptoHftHourlySpec {
 
 impl CryptoHftHourlySpec {
     pub fn new(config: &CryptoHftBinanceL2Config, date: NaiveDate, hour: u8) -> Result<Self> {
+        Self::new_for_market(config, CryptoHftBinanceMarket::Futures, date, hour)
+    }
+
+    pub fn new_spot(config: &CryptoHftBinanceL2Config, date: NaiveDate, hour: u8) -> Result<Self> {
+        Self::new_for_market(config, CryptoHftBinanceMarket::Spot, date, hour)
+    }
+
+    pub fn new_for_market(
+        config: &CryptoHftBinanceL2Config,
+        market: CryptoHftBinanceMarket,
+        date: NaiveDate,
+        hour: u8,
+    ) -> Result<Self> {
         config.validate()?;
         if hour > 23 {
             bail!("CryptoHFT archive hour must be between 0 and 23");
         }
         let date_text = date.format("%Y-%m-%d");
         let remote_file = format!(
-            "binance_futures/{date_text}/{hour:02}/{CRYPTOHFT_SYMBOL}_orderbook.parquet.zst"
+            "{}/{date_text}/{hour:02}/{CRYPTOHFT_SYMBOL}_orderbook.parquet.zst",
+            market.archive_directory()
         );
         let relative_path = PathBuf::from(&remote_file);
         Ok(Self {
@@ -329,12 +447,27 @@ impl CryptoHftHourlySpec {
                 config.base_url.trim_end_matches('/')
             ),
             logical_key: format!(
-                "cryptohftdata:binance-futures:{CRYPTOHFT_SYMBOL}:l2:{date_text}T{hour:02}"
+                "cryptohftdata:{}:{CRYPTOHFT_SYMBOL}:l2:{date_text}T{hour:02}",
+                market.logical_market()
             ),
             archive_path: config.archive_root.join(&relative_path),
             remote_file,
             relative_path,
         })
+    }
+
+    pub fn market(&self) -> Result<CryptoHftBinanceMarket> {
+        market_from_remote_file(&self.remote_file)
+    }
+}
+
+fn market_from_remote_file(remote_file: &str) -> Result<CryptoHftBinanceMarket> {
+    if remote_file.starts_with("binance_futures/") {
+        Ok(CryptoHftBinanceMarket::Futures)
+    } else if remote_file.starts_with("binance_spot/") {
+        Ok(CryptoHftBinanceMarket::Spot)
+    } else {
+        bail!("CryptoHFT archive name did not match a supported Binance source contract")
     }
 }
 
@@ -598,6 +731,7 @@ pub async fn download_hour(
     config.validate()?;
     check_cancelled(cancellation)?;
     validate_spec_paths(config, spec)?;
+    let market = spec.market()?;
 
     if fs::try_exists(&spec.archive_path).await? {
         match reuse_hour(config, spec, cancellation).await? {
@@ -689,8 +823,8 @@ pub async fn download_hour(
     let payload = validate_archive_payload(config, spec, &partial_path, cancellation).await?;
 
     let sha256 = format!("{:x}", hasher.finalize());
-    if spec.remote_file == CRYPTOHFT_AUDITED_ANCHOR_REMOTE_FILE
-        && sha256 != CRYPTOHFT_AUDITED_ANCHOR_SHA256
+    if spec.remote_file == market.audited_anchor_remote_file()
+        && sha256 != market.audited_anchor_sha256()
     {
         bail!("CryptoHFT audited anchor archive checksum did not match the pinned source object");
     }
@@ -878,7 +1012,9 @@ fn cached_manifest_corruption(
     digest: &FileDigest,
     manifest: &HourlyArchiveManifest,
 ) -> Option<anyhow::Error> {
-    let invalid = manifest.provider != CRYPTOHFT_ARCHIVE_PROVIDER
+    let market = spec.market().ok();
+    let invalid = market.is_none()
+        || manifest.provider != CRYPTOHFT_ARCHIVE_PROVIDER
         || manifest.source_uri != spec.source_uri
         || manifest.logical_key != spec.logical_key
         || manifest.remote_file != spec.remote_file
@@ -888,10 +1024,10 @@ fn cached_manifest_corruption(
         || manifest.raw_rows == 0
         || manifest.update_events == 0
         || manifest.validated_snapshot_events > manifest.snapshot_events
-        || (spec.remote_file == CRYPTOHFT_AUDITED_ANCHOR_REMOTE_FILE
-            && (manifest.sha256 != CRYPTOHFT_AUDITED_ANCHOR_SHA256
+        || (market.is_some_and(|market| spec.remote_file == market.audited_anchor_remote_file())
+            && (market.is_some_and(|market| manifest.sha256 != market.audited_anchor_sha256())
                 || !manifest.audited_anchor_snapshot_verified))
-        || (spec.remote_file != CRYPTOHFT_AUDITED_ANCHOR_REMOTE_FILE
+        || (market.is_some_and(|market| spec.remote_file != market.audited_anchor_remote_file())
             && manifest.audited_anchor_snapshot_verified)
         || manifest.minimum_provider_received_at > manifest.maximum_provider_received_at
         || manifest
@@ -945,6 +1081,8 @@ fn validate_spec_paths(
     config: &CryptoHftBinanceL2Config,
     spec: &CryptoHftHourlySpec,
 ) -> Result<()> {
+    let market = spec.market()?;
+    let expected = CryptoHftHourlySpec::new_for_market(config, market, spec.date, spec.hour)?;
     if spec.archive_path != config.archive_root.join(&spec.relative_path)
         || spec.relative_path.is_absolute()
         || spec
@@ -953,6 +1091,9 @@ fn validate_spec_paths(
             .any(|component| matches!(component, std::path::Component::ParentDir))
     {
         bail!("CryptoHFT archive spec escaped the configured archive root");
+    }
+    if *spec != expected {
+        bail!("CryptoHFT archive spec did not match its immutable source contract");
     }
     Ok(())
 }
@@ -1174,13 +1315,18 @@ async fn validate_archive_payload(
     let parquet = decompress_hour_to_temporary_parquet(config, &provisional, cancellation).await?;
     let expected_date = spec.date;
     let expected_hour = spec.hour;
+    let market = spec.market()?;
     let remote_file = spec.remote_file.clone();
     let cancellation = cancellation.clone();
     tokio::task::spawn_blocking(move || {
-        validate_hourly_parquet_payload(parquet.path(), expected_date, expected_hour, &cancellation)
-            .with_context(|| {
-                format!("CryptoHFT source object {remote_file} failed payload validation")
-            })
+        validate_hourly_parquet_payload_for_market(
+            parquet.path(),
+            market,
+            expected_date,
+            expected_hour,
+            &cancellation,
+        )
+        .with_context(|| format!("CryptoHFT source object {remote_file} failed payload validation"))
     })
     .await
     .context("CryptoHFT payload-validation task failed")?
@@ -1198,8 +1344,25 @@ struct HourlyPayloadValidation {
     receipt_rows_outside_exact_hour: u64,
 }
 
+#[cfg(test)]
 fn validate_hourly_parquet_payload(
     path: &Path,
+    expected_date: NaiveDate,
+    expected_hour: u8,
+    cancellation: &ArchiveCancellation,
+) -> Result<HourlyPayloadValidation> {
+    validate_hourly_parquet_payload_for_market(
+        path,
+        CryptoHftBinanceMarket::Futures,
+        expected_date,
+        expected_hour,
+        cancellation,
+    )
+}
+
+fn validate_hourly_parquet_payload_for_market(
+    path: &Path,
+    market: CryptoHftBinanceMarket,
     expected_date: NaiveDate,
     expected_hour: u8,
     cancellation: &ArchiveCancellation,
@@ -1266,6 +1429,7 @@ fn validate_hourly_parquet_payload(
                 }
                 Some(_) => {
                     finish_hourly_validation_event(
+                        market,
                         last_event_key
                             .take()
                             .context("CryptoHFT validation event key disappeared")?,
@@ -1292,6 +1456,7 @@ fn validate_hourly_parquet_payload(
     }
     if let Some(key) = last_event_key.take() {
         finish_hourly_validation_event(
+            market,
             key,
             pending_snapshot.take(),
             &mut snapshot_events,
@@ -1360,6 +1525,7 @@ fn validate_hourly_receipt_distribution(
 }
 
 fn finish_hourly_validation_event(
+    market: CryptoHftBinanceMarket,
     key: EventKey,
     snapshot: Option<LogicalEvent>,
     snapshot_events: &mut u64,
@@ -1371,11 +1537,11 @@ fn finish_hourly_validation_event(
         EventType::Snapshot => {
             *snapshot_events = snapshot_events.saturating_add(1);
             let snapshot = snapshot.context("CryptoHFT snapshot validation state was missing")?;
-            if is_valid_full_depth_snapshot(&snapshot)? {
+            if is_valid_full_depth_snapshot_for_market(market, &snapshot)? {
                 *validated_snapshot_events = validated_snapshot_events.saturating_add(1);
-                if snapshot.key.event_time_ms == CRYPTOHFT_AUDITED_SNAPSHOT_EVENT_MILLIS
-                    && snapshot.key.last_update_id
-                        == Some(CRYPTOHFT_AUDITED_SNAPSHOT_LAST_UPDATE_ID)
+                let (event_millis, last_update_id) = market.audited_snapshot_identity();
+                if snapshot.key.event_time_ms == event_millis
+                    && snapshot.key.last_update_id == Some(last_update_id)
                 {
                     *audited_anchor_snapshot_verified = true;
                 }
@@ -1385,13 +1551,35 @@ fn finish_hourly_validation_event(
             if snapshot.is_some() {
                 bail!("CryptoHFT update unexpectedly carried snapshot validation state");
             }
+            if market == CryptoHftBinanceMarket::Spot {
+                if key.previous_final_update_id.is_some() {
+                    bail!("CryptoHFT spot update unexpectedly contained prev_final_update_id");
+                }
+                let first = key
+                    .first_update_id
+                    .context("CryptoHFT spot update omitted first_update_id")?;
+                let final_id = key
+                    .final_update_id
+                    .context("CryptoHFT spot update omitted final_update_id")?;
+                if key.last_update_id.is_some() || first < 0 || final_id < first {
+                    bail!("CryptoHFT spot update sequence columns were invalid");
+                }
+            }
             *update_events = update_events.saturating_add(1);
         }
     }
     Ok(())
 }
 
+#[cfg(test)]
 fn is_valid_full_depth_snapshot(event: &LogicalEvent) -> Result<bool> {
+    is_valid_full_depth_snapshot_for_market(CryptoHftBinanceMarket::Futures, event)
+}
+
+fn is_valid_full_depth_snapshot_for_market(
+    market: CryptoHftBinanceMarket,
+    event: &LogicalEvent,
+) -> Result<bool> {
     let Some(sequence) = event.key.last_update_id else {
         return Ok(false);
     };
@@ -1402,7 +1590,7 @@ fn is_valid_full_depth_snapshot(event: &LogicalEvent) -> Result<bool> {
             .key
             .final_update_id
             .is_some_and(|final_id| final_id != sequence)
-        || event.levels.len() < MIN_FULL_DEPTH_SNAPSHOT_LEVELS
+        || event.levels.len() < market.minimum_full_depth_snapshot_levels()
     {
         return Ok(false);
     }
@@ -1417,10 +1605,11 @@ fn is_valid_full_depth_snapshot(event: &LogicalEvent) -> Result<bool> {
             level,
         )?;
     }
+    let minimum_per_side = market.minimum_full_depth_snapshot_levels_per_side();
     if bids.len() > MAX_BOOK_LEVELS_PER_SIDE
         || asks.len() > MAX_BOOK_LEVELS_PER_SIDE
-        || bids.len() < 20
-        || asks.len() < 20
+        || bids.len() < minimum_per_side
+        || asks.len() < minimum_per_side
     {
         return Ok(false);
     }
@@ -1433,6 +1622,22 @@ fn is_valid_full_depth_snapshot(event: &LogicalEvent) -> Result<bool> {
                 && *bid_quantity > Decimal::ZERO
                 && *ask_quantity > Decimal::ZERO
     ))
+}
+
+fn validated_snapshot_sequence(key: &EventKey) -> Result<i64> {
+    let sequence = key
+        .last_update_id
+        .context("CryptoHFT snapshot omitted last_update_id")?;
+    if sequence < 0
+        || key.first_update_id.is_some()
+        || key.previous_final_update_id.is_some()
+        || key
+            .final_update_id
+            .is_some_and(|final_id| final_id != sequence)
+    {
+        bail!("CryptoHFT snapshot sequence columns were invalid");
+    }
+    Ok(sequence)
 }
 
 #[derive(Debug, Clone)]
@@ -1472,7 +1677,8 @@ pub fn spawn_day_parser(
     let (sender, receiver) = mpsc::channel(1);
     let handle = tokio::spawn(async move {
         config.validate()?;
-        validate_day_parse_request(&request)?;
+        let market = day_parse_request_market(&request)?;
+        validate_day_parse_request_for_market(market, &request)?;
         let cancellation = request.cancellation.clone();
         let mut archives = BTreeMap::new();
         for manifest in request
@@ -1491,6 +1697,7 @@ pub fn spawn_day_parser(
         }
         let mut replay = DayReplay::new(
             &config,
+            market,
             request.target_date,
             request.output_batch_rows,
             sender,
@@ -1514,7 +1721,18 @@ pub fn spawn_day_parser(
     (receiver, handle)
 }
 
+#[cfg(test)]
 fn validate_day_parse_request(request: &CryptoHftDayParseRequest) -> Result<()> {
+    validate_day_parse_request_for_market(CryptoHftBinanceMarket::Futures, request)
+}
+
+pub fn validate_day_parse_request_for_market(
+    market: CryptoHftBinanceMarket,
+    request: &CryptoHftDayParseRequest,
+) -> Result<()> {
+    if day_parse_request_market(request)? != market {
+        bail!("CryptoHFT day replay archives did not match the requested Binance market");
+    }
     if !(1..=1_000).contains(&request.output_batch_rows) {
         bail!("CryptoHFT feature output batches must contain between 1 and 1000 rows");
     }
@@ -1535,7 +1753,7 @@ fn validate_day_parse_request(request: &CryptoHftDayParseRequest) -> Result<()> 
         .and_utc();
     let mut hours = BTreeSet::new();
     for manifest in &request.target_archives {
-        let hour = manifest_utc_hour(manifest)?;
+        let hour = manifest_utc_hour_for_market(market, manifest)?;
         if hour.date_naive() != request.target_date || !hours.insert(hour) {
             bail!("CryptoHFT target archive hours must be unique and cover 00 through 23");
         }
@@ -1546,7 +1764,7 @@ fn validate_day_parse_request(request: &CryptoHftDayParseRequest) -> Result<()> 
     let context_hours = request
         .context_archives
         .iter()
-        .map(manifest_utc_hour)
+        .map(|manifest| manifest_utc_hour_for_market(market, manifest))
         .collect::<Result<BTreeSet<_>>>()?;
     if context_hours.len() != request.context_archives.len() {
         bail!("CryptoHFT context archive hours must be unique");
@@ -1569,9 +1787,9 @@ fn validate_day_parse_request(request: &CryptoHftDayParseRequest) -> Result<()> 
         let anchor = request
             .context_archives
             .iter()
-            .find(|manifest| manifest.remote_file == CRYPTOHFT_AUDITED_ANCHOR_REMOTE_FILE)
+            .find(|manifest| manifest.remote_file == market.audited_anchor_remote_file())
             .context("CryptoHFT context omitted the audited anchor archive")?;
-        if anchor.sha256 != CRYPTOHFT_AUDITED_ANCHOR_SHA256
+        if anchor.sha256 != market.audited_anchor_sha256()
             || !anchor.audited_anchor_snapshot_verified
         {
             bail!("CryptoHFT context did not match the pinned audited anchor");
@@ -1597,11 +1815,14 @@ fn validate_day_parse_request(request: &CryptoHftDayParseRequest) -> Result<()> 
     Ok(())
 }
 
-fn manifest_utc_hour(manifest: &HourlyArchiveManifest) -> Result<DateTime<Utc>> {
+fn manifest_utc_hour_for_market(
+    market: CryptoHftBinanceMarket,
+    manifest: &HourlyArchiveManifest,
+) -> Result<DateTime<Utc>> {
     let suffix = format!("/{CRYPTOHFT_SYMBOL}_orderbook.parquet.zst");
     let relative = manifest
         .remote_file
-        .strip_prefix("binance_futures/")
+        .strip_prefix(&format!("{}/", market.archive_directory()))
         .and_then(|value| value.strip_suffix(&suffix))
         .context("CryptoHFT archive name did not match the source contract")?;
     let (date, hour) = relative
@@ -1615,6 +1836,22 @@ fn manifest_utc_hour(manifest: &HourlyArchiveManifest) -> Result<DateTime<Utc>> 
     date.and_hms_opt(hour, 0, 0)
         .context("CryptoHFT archive name contained an out-of-range UTC hour")
         .map(|timestamp| timestamp.and_utc())
+}
+
+fn day_parse_request_market(request: &CryptoHftDayParseRequest) -> Result<CryptoHftBinanceMarket> {
+    let mut market = None;
+    for manifest in request
+        .context_archives
+        .iter()
+        .chain(&request.target_archives)
+    {
+        let observed = market_from_remote_file(&manifest.remote_file)?;
+        if market.is_some_and(|expected| expected != observed) {
+            bail!("CryptoHFT day replay mixed futures and spot archives");
+        }
+        market = Some(observed);
+    }
+    market.context("CryptoHFT day replay did not contain any source archives")
 }
 
 const CRYPTOHFT_REQUIRED_COLUMNS: [&str; 13] = [
@@ -1678,6 +1915,13 @@ enum UpdateDisposition {
     Apply,
     IgnoreStale,
     Gap,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotDisposition {
+    Bootstrap,
+    IgnoreStale,
+    Repair,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1765,6 +2009,7 @@ struct PendingSecond {
 }
 
 struct DayReplay {
+    market: CryptoHftBinanceMarket,
     target_start: DateTime<Utc>,
     target_end: DateTime<Utc>,
     availability_offset: TimeDelta,
@@ -1791,6 +2036,7 @@ struct DayReplay {
 impl DayReplay {
     fn new(
         config: &CryptoHftBinanceL2Config,
+        market: CryptoHftBinanceMarket,
         target_date: NaiveDate,
         output_batch_rows: usize,
         sender: mpsc::Sender<Vec<BinanceL2OneSecondFeature>>,
@@ -1811,6 +2057,7 @@ impl DayReplay {
             .checked_add_signed(TimeDelta::days(1))
             .context("CryptoHFT target date overflow")?;
         Ok(Self {
+            market,
             target_start,
             target_end,
             availability_offset: TimeDelta::milliseconds(availability_offset_ms),
@@ -1937,6 +2184,21 @@ impl DayReplay {
         match event.key.event_type {
             EventType::Snapshot => {
                 self.summary.snapshot_events = self.summary.snapshot_events.saturating_add(1);
+                let disposition = self.snapshot_disposition(&event.key)?;
+                if disposition == SnapshotDisposition::IgnoreStale {
+                    return Ok(());
+                }
+                if !is_valid_full_depth_snapshot_for_market(self.market, &event)? {
+                    self.summary.invalid_book_events =
+                        self.summary.invalid_book_events.saturating_add(1);
+                    self.invalidate_book();
+                    self.observe_unavailable(available_at)?;
+                    return Ok(());
+                }
+                if disposition == SnapshotDisposition::Repair {
+                    self.advance_pending_second(floor_utc_second(available_at))?;
+                    self.summary.sequence_gaps = self.summary.sequence_gaps.saturating_add(1);
+                }
                 self.apply_snapshot(&event)?;
             }
             EventType::Update => {
@@ -1996,21 +2258,23 @@ impl DayReplay {
         Ok(())
     }
 
-    fn apply_snapshot(&mut self, event: &LogicalEvent) -> Result<()> {
-        let sequence = event
-            .key
-            .last_update_id
-            .context("CryptoHFT snapshot omitted last_update_id")?;
-        if sequence < 0
-            || event.key.first_update_id.is_some()
-            || event.key.previous_final_update_id.is_some()
-            || event
-                .key
-                .final_update_id
-                .is_some_and(|final_id| final_id != sequence)
-        {
-            bail!("CryptoHFT snapshot sequence columns were invalid");
+    fn snapshot_disposition(&self, key: &EventKey) -> Result<SnapshotDisposition> {
+        let sequence = validated_snapshot_sequence(key)?;
+        if !self.book_ready {
+            return Ok(SnapshotDisposition::Bootstrap);
         }
+        let current = self
+            .last_sequence
+            .context("CryptoHFT ready book did not have a sequence")?;
+        if sequence <= current {
+            Ok(SnapshotDisposition::IgnoreStale)
+        } else {
+            Ok(SnapshotDisposition::Repair)
+        }
+    }
+
+    fn apply_snapshot(&mut self, event: &LogicalEvent) -> Result<()> {
+        let sequence = validated_snapshot_sequence(&event.key)?;
         self.bids.clear();
         self.asks.clear();
         self.rolling.clear();
@@ -2041,31 +2305,57 @@ impl DayReplay {
         let final_id = key
             .final_update_id
             .context("CryptoHFT update omitted final_update_id")?;
-        let previous = key
-            .previous_final_update_id
-            .context("CryptoHFT update omitted prev_final_update_id")?;
-        if first < 0 || final_id < first || previous < 0 {
+        if first < 0 || final_id < first {
             bail!("CryptoHFT update sequence columns were invalid");
         }
         let current = self
             .last_sequence
             .context("CryptoHFT ready book did not have a sequence")?;
-        if self.awaiting_snapshot_bridge {
-            if final_id < current {
-                return Ok(UpdateDisposition::IgnoreStale);
+        match self.market {
+            CryptoHftBinanceMarket::Futures => {
+                let previous = key
+                    .previous_final_update_id
+                    .context("CryptoHFT futures update omitted prev_final_update_id")?;
+                if previous < 0 {
+                    bail!("CryptoHFT update sequence columns were invalid");
+                }
+                if self.awaiting_snapshot_bridge {
+                    if final_id < current {
+                        return Ok(UpdateDisposition::IgnoreStale);
+                    }
+                    if first <= current && current <= final_id {
+                        return Ok(UpdateDisposition::Apply);
+                    }
+                    return Ok(UpdateDisposition::Gap);
+                }
+                if final_id <= current {
+                    return Ok(UpdateDisposition::IgnoreStale);
+                }
+                if previous == current {
+                    Ok(UpdateDisposition::Apply)
+                } else {
+                    Ok(UpdateDisposition::Gap)
+                }
             }
-            if first <= current && current <= final_id {
-                return Ok(UpdateDisposition::Apply);
+            CryptoHftBinanceMarket::Spot => {
+                if key.previous_final_update_id.is_some() {
+                    bail!("CryptoHFT spot update unexpectedly contained prev_final_update_id");
+                }
+                if final_id <= current {
+                    return Ok(UpdateDisposition::IgnoreStale);
+                }
+                let next = current
+                    .checked_add(1)
+                    .context("CryptoHFT spot sequence overflow")?;
+                if first > next {
+                    return Ok(UpdateDisposition::Gap);
+                }
+                if first <= next && next <= final_id {
+                    Ok(UpdateDisposition::Apply)
+                } else {
+                    Ok(UpdateDisposition::Gap)
+                }
             }
-            return Ok(UpdateDisposition::Gap);
-        }
-        if final_id <= current {
-            return Ok(UpdateDisposition::IgnoreStale);
-        }
-        if previous == current {
-            Ok(UpdateDisposition::Apply)
-        } else {
-            Ok(UpdateDisposition::Gap)
         }
     }
 
@@ -2253,7 +2543,7 @@ impl DayReplay {
             provider_received_at: current.provider_received_at,
             available_at: current.available_at,
             source_update_id: current.source_update_id,
-            feature_schema_version: BINANCE_L2_FEATURE_SCHEMA_VERSION.to_owned(),
+            feature_schema_version: self.market.feature_schema_version().to_owned(),
             quality_status: "qualified".to_owned(),
             midpoint: current.midpoint,
             microprice: current.microprice,
@@ -2786,7 +3076,32 @@ mod tests {
         validated_snapshot_events: u64,
         audited_anchor_snapshot_verified: bool,
     ) -> HourlyArchiveManifest {
-        let spec = CryptoHftHourlySpec::new(config, date, hour).unwrap();
+        hourly_manifest_for_market(
+            config,
+            CryptoHftBinanceMarket::Futures,
+            date,
+            hour,
+            sha256,
+            compressed_bytes,
+            snapshot_events,
+            validated_snapshot_events,
+            audited_anchor_snapshot_verified,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn hourly_manifest_for_market(
+        config: &CryptoHftBinanceL2Config,
+        market: CryptoHftBinanceMarket,
+        date: NaiveDate,
+        hour: u8,
+        sha256: String,
+        compressed_bytes: u64,
+        snapshot_events: u64,
+        validated_snapshot_events: u64,
+        audited_anchor_snapshot_verified: bool,
+    ) -> HourlyArchiveManifest {
+        let spec = CryptoHftHourlySpec::new_for_market(config, market, date, hour).unwrap();
         let start = date.and_hms_opt(u32::from(hour), 0, 0).unwrap().and_utc();
         HourlyArchiveManifest {
             provider: CRYPTOHFT_ARCHIVE_PROVIDER.to_owned(),
@@ -2994,6 +3309,36 @@ mod tests {
         assert!(CryptoHftHourlySpec::new(&config, date, 24).is_err());
     }
 
+    #[test]
+    fn spot_hourly_spec_and_lineage_are_isolated_from_futures() {
+        let temporary = tempfile::tempdir().unwrap();
+        let config = test_config(temporary.path());
+        let date = NaiveDate::from_ymd_opt(2026, 4, 14).unwrap();
+        let spot = CryptoHftHourlySpec::new_spot(&config, date, 7).unwrap();
+        let futures = CryptoHftHourlySpec::new(&config, date, 7).unwrap();
+
+        assert_eq!(spot.market().unwrap(), CryptoHftBinanceMarket::Spot);
+        assert_eq!(
+            spot.remote_file,
+            "binance_spot/2026-04-14/07/BTCUSDT_orderbook.parquet.zst"
+        );
+        assert_eq!(
+            spot.logical_key,
+            "cryptohftdata:binance-spot:BTCUSDT:l2:2026-04-14T07"
+        );
+        assert_ne!(spot.archive_path, futures.archive_path);
+        assert_eq!(
+            day_artifact_logical_key_for_market(CryptoHftBinanceMarket::Spot, date),
+            format!(
+                "cryptohftdata:binance-spot:BTCUSDT:l2-day:{BINANCE_SPOT_L2_MATERIALIZATION_CONTRACT}:2026-04-14"
+            )
+        );
+        assert_ne!(
+            day_artifact_logical_key_for_market(CryptoHftBinanceMarket::Spot, date),
+            day_artifact_logical_key(date)
+        );
+    }
+
     #[tokio::test]
     async fn matching_cached_manifest_reuses_only_after_compressed_sha_verification() {
         let temporary = tempfile::tempdir().unwrap();
@@ -3138,6 +3483,55 @@ mod tests {
     }
 
     #[test]
+    fn spot_day_parse_requires_the_spot_anchor_and_never_mixes_markets() {
+        let temporary = tempfile::tempdir().unwrap();
+        let config = test_config(temporary.path());
+        let target_date = NaiveDate::from_ymd_opt(2026, 4, 14).unwrap();
+        let target_archives = (0..24)
+            .map(|hour| {
+                hourly_manifest_for_market(
+                    &config,
+                    CryptoHftBinanceMarket::Spot,
+                    target_date,
+                    hour,
+                    "a".repeat(64),
+                    1,
+                    0,
+                    0,
+                    false,
+                )
+            })
+            .collect::<Vec<_>>();
+        let anchor = hourly_manifest_for_market(
+            &config,
+            CryptoHftBinanceMarket::Spot,
+            NaiveDate::from_ymd_opt(2026, 4, 13).unwrap(),
+            23,
+            CRYPTOHFT_SPOT_AUDITED_ANCHOR_SHA256.to_owned(),
+            1,
+            1,
+            1,
+            true,
+        );
+        let request = CryptoHftDayParseRequest {
+            target_date,
+            context_archives: vec![anchor],
+            target_archives,
+            output_batch_rows: 1_000,
+            cancellation: ArchiveCancellation::default(),
+        };
+        assert!(
+            validate_day_parse_request_for_market(CryptoHftBinanceMarket::Spot, &request).is_ok()
+        );
+        assert!(validate_day_parse_request(&request).is_err());
+
+        let mut mixed = request;
+        mixed.target_archives[0] =
+            hourly_manifest(&config, target_date, 0, "b".repeat(64), 1, 0, 0, false);
+        assert!(day_parse_request_market(&mixed).is_err());
+    }
+
+    #[test]
     fn maximum_context_chain_reaches_the_last_approved_target_day() {
         let anchor =
             DateTime::<Utc>::from_timestamp(CRYPTOHFT_EARLIEST_CONTEXT_HOUR_EPOCH, 0).unwrap();
@@ -3157,11 +3551,19 @@ mod tests {
     fn replay_for_test(
         target_date: NaiveDate,
     ) -> (DayReplay, mpsc::Receiver<Vec<BinanceL2OneSecondFeature>>) {
+        replay_for_market(target_date, CryptoHftBinanceMarket::Futures)
+    }
+
+    fn replay_for_market(
+        target_date: NaiveDate,
+        market: CryptoHftBinanceMarket,
+    ) -> (DayReplay, mpsc::Receiver<Vec<BinanceL2OneSecondFeature>>) {
         let temporary = tempfile::tempdir().unwrap();
         let config = test_config(temporary.path());
         let (sender, receiver) = mpsc::channel(4);
         let replay = DayReplay::new(
             &config,
+            market,
             target_date,
             1_000,
             sender,
@@ -3201,16 +3603,16 @@ mod tests {
             Some(sequence),
         );
         let mut event: Option<LogicalEvent> = None;
-        for index in 0..20 {
+        for index in 0_i64..500 {
             for level in [
                 PriceLevel {
                     side: BookSide::Bid,
-                    price: Decimal::from(100 - index),
+                    price: Decimal::new(10_000 - index, 2),
                     quantity: Decimal::ONE,
                 },
                 PriceLevel {
                     side: BookSide::Ask,
-                    price: Decimal::from(101 + index),
+                    price: Decimal::new(10_100 + index, 2),
                     quantity: Decimal::ONE,
                 },
             ] {
@@ -3255,6 +3657,62 @@ mod tests {
         event.unwrap()
     }
 
+    fn spot_depth_snapshot(timestamp: DateTime<Utc>, sequence: i64) -> LogicalEvent {
+        let key = event_key(
+            timestamp,
+            EventType::Snapshot,
+            None,
+            Some(sequence),
+            None,
+            Some(sequence),
+        );
+        let mut event: Option<LogicalEvent> = None;
+        for index in 0..100 {
+            for level in [
+                PriceLevel {
+                    side: BookSide::Bid,
+                    price: Decimal::from(50_000 - index),
+                    quantity: Decimal::ONE,
+                },
+                PriceLevel {
+                    side: BookSide::Ask,
+                    price: Decimal::from(50_001 + index),
+                    quantity: Decimal::ONE,
+                },
+            ] {
+                match event.as_mut() {
+                    Some(event) => event.push_level(level).unwrap(),
+                    None => event = Some(LogicalEvent::new(key.clone(), level)),
+                }
+            }
+        }
+        event.unwrap()
+    }
+
+    fn imbalanced_spot_depth_snapshot(timestamp: DateTime<Utc>, sequence: i64) -> LogicalEvent {
+        let mut snapshot = spot_depth_snapshot(timestamp, sequence);
+        let ask_keys = snapshot
+            .levels
+            .keys()
+            .filter(|(side, _)| *side == BookSide::Ask)
+            .take(80)
+            .copied()
+            .collect::<Vec<_>>();
+        for key in ask_keys {
+            snapshot.levels.remove(&key);
+        }
+        for index in 0..80 {
+            snapshot
+                .push_level(PriceLevel {
+                    side: BookSide::Bid,
+                    price: Decimal::from(49_000 - index),
+                    quantity: Decimal::ONE,
+                })
+                .unwrap();
+        }
+        snapshot
+    }
+
     fn update(
         timestamp: DateTime<Utc>,
         sequence: i64,
@@ -3292,6 +3750,29 @@ mod tests {
                 Some(first_sequence),
                 Some(final_sequence),
                 Some(previous_sequence),
+                None,
+            ),
+            PriceLevel {
+                side: BookSide::Bid,
+                price: Decimal::from(100),
+                quantity: Decimal::from(quantity),
+            },
+        )
+    }
+
+    fn spot_update_range(
+        timestamp: DateTime<Utc>,
+        first_sequence: i64,
+        final_sequence: i64,
+        quantity: i64,
+    ) -> LogicalEvent {
+        LogicalEvent::new(
+            event_key(
+                timestamp,
+                EventType::Update,
+                Some(first_sequence),
+                Some(final_sequence),
+                None,
                 None,
             ),
             PriceLevel {
@@ -3430,6 +3911,32 @@ mod tests {
     }
 
     #[test]
+    fn spot_replay_emits_only_the_spot_feature_schema() {
+        let date = NaiveDate::from_ymd_opt(2026, 4, 14).unwrap();
+        let start = date.and_hms_opt(0, 0, 0).unwrap().and_utc();
+        let (mut replay, _receiver) = replay_for_market(date, CryptoHftBinanceMarket::Spot);
+        replay.process_event(snapshot(start, 100)).unwrap();
+        for second in 1..=61 {
+            replay
+                .process_event(spot_update_range(
+                    start + TimeDelta::seconds(second),
+                    100 + second,
+                    100 + second,
+                    if second % 2 == 0 { 1 } else { 2 },
+                ))
+                .unwrap();
+        }
+
+        assert!(!replay.output_batch.is_empty());
+        assert!(replay.output_batch.iter().all(|feature| {
+            feature.feature_schema_version == BINANCE_SPOT_L2_FEATURE_SCHEMA_VERSION
+        }));
+        assert!(replay.output_batch.iter().all(|feature| {
+            feature.feature_schema_version != BINANCE_L2_FEATURE_SCHEMA_VERSION
+        }));
+    }
+
+    #[test]
     fn multi_minute_source_gap_emits_no_rows_and_resets_rolling_history() {
         let date = NaiveDate::from_ymd_opt(2026, 5, 18).unwrap();
         let start = date.and_hms_opt(0, 0, 0).unwrap().and_utc();
@@ -3501,6 +4008,228 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(replay.last_sequence, Some(120));
+        assert_eq!(replay.summary.sequence_gaps, 0);
+    }
+
+    #[test]
+    fn spot_updates_follow_u_ranges_and_reject_futures_pu() {
+        let date = NaiveDate::from_ymd_opt(2026, 4, 14).unwrap();
+        let start = date.and_hms_opt(0, 0, 0).unwrap().and_utc();
+        let (mut replay, _receiver) = replay_for_market(date, CryptoHftBinanceMarket::Spot);
+        replay.process_event(snapshot(start, 100)).unwrap();
+
+        replay
+            .process_event(spot_update_range(
+                start + TimeDelta::milliseconds(100),
+                90,
+                100,
+                2,
+            ))
+            .unwrap();
+        assert_eq!(replay.last_sequence, Some(100));
+
+        replay
+            .process_event(spot_update_range(
+                start + TimeDelta::milliseconds(200),
+                99,
+                101,
+                3,
+            ))
+            .unwrap();
+        assert_eq!(replay.last_sequence, Some(101));
+        assert!(!replay.awaiting_snapshot_bridge);
+
+        replay
+            .process_event(spot_update_range(
+                start + TimeDelta::milliseconds(300),
+                102,
+                104,
+                4,
+            ))
+            .unwrap();
+        assert_eq!(replay.last_sequence, Some(104));
+        assert_eq!(replay.summary.sequence_gaps, 0);
+
+        let error = replay
+            .process_event(update_range(
+                start + TimeDelta::milliseconds(400),
+                105,
+                105,
+                104,
+                5,
+            ))
+            .unwrap_err();
+        assert!(error.to_string().contains("spot update"));
+    }
+
+    #[test]
+    fn spot_sequence_gap_invalidates_until_another_snapshot() {
+        let date = NaiveDate::from_ymd_opt(2026, 4, 14).unwrap();
+        let start = date.and_hms_opt(0, 0, 0).unwrap().and_utc();
+        let (mut replay, _receiver) = replay_for_market(date, CryptoHftBinanceMarket::Spot);
+        replay.process_event(snapshot(start, 100)).unwrap();
+
+        replay
+            .process_event(spot_update_range(
+                start + TimeDelta::milliseconds(100),
+                102,
+                102,
+                2,
+            ))
+            .unwrap();
+
+        assert!(!replay.book_ready);
+        assert_eq!(replay.summary.sequence_gaps, 1);
+        replay
+            .process_event(spot_update_range(
+                start + TimeDelta::milliseconds(200),
+                103,
+                103,
+                3,
+            ))
+            .unwrap();
+        assert_eq!(replay.summary.updates_before_snapshot, 1);
+        replay
+            .process_event(snapshot(start + TimeDelta::milliseconds(300), 200))
+            .unwrap();
+        assert!(replay.book_ready);
+        assert_eq!(replay.last_sequence, Some(200));
+    }
+
+    #[test]
+    fn spot_under_depth_and_imbalanced_snapshots_remain_unavailable() {
+        let date = NaiveDate::from_ymd_opt(2026, 4, 14).unwrap();
+        let start = date.and_hms_opt(0, 0, 0).unwrap().and_utc();
+        let (mut replay, _receiver) = replay_for_market(date, CryptoHftBinanceMarket::Spot);
+        let mut under_depth = spot_depth_snapshot(start, 100);
+        under_depth.levels.pop_last();
+
+        replay.process_event(under_depth).unwrap();
+        assert!(!replay.book_ready);
+        assert!(!replay.saw_snapshot);
+        assert_eq!(replay.summary.invalid_book_events, 1);
+        assert!(replay
+            .pending_second
+            .as_ref()
+            .is_some_and(|pending| pending.latest_state.is_none()));
+
+        replay
+            .process_event(spot_depth_snapshot(start + TimeDelta::seconds(1), 200))
+            .unwrap();
+        assert!(replay.book_ready);
+        assert_eq!(replay.last_sequence, Some(200));
+
+        replay
+            .process_event(imbalanced_spot_depth_snapshot(
+                start + TimeDelta::seconds(2),
+                300,
+            ))
+            .unwrap();
+        assert!(!replay.book_ready);
+        assert!(replay.bids.is_empty());
+        assert!(replay.asks.is_empty());
+        assert_eq!(replay.summary.invalid_book_events, 2);
+        assert!(replay
+            .pending_second
+            .as_ref()
+            .is_some_and(|pending| pending.latest_state.is_none()));
+    }
+
+    #[test]
+    fn stale_and_equal_spot_snapshots_never_rewind_a_ready_book() {
+        let date = NaiveDate::from_ymd_opt(2026, 4, 14).unwrap();
+        let start = date.and_hms_opt(0, 0, 0).unwrap().and_utc();
+        let (mut replay, _receiver) = replay_for_market(date, CryptoHftBinanceMarket::Spot);
+        replay
+            .process_event(spot_depth_snapshot(start, 100))
+            .unwrap();
+        replay
+            .process_event(spot_update_range(
+                start + TimeDelta::seconds(1),
+                101,
+                101,
+                2,
+            ))
+            .unwrap();
+        let expected_bids = replay.bids.clone();
+        let expected_asks = replay.asks.clone();
+        let expected_rolling = replay.rolling.clone();
+
+        let mut stale = spot_depth_snapshot(start + TimeDelta::seconds(2), 100);
+        for level in stale.levels.values_mut() {
+            level.quantity = Decimal::from(9);
+        }
+        replay.process_event(stale).unwrap();
+        replay
+            .process_event(spot_depth_snapshot(start + TimeDelta::seconds(3), 101))
+            .unwrap();
+
+        assert_eq!(replay.last_sequence, Some(101));
+        assert_eq!(replay.bids, expected_bids);
+        assert_eq!(replay.asks, expected_asks);
+        assert_eq!(replay.rolling, expected_rolling);
+        assert_eq!(replay.summary.sequence_gaps, 0);
+    }
+
+    #[test]
+    fn newer_spot_snapshot_repairs_the_book_and_breaks_rolling_history() {
+        let date = NaiveDate::from_ymd_opt(2026, 4, 14).unwrap();
+        let start = date.and_hms_opt(0, 0, 0).unwrap().and_utc();
+        let (mut replay, _receiver) = replay_for_market(date, CryptoHftBinanceMarket::Spot);
+        replay
+            .process_event(spot_depth_snapshot(start, 100))
+            .unwrap();
+        replay
+            .process_event(spot_update_range(
+                start + TimeDelta::seconds(1),
+                101,
+                101,
+                2,
+            ))
+            .unwrap();
+        assert!(!replay.rolling.is_empty());
+
+        replay
+            .process_event(spot_depth_snapshot(start + TimeDelta::seconds(2), 200))
+            .unwrap();
+
+        assert!(replay.book_ready);
+        assert_eq!(replay.last_sequence, Some(200));
+        assert!(replay.awaiting_snapshot_bridge);
+        assert_eq!(replay.summary.sequence_gaps, 1);
+        assert!(replay.rolling.is_empty());
+        assert_eq!(
+            replay
+                .pending_second
+                .as_ref()
+                .and_then(|pending| pending.latest_state.as_ref())
+                .map(|state| state.source_update_id),
+            Some(200)
+        );
+    }
+
+    #[test]
+    fn malformed_spot_snapshot_does_not_mutate_a_ready_book() {
+        let date = NaiveDate::from_ymd_opt(2026, 4, 14).unwrap();
+        let start = date.and_hms_opt(0, 0, 0).unwrap().and_utc();
+        let (mut replay, _receiver) = replay_for_market(date, CryptoHftBinanceMarket::Spot);
+        replay
+            .process_event(spot_depth_snapshot(start, 100))
+            .unwrap();
+        let expected_bids = replay.bids.clone();
+        let expected_asks = replay.asks.clone();
+        let mut malformed = spot_depth_snapshot(start + TimeDelta::seconds(1), 200);
+        malformed.key.final_update_id = Some(201);
+
+        let error = replay.process_event(malformed).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("snapshot sequence columns were invalid"));
+        assert!(replay.book_ready);
+        assert_eq!(replay.last_sequence, Some(100));
+        assert_eq!(replay.bids, expected_bids);
+        assert_eq!(replay.asks, expected_asks);
         assert_eq!(replay.summary.sequence_gaps, 0);
     }
 
@@ -3732,7 +4461,7 @@ mod tests {
             .unwrap()
             .and_utc();
         let valid = full_depth_snapshot(timestamp, CRYPTOHFT_AUDITED_SNAPSHOT_LAST_UPDATE_ID);
-        assert_eq!(valid.levels.len(), MIN_FULL_DEPTH_SNAPSHOT_LEVELS);
+        assert_eq!(valid.levels.len(), MIN_FUTURES_FULL_DEPTH_SNAPSHOT_LEVELS);
         assert!(is_valid_full_depth_snapshot(&valid).unwrap());
 
         let mut shallow = valid.clone();
@@ -3748,6 +4477,57 @@ mod tests {
             })
             .unwrap();
         assert!(!is_valid_full_depth_snapshot(&crossed).unwrap());
+    }
+
+    #[test]
+    fn spot_anchor_requires_a_structurally_valid_200_level_snapshot() {
+        let timestamp =
+            DateTime::from_timestamp_millis(CRYPTOHFT_SPOT_AUDITED_SNAPSHOT_EVENT_MILLIS).unwrap();
+        let valid = spot_depth_snapshot(timestamp, CRYPTOHFT_SPOT_AUDITED_SNAPSHOT_LAST_UPDATE_ID);
+        assert_eq!(valid.levels.len(), MIN_SPOT_FULL_DEPTH_SNAPSHOT_LEVELS);
+        assert!(
+            is_valid_full_depth_snapshot_for_market(CryptoHftBinanceMarket::Spot, &valid).unwrap()
+        );
+        assert!(
+            !is_valid_full_depth_snapshot_for_market(CryptoHftBinanceMarket::Futures, &valid)
+                .unwrap()
+        );
+
+        let mut snapshot_events = 0;
+        let mut validated_snapshot_events = 0;
+        let mut audited_anchor_snapshot_verified = false;
+        let mut update_events = 0;
+        finish_hourly_validation_event(
+            CryptoHftBinanceMarket::Spot,
+            valid.key.clone(),
+            Some(valid.clone()),
+            &mut snapshot_events,
+            &mut validated_snapshot_events,
+            &mut audited_anchor_snapshot_verified,
+            &mut update_events,
+        )
+        .unwrap();
+        assert_eq!(snapshot_events, 1);
+        assert_eq!(validated_snapshot_events, 1);
+        assert!(audited_anchor_snapshot_verified);
+
+        let imbalanced = imbalanced_spot_depth_snapshot(
+            timestamp,
+            CRYPTOHFT_SPOT_AUDITED_SNAPSHOT_LAST_UPDATE_ID,
+        );
+        assert_eq!(imbalanced.levels.len(), MIN_SPOT_FULL_DEPTH_SNAPSHOT_LEVELS);
+        assert!(!is_valid_full_depth_snapshot_for_market(
+            CryptoHftBinanceMarket::Spot,
+            &imbalanced
+        )
+        .unwrap());
+
+        let mut shallow = valid;
+        shallow.levels.pop_last();
+        assert!(
+            !is_valid_full_depth_snapshot_for_market(CryptoHftBinanceMarket::Spot, &shallow)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -3861,6 +4641,7 @@ mod tests {
         let parser = tokio::task::spawn_blocking(move || {
             let mut replay = DayReplay::new(
                 &config,
+                CryptoHftBinanceMarket::Futures,
                 target_date,
                 1_000,
                 sender,
