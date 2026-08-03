@@ -19,7 +19,7 @@ const SHARDS: [(&str, &str, &str); 2] = [
     ("2026-06", "2026-06-03T00:00:00Z", "2026-07-01T00:00:00Z"),
     ("2026-07", "2026-07-01T00:00:00Z", "2026-08-01T00:00:00Z"),
 ];
-const RETRY_GENERATION: u32 = 2;
+const RETRY_GENERATION: u32 = 3;
 
 #[tokio::main]
 async fn main() -> Result<()> {

@@ -35,6 +35,7 @@ pub const HUGGINGFACE_GOOODDY_STRATEGY: &str = "huggingface_goooddy";
 const SYMBOL: &str = "BTCUSDT";
 const EXCHANGE: &str = "binance";
 const MAXIMUM_SOURCE_OBJECT_BYTES: u64 = 512 * 1024 * 1024;
+const GOOODDY_SOURCE_IDENTITY_CONTRACT: &str = "resolved-object-sha256-v1";
 
 const DEPTH_COLUMNS: [&str; 8] = [
     "timestamp_ms",
@@ -110,8 +111,10 @@ pub struct GoooddyMonthSpec {
 impl GoooddyMonthSpec {
     pub fn logical_key(&self) -> String {
         format!(
-            "huggingface:Goooddy:binance-spot:BTCUSDT:l2-month:{}:{}",
-            HUGGINGFACE_GOOODDY_MATERIALIZATION_CONTRACT, self.source_month
+            "huggingface:Goooddy:binance-spot:BTCUSDT:l2-month:{}:{}:{}",
+            HUGGINGFACE_GOOODDY_MATERIALIZATION_CONTRACT,
+            GOOODDY_SOURCE_IDENTITY_CONTRACT,
+            self.source_month
         )
     }
 
