@@ -1,0 +1,77 @@
+[data]
+source_contract = "btc_core_oracle_v1"
+range_start = "2026-04-14T00:00:00Z"
+range_end = "2026-08-02T00:00:00Z"
+sample_interval_seconds = 5
+min_seconds_after_open = 5
+min_seconds_before_close = 60
+strict_final_price_audit = false
+
+[split]
+development_start = "2026-04-14T00:00:00Z"
+development_end = "2026-07-06T00:00:00Z"
+probability_calibration_start = "2026-07-06T00:00:00Z"
+probability_calibration_end = "2026-07-13T00:00:00Z"
+policy_selection_start = "2026-07-13T00:00:00Z"
+policy_selection_end = "2026-07-20T00:00:00Z"
+holdout_start = "2026-07-20T00:00:00Z"
+holdout_end = "2026-08-02T00:00:00Z"
+validation_starts = [
+  "2026-06-01T00:00:00Z",
+  "2026-06-08T00:00:00Z",
+  "2026-06-15T00:00:00Z",
+  "2026-06-22T00:00:00Z",
+  "2026-06-29T00:00:00Z",
+]
+validation_ends = [
+  "2026-06-08T00:00:00Z",
+  "2026-06-15T00:00:00Z",
+  "2026-06-22T00:00:00Z",
+  "2026-06-29T00:00:00Z",
+  "2026-07-06T00:00:00Z",
+]
+
+[model]
+c_candidates = [0.1]
+confidence_min = 0.89
+confidence_max = 0.89
+confidence_step = 0.01
+random_seed = 20260804
+candidate_names = ["histogram_enriched"]
+
+[[model.histogram_candidates]]
+learning_rate = 0.05
+max_iter = 160
+max_leaf_nodes = 15
+min_samples_leaf = 100
+l2_regularization = 0.10
+
+[[model.row_weight_schedules]]
+candidate = "histogram_enriched"
+multiplier = 1.0
+normalization = "equal_total_per_market"
+
+[gates]
+target_accuracy = 0.50
+target_wilson_lower = 0.45
+target_balanced_accuracy = 0.50
+minimum_direction_recall = 0.40
+minimum_coverage = 0.50
+minimum_holdout_markets = 100
+maximum_walk_forward_holdout_gap = 0.20
+minimum_same_time_path_uplift = 0.00
+minimum_nonnegative_uplift_folds = 1
+maximum_ece = 0.10
+bootstrap_resamples = 1000
+
+[compute]
+max_parallel_fits = 2
+threads_per_fit = 1
+polars_threads = 6
+
+[paths]
+source_data = "data/btc-early-price-value-20260414-20260802/core-source"
+development_feature_data = "data/btc-early-price-value-20260414-20260802/features/development.parquet"
+holdout_feature_data = "data/btc-early-price-value-20260414-20260802/features/evaluation.parquet"
+runs = "runs/btc-early-price-value-20260414-20260802/core"
+artifacts = "artifacts/btc-early-price-value-20260414-20260802/core"
