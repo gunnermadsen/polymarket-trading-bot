@@ -23,6 +23,7 @@ from .jobs import (
 )
 from .market_ingestion import ingest_markets, ingest_price_history
 from .modeling import reconcile_labels, train_model
+from .residual_opportunity_benchmark import run_residual_opportunity_benchmark
 
 HANDLERS = {
     "polymarket_temperature_markets": ingest_markets,
@@ -44,6 +45,14 @@ def _instant(value: str) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _sha256_image_id(value: str) -> str:
+    if len(value) != 71 or not value.startswith("sha256:"):
+        raise argparse.ArgumentTypeError("image ID must use sha256:<64 lowercase hex characters>")
+    if any(character not in "0123456789abcdef" for character in value[7:]):
+        raise argparse.ArgumentTypeError("image ID must use lowercase hexadecimal characters")
+    return value
 
 
 def _utc_day(value: date) -> datetime:
@@ -165,6 +174,10 @@ def build_parser() -> argparse.ArgumentParser:
     asymmetric.add_argument("--quantity", type=float, default=5.0, choices=(1.0, 5.0, 10.0))
     asymmetric.add_argument("--modeled-slippage", type=float, default=0.01)
     asymmetric.add_argument("--probability-bootstrap-iterations", type=int, default=2000)
+    residual = subparsers.add_parser("residual-opportunity-benchmark")
+    residual.add_argument("--source-policy-run-id", required=True)
+    residual.add_argument("--weather-model-image-id", required=True, type=_sha256_image_id)
+    residual.add_argument("--bootstrap-iterations", type=int, default=1000)
     subparsers.add_parser("readiness")
     return parser
 
@@ -292,6 +305,13 @@ def main() -> None:
             quantity=args.quantity,
             modeled_slippage_per_share=args.modeled_slippage,
             probability_bootstrap_iterations=args.probability_bootstrap_iterations,
+        )
+    elif args.command == "residual-opportunity-benchmark":
+        result = run_residual_opportunity_benchmark(
+            settings,
+            source_policy_run_id=args.source_policy_run_id,
+            weather_model_image_id=args.weather_model_image_id,
+            bootstrap_iterations=args.bootstrap_iterations,
         )
     elif args.command == "readiness":
         result = _readiness(settings)
