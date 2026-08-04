@@ -3,7 +3,7 @@ WITH market_points AS (
     market.market_id,
     market.window_start,
     market.window_end,
-    CASE WHEN market.official_outcome = 'Up' THEN 1 ELSE 0 END AS label_up,
+    CASE WHEN market.official_outcome = 'up' THEN 1 ELSE 0 END AS label_up,
     market.fee_rate::double precision AS fee_rate,
     offset_seconds::integer AS seconds_elapsed,
     market.window_start + make_interval(secs => offset_seconds) AS observed_at,
@@ -17,7 +17,7 @@ WITH market_points AS (
   ) offsets
   WHERE market.window_start >= %(batch_start)s
     AND market.window_start < %(batch_end)s
-    AND market.official_outcome IN ('Up', 'Down')
+    AND market.official_outcome IN ('up', 'down')
 ), token_points AS (
   SELECT
     point.*,
@@ -36,7 +36,7 @@ WITH market_points AS (
     book.book
   FROM token_points point
   LEFT JOIN LATERAL (
-    SELECT checkpoint.received_at, checkpoint.snapshot_at,
+    SELECT checkpoint.received_at, checkpoint.source_timestamp AS snapshot_at,
            checkpoint.best_ask, checkpoint.book
     FROM polymarket.orderbook_checkpoints checkpoint
     WHERE checkpoint.market_id = point.market_id
