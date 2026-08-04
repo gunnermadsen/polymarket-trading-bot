@@ -9,6 +9,8 @@ from pathlib import Path
 
 from .admission_benchmark import run_admission_benchmark
 from .admission_config import load_admission_benchmark_config
+from .asymmetric_value_benchmark import run_asymmetric_value_benchmark
+from .asymmetric_value_config import load_asymmetric_value_config
 from .benchmark_config import load_entry_benchmark_config
 from .chainlink_oi_benchmark import run_chainlink_oi_benchmark
 from .chainlink_oi_config import load_chainlink_oi_benchmark_config
@@ -127,6 +129,11 @@ def main() -> None:
     early_value_run = subparsers.add_parser("early-value-benchmark-run")
     early_value_run.add_argument("--config", type=Path, required=True)
     early_value_run.add_argument("--force", action="store_true")
+    asymmetric_value_run = subparsers.add_parser(
+        "asymmetric-value-benchmark-run"
+    )
+    asymmetric_value_run.add_argument("--config", type=Path, required=True)
+    asymmetric_value_run.add_argument("--force", action="store_true")
     oracle_book_run = subparsers.add_parser("oracle-book-benchmark-run")
     oracle_book_run.add_argument("--config", type=Path, required=True)
     price_aware_run = subparsers.add_parser("price-aware-benchmark-run")
@@ -330,6 +337,17 @@ def main() -> None:
         run_dir, result = run_early_value_benchmark(config, force=args.force)
         print(f"report: {run_dir / 'benchmark-report.md'}")
         print(f"selected probability model: {result['training']['selected_profile']}")
+        print("runtime/trading pipeline changes: none")
+        return
+    if args.command == "asymmetric-value-benchmark-run":
+        config = load_asymmetric_value_config(args.config)
+        run_dir, result = run_asymmetric_value_benchmark(
+            config,
+            force=args.force,
+        )
+        print(f"report: {run_dir / 'benchmark-report.md'}")
+        print(f"selected value hunter: {result['selection']['selected_key']}")
+        print(f"evaluation status: {result['evaluation']['status']}")
         print("runtime/trading pipeline changes: none")
         return
     if args.command == "oracle-book-benchmark-run":
