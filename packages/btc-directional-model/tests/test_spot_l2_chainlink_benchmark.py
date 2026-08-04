@@ -159,6 +159,15 @@ def test_fixed_profile_schema_counts_and_feature_boundaries() -> None:
     assert not set(L2_AUDIT_COLUMNS).intersection(config.feature_sets[COMBINED])
 
 
+def test_execution_decision_grid_uses_unambiguous_integer_series() -> None:
+    root = Path(__file__).parents[1]
+    query = (root / "sql/btc-spot-l2-execution-stress-source.sql").read_text()
+
+    assert "%(minimum_decision_second)s::integer" in query
+    assert "%(maximum_decision_second)s::integer" in query
+    assert "%(sample_interval_seconds)s::integer" in query
+
+
 def test_l2_join_requires_strictly_prior_availability_with_two_second_cap() -> None:
     qualified = join_qualified_l2(
         _core(),
