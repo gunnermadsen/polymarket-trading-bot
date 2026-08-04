@@ -187,6 +187,34 @@ def _impute(matrix: np.ndarray, medians: np.ndarray) -> np.ndarray:
     return result
 
 
+def _training_imputation_medians(
+    matrix: np.ndarray, decision_hour: int
+) -> tuple[np.ndarray, tuple[str, ...]]:
+    medians = np.asarray(
+        [
+            np.median(column[np.isfinite(column)])
+            if np.isfinite(column).any()
+            else np.nan
+            for column in matrix.T
+        ],
+        dtype=np.float64,
+    )
+    structurally_missing = tuple(
+        FEATURE_NAMES[index]
+        for index, value in enumerate(medians)
+        if not np.isfinite(value)
+    )
+    allowed = {"observed_max_so_far_f"} if decision_hour == 0 else set()
+    unexpected = set(structurally_missing) - allowed
+    if unexpected:
+        raise ValueError(
+            f"features have no finite training values: {', '.join(sorted(unexpected))}"
+        )
+    for feature_name in structurally_missing:
+        medians[FEATURE_NAMES.index(feature_name)] = 0.0
+    return medians, structurally_missing
+
+
 def raw_point_prediction(rows: list[FeatureRow]) -> np.ndarray:
     return np.asarray(
         [
@@ -321,11 +349,11 @@ def train_model(
     if len(train_rows) < 365 or len(calibration_rows) < 90:
         raise ValueError(
             f"insufficient complete days: training={len(train_rows)}, calibration={len(calibration_rows)}"
-        )
+    )
     train_matrix = _matrix(train_rows)
-    medians = np.nanmedian(train_matrix, axis=0)
-    if not np.isfinite(medians).all():
-        raise ValueError("one or more features have no finite training values")
+    medians, structurally_missing_features = _training_imputation_medians(
+        train_matrix, decision_hour
+    )
     train_matrix = _impute(train_matrix, medians)
     train_target = np.asarray([row.target_daily_max_f for row in train_rows])
     estimator = None
@@ -347,6 +375,7 @@ def train_model(
         "candidate": candidate,
         "decision_hour_local": decision_hour,
         "imputation_medians": medians,
+        "structurally_missing_features": structurally_missing_features,
         "estimator": estimator,
         "ranges": {
             "training_start": training_start.isoformat(),
@@ -364,6 +393,7 @@ def train_model(
     metrics = {
         "training_days": len(train_rows),
         "calibration_days": len(calibration_rows),
+        "structurally_missing_features": list(structurally_missing_features),
         "calibration_mae_f": float(mean_absolute_error(calibration_target, candidate_point)),
         "calibration_rmse_f": float(mean_squared_error(calibration_target, candidate_point) ** 0.5),
         "raw_calibration_mae_f": float(mean_absolute_error(calibration_target, raw_point)),

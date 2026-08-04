@@ -1,11 +1,14 @@
 from datetime import UTC, date, datetime
 
 import numpy as np
+import pytest
 
 from nyc_temperature_model.modeling import (
+    FEATURE_NAMES,
     FeatureRow,
     _complete_forecast_values,
     _expected_forecast_times,
+    _training_imputation_medians,
     bucket_probability,
     leave_one_out_distribution_metrics,
     normalized_bucket_probabilities,
@@ -49,6 +52,27 @@ def test_model_selection_score_rewards_sharper_calibrated_distributions():
         sharp["calibration_loo_ranked_probability_score"]
         < diffuse["calibration_loo_ranked_probability_score"]
     )
+
+
+def test_midnight_allows_only_structurally_absent_observed_max_feature():
+    matrix = np.ones((4, len(FEATURE_NAMES)), dtype=float)
+    observed_max_index = FEATURE_NAMES.index("observed_max_so_far_f")
+    matrix[:, observed_max_index] = np.nan
+
+    medians, structurally_missing = _training_imputation_medians(matrix, 0)
+
+    assert structurally_missing == ("observed_max_so_far_f",)
+    assert medians[observed_max_index] == 0.0
+    with pytest.raises(ValueError, match="observed_max_so_far_f"):
+        _training_imputation_medians(matrix, 12)
+
+
+def test_midnight_still_fails_on_unexpected_all_missing_feature():
+    matrix = np.ones((4, len(FEATURE_NAMES)), dtype=float)
+    matrix[:, FEATURE_NAMES.index("latest_observation_f")] = np.nan
+
+    with pytest.raises(ValueError, match="latest_observation_f"):
+        _training_imputation_medians(matrix, 0)
 
 
 def test_midnight_decision_hour_remains_zero_not_missing():
