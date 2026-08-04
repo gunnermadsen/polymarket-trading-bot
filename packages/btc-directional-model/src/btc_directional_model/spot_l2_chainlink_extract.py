@@ -976,7 +976,7 @@ def _l2_summary(path: Path, batch_start: datetime, batch_end: datetime) -> dict[
         values = table[column]
         if values.null_count or pc.sum(pc.invert(pc.is_finite(values))).as_py():
             raise RuntimeError(f"{path.name} contains invalid L2 values in {column}")
-    rows = table.select(*L2_IDENTITY_COLUMNS).to_pylist()
+    rows = table.select(L2_IDENTITY_COLUMNS).to_pylist()
     for row in rows:
         if row["symbol"] != BINANCE_SYMBOL:
             raise RuntimeError(f"{path.name} contains a non-BTCUSDT L2 row")

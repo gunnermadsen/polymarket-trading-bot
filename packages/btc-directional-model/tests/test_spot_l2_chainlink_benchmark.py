@@ -6,6 +6,8 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from btc_directional_model.chainlink_oi_features import CHAINLINK_CANDLE_FEATURES
@@ -36,6 +38,10 @@ from btc_directional_model.spot_l2_chainlink_evaluation import (
     evaluate_advancement_gates,
     pair_economic_ledgers,
     paired_economic_metrics,
+)
+from btc_directional_model.spot_l2_chainlink_extract import (
+    L2_SOURCE_SCHEMA,
+    _l2_summary,
 )
 from btc_directional_model.spot_l2_chainlink_features import (
     L2_AUDIT_COLUMNS,
@@ -174,6 +180,24 @@ def test_l2_join_requires_strictly_prior_availability_with_two_second_cap() -> N
     )
     assert exact.is_empty()
     assert too_old.is_empty()
+
+
+def test_l2_partition_summary_reads_the_fixed_identity_columns(tmp_path: Path) -> None:
+    source = _l2(available_at=DECISION - timedelta(seconds=1))
+    path = tmp_path / "l2.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(source.to_dicts(), schema=L2_SOURCE_SCHEMA),
+        path,
+    )
+
+    summary = _l2_summary(
+        path,
+        DECISION.replace(hour=0, minute=0, second=0),
+        DECISION.replace(hour=0, minute=0, second=0) + timedelta(days=1),
+    )
+
+    assert summary["rows"] == 1
+    assert summary["qualified_seconds"] == 1
 
 
 def test_l2_join_does_not_fill_a_missing_source_interval() -> None:
