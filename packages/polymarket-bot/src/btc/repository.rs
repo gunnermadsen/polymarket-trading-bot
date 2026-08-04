@@ -497,6 +497,7 @@ SELECT EXISTS (
     AND market_id = $3
     AND strategy_version = $4
     AND metadata #>> '{prediction,status}' = 'directional_prediction'
+    AND status <> 'execution_pending'
 )
 "#;
 
@@ -632,6 +633,16 @@ WHERE process_id = $1
   AND run_id = $2
   AND decision_id = $3
   AND decision_at = $4
+"#;
+
+const AUTHORIZE_PENDING_STRATEGY_DECISION_SQL: &str = r#"
+UPDATE polymarket.btc_strategy_decisions
+SET status = 'approved'
+WHERE process_id = $1
+  AND run_id = $2
+  AND decision_id = $3
+  AND decision_at = $4
+  AND status = 'execution_pending'
 "#;
 
 const DISCOVER_PENDING_SETTLEMENTS_SQL: &str = r#"
@@ -3216,6 +3227,27 @@ impl BtcRepository {
         Ok(())
     }
 
+    pub async fn authorize_pending_strategy_decision(
+        &self,
+        process_id: Uuid,
+        run_id: Uuid,
+        decision_id: Uuid,
+        decision_at: DateTime<Utc>,
+    ) -> Result<()> {
+        let result = sqlx::query(AUTHORIZE_PENDING_STRATEGY_DECISION_SQL)
+            .bind(process_id)
+            .bind(run_id)
+            .bind(decision_id)
+            .bind(decision_at)
+            .execute(&self.pool)
+            .await
+            .context("failed to authorize pending BTC strategy decision")?;
+        if result.rows_affected() != 1 {
+            bail!("pending BTC strategy decision authorization did not update exactly one row");
+        }
+        Ok(())
+    }
+
     /// Materializes every newly eligible official settlement into a durable, idempotent ledger
     /// and returns records still awaiting venue-specific recognition. Fill selection is exact for
     /// the requested execution source. Eligibility requires the immutable official market fact
@@ -5122,6 +5154,17 @@ mod tests {
     }
 
     #[test]
+    fn pending_entry_authorization_is_process_run_and_state_scoped() {
+        let normalized = AUTHORIZE_PENDING_STRATEGY_DECISION_SQL.to_ascii_lowercase();
+        assert!(normalized.contains("where process_id = $1"));
+        assert!(normalized.contains("and run_id = $2"));
+        assert!(normalized.contains("and decision_id = $3"));
+        assert!(normalized.contains("and decision_at = $4"));
+        assert!(normalized.contains("and status = 'execution_pending'"));
+        assert!(normalized.contains("set status = 'approved'"));
+    }
+
+    #[test]
     fn directional_prediction_resume_is_process_and_run_owned() {
         let normalized = PROCESS_HAS_DIRECTIONAL_PREDICTION_SQL.to_ascii_lowercase();
         assert!(normalized.contains("where process_id = $1"));
@@ -5131,6 +5174,7 @@ mod tests {
         assert!(
             normalized.contains("metadata #>> '{prediction,status}' = 'directional_prediction'")
         );
+        assert!(normalized.contains("and status <> 'execution_pending'"));
         assert!(!normalized.contains("experiment_id"));
     }
 

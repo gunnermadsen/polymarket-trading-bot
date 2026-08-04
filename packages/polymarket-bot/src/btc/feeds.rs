@@ -1208,6 +1208,9 @@ impl RealtimeState {
         max_reference_age: Duration,
     ) -> Readiness {
         let mut reasons = Vec::new();
+        if !self.primary_persistence_available() {
+            reasons.push("primary_persistence_unavailable".to_string());
+        }
         let Some(market) = self.current_market.as_ref() else {
             reasons.push("missing_current_market".to_string());
             return Readiness {
@@ -2709,6 +2712,17 @@ mod tests {
                 .ready
         );
 
+        let stale_binance = state.readiness(
+            now + Duration::milliseconds(2_001),
+            Duration::seconds(2),
+            Duration::seconds(2),
+        );
+        assert!(!stale_binance.ready);
+        assert!(stale_binance
+            .reasons
+            .iter()
+            .any(|reason| reason == "stale_reference:direct_binance"));
+
         let up_book = state.books.get_mut("up").unwrap();
         up_book.source_timestamp = Some(now - Duration::milliseconds(2_500));
         up_book.received_at = Some(now - Duration::milliseconds(1));
@@ -2718,6 +2732,26 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason == "stale_book:up"));
+    }
+
+    #[test]
+    fn readiness_reports_primary_persistence_unavailable_without_a_market() {
+        let now = ts(1_783_902_701_500);
+        let state = RealtimeState {
+            primary_persistence_degraded: true,
+            ..RealtimeState::default()
+        };
+
+        let readiness = state.readiness(now, Duration::seconds(2), Duration::seconds(2));
+
+        assert!(!readiness.ready);
+        assert_eq!(
+            readiness.reasons,
+            vec![
+                "primary_persistence_unavailable".to_string(),
+                "missing_current_market".to_string(),
+            ]
+        );
     }
 
     #[test]

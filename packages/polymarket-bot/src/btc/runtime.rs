@@ -60,8 +60,10 @@ use super::{
 };
 
 const BOUNDARY_LABEL_VERSION: &str = "chainlink_first_tick_at_or_after_boundary_v1";
+const BOUNDARY_HYDRATION_RETRY_MAX_DELAY: StdDuration = StdDuration::from_secs(30);
 const CRITICAL_WRITE_ATTEMPTS: usize = 3;
 const CRITICAL_WRITE_INITIAL_BACKOFF: StdDuration = StdDuration::from_millis(25);
+const PRIMARY_PERSISTENCE_RETRY_MAX_DELAY: StdDuration = StdDuration::from_secs(1);
 const GAMMA_RESOLUTION_RETRY_INITIAL_BACKOFF: StdDuration = StdDuration::from_secs(30);
 const GAMMA_RESOLUTION_RETRY_MAX_BACKOFF: StdDuration = StdDuration::from_secs(300);
 const MAX_EXPIRED_RESOLUTION_RECONCILIATIONS_PER_TICK: usize = 4;
@@ -78,7 +80,6 @@ const REFERENCE_SEND_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 // Chainlink updates can have legitimate multi-second gaps; this bound avoids
 // reconnect churn while still detecting an unavailable required source quickly.
 const RTDS_REQUIRED_DATA_TIMEOUT: StdDuration = StdDuration::from_secs(10);
-const BINANCE_REQUIRED_DATA_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const BINANCE_MODEL_RECOVERY_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 const BINANCE_MODEL_RECOVERY_RETRY_INTERVAL: StdDuration = StdDuration::from_secs(5);
 const BINANCE_MODEL_RECOVERY_PAGE_LIMIT: usize = 1_000;
@@ -332,6 +333,14 @@ pub struct BtcRuntimeMetrics {
     pub finalized_boundary_outcome_conflicts: u64,
     pub persistence_items_written: u64,
     pub persistence_errors: u64,
+    #[serde(default)]
+    pub primary_persistence_retryable_errors: u64,
+    #[serde(default)]
+    pub primary_persistence_consecutive_failures: u32,
+    #[serde(default)]
+    pub primary_persistence_recoveries: u64,
+    #[serde(default)]
+    pub primary_persistence_queue_overflows: u64,
     pub strategy_errors: u64,
     pub decode_errors: u64,
     pub integrity_gaps: u64,
@@ -395,6 +404,10 @@ pub struct BtcRuntimeMetrics {
     pub official_resolutions_rest: u64,
     pub resolution_reconciliation_errors: u64,
     pub resolution_watches_expired: u64,
+    #[serde(default)]
+    pub boundary_hydration_read_errors: u64,
+    #[serde(default)]
+    pub boundary_hydration_consecutive_failures: u32,
     pub last_error: Option<String>,
 }
 
@@ -1174,10 +1187,14 @@ impl ReferenceFeedKind {
         }
     }
 
-    fn required_data_timeout(self) -> StdDuration {
+    /// A required-data timeout is a transport watchdog only for feeds whose
+    /// protocol does not provide an independent liveness signal. Binance
+    /// freshness is instead enforced at the trading/readiness boundary, while
+    /// EOF, PONG, and frame-idle failures continue to reconnect its socket.
+    fn required_data_disconnect_timeout(self) -> Option<StdDuration> {
         match self {
-            Self::Rtds => RTDS_REQUIRED_DATA_TIMEOUT,
-            Self::Binance => BINANCE_REQUIRED_DATA_TIMEOUT,
+            Self::Rtds => Some(RTDS_REQUIRED_DATA_TIMEOUT),
+            Self::Binance => None,
         }
     }
 
@@ -1256,7 +1273,7 @@ enum ReferencePongExpectation {
 
 #[derive(Debug)]
 struct ReferenceFeedWatchdog {
-    required_data_deadline: Instant,
+    required_data_deadline: Option<Instant>,
     read_idle_deadline: Instant,
     pong_deadline: Option<Instant>,
     stable_deadline: Option<Instant>,
@@ -1267,7 +1284,9 @@ struct ReferenceFeedWatchdog {
 impl ReferenceFeedWatchdog {
     fn new(now: Instant, kind: ReferenceFeedKind) -> Self {
         Self {
-            required_data_deadline: now + kind.required_data_timeout(),
+            required_data_deadline: kind
+                .required_data_disconnect_timeout()
+                .map(|timeout| now + timeout),
             read_idle_deadline: now + REFERENCE_READ_IDLE_TIMEOUT,
             pong_deadline: None,
             stable_deadline: None,
@@ -1281,7 +1300,9 @@ impl ReferenceFeedWatchdog {
     }
 
     fn on_required_tick(&mut self, now: Instant, kind: ReferenceFeedKind) {
-        self.required_data_deadline = now + kind.required_data_timeout();
+        if let Some(timeout) = kind.required_data_disconnect_timeout() {
+            self.required_data_deadline = Some(now + timeout);
+        }
         if self.stable_deadline.is_none() && !self.stable {
             self.stable_deadline = Some(now + REFERENCE_STABLE_RESET_AFTER);
         }
@@ -1509,7 +1530,13 @@ impl BtcRuntime {
         let tasks = vec![
             spawn_runtime_task(
                 "writer",
-                run_writer(self.repository.clone(), writer_rx, metrics.clone()),
+                run_writer(
+                    self.repository.clone(),
+                    writer_rx,
+                    state.clone(),
+                    metrics.clone(),
+                    shutdown_rx.clone(),
+                ),
                 running.clone(),
                 metrics.clone(),
             ),
@@ -1825,52 +1852,251 @@ enum PersistItem {
     Checkpoint(super::types::OrderbookCheckpoint),
 }
 
+impl PersistItem {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::ReferenceTick(_) => "reference tick",
+            Self::FeedEvent(_) => "feed event",
+            Self::Checkpoint(_) => "orderbook checkpoint",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersistEnqueueOutcome {
+    Queued,
+    Saturated,
+    Closed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrimaryPersistenceOutcome {
+    Persisted,
+    Shutdown,
+    Fatal,
+}
+
 async fn run_writer(
     repository: BtcRepository,
     mut receiver: mpsc::Receiver<PersistItem>,
+    state: Arc<RwLock<RealtimeState>>,
     metrics: Arc<RwLock<BtcRuntimeMetrics>>,
+    mut shutdown: watch::Receiver<bool>,
 ) {
     while let Some(item) = receiver.recv().await {
-        let result = match item {
-            PersistItem::ReferenceTick(tick) => {
-                repository.insert_reference_tick(&tick).await.map(|_| ())
+        let outcome = persist_primary_item_with_retry(
+            || persist_item(&repository, &item),
+            item.kind(),
+            &state,
+            &metrics,
+            &mut shutdown,
+        )
+        .await;
+        match outcome {
+            PrimaryPersistenceOutcome::Persisted => {}
+            PrimaryPersistenceOutcome::Shutdown => {
+                receiver.close();
+                let abandoned_items = u64::try_from(receiver.len())
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(1);
+                record_primary_persistence_shutdown_abandonment(
+                    &metrics,
+                    item.kind(),
+                    abandoned_items,
+                )
+                .await;
+                return;
             }
-            PersistItem::FeedEvent(event) => repository.insert_feed_event(&event).await.map(|_| ()),
-            PersistItem::Checkpoint(checkpoint) => repository
-                .insert_orderbook_checkpoint(&checkpoint, "websocket_book")
-                .await
-                .map(|_| ()),
-        };
-        let mut metrics = metrics.write().await;
+            PrimaryPersistenceOutcome::Fatal => return,
+        }
+    }
+}
+
+async fn persist_item(repository: &BtcRepository, item: &PersistItem) -> Result<()> {
+    match item {
+        PersistItem::ReferenceTick(tick) => {
+            repository.insert_reference_tick(tick).await.map(|_| ())
+        }
+        PersistItem::FeedEvent(event) => repository.insert_feed_event(event).await.map(|_| ()),
+        PersistItem::Checkpoint(checkpoint) => repository
+            .insert_orderbook_checkpoint(checkpoint, "websocket_book")
+            .await
+            .map(|_| ()),
+    }
+}
+
+async fn persist_primary_item_with_retry<Operation, OperationFuture>(
+    mut operation: Operation,
+    item_kind: &'static str,
+    state: &Arc<RwLock<RealtimeState>>,
+    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
+    shutdown: &mut watch::Receiver<bool>,
+) -> PrimaryPersistenceOutcome
+where
+    Operation: FnMut() -> OperationFuture,
+    OperationFuture: Future<Output = Result<()>>,
+{
+    let mut recovering = false;
+    loop {
+        if recovering && *shutdown.borrow() {
+            return PrimaryPersistenceOutcome::Shutdown;
+        }
+        // Never cancel an in-flight idempotent insert: a transport error can be
+        // ambiguous about whether PostgreSQL committed it. Shutdown only
+        // interrupts the bounded delay between complete attempts.
+        let result = operation().await;
         match result {
             Ok(()) => {
-                metrics.persistence_items_written =
-                    metrics.persistence_items_written.saturating_add(1)
+                record_primary_persistence_success(state, metrics).await;
+                return PrimaryPersistenceOutcome::Persisted;
+            }
+            Err(error) if is_retryable_primary_persistence_error(&error) => {
+                let (entered_degraded_state, consecutive_failures) =
+                    record_primary_persistence_retry(state, metrics).await;
+                if entered_degraded_state {
+                    tracing::warn!(
+                        item_kind,
+                        error = %error,
+                        "primary persistence writer entered retry recovery"
+                    );
+                }
+                let delay = primary_persistence_retry_delay(consecutive_failures);
+                if !wait_reconnect_backoff(delay, shutdown).await {
+                    return PrimaryPersistenceOutcome::Shutdown;
+                }
+                recovering = true;
             }
             Err(error) => {
-                metrics.persistence_errors = metrics.persistence_errors.saturating_add(1);
-                metrics.last_error = Some(error.to_string());
-                // An immutable realtime execution run permits no primary-writer
-                // failures. Exit so the shared runtime fails instead of allowing a
-                // partially durable run to continue collecting.
-                return;
+                record_primary_persistence_fatal(state, metrics, item_kind, &error).await;
+                return PrimaryPersistenceOutcome::Fatal;
             }
         }
     }
 }
 
+async fn record_primary_persistence_retry(
+    state: &Arc<RwLock<RealtimeState>>,
+    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
+) -> (bool, u32) {
+    let mut runtime_metrics = metrics.write().await;
+    let entered_degraded_state = runtime_metrics.primary_persistence_consecutive_failures == 0;
+    runtime_metrics.primary_persistence_retryable_errors = runtime_metrics
+        .primary_persistence_retryable_errors
+        .saturating_add(1);
+    runtime_metrics.primary_persistence_consecutive_failures = runtime_metrics
+        .primary_persistence_consecutive_failures
+        .saturating_add(1);
+    let consecutive_failures = runtime_metrics.primary_persistence_consecutive_failures;
+    let health_changed = if entered_degraded_state {
+        let mut realtime = state.write().await;
+        if realtime.primary_persistence_degraded {
+            false
+        } else {
+            realtime.primary_persistence_degraded = true;
+            realtime.last_updated_at = Some(Utc::now());
+            true
+        }
+    } else {
+        false
+    };
+    (health_changed, consecutive_failures)
+}
+
+async fn record_primary_persistence_success(
+    state: &Arc<RwLock<RealtimeState>>,
+    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
+) {
+    let mut runtime_metrics = metrics.write().await;
+    runtime_metrics.persistence_items_written =
+        runtime_metrics.persistence_items_written.saturating_add(1);
+    let recovered = runtime_metrics.primary_persistence_consecutive_failures > 0;
+    if recovered {
+        runtime_metrics.primary_persistence_recoveries = runtime_metrics
+            .primary_persistence_recoveries
+            .saturating_add(1);
+    }
+    runtime_metrics.primary_persistence_consecutive_failures = 0;
+    if recovered && runtime_metrics.primary_persistence_queue_overflows == 0 {
+        let mut realtime = state.write().await;
+        if realtime.primary_persistence_degraded {
+            realtime.primary_persistence_degraded = false;
+            realtime.last_updated_at = Some(Utc::now());
+            tracing::info!("primary persistence writer recovered");
+        }
+    }
+}
+
+async fn record_primary_persistence_fatal(
+    state: &Arc<RwLock<RealtimeState>>,
+    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
+    item_kind: &'static str,
+    error: &anyhow::Error,
+) {
+    let mut runtime_metrics = metrics.write().await;
+    runtime_metrics.persistence_errors = runtime_metrics.persistence_errors.saturating_add(1);
+    runtime_metrics.last_error = Some(format!(
+        "BTC primary {item_kind} persistence failed: {error:#}"
+    ));
+    let mut realtime = state.write().await;
+    realtime.primary_persistence_degraded = true;
+    realtime.last_updated_at = Some(Utc::now());
+}
+
+async fn record_primary_persistence_shutdown_abandonment(
+    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
+    item_kind: &'static str,
+    abandoned_items: u64,
+) {
+    let mut runtime_metrics = metrics.write().await;
+    runtime_metrics.dropped_messages = runtime_metrics
+        .dropped_messages
+        .saturating_add(abandoned_items);
+    runtime_metrics.last_error.get_or_insert_with(|| {
+        format!(
+            "BTC primary persistence shutdown abandoned {abandoned_items} queued item(s), beginning with {item_kind}"
+        )
+    });
+}
+
 async fn enqueue(
     sender: &mpsc::Sender<PersistItem>,
     item: PersistItem,
+    state: &Arc<RwLock<RealtimeState>>,
     metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
-) -> bool {
+) -> PersistEnqueueOutcome {
+    let item_kind = item.kind();
     match sender.try_send(item) {
-        Ok(()) => true,
-        Err(error) => {
+        Ok(()) => PersistEnqueueOutcome::Queued,
+        Err(mpsc::error::TrySendError::Full(_)) => {
             let mut metrics = metrics.write().await;
             metrics.dropped_messages = metrics.dropped_messages.saturating_add(1);
-            metrics.last_error = Some(format!("BTC persistence queue rejected item: {error}"));
-            false
+            let first_overflow = metrics.primary_persistence_queue_overflows == 0;
+            metrics.primary_persistence_queue_overflows = metrics
+                .primary_persistence_queue_overflows
+                .saturating_add(1);
+            if first_overflow {
+                metrics.last_error = Some(format!(
+                    "BTC persistence queue saturated; dropped {item_kind}"
+                ));
+                let mut realtime = state.write().await;
+                if !realtime.primary_persistence_degraded {
+                    realtime.primary_persistence_degraded = true;
+                    realtime.last_updated_at = Some(Utc::now());
+                }
+                tracing::error!(item_kind, "primary persistence queue saturated");
+            }
+            PersistEnqueueOutcome::Saturated
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            let mut metrics = metrics.write().await;
+            metrics.dropped_messages = metrics.dropped_messages.saturating_add(1);
+            metrics.last_error = Some(format!(
+                "BTC persistence queue closed; rejected {item_kind}"
+            ));
+            let mut realtime = state.write().await;
+            realtime.primary_persistence_degraded = true;
+            realtime.last_updated_at = Some(Utc::now());
+            PersistEnqueueOutcome::Closed
         }
     }
 }
@@ -1924,6 +2150,7 @@ async fn run_discovery(
     let mut ticker = interval(config.discovery_interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut gamma_resolution_retries = HashMap::new();
+    let mut boundary_hydration_retry_at = None;
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
@@ -2051,6 +2278,15 @@ async fn run_discovery(
                     }
                 }
                 recovery_markets.sort_by_key(|market| market.window_start);
+                publish_market_subscriptions_if_changed(&market_sender, &pending_markets);
+                {
+                    let mut runtime_metrics = metrics.write().await;
+                    runtime_metrics.markets_discovered = fresh_markets.len() as u64;
+                    runtime_metrics.resolution_watches_active = pending_markets.len() as u64;
+                }
+                if boundary_hydration_retry_at.is_some_and(|retry_at| Instant::now() < retry_at) {
+                    continue;
+                }
                 let max_delay = chrono_duration(config.boundary_tick_max_delay);
                 let durable = tokio::try_join!(
                     repository.load_market_open_references(&recovery_markets),
@@ -2060,11 +2296,47 @@ async fn run_discovery(
                 let (durable_opens, durable_closes, durable_labels) = match durable {
                     Ok(value) => value,
                     Err(error) => {
-                        record_critical_persistence_error(&metrics, error).await;
-                        return;
+                        let failure = {
+                            let mut runtime_metrics = metrics.write().await;
+                            classify_boundary_hydration_read_failure(error, &mut runtime_metrics)
+                        };
+                        match failure {
+                            BoundaryHydrationReadFailure::Retry {
+                                error,
+                                entered_degraded_state,
+                                consecutive_failures,
+                            } => {
+                                let retry_delay = boundary_hydration_retry_delay(
+                                    config.discovery_interval,
+                                    consecutive_failures,
+                                );
+                                boundary_hydration_retry_at = Some(Instant::now() + retry_delay);
+                                if entered_degraded_state {
+                                    tracing::warn!(
+                                        error = ?error,
+                                        retry_delay_ms = duration_milliseconds(retry_delay),
+                                        "BTC boundary hydration is temporarily unavailable; shared market data remains active"
+                                    );
+                                } else {
+                                    tracing::debug!(
+                                        error = ?error,
+                                        retry_delay_ms = duration_milliseconds(retry_delay),
+                                        "BTC boundary hydration retry remains unavailable"
+                                    );
+                                }
+                                continue;
+                            }
+                            BoundaryHydrationReadFailure::Fatal(error) => {
+                                record_critical_persistence_error(&metrics, error).await;
+                                return;
+                            }
+                        }
                     }
                 };
                 let hydration = {
+                    // Boundary observation remains fail-closed until every durable read has
+                    // succeeded. Publishing CLOB subscriptions above is independent of this
+                    // immutable boundary-state transition.
                     let mut tracker = boundaries.write().await;
                     tracker.update_markets(&recovery_markets);
                     tracker
@@ -2087,12 +2359,14 @@ async fn run_discovery(
                     record_critical_persistence_error(&metrics, error).await;
                     return;
                 }
-                if !same_market_subscriptions(&market_sender.borrow(), &pending_markets) {
-                    let _ = market_sender.send(pending_markets.clone());
+                boundary_hydration_retry_at = None;
+                let recovered = {
+                    let mut runtime_metrics = metrics.write().await;
+                    mark_boundary_hydration_recovered(&mut runtime_metrics)
+                };
+                if recovered {
+                    tracing::info!("BTC boundary hydration recovered without restarting shared market data");
                 }
-                let mut runtime_metrics = metrics.write().await;
-                runtime_metrics.markets_discovered = fresh_markets.len() as u64;
-                runtime_metrics.resolution_watches_active = pending_markets.len() as u64;
             }
         }
     }
@@ -2694,11 +2968,18 @@ async fn apply_active_clob_frame(
         if !should_persist_feed_event(&event) {
             continue;
         }
-        if enqueue(writer, PersistItem::FeedEvent(event), metrics).await {
-            epoch.session.messages_persisted = epoch.session.messages_persisted.saturating_add(1);
-        } else {
-            epoch.session.dropped_messages = epoch.session.dropped_messages.saturating_add(1);
-            bail!("CLOB feed event persistence queue closed");
+        match enqueue(writer, PersistItem::FeedEvent(event), state, metrics).await {
+            PersistEnqueueOutcome::Queued => {
+                epoch.session.messages_persisted =
+                    epoch.session.messages_persisted.saturating_add(1);
+            }
+            PersistEnqueueOutcome::Saturated => {
+                epoch.session.dropped_messages = epoch.session.dropped_messages.saturating_add(1);
+            }
+            PersistEnqueueOutcome::Closed => {
+                epoch.session.dropped_messages = epoch.session.dropped_messages.saturating_add(1);
+                bail!("CLOB feed event persistence queue closed");
+            }
         }
     }
     if frame_changed {
@@ -4112,22 +4393,36 @@ async fn run_clob_supervisor(
                             }
                             for token_id in [&market.up_token_id, &market.down_token_id] {
                                 if let Some(checkpoint) = epoch.registry.checkpoint(token_id) {
-                                    if enqueue(&writer, PersistItem::Checkpoint(checkpoint), &metrics).await {
-                                        let mut runtime_metrics = metrics.write().await;
-                                        runtime_metrics.checkpoints_queued = runtime_metrics
-                                            .checkpoints_queued
-                                            .saturating_add(1);
-                                    } else {
-                                        epoch.session.dropped_messages =
-                                            epoch.session.dropped_messages.saturating_add(1);
-                                        active_failure = Some((
-                                            "critical_checkpoint_queue_closed".to_string(),
-                                            ClobDisconnectCause::CriticalPersistence,
-                                            Some(anyhow::anyhow!(
-                                                "CLOB checkpoint persistence queue closed"
-                                            )),
-                                        ));
-                                        break;
+                                    match enqueue(
+                                        &writer,
+                                        PersistItem::Checkpoint(checkpoint),
+                                        &state,
+                                        &metrics,
+                                    )
+                                    .await
+                                    {
+                                        PersistEnqueueOutcome::Queued => {
+                                            let mut runtime_metrics = metrics.write().await;
+                                            runtime_metrics.checkpoints_queued = runtime_metrics
+                                                .checkpoints_queued
+                                                .saturating_add(1);
+                                        }
+                                        PersistEnqueueOutcome::Saturated => {
+                                            epoch.session.dropped_messages =
+                                                epoch.session.dropped_messages.saturating_add(1);
+                                        }
+                                        PersistEnqueueOutcome::Closed => {
+                                            epoch.session.dropped_messages =
+                                                epoch.session.dropped_messages.saturating_add(1);
+                                            active_failure = Some((
+                                                "critical_checkpoint_queue_closed".to_string(),
+                                                ClobDisconnectCause::CriticalPersistence,
+                                                Some(anyhow::anyhow!(
+                                                    "CLOB checkpoint persistence queue closed"
+                                                )),
+                                            ));
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -5648,14 +5943,18 @@ async fn run_rtds_supervisor(
                 let mut heartbeat =
                     interval_at(watchdog_started + heartbeat_interval, heartbeat_interval);
                 heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
-                let required_data_sleep = sleep(kind.required_data_timeout());
+                let required_data_timeout = kind
+                    .required_data_disconnect_timeout()
+                    .expect("RTDS required-data watchdog must be enabled");
+                let required_data_sleep = sleep(required_data_timeout);
                 let read_idle_sleep = sleep(REFERENCE_READ_IDLE_TIMEOUT);
                 let stable_sleep = sleep(REFERENCE_STABLE_RESET_AFTER);
                 tokio::pin!(required_data_sleep, read_idle_sleep, stable_sleep);
                 'connection: loop {
-                    required_data_sleep
-                        .as_mut()
-                        .reset(watchdog.required_data_deadline);
+                    let required_data_deadline = watchdog
+                        .required_data_deadline
+                        .expect("RTDS required-data watchdog deadline must be armed");
+                    required_data_sleep.as_mut().reset(required_data_deadline);
                     read_idle_sleep.as_mut().reset(watchdog.read_idle_deadline);
                     if let Some(deadline) = watchdog.stable_deadline {
                         stable_sleep.as_mut().reset(deadline);
@@ -5915,17 +6214,34 @@ async fn run_rtds_supervisor(
                                                             break 'connection;
                                                         }
                                                     }
-                                                    if enqueue(&writer, PersistItem::ReferenceTick(tick), &metrics).await {
-                                                        session.messages_persisted =
-                                                            session.messages_persisted.saturating_add(1);
-                                                    } else {
-                                                        session.dropped_messages =
-                                                            session.dropped_messages.saturating_add(1);
-                                                        disconnect_reason = ReferenceDisconnectReason::CriticalWriterQueue;
-                                                        fatal_persistence_error = Some(anyhow::anyhow!(
-                                                            "RTDS reference persistence queue rejected item"
-                                                        ));
-                                                        break 'connection;
+                                                    match enqueue(
+                                                        &writer,
+                                                        PersistItem::ReferenceTick(tick),
+                                                        &state,
+                                                        &metrics,
+                                                    )
+                                                    .await
+                                                    {
+                                                        PersistEnqueueOutcome::Queued => {
+                                                            session.messages_persisted = session
+                                                                .messages_persisted
+                                                                .saturating_add(1);
+                                                        }
+                                                        PersistEnqueueOutcome::Saturated => {
+                                                            session.dropped_messages = session
+                                                                .dropped_messages
+                                                                .saturating_add(1);
+                                                        }
+                                                        PersistEnqueueOutcome::Closed => {
+                                                            session.dropped_messages = session
+                                                                .dropped_messages
+                                                                .saturating_add(1);
+                                                            disconnect_reason = ReferenceDisconnectReason::CriticalWriterQueue;
+                                                            fatal_persistence_error = Some(anyhow::anyhow!(
+                                                                "RTDS reference persistence queue closed"
+                                                            ));
+                                                            break 'connection;
+                                                        }
                                                     }
                                                 }
                                                 Ok(None) => {}
@@ -6361,21 +6677,12 @@ async fn run_binance_supervisor(
         let mut model_recovery_task: Option<JoinHandle<Result<BinanceModelRecovery>>> = None;
         let mut model_recovery_started = None;
         let mut model_recovery_buffer = VecDeque::with_capacity(1_024);
-        let required_data_sleep = sleep(kind.required_data_timeout());
         let read_idle_sleep = sleep(REFERENCE_READ_IDLE_TIMEOUT);
         let pong_sleep = sleep(REFERENCE_PONG_TIMEOUT);
         let stable_sleep = sleep(REFERENCE_STABLE_RESET_AFTER);
-        tokio::pin!(
-            required_data_sleep,
-            read_idle_sleep,
-            pong_sleep,
-            stable_sleep
-        );
+        tokio::pin!(read_idle_sleep, pong_sleep, stable_sleep);
         let mut heartbeat_sequence = 0u64;
         'connection: loop {
-            required_data_sleep
-                .as_mut()
-                .reset(watchdog.required_data_deadline);
             read_idle_sleep.as_mut().reset(watchdog.read_idle_deadline);
             if let Some(deadline) = watchdog.pong_deadline {
                 pong_sleep.as_mut().reset(deadline);
@@ -6387,10 +6694,6 @@ async fn run_binance_supervisor(
                 biased;
                 _ = shutdown.changed() => {
                     disconnect_reason = ReferenceDisconnectReason::Shutdown;
-                    break;
-                }
-                _ = &mut required_data_sleep => {
-                    disconnect_reason = ReferenceDisconnectReason::RequiredDataIdleTimeout;
                     break;
                 }
                 _ = &mut pong_sleep, if watchdog.pong_deadline.is_some() => {
@@ -6695,24 +6998,34 @@ async fn run_binance_supervisor(
                                                     );
                                                 }
                                             }
-                                            if enqueue(
+                                            match enqueue(
                                                 &writer,
                                                 PersistItem::ReferenceTick(tick),
+                                                &state,
                                                 &metrics,
                                             )
                                             .await
                                             {
-                                                session.messages_persisted =
-                                                    session.messages_persisted.saturating_add(1);
-                                            } else {
-                                                session.dropped_messages =
-                                                    session.dropped_messages.saturating_add(1);
-                                                disconnect_reason =
-                                                    ReferenceDisconnectReason::CriticalWriterQueue;
-                                                fatal_persistence_error = Some(anyhow::anyhow!(
-                                                    "Binance reference persistence queue rejected item"
-                                                ));
-                                                break 'connection;
+                                                PersistEnqueueOutcome::Queued => {
+                                                    session.messages_persisted = session
+                                                        .messages_persisted
+                                                        .saturating_add(1);
+                                                }
+                                                PersistEnqueueOutcome::Saturated => {
+                                                    session.dropped_messages = session
+                                                        .dropped_messages
+                                                        .saturating_add(1);
+                                                }
+                                                PersistEnqueueOutcome::Closed => {
+                                                    session.dropped_messages = session
+                                                        .dropped_messages
+                                                        .saturating_add(1);
+                                                    disconnect_reason = ReferenceDisconnectReason::CriticalWriterQueue;
+                                                    fatal_persistence_error = Some(anyhow::anyhow!(
+                                                        "Binance reference persistence queue closed"
+                                                    ));
+                                                    break 'connection;
+                                                }
                                             }
                                         }
                                         Err(error) => {
@@ -6862,6 +7175,9 @@ async fn run_strategy_loop(
                     continue;
                 }
                 last_observed_at = snapshot.last_updated_at;
+                if !snapshot.primary_persistence_available() {
+                    continue;
+                }
                 let readiness = snapshot.readiness(
                     Utc::now(),
                     chrono_duration(config.max_book_age),
@@ -7663,6 +7979,15 @@ fn same_market_subscriptions(left: &[BtcIntervalMarket], right: &[BtcIntervalMar
     })
 }
 
+fn publish_market_subscriptions_if_changed(
+    sender: &watch::Sender<Vec<BtcIntervalMarket>>,
+    markets: &[BtcIntervalMarket],
+) {
+    if !same_market_subscriptions(&sender.borrow(), markets) {
+        let _ = sender.send(markets.to_vec());
+    }
+}
+
 fn same_market_subscription(left: &BtcIntervalMarket, right: &BtcIntervalMarket) -> bool {
     left.market_id == right.market_id
         && left.condition_id == right.condition_id
@@ -7746,6 +8071,113 @@ fn duration_milliseconds(duration: StdDuration) -> u64 {
 
 async fn record_error(metrics: &Arc<RwLock<BtcRuntimeMetrics>>, error: anyhow::Error) {
     metrics.write().await.last_error = Some(error.to_string());
+}
+
+fn retryable_postgres_primary_persistence_sqlstate(code: &str) -> bool {
+    code.starts_with("08")
+        || code.starts_with("40")
+        || code.starts_with("53")
+        || matches!(
+            code,
+            "55P03" | "57014" | "57P01" | "57P02" | "57P03" | "57P05" | "58030"
+        )
+}
+
+fn is_retryable_primary_persistence_error(error: &anyhow::Error) -> bool {
+    let Some(sqlx_error) = error.downcast_ref::<sqlx::Error>() else {
+        return false;
+    };
+    match sqlx_error {
+        sqlx::Error::Database(error) => error
+            .code()
+            .as_deref()
+            .is_some_and(retryable_postgres_primary_persistence_sqlstate),
+        sqlx::Error::Io(_) | sqlx::Error::Tls(_) | sqlx::Error::PoolTimedOut => true,
+        sqlx::Error::PoolClosed | sqlx::Error::WorkerCrashed => false,
+        _ => false,
+    }
+}
+
+fn primary_persistence_retry_delay(consecutive_failures: u32) -> StdDuration {
+    let exponent = consecutive_failures.saturating_sub(1).min(10);
+    CRITICAL_WRITE_INITIAL_BACKOFF
+        .saturating_mul(2u32.saturating_pow(exponent))
+        .min(PRIMARY_PERSISTENCE_RETRY_MAX_DELAY)
+}
+
+fn retryable_postgres_boundary_hydration_sqlstate(code: &str) -> bool {
+    code.starts_with("08")
+        || code.starts_with("40")
+        || code.starts_with("53")
+        || code.starts_with("58")
+        || matches!(code, "55P03" | "57014" | "57P01" | "57P02" | "57P03")
+}
+
+fn boundary_hydration_retry_delay(
+    discovery_interval: StdDuration,
+    consecutive_failures: u32,
+) -> StdDuration {
+    let initial_delay = discovery_interval.max(StdDuration::from_secs(1));
+    let maximum_delay = BOUNDARY_HYDRATION_RETRY_MAX_DELAY.max(initial_delay);
+    let exponent = consecutive_failures.saturating_sub(1).min(10);
+    initial_delay
+        .saturating_mul(2u32.saturating_pow(exponent))
+        .min(maximum_delay)
+}
+
+fn is_retryable_boundary_hydration_read_error(error: &anyhow::Error) -> bool {
+    let Some(sqlx_error) = error.downcast_ref::<sqlx::Error>() else {
+        return false;
+    };
+    match sqlx_error {
+        sqlx::Error::Database(error) => error
+            .code()
+            .as_deref()
+            .is_some_and(retryable_postgres_boundary_hydration_sqlstate),
+        sqlx::Error::Io(_) | sqlx::Error::Tls(_) | sqlx::Error::PoolTimedOut => true,
+        _ => false,
+    }
+}
+
+#[derive(Debug)]
+enum BoundaryHydrationReadFailure {
+    Retry {
+        error: anyhow::Error,
+        entered_degraded_state: bool,
+        consecutive_failures: u32,
+    },
+    Fatal(anyhow::Error),
+}
+
+fn classify_boundary_hydration_read_failure(
+    error: anyhow::Error,
+    metrics: &mut BtcRuntimeMetrics,
+) -> BoundaryHydrationReadFailure {
+    if !is_retryable_boundary_hydration_read_error(&error) {
+        return BoundaryHydrationReadFailure::Fatal(error);
+    }
+    let entered_degraded_state = mark_boundary_hydration_read_failure(metrics);
+    BoundaryHydrationReadFailure::Retry {
+        error,
+        entered_degraded_state,
+        consecutive_failures: metrics.boundary_hydration_consecutive_failures,
+    }
+}
+
+fn mark_boundary_hydration_read_failure(metrics: &mut BtcRuntimeMetrics) -> bool {
+    let entered_degraded_state = metrics.boundary_hydration_consecutive_failures == 0;
+    metrics.boundary_hydration_read_errors =
+        metrics.boundary_hydration_read_errors.saturating_add(1);
+    metrics.boundary_hydration_consecutive_failures = metrics
+        .boundary_hydration_consecutive_failures
+        .saturating_add(1);
+    entered_degraded_state
+}
+
+fn mark_boundary_hydration_recovered(metrics: &mut BtcRuntimeMetrics) -> bool {
+    let recovered = metrics.boundary_hydration_consecutive_failures > 0;
+    metrics.boundary_hydration_consecutive_failures = 0;
+    recovered
 }
 
 async fn record_critical_persistence_error(
@@ -9611,6 +10043,384 @@ mod tests {
         );
     }
 
+    #[test]
+    fn boundary_hydration_retry_classification_is_limited_to_availability_failures() {
+        for code in [
+            "08006", "40001", "40P01", "53200", "53300", "55P03", "57014", "57P01", "57P02",
+            "57P03", "58030",
+        ] {
+            assert!(
+                retryable_postgres_boundary_hydration_sqlstate(code),
+                "{code} must remain retryable"
+            );
+        }
+        for code in ["22000", "23505", "42601", "42P01"] {
+            assert!(
+                !retryable_postgres_boundary_hydration_sqlstate(code),
+                "{code} must remain fatal"
+            );
+        }
+
+        let retryable = anyhow::Error::new(sqlx::Error::PoolTimedOut)
+            .context("failed to load durable BTC closing references");
+        assert!(is_retryable_boundary_hydration_read_error(&retryable));
+
+        let fatal = anyhow::Error::new(sqlx::Error::ColumnNotFound("source".to_string()))
+            .context("failed to decode durable BTC closing references");
+        assert!(!is_retryable_boundary_hydration_read_error(&fatal));
+        assert!(!is_retryable_boundary_hydration_read_error(
+            &anyhow::Error::new(sqlx::Error::PoolClosed)
+        ));
+        assert!(!is_retryable_boundary_hydration_read_error(
+            &anyhow::Error::new(sqlx::Error::WorkerCrashed)
+        ));
+        assert!(!is_retryable_boundary_hydration_read_error(
+            &anyhow::anyhow!("durable BTC boundary identity conflict")
+        ));
+    }
+
+    #[test]
+    fn primary_persistence_retry_classification_is_limited_to_availability_failures() {
+        for code in [
+            "08006", "40001", "40P01", "53200", "53300", "55P03", "57014", "57P01", "57P02",
+            "57P03", "57P05", "58030",
+        ] {
+            assert!(
+                retryable_postgres_primary_persistence_sqlstate(code),
+                "{code} must remain retryable"
+            );
+        }
+        for code in ["22000", "23505", "42601", "42P01", "58000", "58P01"] {
+            assert!(
+                !retryable_postgres_primary_persistence_sqlstate(code),
+                "{code} must remain fatal"
+            );
+        }
+
+        let retryable = anyhow::Error::new(sqlx::Error::PoolTimedOut)
+            .context("failed to persist BTC reference tick");
+        assert!(is_retryable_primary_persistence_error(&retryable));
+
+        for fatal in [
+            sqlx::Error::PoolClosed,
+            sqlx::Error::WorkerCrashed,
+            sqlx::Error::ColumnNotFound("source".to_string()),
+        ] {
+            assert!(!is_retryable_primary_persistence_error(
+                &anyhow::Error::new(fatal)
+            ));
+        }
+        assert!(!is_retryable_primary_persistence_error(&anyhow::anyhow!(
+            "primary persistence identity conflict"
+        )));
+    }
+
+    #[test]
+    fn primary_persistence_retry_delay_is_bounded_and_exponential() {
+        assert_eq!(
+            primary_persistence_retry_delay(1),
+            StdDuration::from_millis(25)
+        );
+        assert_eq!(
+            primary_persistence_retry_delay(2),
+            StdDuration::from_millis(50)
+        );
+        assert_eq!(
+            primary_persistence_retry_delay(6),
+            StdDuration::from_millis(800)
+        );
+        assert_eq!(
+            primary_persistence_retry_delay(7),
+            PRIMARY_PERSISTENCE_RETRY_MAX_DELAY
+        );
+        assert_eq!(
+            primary_persistence_retry_delay(u32::MAX),
+            PRIMARY_PERSISTENCE_RETRY_MAX_DELAY
+        );
+    }
+
+    #[tokio::test]
+    async fn primary_persistence_retries_the_same_item_and_recovers() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let state = Arc::new(RwLock::new(RealtimeState::default()));
+        let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
+        let (_shutdown_sender, mut shutdown) = watch::channel(false);
+
+        let outcome = tokio::time::timeout(
+            StdDuration::from_secs(1),
+            persist_primary_item_with_retry(
+                || {
+                    let attempts = attempts.clone();
+                    async move {
+                        if attempts.fetch_add(1, Ordering::Relaxed) < 2 {
+                            Err(anyhow::Error::new(sqlx::Error::PoolTimedOut))
+                        } else {
+                            Ok(())
+                        }
+                    }
+                },
+                "reference tick",
+                &state,
+                &metrics,
+                &mut shutdown,
+            ),
+        )
+        .await
+        .expect("retry recovery must remain bounded");
+
+        assert_eq!(outcome, PrimaryPersistenceOutcome::Persisted);
+        assert_eq!(attempts.load(Ordering::Relaxed), 3);
+        let status = metrics.read().await;
+        assert_eq!(status.primary_persistence_retryable_errors, 2);
+        assert_eq!(status.primary_persistence_consecutive_failures, 0);
+        assert_eq!(status.primary_persistence_recoveries, 1);
+        assert_eq!(status.persistence_items_written, 1);
+        assert_eq!(status.persistence_errors, 0);
+        drop(status);
+        assert!(state.read().await.primary_persistence_available());
+    }
+
+    #[tokio::test]
+    async fn primary_persistence_permanent_error_fails_closed_without_retry() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let state = Arc::new(RwLock::new(RealtimeState::default()));
+        let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
+        let (_shutdown_sender, mut shutdown) = watch::channel(false);
+
+        let outcome = persist_primary_item_with_retry(
+            || {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                std::future::ready(Err(anyhow::Error::new(sqlx::Error::ColumnNotFound(
+                    "source".to_string(),
+                ))))
+            },
+            "reference tick",
+            &state,
+            &metrics,
+            &mut shutdown,
+        )
+        .await;
+
+        assert_eq!(outcome, PrimaryPersistenceOutcome::Fatal);
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+        let status = metrics.read().await;
+        assert_eq!(status.persistence_errors, 1);
+        assert_eq!(status.primary_persistence_retryable_errors, 0);
+        drop(status);
+        assert!(!state.read().await.primary_persistence_available());
+    }
+
+    #[tokio::test]
+    async fn primary_persistence_shutdown_interrupts_retry_backoff() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let state = Arc::new(RwLock::new(RealtimeState::default()));
+        let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
+        let (shutdown_sender, mut shutdown) = watch::channel(false);
+
+        let outcome = tokio::time::timeout(StdDuration::from_secs(1), async {
+            tokio::select! {
+                outcome = persist_primary_item_with_retry(
+                    || {
+                        attempts.fetch_add(1, Ordering::Relaxed);
+                        std::future::ready(Err(anyhow::Error::new(sqlx::Error::PoolTimedOut)))
+                    },
+                    "reference tick",
+                    &state,
+                    &metrics,
+                    &mut shutdown,
+                ) => outcome,
+                _ = async {
+                    while attempts.load(Ordering::Relaxed) == 0 {
+                        tokio::task::yield_now().await;
+                    }
+                    shutdown_sender.send(true).unwrap();
+                    std::future::pending::<()>().await;
+                } => unreachable!("shutdown sender branch never completes"),
+            }
+        })
+        .await
+        .expect("shutdown must interrupt primary persistence retry backoff");
+
+        assert_eq!(outcome, PrimaryPersistenceOutcome::Shutdown);
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.read().await.primary_persistence_retryable_errors, 1);
+        assert_eq!(metrics.read().await.persistence_items_written, 0);
+    }
+
+    #[tokio::test]
+    async fn primary_persistence_shutdown_does_not_skip_a_healthy_queued_write() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let state = Arc::new(RwLock::new(RealtimeState::default()));
+        let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
+        let (_shutdown_sender, mut shutdown) = watch::channel(true);
+
+        let outcome = persist_primary_item_with_retry(
+            || {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                std::future::ready(Ok(()))
+            },
+            "reference tick",
+            &state,
+            &metrics,
+            &mut shutdown,
+        )
+        .await;
+
+        assert_eq!(outcome, PrimaryPersistenceOutcome::Persisted);
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.read().await.persistence_items_written, 1);
+    }
+
+    #[tokio::test]
+    async fn primary_persistence_shutdown_does_not_cancel_an_inflight_retry() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let retry_started = Arc::new(tokio::sync::Notify::new());
+        let release_retry = Arc::new(tokio::sync::Notify::new());
+        let state = Arc::new(RwLock::new(RealtimeState::default()));
+        let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
+        let (shutdown_sender, mut shutdown) = watch::channel(false);
+
+        let outcome = tokio::time::timeout(StdDuration::from_secs(1), async {
+            tokio::select! {
+                outcome = persist_primary_item_with_retry(
+                    || {
+                        let attempt = attempts.fetch_add(1, Ordering::Relaxed);
+                        let retry_started = retry_started.clone();
+                        let release_retry = release_retry.clone();
+                        async move {
+                            if attempt == 0 {
+                                Err(anyhow::Error::new(sqlx::Error::PoolTimedOut))
+                            } else {
+                                retry_started.notify_one();
+                                release_retry.notified().await;
+                                Ok(())
+                            }
+                        }
+                    },
+                    "reference tick",
+                    &state,
+                    &metrics,
+                    &mut shutdown,
+                ) => outcome,
+                _ = async {
+                    retry_started.notified().await;
+                    shutdown_sender.send(true).unwrap();
+                    release_retry.notify_one();
+                    std::future::pending::<()>().await;
+                } => unreachable!("retry controller branch never completes"),
+            }
+        })
+        .await
+        .expect("shutdown must not cancel an in-flight idempotent retry");
+
+        assert_eq!(outcome, PrimaryPersistenceOutcome::Persisted);
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+        assert_eq!(metrics.read().await.persistence_items_written, 1);
+        assert!(state.read().await.primary_persistence_available());
+    }
+
+    #[tokio::test]
+    async fn primary_persistence_shutdown_abandonment_fails_the_integrity_audit() {
+        let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
+
+        record_primary_persistence_shutdown_abandonment(&metrics, "feed event", 3).await;
+
+        let status = metrics.read().await;
+        assert_eq!(status.dropped_messages, 3);
+        assert!(status
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("abandoned 3 queued item(s)")));
+        assert!(primary_runtime_failure(&status).is_some());
+    }
+
+    #[test]
+    fn boundary_hydration_retry_delay_is_bounded_and_exponential() {
+        let discovery_interval = StdDuration::from_secs(5);
+        assert_eq!(
+            boundary_hydration_retry_delay(discovery_interval, 1),
+            StdDuration::from_secs(5)
+        );
+        assert_eq!(
+            boundary_hydration_retry_delay(discovery_interval, 2),
+            StdDuration::from_secs(10)
+        );
+        assert_eq!(
+            boundary_hydration_retry_delay(discovery_interval, 3),
+            StdDuration::from_secs(20)
+        );
+        assert_eq!(
+            boundary_hydration_retry_delay(discovery_interval, 4),
+            BOUNDARY_HYDRATION_RETRY_MAX_DELAY
+        );
+        assert_eq!(
+            boundary_hydration_retry_delay(discovery_interval, u32::MAX),
+            BOUNDARY_HYDRATION_RETRY_MAX_DELAY
+        );
+    }
+
+    #[test]
+    fn retryable_boundary_hydration_control_does_not_poison_primary_runtime_health() {
+        let mut metrics = BtcRuntimeMetrics::default();
+
+        let first = classify_boundary_hydration_read_failure(
+            anyhow::Error::new(sqlx::Error::PoolTimedOut)
+                .context("failed to load durable BTC opening references"),
+            &mut metrics,
+        );
+        assert!(matches!(
+            first,
+            BoundaryHydrationReadFailure::Retry {
+                entered_degraded_state: true,
+                consecutive_failures: 1,
+                ..
+            }
+        ));
+
+        let second = classify_boundary_hydration_read_failure(
+            anyhow::Error::new(sqlx::Error::PoolTimedOut)
+                .context("failed to load durable BTC closing references"),
+            &mut metrics,
+        );
+        assert!(matches!(
+            second,
+            BoundaryHydrationReadFailure::Retry {
+                entered_degraded_state: false,
+                consecutive_failures: 2,
+                ..
+            }
+        ));
+
+        assert_eq!(metrics.boundary_hydration_read_errors, 2);
+        assert_eq!(metrics.boundary_hydration_consecutive_failures, 2);
+        assert_eq!(metrics.persistence_errors, 0);
+        assert!(metrics.last_error.is_none());
+        assert!(primary_runtime_failure(&metrics).is_none());
+
+        assert!(mark_boundary_hydration_recovered(&mut metrics));
+        assert_eq!(metrics.boundary_hydration_read_errors, 2);
+        assert_eq!(metrics.boundary_hydration_consecutive_failures, 0);
+        assert!(!mark_boundary_hydration_recovered(&mut metrics));
+        assert!(primary_runtime_failure(&metrics).is_none());
+    }
+
+    #[test]
+    fn market_subscription_publication_is_independent_of_boundary_hydration() {
+        let market = market();
+        let (sender, mut receiver) = watch::channel(Vec::new());
+
+        publish_market_subscriptions_if_changed(&sender, std::slice::from_ref(&market));
+        assert!(receiver.has_changed().unwrap());
+        let published = receiver.borrow_and_update().clone();
+        assert!(same_market_subscriptions(
+            &published,
+            std::slice::from_ref(&market)
+        ));
+
+        publish_market_subscriptions_if_changed(&sender, std::slice::from_ref(&market));
+        assert!(!receiver.has_changed().unwrap());
+    }
+
     #[derive(Debug)]
     struct FailingStrategyRunner;
 
@@ -9619,6 +10429,55 @@ mod tests {
         async fn on_observation(&self, _observation: StrategyObservation) -> Result<()> {
             bail!("primary strategy persistence failed")
         }
+    }
+
+    #[derive(Debug, Default)]
+    struct CountingStrategyRunner {
+        callbacks: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl BtcStrategyRunner for CountingStrategyRunner {
+        async fn on_observation(&self, _observation: StrategyObservation) -> Result<()> {
+            self.callbacks.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn degraded_primary_persistence_pauses_and_recovery_resumes_strategy_callbacks() {
+        let config = BtcRuntimeConfig {
+            enabled: true,
+            strategy_interval: StdDuration::from_millis(1),
+            ..BtcRuntimeConfig::default()
+        };
+        let updated_at = Utc::now();
+        let state = Arc::new(RwLock::new(RealtimeState {
+            primary_persistence_degraded: true,
+            last_updated_at: Some(updated_at),
+            ..RealtimeState::default()
+        }));
+        let strategy = Arc::new(CountingStrategyRunner::default());
+        let handle = BtcPlaybookRuntimeHandle::start(config, strategy.clone(), state.clone())
+            .expect("playbook must start");
+
+        tokio::time::sleep(StdDuration::from_millis(20)).await;
+        assert_eq!(strategy.callbacks.load(Ordering::Relaxed), 0);
+
+        {
+            let mut realtime = state.write().await;
+            realtime.primary_persistence_degraded = false;
+            realtime.last_updated_at = Some(updated_at + Duration::milliseconds(1));
+        }
+        tokio::time::timeout(StdDuration::from_secs(1), async {
+            while strategy.callbacks.load(Ordering::Relaxed) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("strategy callbacks must resume after persistence recovery");
+
+        handle.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -9667,24 +10526,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn primary_writer_queue_rejection_records_a_fatal_cause() {
-        let (sender, receiver) = mpsc::channel(1);
-        drop(receiver);
+    async fn primary_writer_queue_distinguishes_saturation_from_closure() {
+        let state = Arc::new(RwLock::new(RealtimeState::default()));
         let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
-        let accepted = enqueue(
+        let (sender, _receiver) = mpsc::channel(1);
+        sender
+            .try_send(PersistItem::ReferenceTick(tick(Utc::now(), dec!(99))))
+            .unwrap();
+        let saturated = enqueue(
             &sender,
             PersistItem::ReferenceTick(tick(Utc::now(), dec!(100))),
+            &state,
             &metrics,
         )
         .await;
 
-        assert!(!accepted);
+        assert_eq!(saturated, PersistEnqueueOutcome::Saturated);
         let status = metrics.read().await;
         assert_eq!(status.dropped_messages, 1);
+        assert_eq!(status.primary_persistence_queue_overflows, 1);
         assert!(status
             .last_error
             .as_deref()
-            .is_some_and(|error| error.contains("persistence queue rejected item")));
+            .is_some_and(|error| error.contains("persistence queue saturated")));
+        drop(status);
+        assert!(!state.read().await.primary_persistence_available());
+
+        record_primary_persistence_success(&state, &metrics).await;
+        assert!(
+            !state.read().await.primary_persistence_available(),
+            "a dropped durable item must latch the runtime fail-closed"
+        );
+
+        let closed_state = Arc::new(RwLock::new(RealtimeState::default()));
+        let closed_metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
+        let (closed_sender, closed_receiver) = mpsc::channel(1);
+        drop(closed_receiver);
+        let closed = enqueue(
+            &closed_sender,
+            PersistItem::ReferenceTick(tick(Utc::now(), dec!(101))),
+            &closed_state,
+            &closed_metrics,
+        )
+        .await;
+
+        assert_eq!(closed, PersistEnqueueOutcome::Closed);
+        let status = closed_metrics.read().await;
+        assert_eq!(status.dropped_messages, 1);
+        assert_eq!(status.primary_persistence_queue_overflows, 0);
+        assert!(status
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("persistence queue closed")));
     }
 
     #[test]
@@ -11002,7 +11895,7 @@ mod tests {
         let mut watchdog = ReferenceFeedWatchdog::new(started_at, ReferenceFeedKind::Rtds);
         assert_eq!(
             watchdog.required_data_deadline,
-            started_at + RTDS_REQUIRED_DATA_TIMEOUT
+            Some(started_at + RTDS_REQUIRED_DATA_TIMEOUT)
         );
         assert_eq!(
             watchdog.read_idle_deadline,
@@ -11019,14 +11912,14 @@ mod tests {
         );
         assert_eq!(
             watchdog.required_data_deadline,
-            started_at + RTDS_REQUIRED_DATA_TIMEOUT
+            Some(started_at + RTDS_REQUIRED_DATA_TIMEOUT)
         );
 
         let data_at = started_at + StdDuration::from_secs(3);
         watchdog.on_required_tick(data_at, ReferenceFeedKind::Rtds);
         assert_eq!(
             watchdog.required_data_deadline,
-            data_at + RTDS_REQUIRED_DATA_TIMEOUT
+            Some(data_at + RTDS_REQUIRED_DATA_TIMEOUT)
         );
         assert_eq!(
             watchdog.stable_deadline,
@@ -11060,6 +11953,35 @@ mod tests {
         assert!(watchdog.stable);
         assert!(watchdog.stable_deadline.is_none());
         assert!(!watchdog.mark_stable());
+    }
+
+    #[test]
+    fn binance_watchdog_keeps_freshness_separate_from_transport_liveness() {
+        let started_at = Instant::now();
+        let mut watchdog = ReferenceFeedWatchdog::new(started_at, ReferenceFeedKind::Binance);
+
+        assert_eq!(
+            ReferenceFeedKind::Rtds.required_data_disconnect_timeout(),
+            Some(RTDS_REQUIRED_DATA_TIMEOUT)
+        );
+        assert_eq!(
+            ReferenceFeedKind::Binance.required_data_disconnect_timeout(),
+            None
+        );
+        assert!(watchdog.required_data_deadline.is_none());
+        assert_eq!(
+            watchdog.read_idle_deadline,
+            started_at + REFERENCE_READ_IDLE_TIMEOUT
+        );
+
+        let data_at = started_at + StdDuration::from_secs(3);
+        watchdog.on_required_tick(data_at, ReferenceFeedKind::Binance);
+
+        assert!(watchdog.required_data_deadline.is_none());
+        assert_eq!(
+            watchdog.stable_deadline,
+            Some(data_at + REFERENCE_STABLE_RESET_AFTER)
+        );
     }
 
     #[test]
