@@ -22,9 +22,9 @@ decision_grid AS MATERIALIZED (
       AS decision_at
   FROM eligible_markets market
   CROSS JOIN generate_series(
-    %(minimum_decision_second)s,
-    %(maximum_decision_second)s,
-    %(sample_interval_seconds)s
+    %(minimum_decision_second)s::integer,
+    %(maximum_decision_second)s::integer,
+    %(sample_interval_seconds)s::integer
   ) AS decision(seconds_elapsed)
 ),
 scenario_grid AS MATERIALIZED (
