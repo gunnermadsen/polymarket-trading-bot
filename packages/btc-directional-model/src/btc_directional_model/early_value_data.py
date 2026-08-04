@@ -24,6 +24,27 @@ PRICE_COLUMNS = (
     "yes_best_ask", "yes_ask_vwap_5", "yes_ask_depth", "no_received_at",
     "no_snapshot_at", "no_best_ask", "no_ask_vwap_5", "no_ask_depth",
 )
+PRICE_SCHEMA = pa.schema(
+    [
+        ("market_id", pa.string()),
+        ("window_start", pa.timestamp("us", tz="UTC")),
+        ("window_end", pa.timestamp("us", tz="UTC")),
+        ("label_up", pa.int32()),
+        ("fee_rate", pa.float64()),
+        ("seconds_elapsed", pa.int32()),
+        ("observed_at", pa.timestamp("us", tz="UTC")),
+        ("yes_received_at", pa.timestamp("us", tz="UTC")),
+        ("yes_snapshot_at", pa.timestamp("us", tz="UTC")),
+        ("yes_best_ask", pa.float64()),
+        ("yes_ask_vwap_5", pa.float64()),
+        ("yes_ask_depth", pa.float64()),
+        ("no_received_at", pa.timestamp("us", tz="UTC")),
+        ("no_snapshot_at", pa.timestamp("us", tz="UTC")),
+        ("no_best_ask", pa.float64()),
+        ("no_ask_vwap_5", pa.float64()),
+        ("no_ask_depth", pa.float64()),
+    ]
+)
 
 
 def load_external_source(path: Path, *, start: datetime, end: datetime) -> pl.DataFrame:
@@ -173,12 +194,15 @@ def _extract_price_day(
             )
             names = [column.name for column in cursor.description]
             while rows := cursor.fetchmany(10_000):
-                table = pa.Table.from_pylist([dict(zip(names, row, strict=True)) for row in rows])
+                table = pa.Table.from_pylist(
+                    [dict(zip(names, row, strict=True)) for row in rows],
+                    schema=PRICE_SCHEMA,
+                )
                 if writer is None:
                     writer = pq.ParquetWriter(temporary, table.schema, compression="zstd")
                 writer.write_table(table)
         if writer is None:
-            table = pa.table({name: pa.array([], type=pa.string()) for name in PRICE_COLUMNS})
+            table = pa.Table.from_pylist([], schema=PRICE_SCHEMA)
             pq.write_table(table, temporary, compression="zstd")
         else:
             writer.close()

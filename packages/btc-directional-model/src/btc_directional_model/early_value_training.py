@@ -14,7 +14,7 @@ from threadpoolctl import threadpool_limits
 
 from .chainlink_oi_features import CHAINLINK_CANDLE_FEATURES
 from .core_config import CoreTrainingConfig
-from .core_features import CORE_BOUNDARY_ENRICHED_FEATURES, CORE_ORACLE_FEATURES
+from .core_features import CORE_BOUNDARY_ENRICHED_FEATURES
 from .core_training import (
     MARKET_EQUAL_ROW_WEIGHT_POLICY,
     CandidateSpec,
@@ -28,10 +28,9 @@ from .spot_l2_chainlink_features import L2_FEATURES
 
 CORE = "core_hgb"
 CORE_LOGISTIC = "core_logistic"
-CORE_ORACLE = "core_oracle_hgb"
 CORE_L2 = "core_l2_hgb"
 CORE_CANDLES = "core_chainlink_candles_hgb"
-COMBINED = "core_oracle_l2_chainlink_candles_hgb"
+COMBINED = "core_l2_chainlink_candles_hgb"
 
 
 @dataclass(frozen=True)
@@ -63,15 +62,13 @@ class EarlyModel:
 
 def model_feature_sets() -> dict[str, tuple[str, ...]]:
     core = tuple(CORE_BOUNDARY_ENRICHED_FEATURES)
-    oracle = tuple(dict.fromkeys((*core, *CORE_ORACLE_FEATURES)))
     return {
         CORE_LOGISTIC: core,
         CORE: core,
-        CORE_ORACLE: oracle,
         CORE_L2: tuple(dict.fromkeys((*core, *L2_FEATURES))),
         CORE_CANDLES: tuple(dict.fromkeys((*core, *CHAINLINK_CANDLE_FEATURES))),
         COMBINED: tuple(
-            dict.fromkeys((*oracle, *L2_FEATURES, *CHAINLINK_CANDLE_FEATURES))
+            dict.fromkeys((*core, *L2_FEATURES, *CHAINLINK_CANDLE_FEATURES))
         ),
     }
 
