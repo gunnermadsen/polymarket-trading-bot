@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import polars as pl
 
@@ -34,3 +35,12 @@ def test_external_join_uses_only_strictly_prior_availability() -> None:
     result = build_strict_external_frame(core, pl.DataFrame(values), candles)
     assert result.height == 1
     assert result["seconds_elapsed"].to_list() == [5]
+
+
+def test_price_query_matches_canonical_checkpoint_schema() -> None:
+    query = (
+        Path(__file__).parents[1] / "sql/btc-early-value-book-source.sql"
+    ).read_text()
+    assert "official_outcome IN ('up', 'down')" in query
+    assert "checkpoint.source_timestamp AS snapshot_at" in query
+    assert "checkpoint.snapshot_at" not in query

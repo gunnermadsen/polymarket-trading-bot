@@ -1,5 +1,5 @@
 [data]
-source_contract = "btc_core_oracle_v1"
+source_contract = "btc_core_v1"
 range_start = "2026-04-14T00:00:00Z"
 range_end = "2026-08-02T00:00:00Z"
 sample_interval_seconds = 5
@@ -70,8 +70,8 @@ threads_per_fit = 1
 polars_threads = 6
 
 [paths]
-source_data = "data/btc-early-price-value-20260414-20260802/core-source"
-development_feature_data = "data/btc-early-price-value-20260414-20260802/features/development.parquet"
-holdout_feature_data = "data/btc-early-price-value-20260414-20260802/features/evaluation.parquet"
+source_data = "data/btc-early-price-value-20260414-20260802/core-market-source"
+development_feature_data = "data/btc-early-price-value-20260414-20260802/features/core-development.parquet"
+holdout_feature_data = "data/btc-early-price-value-20260414-20260802/features/core-evaluation.parquet"
 runs = "runs/btc-early-price-value-20260414-20260802/core"
 artifacts = "artifacts/btc-early-price-value-20260414-20260802/core"

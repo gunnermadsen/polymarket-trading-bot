@@ -74,15 +74,34 @@ def run_early_value_benchmark(
     prices = load_price_evidence(config)
     scored = attach_execution_value(predictions, prices)
     ledgers = policy_ledgers(scored, config)
+    selected_model = training["selected_profile"]
     policy_results: dict[str, Any] = {}
+    policy_model_results: dict[str, Any] = {}
     for name, ledger in ledgers.items():
-        metrics = ledger_metrics(ledger)
-        metrics["utc_day_block_bootstrap_net_expectancy"] = bootstrap_net_expectancy(
-            ledger,
-            resamples=config.bootstrap_resamples,
-            seed=config.random_seed,
+        model_results: dict[str, Any] = {}
+        for model_name in sorted(ledger["model"].unique().to_list()):
+            model_ledger = ledger.filter(pl.col("model") == model_name)
+            metrics = ledger_metrics(model_ledger)
+            metrics["utc_day_block_bootstrap_net_expectancy"] = bootstrap_net_expectancy(
+                model_ledger,
+                resamples=config.bootstrap_resamples,
+                seed=config.random_seed,
+            )
+            model_results[model_name] = metrics
+        policy_model_results[name] = model_results
+        policy_results[name] = model_results.get(
+            selected_model,
+            {
+                "trades": 0,
+                "accuracy": None,
+                "net_profit": 0.0,
+                "net_expectancy_per_trade": None,
+                "profit_factor": None,
+                "mean_entry_cost_per_share": None,
+                "mean_entry_second": None,
+                "utc_day_block_bootstrap_net_expectancy": None,
+            },
         )
-        policy_results[name] = metrics
 
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = config.runs / run_id
@@ -136,12 +155,18 @@ def run_early_value_benchmark(
             "price_by_second": price_rows,
             "calibration_by_time_and_cost": calibration_rows,
             "policies": policy_results,
+            "policies_by_model": policy_model_results,
         },
         "interpretation": {
             "break_even_rule": "predicted win probability must exceed all-in executable cost per share",
             "example_25pct_at_30c": "negative expectancy before sampling error because 0.25 < 0.30 plus fees",
             "refprice_training_eligible": False,
             "refprice_reason": "historical availability/receipt timestamps are not proven",
+            "oracle_round_early_training_eligible": False,
+            "oracle_round_reason": (
+                "the existing oracle feature contract requires mature context and yields no complete 5-240 second markets"
+            ),
+            "chainlink_closed_candles_used": True,
             "fresh_forward_shadow_required": True,
         },
         "lineage": {
