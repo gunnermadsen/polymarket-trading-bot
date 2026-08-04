@@ -5,7 +5,9 @@ import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+from . import PROCESS_ID
 from .asos_ingestion import ingest_asos, ingest_asos_one_minute, ingest_asos_resolution
+from .asymmetric_benchmark import run_asymmetric_benchmark
 from .benchmark import run_benchmark
 from .config import Settings
 from .database import connection
@@ -67,8 +69,12 @@ def _year_ranges(start: date, end: date):
 def _model_path(settings: Settings, model_run_id: str) -> Path:
     with connection(settings.database_url) as conn:
         row = conn.execute(
-            "SELECT model_uri FROM weather.model_runs WHERE model_run_id=%s",
-            (model_run_id,),
+            """
+            SELECT model_uri
+            FROM weather.model_runs
+            WHERE process_id=%s AND model_run_id=%s
+            """,
+            (PROCESS_ID, model_run_id),
         ).fetchone()
     if not row:
         raise ValueError(f"unknown model_run_id: {model_run_id}")
@@ -100,7 +106,9 @@ def _readiness(settings: Settings) -> dict:
               (SELECT count(*)::int FROM weather.label_reconciliation
                 WHERE winner_matches_station) AS matching_days,
               (SELECT count(*)::int FROM weather.model_runs) AS model_runs,
-              (SELECT count(*)::int FROM weather.benchmark_runs) AS benchmark_runs
+              (SELECT count(*)::int FROM weather.benchmark_runs) AS benchmark_runs,
+              (SELECT count(*)::int FROM weather.asymmetric_policy_runs)
+                AS asymmetric_policy_runs
             """
         ).fetchone()
 
@@ -128,7 +136,11 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile.add_argument("--start", required=True, type=_date)
     reconcile.add_argument("--end", required=True, type=_date)
     train = subparsers.add_parser("train")
-    train.add_argument("--candidate", required=True, choices=("raw_hrrr", "linear_bias", "histogram_residual"))
+    train.add_argument(
+        "--candidate",
+        required=True,
+        choices=("raw_hrrr", "linear_bias", "histogram_residual"),
+    )
     train.add_argument("--decision-hour", required=True, type=int, choices=(0, 12))
     train.add_argument("--training-start", required=True, type=_date)
     train.add_argument("--training-end", required=True, type=_date)
@@ -143,6 +155,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--evidence-tier", choices=("indicative", "executable_taker"), default="executable_taker"
     )
     benchmark.add_argument("--safety-buffer", type=float, default=0.02)
+    asymmetric = subparsers.add_parser("asymmetric-benchmark")
+    asymmetric.add_argument("--midnight-model-run-id", required=True)
+    asymmetric.add_argument("--noon-model-run-id", required=True)
+    asymmetric.add_argument("--discovery-start", required=True, type=_date)
+    asymmetric.add_argument("--discovery-end", required=True, type=_date)
+    asymmetric.add_argument("--evaluation-start", required=True, type=_date)
+    asymmetric.add_argument("--evaluation-end", required=True, type=_date)
+    asymmetric.add_argument("--quantity", type=float, default=5.0, choices=(1.0, 5.0, 10.0))
+    asymmetric.add_argument("--modeled-slippage", type=float, default=0.01)
+    asymmetric.add_argument("--probability-bootstrap-iterations", type=int, default=2000)
     subparsers.add_parser("readiness")
     return parser
 
@@ -257,6 +279,19 @@ def main() -> None:
             quantity=args.quantity,
             evidence_tier=args.evidence_tier,
             safety_buffer=args.safety_buffer,
+        )
+    elif args.command == "asymmetric-benchmark":
+        result = run_asymmetric_benchmark(
+            settings,
+            midnight_model_run_id=args.midnight_model_run_id,
+            noon_model_run_id=args.noon_model_run_id,
+            discovery_start=args.discovery_start,
+            discovery_end=args.discovery_end,
+            evaluation_start=args.evaluation_start,
+            evaluation_end=args.evaluation_end,
+            quantity=args.quantity,
+            modeled_slippage_per_share=args.modeled_slippage,
+            probability_bootstrap_iterations=args.probability_bootstrap_iterations,
         )
     elif args.command == "readiness":
         result = _readiness(settings)

@@ -51,20 +51,42 @@ docker compose -f docker-compose.temperature.yml --profile tools run --rm temper
 docker compose -f docker-compose.temperature.yml --profile tools run --rm temperature-model \
   train --candidate histogram_residual --decision-hour 0 \
   --training-start 2019-01-01 --training-end 2024-12-31 \
-  --calibration-start 2025-01-01 --calibration-end 2025-08-31
+  --calibration-start 2025-01-01 --calibration-end 2025-12-31
 
 docker compose -f docker-compose.temperature.yml --profile tools run --rm temperature-model \
-  benchmark --model-run-id MODEL_RUN_ID \
-  --evaluation-start 2026-04-14 --evaluation-end 2026-08-01 \
-  --quantity 5 --evidence-tier executable_taker --safety-buffer 0.02
+  asymmetric-benchmark \
+  --midnight-model-run-id MIDNIGHT_MODEL_RUN_ID \
+  --noon-model-run-id NOON_MODEL_RUN_ID \
+  --discovery-start 2026-04-14 --discovery-end 2026-06-30 \
+  --evaluation-start 2026-07-01 --evaluation-end 2026-07-30 \
+  --quantity 5 --modeled-slippage 0.01
 ```
 
-Run the midnight and noon policies independently. Train all three candidates, but select the
-candidate using only the training and calibration periods. Historical CLOB price history is an
-indicative benchmark only. It cannot pass strict qualification; only causal PMXT taker VWAP can.
+Train all three candidates for midnight and noon. Select each decision-time ML model using the
+lowest pre-2026 leave-one-out rounded-temperature distribution log loss, with ranked probability
+score secondary and RMSE retained as a point-forecast diagnostic. The executable 2026 policy
+discovery and July holdout must not choose the forecast model. July 31 is excluded because its
+canonical station day is incomplete in the collected archive. Historical CLOB price history is
+diagnostic only; this benchmark uses causal PMXT five-share ask VWAPs.
 
-Strict qualification requires all of the following: at least 99% station/market label agreement,
-better log loss than raw HRRR, ECE no greater than 5%, at least 75 independent executable event
-days, positive five-share net expectancy after fees and a two-cent safety buffer, a positive lower
-90% block-bootstrap bound, positive chronological folds, and positive expectancy after removing
-the five best days.
+The asymmetric benchmark predicts the complete mutually exclusive temperature-bucket distribution,
+expands every bucket into actual executable YES and NO candidates, and selects at most one position
+per event day. It does not require 90% accuracy. The predeclared nine-policy frontier admits a trade
+only when the conservative probability estimate exceeds captured-schedule, adverse-slippage,
+five-share VWAP break-even cost by the policy's edge and ROI margins. Dynamic fees are recomputed at
+the slipped VWAP and rounded to five decimals. Because archived individual match levels are not
+persisted, this is a conservative fee-curve approximation at the order VWAP, not an exact per-fill
+fee reconstruction. The discovery winner is frozen before the July
+holdout is evaluated. Reports include price-conditioned calibration, fixed-five-share PnL, return on
+deployed capital, equity and drawdown, worst-loss concentration, an expensive-share comparator, an
+uncapped comparator, and frozen-policy slippage stress at 0, 0.5, 1, and 2 cents per share.
+Price-cell uncertainty resamples complete event dates in seven-day blocks; it never treats the
+mutually exclusive bucket contracts from one day as independent observations. Label qualification
+requires at least 100 reconciled days, at least 95% coverage of resolved event days, and at least 99%
+agreement with the canonical station result.
+
+`pilot_edge_supported` is an evidence label, not a deployment guarantee. `production_qualified`
+also requires a positive one-sided block-bootstrap bound, robustness without the best trade, and a
+larger balance of observed wins and losses. If those conditions fail, the valid conclusion is that
+the collected history has not demonstrated a deployable edge; thresholds must not be changed after
+opening the holdout.

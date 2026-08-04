@@ -1,5 +1,8 @@
+from datetime import date
+
 import pytest
 
+from nyc_temperature_model.contracts import canonical_market_rows
 from nyc_temperature_model.market_ingestion import (
     _eligible_resolution_source,
     parse_bucket,
@@ -37,3 +40,29 @@ def test_historical_event_without_canonical_source_is_ineligible():
             )
         },
     )
+
+
+def test_non_archived_partition_wins_only_when_duplicate_exists():
+    rows = [
+        {
+            "event_date": date(2026, 5, 18),
+            "event_id": "arch-only",
+            "event_slug": "arch-highest-temperature-may-18",
+            "market_id": "1",
+        },
+        {
+            "event_date": date(2026, 5, 19),
+            "event_id": "arch-duplicate",
+            "event_slug": "arch-highest-temperature-may-19",
+            "market_id": "2",
+        },
+        {
+            "event_date": date(2026, 5, 19),
+            "event_id": "canonical",
+            "event_slug": "highest-temperature-may-19",
+            "market_id": "3",
+        },
+    ]
+
+    selected = canonical_market_rows(rows)
+    assert [row["market_id"] for row in selected] == ["1", "3"]

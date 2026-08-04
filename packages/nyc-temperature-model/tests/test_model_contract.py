@@ -7,6 +7,7 @@ from nyc_temperature_model.modeling import (
     _complete_forecast_values,
     _expected_forecast_times,
     bucket_probability,
+    leave_one_out_distribution_metrics,
     normalized_bucket_probabilities,
     round_temperature,
 )
@@ -31,6 +32,23 @@ def test_market_bucket_probabilities_sum_to_one_after_smoothing():
         [(None, 68), (69, 71), (72, None)],
     )
     assert np.isclose(sum(probabilities), 1.0)
+
+
+def test_model_selection_score_rewards_sharper_calibrated_distributions():
+    targets = np.asarray([60, 62, 64, 66, 68, 70], dtype=float)
+    sharp = leave_one_out_distribution_metrics(targets.copy(), targets)
+    diffuse = leave_one_out_distribution_metrics(
+        np.full(targets.shape, targets.mean()), targets
+    )
+
+    assert (
+        sharp["calibration_loo_rounded_log_loss"]
+        < diffuse["calibration_loo_rounded_log_loss"]
+    )
+    assert (
+        sharp["calibration_loo_ranked_probability_score"]
+        < diffuse["calibration_loo_ranked_probability_score"]
+    )
 
 
 def test_midnight_decision_hour_remains_zero_not_missing():

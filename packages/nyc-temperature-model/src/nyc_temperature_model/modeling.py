@@ -18,7 +18,9 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from . import PROCESS_ID, STATION_ID
 from .config import Settings
+from .contracts import canonical_market_rows
 from .database import connection
+from .hrrr_ingestion import _model_run_for_decision
 from .sources import file_sha256
 
 NYC = ZoneInfo("America/New_York")
@@ -34,6 +36,8 @@ FEATURE_NAMES = (
     "decision_hour_local",
 )
 CANDIDATES = ("raw_hrrr", "linear_bias", "histogram_residual")
+ROUNDED_TEMPERATURE_SUPPORT_MIN_F = -20
+ROUNDED_TEMPERATURE_SUPPORT_MAX_F = 130
 
 
 @dataclass(frozen=True)
@@ -99,10 +103,11 @@ def build_feature_rows(database_url: str, start: date, end: date, decision_hour:
     with connection(database_url) as conn:
         forecasts = conn.execute(
             """
-            SELECT decision_time, valid_at, temperature_f::double precision AS temperature_f
+            SELECT decision_time, valid_at, model_run,
+                   temperature_f::double precision AS temperature_f
             FROM weather.hrrr_point_forecasts
             WHERE station_id = %s AND decision_time >= %s AND decision_time < %s
-            ORDER BY decision_time, valid_at
+            ORDER BY decision_time, model_run, valid_at
             """,
             (STATION_ID, start_utc, end_utc),
         ).fetchall()
@@ -120,7 +125,8 @@ def build_feature_rows(database_url: str, start: date, end: date, decision_hour:
     forecast_groups: dict[datetime, dict[datetime, float]] = {}
     for row in forecasts:
         local = row["decision_time"].astimezone(NYC)
-        if local.hour == decision_hour:
+        expected_model_run = _model_run_for_decision(row["decision_time"], 75)
+        if local.hour == decision_hour and row["model_run"] == expected_model_run:
             forecast_groups.setdefault(row["decision_time"], {})[row["valid_at"]] = row[
                 "temperature_f"
             ]
@@ -181,7 +187,7 @@ def _impute(matrix: np.ndarray, medians: np.ndarray) -> np.ndarray:
     return result
 
 
-def _raw_point(rows: list[FeatureRow]) -> np.ndarray:
+def raw_point_prediction(rows: list[FeatureRow]) -> np.ndarray:
     return np.asarray(
         [
             max(
@@ -197,7 +203,7 @@ def _raw_point(rows: list[FeatureRow]) -> np.ndarray:
 
 
 def point_prediction(bundle: dict[str, Any], rows: list[FeatureRow]) -> np.ndarray:
-    raw = _raw_point(rows)
+    raw = raw_point_prediction(rows)
     if bundle["candidate"] == "raw_hrrr":
         return raw
     matrix = _impute(_matrix(rows), np.asarray(bundle["imputation_medians"]))
@@ -225,11 +231,68 @@ def normalized_bucket_probabilities(
     residuals: np.ndarray,
     buckets: list[tuple[int | None, int | None]],
 ) -> list[float]:
-    values = [bucket_probability(point, residuals, lower, upper) for lower, upper in buckets]
+    if residuals.size == 0 or not buckets:
+        raise ValueError("temperature bucket probabilities require residuals and buckets")
+    rounded = np.floor(point + residuals + 0.5).astype(np.int64)
+    denominator = rounded.size + 0.5 * len(buckets)
+    values = []
+    for lower, upper in buckets:
+        selected = np.ones(rounded.shape, dtype=bool)
+        if lower is not None:
+            selected &= rounded >= lower
+        if upper is not None:
+            selected &= rounded <= upper
+        values.append(float((selected.sum() + 0.5) / denominator))
     total = sum(values)
-    if not math.isfinite(total) or total <= 0:
+    if not math.isclose(total, 1.0, rel_tol=1e-9, abs_tol=1e-9):
         raise ValueError("temperature bucket probabilities cannot be normalized")
-    return [value / total for value in values]
+    return values
+
+
+def leave_one_out_distribution_metrics(
+    points: np.ndarray,
+    targets: np.ndarray,
+) -> dict[str, float]:
+    if points.ndim != 1 or targets.ndim != 1 or points.size != targets.size:
+        raise ValueError("distribution scoring requires aligned one-dimensional arrays")
+    if points.size < 3 or not np.isfinite(points).all() or not np.isfinite(targets).all():
+        raise ValueError("distribution scoring requires at least three finite observations")
+    residuals = targets - points
+    rounded_targets = np.floor(targets + 0.5).astype(np.int64)
+    support_min = ROUNDED_TEMPERATURE_SUPPORT_MIN_F
+    support_max = ROUNDED_TEMPERATURE_SUPPORT_MAX_F
+    support_size = support_max - support_min + 1
+    log_losses = []
+    ranked_probability_scores = []
+    for index, point in enumerate(points):
+        calibration_residuals = np.delete(residuals, index)
+        simulated = np.floor(point + calibration_residuals + 0.5).astype(np.int64)
+        if (
+            simulated.min() < support_min
+            or simulated.max() > support_max
+            or rounded_targets[index] < support_min
+            or rounded_targets[index] > support_max
+        ):
+            raise ValueError("rounded temperature falls outside canonical scoring support")
+        counts = np.bincount(simulated - support_min, minlength=support_size)
+        probabilities = (counts + 0.5) / (
+            calibration_residuals.size + 0.5 * support_size
+        )
+        target_index = int(rounded_targets[index] - support_min)
+        log_losses.append(-math.log(float(probabilities[target_index])))
+        observed_cdf = (np.arange(support_size) >= target_index).astype(np.float64)
+        ranked_probability_scores.append(
+            float(np.sum((np.cumsum(probabilities) - observed_cdf) ** 2))
+        )
+    return {
+        "calibration_loo_rounded_log_loss": float(np.mean(log_losses)),
+        "calibration_loo_ranked_probability_score": float(
+            np.mean(ranked_probability_scores)
+        ),
+        "calibration_distribution_support_degrees": support_size,
+        "calibration_distribution_support_min_f": support_min,
+        "calibration_distribution_support_max_f": support_max,
+    }
 
 
 def train_model(
@@ -278,7 +341,7 @@ def train_model(
             random_state=17,
         ).fit(train_matrix, train_target)
     bundle: dict[str, Any] = {
-        "schema_version": "nyc-temperature-model-v1",
+        "schema_version": "nyc-temperature-model-v2",
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "feature_names": FEATURE_NAMES,
         "candidate": candidate,
@@ -294,9 +357,10 @@ def train_model(
     }
     calibration_target = np.asarray([row.target_daily_max_f for row in calibration_rows])
     candidate_point = point_prediction(bundle, calibration_rows)
-    raw_point = _raw_point(calibration_rows)
+    raw_point = raw_point_prediction(calibration_rows)
     bundle["residuals"] = calibration_target - candidate_point
     bundle["raw_residuals"] = calibration_target - raw_point
+    bundle["residual_dates"] = [row.event_date.isoformat() for row in calibration_rows]
     metrics = {
         "training_days": len(train_rows),
         "calibration_days": len(calibration_rows),
@@ -304,8 +368,18 @@ def train_model(
         "calibration_rmse_f": float(mean_squared_error(calibration_target, candidate_point) ** 0.5),
         "raw_calibration_mae_f": float(mean_absolute_error(calibration_target, raw_point)),
         "raw_calibration_rmse_f": float(mean_squared_error(calibration_target, raw_point) ** 0.5),
+        "calibration_exact_degree_rate": float(
+            np.mean(
+                np.floor(candidate_point + 0.5).astype(np.int64)
+                == np.asarray([row.target_rounded_max_f for row in calibration_rows])
+            )
+        ),
+        "calibration_within_one_f_rate": float(
+            np.mean(np.abs(calibration_target - candidate_point) <= 1.0)
+        ),
         "residual_p05_f": float(np.quantile(bundle["residuals"], 0.05)),
         "residual_p95_f": float(np.quantile(bundle["residuals"], 0.95)),
+        **leave_one_out_distribution_metrics(candidate_point, calibration_target),
     }
     model_run_id = str(uuid.uuid4())
     settings.model_directory.mkdir(parents=True, exist_ok=True)
@@ -350,7 +424,10 @@ def train_model(
 
 def load_model(path: Path) -> dict[str, Any]:
     bundle = joblib.load(path)
-    if bundle.get("schema_version") != "nyc-temperature-model-v1":
+    if bundle.get("schema_version") not in {
+        "nyc-temperature-model-v1",
+        "nyc-temperature-model-v2",
+    }:
         raise ValueError("unsupported model schema")
     if tuple(bundle.get("feature_names", ())) != FEATURE_NAMES:
         raise ValueError("model feature contract does not match this package")
@@ -373,13 +450,15 @@ def reconcile_labels(settings: Settings, start: date, end: date) -> dict[str, An
         ).fetchall()
         markets = conn.execute(
             """
-            SELECT market_id,event_date,bucket_lower_f,bucket_upper_f,resolved_yes
+            SELECT market_id,event_id,event_slug,event_date,
+                   bucket_lower_f,bucket_upper_f,resolved_yes
             FROM weather.temperature_markets
             WHERE event_date >= %s AND event_date < %s AND resolved_yes IS NOT NULL
             ORDER BY event_date,market_id
             """,
             (start, end),
         ).fetchall()
+    markets = canonical_market_rows(list(markets))
     by_date_observations: dict[date, list[dict]] = {}
     for row in observations:
         by_date_observations.setdefault(row["observed_at"].astimezone(NYC).date(), []).append(row)
