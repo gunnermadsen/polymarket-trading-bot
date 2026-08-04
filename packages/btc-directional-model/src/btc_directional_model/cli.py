@@ -68,6 +68,8 @@ from .report import generate_report
 from .residual_admission_benchmark import run_residual_admission_benchmark
 from .residual_admission_config import load_residual_admission_config
 from .runtime_export import export_runtime_model
+from .spot_l2_chainlink_benchmark import run_spot_l2_chainlink_benchmark
+from .spot_l2_chainlink_config import load_spot_l2_chainlink_config
 from .train import train_models
 from .training_readiness import prepare_training_readiness
 
@@ -166,6 +168,10 @@ def main() -> None:
     chainlink_oi_forward.add_argument("--end", type=_parse_utc_day, required=True)
     chainlink_oi_forward.add_argument("--output-root", type=Path, required=True)
     chainlink_oi_forward.add_argument("--runtime-model-root", type=Path)
+    spot_l2_chainlink_run = subparsers.add_parser(
+        "spot-l2-chainlink-candles-benchmark-run"
+    )
+    spot_l2_chainlink_run.add_argument("--config", type=Path, required=True)
     fixed_time_run = subparsers.add_parser("fixed-120-benchmark-run")
     fixed_time_run.add_argument("--config", type=Path, required=True)
     fixed_time_export = subparsers.add_parser("fixed-120-paper-candidate-export")
@@ -405,6 +411,13 @@ def main() -> None:
             print(f"model SHA-256: {result.model_sha256}")
             print(f"feature schema SHA-256: {result.feature_schema_sha256}")
         print("scope: paper_only; production-qualified: false")
+        return
+    if args.command == "spot-l2-chainlink-candles-benchmark-run":
+        config = load_spot_l2_chainlink_config(args.config)
+        run_dir, _report = run_spot_l2_chainlink_benchmark(config)
+        print(f"report: {run_dir / 'benchmark-report.md'}")
+        print("advancement: paper-only forward validation at most")
+        print("runtime/deployment: unchanged")
         return
     if args.command == "fixed-120-benchmark-run":
         config = load_fixed_time_accuracy_config(args.config)
