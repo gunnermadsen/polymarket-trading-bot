@@ -25,6 +25,8 @@ from .core_extract import extract_core_source, snapshot_residual_admission_sourc
 from .core_features import build_core_features
 from .core_report import generate_core_report
 from .core_training import develop_core_models, evaluate_core_holdout
+from .early_value_benchmark import run_early_value_benchmark
+from .early_value_config import load_early_value_config
 from .entry_benchmark import run_entry_benchmark
 from .extract import extract_source
 from .features import build_features
@@ -122,6 +124,9 @@ def main() -> None:
     entry_run = subparsers.add_parser("entry-benchmark-run")
     entry_run.add_argument("--config", type=Path, required=True)
     entry_run.add_argument("--force", action="store_true")
+    early_value_run = subparsers.add_parser("early-value-benchmark-run")
+    early_value_run.add_argument("--config", type=Path, required=True)
+    early_value_run.add_argument("--force", action="store_true")
     oracle_book_run = subparsers.add_parser("oracle-book-benchmark-run")
     oracle_book_run.add_argument("--config", type=Path, required=True)
     price_aware_run = subparsers.add_parser("price-aware-benchmark-run")
@@ -319,6 +324,13 @@ def main() -> None:
                 else "none"
             )
         )
+        return
+    if args.command == "early-value-benchmark-run":
+        config = load_early_value_config(args.config)
+        run_dir, result = run_early_value_benchmark(config, force=args.force)
+        print(f"report: {run_dir / 'benchmark-report.md'}")
+        print(f"selected probability model: {result['training']['selected_profile']}")
+        print("runtime/trading pipeline changes: none")
         return
     if args.command == "oracle-book-benchmark-run":
         config = load_oracle_book_benchmark_config(args.config)
