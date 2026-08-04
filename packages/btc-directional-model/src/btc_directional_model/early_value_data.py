@@ -58,6 +58,40 @@ def build_strict_external_frame(
     return combined.sort("window_start", "seconds_elapsed")
 
 
+def build_partitioned_external_frame(
+    core: pl.DataFrame,
+    l2_source: Path,
+    candle_source: Path,
+) -> pl.DataFrame:
+    """Build the common cohort one UTC day at a time to bound L2 memory."""
+
+    candles = load_external_source(
+        candle_source,
+        start=core["window_start"].min() - timedelta(minutes=62),
+        end=core["window_start"].max() + timedelta(days=1),
+    )
+    pieces: list[pl.DataFrame] = []
+    dated = core.with_columns(pl.col("window_start").dt.date().alias("_utc_day"))
+    for day in sorted(dated["_utc_day"].unique().to_list()):
+        daily_core = dated.filter(pl.col("_utc_day") == day).drop("_utc_day")
+        start = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
+        end = start + timedelta(days=1)
+        daily_path = l2_source / f"{day.isoformat()}.parquet"
+        daily_l2 = load_external_source(
+            daily_path if daily_path.is_file() else l2_source,
+            start=start,
+            end=end,
+        )
+        if daily_l2.is_empty():
+            continue
+        joined = build_strict_external_frame(daily_core, daily_l2, candles)
+        if joined.height:
+            pieces.append(joined)
+    if not pieces:
+        raise RuntimeError("no strict external feature partitions were produced")
+    return pl.concat(pieces, how="vertical_relaxed").sort("window_start", "seconds_elapsed")
+
+
 def extract_price_evidence(config: EarlyValueConfig, *, force: bool = False) -> dict[str, Any]:
     """Extract bounded daily causal book observations without mutating the database."""
 
