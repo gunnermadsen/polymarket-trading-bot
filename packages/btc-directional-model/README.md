@@ -574,6 +574,28 @@ the control's prediction quality. Native p99 latency and serialized runtime-mode
 also mandatory; missing measurements fail closed. Passing development gates is not deployment
 qualification.
 
+## Asymmetric-value hunter
+
+The offline asymmetric-value benchmark trains price-aware challengers to find lower-priced YES or
+NO claims whose calibrated probability exceeds exact five-share VWAP, fee, and a conservative
+execution reserve. Its primary policy search is restricted to raw share prices below 30 cents; the
+wider price policies and conventional confidence thresholds are diagnostics only. Accuracy is
+reported but is not an admission gate.
+
+```bash
+.venv/bin/btc-directional-model asymmetric-value-benchmark-run \
+  --config configs/btc-5m-directional-asymmetric-value-hunter-20260414-20260802.toml
+```
+
+Selection is sealed before the frozen evaluation data is opened. Missing exact books are NoTrade,
+not losses or proxy prices, and evidence sufficiency is evaluated separately from point-estimate
+economics. The matrix includes a universal original-core control, price-aware core, causal Polygon
+Chainlink oracle, paired L2-only and closed-candle-only feature ablations, their combined arm, and
+an oracle/L2/candle arm. Historical RefPrice is excluded because local receipt time is not proven.
+The frozen current-policy reference preserves first 89% confidence crossing and its 30–95 cent
+execution range without inventing an extra edge gate. This command never exports a runtime model or
+changes the trading pipeline. Add `--force` only when intentionally rebuilding all source caches.
+
 ## Apple Silicon
 
 The canonical model is L2 logistic regression because it is transparent, compact, and directly
