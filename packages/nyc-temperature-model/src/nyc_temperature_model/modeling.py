@@ -70,6 +70,28 @@ def _local_bounds(start: date, end: date) -> tuple[datetime, datetime]:
     )
 
 
+def _expected_forecast_times(decision_time: datetime) -> tuple[datetime, ...]:
+    local_date = decision_time.astimezone(NYC).date()
+    local_end = datetime.combine(
+        local_date + timedelta(days=1), datetime.min.time(), NYC
+    ).astimezone(UTC)
+    valid_at = decision_time.astimezone(UTC)
+    output = []
+    while valid_at < local_end:
+        output.append(valid_at)
+        valid_at += timedelta(hours=1)
+    return tuple(output)
+
+
+def _complete_forecast_values(
+    decision_time: datetime, forecasts_by_valid_at: dict[datetime, float]
+) -> list[float] | None:
+    expected = _expected_forecast_times(decision_time)
+    if set(forecasts_by_valid_at) != set(expected):
+        return None
+    return [forecasts_by_valid_at[valid_at] for valid_at in expected]
+
+
 def build_feature_rows(database_url: str, start: date, end: date, decision_hour: int) -> list[FeatureRow]:
     if decision_hour not in (0, 12):
         raise ValueError("decision_hour must be 0 or 12")
@@ -95,13 +117,18 @@ def build_feature_rows(database_url: str, start: date, end: date, decision_hour:
             """,
             (STATION_ID, start_utc, end_utc),
         ).fetchall()
-    forecast_groups: dict[datetime, list[float]] = {}
+    forecast_groups: dict[datetime, dict[datetime, float]] = {}
     for row in forecasts:
         local = row["decision_time"].astimezone(NYC)
         if local.hour == decision_hour:
-            forecast_groups.setdefault(row["decision_time"], []).append(row["temperature_f"])
+            forecast_groups.setdefault(row["decision_time"], {})[row["valid_at"]] = row[
+                "temperature_f"
+            ]
     output = []
-    for decision_time, forecast_values in sorted(forecast_groups.items()):
+    for decision_time, forecasts_by_valid_at in sorted(forecast_groups.items()):
+        forecast_values = _complete_forecast_values(decision_time, forecasts_by_valid_at)
+        if forecast_values is None:
+            continue
         local_decision = decision_time.astimezone(NYC)
         event_date = local_decision.date()
         local_start = datetime.combine(event_date, datetime.min.time(), NYC).astimezone(UTC)

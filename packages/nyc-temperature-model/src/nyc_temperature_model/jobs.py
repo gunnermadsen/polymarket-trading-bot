@@ -12,18 +12,8 @@ from typing import Any
 
 import psycopg
 
-from .config import Settings
+from .config import SUPPORTED_INGESTERS, Settings
 from .database import connection
-
-SUPPORTED_INGESTERS = (
-    "polymarket_temperature_markets",
-    "polymarket_temperature_price_history",
-    "asos_station_observations",
-    "asos_resolution_observations",
-    "asos_one_minute_observations",
-    "hrrr_point_forecasts",
-    "pmxt_temperature_execution",
-)
 
 
 @dataclass(frozen=True)
@@ -105,6 +95,7 @@ def claim(settings: Settings) -> Job | None:
               SELECT job_id
               FROM weather.ingestion_jobs
               WHERE status = 'queued' AND next_attempt_at <= now() AND attempt < max_attempts
+                AND ingester_key = ANY(%s::text[])
                 AND (
                   depends_on_job_id IS NULL
                   OR EXISTS (
@@ -128,7 +119,12 @@ def claim(settings: Settings) -> Job | None:
             RETURNING job.job_id::text, job.ingester_key, job.range_start,
                       job.range_end, job.request, job.attempt, job.lease_token::text
             """,
-            (settings.worker_id, lease_token, settings.lease_seconds),
+            (
+                list(settings.worker_ingesters),
+                settings.worker_id,
+                lease_token,
+                settings.lease_seconds,
+            ),
         ).fetchone()
     return Job(**row) if row else None
 

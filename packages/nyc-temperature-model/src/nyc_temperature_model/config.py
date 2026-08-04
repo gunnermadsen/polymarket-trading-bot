@@ -4,6 +4,16 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+SUPPORTED_INGESTERS = (
+    "polymarket_temperature_markets",
+    "polymarket_temperature_price_history",
+    "asos_station_observations",
+    "asos_resolution_observations",
+    "asos_one_minute_observations",
+    "hrrr_point_forecasts",
+    "pmxt_temperature_execution",
+)
+
 
 def _env_int(name: str, default: int) -> int:
     value = int(os.environ.get(name, str(default)))
@@ -19,6 +29,28 @@ def _env_nonnegative_int(name: str, default: int) -> int:
     return value
 
 
+def _env_nonnegative_float(name: str, default: float) -> float:
+    value = float(os.environ.get(name, str(default)))
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return value
+
+
+def _env_worker_ingesters() -> tuple[str, ...]:
+    raw = os.environ.get("WEATHER_WORKER_INGESTERS")
+    if raw is None:
+        return SUPPORTED_INGESTERS
+    ingesters = tuple(dict.fromkeys(value.strip() for value in raw.split(",") if value.strip()))
+    if not ingesters:
+        raise ValueError("WEATHER_WORKER_INGESTERS must contain at least one ingester")
+    unsupported = sorted(set(ingesters) - set(SUPPORTED_INGESTERS))
+    if unsupported:
+        raise ValueError(
+            "WEATHER_WORKER_INGESTERS contains unsupported ingesters: " + ", ".join(unsupported)
+        )
+    return ingesters
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str
@@ -26,6 +58,7 @@ class Settings:
     model_directory: Path
     report_directory: Path
     worker_id: str
+    worker_ingesters: tuple[str, ...]
     poll_seconds: int
     lease_seconds: int
     gamma_base_url: str
@@ -38,6 +71,8 @@ class Settings:
     hrrr_retry_max_ms: int
     hrrr_request_interval_ms: int
     hrrr_source_priority: tuple[str, ...]
+    pmxt_download_attempts: int
+    pmxt_retry_base_seconds: float
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -70,6 +105,7 @@ class Settings:
             model_directory=models,
             report_directory=reports,
             worker_id=os.environ.get("WEATHER_WORKER_ID", "temperature-worker-1"),
+            worker_ingesters=_env_worker_ingesters(),
             poll_seconds=_env_int("WEATHER_WORKER_POLL_SECONDS", 2),
             lease_seconds=_env_int("WEATHER_WORKER_LEASE_SECONDS", 1800),
             gamma_base_url=os.environ.get(
@@ -94,6 +130,8 @@ class Settings:
             hrrr_retry_max_ms=hrrr_retry_max_ms,
             hrrr_request_interval_ms=_env_nonnegative_int("HRRR_REQUEST_INTERVAL_MS", 500),
             hrrr_source_priority=hrrr_source_priority,
+            pmxt_download_attempts=_env_int("PMXT_DOWNLOAD_ATTEMPTS", 6),
+            pmxt_retry_base_seconds=_env_nonnegative_float("PMXT_RETRY_BASE_SECONDS", 2.0),
         )
 
     def prepare_directories(self) -> None:

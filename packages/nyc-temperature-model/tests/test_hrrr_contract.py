@@ -1,8 +1,10 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
 from nyc_temperature_model.hrrr_ingestion import (
+    _download_field,
     _model_run_for_decision,
     _run_with_retry,
     _valid_times,
@@ -64,3 +66,154 @@ def test_hrrr_field_retry_does_not_hide_deterministic_errors():
             retry_max_ms=30000,
             sleep=lambda _delay: None,
         )
+
+
+def test_hrrr_field_retry_rotates_after_mirror_range_mismatch():
+    calls = []
+    sleeps = []
+
+    def operation(priority, overwrite):
+        calls.append((priority, overwrite))
+        if len(calls) == 1:
+            raise RuntimeError(
+                "Processing failed: 416 Client Error: Requested range not satisfiable"
+            )
+        return "downloaded-from-aws"
+
+    result = _run_with_retry(
+        operation,
+        attempts=8,
+        sources=("google", "aws", "nomads"),
+        retry_base_ms=1000,
+        retry_max_ms=30000,
+        sleep=sleeps.append,
+        jitter=lambda _start, _end: 0,
+    )
+
+    assert result == "downloaded-from-aws"
+    assert calls == [
+        (("google", "aws", "nomads"), False),
+        (("aws", "nomads", "google"), True),
+    ]
+    assert sleeps == [1]
+
+
+def test_hrrr_field_retry_rotates_after_empty_mirror_inventory():
+    calls = []
+
+    def operation(priority, overwrite):
+        calls.append((priority, overwrite))
+        if len(calls) == 1:
+            raise ValueError("Cannot set a DataFrame without columns to the column search_this")
+        return "downloaded-from-aws"
+
+    result = _run_with_retry(
+        operation,
+        attempts=8,
+        sources=("google", "aws", "nomads"),
+        retry_base_ms=0,
+        retry_max_ms=0,
+        sleep=lambda _delay: None,
+    )
+
+    assert result == "downloaded-from-aws"
+    assert calls == [
+        (("google", "aws", "nomads"), False),
+        (("aws", "nomads", "google"), True),
+    ]
+
+
+def test_hrrr_field_retry_bounds_verified_archive_misses_by_source_count():
+    calls = []
+    sleeps = []
+
+    def operation(priority, overwrite):
+        calls.append((priority, overwrite))
+        raise FileNotFoundError("archive field is unavailable")
+
+    with pytest.raises(FileNotFoundError, match="archive field is unavailable"):
+        _run_with_retry(
+            operation,
+            attempts=8,
+            sources=("google", "aws", "nomads"),
+            retry_base_ms=1000,
+            retry_max_ms=30000,
+            sleep=sleeps.append,
+            jitter=lambda _start, _end: 0,
+        )
+
+    assert len(calls) == 3
+    assert sleeps == [1, 2]
+
+
+def test_hrrr_download_classifies_a_missing_grib_as_an_archive_gap(tmp_path):
+    calls = []
+
+    def herbie_factory(*_args, **kwargs):
+        calls.append(kwargs["priority"])
+        return SimpleNamespace(grib=None)
+
+    settings = SimpleNamespace(
+        cache_directory=tmp_path,
+        hrrr_download_attempts=8,
+        hrrr_source_priority=("google", "aws", "nomads"),
+        hrrr_retry_base_ms=0,
+        hrrr_retry_max_ms=0,
+        hrrr_request_interval_ms=0,
+    )
+
+    with pytest.raises(FileNotFoundError, match="2019-03-11T12:00Z f08"):
+        _download_field(
+            settings,
+            herbie_factory,
+            datetime(2019, 3, 11, 12, tzinfo=UTC),
+            8,
+            ":TMP:2 m above ground",
+        )
+
+    assert calls == [
+        ["google", "aws", "nomads"],
+        ["aws", "nomads", "google"],
+        ["nomads", "google", "aws"],
+    ]
+
+
+def test_hrrr_download_classifies_a_missing_subset_as_an_archive_gap(tmp_path):
+    calls = []
+
+    class MissingSubset:
+        grib = "https://example.test/hrrr.grib2"
+
+        def download(self, *_args, **_kwargs):
+            return tmp_path / "missing-subset.grib2"
+
+        def xarray(self, *_args, **_kwargs):
+            raise AssertionError("a nonexistent subset must not be decoded")
+
+    def herbie_factory(*_args, **kwargs):
+        calls.append(kwargs["priority"])
+        return MissingSubset()
+
+    settings = SimpleNamespace(
+        cache_directory=tmp_path,
+        hrrr_download_attempts=8,
+        hrrr_source_priority=("google", "aws", "nomads"),
+        hrrr_retry_base_ms=0,
+        hrrr_retry_max_ms=0,
+        hrrr_request_interval_ms=0,
+    )
+
+    with pytest.raises(FileNotFoundError, match="did not return a subset"):
+        _download_field(
+            settings,
+            herbie_factory,
+            datetime(2020, 2, 14, 0, tzinfo=UTC),
+            23,
+            ":TMP:2 m above ground",
+        )
+
+    assert calls == [
+        ["google", "aws", "nomads"],
+        ["aws", "nomads", "google"],
+        ["nomads", "google", "aws"],
+    ]
