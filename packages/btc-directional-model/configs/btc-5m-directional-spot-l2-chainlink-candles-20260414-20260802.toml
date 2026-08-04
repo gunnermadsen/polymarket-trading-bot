@@ -1,0 +1,73 @@
+[benchmark]
+profile = "spot_l2_chainlink_candles_fixed_ablation"
+paper_only = true
+live_capital_allowed = false
+source_schema_revision = "ef985bfbced34317f08e7fa81e92bad01b341fa0"
+confidence_threshold = 0.89
+decision_seconds = [60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150, 155, 160, 165, 170, 175, 180, 185, 190, 195, 200, 205, 210, 215, 220, 225, 230, 235, 240]
+
+[windows]
+source_start = "2026-04-14T00:00:00Z"
+source_end = "2026-08-02T00:00:00Z"
+fit_start = "2026-04-14T00:00:00Z"
+fit_end = "2026-07-06T00:00:00Z"
+calibration_start = "2026-07-06T00:00:00Z"
+calibration_end = "2026-07-13T00:00:00Z"
+policy_start = "2026-07-13T00:00:00Z"
+policy_end = "2026-07-20T00:00:00Z"
+evaluation_start = "2026-07-20T00:00:00Z"
+evaluation_end = "2026-08-02T00:00:00Z"
+
+[profiles]
+boundary_matched_control_count = 68
+boundary_spot_l2_count = 108
+boundary_chainlink_candles_count = 76
+boundary_spot_l2_chainlink_candles_count = 116
+boundary_matched_control = [
+  "seconds_elapsed_scaled", "seconds_remaining_scaled", "btc_path_from_window_open_bps", "btc_return_1s_bps", "btc_return_5s_bps", "btc_return_15s_bps", "btc_return_30s_bps", "btc_return_60s_bps", "btc_realized_volatility_5s_bps", "btc_realized_volatility_15s_bps", "btc_realized_volatility_30s_bps", "btc_realized_volatility_60s_bps", "btc_range_5s_bps", "btc_range_30s_bps", "btc_range_60s_bps", "btc_path_efficiency_30s", "btc_path_efficiency_60s", "btc_range_position_30s", "btc_volatility_expansion_5_to_30", "btc_log_quote_volume_5s", "btc_log_quote_volume_30s", "btc_log_quote_volume_60s", "btc_log_trade_count_5s", "btc_log_trade_count_30s", "btc_taker_buy_share_5s", "btc_taker_buy_share_30s", "btc_signed_flow_5s", "btc_signed_flow_30s", "btc_volume_surprise_5_to_60", "hour_sin", "hour_cos", "weekday_sin", "weekday_cos", "btc_path_terminal_volatility_z", "btc_path_abs_terminal_volatility_z", "btc_path_cross_count", "btc_seconds_since_path_cross", "btc_fraction_time_path_positive", "btc_fraction_time_path_negative", "btc_momentum_agreement_5_15", "btc_momentum_agreement_15_30", "btc_momentum_multihorizon_score", "btc_momentum_acceleration_5_vs_30", "btc_momentum_acceleration_15_vs_60", "btc_reversal_5_vs_30", "btc_range_position_60s", "btc_distance_from_high_30s_bps", "btc_distance_from_low_30s_bps", "btc_distance_from_high_60s_bps", "btc_distance_from_low_60s_bps", "btc_volatility_regime_60_vs_elapsed", "btc_log_trade_count_60s", "btc_taker_buy_share_60s", "btc_signed_flow_60s", "btc_flow_persistence_5_30", "btc_flow_persistence_30_60", "btc_price_flow_agreement_30s", "btc_price_flow_divergence_30s", "btc_cross_venue_boundary_gap_bps", "btc_window_open_cross_venue_basis_bps", "btc_boundary_terminal_volatility_z", "btc_boundary_abs_terminal_volatility_z", "btc_boundary_cross_count", "btc_seconds_since_boundary_cross", "btc_fraction_time_boundary_positive", "btc_fraction_time_boundary_negative", "btc_boundary_distance_velocity_5s_bps", "btc_boundary_momentum_alignment_5s",
+]
+
+[model]
+estimator = "histogram_gradient_boosting"
+learning_rate = 0.05
+max_iter = 160
+max_leaf_nodes = 15
+min_samples_leaf = 100
+l2_regularization = 0.10
+random_seed = 20260726
+bootstrap_resamples = 10000
+threads_per_fit = 1
+
+[execution]
+quantity = 5.0
+freshness_seconds = 2
+
+[advancement]
+minimum_net_expectancy_improvement = 0.0
+minimum_profit_factor_improvement = 0.0
+maximum_accuracy_regression = 0.01
+minimum_trade_coverage_ratio = 0.80
+minimum_win_retention_ratio = 0.80
+minimum_gross_loss_reduction = 0.10
+maximum_ece = 0.05
+minimum_consistent_days = 3
+
+[sources]
+l2_view = "polymarket.binance_spot_btcusdt_l2_training_features"
+l2_schema_version = "binance-spot-btcusdt-l2-one-second-features-v1"
+l2_materialization_contracts = [
+  "cryptohft-binance-spot-btcusdt-l2-features-v1",
+  "coinapi-binance-spot-btcusdt-l2-snapshots-v1",
+  "huggingface-goooddy-binance-spot-btcusdt-l2-features-v1",
+]
+candle_symbol = "BTCUSD"
+
+[paths]
+core_source_sql = "sql/btc-core-source.sql"
+l2_source_sql = "sql/btc-spot-l2-source.sql"
+candles_source_sql = "sql/btc-chainlink-one-minute-candles-source.sql"
+champion_model = "runtime-models/btc-5m-directional-boundary-alignment-20260421-20260720-paper-v1/model.json"
+champion_manifest = "runtime-models/btc-5m-directional-boundary-alignment-20260421-20260720-paper-v1/manifest.json"
+champion_process = "../../infra/processes/btc-5m-directional-model-paper-boundary-alignment.json"
+cache = "data/btc-spot-l2-chainlink-candles-20260414-20260802/cache"
+runs = "runs/btc-spot-l2-chainlink-candles-20260414-20260802"
