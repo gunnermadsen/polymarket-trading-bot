@@ -25,7 +25,9 @@ use super::{
         ChainlinkCandlestickConfig, ChainlinkCandlestickCredentials,
         DEFAULT_CHAINLINK_CANDLESTICK_BASE_URL, DEFAULT_CHAINLINK_CANDLESTICK_SYMBOL,
     },
+    cryptohft_binance_l2::{CryptoHftBinanceL2Config, DEFAULT_CRYPTOHFT_BASE_URL},
     executor::{IngestionExecutor, IngestionExecutorConfig},
+    huggingface_binance_l2::{HuggingFaceBinanceL2Config, DEFAULT_HUGGINGFACE_GOOODDY_BASE_URL},
     job::{BackfillEventLevel, BackfillFailureKind, BackfillJobSummary, ClaimedJob, WorkerControl},
     pmxt_archive::DEFAULT_PMXT_ARCHIVE_URL,
     polygon_chainlink_oracle::{
@@ -139,6 +141,17 @@ impl BackfillWorker {
             .user_agent("polymarket-bot-backfill-worker/1")
             .build()
             .context("failed to build backfill source client")?;
+        let cryptohft_binance_spot_l2 = cryptohft_binance_spot_l2_config_from_env(&config)?;
+        let huggingface_binance_spot_l2 =
+            cryptohft_binance_spot_l2
+                .clone()
+                .map(|storage| HuggingFaceBinanceL2Config {
+                    base_url: env_string(
+                        "POLYMARKET_BINANCE_SPOT_L2_HUGGINGFACE_BASE_URL",
+                        DEFAULT_HUGGINGFACE_GOOODDY_BASE_URL,
+                    ),
+                    storage,
+                });
         let executor = IngestionExecutor::new(
             repository.clone(),
             client,
@@ -183,6 +196,9 @@ impl BackfillWorker {
                         DEFAULT_BINANCE_OPEN_INTEREST_SYMBOL,
                     ),
                 },
+                cryptohft_binance_l2: cryptohft_binance_l2_config_from_env(&config)?,
+                cryptohft_binance_spot_l2,
+                huggingface_binance_spot_l2,
                 polygon_chainlink: PolygonChainlinkOracleConfig {
                     rpc_url: env_string("POLYMARKET_POLYGON_RPC_URL", DEFAULT_POLYGON_RPC_URL),
                     archive_log_rpc_url: env_string(
@@ -488,6 +504,108 @@ fn env_string(key: &str, default: &str) -> String {
         .unwrap_or_else(|| default.to_string())
 }
 
+fn cryptohft_binance_l2_config_from_env(
+    worker: &BackfillWorkerConfig,
+) -> Result<Option<CryptoHftBinanceL2Config>> {
+    let Some(archive_root) = env::var("POLYMARKET_BINANCE_L2_ARCHIVE_ROOT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let minimum_free_fraction = env_f64("POLYMARKET_BINANCE_L2_MINIMUM_FREE_FRACTION", 0.25)?;
+    if minimum_free_fraction <= 0.0 || minimum_free_fraction >= 1.0 {
+        bail!("POLYMARKET_BINANCE_L2_MINIMUM_FREE_FRACTION must be greater than zero and less than one");
+    }
+
+    Ok(Some(CryptoHftBinanceL2Config {
+        base_url: env_string(
+            "POLYMARKET_BINANCE_L2_CRYPTOHFT_BASE_URL",
+            DEFAULT_CRYPTOHFT_BASE_URL,
+        ),
+        archive_root: PathBuf::from(archive_root),
+        temporary_directory: worker.cache_directory.join("cryptohft-l2-working"),
+        availability_offset_ms: super::cryptohft_binance_l2::DEFAULT_AVAILABILITY_OFFSET_MS,
+        max_stale_ms: super::cryptohft_binance_l2::DEFAULT_MAX_STALE_MS,
+        minimum_free_fraction,
+        minimum_free_bytes: env_u64(
+            "POLYMARKET_BINANCE_L2_MINIMUM_FREE_BYTES",
+            64 * 1024 * 1024 * 1024,
+        )?,
+        minimum_write_bytes_per_second: env_u64(
+            "POLYMARKET_BINANCE_L2_MINIMUM_WRITE_BYTES_PER_SECOND",
+            20 * 1024 * 1024,
+        )?,
+        request_minimum_interval: Duration::from_millis(env_u64(
+            "POLYMARKET_BINANCE_L2_REQUEST_MINIMUM_INTERVAL_MS",
+            1_100,
+        )?),
+        maximum_compressed_bytes: env_u64(
+            "POLYMARKET_BINANCE_L2_MAXIMUM_COMPRESSED_BYTES",
+            1024 * 1024 * 1024,
+        )?,
+        maximum_decoded_bytes: env_u64(
+            "POLYMARKET_BINANCE_L2_MAXIMUM_DECODED_BYTES",
+            8 * 1024 * 1024 * 1024,
+        )?,
+        download_chunk_idle_timeout: Duration::from_secs(env_u64(
+            "POLYMARKET_BINANCE_L2_DOWNLOAD_CHUNK_IDLE_TIMEOUT_SECS",
+            60,
+        )?),
+    }))
+}
+
+fn cryptohft_binance_spot_l2_config_from_env(
+    worker: &BackfillWorkerConfig,
+) -> Result<Option<CryptoHftBinanceL2Config>> {
+    let Some(archive_root) = env::var("POLYMARKET_BINANCE_SPOT_L2_ARCHIVE_ROOT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let minimum_free_fraction = env_f64("POLYMARKET_BINANCE_SPOT_L2_MINIMUM_FREE_FRACTION", 0.25)?;
+    if minimum_free_fraction <= 0.0 || minimum_free_fraction >= 1.0 {
+        bail!("POLYMARKET_BINANCE_SPOT_L2_MINIMUM_FREE_FRACTION must be greater than zero and less than one");
+    }
+
+    Ok(Some(CryptoHftBinanceL2Config {
+        base_url: env_string(
+            "POLYMARKET_BINANCE_SPOT_L2_CRYPTOHFT_BASE_URL",
+            DEFAULT_CRYPTOHFT_BASE_URL,
+        ),
+        archive_root: PathBuf::from(archive_root),
+        temporary_directory: worker.cache_directory.join("cryptohft-spot-l2-working"),
+        availability_offset_ms: super::cryptohft_binance_l2::DEFAULT_AVAILABILITY_OFFSET_MS,
+        max_stale_ms: super::cryptohft_binance_l2::DEFAULT_MAX_STALE_MS,
+        minimum_free_fraction,
+        minimum_free_bytes: env_u64(
+            "POLYMARKET_BINANCE_SPOT_L2_MINIMUM_FREE_BYTES",
+            64 * 1024 * 1024 * 1024,
+        )?,
+        minimum_write_bytes_per_second: env_u64(
+            "POLYMARKET_BINANCE_SPOT_L2_MINIMUM_WRITE_BYTES_PER_SECOND",
+            20 * 1024 * 1024,
+        )?,
+        request_minimum_interval: Duration::from_millis(env_u64(
+            "POLYMARKET_BINANCE_SPOT_L2_REQUEST_MINIMUM_INTERVAL_MS",
+            1_100,
+        )?),
+        maximum_compressed_bytes: env_u64(
+            "POLYMARKET_BINANCE_SPOT_L2_MAXIMUM_COMPRESSED_BYTES",
+            1024 * 1024 * 1024,
+        )?,
+        maximum_decoded_bytes: env_u64(
+            "POLYMARKET_BINANCE_SPOT_L2_MAXIMUM_DECODED_BYTES",
+            8 * 1024 * 1024 * 1024,
+        )?,
+        download_chunk_idle_timeout: Duration::from_secs(env_u64(
+            "POLYMARKET_BINANCE_SPOT_L2_DOWNLOAD_CHUNK_IDLE_TIMEOUT_SECS",
+            60,
+        )?),
+    }))
+}
+
 fn chainlink_credentials_from_env() -> Result<Option<ChainlinkCredentials>> {
     let api_key = env::var("POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY")
         .ok()
@@ -542,6 +660,21 @@ fn env_u32(key: &str, default: u32) -> Result<u32> {
 fn env_usize(key: &str, default: usize) -> Result<usize> {
     usize::try_from(env_u64(key, u64::try_from(default).unwrap_or(u64::MAX))?)
         .with_context(|| format!("{key} exceeds the supported range"))
+}
+
+fn env_f64(key: &str, default: f64) -> Result<f64> {
+    match env::var(key) {
+        Ok(value) if !value.trim().is_empty() => {
+            let parsed = value
+                .parse::<f64>()
+                .with_context(|| format!("{key} must be a finite number"))?;
+            if !parsed.is_finite() {
+                bail!("{key} must be a finite number");
+            }
+            Ok(parsed)
+        }
+        _ => Ok(default),
+    }
 }
 
 #[cfg(test)]

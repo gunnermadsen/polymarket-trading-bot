@@ -808,6 +808,18 @@ async fn authenticated_admin_can_list_generic_ingesters() {
                     "accepts_new_requests": true
                 },
                 {
+                    "key": "binance_btcusdt_l2_one_second_features",
+                    "request_version": 1,
+                    "range_alignment_seconds": 86400,
+                    "accepts_new_requests": true
+                },
+                {
+                    "key": "binance_spot_btcusdt_l2_one_second_features",
+                    "request_version": 1,
+                    "range_alignment_seconds": 86400,
+                    "accepts_new_requests": true
+                },
+                {
                     "key": "binance_btcusdt_one_second_klines",
                     "request_version": 1,
                     "range_alignment_seconds": 86400,

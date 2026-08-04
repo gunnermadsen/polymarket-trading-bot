@@ -1,0 +1,65 @@
+x-binance-l2-backfill-env: &binance-l2-backfill-env
+  POLYMARKET_BINANCE_L2_CRYPTOHFT_BASE_URL: "https://api.cryptohftdata.com"
+  POLYMARKET_BINANCE_L2_ARCHIVE_ROOT: "/var/lib/polymarket/binance-l2"
+  POLYMARKET_BINANCE_L2_MINIMUM_FREE_FRACTION: "0.25"
+  POLYMARKET_BINANCE_L2_MINIMUM_FREE_BYTES: "68719476736"
+  POLYMARKET_BINANCE_L2_MINIMUM_WRITE_BYTES_PER_SECOND: "20971520"
+  POLYMARKET_BINANCE_L2_REQUEST_MINIMUM_INTERVAL_MS: "1100"
+  POLYMARKET_BINANCE_L2_MAXIMUM_COMPRESSED_BYTES: "1073741824"
+  POLYMARKET_BINANCE_L2_MAXIMUM_DECODED_BYTES: "8589934592"
+  POLYMARKET_BINANCE_L2_DOWNLOAD_CHUNK_IDLE_TIMEOUT_SECS: "60"
+  POLYMARKET_BINANCE_SPOT_L2_CRYPTOHFT_BASE_URL: "https://api.cryptohftdata.com"
+  POLYMARKET_BINANCE_SPOT_L2_HUGGINGFACE_BASE_URL: "https://huggingface.co/datasets/Goooddy/crypto-lob-stream/resolve/main"
+  POLYMARKET_BINANCE_SPOT_L2_ARCHIVE_ROOT: "/var/lib/polymarket/binance-l2"
+  POLYMARKET_BINANCE_SPOT_L2_MINIMUM_FREE_FRACTION: "0.25"
+  POLYMARKET_BINANCE_SPOT_L2_MINIMUM_FREE_BYTES: "68719476736"
+  POLYMARKET_BINANCE_SPOT_L2_MINIMUM_WRITE_BYTES_PER_SECOND: "20971520"
+  POLYMARKET_BINANCE_SPOT_L2_REQUEST_MINIMUM_INTERVAL_MS: "1100"
+  POLYMARKET_BINANCE_SPOT_L2_MAXIMUM_COMPRESSED_BYTES: "1073741824"
+  POLYMARKET_BINANCE_SPOT_L2_MAXIMUM_DECODED_BYTES: "8589934592"
+  POLYMARKET_BINANCE_SPOT_L2_DOWNLOAD_CHUNK_IDLE_TIMEOUT_SECS: "60"
+
+services:
+  db-migrate:
+    volumes:
+      - ./packages/db-migrate/src/migrations/1785685200000-AddBinanceBtcusdtL2OneSecondFeatures.ts:/usr/src/app/src/migrations/1785685200000-AddBinanceBtcusdtL2OneSecondFeatures.ts:ro
+      - ./packages/db-migrate/src/migrations/1785688800000-QueueFailedBinanceBtcusdtL2Retries.ts:/usr/src/app/src/migrations/1785688800000-QueueFailedBinanceBtcusdtL2Retries.ts:ro
+      - ./packages/db-migrate/src/migrations/1785776400000-AddBinanceSpotBtcusdtL2OneSecondFeatures.ts:/usr/src/app/src/migrations/1785776400000-AddBinanceSpotBtcusdtL2OneSecondFeatures.ts:ro
+      - ./packages/db-migrate/src/migrations/1785780000000-AllowCoinapiBinanceSpotL2Lineage.ts:/usr/src/app/src/migrations/1785780000000-AllowCoinapiBinanceSpotL2Lineage.ts:ro
+      - ./packages/db-migrate/src/migrations/1785866400000-AllowHuggingFaceBinanceSpotL2Lineage.ts:/usr/src/app/src/migrations/1785866400000-AllowHuggingFaceBinanceSpotL2Lineage.ts:ro
+
+  polymarket-backfill-worker:
+    environment:
+      <<: *binance-l2-backfill-env
+    volumes:
+      - ${POLYMARKET_BINANCE_L2_ARCHIVE_ROOT:?POLYMARKET_BINANCE_L2_ARCHIVE_ROOT must be set}:/var/lib/polymarket/binance-l2:rw
+
+  polymarket-backfill-worker-2:
+    environment:
+      <<: *binance-l2-backfill-env
+    volumes:
+      - ${POLYMARKET_BINANCE_L2_ARCHIVE_ROOT:?POLYMARKET_BINANCE_L2_ARCHIVE_ROOT must be set}:/var/lib/polymarket/binance-l2:rw
+
+  polymarket-backfill-worker-3:
+    environment:
+      <<: *binance-l2-backfill-env
+    volumes:
+      - ${POLYMARKET_BINANCE_L2_ARCHIVE_ROOT:?POLYMARKET_BINANCE_L2_ARCHIVE_ROOT must be set}:/var/lib/polymarket/binance-l2:rw
+
+  polymarket-backfill-worker-4:
+    environment:
+      <<: *binance-l2-backfill-env
+    volumes:
+      - ${POLYMARKET_BINANCE_L2_ARCHIVE_ROOT:?POLYMARKET_BINANCE_L2_ARCHIVE_ROOT must be set}:/var/lib/polymarket/binance-l2:rw
+
+  polymarket-backfill-worker-5:
+    environment:
+      <<: *binance-l2-backfill-env
+    volumes:
+      - ${POLYMARKET_BINANCE_L2_ARCHIVE_ROOT:?POLYMARKET_BINANCE_L2_ARCHIVE_ROOT must be set}:/var/lib/polymarket/binance-l2:rw
+
+  polymarket-backfill-worker-6:
+    environment:
+      <<: *binance-l2-backfill-env
+    volumes:
+      - ${POLYMARKET_BINANCE_L2_ARCHIVE_ROOT:?POLYMARKET_BINANCE_L2_ARCHIVE_ROOT must be set}:/var/lib/polymarket/binance-l2:rw
