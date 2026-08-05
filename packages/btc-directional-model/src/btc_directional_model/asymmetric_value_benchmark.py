@@ -2311,6 +2311,7 @@ def _markdown_report(result: dict[str, Any]) -> str:
         for record in result["selection"]["frontier"]
         if record["key"] == evaluation["selected_key"]
     )
+    calibration = _calibration_report_summary(result["training"])
     selected_label = (
         "qualified hunter" if evaluation["qualified"] else "selected diagnostic candidate"
     )
@@ -2339,6 +2340,32 @@ def _markdown_report(result: dict[str, Any]) -> str:
         "",
         "The primary search is restricted to raw share prices below 30 cents. Accuracy is a",
         "reported property, not an entry threshold; entry requires calibrated edge over all-in cost.",
+        "",
+        "## Calibration evidence",
+        "",
+        (
+            f"Parent time-band Platt calibrators converged with positive slopes: "
+            f"`{calibration['valid_parent_calibrators']}/{calibration['parent_calibrators']}` "
+            f"(`{calibration['minimum_parent_rows']}`–`{calibration['maximum_parent_rows']}` rows "
+            f"and `{calibration['minimum_parent_markets']}`–"
+            f"`{calibration['maximum_parent_markets']}` markets per band)."
+        ),
+        (
+            f"Specialized YES/NO × 10-cent-price × time cells fitted: "
+            f"`{calibration['fitted_cells']}/{calibration['cells']}`; identity parent "
+            f"fallbacks: `{calibration['fallback_cells']}`. Fallback cells contain at most "
+            f"`{calibration['maximum_fallback_cell_utc_days']}` exact-book UTC days versus the "
+            f"required `{calibration['minimum_cell_utc_days']}`."
+        ),
+        (
+            "Fallback reasons (a cell may have more than one): "
+            f"`{calibration['fallback_reason_text']}`."
+        ),
+        (
+            "Every prediction is parent-time-calibrated. A specialized side/price correction "
+            "is applied only where its frozen evidence gate passes; identity fallback leaves "
+            "the parent probability unchanged."
+        ),
         "",
         "## Policy selection versus frozen evaluation",
         "",
@@ -2544,6 +2571,56 @@ def _markdown_report(result: dict[str, Any]) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def _calibration_report_summary(training: dict[str, Any]) -> dict[str, Any]:
+    profiles = training["profiles"]
+    parent_bands = [
+        band
+        for profile in profiles.values()
+        for band in profile["calibration_bands"]
+    ]
+    calibrations = [
+        profile["side_price_time_calibration"] for profile in profiles.values()
+    ]
+    cells = [cell for calibration in calibrations for cell in calibration["cells"]]
+    fallback_cells = [cell for cell in cells if not cell["fitted"]]
+    reason_counts: dict[str, int] = {}
+    for cell in cells:
+        if cell["fitted"]:
+            continue
+        for reason in (cell.get("fallback") or "unspecified").split("+"):
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    reason_text = ", ".join(
+        f"{reason}={count}" for reason, count in sorted(reason_counts.items())
+    )
+    return {
+        "parent_calibrators": len(parent_bands),
+        "valid_parent_calibrators": sum(
+            bool(band["converged"]) and float(band["slope"]) > 0.0
+            for band in parent_bands
+        ),
+        "minimum_parent_rows": min(int(band["rows"]) for band in parent_bands),
+        "maximum_parent_rows": max(int(band["rows"]) for band in parent_bands),
+        "minimum_parent_markets": min(
+            int(band["markets"]) for band in parent_bands
+        ),
+        "maximum_parent_markets": max(
+            int(band["markets"]) for band in parent_bands
+        ),
+        "cells": len(cells),
+        "fitted_cells": sum(bool(cell["fitted"]) for cell in cells),
+        "fallback_cells": sum(not bool(cell["fitted"]) for cell in cells),
+        "maximum_fallback_cell_utc_days": max(
+            int(cell["utc_days"]) for cell in fallback_cells
+        ) if fallback_cells else 0,
+        "minimum_cell_utc_days": max(
+            int(calibration["minimum_utc_days_per_cell"])
+            for calibration in calibrations
+        ),
+        "fallback_reason_counts": reason_counts,
+        "fallback_reason_text": reason_text or "none",
+    }
 
 
 def _window(frame: pl.DataFrame, start: Any, end: Any) -> pl.DataFrame:

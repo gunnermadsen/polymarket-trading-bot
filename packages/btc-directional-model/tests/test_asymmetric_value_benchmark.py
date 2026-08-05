@@ -7,6 +7,7 @@ import polars as pl
 import pytest
 
 from btc_directional_model.asymmetric_value_benchmark import (
+    _calibration_report_summary,
     _candidate_frames,
     _candidate_grid_summary,
     _evaluation_economics_table,
@@ -185,3 +186,55 @@ def test_candidate_grid_materializes_missing_prediction_seconds() -> None:
     assert by_second[5]["markets"] == 1
     assert by_second[15]["markets"] == 0
     assert summary["minimum_second_market_coverage"] == 0.0
+
+
+def test_calibration_report_summary_discloses_parent_and_cell_fallbacks() -> None:
+    parent = {
+        "converged": True,
+        "slope": 1.1,
+        "rows": 500,
+        "markets": 100,
+    }
+    fallback = {
+        "fitted": False,
+        "fallback": "insufficient_markets+insufficient_utc_days",
+        "utc_days": 3,
+    }
+    fitted = {"fitted": True, "fallback": None, "utc_days": 5}
+    training = {
+        "profiles": {
+            "first": {
+                "calibration_bands": [parent],
+                "side_price_time_calibration": {
+                    "minimum_utc_days_per_cell": 5,
+                    "cells": [fallback, fitted],
+                },
+            },
+            "second": {
+                "calibration_bands": [
+                    {**parent, "rows": 600, "markets": 120}
+                ],
+                "side_price_time_calibration": {
+                    "minimum_utc_days_per_cell": 5,
+                    "cells": [fallback],
+                },
+            },
+        }
+    }
+
+    summary = _calibration_report_summary(training)
+
+    assert summary["valid_parent_calibrators"] == 2
+    assert summary["parent_calibrators"] == 2
+    assert summary["minimum_parent_rows"] == 500
+    assert summary["maximum_parent_rows"] == 600
+    assert summary["minimum_parent_markets"] == 100
+    assert summary["maximum_parent_markets"] == 120
+    assert summary["fitted_cells"] == 1
+    assert summary["fallback_cells"] == 2
+    assert summary["maximum_fallback_cell_utc_days"] == 3
+    assert summary["minimum_cell_utc_days"] == 5
+    assert summary["fallback_reason_counts"] == {
+        "insufficient_markets": 2,
+        "insufficient_utc_days": 2,
+    }
