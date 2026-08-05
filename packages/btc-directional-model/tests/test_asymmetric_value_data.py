@@ -171,8 +171,8 @@ def test_execution_grid_coverage_counts_only_exact_core_market_keys(
             "market_id": ["core-a", "unrelated"],
             "seconds_elapsed": [1, 1],
             "strict_both_side_eligible": [True, True],
-            "yes_ask_depth": [20.0, 20.0],
-            "no_ask_depth": [20.0, 20.0],
+            "up_ask_depth": [20.0, 20.0],
+            "down_ask_depth": [20.0, 20.0],
         }
     ).write_parquet(early.output_dir / "rows.parquet")
     pl.DataFrame(
@@ -180,8 +180,8 @@ def test_execution_grid_coverage_counts_only_exact_core_market_keys(
             "market_id": ["core-a"],
             "seconds_elapsed": [60],
             "strict_both_side_eligible": [True],
-            "yes_ask_depth": [19.0],
-            "no_ask_depth": [20.0],
+            "up_ask_depth": [19.0],
+            "down_ask_depth": [20.0],
         }
     ).write_parquet(later.output_dir / "rows.parquet")
     core = pl.DataFrame({"market_id": ["core-a", "core-b"]})

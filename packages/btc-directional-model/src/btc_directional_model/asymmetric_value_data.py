@@ -582,8 +582,8 @@ def execution_grid_coverage(
             "market_id",
             "seconds_elapsed",
             "strict_both_side_eligible",
-            "yes_ask_depth",
-            "no_ask_depth",
+            "up_ask_depth",
+            "down_ask_depth",
         )
         for evidence in evidence_configs
     ]
@@ -603,8 +603,8 @@ def execution_grid_coverage(
     minimum_displayed_depth = config.quantity / config.maximum_depth_participation
     strict_rows = matching.filter(
         pl.col("strict_both_side_eligible")
-        & (pl.col("yes_ask_depth") >= minimum_displayed_depth)
-        & (pl.col("no_ask_depth") >= minimum_displayed_depth)
+        & (pl.col("up_ask_depth") >= minimum_displayed_depth)
+        & (pl.col("down_ask_depth") >= minimum_displayed_depth)
     ).height
     return {
         "core_markets": market_ids.height,
