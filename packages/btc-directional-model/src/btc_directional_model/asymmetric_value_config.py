@@ -32,6 +32,8 @@ class ValuePolicy:
 @dataclass(frozen=True)
 class ValueGates:
     minimum_calibration_markets_per_band: int
+    minimum_calibration_markets_per_cell: int
+    minimum_calibration_days_per_cell: int
     minimum_policy_strict_markets: int
     minimum_policy_executable_days: int
     minimum_policy_source_grid_coverage: float
@@ -71,6 +73,7 @@ class AsymmetricValueConfig:
     price_seconds: tuple[int, ...]
     calibration_bands: tuple[tuple[int, int], ...]
     quantity: float
+    maximum_depth_participation: float
     book_freshness_seconds: int
     execution_reserve_per_share: float
     confidence_control_minimum_edge_per_share: float
@@ -79,6 +82,7 @@ class AsymmetricValueConfig:
     gates: ValueGates
     random_seed: int
     bootstrap_resamples: int
+    calibration_identity_l2: float
     core_config: Path
     oracle_source: Path
     l2_source: Path
@@ -111,19 +115,16 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
         )
 
     timing = raw["timing"]
-    prediction_seconds = tuple(
-        range(
-            int(timing["prediction_start_second"]),
-            int(timing["prediction_end_second"]) + 1,
-            int(timing["prediction_cadence_seconds"]),
-        )
+    prediction_start = int(timing["prediction_start_second"])
+    prediction_end = int(timing["prediction_end_second"])
+    early_end = int(timing["early_end_second"])
+    early_cadence = int(timing["early_cadence_seconds"])
+    later_cadence = int(timing["later_cadence_seconds"])
+    prediction_seconds = (
+        *range(prediction_start, early_end + 1, early_cadence),
+        *range(early_end + 1, prediction_end + 1, later_cadence),
     )
-    early_price_end = int(timing["early_price_end_second"])
-    later_price_cadence = int(timing["later_price_cadence_seconds"])
-    price_seconds = (
-        *range(1, early_price_end + 1),
-        *range(early_price_end + 1, prediction_seconds[-1] + 1, later_price_cadence),
-    )
+    price_seconds = prediction_seconds
 
     economics = raw["economics"]
     policies = tuple(
@@ -155,6 +156,9 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
             for values in model["calibration_bands"]
         ),
         quantity=float(economics["quantity"]),
+        maximum_depth_participation=float(
+            economics["maximum_depth_participation"]
+        ),
         book_freshness_seconds=int(economics["book_freshness_seconds"]),
         execution_reserve_per_share=float(economics["execution_reserve_per_share"]),
         confidence_control_minimum_edge_per_share=float(
@@ -167,6 +171,12 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
         gates=ValueGates(
             minimum_calibration_markets_per_band=int(
                 gate_values["minimum_calibration_markets_per_band"]
+            ),
+            minimum_calibration_markets_per_cell=int(
+                gate_values["minimum_calibration_markets_per_cell"]
+            ),
+            minimum_calibration_days_per_cell=int(
+                gate_values["minimum_calibration_days_per_cell"]
             ),
             minimum_policy_strict_markets=int(
                 gate_values["minimum_policy_strict_markets"]
@@ -222,6 +232,7 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
         ),
         random_seed=int(model["random_seed"]),
         bootstrap_resamples=int(model["bootstrap_resamples"]),
+        calibration_identity_l2=float(model["calibration_identity_l2"]),
         core_config=package_root / str(paths["core_config"]),
         oracle_source=package_root / str(paths["oracle_source"]),
         l2_source=package_root / str(paths["l2_source"]),
@@ -244,15 +255,18 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
     if any(left.end != right.start for left, right in pairwise(windows)):
         raise ValueError("fit, calibration, policy, and evaluation windows must be contiguous")
 
-    expected_predictions = tuple(range(5, 241, 5))
-    expected_prices = (*range(1, 60), *range(60, 241, 5))
+    expected_predictions = (*range(1, 60), *range(60, 241, 5))
+    expected_prices = expected_predictions
     if config.prediction_seconds != expected_predictions:
-        raise ValueError("asymmetric-value predictions must cover seconds 5-240 every five seconds")
+        raise ValueError(
+            "asymmetric-value predictions must cover seconds 1-59 every second "
+            "and seconds 60-240 every five seconds"
+        )
     if config.price_seconds != expected_prices:
         raise ValueError("asymmetric-value prices must cover seconds 1-59 and 60-240 every five seconds")
 
     expected_bands = (
-        (5, 15),
+        (1, 15),
         (15, 30),
         (30, 45),
         (45, 60),
@@ -265,6 +279,10 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
         raise ValueError("asymmetric-value calibration bands must preserve the causal time contract")
     if not math.isclose(config.quantity, 5.0):
         raise ValueError("asymmetric-value economics are fixed to five-share execution")
+    if not math.isclose(config.maximum_depth_participation, 0.25):
+        raise ValueError(
+            "asymmetric-value execution must preserve 25% maximum depth participation"
+        )
     if config.book_freshness_seconds != 2:
         raise ValueError("asymmetric-value books must be no more than two seconds old")
     if not 0.0 <= config.execution_reserve_per_share <= 0.05:
@@ -278,6 +296,11 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
         )
     if config.random_seed < 0 or config.bootstrap_resamples < 1_000:
         raise ValueError("asymmetric-value randomness and bootstrap settings are invalid")
+    if (
+        not math.isfinite(config.calibration_identity_l2)
+        or config.calibration_identity_l2 <= 0.0
+    ):
+        raise ValueError("asymmetric-value calibration identity L2 must be positive")
 
     if not config.policies:
         raise ValueError("asymmetric-value policies must be non-empty")
@@ -305,6 +328,8 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
         raise ValueError("asymmetric-value trade gates must be positive")
     evidence_gates = (
         gates.minimum_calibration_markets_per_band,
+        gates.minimum_calibration_markets_per_cell,
+        gates.minimum_calibration_days_per_cell,
         gates.minimum_policy_strict_markets,
         gates.minimum_policy_executable_days,
         gates.minimum_evaluation_strict_markets,
@@ -312,6 +337,18 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
     )
     if any(value <= 0 for value in evidence_gates):
         raise ValueError("asymmetric-value evidence sufficiency gates must be positive")
+    if (
+        gates.minimum_calibration_markets_per_cell
+        > gates.minimum_calibration_markets_per_band
+    ):
+        raise ValueError(
+            "asymmetric-value calibration-cell market support cannot exceed its band"
+        )
+    calibration_days = (config.calibration.end - config.calibration.start).days
+    if gates.minimum_calibration_days_per_cell > calibration_days:
+        raise ValueError(
+            "asymmetric-value calibration-cell day support exceeds the calibration window"
+        )
     source_coverage_gates = (
         gates.minimum_policy_source_grid_coverage,
         gates.minimum_policy_strict_grid_coverage,

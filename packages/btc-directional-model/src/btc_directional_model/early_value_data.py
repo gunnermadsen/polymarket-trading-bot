@@ -45,6 +45,12 @@ PRICE_SCHEMA = pa.schema(
         ("no_ask_depth", pa.float64()),
     ]
 )
+_DECISION_POINT_COLUMNS = (
+    "market_id",
+    "window_start",
+    "observed_at",
+    "seconds_elapsed",
+)
 
 
 def load_external_source(path: Path, *, start: datetime, end: datetime) -> pl.DataFrame:
@@ -111,6 +117,114 @@ def build_partitioned_external_frame(
     if not pieces:
         raise RuntimeError("no strict external feature partitions were produced")
     return pl.concat(pieces, how="vertical_relaxed").sort("window_start", "seconds_elapsed")
+
+
+def build_partitioned_l2_frame(
+    core: pl.DataFrame,
+    l2_source: Path,
+) -> pl.DataFrame:
+    """Build the strict L2-only cohort one UTC day at a time."""
+
+    if core.is_empty():
+        raise RuntimeError("cannot build an L2 cohort from an empty core frame")
+    _validate_unique_decision_points(core, "core")
+    pieces: list[pl.DataFrame] = []
+    dated = core.with_columns(pl.col("window_start").dt.date().alias("_utc_day"))
+    for day in sorted(dated["_utc_day"].unique().to_list()):
+        daily_core = dated.filter(pl.col("_utc_day") == day).drop("_utc_day")
+        start = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
+        end = start + timedelta(days=1)
+        daily_path = l2_source / f"{day.isoformat()}.parquet"
+        daily_l2 = load_external_source(
+            daily_path if daily_path.is_file() else l2_source,
+            start=start,
+            end=end,
+        )
+        if daily_l2.is_empty():
+            continue
+        joined = join_qualified_l2(
+            daily_core,
+            daily_l2,
+            maximum_age_seconds=2,
+        )
+        if joined.height:
+            pieces.append(joined)
+    if not pieces:
+        raise RuntimeError("no strict L2 feature partitions were produced")
+    result = pl.concat(pieces, how="vertical_relaxed").sort(
+        "window_start",
+        "seconds_elapsed",
+    )
+    _validate_unique_decision_points(result, "strict L2")
+    _validate_decision_point_subset(result, core, "strict L2")
+    return result
+
+
+def build_full_closed_candle_frame(
+    core: pl.DataFrame,
+    candle_source: Path,
+) -> pl.DataFrame:
+    """Attach closed-candle features without reducing the core decision cohort."""
+
+    if core.is_empty():
+        raise RuntimeError("cannot build a candle cohort from an empty core frame")
+    _validate_unique_decision_points(core, "core")
+    candles = load_external_source(
+        candle_source,
+        start=core["window_start"].min() - timedelta(minutes=62),
+        end=core["window_start"].max() + timedelta(days=1),
+    )
+    result = join_closed_chainlink_candles(core, candles).sort(
+        "window_start",
+        "seconds_elapsed",
+    )
+    if result.is_empty():
+        raise RuntimeError("full closed-candle cohort is empty")
+    _validate_unique_decision_points(result, "full closed-candle")
+    _validate_decision_point_identity(result, core, "full closed-candle")
+    return result
+
+
+def _validate_unique_decision_points(frame: pl.DataFrame, label: str) -> None:
+    missing = sorted(set(_DECISION_POINT_COLUMNS) - set(frame.columns))
+    if missing:
+        raise RuntimeError(
+            f"{label} frame is missing decision-point columns: " + ", ".join(missing)
+        )
+    duplicates = frame.group_by(*_DECISION_POINT_COLUMNS).len().filter(pl.col("len") != 1)
+    if duplicates.height:
+        raise RuntimeError(f"{label} frame contains duplicate decision points")
+
+
+def _validate_decision_point_subset(
+    frame: pl.DataFrame,
+    core: pl.DataFrame,
+    label: str,
+) -> None:
+    outside = frame.select(*_DECISION_POINT_COLUMNS).join(
+        core.select(*_DECISION_POINT_COLUMNS),
+        on=list(_DECISION_POINT_COLUMNS),
+        how="anti",
+    )
+    if outside.height:
+        raise RuntimeError(f"{label} cohort contains decision points outside the core frame")
+
+
+def _validate_decision_point_identity(
+    frame: pl.DataFrame,
+    core: pl.DataFrame,
+    label: str,
+) -> None:
+    _validate_decision_point_subset(frame, core, label)
+    missing = core.select(*_DECISION_POINT_COLUMNS).join(
+        frame.select(*_DECISION_POINT_COLUMNS),
+        on=list(_DECISION_POINT_COLUMNS),
+        how="anti",
+    )
+    if missing.height:
+        raise RuntimeError(
+            f"{label} cohort changed core decision-point identity: missing {missing.height} rows"
+        )
 
 
 def extract_price_evidence(config: EarlyValueConfig, *, force: bool = False) -> dict[str, Any]:

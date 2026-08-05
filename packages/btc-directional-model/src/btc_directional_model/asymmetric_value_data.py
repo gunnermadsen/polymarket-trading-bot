@@ -70,6 +70,64 @@ POLYMARKET_VALUE_FEATURES = (
 )
 
 
+def select_asymmetric_prediction_grid(
+    core: pl.DataFrame,
+    config: AsymmetricValueConfig,
+) -> pl.DataFrame:
+    """Select one complete causal 1s/5s prediction grid per core market."""
+
+    required = {"market_id", "window_start", "observed_at", "seconds_elapsed"}
+    missing = sorted(required - set(core.columns))
+    if missing:
+        raise ValueError(
+            "asymmetric-value core frame is missing columns: " + ", ".join(missing)
+        )
+    if core.is_empty():
+        raise RuntimeError("asymmetric-value core frame is empty")
+
+    selected = core.filter(
+        pl.col("seconds_elapsed").is_in(list(config.prediction_seconds))
+    )
+    duplicates = (
+        selected.group_by("market_id", "seconds_elapsed")
+        .len()
+        .filter(pl.col("len") != 1)
+    )
+    if duplicates.height:
+        raise RuntimeError(
+            "asymmetric-value core prediction grid contains duplicate decision points"
+        )
+
+    expected_rows = len(config.prediction_seconds)
+    market_grid = selected.group_by("market_id").agg(
+        pl.len().alias("rows"),
+        pl.col("seconds_elapsed").n_unique().alias("unique_seconds"),
+    )
+    incomplete = market_grid.filter(
+        (pl.col("rows") != expected_rows)
+        | (pl.col("unique_seconds") != expected_rows)
+    )
+    if incomplete.height or market_grid.height != core["market_id"].n_unique():
+        raise RuntimeError(
+            "asymmetric-value core markets must contain the complete 96-point "
+            "prediction grid"
+        )
+
+    timestamp_violations = selected.filter(
+        pl.col("observed_at").is_null()
+        | pl.col("window_start").is_null()
+        | (
+            (pl.col("observed_at") - pl.col("window_start")).dt.total_microseconds()
+            != pl.col("seconds_elapsed") * 1_000_000
+        )
+    )
+    if timestamp_violations.height:
+        raise RuntimeError(
+            "asymmetric-value core decision timestamps are not aligned to elapsed seconds"
+        )
+    return selected.sort("window_start", "market_id", "seconds_elapsed")
+
+
 def extract_asymmetric_price_evidence(
     config: AsymmetricValueConfig,
     *,
@@ -160,6 +218,48 @@ def load_asymmetric_price_evidence(
     )
     if duplicates.height:
         raise RuntimeError("asymmetric-value execution evidence contains duplicate points")
+    return frame
+
+
+def load_asymmetric_retained_execution_evidence(
+    config: AsymmetricValueConfig,
+    *,
+    scope: Literal["development", "evaluation"],
+) -> pl.DataFrame:
+    """Load causal side-level books for the frozen single-side reference only."""
+
+    manifest_path = config.price_cache / scope / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(
+            f"asymmetric-value price manifest does not exist: {manifest_path}"
+        )
+    manifest = json.loads(manifest_path.read_text())
+    observed_identity = {
+        name: manifest.get(name)
+        for name in _manifest_identity(config, scope=scope)
+    }
+    if observed_identity != _manifest_identity(config, scope=scope):
+        raise RuntimeError(
+            "asymmetric-value execution cache identity changed; rebuild intentionally"
+        )
+
+    early_config, later_config = _execution_evidence_configs(config, scope=scope)
+    frame = pl.concat(
+        (
+            _load_retained_side_execution_rows(early_config.output_dir),
+            _load_retained_side_execution_rows(later_config.output_dir),
+        ),
+        how="vertical_relaxed",
+    ).sort("window_start", "seconds_elapsed")
+    duplicates = (
+        frame.group_by("market_id", "seconds_elapsed")
+        .len()
+        .filter(pl.col("len") != 1)
+    )
+    if duplicates.height:
+        raise RuntimeError(
+            "retained side-level execution evidence contains duplicate points"
+        )
     return frame
 
 
@@ -297,7 +397,7 @@ def attach_early_causal_oracle_features(
     minimum_propagation_seconds: int = ORACLE_MINIMUM_PROPAGATION_SECONDS,
     maximum_age_seconds: int = ORACLE_MAXIMUM_AGE_SECONDS,
 ) -> pl.DataFrame:
-    """Derive boundary-independent t=5 oracle fields on raw one-second rows."""
+    """Derive oracle fields on raw 1s history for the incoming decision keys."""
 
     if core.is_empty():
         return core
@@ -315,7 +415,7 @@ def attach_early_causal_oracle_features(
             on="market_id",
             how="inner",
             validate="m:1",
-        )
+        ).sort("market_id", "seconds_elapsed")
         raw_grid = raw.group_by("market_id").agg(
             pl.len().alias("rows"),
             pl.col("seconds_elapsed").n_unique().alias("unique_seconds"),
@@ -349,8 +449,10 @@ def attach_early_causal_oracle_features(
         ).drop(
             "_decision_observed_at"
         )
-        oracle = derive_oracle_point_in_time_features(with_rounds).filter(
-            pl.col("seconds_elapsed").is_in(list(range(5, 241, 5)))
+        oracle = derive_oracle_point_in_time_features(with_rounds).join(
+            daily_core.select(*keys),
+            on=keys,
+            how="semi",
         )
         oracle = oracle.with_columns(
             (
@@ -566,6 +668,67 @@ def _load_strict_execution_rows(source: Path) -> pl.DataFrame:
         )
         .collect()
     )
+
+
+def _load_retained_side_execution_rows(source: Path) -> pl.DataFrame:
+    files = sorted(source.glob("*.parquet"))
+    if not files:
+        raise FileNotFoundError(f"execution evidence has no Parquet partitions: {source}")
+    frame = (
+        pl.scan_parquet(files)
+        .select(
+            "market_id",
+            "window_start",
+            "observed_at",
+            "seconds_elapsed",
+            "fee_rate",
+            "up_side_fresh",
+            "down_side_fresh",
+            pl.col("up_ask_vwap_5").alias("yes_ask_vwap_5"),
+            pl.col("up_ask_depth").alias("yes_ask_depth"),
+            pl.col("down_ask_vwap_5").alias("no_ask_vwap_5"),
+            pl.col("down_ask_depth").alias("no_ask_depth"),
+        )
+        .collect()
+    )
+    yes_execution_cost = (
+        pl.col("yes_ask_vwap_5")
+        + pl.col("fee_rate")
+        * pl.col("yes_ask_vwap_5")
+        * (1.0 - pl.col("yes_ask_vwap_5"))
+    )
+    no_execution_cost = (
+        pl.col("no_ask_vwap_5")
+        + pl.col("fee_rate")
+        * pl.col("no_ask_vwap_5")
+        * (1.0 - pl.col("no_ask_vwap_5"))
+    )
+    return frame.with_columns(
+        pl.when(pl.col("up_side_fresh"))
+        .then(yes_execution_cost)
+        .otherwise(None)
+        .alias("yes_execution_cost_per_share"),
+        pl.when(pl.col("down_side_fresh"))
+        .then(no_execution_cost)
+        .otherwise(None)
+        .alias("no_execution_cost_per_share"),
+        pl.when(pl.col("up_side_fresh"))
+        .then(pl.col("yes_ask_vwap_5"))
+        .otherwise(None)
+        .alias("yes_ask_vwap_5"),
+        pl.when(pl.col("up_side_fresh"))
+        .then(pl.col("yes_ask_depth"))
+        .otherwise(None)
+        .alias("yes_ask_depth"),
+        pl.when(pl.col("down_side_fresh"))
+        .then(pl.col("no_ask_vwap_5"))
+        .otherwise(None)
+        .alias("no_ask_vwap_5"),
+        pl.when(pl.col("down_side_fresh"))
+        .then(pl.col("no_ask_depth"))
+        .otherwise(None)
+        .alias("no_ask_depth"),
+    ).drop("fee_rate", "up_side_fresh", "down_side_fresh")
 
 
 def _coverage_by_day(
