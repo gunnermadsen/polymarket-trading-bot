@@ -12,16 +12,18 @@ from btc_directional_model.asymmetric_value_data import (
     EARLY_CAUSAL_ORACLE_FEATURES,
     POLYMARKET_VALUE_FEATURES,
     _execution_evidence_configs,
+    _load_retained_side_execution_rows,
     attach_asymmetric_value_features,
     attach_early_causal_oracle_features,
     execution_grid_coverage,
+    select_asymmetric_prediction_grid,
 )
 
 
 def _config():
     return load_asymmetric_value_config(
         Path(__file__).parents[1]
-        / "configs/btc-5m-directional-asymmetric-value-hunter-20260414-20260802.toml"
+        / "configs/btc-5m-directional-asymmetric-value-one-second-20260414-20260802.toml"
     )
 
 
@@ -182,6 +184,71 @@ def test_execution_grid_coverage_counts_only_exact_core_market_keys(
     assert coverage["strict_rows"] == 1
 
 
+def test_prediction_grid_selects_exact_hybrid_cadence_without_filling_nulls() -> None:
+    config = _config()
+    start = datetime(2026, 7, 16, tzinfo=UTC)
+    seconds = list(range(1, 241))
+    core = pl.DataFrame(
+        {
+            "market_id": ["m"] * len(seconds),
+            "window_start": [start] * len(seconds),
+            "observed_at": [start + timedelta(seconds=value) for value in seconds],
+            "seconds_elapsed": seconds,
+            "causal_long_horizon_feature": [
+                None if value < 60 else float(value) for value in seconds
+            ],
+        }
+    )
+
+    selected = select_asymmetric_prediction_grid(core, config)
+
+    assert selected["seconds_elapsed"].to_list() == list(config.prediction_seconds)
+    assert selected.height == 96
+    assert selected.filter(pl.col("seconds_elapsed") < 60)[
+        "causal_long_horizon_feature"
+    ].null_count() == 59
+    assert 61 not in selected["seconds_elapsed"]
+    assert 65 in selected["seconds_elapsed"]
+
+
+def test_prediction_grid_rejects_an_incomplete_core_market() -> None:
+    config = _config()
+    start = datetime(2026, 7, 16, tzinfo=UTC)
+    seconds = [
+        value for value in range(1, 241) if value != 55
+    ]
+    core = pl.DataFrame(
+        {
+            "market_id": ["m"] * len(seconds),
+            "window_start": [start] * len(seconds),
+            "observed_at": [start + timedelta(seconds=value) for value in seconds],
+            "seconds_elapsed": seconds,
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="complete 96-point"):
+        select_asymmetric_prediction_grid(core, config)
+
+
+def test_prediction_grid_rejects_subsecond_timestamp_misalignment() -> None:
+    config = _config()
+    start = datetime(2026, 7, 16, tzinfo=UTC)
+    seconds = list(range(1, 241))
+    observed = [start + timedelta(seconds=value) for value in seconds]
+    observed[0] += timedelta(milliseconds=500)
+    core = pl.DataFrame(
+        {
+            "market_id": ["m"] * len(seconds),
+            "window_start": [start] * len(seconds),
+            "observed_at": observed,
+            "seconds_elapsed": seconds,
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="timestamps are not aligned"):
+        select_asymmetric_prediction_grid(core, config)
+
+
 def test_early_oracle_features_are_derived_on_raw_one_second_rows(
     tmp_path: Path,
 ) -> None:
@@ -204,9 +271,12 @@ def test_early_oracle_features_are_derived_on_raw_one_second_rows(
             "oracle_log_index": [0] * len(oracle_seconds),
         }
     )
-    raw.write_parquet(tmp_path / "2026-07-16.parquet")
+    raw.reverse().write_parquet(tmp_path / "2026-07-16.parquet")
     oracle.write_parquet(tmp_path / "oracle-2026-07-16.parquet")
-    core = raw.filter(pl.col("seconds_elapsed").is_in(list(range(5, 241, 5)))).select(
+    config = _config()
+    core = raw.filter(
+        pl.col("seconds_elapsed").is_in(list(config.prediction_seconds))
+    ).select(
         "market_id",
         "window_start",
         "observed_at",
@@ -217,7 +287,8 @@ def test_early_oracle_features_are_derived_on_raw_one_second_rows(
     result = attach_early_causal_oracle_features(core, tmp_path)
     at_five = result.filter(pl.col("seconds_elapsed") == 5)
 
-    assert result.height == 48
+    assert result.height == 96
+    assert result["seconds_elapsed"].to_list() == list(config.prediction_seconds)
     assert at_five.select(
         pl.all_horizontal(
             pl.col(feature).is_finite() for feature in EARLY_CAUSAL_ORACLE_FEATURES
@@ -226,7 +297,7 @@ def test_early_oracle_features_are_derived_on_raw_one_second_rows(
     assert result.filter(pl.col("early_oracle_eligible"))[
         "oracle_age_seconds"
     ].min() >= 2
-    assert result["oracle_age_seconds"].max() <= 10
+    assert result["oracle_age_seconds"].max() <= 11
     assert at_five["oracle_block_timestamp"].item() == start
 
 
@@ -270,3 +341,33 @@ def test_early_oracle_features_reject_any_gapped_market(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="complete 0-299 one-second grid"):
         attach_early_causal_oracle_features(core, tmp_path)
+
+
+def test_retained_reference_keeps_each_fresh_side_independently(
+    tmp_path: Path,
+) -> None:
+    timestamp = datetime(2026, 7, 20, tzinfo=UTC)
+    pl.DataFrame(
+        {
+            "market_id": ["m"],
+            "window_start": [timestamp],
+            "observed_at": [timestamp + timedelta(seconds=60)],
+            "seconds_elapsed": [60],
+            "fee_rate": [0.02],
+            "up_side_fresh": [True],
+            "down_side_fresh": [False],
+            "up_ask_vwap_5": [0.20],
+            "up_ask_depth": [25.0],
+            "down_ask_vwap_5": [0.80],
+            "down_ask_depth": [25.0],
+        }
+    ).write_parquet(tmp_path / "2026-07-20.parquet")
+
+    result = _load_retained_side_execution_rows(tmp_path)
+
+    assert result["yes_execution_cost_per_share"].item() == pytest.approx(
+        0.2032
+    )
+    assert result["yes_ask_vwap_5"].item() == pytest.approx(0.20)
+    assert result["no_execution_cost_per_share"].item() is None
+    assert result["no_ask_vwap_5"].item() is None
