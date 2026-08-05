@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from btc_directional_model.asymmetric_value_config import (
     load_asymmetric_value_config,
 )
 from btc_directional_model.asymmetric_value_evaluation import (
+    accuracy_price_by_second,
     confidence_control_ledger,
     current_policy_reference_ledger,
     joint_accuracy_value_surface,
@@ -62,7 +64,12 @@ def _under30_policy() -> ValuePolicy:
 
 def test_low_probability_underdog_is_selected_when_price_creates_edge() -> None:
     scored = score_two_sided_value(_predictions())
-    ledger = policy_ledger(scored, _under30_policy(), quantity=5.0)
+    ledger = policy_ledger(
+        scored,
+        _under30_policy(),
+        quantity=5.0,
+        maximum_depth_participation=0.25,
+    )
 
     assert scored["selected_yes"].item() is True
     assert scored["selected_underdog"].item() is True
@@ -72,12 +79,65 @@ def test_low_probability_underdog_is_selected_when_price_creates_edge() -> None:
 
 def test_cheap_loss_is_bounded_and_stress_is_reported() -> None:
     scored = score_two_sided_value(_predictions(label_up=0))
-    ledger = policy_ledger(scored, _under30_policy(), quantity=5.0)
+    ledger = policy_ledger(
+        scored,
+        _under30_policy(),
+        quantity=5.0,
+        maximum_depth_participation=0.25,
+    )
     metrics = ledger_metrics(ledger)
 
     assert ledger["realized_net"].item() == pytest.approx(-0.40)
     assert metrics["maximum_loss"] == pytest.approx(-0.40)
     assert metrics["stress_1c_net_expectancy_per_trade"] == pytest.approx(-0.45)
+
+
+def test_policy_selects_best_eligible_side_before_global_edge() -> None:
+    predictions = _predictions(probability_yes=0.80, label_up=0).with_columns(
+        pl.lit(0.40).alias("yes_ask_vwap_5"),
+        pl.lit(0.40).alias("yes_execution_cost_per_share"),
+        pl.lit(0.40).alias("yes_cost_per_share"),
+        pl.lit(0.10).alias("no_ask_vwap_5"),
+        pl.lit(0.10).alias("no_execution_cost_per_share"),
+        pl.lit(0.10).alias("no_cost_per_share"),
+    )
+    scored = score_two_sided_value(predictions)
+
+    ledger = policy_ledger(
+        scored,
+        _under30_policy(),
+        quantity=5.0,
+        maximum_depth_participation=0.25,
+    )
+
+    assert scored["selected_yes"].item() is True
+    assert ledger["selected_yes"].item() is False
+    assert ledger["selected_share_price"].item() == pytest.approx(0.10)
+    assert ledger["realized_net"].item() == pytest.approx(4.50)
+
+
+def test_policy_preserves_twenty_share_depth_requirement() -> None:
+    predictions = _predictions().with_columns(
+        pl.lit(19.0).alias("yes_ask_depth"),
+    )
+
+    ledger = policy_ledger(
+        score_two_sided_value(predictions),
+        _under30_policy(),
+        quantity=5.0,
+        maximum_depth_participation=0.25,
+    )
+
+    accepted = policy_ledger(
+        score_two_sided_value(_predictions()),
+        _under30_policy(),
+        quantity=5.0,
+        maximum_depth_participation=0.25,
+    )
+
+    assert ledger.is_empty()
+    assert ledger.schema == accepted.schema
+    assert pl.concat((ledger, accepted), how="vertical_relaxed").height == 1
 
 
 def test_confidence_control_requires_positive_conservative_edge() -> None:
@@ -91,6 +151,25 @@ def test_confidence_control_requires_positive_conservative_edge() -> None:
         maximum_entry_second=240,
         maximum_cost_per_share=0.70,
         minimum_edge_per_share=0.015,
+        maximum_depth_participation=0.25,
+        quantity=5.0,
+    )
+
+    assert ledger.is_empty()
+
+
+def test_confidence_control_preserves_depth_participation() -> None:
+    predictions = _predictions(probability_yes=0.80).with_columns(
+        pl.lit(19.0).alias("yes_ask_depth")
+    )
+
+    ledger = confidence_control_ledger(
+        predictions,
+        threshold=0.55,
+        maximum_entry_second=240,
+        maximum_cost_per_share=0.70,
+        minimum_edge_per_share=0.015,
+        maximum_depth_participation=0.25,
         quantity=5.0,
     )
 
@@ -163,6 +242,7 @@ def test_all_win_ledger_passes_loss_shape_with_zero_loss() -> None:
         score_two_sided_value(_predictions(label_up=1)),
         _under30_policy(),
         quantity=5.0,
+        maximum_depth_participation=0.25,
     )
     metrics = ledger_metrics(ledger)
 
@@ -175,7 +255,7 @@ def test_all_win_ledger_passes_loss_shape_with_zero_loss() -> None:
 def test_policy_selection_cannot_be_won_by_expensive_diagnostic() -> None:
     config = load_asymmetric_value_config(
         Path(__file__).parents[1]
-        / "configs/btc-5m-directional-asymmetric-value-hunter-20260414-20260802.toml"
+        / "configs/btc-5m-directional-asymmetric-value-one-second-20260414-20260802.toml"
     )
     primary = next(policy for policy in config.policies if policy.selection_eligible)
     diagnostic = next(policy for policy in config.policies if not policy.selection_eligible)
@@ -221,3 +301,79 @@ def test_both_side_surface_reports_yes_and_no_without_selection() -> None:
     assert yes["actual_win_rate"] == 1.0
     assert no["mean_side_probability"] == pytest.approx(0.79)
     assert no["actual_win_rate"] == 0.0
+
+
+def test_per_second_report_covers_hybrid_grid_quality_prices_and_support() -> None:
+    start = datetime(2026, 7, 16, tzinfo=UTC)
+    second_one_yes = _predictions(probability_yes=0.80, label_up=1).with_columns(
+        pl.lit(1).alias("seconds_elapsed"),
+        pl.lit(start + timedelta(seconds=1)).alias("observed_at"),
+    )
+    second_one_no = _predictions(probability_yes=0.20, label_up=0).with_columns(
+        pl.lit("m-next-day").alias("market_id"),
+        pl.lit(start + timedelta(days=1)).alias("window_start"),
+        pl.lit(start + timedelta(days=1, seconds=1)).alias("observed_at"),
+        pl.lit(1).alias("seconds_elapsed"),
+        pl.lit(0.12).alias("yes_best_ask"),
+        pl.lit(0.14).alias("yes_ask_vwap_5"),
+        pl.lit(0.16).alias("yes_cost_per_share"),
+        pl.lit(0.85).alias("no_best_ask"),
+        pl.lit(0.86).alias("no_ask_vwap_5"),
+        pl.lit(0.88).alias("no_cost_per_share"),
+    )
+    later = [
+        _predictions(probability_yes=0.60, label_up=label).with_columns(
+            pl.lit(f"m-{second}").alias("market_id"),
+            pl.lit(start + timedelta(seconds=second)).alias("observed_at"),
+            pl.lit(second).alias("seconds_elapsed"),
+        )
+        for second, label in ((59, 1), (60, 1), (65, 0))
+    ]
+    scored = score_two_sided_value(
+        pl.concat((second_one_yes, second_one_no, *later), how="vertical_relaxed")
+    )
+
+    rows = accuracy_price_by_second(scored)
+    at_one = next(row for row in rows if row["seconds_elapsed"] == 1)
+
+    assert [row["seconds_elapsed"] for row in rows] == [1, 59, 60, 65]
+    assert at_one["rows"] == 2
+    assert at_one["markets"] == 2
+    assert at_one["utc_days"] == 2
+    assert at_one["accuracy"] == 1.0
+    assert at_one["argmax_accuracy"] == 1.0
+    assert at_one["brier_score"] == pytest.approx(0.04)
+    assert at_one["log_loss"] == pytest.approx(-math.log(0.8))
+    assert at_one["calibration_bias"] == pytest.approx(0.0)
+    assert at_one["absolute_calibration_bias"] == pytest.approx(0.0)
+    assert at_one["mean_yes_best_ask"] == pytest.approx(0.10)
+    assert at_one["mean_yes_vwap_5"] == pytest.approx(0.11)
+    assert at_one["mean_yes_all_in_cost_per_share"] == pytest.approx(0.125)
+    assert at_one["mean_no_best_ask"] == pytest.approx(0.89)
+    assert at_one["mean_no_vwap_5"] == pytest.approx(0.895)
+    assert at_one["mean_no_all_in_cost_per_share"] == pytest.approx(0.91)
+
+
+def test_per_second_report_keeps_models_separate() -> None:
+    scored = score_two_sided_value(
+        pl.concat(
+            (
+                _predictions(probability_yes=0.80, label_up=1).with_columns(
+                    pl.lit("model-a").alias("model")
+                ),
+                _predictions(probability_yes=0.20, label_up=1).with_columns(
+                    pl.lit("model-b").alias("model")
+                ),
+            ),
+            how="vertical_relaxed",
+        )
+    )
+
+    rows = accuracy_price_by_second(scored)
+
+    assert [(row["model"], row["seconds_elapsed"]) for row in rows] == [
+        ("model-a", 5),
+        ("model-b", 5),
+    ]
+    assert rows[0]["argmax_accuracy"] == 1.0
+    assert rows[1]["argmax_accuracy"] == 0.0

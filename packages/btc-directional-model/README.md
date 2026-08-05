@@ -579,22 +579,32 @@ qualification.
 The offline asymmetric-value benchmark trains price-aware challengers to find lower-priced YES or
 NO claims whose calibrated probability exceeds exact five-share VWAP, fee, and a conservative
 execution reserve. Its primary policy search is restricted to raw share prices below 30 cents; the
-wider price policies and conventional confidence thresholds are diagnostics only. Accuracy is
-reported but is not an admission gate.
+wider price policies are diagnostics only. Predictions are made every second from seconds 1–59 and
+every five seconds from seconds 60–240. Every candidate preserves the runtime contract's 25%
+maximum depth participation, so a five-share entry requires at least 20 shares of selected-side
+depth. Accuracy is reported but is not an admission gate.
 
 ```bash
 .venv/bin/btc-directional-model asymmetric-value-benchmark-run \
-  --config configs/btc-5m-directional-asymmetric-value-hunter-20260414-20260802.toml
+  --config configs/btc-5m-directional-asymmetric-value-one-second-20260414-20260802.toml
 ```
 
 Selection is sealed before the frozen evaluation data is opened. Missing exact books are NoTrade,
 not losses or proxy prices, and evidence sufficiency is evaluated separately from point-estimate
-economics. The matrix includes a universal original-core control, price-aware core, causal Polygon
-Chainlink oracle, paired L2-only and closed-candle-only feature ablations, their combined arm, and
-an oracle/L2/candle arm. Historical RefPrice is excluded because local receipt time is not proven.
-The frozen current-policy reference preserves first 89% confidence crossing and its 30–95 cent
-execution range without inventing an extra edge gate. This command never exports a runtime model or
-changes the trading pipeline. Add `--force` only when intentionally rebuilding all source caches.
+economics. The matrix contains price logistic, core-plus-PMXT, Binance L2, closed Chainlink candle,
+and causal Polygon Chainlink oracle arms, with same-cohort controls for incomplete optional sources.
+It deliberately excludes multi-source kitchen-sink models. An enriched sparse-source arm remains
+selection-eligible only when it is non-inferior to its same-key control on point expectancy,
+opportunity yield, and paired UTC-day net profit. Calibration fits one coherent complementary
+YES/NO probability jointly by decision-time band and raw 10-cent side-price cells, with explicit
+parent-time fallback when a cell lacks 50 markets, five UTC days, or both outcomes. Historical
+RefPrice is excluded because local receipt time is not proven. The frozen current-policy reference
+preserves first 89% confidence crossing and its 30–95 cent execution range. A separate diagnostic
+varies only the retrained core-plus-price model's 50–89% confidence threshold under a fixed 1–240
+second, 70-cent cost, positive-edge, size, and depth contract. The frozen-model low-price diagnostic
+uses the value policy only over its artifact-supported 60–240 second interval; it cannot answer the
+pre-60 hypothesis. This command never exports a runtime model or changes the trading pipeline. Add
+`--force` only when intentionally rebuilding all source caches.
 
 ## Apple Silicon
 

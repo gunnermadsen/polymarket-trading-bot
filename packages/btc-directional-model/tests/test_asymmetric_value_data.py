@@ -54,11 +54,11 @@ def _frames(*, price_label: int = 1, age_seconds: float = 0.5):
             "yes_received_at": [received],
             "yes_best_ask": [0.20],
             "yes_ask_vwap_5": [0.21],
-            "yes_ask_depth": [12.0],
+            "yes_ask_depth": [25.0],
             "no_received_at": [received],
             "no_best_ask": [0.79],
             "no_ask_vwap_5": [0.80],
-            "no_ask_depth": [10.0],
+            "no_ask_depth": [20.0],
             "source_artifact_id": ["artifact"],
             "source_schema_version": ["btc5m-book-250ms-v1"],
             "quality_flags": [0],
@@ -114,6 +114,15 @@ def test_value_features_use_fee_and_reserve_adjusted_costs() -> None:
     assert set(POLYMARKET_VALUE_FEATURES).issubset(result.columns)
 
 
+def test_value_features_require_depth_for_maximum_participation() -> None:
+    config = _config()
+    features, prices = _frames()
+    prices = prices.with_columns(pl.lit(19.0).alias("yes_ask_depth"))
+
+    with pytest.raises(RuntimeError, match="no strict executable books"):
+        attach_asymmetric_value_features(features, prices, config)
+
+
 def test_value_feature_join_asserts_label_identity() -> None:
     config = _config()
     features, prices = _frames(price_label=0)
@@ -162,13 +171,17 @@ def test_execution_grid_coverage_counts_only_exact_core_market_keys(
             "market_id": ["core-a", "unrelated"],
             "seconds_elapsed": [1, 1],
             "strict_both_side_eligible": [True, True],
+            "yes_ask_depth": [20.0, 20.0],
+            "no_ask_depth": [20.0, 20.0],
         }
     ).write_parquet(early.output_dir / "rows.parquet")
     pl.DataFrame(
         {
             "market_id": ["core-a"],
             "seconds_elapsed": [60],
-            "strict_both_side_eligible": [False],
+            "strict_both_side_eligible": [True],
+            "yes_ask_depth": [19.0],
+            "no_ask_depth": [20.0],
         }
     ).write_parquet(later.output_dir / "rows.parquet")
     core = pl.DataFrame({"market_id": ["core-a", "core-b"]})

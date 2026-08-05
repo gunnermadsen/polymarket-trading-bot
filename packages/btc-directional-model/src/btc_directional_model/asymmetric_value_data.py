@@ -282,6 +282,7 @@ def attach_asymmetric_value_features(
     if mismatched_labels.height:
         raise RuntimeError("feature and execution labels disagree for the same market")
     joined = joined.drop("label_up_price")
+    minimum_displayed_depth = config.quantity / config.maximum_depth_participation
     strict = joined.filter(
         pl.col("fee_rate").is_not_null()
         & pl.col("fee_rate").is_finite()
@@ -290,8 +291,8 @@ def attach_asymmetric_value_features(
         & pl.col("no_best_ask").is_between(0.0, 1.0, closed="right")
         & pl.col("yes_ask_vwap_5").is_between(0.0, 1.0, closed="right")
         & pl.col("no_ask_vwap_5").is_between(0.0, 1.0, closed="right")
-        & (pl.col("yes_ask_depth") >= config.quantity)
-        & (pl.col("no_ask_depth") >= config.quantity)
+        & (pl.col("yes_ask_depth") >= minimum_displayed_depth)
+        & (pl.col("no_ask_depth") >= minimum_displayed_depth)
         & (pl.col("yes_received_at") <= pl.col("observed_at"))
         & (pl.col("no_received_at") <= pl.col("observed_at"))
         & (
@@ -581,6 +582,8 @@ def execution_grid_coverage(
             "market_id",
             "seconds_elapsed",
             "strict_both_side_eligible",
+            "yes_ask_depth",
+            "no_ask_depth",
         )
         for evidence in evidence_configs
     ]
@@ -597,7 +600,12 @@ def execution_grid_coverage(
     if duplicates.height:
         raise RuntimeError("execution source grid contains duplicate core-market keys")
     retained_rows = matching.height
-    strict_rows = int(matching["strict_both_side_eligible"].sum())
+    minimum_displayed_depth = config.quantity / config.maximum_depth_participation
+    strict_rows = matching.filter(
+        pl.col("strict_both_side_eligible")
+        & (pl.col("yes_ask_depth") >= minimum_displayed_depth)
+        & (pl.col("no_ask_depth") >= minimum_displayed_depth)
+    ).height
     return {
         "core_markets": market_ids.height,
         "expected_rows": expected_rows,

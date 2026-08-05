@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -24,13 +26,15 @@ from .asymmetric_value_data import (
     execution_grid_coverage,
     extract_asymmetric_price_evidence,
     load_asymmetric_price_evidence,
+    load_asymmetric_retained_execution_evidence,
+    select_asymmetric_prediction_grid,
 )
 from .asymmetric_value_evaluation import (
     accuracy_price_by_second,
     add_bootstrap_metrics,
     bootstrap_ledger_metrics,
+    candidate_policy_key,
     confidence_control_ledger,
-    confidence_reference_ledger,
     current_policy_reference_ledger,
     evaluate_policy_grid,
     evidence_gate_checks,
@@ -45,29 +49,33 @@ from .asymmetric_value_evaluation import (
     side_accuracy_value_surface,
 )
 from .asymmetric_value_training import (
+    ASYMMETRIC_VALUE_CANDIDATES,
     CORE_CANDLES_PRICE,
-    CORE_CONTROL,
-    CORE_L2_CANDLES_PRICE,
     CORE_L2_PRICE,
-    CORE_ORACLE_L2_CANDLES_PRICE,
     CORE_ORACLE_PRICE,
     CORE_PRICE,
-    L2_CANDLES_MATCHED_CORE_PRICE_CONTROL,
+    L2_MATCHED_CORE_PRICE_CONTROL,
     MODEL_SELECTION_ELIGIBLE,
-    ORACLE_L2_CANDLES_MATCHED_CORE_ORACLE_PRICE_CONTROL,
     ORACLE_MATCHED_CORE_PRICE_CONTROL,
-    PAIRED_CORE_CONTROL,
     PRICE_LOGISTIC,
     asymmetric_probability_frame,
+    asymmetric_value_feature_sets,
     fit_asymmetric_value_models,
 )
 from .core_config import load_core_config
 from .core_extract import extract_core_source, file_sha256, write_json_atomic
-from .core_features import build_core_features, load_core_feature_frame
-from .early_value_data import build_partitioned_external_frame
+from .core_features import (
+    build_core_features,
+    feature_destination,
+    validate_core_feature_cache,
+)
+from .early_value_data import (
+    build_full_closed_candle_frame,
+    build_partitioned_l2_frame,
+)
 from .runtime_export import score_runtime_model
 
-ASYMMETRIC_VALUE_SCHEMA_VERSION = "btc-asymmetric-value-hunter-benchmark-v1"
+ASYMMETRIC_VALUE_SCHEMA_VERSION = "btc-asymmetric-value-hunter-benchmark-v2"
 FROZEN_CHAMPION = "frozen_champion_reference_60s_plus"
 DEVELOPMENT_ORACLE_CACHE = "development-oracle-propagation-2s.parquet"
 EVALUATION_ORACLE_CACHE = "evaluation-oracle-propagation-2s.parquet"
@@ -85,31 +93,12 @@ def run_asymmetric_value_benchmark(
     print("asymmetric-value: preparing pre-evaluation causal features", flush=True)
     extract_core_source(core_config, "pre_holdout", force=force)
     build_core_features(core_config, "pre_holdout", force=force)
-    development = load_core_feature_frame(core_config, "pre_holdout")
+    development = _load_asymmetric_core_grid(
+        core_config,
+        "pre_holdout",
+        config,
+    )
     development_core_content_sha256 = _frame_content_digest(development)
-    development_oracle_inventory = _oracle_source_inventory(
-        development,
-        config.oracle_source,
-    )
-    development_oracle = _load_or_build_oracle_core(
-        development,
-        config,
-        destination=config.feature_cache / DEVELOPMENT_ORACLE_CACHE,
-        source_inventory=development_oracle_inventory,
-        core_content_sha256=development_core_content_sha256,
-        force=force,
-    )
-    development_external = _load_or_build_external(
-        development,
-        config,
-        destination=config.feature_cache / "development-external.parquet",
-        core_content_sha256=development_core_content_sha256,
-        force=force,
-    )
-    development_external_oracle = _join_early_oracle(
-        development_external,
-        development_oracle,
-    )
 
     print("asymmetric-value: extracting pre-evaluation executable books", flush=True)
     development_price_manifest = extract_asymmetric_price_evidence(
@@ -126,38 +115,129 @@ def run_asymmetric_value_benchmark(
         development_prices,
         config,
     )
-    development_oracle_price_features = attach_asymmetric_value_features(
-        development_oracle,
-        development_prices,
-        config,
-    ).filter(pl.col("early_oracle_eligible"))
-    development_external_price_features = attach_asymmetric_value_features(
-        development_external,
-        development_prices,
+    development_executable_core = development_price_features.select(
+        *development.columns
+    )
+    development_coverage = _base_coverage_summary(
+        development,
+        development_price_features,
         config,
     )
-    development_external_oracle_price_features = attach_asymmetric_value_features(
-        development_external_oracle,
-        development_prices,
+    development_price_features = _project_candidate_source(
+        development_price_features,
+        PRICE_LOGISTIC,
+        CORE_PRICE,
+    )
+    development_oracle_inventory = _oracle_source_inventory(
+        development_executable_core,
+        config.oracle_source,
+    )
+    development_oracle = _load_or_build_oracle_core(
+        development_executable_core,
         config,
-    ).filter(pl.col("early_oracle_eligible"))
+        destination=config.feature_cache / DEVELOPMENT_ORACLE_CACHE,
+        source_inventory=development_oracle_inventory,
+        core_content_sha256=development_core_content_sha256,
+        force=force,
+    )
+    development_oracle_price_features = _project_candidate_source(
+        attach_asymmetric_value_features(
+            development_oracle,
+            development_prices,
+            config,
+        ).filter(pl.col("early_oracle_eligible")),
+        ORACLE_MATCHED_CORE_PRICE_CONTROL,
+        CORE_ORACLE_PRICE,
+    )
+    del development_oracle
+    gc.collect()
+
+    development_l2 = _load_or_build_source_features(
+        development_executable_core,
+        config,
+        source_family="l2",
+        destination=config.feature_cache / "development-l2.parquet",
+        core_content_sha256=development_core_content_sha256,
+        force=force,
+    )
+    _add_joint_source_coverage(
+        development_coverage,
+        development_l2,
+        config,
+        source_family="l2",
+    )
+    development_l2_price_features = _project_candidate_source(
+        attach_asymmetric_value_features(
+            development_l2,
+            development_prices,
+            config,
+        ),
+        L2_MATCHED_CORE_PRICE_CONTROL,
+        CORE_L2_PRICE,
+    )
+    del development_l2
+    gc.collect()
+
+    development_candles = _load_or_build_source_features(
+        development_executable_core,
+        config,
+        source_family="candles",
+        destination=config.feature_cache / "development-candles.parquet",
+        core_content_sha256=development_core_content_sha256,
+        force=force,
+    )
+    _add_joint_source_coverage(
+        development_coverage,
+        development_candles,
+        config,
+        source_family="candle",
+    )
+    development_candle_price_features = _project_candidate_source(
+        attach_asymmetric_value_features(
+            development_candles,
+            development_prices,
+            config,
+        ),
+        CORE_CANDLES_PRICE,
+    )
+    del development_candles
+    policy_core = _window(
+        development,
+        config.policy.start,
+        config.policy.end,
+    ).select("market_id", "window_start", "seconds_elapsed")
+    policy_resolved_markets = policy_core["market_id"].n_unique()
+    policy_grid_coverage = execution_grid_coverage(
+        config,
+        scope="development",
+        core=policy_core,
+    )
     development_model_frames = _candidate_frames(
         price=development_price_features,
         oracle_price=development_oracle_price_features,
-        l2_candles_price=development_external_price_features,
-        oracle_l2_candles_price=development_external_oracle_price_features,
+        l2_price=development_l2_price_features,
+        candle_price=development_candle_price_features,
     )
+    del (
+        development,
+        development_executable_core,
+        development_prices,
+    )
+    gc.collect()
 
     print("asymmetric-value: fitting price-aware champion-family candidates", flush=True)
     models, training = fit_asymmetric_value_models(
         development_model_frames,
-        development,
         config,
         core_config,
     )
     policy_frames = {
         name: _window(frame, config.policy.start, config.policy.end)
         for name, frame in development_model_frames.items()
+    }
+    policy_candidate_strict_markets = {
+        name: frame["market_id"].n_unique()
+        for name, frame in policy_frames.items()
     }
     policy_predictions = _prediction_surface(policy_frames, models)
     policy_scored = score_two_sided_value(policy_predictions)
@@ -174,22 +254,17 @@ def run_asymmetric_value_benchmark(
     )
     _add_opportunity_denominators(
         policy_metrics,
-        resolved_markets=_window(
-            development,
-            config.policy.start,
-            config.policy.end,
-        )["market_id"].n_unique(),
-        strict_markets_by_model={
-            name: frame["market_id"].n_unique()
-            for name, frame in policy_frames.items()
-        },
+        resolved_markets=policy_resolved_markets,
+        strict_markets_by_model=policy_candidate_strict_markets,
     )
-    policy_grid_coverage = execution_grid_coverage(
+    policy_confidence_controls = _confidence_threshold_window(
+        policy_predictions,
         config,
-        scope="development",
-        core=_window(development, config.policy.start, config.policy.end),
+        window="policy",
+        seed_offset=30_000,
+        resolved_markets=policy_resolved_markets,
+        strict_markets=policy_candidate_strict_markets[CORE_PRICE],
     )
-    policy_core = _window(development, config.policy.start, config.policy.end)
     policy_candidate_coverage = {
         name: _candidate_grid_summary(frame, policy_core, config)
         for name, frame in policy_frames.items()
@@ -207,11 +282,24 @@ def run_asymmetric_value_benchmark(
         )
         for name, frame in policy_frames.items()
     }
+    primary_policy = next(
+        policy for policy in config.policies if policy.selection_eligible
+    )
+    matched_control_checks, eligible_models = (
+        _matched_control_noninferiority_checks(
+            policy_metrics,
+            policy_ledgers,
+            primary_policy.name,
+            config,
+        )
+    )
+    for name, check in matched_control_checks.items():
+        policy_evidence_checks_by_model[name].extend(check)
     selection = select_policy_candidate(
         policy_metrics,
         config,
         evidence_checks_by_model=policy_evidence_checks_by_model,
-        eligible_models=set(MODEL_SELECTION_ELIGIBLE),
+        eligible_models=eligible_models,
     )
     selected_matched_control = _selected_matched_control(
         selection["selected_model"]
@@ -233,27 +321,50 @@ def run_asymmetric_value_benchmark(
     )
     write_json_atomic(run_dir / "policy-selection.json", selection)
     selection_seal = {
-        "schema_version": "btc-asymmetric-value-selection-seal-v1",
+        "schema_version": "btc-asymmetric-value-selection-seal-v2",
         "sealed_at": datetime.now(UTC).isoformat(),
         "evaluation_opened": False,
         "selected_key": selection["selected_key"],
         "selected_model": selection["selected_model"],
         "selected_policy": selection["selected_policy"],
-        "predeclared_evaluation_controls": [
-            CORE_CONTROL,
-            *([selected_matched_control] if selected_matched_control else []),
-        ],
+        "predeclared_evaluation_models": list(ASYMMETRIC_VALUE_CANDIDATES),
+        "evaluation_policy_contract": {
+            "policy": selection["selected_policy"],
+            "quantity": config.quantity,
+            "maximum_depth_participation": (
+                config.maximum_depth_participation
+            ),
+            "same_policy_applied_to_every_trained_model": True,
+            "qualification_limited_to_policy_window_selected_model": True,
+        },
         "predeclared_frozen_evaluation_diagnostics": [
-            "full_current_policy_reference",
-            "selected_market_paired_current_policy_reference",
-            "frozen_champion_threshold_only_sweep",
-            "frozen_champion_edge_guarded_reference",
-            "retrained_core_control_threshold_sweep",
+            "frozen_current_policy_full_exact_book_89",
+            "frozen_current_policy_market_paired_89",
+            "frozen_champion_low_price_value_60s_240s",
+            "core_price_confidence_threshold_controls",
         ],
+        "confidence_threshold_control_contract": {
+            "model": CORE_PRICE,
+            "thresholds": list(config.confidence_thresholds),
+            "minimum_entry_second": 1,
+            "maximum_entry_second": 240,
+            "maximum_cost_per_share": (
+                config.gates.maximum_mean_cost_per_share
+            ),
+            "minimum_edge_per_share": (
+                config.confidence_control_minimum_edge_per_share
+            ),
+            "quantity": config.quantity,
+            "maximum_depth_participation": (
+                config.maximum_depth_participation
+            ),
+            "policy_window_metrics": policy_confidence_controls["metrics"],
+        },
         "qualified_on_policy_window": selection["qualified_on_policy_window"],
         "policy_evidence_checks_by_model": policy_evidence_checks_by_model,
         "policy_source_grid": policy_grid_coverage,
         "policy_candidate_grid": policy_candidate_coverage,
+        "matched_control_noninferiority": matched_control_checks,
         "policy_cohort_key_sha256": {
             name: _frame_key_digest(frame) for name, frame in policy_frames.items()
         },
@@ -275,46 +386,53 @@ def run_asymmetric_value_benchmark(
         "development_price_manifest_sha256": file_sha256(
             config.price_cache / "development" / "manifest.json"
         ),
-        "development_external_features_sha256": file_sha256(
-            config.feature_cache / "development-external.parquet"
+        "development_l2_features_sha256": file_sha256(
+            config.feature_cache / "development-l2.parquet"
+        ),
+        "development_l2_metadata_sha256": file_sha256(
+            config.feature_cache / "development-l2.metadata.json"
+        ),
+        "development_candle_features_sha256": file_sha256(
+            config.feature_cache / "development-candles.parquet"
+        ),
+        "development_candle_metadata_sha256": file_sha256(
+            config.feature_cache / "development-candles.metadata.json"
         ),
         "development_oracle_features_sha256": file_sha256(
             config.feature_cache / DEVELOPMENT_ORACLE_CACHE
+        ),
+        "development_oracle_metadata_sha256": file_sha256(
+            (config.feature_cache / DEVELOPMENT_ORACLE_CACHE).with_suffix(
+                ".metadata.json"
+            )
         ),
         "development_oracle_source_inventory": development_oracle_inventory,
         "model_artifact_sha256": model_hashes,
     }
     write_json_atomic(run_dir / "selection-seal.json", selection_seal)
     selection_seal_sha256 = file_sha256(run_dir / "selection-seal.json")
+    del (
+        development_price_features,
+        development_oracle_price_features,
+        development_l2_price_features,
+        development_candle_price_features,
+        development_model_frames,
+        policy_frames,
+        policy_predictions,
+        policy_scored,
+        policy_core,
+    )
+    gc.collect()
 
     print("asymmetric-value: selection sealed; opening frozen evaluation", flush=True)
     extract_core_source(core_config, "holdout", force=force)
     build_core_features(core_config, "holdout", force=force)
-    evaluation = load_core_feature_frame(core_config, "holdout")
+    evaluation = _load_asymmetric_core_grid(
+        core_config,
+        "holdout",
+        config,
+    )
     evaluation_core_content_sha256 = _frame_content_digest(evaluation)
-    evaluation_oracle_inventory = _oracle_source_inventory(
-        evaluation,
-        config.oracle_source,
-    )
-    evaluation_oracle = _load_or_build_oracle_core(
-        evaluation,
-        config,
-        destination=config.feature_cache / EVALUATION_ORACLE_CACHE,
-        source_inventory=evaluation_oracle_inventory,
-        core_content_sha256=evaluation_core_content_sha256,
-        force=force,
-    )
-    evaluation_external = _load_or_build_external(
-        evaluation,
-        config,
-        destination=config.feature_cache / "evaluation-external.parquet",
-        core_content_sha256=evaluation_core_content_sha256,
-        force=force,
-    )
-    evaluation_external_oracle = _join_early_oracle(
-        evaluation_external,
-        evaluation_oracle,
-    )
     evaluation_price_manifest = extract_asymmetric_price_evidence(
         config,
         scope="evaluation",
@@ -324,51 +442,119 @@ def run_asymmetric_value_benchmark(
         config,
         scope="evaluation",
     )
+    evaluation_reference_execution = (
+        load_asymmetric_retained_execution_evidence(
+            config,
+            scope="evaluation",
+        )
+    )
     evaluation_price_features = attach_asymmetric_value_features(
         evaluation,
         evaluation_prices,
         config,
     )
-    evaluation_oracle_price_features = attach_asymmetric_value_features(
-        evaluation_oracle,
-        evaluation_prices,
-        config,
-    ).filter(pl.col("early_oracle_eligible"))
-    evaluation_external_price_features = attach_asymmetric_value_features(
-        evaluation_external,
-        evaluation_prices,
+    evaluation_executable_core = evaluation_price_features.select(
+        *evaluation.columns
+    )
+    evaluation_coverage = _base_coverage_summary(
+        evaluation,
+        evaluation_price_features,
         config,
     )
-    evaluation_external_oracle_price_features = attach_asymmetric_value_features(
-        evaluation_external_oracle,
-        evaluation_prices,
+    evaluation_price_features = _project_candidate_source(
+        evaluation_price_features,
+        PRICE_LOGISTIC,
+        CORE_PRICE,
+    )
+    evaluation_oracle_inventory = _oracle_source_inventory(
+        evaluation_executable_core,
+        config.oracle_source,
+    )
+    evaluation_oracle = _load_or_build_oracle_core(
+        evaluation_executable_core,
         config,
-    ).filter(pl.col("early_oracle_eligible"))
+        destination=config.feature_cache / EVALUATION_ORACLE_CACHE,
+        source_inventory=evaluation_oracle_inventory,
+        core_content_sha256=evaluation_core_content_sha256,
+        force=force,
+    )
+    evaluation_oracle_price_features = _project_candidate_source(
+        attach_asymmetric_value_features(
+            evaluation_oracle,
+            evaluation_prices,
+            config,
+        ).filter(pl.col("early_oracle_eligible")),
+        ORACLE_MATCHED_CORE_PRICE_CONTROL,
+        CORE_ORACLE_PRICE,
+    )
+    del evaluation_oracle
+
+    evaluation_l2 = _load_or_build_source_features(
+        evaluation_executable_core,
+        config,
+        source_family="l2",
+        destination=config.feature_cache / "evaluation-l2.parquet",
+        core_content_sha256=evaluation_core_content_sha256,
+        force=force,
+    )
+    _add_joint_source_coverage(
+        evaluation_coverage,
+        evaluation_l2,
+        config,
+        source_family="l2",
+    )
+    evaluation_l2_price_features = _project_candidate_source(
+        attach_asymmetric_value_features(
+            evaluation_l2,
+            evaluation_prices,
+            config,
+        ),
+        L2_MATCHED_CORE_PRICE_CONTROL,
+        CORE_L2_PRICE,
+    )
+    del evaluation_l2
+
+    evaluation_candles = _load_or_build_source_features(
+        evaluation_executable_core,
+        config,
+        source_family="candles",
+        destination=config.feature_cache / "evaluation-candles.parquet",
+        core_content_sha256=evaluation_core_content_sha256,
+        force=force,
+    )
+    _add_joint_source_coverage(
+        evaluation_coverage,
+        evaluation_candles,
+        config,
+        source_family="candle",
+    )
+    evaluation_candle_price_features = _project_candidate_source(
+        attach_asymmetric_value_features(
+            evaluation_candles,
+            evaluation_prices,
+            config,
+        ),
+        CORE_CANDLES_PRICE,
+    )
+    del evaluation_candles
     evaluation_model_frames = _candidate_frames(
         price=evaluation_price_features,
         oracle_price=evaluation_oracle_price_features,
-        l2_candles_price=evaluation_external_price_features,
-        oracle_l2_candles_price=evaluation_external_oracle_price_features,
+        l2_price=evaluation_l2_price_features,
+        candle_price=evaluation_candle_price_features,
     )
     selected_evaluation_frame = evaluation_model_frames[selection["selected_model"]]
-    coverage = _coverage_summary(
-        pl.concat(
-            (development, evaluation),
-            how="vertical_relaxed",
-        ),
-        pl.concat(
-            (development_external, evaluation_external),
-            how="vertical_relaxed",
-        ),
-        pl.concat(
-            (development_price_features, evaluation_price_features),
-            how="vertical_relaxed",
-        ),
-        config,
-    )
+    coverage = {
+        "fit": development_coverage["fit"],
+        "calibration": development_coverage["calibration"],
+        "policy": development_coverage["policy"],
+        "evaluation": evaluation_coverage["evaluation"],
+    }
+    del evaluation_executable_core
+    gc.collect()
     coverage["policy"]["source_grid"] = policy_grid_coverage
     coverage["policy"]["candidate_strict_markets"] = {
-        name: frame["market_id"].n_unique() for name, frame in policy_frames.items()
+        **policy_candidate_strict_markets
     }
     coverage["policy"]["candidate_prediction_grid"] = policy_candidate_coverage
     evaluation_grid_coverage = execution_grid_coverage(
@@ -377,9 +563,12 @@ def run_asymmetric_value_benchmark(
         core=evaluation,
     )
     coverage["evaluation"]["source_grid"] = evaluation_grid_coverage
-    coverage["evaluation"]["candidate_strict_markets"] = {
+    evaluation_candidate_strict_markets = {
         name: frame["market_id"].n_unique()
         for name, frame in evaluation_model_frames.items()
+    }
+    coverage["evaluation"]["candidate_strict_markets"] = {
+        **evaluation_candidate_strict_markets
     }
     evaluation_candidate_coverage = {
         name: _candidate_grid_summary(frame, evaluation, config)
@@ -389,28 +578,13 @@ def run_asymmetric_value_benchmark(
         evaluation_candidate_coverage
     )
 
-    evaluation_prediction_frames = {
-        selection["selected_model"]: selected_evaluation_frame,
-        CORE_CONTROL: evaluation_model_frames[CORE_CONTROL],
-    }
-    if selected_matched_control is not None:
-        evaluation_prediction_frames[selected_matched_control] = (
-            selected_evaluation_frame
-        )
-    evaluation_model_names = set(evaluation_prediction_frames)
     evaluation_predictions = _prediction_surface(
-        evaluation_prediction_frames,
-        {
-            name: model
-            for name, model in models.items()
-            if name in evaluation_model_names
-        },
+        evaluation_model_frames,
+        models,
     )
-    selected_evaluation_predictions = evaluation_predictions.filter(
+    evaluation_scored = score_two_sided_value(evaluation_predictions)
+    selected_evaluation_scored = evaluation_scored.filter(
         pl.col("model") == selection["selected_model"]
-    )
-    selected_evaluation_scored = score_two_sided_value(
-        selected_evaluation_predictions
     )
     selected_key = selection["selected_key"]
     selected_policy = next(
@@ -418,60 +592,63 @@ def run_asymmetric_value_benchmark(
         for policy in config.policies
         if policy.name == selection["selected_policy"]
     )
-    selected_ledger = policy_ledger(
-        selected_evaluation_scored,
-        selected_policy,
-        quantity=config.quantity,
-    )
-    selected_metrics = ledger_metrics(selected_ledger)
-    selected_metrics["utc_day_block_bootstrap"] = bootstrap_ledger_metrics(
-        selected_ledger,
-        resamples=config.bootstrap_resamples,
-        seed=config.random_seed + 10_000,
-    )
-    _add_opportunity_denominators(
-        {selected_key: selected_metrics},
-        resolved_markets=evaluation["market_id"].n_unique(),
-        strict_markets_by_model={
-            selection["selected_model"]: selected_evaluation_frame[
-                "market_id"
-            ].n_unique()
-        },
-    )
-    matched_control_metrics: dict[str, Any] | None = None
-    matched_control_ledger: pl.DataFrame | None = None
-    if selected_matched_control is not None:
-        matched_control_scored = score_two_sided_value(
-            evaluation_predictions.filter(
-                pl.col("model") == selected_matched_control
-            )
-        )
-        matched_control_ledger = policy_ledger(
-            matched_control_scored,
+    evaluation_ledgers: dict[str, pl.DataFrame] = {}
+    evaluation_model_metrics: dict[str, dict[str, Any]] = {}
+    for offset, name in enumerate(ASYMMETRIC_VALUE_CANDIDATES):
+        scored = evaluation_scored.filter(pl.col("model") == name)
+        ledger = policy_ledger(
+            scored,
             selected_policy,
             quantity=config.quantity,
+            maximum_depth_participation=config.maximum_depth_participation,
         )
-        matched_control_metrics = ledger_metrics(matched_control_ledger)
-        matched_control_metrics["utc_day_block_bootstrap"] = (
-            bootstrap_ledger_metrics(
-                matched_control_ledger,
-                resamples=config.bootstrap_resamples,
-                seed=config.random_seed + 11_000,
-            )
+        values = ledger_metrics(ledger)
+        values["utc_day_block_bootstrap"] = bootstrap_ledger_metrics(
+            ledger,
+            resamples=config.bootstrap_resamples,
+            seed=config.random_seed + 10_000 + offset,
         )
-        _add_opportunity_denominators(
-            {
-                f"{selected_matched_control}::{selected_policy.name}": (
-                    matched_control_metrics
-                )
-            },
-            resolved_markets=evaluation["market_id"].n_unique(),
-            strict_markets_by_model={
-                selected_matched_control: selected_evaluation_frame[
-                    "market_id"
-                ].n_unique()
-            },
-        )
+        evaluation_ledgers[name] = ledger
+        evaluation_model_metrics[name] = values
+    _add_opportunity_denominators(
+        {
+            f"{name}::{selected_policy.name}": values
+            for name, values in evaluation_model_metrics.items()
+        },
+        resolved_markets=evaluation["market_id"].n_unique(),
+        strict_markets_by_model=evaluation_candidate_strict_markets,
+    )
+    evaluation_confidence_controls = _confidence_threshold_window(
+        evaluation_predictions,
+        config,
+        window="evaluation",
+        seed_offset=40_000,
+        resolved_markets=evaluation["market_id"].n_unique(),
+        strict_markets=evaluation_candidate_strict_markets[CORE_PRICE],
+    )
+    confidence_controls = {
+        "model": CORE_PRICE,
+        "description": evaluation_confidence_controls["description"],
+        "accuracy_thresholds_are_diagnostics_not_selection_gates": True,
+        "policy_window": policy_confidence_controls["metrics"],
+        "evaluation_window": evaluation_confidence_controls["metrics"],
+        "table": [
+            *policy_confidence_controls["table"],
+            *evaluation_confidence_controls["table"],
+        ],
+    }
+    selected_ledger = evaluation_ledgers[selection["selected_model"]]
+    selected_metrics = evaluation_model_metrics[selection["selected_model"]]
+    matched_control_ledger = (
+        evaluation_ledgers[selected_matched_control]
+        if selected_matched_control is not None
+        else None
+    )
+    matched_control_metrics = (
+        evaluation_model_metrics[selected_matched_control]
+        if selected_matched_control is not None
+        else None
+    )
     evaluation_evidence_checks = evidence_gate_checks(
         selected_evaluation_frame,
         config,
@@ -521,7 +698,7 @@ def run_asymmetric_value_benchmark(
         how="inner",
         validate="m:1",
     )
-    paired_execution = evaluation_price_features.join(
+    paired_execution = evaluation_reference_execution.join(
         selected_market_ids,
         on="market_id",
         how="inner",
@@ -529,7 +706,7 @@ def run_asymmetric_value_benchmark(
     )
     full_current_policy_reference = current_policy_reference_ledger(
         full_champion_predictions,
-        execution=evaluation_price_features,
+        execution=evaluation_reference_execution,
         threshold=current_process["confidence_threshold"],
         minimum_entry_second=current_process["minimum_entry_second"],
         maximum_entry_second=current_process["maximum_entry_second"],
@@ -578,48 +755,59 @@ def run_asymmetric_value_benchmark(
             current_process,
         )
     )
-    frozen_champion_thresholds = _frozen_champion_threshold_controls(
-        full_champion_predictions,
-        evaluation_price_features,
-        current_process,
-        config,
-    )
     champion_executable_predictions = _champion_probability_frame(
         config,
         evaluation_price_features,
         include_execution=True,
     )
-    guarded_champion_reference = confidence_reference_ledger(
-        champion_executable_predictions,
-        threshold=0.89,
-        minimum_edge_per_share=(
-            config.confidence_control_minimum_edge_per_share
-        ),
+    frozen_value_policy = replace(
+        selected_policy,
+        name="frozen_champion_low_price_value_60s_240s",
+        maximum_entry_second=240,
+    )
+    frozen_champion_value_reference = policy_ledger(
+        score_two_sided_value(champion_executable_predictions),
+        frozen_value_policy,
         quantity=config.quantity,
+        maximum_depth_participation=config.maximum_depth_participation,
     )
-    guarded_champion_metrics = ledger_metrics(guarded_champion_reference)
-    guarded_champion_metrics["utc_day_block_bootstrap"] = (
-        _bootstrap_reference(guarded_champion_reference, config)
+    frozen_champion_value_metrics = ledger_metrics(
+        frozen_champion_value_reference
     )
+    frozen_champion_value_metrics["utc_day_block_bootstrap"] = (
+        _bootstrap_reference(frozen_champion_value_reference, config)
+    )
+    frozen_champion_value_metrics["supported_interval"] = [60, 240]
+    frozen_champion_value_metrics["pre_60_supported"] = False
+    frozen_champion_value_metrics["policy_contract"] = {
+        "quantity": config.quantity,
+        "maximum_depth_participation": (
+            config.maximum_depth_participation
+        ),
+        "minimum_share_price": frozen_value_policy.minimum_share_price,
+        "maximum_share_price": frozen_value_policy.maximum_share_price,
+        "maximum_cost_per_share": frozen_value_policy.maximum_cost_per_share,
+        "minimum_edge_per_share": frozen_value_policy.minimum_edge_per_share,
+    }
     comparison = _risk_shape_comparison(
         selected_metrics,
         paired_current_policy_metrics,
     )
-    accuracy_prices = accuracy_price_by_second(selected_evaluation_scored)
+    accuracy_prices = accuracy_price_by_second(evaluation_scored)
     evaluation_joint_surface = joint_accuracy_value_surface(
-        selected_evaluation_scored
+        evaluation_scored
     )
     evaluation_both_side_surface = side_accuracy_value_surface(
-        selected_evaluation_predictions
+        evaluation_predictions
     )
     opportunity_calibration = opportunity_calibration_by_price_band(
-        selected_evaluation_scored
+        evaluation_scored
     )
     exact_prices = exact_price_by_second(evaluation_prices)
-    confidence_controls = _confidence_threshold_controls(
-        policy_predictions,
-        evaluation_predictions,
-        config,
+    evaluation_economics_leaderboard = _evaluation_economics_table(
+        evaluation_model_metrics,
+        selected_model=selection["selected_model"],
+        policy=selected_policy.name,
     )
 
     evaluation_predictions.write_parquet(
@@ -627,10 +815,18 @@ def run_asymmetric_value_benchmark(
         compression="zstd",
     )
     selected_evaluation_scored.write_parquet(
+        run_dir / "selected-evaluation-scored-opportunities.parquet",
+        compression="zstd",
+    )
+    evaluation_scored.write_parquet(
         run_dir / "evaluation-scored-opportunities.parquet",
         compression="zstd",
     )
     selected_ledger.write_parquet(run_dir / "selected-policy-ledger.parquet", compression="zstd")
+    pl.concat(list(evaluation_ledgers.values()), how="vertical_relaxed").write_parquet(
+        run_dir / "evaluation-model-policy-ledger.parquet",
+        compression="zstd",
+    )
     full_current_policy_reference.write_parquet(
         run_dir / "frozen-current-policy-full-reference-ledger.parquet",
         compression="zstd",
@@ -644,8 +840,8 @@ def run_asymmetric_value_benchmark(
             run_dir / "selected-matched-control-ledger.parquet",
             compression="zstd",
         )
-    guarded_champion_reference.write_parquet(
-        run_dir / "frozen-champion-edge-guarded-reference-ledger.parquet",
+    frozen_champion_value_reference.write_parquet(
+        run_dir / "frozen-champion-low-price-value-reference-ledger.parquet",
         compression="zstd",
     )
     price_bands = price_band_metrics(selected_ledger)
@@ -654,7 +850,7 @@ def run_asymmetric_value_benchmark(
         run_dir / "candidate-policy-economics.csv"
     )
     pl.DataFrame(accuracy_prices).write_csv(
-        run_dir / "accuracy-price-by-five-seconds.csv"
+        run_dir / "accuracy-price-by-observation-second.csv"
     )
     pl.DataFrame(exact_prices).write_csv(
         run_dir / "exact-price-by-observation-second.csv"
@@ -662,11 +858,11 @@ def run_asymmetric_value_benchmark(
     pl.DataFrame(opportunity_calibration).write_csv(
         run_dir / "opportunity-calibration-by-price-band.csv"
     )
-    pl.DataFrame(confidence_controls["table"]).write_csv(
-        run_dir / "core-control-confidence-threshold-economics.csv"
+    pl.DataFrame(evaluation_economics_leaderboard).write_csv(
+        run_dir / "evaluation-model-economics.csv"
     )
-    pl.DataFrame(frozen_champion_thresholds["table"]).write_csv(
-        run_dir / "frozen-champion-confidence-threshold-economics.csv"
+    pl.DataFrame(confidence_controls["table"]).write_csv(
+        run_dir / "core-price-confidence-threshold-economics.csv"
     )
     pl.DataFrame(
         [
@@ -685,6 +881,27 @@ def run_asymmetric_value_benchmark(
             for row in evaluation_both_side_surface
         ]
     ).write_csv(run_dir / "model-second-yes-no-price-band-surface.csv")
+    evaluation_artifact_names = [
+        "evaluation-predictions.parquet",
+        "selected-evaluation-scored-opportunities.parquet",
+        "evaluation-scored-opportunities.parquet",
+        "selected-policy-ledger.parquet",
+        "evaluation-model-policy-ledger.parquet",
+        "frozen-current-policy-full-reference-ledger.parquet",
+        "frozen-current-policy-paired-reference-ledger.parquet",
+        "frozen-champion-low-price-value-reference-ledger.parquet",
+        "selected-price-band-economics.csv",
+        "candidate-policy-economics.csv",
+        "accuracy-price-by-observation-second.csv",
+        "exact-price-by-observation-second.csv",
+        "opportunity-calibration-by-price-band.csv",
+        "evaluation-model-economics.csv",
+        "core-price-confidence-threshold-economics.csv",
+        "model-second-side-price-band-surface.csv",
+        "model-second-yes-no-price-band-surface.csv",
+    ]
+    if matched_control_ledger is not None:
+        evaluation_artifact_names.append("selected-matched-control-ledger.parquet")
 
     result: dict[str, Any] = {
         "schema_version": ASYMMETRIC_VALUE_SCHEMA_VERSION,
@@ -700,30 +917,38 @@ def run_asymmetric_value_benchmark(
         "trading_process_changed": False,
         "core_contract_changed": False,
         "model_contract": {
-            "estimator_family": "champion-family histogram gradient boosting",
+            "selected_estimator_family": training["profiles"][
+                selection["selected_model"]
+            ]["family"],
+            "candidate_estimator_families": {
+                name: values["family"]
+                for name, values in training["profiles"].items()
+            },
             "price_aware_candidates": True,
             "two_sided_value_selection": True,
             "underdog_selection_allowed": True,
             "accuracy_gate_used": False,
             "market_equal_row_weights": True,
             "candidate_specific_training_cohorts": True,
-            "original_core_control_uses_universal_core": True,
             "opening_boundary_features_used_by_candidates": False,
+            "prediction_grid": "seconds 1-59 every second; seconds 60-240 every five seconds",
+            "calibration": (
+                "coherent joint probability by time band, raw 10c price band, "
+                "and YES/NO side with identity parent fallback"
+            ),
             "causal_oracle_features": list(EARLY_CAUSAL_ORACLE_FEATURES),
             "feature_and_source_ablation_candidates": [
                 CORE_PRICE,
                 CORE_ORACLE_PRICE,
                 CORE_L2_PRICE,
                 CORE_CANDLES_PRICE,
-                CORE_L2_CANDLES_PRICE,
-                CORE_ORACLE_L2_CANDLES_PRICE,
             ],
             "matched_feature_controls": [
                 ORACLE_MATCHED_CORE_PRICE_CONTROL,
-                L2_CANDLES_MATCHED_CORE_PRICE_CONTROL,
-                ORACLE_L2_CANDLES_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+                L2_MATCHED_CORE_PRICE_CONTROL,
             ],
-            "l2_and_candle_single-source_arms_use_paired_common_cohort": True,
+            "kitchen_sink_candidates_used": False,
+            "candle_arm_uses_full_pmxt_cohort": True,
             "primary_maximum_admission_cost_per_share": max(
                 policy.maximum_cost_per_share
                 for policy in config.policies
@@ -734,6 +959,10 @@ def run_asymmetric_value_benchmark(
             ),
             "primary_maximum_raw_share_price": 0.30,
             "execution_reserve_per_share": config.execution_reserve_per_share,
+            "quantity": config.quantity,
+            "maximum_depth_participation": (
+                config.maximum_depth_participation
+            ),
             "realized_execution_stress_per_share": 0.01,
             "selection_eligible_policies": [
                 policy.name for policy in config.policies if policy.selection_eligible
@@ -806,7 +1035,8 @@ def run_asymmetric_value_benchmark(
             "selected_key": selected_key,
             "selected_metrics": selected_metrics,
             "selected_price_bands": price_bands,
-            "accuracy_price_by_five_seconds": accuracy_prices,
+            "accuracy_price_by_observation_second": accuracy_prices,
+            "accuracy_price_artifact": "accuracy-price-by-observation-second.csv",
             "joint_surface_artifact": "model-second-side-price-band-surface.csv",
             "both_side_surface_artifact": (
                 "model-second-yes-no-price-band-surface.csv"
@@ -814,17 +1044,22 @@ def run_asymmetric_value_benchmark(
             "candidate_policy_economics_artifact": (
                 "candidate-policy-economics.csv"
             ),
+            "evaluation_model_economics_artifact": (
+                "evaluation-model-economics.csv"
+            ),
+            "evaluation_model_economics": evaluation_model_metrics,
+            "evaluation_model_economics_leaderboard": (
+                evaluation_economics_leaderboard
+            ),
+            "core_price_confidence_threshold_controls": confidence_controls,
+            "core_price_confidence_threshold_artifact": (
+                "core-price-confidence-threshold-economics.csv"
+            ),
             "exact_price_by_observation_second": exact_prices,
             "opportunity_calibration_by_price_band": opportunity_calibration,
-            "core_control_confidence_thresholds": confidence_controls,
-            "frozen_champion_confidence_thresholds": (
-                frozen_champion_thresholds
-            ),
-            "predeclared_evaluation_control_models": [
-                CORE_CONTROL,
-                *([selected_matched_control] if selected_matched_control else []),
-            ],
-            "non_predeclared_model_metrics_opened_on_evaluation": False,
+            "predeclared_evaluation_models": list(ASYMMETRIC_VALUE_CANDIDATES),
+            "all_predeclared_models_evaluated": True,
+            "qualification_limited_to_selected_model": True,
             "policy_window_candidate_metrics": policy_metrics,
             "selected_feature_attribution_control": {
                 "model": selected_matched_control,
@@ -843,7 +1078,8 @@ def run_asymmetric_value_benchmark(
             "frozen_current_policy_reference_scope": (
                 "frozen model on its five-second feature cadence, terminal first 89% "
                 "confidence crossing before exact-book validation, 30-95c price bounds, "
-                "five-share depth participation, and no added edge gate; full and "
+                "five-share size with 25% maximum depth participation, and no added "
+                "edge gate; full and "
                 "selected-market-paired cohorts are reported separately"
             ),
             "frozen_current_policy_fidelity_limitations": (
@@ -852,7 +1088,10 @@ def run_asymmetric_value_benchmark(
                 "does not reconstruct intermediate-loop quotes, marketable-limit price, "
                 "quoted-size, or 150ms arrival fills"
             ),
-            "frozen_champion_edge_guarded_diagnostic_89": guarded_champion_metrics,
+            "frozen_champion_low_price_value_60s_240s": (
+                frozen_champion_value_metrics
+            ),
+            "frozen_champion_pre60_value_diagnostic_supported": False,
             "risk_shape_comparison": comparison,
         },
         "hypothesis": {
@@ -896,11 +1135,35 @@ def run_asymmetric_value_benchmark(
             "policy_selection_sha256": file_sha256(
                 run_dir / "policy-selection.json"
             ),
-            "development_external_features_sha256": file_sha256(
-                config.feature_cache / "development-external.parquet"
+            "development_price_manifest_sha256": file_sha256(
+                config.price_cache / "development" / "manifest.json"
             ),
-            "evaluation_external_features_sha256": file_sha256(
-                config.feature_cache / "evaluation-external.parquet"
+            "evaluation_price_manifest_sha256": file_sha256(
+                config.price_cache / "evaluation" / "manifest.json"
+            ),
+            "development_l2_features_sha256": file_sha256(
+                config.feature_cache / "development-l2.parquet"
+            ),
+            "evaluation_l2_features_sha256": file_sha256(
+                config.feature_cache / "evaluation-l2.parquet"
+            ),
+            "development_l2_metadata_sha256": file_sha256(
+                config.feature_cache / "development-l2.metadata.json"
+            ),
+            "evaluation_l2_metadata_sha256": file_sha256(
+                config.feature_cache / "evaluation-l2.metadata.json"
+            ),
+            "development_candle_features_sha256": file_sha256(
+                config.feature_cache / "development-candles.parquet"
+            ),
+            "evaluation_candle_features_sha256": file_sha256(
+                config.feature_cache / "evaluation-candles.parquet"
+            ),
+            "development_candle_metadata_sha256": file_sha256(
+                config.feature_cache / "development-candles.metadata.json"
+            ),
+            "evaluation_candle_metadata_sha256": file_sha256(
+                config.feature_cache / "evaluation-candles.metadata.json"
             ),
             "development_oracle_features_sha256": file_sha256(
                 config.feature_cache / DEVELOPMENT_ORACLE_CACHE
@@ -908,6 +1171,20 @@ def run_asymmetric_value_benchmark(
             "evaluation_oracle_features_sha256": file_sha256(
                 config.feature_cache / EVALUATION_ORACLE_CACHE
             ),
+            "development_oracle_metadata_sha256": file_sha256(
+                (config.feature_cache / DEVELOPMENT_ORACLE_CACHE).with_suffix(
+                    ".metadata.json"
+                )
+            ),
+            "evaluation_oracle_metadata_sha256": file_sha256(
+                (config.feature_cache / EVALUATION_ORACLE_CACHE).with_suffix(
+                    ".metadata.json"
+                )
+            ),
+            "evaluation_artifact_sha256": {
+                name: file_sha256(run_dir / name)
+                for name in evaluation_artifact_names
+            },
         },
         "deployment": {
             "authorized": False,
@@ -931,25 +1208,79 @@ def _candidate_frames(
     *,
     price: pl.DataFrame,
     oracle_price: pl.DataFrame,
-    l2_candles_price: pl.DataFrame,
-    oracle_l2_candles_price: pl.DataFrame,
+    l2_price: pl.DataFrame,
+    candle_price: pl.DataFrame,
 ) -> dict[str, pl.DataFrame]:
     return {
         PRICE_LOGISTIC: price,
-        CORE_CONTROL: price,
-        PAIRED_CORE_CONTROL: price,
         CORE_PRICE: price,
+        L2_MATCHED_CORE_PRICE_CONTROL: l2_price,
+        CORE_L2_PRICE: l2_price,
+        CORE_CANDLES_PRICE: candle_price,
         ORACLE_MATCHED_CORE_PRICE_CONTROL: oracle_price,
         CORE_ORACLE_PRICE: oracle_price,
-        CORE_L2_PRICE: l2_candles_price,
-        CORE_CANDLES_PRICE: l2_candles_price,
-        L2_CANDLES_MATCHED_CORE_PRICE_CONTROL: l2_candles_price,
-        CORE_L2_CANDLES_PRICE: l2_candles_price,
-        ORACLE_L2_CANDLES_MATCHED_CORE_ORACLE_PRICE_CONTROL: (
-            oracle_l2_candles_price
-        ),
-        CORE_ORACLE_L2_CANDLES_PRICE: oracle_l2_candles_price,
     }
+
+
+def _load_asymmetric_core_grid(
+    core_config: Any,
+    scope: str,
+    config: AsymmetricValueConfig,
+) -> pl.DataFrame:
+    """Read only the frozen 96 decision rows from the larger 1-second cache."""
+
+    validate_core_feature_cache(core_config, scope)
+    frame = (
+        pl.scan_parquet(feature_destination(core_config, scope))
+        .filter(
+            pl.col("seconds_elapsed").is_in(
+                list(config.prediction_seconds)
+            )
+        )
+        .collect()
+    )
+    return select_asymmetric_prediction_grid(frame, config)
+
+
+def _project_candidate_source(
+    frame: pl.DataFrame,
+    *candidate_names: str,
+) -> pl.DataFrame:
+    feature_sets = asymmetric_value_feature_sets()
+    columns = list(
+        dict.fromkeys(
+            (
+                "market_id",
+                "window_start",
+                "observed_at",
+                "seconds_elapsed",
+                "label_up",
+                "fee_rate",
+                "yes_best_ask",
+                "yes_ask_vwap_5",
+                "yes_ask_depth",
+                "no_best_ask",
+                "no_ask_vwap_5",
+                "no_ask_depth",
+                "yes_cost_per_share",
+                "no_cost_per_share",
+                "yes_execution_cost_per_share",
+                "no_execution_cost_per_share",
+                *(
+                    feature
+                    for name in candidate_names
+                    for feature in feature_sets[name]
+                ),
+            )
+        )
+    )
+    missing = sorted(set(columns) - set(frame.columns))
+    if missing:
+        raise RuntimeError(
+            "candidate source projection is missing columns: "
+            + ", ".join(missing)
+        )
+    return frame.select(*columns)
 
 
 def _candidate_grid_summary(
@@ -1113,66 +1444,56 @@ def _oracle_source_inventory(
     return payload
 
 
-def _load_or_build_external(
+def _load_or_build_source_features(
     core: pl.DataFrame,
     config: AsymmetricValueConfig,
     *,
+    source_family: str,
     destination: Path,
     core_content_sha256: str,
     force: bool,
 ) -> pl.DataFrame:
+    if source_family == "l2":
+        source = config.l2_source
+        builder = build_partitioned_l2_frame
+        require_full_identity = False
+    elif source_family == "candles":
+        source = config.candle_source
+        builder = build_full_closed_candle_frame
+        require_full_identity = True
+    else:
+        raise ValueError(f"unsupported asymmetric-value source family: {source_family}")
     metadata_path = destination.with_suffix(".metadata.json")
     identity = {
-        "schema_version": "btc-asymmetric-value-external-features-v3",
+        "schema_version": "btc-asymmetric-value-source-features-v1",
+        "source_family": source_family,
         "core_key_sha256": _frame_key_digest(core),
         "core_content_sha256": core_content_sha256,
         "core_rows": core.height,
         "core_markets": core["market_id"].n_unique(),
         "minimum_window_start": core["window_start"].min().isoformat(),
         "maximum_window_start": core["window_start"].max().isoformat(),
-        "l2_metadata_sha256": _source_metadata_digest(config.l2_source),
-        "candle_metadata_sha256": _source_metadata_digest(config.candle_source),
+        "source_metadata_sha256": _source_metadata_digest(source),
+        "require_full_core_key_identity": require_full_identity,
     }
     if destination.is_file() and not force:
         if not metadata_path.is_file():
-            raise RuntimeError("external feature cache lacks a provenance manifest")
+            raise RuntimeError(f"{source_family} feature cache lacks a provenance manifest")
         metadata = json.loads(metadata_path.read_text())
         observed = {name: metadata.get(name) for name in identity}
         observed_sha256 = file_sha256(destination)
         if metadata.get("sha256") != observed_sha256:
-            raise RuntimeError("external feature cache content hash changed")
+            raise RuntimeError(f"{source_family} feature cache content hash changed")
         frame = pl.read_parquet(destination)
         if observed != identity:
-            legacy_names = (
-                "core_rows",
-                "core_markets",
-                "minimum_window_start",
-                "maximum_window_start",
-                "l2_metadata_sha256",
-                "candle_metadata_sha256",
+            raise RuntimeError(
+                f"{source_family} feature cache provenance changed; rebuild intentionally"
             )
-            legacy_schema = metadata.get("schema_version")
-            legacy_matches = legacy_schema in {
-                "btc-asymmetric-value-external-features-v1",
-                "btc-asymmetric-value-external-features-v2",
-            } and all(metadata.get(name) == identity[name] for name in legacy_names)
-            if not legacy_matches:
-                raise RuntimeError(
-                    "external feature cache provenance changed; rebuild intentionally"
-                )
-            _validate_external_core_keys(frame, core)
-            write_json_atomic(
-                metadata_path,
-                {
-                    **identity,
-                    "rows": frame.height,
-                    "markets": frame["market_id"].n_unique(),
-                    "sha256": observed_sha256,
-                    "upgraded_from_schema_version": metadata["schema_version"],
-                },
-            )
+        _validate_external_core_keys(frame, core)
+        if require_full_identity and _frame_key_digest(frame) != _frame_key_digest(core):
+            raise RuntimeError("closed-candle feature cache changed the core decision keys")
         return frame
-    frame = build_partitioned_external_frame(core, config.l2_source, config.candle_source)
+    frame = builder(core, source)
     destination.parent.mkdir(parents=True, exist_ok=True)
     frame.write_parquet(destination, compression="zstd", statistics=True)
     write_json_atomic(
@@ -1294,7 +1615,7 @@ def _implementation_digest(config: AsymmetricValueConfig) -> str:
 def _dependency_versions() -> dict[str, str]:
     return {
         package: version(package)
-        for package in ("joblib", "numpy", "polars", "scikit-learn")
+        for package in ("joblib", "numpy", "polars", "scikit-learn", "scipy")
     }
 
 
@@ -1421,13 +1742,230 @@ def _champion_probability_frame(
 def _selected_matched_control(model: str) -> str | None:
     if model == CORE_ORACLE_PRICE:
         return ORACLE_MATCHED_CORE_PRICE_CONTROL
-    if model in {CORE_L2_PRICE, CORE_CANDLES_PRICE, CORE_L2_CANDLES_PRICE}:
-        return L2_CANDLES_MATCHED_CORE_PRICE_CONTROL
-    if model == CORE_ORACLE_L2_CANDLES_PRICE:
-        return ORACLE_L2_CANDLES_MATCHED_CORE_ORACLE_PRICE_CONTROL
-    if model == CORE_PRICE:
-        return PAIRED_CORE_CONTROL
+    if model == CORE_L2_PRICE:
+        return L2_MATCHED_CORE_PRICE_CONTROL
+    if model == CORE_CANDLES_PRICE:
+        return CORE_PRICE
     return None
+
+
+def _matched_control_noninferiority_checks(
+    metrics: dict[str, dict[str, Any]],
+    ledgers: dict[str, pl.DataFrame],
+    policy_name: str,
+    config: AsymmetricValueConfig,
+) -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
+    checks: dict[str, list[dict[str, Any]]] = {}
+    eligible = set(MODEL_SELECTION_ELIGIBLE)
+    for offset, model in enumerate(sorted(MODEL_SELECTION_ELIGIBLE)):
+        control = _selected_matched_control(model)
+        if control is None:
+            continue
+        candidate_key = candidate_policy_key(model, policy_name)
+        control_key = candidate_policy_key(control, policy_name)
+        candidate = metrics[candidate_key]
+        reference = metrics[control_key]
+        expectancy_difference = _finite_difference(
+            candidate.get("net_expectancy_per_trade"),
+            reference.get("net_expectancy_per_trade"),
+        )
+        yield_difference = _finite_difference(
+            candidate.get("net_profit_per_resolved_market"),
+            reference.get("net_profit_per_resolved_market"),
+        )
+        paired = _paired_day_net_difference_bootstrap(
+            ledgers[candidate_key],
+            ledgers[control_key],
+            config,
+            seed=config.random_seed + 25_000 + offset,
+        )
+        checks[model] = [
+            {
+                "name": "matched_control_point_expectancy_noninferiority",
+                "observed": expectancy_difference,
+                "threshold": 0.0,
+                "operator": ">=",
+                "passed": bool(
+                    expectancy_difference is not None
+                    and expectancy_difference >= 0.0
+                ),
+                "matched_control": control,
+            },
+            {
+                "name": "matched_control_opportunity_yield_noninferiority",
+                "observed": yield_difference,
+                "threshold": 0.0,
+                "operator": ">=",
+                "passed": bool(
+                    yield_difference is not None and yield_difference >= 0.0
+                ),
+                "matched_control": control,
+            },
+            {
+                "name": "matched_control_paired_day_net_lower_95_noninferiority",
+                "observed": paired["lower_95"],
+                "threshold": 0.0,
+                "operator": ">=",
+                "passed": bool(paired["lower_95"] >= 0.0),
+                "matched_control": control,
+                "paired_day_net_difference": paired,
+            },
+        ]
+        if not all(check["passed"] for check in checks[model]):
+            eligible.discard(model)
+    return checks, eligible
+
+
+def _finite_difference(candidate: Any, control: Any) -> float | None:
+    if candidate is None or control is None:
+        return None
+    difference = float(candidate) - float(control)
+    return difference if np.isfinite(difference) else None
+
+
+def _paired_day_net_difference_bootstrap(
+    candidate: pl.DataFrame,
+    control: pl.DataFrame,
+    config: AsymmetricValueConfig,
+    *,
+    seed: int,
+) -> dict[str, Any]:
+    days = []
+    current = config.policy.start.date()
+    while current < config.policy.end.date():
+        days.append(current)
+        current += timedelta(days=1)
+
+    def daily_net(ledger: pl.DataFrame) -> dict[Any, float]:
+        if ledger.is_empty():
+            return {}
+        return {
+            row["utc_day"]: float(row["net_profit"])
+            for row in (
+                ledger.with_columns(
+                    pl.col("window_start").dt.date().alias("utc_day")
+                )
+                .group_by("utc_day")
+                .agg(pl.col("realized_net").sum().alias("net_profit"))
+                .to_dicts()
+            )
+        }
+
+    candidate_daily = daily_net(candidate)
+    control_daily = daily_net(control)
+    differences = np.asarray(
+        [
+            candidate_daily.get(day, 0.0) - control_daily.get(day, 0.0)
+            for day in days
+        ],
+        dtype=np.float64,
+    )
+    rng = np.random.default_rng(seed)
+    sampled = differences[
+        rng.integers(0, len(differences), (config.bootstrap_resamples, len(differences)))
+    ].mean(axis=1)
+    return {
+        "utc_days": len(days),
+        "mean_daily_net_difference": float(differences.mean()),
+        "lower_95": float(np.quantile(sampled, 0.025)),
+        "upper_95": float(np.quantile(sampled, 0.975)),
+    }
+
+
+def _confidence_threshold_window(
+    predictions: pl.DataFrame,
+    config: AsymmetricValueConfig,
+    *,
+    window: str,
+    seed_offset: int,
+    resolved_markets: int,
+    strict_markets: int,
+) -> dict[str, Any]:
+    source = predictions.filter(pl.col("model") == CORE_PRICE)
+    metrics: dict[str, dict[str, Any]] = {}
+    table: list[dict[str, Any]] = []
+    for offset, threshold in enumerate(config.confidence_thresholds):
+        ledger = confidence_control_ledger(
+            source,
+            threshold=threshold,
+            maximum_entry_second=240,
+            maximum_cost_per_share=config.gates.maximum_mean_cost_per_share,
+            minimum_edge_per_share=(
+                config.confidence_control_minimum_edge_per_share
+            ),
+            maximum_depth_participation=config.maximum_depth_participation,
+            quantity=config.quantity,
+        )
+        values = ledger_metrics(ledger)
+        values["utc_day_block_bootstrap"] = bootstrap_ledger_metrics(
+            ledger,
+            resamples=config.bootstrap_resamples,
+            seed=config.random_seed + seed_offset + offset,
+        )
+        _add_opportunity_denominators(
+            {CORE_PRICE: values},
+            resolved_markets=resolved_markets,
+            strict_markets_by_model={CORE_PRICE: strict_markets},
+        )
+        key = f"{threshold:.2f}"
+        metrics[key] = values
+        table.append(
+            {
+                "model": CORE_PRICE,
+                "window": window,
+                "confidence_threshold": threshold,
+                "maximum_entry_second": 240,
+                "maximum_cost_per_share": (
+                    config.gates.maximum_mean_cost_per_share
+                ),
+                "minimum_edge_per_share": (
+                    config.confidence_control_minimum_edge_per_share
+                ),
+                "maximum_depth_participation": (
+                    config.maximum_depth_participation
+                ),
+                "trades": values.get("trades"),
+                "accuracy": values.get("accuracy"),
+                "mean_entry_second": values.get("mean_entry_second"),
+                "mean_share_price": values.get("mean_share_price"),
+                "mean_cost_per_share": values.get(
+                    "mean_admission_cost_per_share"
+                ),
+                "net_profit": values.get("net_profit"),
+                "net_profit_per_resolved_market": values.get(
+                    "net_profit_per_resolved_market"
+                ),
+                "net_expectancy_per_trade": values.get(
+                    "net_expectancy_per_trade"
+                ),
+                "stress_1c_net_expectancy_per_trade": values.get(
+                    "stress_1c_net_expectancy_per_trade"
+                ),
+                "capital_efficiency": values.get("capital_efficiency"),
+                "profit_factor": values.get("profit_factor"),
+                "average_loss": values.get("average_loss"),
+                "loss_recovery_wins": values.get("loss_recovery_wins"),
+                "pre60_trades": values.get("pre60_trades"),
+                "twenty_to_thirty_cent_trades": values.get(
+                    "twenty_to_thirty_cent_trades"
+                ),
+                "strict_market_coverage": values.get(
+                    "strict_market_coverage"
+                ),
+            }
+        )
+    return {
+        "model": CORE_PRICE,
+        "window": window,
+        "description": (
+            "same retrained core+price model with only the conventional confidence "
+            "threshold varied; 1-240s timing, 70c all-in cost cap, 1.5c edge guard, "
+            "five-share size, and 25% depth participation remain fixed"
+        ),
+        "accuracy_thresholds_are_diagnostics_not_selection_gates": True,
+        "metrics": metrics,
+        "table": table,
+    }
 
 
 def _current_reference_crossing_diagnostics(
@@ -1465,9 +2003,8 @@ def _current_reference_crossing_diagnostics(
     }
 
 
-def _coverage_summary(
+def _base_coverage_summary(
     core: pl.DataFrame,
-    external: pl.DataFrame,
     strict: pl.DataFrame,
     config: AsymmetricValueConfig,
 ) -> dict[str, Any]:
@@ -1479,16 +2016,12 @@ def _coverage_summary(
         ("evaluation", config.evaluation),
     ):
         core_rows = _window(core, evidence.start, evidence.end)
-        external_rows = _window(external, evidence.start, evidence.end)
         strict_rows = _window(strict, evidence.start, evidence.end)
         core_markets = core_rows["market_id"].n_unique()
-        external_markets = external_rows["market_id"].n_unique()
         strict_markets = strict_rows["market_id"].n_unique()
         output[name] = {
             "core_resolved_rows": core_rows.height,
             "core_resolved_markets": core_markets,
-            "external_feature_qualified_rows": external_rows.height,
-            "external_feature_qualified_markets": external_markets,
             "strict_rows": strict_rows.height,
             "strict_markets": strict_markets,
             "strict_executable_utc_days": (
@@ -1499,14 +2032,36 @@ def _coverage_summary(
             "strict_row_coverage": (
                 strict_rows.height / core_rows.height if core_rows.height else 0.0
             ),
-            "external_market_coverage": (
-                external_markets / core_markets if core_markets else 0.0
-            ),
             "strict_market_coverage": (
                 strict_markets / core_markets if core_markets else 0.0
             ),
         }
     return output
+
+
+def _add_joint_source_coverage(
+    coverage: dict[str, Any],
+    source: pl.DataFrame,
+    config: AsymmetricValueConfig,
+    *,
+    source_family: str,
+) -> None:
+    if source_family not in {"l2", "candle"}:
+        raise ValueError(f"unsupported joint source coverage: {source_family}")
+    for name, evidence in (
+        ("fit", config.fit),
+        ("calibration", config.calibration),
+        ("policy", config.policy),
+        ("evaluation", config.evaluation),
+    ):
+        rows = _window(source, evidence.start, evidence.end)
+        markets = rows["market_id"].n_unique() if not rows.is_empty() else 0
+        core_markets = int(coverage[name]["core_resolved_markets"])
+        coverage[name][f"joint_pmxt_{source_family}_feature_rows"] = rows.height
+        coverage[name][f"joint_pmxt_{source_family}_feature_markets"] = markets
+        coverage[name][f"joint_pmxt_{source_family}_market_coverage"] = (
+            markets / core_markets if core_markets else 0.0
+        )
 
 
 def _risk_shape_comparison(
@@ -1588,171 +2143,6 @@ def _add_opportunity_denominators(
         )
 
 
-def _confidence_threshold_controls(
-    policy_predictions: pl.DataFrame,
-    evaluation_predictions: pl.DataFrame,
-    config: AsymmetricValueConfig,
-) -> dict[str, Any]:
-    """Benchmark the retrained champion family at conventional confidence gates."""
-
-    policy_source = policy_predictions.filter(pl.col("model") == CORE_CONTROL)
-    evaluation_source = evaluation_predictions.filter(pl.col("model") == CORE_CONTROL)
-    policy_metrics: dict[str, dict[str, Any]] = {}
-    evaluation_metrics: dict[str, dict[str, Any]] = {}
-    table: list[dict[str, Any]] = []
-    for offset, threshold in enumerate(config.confidence_thresholds):
-        name = f"{threshold:.2f}"
-        policy_ledger = confidence_control_ledger(
-            policy_source,
-            threshold=threshold,
-            maximum_entry_second=240,
-            maximum_cost_per_share=config.gates.maximum_mean_cost_per_share,
-            minimum_edge_per_share=(
-                config.confidence_control_minimum_edge_per_share
-            ),
-            quantity=config.quantity,
-        )
-        evaluation_ledger = confidence_control_ledger(
-            evaluation_source,
-            threshold=threshold,
-            maximum_entry_second=240,
-            maximum_cost_per_share=config.gates.maximum_mean_cost_per_share,
-            minimum_edge_per_share=(
-                config.confidence_control_minimum_edge_per_share
-            ),
-            quantity=config.quantity,
-        )
-        policy_values = ledger_metrics(policy_ledger)
-        evaluation_values = ledger_metrics(evaluation_ledger)
-        policy_values["utc_day_block_bootstrap"] = bootstrap_ledger_metrics(
-            policy_ledger,
-            resamples=config.bootstrap_resamples,
-            seed=config.random_seed + 30_000 + offset,
-        )
-        evaluation_values["utc_day_block_bootstrap"] = bootstrap_ledger_metrics(
-            evaluation_ledger,
-            resamples=config.bootstrap_resamples,
-            seed=config.random_seed + 40_000 + offset,
-        )
-        policy_metrics[name] = policy_values
-        evaluation_metrics[name] = evaluation_values
-        for role, values in (
-            ("policy", policy_values),
-            ("evaluation", evaluation_values),
-        ):
-            table.append(
-                {
-                    "model": CORE_CONTROL,
-                    "window": role,
-                    "confidence_threshold": threshold,
-                    "maximum_cost_per_share": (
-                        config.gates.maximum_mean_cost_per_share
-                    ),
-                    "trades": values.get("trades"),
-                    "accuracy": values.get("accuracy"),
-                    "mean_cost_per_share": values.get(
-                        "mean_admission_cost_per_share"
-                    ),
-                    "net_profit": values.get("net_profit"),
-                    "net_expectancy_per_trade": values.get(
-                        "net_expectancy_per_trade"
-                    ),
-                    "capital_efficiency": values.get("capital_efficiency"),
-                    "profit_factor": values.get("profit_factor"),
-                    "loss_recovery_wins": values.get("loss_recovery_wins"),
-                    "mean_entry_second": values.get("mean_entry_second"),
-                }
-            )
-    return {
-        "model": CORE_CONTROL,
-        "description": (
-            "diagnostic same-core-feature family retrained for 5-240s, with a 70c "
-            "cost cap, 1.5c conservative edge guard, and conventional confidence "
-            "thresholds; this is not a replay of the full live pipeline"
-        ),
-        "accuracy_thresholds_are_controls_not_selection_gates": True,
-        "policy_window": policy_metrics,
-        "evaluation_window": evaluation_metrics,
-        "table": table,
-    }
-
-
-def _frozen_champion_threshold_controls(
-    predictions: pl.DataFrame,
-    execution: pl.DataFrame,
-    contract: dict[str, Any],
-    config: AsymmetricValueConfig,
-) -> dict[str, Any]:
-    """Vary only the frozen champion confidence threshold on untouched evidence."""
-
-    metrics: dict[str, dict[str, Any]] = {}
-    table: list[dict[str, Any]] = []
-    for offset, threshold in enumerate(config.confidence_thresholds):
-        ledger = current_policy_reference_ledger(
-            predictions,
-            execution=execution,
-            threshold=threshold,
-            minimum_entry_second=contract["minimum_entry_second"],
-            maximum_entry_second=contract["maximum_entry_second"],
-            minimum_share_price=contract["minimum_share_price"],
-            maximum_share_price=contract["maximum_share_price"],
-            maximum_depth_participation=contract[
-                "maximum_depth_participation"
-            ],
-            quantity=config.quantity,
-        )
-        values = ledger_metrics(ledger)
-        values["utc_day_block_bootstrap"] = bootstrap_ledger_metrics(
-            ledger,
-            resamples=config.bootstrap_resamples,
-            seed=config.random_seed + 50_000 + offset,
-        )
-        values["terminal_crossing_diagnostics"] = (
-            _current_reference_crossing_diagnostics(
-                predictions,
-                ledger,
-                {**contract, "confidence_threshold": threshold},
-            )
-        )
-        name = f"{threshold:.2f}"
-        metrics[name] = values
-        table.append(
-            {
-                "model": FROZEN_CHAMPION,
-                "confidence_threshold": threshold,
-                "minimum_entry_second": contract["minimum_entry_second"],
-                "maximum_entry_second": contract["maximum_entry_second"],
-                "minimum_share_price": contract["minimum_share_price"],
-                "maximum_share_price": contract["maximum_share_price"],
-                "trades": values.get("trades"),
-                "accuracy": values.get("accuracy"),
-                "mean_share_price": values.get("mean_share_price"),
-                "mean_entry_second": values.get("mean_entry_second"),
-                "net_profit": values.get("net_profit"),
-                "net_expectancy_per_trade": values.get(
-                    "net_expectancy_per_trade"
-                ),
-                "stress_1c_net_expectancy_per_trade": values.get(
-                    "stress_1c_net_expectancy_per_trade"
-                ),
-                "capital_efficiency": values.get("capital_efficiency"),
-                "profit_factor": values.get("profit_factor"),
-                "average_loss": values.get("average_loss"),
-                "loss_recovery_wins": values.get("loss_recovery_wins"),
-            }
-        )
-    return {
-        "model": FROZEN_CHAMPION,
-        "description": (
-            "hypothetical threshold-only variants of the frozen champion; all other "
-            "30-95c, 60-240s, terminal-first-crossing, depth, and sizing rules remain fixed"
-        ),
-        "threshold_change_authorized_for_runtime": False,
-        "evaluation_window": metrics,
-        "table": table,
-    }
-
-
 def _bootstrap_reference(
     ledger: pl.DataFrame,
     config: AsymmetricValueConfig,
@@ -1761,6 +2151,76 @@ def _bootstrap_reference(
         ledger,
         resamples=config.bootstrap_resamples,
         seed=config.random_seed + 20_000,
+    )
+
+
+def _evaluation_economics_table(
+    metrics: dict[str, dict[str, Any]],
+    *,
+    selected_model: str,
+    policy: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for model in ASYMMETRIC_VALUE_CANDIDATES:
+        values = metrics[model]
+        bootstrap = values.get("utc_day_block_bootstrap") or {}
+        expectancy = bootstrap.get("net_expectancy_per_trade") or {}
+        rows.append(
+            {
+                "model": model,
+                "policy": policy,
+                "selected_on_policy_window": model == selected_model,
+                "selection_eligible": model in MODEL_SELECTION_ELIGIBLE,
+                "resolved_markets": values.get("resolved_markets"),
+                "strict_executable_markets": values.get(
+                    "strict_executable_markets"
+                ),
+                "strict_market_coverage": values.get(
+                    "strict_market_coverage"
+                ),
+                "trades": values.get("trades"),
+                "trades_per_resolved_market": values.get(
+                    "trades_per_resolved_market"
+                ),
+                "utc_days": values.get("utc_days"),
+                "accuracy": values.get("accuracy"),
+                "mean_share_price": values.get("mean_share_price"),
+                "mean_admission_cost_per_share": values.get(
+                    "mean_admission_cost_per_share"
+                ),
+                "mean_entry_second": values.get("mean_entry_second"),
+                "pre60_trades": values.get("pre60_trades"),
+                "twenty_to_thirty_cent_trades": values.get(
+                    "twenty_to_thirty_cent_trades"
+                ),
+                "net_profit": values.get("net_profit"),
+                "net_profit_per_resolved_market": values.get(
+                    "net_profit_per_resolved_market"
+                ),
+                "net_expectancy_per_trade": values.get(
+                    "net_expectancy_per_trade"
+                ),
+                "expectancy_lower_95": expectancy.get("lower_95"),
+                "expectancy_upper_95": expectancy.get("upper_95"),
+                "capital_efficiency": values.get("capital_efficiency"),
+                "profit_factor": values.get("profit_factor"),
+                "average_win": values.get("average_win"),
+                "average_loss": values.get("average_loss"),
+                "maximum_loss": values.get("maximum_loss"),
+                "loss_recovery_wins": values.get("loss_recovery_wins"),
+                "stress_1c_net_expectancy_per_trade": values.get(
+                    "stress_1c_net_expectancy_per_trade"
+                ),
+            }
+        )
+    return sorted(
+        rows,
+        key=lambda row: (
+            row["net_profit_per_resolved_market"]
+            if row["net_profit_per_resolved_market"] is not None
+            else float("-inf")
+        ),
+        reverse=True,
     )
 
 
@@ -1854,16 +2314,24 @@ def _markdown_report(result: dict[str, Any]) -> str:
     selected_label = (
         "qualified hunter" if evaluation["qualified"] else "selected diagnostic candidate"
     )
+    if supported:
+        outcome_statement = "**Hypothesis supported by qualification evidence.**"
+    elif evaluation["status"] == "insufficient_execution_evidence":
+        outcome_statement = (
+            "**Hypothesis remains inconclusive because exact execution evidence is "
+            "insufficient; directional point estimates are reported below.**"
+        )
+    else:
+        outcome_statement = (
+            "**Hypothesis was not economically qualified on sufficient evidence in "
+            "this run.**"
+        )
     lines = [
         "# BTC asymmetric-value hunter benchmark",
         "",
         "This is consumed offline development evidence. It does not authorize live capital.",
         "",
-        (
-            "**Hypothesis supported by qualification evidence.**"
-            if supported
-            else "**Hypothesis not supported by qualification evidence in this run.**"
-        ),
+        outcome_statement,
         "",
         f"{selected_label.capitalize()}: `{evaluation['selected_key']}`.",
         f"Policy-window qualification: `{result['selection']['qualified_on_policy_window']}`.",
@@ -1919,26 +2387,65 @@ def _markdown_report(result: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## Frozen champion with threshold-only variants",
+            "## Same low-price policy across every predeclared model",
             "",
-            "This isolates the user's threshold question: the trained frozen model is unchanged, and only confidence admission varies. Its original feature contract still cannot score before 60 seconds, and its 30-cent minimum price remains fixed.",
+            "Rows are ordered by net profit per resolved market so sparse source cohorts do not look artificially superior on EV/trade alone.",
             "",
-            "| Threshold | Trades | Accuracy | Mean entry second | Raw share | EV/trade | +1c EV/trade | Avg loss | Wins/loss |",
-            "|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| Model | Selected | Strict coverage | Trades | Accuracy | Entry second | Raw share | Net profit | Net/resolved market | EV/trade | EV lower 95% | Capital efficiency | Wins/loss |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
-    for row in result["evaluation"]["frozen_champion_confidence_thresholds"][
-        "table"
-    ]:
+    for row in evaluation["evaluation_model_economics_leaderboard"]:
+        lines.append(
+            f"| {row['model']} | {row['selected_on_policy_window']} | "
+            f"{_fmt(row['strict_market_coverage'])} | {row['trades']} | "
+            f"{_fmt(row['accuracy'])} | "
+            f"{_fmt(row['mean_entry_second'])} | {_fmt(row['mean_share_price'])} | "
+            f"{_fmt(row['net_profit'])} | "
+            f"{_fmt(row['net_profit_per_resolved_market'])} | "
+            f"{_fmt(row['net_expectancy_per_trade'])} | "
+            f"{_fmt(row['expectancy_lower_95'])} | "
+            f"{_fmt(row['capital_efficiency'])} | "
+            f"{_fmt(row['loss_recovery_wins'])} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Same core+price model at lower confidence thresholds",
+            "",
+            "This diagnostic varies only the confidence threshold. The 1–240 second window, 70-cent all-in cap, 1.5-cent positive-edge guard, five-share size, and 25% depth participation remain fixed.",
+            "",
+            "| Threshold | Trades | Accuracy | Entry second | Raw share | Net/resolved market | EV/trade | +1c EV/trade | Avg loss | Wins/loss | Pre-60 | 20–30c |",
+            "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for row in evaluation["core_price_confidence_threshold_controls"]["table"]:
+        if row["window"] != "evaluation":
+            continue
         lines.append(
             f"| {_fmt(row['confidence_threshold'])} | {row['trades']} | "
             f"{_fmt(row['accuracy'])} | {_fmt(row['mean_entry_second'])} | "
             f"{_fmt(row['mean_share_price'])} | "
+            f"{_fmt(row['net_profit_per_resolved_market'])} | "
             f"{_fmt(row['net_expectancy_per_trade'])} | "
             f"{_fmt(row['stress_1c_net_expectancy_per_trade'])} | "
             f"{_fmt(row['average_loss'])} | "
-            f"{_fmt(row['loss_recovery_wins'])} |"
+            f"{_fmt(row['loss_recovery_wins'])} | {row['pre60_trades']} | "
+            f"{row['twenty_to_thirty_cent_trades']} |"
         )
+
+    frozen_value = evaluation["frozen_champion_low_price_value_60s_240s"]
+    lines.extend(
+        [
+            "",
+            "## Frozen champion under the low-price value policy",
+            "",
+            "The frozen champion is scored only on its supported 60–240 second contract; it cannot test the pre-60 hypothesis.",
+            "",
+            f"Trades: `{frozen_value.get('trades')}`; accuracy: `{_fmt(frozen_value.get('accuracy'))}`; raw share: `{_fmt(frozen_value.get('mean_share_price'))}`; EV/trade: `{_fmt(frozen_value.get('net_expectancy_per_trade'))}`.",
+        ]
+    )
 
     if matched_control["model"] is not None:
         matched = matched_control["metrics"]
@@ -1974,7 +2481,7 @@ def _markdown_report(result: dict[str, Any]) -> str:
             f"Selected-candidate markets: `{candidate_grid['candidate_markets']}`; selected-candidate UTC days: `{candidate_grid['candidate_utc_days']}`.",
             f"Selected-candidate prediction-grid coverage: `{_fmt(candidate_grid['prediction_grid_coverage'])}`; weakest decision-second market coverage: `{_fmt(candidate_grid['minimum_second_market_coverage'])}`.",
             f"Exact source-grid retained coverage: `{_fmt(coverage['source_grid']['retained_coverage'])}`; strict two-sided grid coverage: `{_fmt(coverage['source_grid']['strict_coverage'])}`.",
-            f"Exact-price market coverage of all resolved core markets: `{_fmt(coverage['strict_market_coverage'])}`; L2/candle feature coverage: `{_fmt(coverage['external_market_coverage'])}`.",
+            f"Exact-price market coverage of all resolved core markets: `{_fmt(coverage['strict_market_coverage'])}`; joint PMXT+L2 candidate coverage: `{_fmt(coverage['joint_pmxt_l2_market_coverage'])}`; joint PMXT+closed-candle candidate coverage: `{_fmt(coverage['joint_pmxt_candle_market_coverage'])}`.",
             "Missing exact books are NoTrade and remain in the resolved-market denominator; they are not proxy prices or losses.",
             "",
             "## Raw share-price bands for selected trades",
@@ -1995,16 +2502,16 @@ def _markdown_report(result: dict[str, Any]) -> str:
             "",
             "## Accuracy and price at key decision seconds",
             "",
-            "| Second | Markets | Argmax accuracy | Value-side accuracy | Mean raw share | Mean modeled edge |",
-            "|---:|---:|---:|---:|---:|---:|",
+            "| Model | Second | Markets | Argmax accuracy | Value-side accuracy | Mean raw share | Mean modeled edge |",
+            "|---|---:|---:|---:|---:|---:|---:|",
         ]
     )
-    key_seconds = {5, 30, 55, 60, 120, 180, 240}
-    for row in evaluation["accuracy_price_by_five_seconds"]:
+    key_seconds = {1, 5, 15, 30, 55, 59, 60, 120, 180, 240}
+    for row in evaluation["accuracy_price_by_observation_second"]:
         if row["seconds_elapsed"] not in key_seconds:
             continue
         lines.append(
-            f"| {row['seconds_elapsed']} | {row['markets']} | "
+            f"| {row['model']} | {row['seconds_elapsed']} | {row['markets']} | "
             f"{_fmt(row['argmax_accuracy'])} | {_fmt(row['value_side_accuracy'])} | "
             f"{_fmt(row['mean_selected_share_price'])} | "
             f"{_fmt(row['mean_selected_edge_per_share'])} |"
@@ -2030,9 +2537,9 @@ def _markdown_report(result: dict[str, Any]) -> str:
             "Decision-time VWAP5 is not a guaranteed fill. Baseline and +1c/share stress economics",
             "are reported, and complete fresh forward evidence is required before any runtime change.",
             "",
-            "See the CSV artifacts for every five-second accuracy point, every one-second price",
-            "point before 60 seconds, the confidence-threshold controls, the selected-side",
-            "surface, and the explicit YES/NO model × second × raw-price-band surface.",
+            "See the CSV artifacts for every one-second accuracy and price point before 60",
+            "seconds, every five-second point afterward, per-model fixed-policy economics,",
+            "the selected-side surface, and the explicit YES/NO model × second × raw-price-band surface.",
             "",
         ]
     )
