@@ -453,6 +453,11 @@ def run_asymmetric_value_benchmark(
         evaluation_prices,
         config,
     )
+    champion_executable_predictions = _champion_probability_frame(
+        config,
+        evaluation_price_features,
+        include_execution=True,
+    )
     evaluation_executable_core = evaluation_price_features.select(
         *evaluation.columns
     )
@@ -754,11 +759,6 @@ def run_asymmetric_value_benchmark(
             paired_current_policy_reference,
             current_process,
         )
-    )
-    champion_executable_predictions = _champion_probability_frame(
-        config,
-        evaluation_price_features,
-        include_execution=True,
     )
     frozen_value_policy = replace(
         selected_policy,
