@@ -76,21 +76,76 @@ def policy_ledger(
     policy: ValuePolicy,
     *,
     quantity: float,
+    maximum_depth_participation: float,
 ) -> pl.DataFrame:
-    eligible = scored.filter(
-        (pl.col("seconds_elapsed") <= policy.maximum_entry_second)
-        & (pl.col("selected_share_price") >= policy.minimum_share_price)
-        & (pl.col("selected_share_price") < policy.maximum_share_price)
-        & (pl.col("selected_admission_cost_per_share") <= policy.maximum_cost_per_share)
-        & (pl.col("selected_edge_per_share") >= policy.minimum_edge_per_share)
-    )
-    if eligible.is_empty():
-        return eligible.with_columns(
-            pl.lit(policy.name).alias("policy"),
-            pl.lit(quantity).alias("quantity"),
-            pl.lit(None, dtype=pl.Float64).alias("realized_net"),
-            pl.lit(None, dtype=pl.Float64).alias("entry_debit"),
+    yes_eligible = (
+        pl.col("yes_ask_vwap_5").is_between(
+            policy.minimum_share_price,
+            policy.maximum_share_price,
+            closed="left",
         )
+        & (pl.col("yes_cost_per_share") <= policy.maximum_cost_per_share)
+        & (pl.col("yes_edge_per_share") >= policy.minimum_edge_per_share)
+        & (
+            quantity
+            <= pl.col("yes_ask_depth") * maximum_depth_participation
+        )
+    )
+    no_eligible = (
+        pl.col("no_ask_vwap_5").is_between(
+            policy.minimum_share_price,
+            policy.maximum_share_price,
+            closed="left",
+        )
+        & (pl.col("no_cost_per_share") <= policy.maximum_cost_per_share)
+        & (pl.col("no_edge_per_share") >= policy.minimum_edge_per_share)
+        & (
+            quantity
+            <= pl.col("no_ask_depth") * maximum_depth_participation
+        )
+    )
+    eligible = scored.with_columns(
+        yes_eligible.alias("_yes_policy_eligible"),
+        no_eligible.alias("_no_policy_eligible"),
+    ).filter(
+        (pl.col("seconds_elapsed") <= policy.maximum_entry_second)
+        & (pl.col("_yes_policy_eligible") | pl.col("_no_policy_eligible"))
+    ).with_columns(
+        pl.when(
+            pl.col("_yes_policy_eligible") & pl.col("_no_policy_eligible")
+        )
+        .then(pl.col("yes_edge_per_share") >= pl.col("no_edge_per_share"))
+        .otherwise(pl.col("_yes_policy_eligible"))
+        .alias("selected_yes")
+    ).with_columns(
+        pl.when(pl.col("selected_yes"))
+        .then(pl.col("probability_yes"))
+        .otherwise(1.0 - pl.col("probability_yes"))
+        .alias("selected_probability"),
+        pl.when(pl.col("selected_yes"))
+        .then(pl.col("yes_cost_per_share"))
+        .otherwise(pl.col("no_cost_per_share"))
+        .alias("selected_admission_cost_per_share"),
+        pl.when(pl.col("selected_yes"))
+        .then(pl.col("yes_execution_cost_per_share"))
+        .otherwise(pl.col("no_execution_cost_per_share"))
+        .alias("selected_execution_cost_per_share"),
+        pl.when(pl.col("selected_yes"))
+        .then(pl.col("yes_ask_vwap_5"))
+        .otherwise(pl.col("no_ask_vwap_5"))
+        .alias("selected_share_price"),
+        pl.when(pl.col("selected_yes"))
+        .then(pl.col("yes_edge_per_share"))
+        .otherwise(pl.col("no_edge_per_share"))
+        .alias("selected_edge_per_share"),
+        pl.when(pl.col("selected_yes"))
+        .then(pl.col("label_up") == 1)
+        .otherwise(pl.col("label_up") == 0)
+        .alias("won"),
+        (pl.col("selected_yes") != pl.col("argmax_yes")).alias(
+            "selected_underdog"
+        ),
+    ).drop("_yes_policy_eligible", "_no_policy_eligible")
     return (
         eligible.sort("model", "market_id", "seconds_elapsed", "observed_at")
         .group_by("model", "market_id", maintain_order=True)
@@ -308,6 +363,7 @@ def confidence_control_ledger(
     maximum_entry_second: int,
     maximum_cost_per_share: float,
     minimum_edge_per_share: float,
+    maximum_depth_participation: float,
     quantity: float,
 ) -> pl.DataFrame:
     """First argmax-side entry for a conventional confidence-threshold control."""
@@ -331,6 +387,10 @@ def confidence_control_ledger(
         .otherwise(pl.col("no_ask_vwap_5"))
         .alias("selected_share_price"),
         pl.when(pl.col("selected_yes"))
+        .then(pl.col("yes_ask_depth"))
+        .otherwise(pl.col("no_ask_depth"))
+        .alias("selected_ask_depth"),
+        pl.when(pl.col("selected_yes"))
         .then(pl.col("label_up") == 1)
         .otherwise(pl.col("label_up") == 0)
         .alias("won"),
@@ -348,6 +408,11 @@ def confidence_control_ledger(
             & (
                 pl.col("selected_admission_cost_per_share")
                 <= maximum_cost_per_share
+            )
+            & (
+                quantity
+                <= pl.col("selected_ask_depth")
+                * maximum_depth_participation
             )
         )
         .sort("model", "market_id", "seconds_elapsed", "observed_at")
@@ -381,7 +446,12 @@ def evaluate_policy_grid(
     metrics: dict[str, dict[str, Any]] = {}
     models = sorted(scored["model"].unique().to_list())
     for policy in config.policies:
-        combined = policy_ledger(scored, policy, quantity=config.quantity)
+        combined = policy_ledger(
+            scored,
+            policy,
+            quantity=config.quantity,
+            maximum_depth_participation=config.maximum_depth_participation,
+        )
         for model in models:
             key = candidate_policy_key(model, policy.name)
             ledger = combined.filter(pl.col("model") == model)
@@ -432,9 +502,9 @@ def select_policy_candidate(
         "selected_policy": selected["policy"],
         "qualified_on_policy_window": selected["qualified"],
         "selection_objective": (
-            "qualified first, then UTC-day bootstrap lower expectancy, capital efficiency, "
-            "lower loss-recovery burden, lower admission cost, net expectancy, profit factor, "
-            "and trade count"
+            "qualified first, then UTC-day bootstrap lower expectancy, net profit per "
+            "resolved market, capital efficiency, lower loss-recovery burden, lower "
+            "admission cost, net expectancy, profit factor, and trade count"
         ),
         "frontier": records,
     }
@@ -844,18 +914,41 @@ def accuracy_price_by_second(scored: pl.DataFrame) -> list[dict[str, Any]]:
 
     if scored.is_empty():
         return []
+    group_columns = ["seconds_elapsed"]
+    sort_columns = ["seconds_elapsed"]
+    if "model" in scored.columns:
+        group_columns.insert(0, "model")
+        sort_columns.insert(0, "model")
+    label = pl.col("label_up").cast(pl.Float64)
+    probability = pl.col("probability_yes")
+    clipped_probability = probability.clip(1e-15, 1.0 - 1e-15)
     return (
         scored.with_columns(
             (pl.col("argmax_yes") == (pl.col("label_up") == 1)).alias(
                 "argmax_correct"
             ),
             (pl.col("selected_edge_per_share") > 0).alias("positive_value"),
+            ((probability - label) ** 2).alias("probability_yes_brier"),
+            (
+                -(
+                    label * clipped_probability.log()
+                    + (1.0 - label) * (1.0 - clipped_probability).log()
+                )
+            ).alias("probability_yes_log_loss"),
+            (probability - label).alias("probability_yes_calibration_error"),
         )
-        .group_by("seconds_elapsed")
+        .group_by(group_columns)
         .agg(
             pl.len().alias("rows"),
             pl.col("market_id").n_unique().alias("markets"),
+            pl.col("window_start").dt.date().n_unique().alias("utc_days"),
+            pl.col("argmax_correct").mean().alias("accuracy"),
             pl.col("argmax_correct").mean().alias("argmax_accuracy"),
+            pl.col("probability_yes_brier").mean().alias("brier_score"),
+            pl.col("probability_yes_log_loss").mean().alias("log_loss"),
+            pl.col("probability_yes_calibration_error")
+            .mean()
+            .alias("calibration_bias"),
             pl.col("won").mean().alias("value_side_accuracy"),
             pl.col("probability_yes").mean().alias("mean_probability_yes"),
             pl.col("label_up").mean().alias("actual_yes_rate"),
@@ -875,10 +968,19 @@ def accuracy_price_by_second(scored: pl.DataFrame) -> list[dict[str, Any]]:
             pl.col("selected_underdog").mean().alias(
                 "selected_underdog_share"
             ),
+            pl.col("yes_best_ask").mean().alias("mean_yes_best_ask"),
             pl.col("yes_ask_vwap_5").mean().alias("mean_yes_vwap_5"),
+            pl.col("yes_cost_per_share")
+            .mean()
+            .alias("mean_yes_all_in_cost_per_share"),
+            pl.col("no_best_ask").mean().alias("mean_no_best_ask"),
             pl.col("no_ask_vwap_5").mean().alias("mean_no_vwap_5"),
+            pl.col("no_cost_per_share")
+            .mean()
+            .alias("mean_no_all_in_cost_per_share"),
         )
-        .sort("seconds_elapsed")
+        .with_columns(pl.col("calibration_bias").abs().alias("absolute_calibration_bias"))
+        .sort(sort_columns)
         .to_dicts()
     )
 
@@ -891,8 +993,13 @@ def opportunity_calibration_by_price_band(
     if scored.is_empty():
         return []
     banded = _with_price_band(scored)
+    group_columns = ["price_band"]
+    sort_columns = ["price_band"]
+    if "model" in banded.columns:
+        group_columns.insert(0, "model")
+        sort_columns.insert(0, "model")
     return (
-        banded.group_by("price_band")
+        banded.group_by(group_columns)
         .agg(
             pl.len().alias("rows"),
             pl.col("market_id").n_unique().alias("markets"),
@@ -915,7 +1022,7 @@ def opportunity_calibration_by_price_band(
             .alias("realized_net_per_share_if_every_point"),
             pl.col("selected_underdog").mean().alias("underdog_share"),
         )
-        .sort("price_band")
+        .sort(sort_columns)
         .to_dicts()
     )
 
@@ -1125,6 +1232,9 @@ def _selection_rank(record: dict[str, Any]) -> tuple[Any, ...]:
     return (
         record["qualified"],
         lower if lower is not None else float("-inf"),
+        metrics.get("net_profit_per_resolved_market")
+        if metrics.get("net_profit_per_resolved_market") is not None
+        else float("-inf"),
         metrics.get("capital_efficiency")
         if metrics.get("capital_efficiency") is not None
         else float("-inf"),
