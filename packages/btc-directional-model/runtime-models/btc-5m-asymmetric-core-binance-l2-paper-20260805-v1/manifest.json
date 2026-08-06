@@ -1,0 +1,15 @@
+{
+  "deployment_scope": "paper_only",
+  "feature_schema_sha256": "77e556b0def726dba4e6573f8fd47aff1fff5b7dd2293bbf2152719320f9e1a3",
+  "feature_schema_version": "btc-5m-asymmetric-core-binance-l2-paper-20260805-v1-features-v1",
+  "golden_vectors_file": "golden-vectors.json",
+  "golden_vectors_sha256": "6795b0850b51984c8c9a1baed4dea074917bb12a5c2725a90cd24158ab5d55ea",
+  "live_capital_allowed": false,
+  "model_file": "model.json",
+  "model_key": "btc-5m-asymmetric-core-binance-l2-paper-20260805-v1",
+  "model_sha256": "06712513ee0dde34c85e6420ddc0a48cd70af4fa4215e8b2f452b51a15e2f84a",
+  "production_qualified": false,
+  "schema_version": "capitonic-btc-directional-runtime-manifest-v1",
+  "source_freeze_manifest_sha256": "37a47df0eb7e764b69fdbc539bf658f27e31126d78dff73cbf7908229dffaba6",
+  "source_training_model_sha256": "6248e7a6c63ec3a4bcbb05a3a131462174be1cd5b1fdc92da69227a9cc098e36"
+}
