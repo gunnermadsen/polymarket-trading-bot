@@ -6,9 +6,7 @@ use rust_decimal::prelude::ToPrimitive;
 
 use super::{
     binance_spot_l2::BinanceL2OneSecondFeature,
-    directional_features::{
-        build_directional_features_for_schema_with_external, BTC_DIRECTIONAL_FEATURE_SCHEMA_VERSION,
-    },
+    directional_features::build_directional_features_for_asymmetric_value,
     directional_model::{
         asymmetric_value_model_input_sha256, BtcDirectionalModelFeatureSnapshot,
         RuntimeDirectionalModel, RuntimeModelSelection, ASYMMETRIC_L2_FEATURE_NAMES,
@@ -32,13 +30,11 @@ pub fn build_asymmetric_value_feature_snapshot(
     if !model.is_asymmetric_value() {
         bail!("asymmetric feature construction requires an asymmetric model");
     }
-    let core = build_directional_features_for_schema_with_external(
+    let core = build_directional_features_for_asymmetric_value(
         &state.binance_one_second_window,
         market.window_start,
         feature_as_of,
-        BTC_DIRECTIONAL_FEATURE_SCHEMA_VERSION,
-        None,
-        None,
+        model.imputation_medians(),
     )?;
     let mut values = Vec::with_capacity(model.feature_names().len());
     values.extend(core.values);
