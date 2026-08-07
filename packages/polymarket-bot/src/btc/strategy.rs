@@ -11,6 +11,7 @@ use super::{
         RuntimeModelSelection, BTC_DIRECTIONAL_MODEL_FAMILY,
         BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
     },
+    feed_contract::{validate_feed_requirements, BtcModelFeedRequirement},
     types::{BtcOutcome, FeedIntegrityStatus},
 };
 
@@ -168,6 +169,10 @@ pub struct BtcStrategyConfig {
     pub feature_schema_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision_strategy: Option<BtcDecisionStrategyConfig>,
+    /// Additive declaration for model-owned feature requirements. Existing strategies leave
+    /// this empty and retain their established runtime data path.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_model_feeds: Vec<BtcModelFeedRequirement>,
     pub target_size: Decimal,
     pub min_seconds_after_open: i64,
     pub min_seconds_before_close: i64,
@@ -208,6 +213,7 @@ impl Default for BtcStrategyConfig {
             strategy_version: BTC_STRATEGY_VERSION.to_string(),
             feature_schema_version: BTC_FEATURE_SCHEMA_VERSION.to_string(),
             decision_strategy: None,
+            required_model_feeds: Vec::new(),
             target_size: dec!(5),
             min_seconds_after_open: 15,
             min_seconds_before_close: 20,
@@ -1853,6 +1859,11 @@ fn continuation_signal_outcome(
 }
 
 fn validate_config(config: &BtcStrategyConfig) -> Result<(), BtcRejectReason> {
+    if !config.required_model_feeds.is_empty()
+        && validate_feed_requirements(&config.required_model_feeds).is_err()
+    {
+        return Err(BtcRejectReason::InvalidConfiguration);
+    }
     let strategy_contract_valid = match ResolvedBtcDecisionStrategy::resolve(config) {
         Ok(ResolvedBtcDecisionStrategy::ChainlinkFairValue) => true,
         Ok(ResolvedBtcDecisionStrategy::ChainlinkPersistenceCalibratedFairValue(profile)) => {
