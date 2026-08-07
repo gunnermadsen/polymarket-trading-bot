@@ -4,6 +4,7 @@ pub mod directional_features;
 pub mod directional_model;
 pub mod execution_guard;
 pub mod execution_lifecycle;
+pub mod feed_contract;
 pub mod feeds;
 pub mod live_execution;
 pub mod market;
@@ -65,6 +66,10 @@ pub use execution_guard::{
 };
 pub use execution_lifecycle::{
     BtcExecutionLifecycle, BtcExecutionMode, LiveExecutionLifecycle, PaperExecutionLifecycle,
+};
+pub use feed_contract::{
+    validate_feed_requirements, BtcModelFeedId, BtcModelFeedRequirement,
+    BTC_MODEL_FEED_CONTRACT_VERSION,
 };
 pub use feeds::{
     parse_binance_agg_trade, parse_binance_agg_trade_with_details, parse_binance_aggregate_trade,
