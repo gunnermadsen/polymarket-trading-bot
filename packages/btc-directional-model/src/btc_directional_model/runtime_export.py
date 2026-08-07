@@ -37,6 +37,9 @@ TIME_BANDED_GOLDEN_VECTORS_SCHEMA_VERSION = (
 ASYMMETRIC_VALUE_RUNTIME_MODEL_SCHEMA_VERSION = (
     "capitonic-btc-asymmetric-value-runtime-model-v1"
 )
+ASYMMETRIC_VALUE_GOLDEN_VECTORS_SCHEMA_VERSION = (
+    "capitonic-btc-asymmetric-value-golden-vectors-v1"
+)
 MODEL_FILENAME = "model.json"
 MANIFEST_FILENAME = "manifest.json"
 GOLDEN_VECTORS_FILENAME = "golden-vectors.json"
@@ -197,13 +200,19 @@ def export_asymmetric_value_runtime_model(
             "trees": [export_tree(predictors[0], len(feature_names)) for predictors in estimator._predictors],
         },
         "asymmetric_value_calibration": {"time_bands": bands, "side_price_cells": cells},
+        "decision": {
+            "probability_up_threshold": 0.5,
+            "below_confidence_action": "no_trade",
+            "up_action": "up",
+            "down_action": "down",
+        },
         "prediction_policy": {
             "type": "scheduled",
             "minimum_seconds_after_open": 1,
             "maximum_seconds_after_open": 240,
             "early_end_second": 59,
             "early_cadence_seconds": 1,
-            "later_cadence_seconds": 5,
+            "cadence_seconds": 5,
         },
         "deployment": {"scope": "paper_only", "production_qualified": False, "live_capital_allowed": False},
         "provenance": {
@@ -215,16 +224,42 @@ def export_asymmetric_value_runtime_model(
         },
     }
     model_bytes = canonical_json_bytes(payload)
+    golden_seconds_elapsed = 30
+    golden_yes_ask_vwap = 0.25
+    golden_no_ask_vwap = 0.75
+    golden_frame = pl.DataFrame({
+        **{
+            name: [finite_float(value, "golden feature")]
+            for name, value in zip(feature_names, medians, strict=True)
+        },
+        "seconds_elapsed": [golden_seconds_elapsed],
+        "yes_ask_vwap_5": [golden_yes_ask_vwap],
+        "no_ask_vwap_5": [golden_no_ask_vwap],
+    })
+    golden_raw_logit = finite_float(
+        float(bundle.model.raw_logit(golden_frame)[0]), "golden raw logit"
+    )
+    golden_probability = finite_float(
+        float(bundle.probability(golden_frame)[0]), "golden probability"
+    )
     golden = {
-        "schema_version": "capitonic-btc-asymmetric-value-golden-vectors-v1",
+        "schema_version": ASYMMETRIC_VALUE_GOLDEN_VECTORS_SCHEMA_VERSION,
         "model_key": model_key,
         "feature_schema_version": payload["features"]["schema_version"],
         "feature_schema_sha256": payload["features"]["schema_sha256"],
         "vectors": [{
-            "seconds_elapsed": 30,
+            "id": "median-features-30s",
+            "source": None,
+            "seconds_elapsed": golden_seconds_elapsed,
             "feature_values": payload["features"]["imputation_medians"],
-            "yes_ask_vwap": 0.25,
-            "no_ask_vwap": 0.75,
+            "yes_ask_vwap": golden_yes_ask_vwap,
+            "no_ask_vwap": golden_no_ask_vwap,
+            "expected": {
+                "raw_logit": golden_raw_logit,
+                "probability_up": golden_probability,
+                "confidence": max(golden_probability, 1.0 - golden_probability),
+                "action": "up" if golden_probability >= 0.5 else "down",
+            },
         }],
     }
     golden_bytes = canonical_json_bytes(golden)

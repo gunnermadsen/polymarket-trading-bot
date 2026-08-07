@@ -5,6 +5,12 @@
   "schema_version": "capitonic-btc-asymmetric-value-golden-vectors-v1",
   "vectors": [
     {
+      "expected": {
+        "action": "up",
+        "confidence": 0.5282057562397537,
+        "probability_up": 0.5282057562397537,
+        "raw_logit": 0.10434249529948365
+      },
       "feature_values": [
         0.16,
         0.8400000000000001,
@@ -118,8 +124,10 @@
         0.111,
         0.11
       ],
+      "id": "median-features-30s",
       "no_ask_vwap": 0.75,
       "seconds_elapsed": 30,
+      "source": null,
       "yes_ask_vwap": 0.25
     }
   ]

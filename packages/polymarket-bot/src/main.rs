@@ -14,10 +14,11 @@ use polymarket_bot::{
     btc::{
         runtime_model, runtime_status_from_inputs, BookRegistry, BtcDecisionStrategyConfig,
         BtcDirectionalModelEntryPolicy, BtcEntryAdmissionConfig, BtcExecutionLifecycle,
-        BtcExecutionMode, BtcLiveExecutionAdapter, BtcPlaybookRuntimeHandle, BtcProcessConfig,
-        BtcProcessRunner, BtcRepository, BtcRuntime, BtcRuntimeConfig, BtcRuntimeHandle,
-        BtcStrategyConfig, LiveExecutionLifecycle, PaperExecutionLifecycle, PaperPreviewConfig,
-        PaperVenue as BtcPaperVenue, PaperVenueConfig, RuntimeModelSelection,
+        BtcExecutionMode, BtcLiveExecutionAdapter, BtcModelFeedId, BtcPlaybookRuntimeHandle,
+        BtcProcessConfig, BtcProcessRunner, BtcRepository, BtcRuntime, BtcRuntimeConfig,
+        BtcRuntimeHandle, BtcStrategyConfig, LiveExecutionLifecycle, PaperExecutionLifecycle,
+        PaperPreviewConfig, PaperVenue as BtcPaperVenue, PaperVenueConfig, RuntimeModelSelection,
+        BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_VERSION,
         BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
         BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION,
         BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION,
@@ -178,6 +179,8 @@ fn shared_market_data_config_compatible(left: &BtcRuntimeConfig, right: &BtcRunt
         && left.clob_ws_url == right.clob_ws_url
         && left.rtds_ws_url == right.rtds_ws_url
         && left.binance_ws_url == right.binance_ws_url
+        && left.binance_spot_l2_enabled == right.binance_spot_l2_enabled
+        && left.binance_spot_l2_ws_url == right.binance_spot_l2_ws_url
         && left.binance_rest_base_url == right.binance_rest_base_url
         && left.discovery_interval == right.discovery_interval
         && left.reconnect_initial_delay == right.reconnect_initial_delay
@@ -319,6 +322,10 @@ fn resolve_btc_strategy(
         "max_directional_feature_age_ms".to_string(),
         serde_json::Value::Null,
     );
+    strategy_object.insert(
+        "required_model_feeds".to_string(),
+        serde_json::Value::Array(Vec::new()),
+    );
     for (key, value) in strategy_overrides {
         let Some(slot) = strategy_object.get_mut(key) else {
             return Err(HttpError::bad_request(format!(
@@ -389,6 +396,31 @@ fn resolve_btc_strategy(
                     model.feature_schema_version().to_string(),
                 )
             }
+            BtcDecisionStrategyConfig::BtcAsymmetricValueModel {
+                model_key,
+                artifact_sha256,
+                feature_schema_sha256,
+            } => {
+                let model = runtime_model(&RuntimeModelSelection {
+                    model_key: model_key.clone(),
+                    artifact_sha256: artifact_sha256.clone(),
+                    feature_schema_sha256: feature_schema_sha256.clone(),
+                })
+                .map_err(|error| {
+                    HttpError::bad_request(format!(
+                        "invalid BTC asymmetric value model selection: {error}"
+                    ))
+                })?;
+                if !model.is_asymmetric_value() {
+                    return Err(HttpError::bad_request(
+                        "selected model is not an asymmetric value artifact",
+                    ));
+                }
+                (
+                    BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_VERSION.to_string(),
+                    model.feature_schema_version().to_string(),
+                )
+            }
         };
         strategy_object.insert(
             "strategy_version".to_string(),
@@ -418,6 +450,21 @@ fn resolve_btc_strategy(
                 feature_schema_sha256: feature_schema_sha256.clone(),
             })
             .is_ok_and(|model| model.feature_schema_version() == strategy.feature_schema_version)
+        }
+        Some(BtcDecisionStrategyConfig::BtcAsymmetricValueModel {
+            model_key,
+            artifact_sha256,
+            feature_schema_sha256,
+        }) if strategy.strategy_version == BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_VERSION => {
+            runtime_model(&RuntimeModelSelection {
+                model_key: model_key.clone(),
+                artifact_sha256: artifact_sha256.clone(),
+                feature_schema_sha256: feature_schema_sha256.clone(),
+            })
+            .is_ok_and(|model| {
+                model.is_asymmetric_value()
+                    && model.feature_schema_version() == strategy.feature_schema_version
+            })
         }
         _ => false,
     };
@@ -910,6 +957,8 @@ fn resume_process_contract_projection(mut config: serde_json::Value) -> serde_js
             runtime.remove("clob_heartbeat_interval");
             runtime.remove("rtds_heartbeat_interval");
             runtime.remove("binance_heartbeat_interval");
+            runtime.remove("binance_spot_l2_enabled");
+            runtime.remove("binance_spot_l2_ws_url");
             runtime.remove("binance_rest_base_url");
         }
         if raw
@@ -1298,6 +1347,26 @@ impl BtcProcessManager {
             ));
         }
         let strategy = resolve_btc_strategy(&control)?;
+        if strategy
+            .required_model_feeds
+            .iter()
+            .any(|requirement| requirement.feed == BtcModelFeedId::BinanceBtcusdtL2V1)
+            && !self.config.btc.binance_spot_l2_enabled
+        {
+            return Err(HttpError::bad_request(
+                "BTC strategy requires the shared Binance spot L2 runtime feed",
+            ));
+        }
+        if strategy
+            .required_model_feeds
+            .iter()
+            .any(|requirement| requirement.feed == BtcModelFeedId::ChainlinkBtcusdOracleV1)
+            && !self.config.btc.directional_external.enabled
+        {
+            return Err(HttpError::bad_request(
+                "BTC strategy requires the shared Chainlink oracle runtime feed",
+            ));
+        }
         if process.effective_execution().mode == "live"
             && definition_use != BtcDefinitionUse::InactiveDefinition
         {
@@ -1328,6 +1397,8 @@ impl BtcProcessManager {
             clob_ws_url: self.config.clob_ws_url.clone(),
             rtds_ws_url: self.config.btc.rtds_ws_url.clone(),
             binance_ws_url: self.config.btc.binance_ws_url.clone(),
+            binance_spot_l2_enabled: self.config.btc.binance_spot_l2_enabled,
+            binance_spot_l2_ws_url: self.config.btc.binance_spot_l2_ws_url.clone(),
             binance_rest_base_url: self.config.btc.binance_rest_base_url.clone(),
             strategy_interval: Duration::from_millis(control.runtime.strategy_interval_ms),
             max_book_age: Duration::from_millis(strategy.max_book_age_ms as u64),
@@ -3878,6 +3949,8 @@ mod lifecycle_tests {
                     paper_enabled: true,
                     rtds_ws_url: String::new(),
                     binance_ws_url: String::new(),
+                    binance_spot_l2_enabled: false,
+                    binance_spot_l2_ws_url: String::new(),
                     binance_rest_base_url: String::new(),
                     data_source_heartbeat: polymarket_bot::btc::BtcHeartbeatConfig::default(),
                     directional_external:
@@ -4002,6 +4075,8 @@ mod lifecycle_tests {
             "clob_heartbeat_interval",
             "rtds_heartbeat_interval",
             "binance_heartbeat_interval",
+            "binance_spot_l2_enabled",
+            "binance_spot_l2_ws_url",
         ] {
             let mut process_control = serde_json::json!({
                 "schema_version": BTC_PROCESS_SCHEMA_VERSION,
@@ -4096,6 +4171,50 @@ mod lifecycle_tests {
         ));
         assert_eq!(strategy.max_directional_feature_age_ms, Some(5_000));
         assert!(strategy.volatility_continuation.is_none());
+    }
+
+    #[test]
+    fn selectable_v3_resolves_asymmetric_value_model_without_directional_entry_policy() {
+        let control = BtcRealtimePaperControlConfig {
+            schema_version: SELECTABLE_BTC_PROCESS_SCHEMA_VERSION.to_string(),
+            strategy: serde_json::json!({
+                "decision_strategy": {
+                    "type": "btc_asymmetric_value_model",
+                    "model_key": "btc-5m-asymmetric-core-paper-20260805-v1",
+                    "artifact_sha256":
+                        "4379aee1ab04b382425b76f2c8f32e80c86299a149cd9994c2515b8138de9813",
+                    "feature_schema_sha256":
+                        "633033efb069dfb54a5f7834ab355ea380bd01c5774b800fddb528322e1e73dd"
+                },
+                "required_model_feeds": [
+                    {"feed": "binance_btcusdt_one_second_v1", "maximum_age_ms": 1000},
+                    {"feed": "polymarket_btc5m_clob_execution_v1", "maximum_age_ms": 2000}
+                ],
+                "min_seconds_after_open": 1,
+                "min_seconds_before_close": 244,
+                "max_directional_feature_age_ms": 1000,
+                "min_entry_price": "0.20",
+                "max_entry_price": "0.30",
+                "spread_reserve_fraction": "0",
+                "slippage_reserve_bps": "0",
+                "latency_reserve_per_share": "0.01",
+                "min_net_edge_per_share": "0.03",
+                "min_net_edge_usd": "0.15"
+            }),
+            ..BtcRealtimePaperControlConfig::default()
+        };
+
+        let strategy = resolve_btc_strategy(&control).unwrap();
+
+        assert_eq!(
+            strategy.strategy_version,
+            BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_VERSION
+        );
+        assert!(matches!(
+            strategy.decision_strategy,
+            Some(BtcDecisionStrategyConfig::BtcAsymmetricValueModel { .. })
+        ));
+        assert_eq!(strategy.required_model_feeds.len(), 2);
     }
 
     #[test]
@@ -5200,6 +5319,16 @@ mod lifecycle_tests {
 
         playbook.writer_capacity += 1;
         assert!(!shared_market_data_config_compatible(&shared, &playbook));
+
+        let mut l2_playbook = shared.clone();
+        l2_playbook.binance_spot_l2_enabled = true;
+        assert!(!shared_market_data_config_compatible(&shared, &l2_playbook));
+        let mut l2_url_playbook = shared.clone();
+        l2_url_playbook.binance_spot_l2_ws_url = "wss://example.test/ws/depth".to_string();
+        assert!(!shared_market_data_config_compatible(
+            &shared,
+            &l2_url_playbook
+        ));
     }
 
     #[test]
@@ -5226,6 +5355,8 @@ mod lifecycle_tests {
                 "clob_heartbeat_interval",
                 "rtds_heartbeat_interval",
                 "binance_heartbeat_interval",
+                "binance_spot_l2_enabled",
+                "binance_spot_l2_ws_url",
                 "binance_rest_base_url",
             ] {
                 durable["raw"]["runtime"][field] = historical_value.clone();

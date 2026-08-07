@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::directional_features::directional_feature_names;
+use super::directional_features::{directional_feature_names, BTC_DIRECTIONAL_FEATURE_NAMES};
 
 pub const BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION: &str = "btc_5m_directional_model_v1";
 pub const BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION: &str =
@@ -28,11 +28,16 @@ pub const DEFAULT_BTC_DIRECTIONAL_MODEL_DIR: &str = "/usr/local/share/polymarket
 pub const RUNTIME_MODEL_SCHEMA_VERSION: &str = "capitonic-btc-directional-runtime-model-v1";
 pub const RUNTIME_MODEL_TIME_BANDED_SCHEMA_VERSION: &str =
     "capitonic-btc-directional-runtime-model-v2";
+pub const RUNTIME_MODEL_ASYMMETRIC_VALUE_SCHEMA_VERSION: &str =
+    "capitonic-btc-asymmetric-value-runtime-model-v1";
 pub const RUNTIME_MANIFEST_SCHEMA_VERSION: &str = "capitonic-btc-directional-runtime-manifest-v1";
 pub const GOLDEN_VECTORS_SCHEMA_VERSION: &str = "capitonic-btc-directional-golden-vectors-v1";
 pub const TIME_BANDED_GOLDEN_VECTORS_SCHEMA_VERSION: &str =
     "capitonic-btc-directional-golden-vectors-v2";
+pub const ASYMMETRIC_VALUE_GOLDEN_VECTORS_SCHEMA_VERSION: &str =
+    "capitonic-btc-asymmetric-value-golden-vectors-v1";
 pub const BTC_DIRECTIONAL_MODEL_INPUT_CONTRACT: &str = "btc_directional_model_input_v1";
+pub const BTC_ASYMMETRIC_VALUE_MODEL_INPUT_CONTRACT: &str = "btc_asymmetric_value_model_input_v1";
 
 const MODEL_FILE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const GOLDEN_VECTORS_FILE_MAX_BYTES: u64 = 64 * 1024 * 1024;
@@ -70,6 +75,48 @@ pub fn directional_model_input_sha256(
         "feature_as_of": feature_as_of,
         "seconds_elapsed": seconds_elapsed,
         "feature_values": feature_values,
+    });
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&payload)?)
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn asymmetric_value_model_input_sha256(
+    selection: &RuntimeModelSelection,
+    feature_schema_version: &str,
+    market_id: &str,
+    window_start: DateTime<Utc>,
+    feature_as_of: DateTime<Utc>,
+    seconds_elapsed: i64,
+    feature_values: &[f64],
+    yes_ask_vwap: f64,
+    no_ask_vwap: f64,
+) -> Result<String> {
+    let model = runtime_model(selection)?;
+    if !model.is_asymmetric_value()
+        || model.feature_schema_version() != feature_schema_version
+        || feature_values.len() != model.feature_names().len()
+        || !yes_ask_vwap.is_finite()
+        || !no_ask_vwap.is_finite()
+    {
+        bail!("BTC asymmetric value model input contract is invalid");
+    }
+    let payload = serde_json::json!({
+        "contract": BTC_ASYMMETRIC_VALUE_MODEL_INPUT_CONTRACT,
+        "model_key": selection.model_key,
+        "model_artifact_sha256": selection.artifact_sha256,
+        "feature_schema_version": feature_schema_version,
+        "feature_schema_sha256": selection.feature_schema_sha256,
+        "feature_names": model.feature_names(),
+        "market_id": market_id,
+        "window_start": window_start,
+        "feature_as_of": feature_as_of,
+        "seconds_elapsed": seconds_elapsed,
+        "feature_values": feature_values,
+        "yes_ask_vwap": yes_ask_vwap,
+        "no_ask_vwap": no_ask_vwap,
     });
     Ok(format!(
         "{:x}",
@@ -129,13 +176,25 @@ pub struct RuntimePredictionPolicy {
     pub minimum_seconds_after_open: i64,
     pub maximum_seconds_after_open: i64,
     pub cadence_seconds: i64,
+    pub early_end_second: Option<i64>,
+    pub early_cadence_seconds: Option<i64>,
 }
 
 impl RuntimePredictionPolicy {
     pub fn accepts(self, seconds_elapsed: i64) -> bool {
-        seconds_elapsed >= self.minimum_seconds_after_open
-            && seconds_elapsed <= self.maximum_seconds_after_open
-            && (seconds_elapsed - self.minimum_seconds_after_open) % self.cadence_seconds == 0
+        if seconds_elapsed < self.minimum_seconds_after_open
+            || seconds_elapsed > self.maximum_seconds_after_open
+        {
+            return false;
+        }
+        let (start, cadence) = match (self.early_end_second, self.early_cadence_seconds) {
+            (Some(end), Some(cadence)) if seconds_elapsed <= end => {
+                (self.minimum_seconds_after_open, cadence)
+            }
+            (Some(end), Some(_)) => (end + 1, self.cadence_seconds),
+            _ => (self.minimum_seconds_after_open, self.cadence_seconds),
+        };
+        (seconds_elapsed - start) % cadence == 0
     }
 }
 
@@ -156,6 +215,7 @@ pub struct RuntimeDirectionalModel {
     target: RuntimeTarget,
     decision: RuntimeDecision,
     prediction_policy: RuntimePredictionPolicy,
+    asymmetric_value_calibration: Option<RuntimeAsymmetricValueCalibration>,
 }
 
 impl RuntimeDirectionalModel {
@@ -205,6 +265,10 @@ impl RuntimeDirectionalModel {
         self.prediction_policy
     }
 
+    pub fn is_asymmetric_value(&self) -> bool {
+        self.asymmetric_value_calibration.is_some()
+    }
+
     pub fn probability_up_threshold(&self) -> f64 {
         self.decision.probability_up_threshold
     }
@@ -241,6 +305,63 @@ impl RuntimeDirectionalModel {
             bail!("BTC directional model feature snapshot is outside its prediction policy");
         }
         self.score_at_seconds(&snapshot.feature_values, snapshot.seconds_elapsed)
+    }
+
+    pub fn score_asymmetric_value_snapshot(
+        &self,
+        snapshot: &BtcDirectionalModelFeatureSnapshot,
+        yes_ask_vwap: f64,
+        no_ask_vwap: f64,
+    ) -> Result<RuntimeModelScore> {
+        if snapshot.model_key != self.model_key
+            || snapshot.model_artifact_sha256 != self.artifact_sha256
+            || snapshot.feature_schema_version != self.feature_schema_version
+            || snapshot.feature_schema_sha256 != self.feature_schema_sha256
+        {
+            bail!("BTC asymmetric model feature snapshot identity does not match the model");
+        }
+        if !self.prediction_policy.accepts(snapshot.seconds_elapsed) {
+            bail!("BTC asymmetric model feature snapshot is outside its prediction policy");
+        }
+        let calibration = self
+            .asymmetric_value_calibration
+            .as_ref()
+            .context("BTC model does not carry asymmetric-value calibration")?;
+        if snapshot.feature_values.len() != self.feature_names.len()
+            || !yes_ask_vwap.is_finite()
+            || !no_ask_vwap.is_finite()
+            || !(0.0..=1.0).contains(&yes_ask_vwap)
+            || !(0.0..=1.0).contains(&no_ask_vwap)
+        {
+            bail!("BTC asymmetric model input is invalid");
+        }
+        let mut raw_logit = self.baseline_logit;
+        for tree in &self.trees {
+            raw_logit += tree.score(&snapshot.feature_values, &self.imputation_medians)?;
+        }
+        if !raw_logit.is_finite() {
+            bail!("BTC asymmetric model produced a non-finite raw logit");
+        }
+        let parent = calibration.parent_probability(raw_logit, snapshot.seconds_elapsed)?;
+        let probability_up = calibration.coherent_probability(
+            parent,
+            snapshot.seconds_elapsed,
+            yes_ask_vwap,
+            no_ask_vwap,
+        )?;
+        let confidence = probability_up.max(1.0 - probability_up);
+        let action = if probability_up >= 0.5 {
+            RuntimeModelAction::Up
+        } else {
+            RuntimeModelAction::Down
+        };
+        Ok(RuntimeModelScore {
+            raw_logit,
+            probability_up,
+            confidence,
+            action,
+            accepted: true,
+        })
     }
 
     /// Scores an ordered feature vector without allocating on the inference path.
@@ -535,6 +656,86 @@ struct RuntimeTimeBand {
     confidence_threshold: f64,
 }
 
+#[derive(Debug)]
+struct RuntimeAsymmetricValueCalibration {
+    time_bands: Vec<RuntimeAsymmetricTimeBand>,
+    side_price_cells: Vec<RuntimeAsymmetricPriceCell>,
+}
+
+#[derive(Debug)]
+struct RuntimeAsymmetricTimeBand {
+    start_seconds: i64,
+    end_seconds_exclusive: i64,
+    slope: f64,
+    intercept: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeAsymmetricSide {
+    Yes,
+    No,
+}
+
+#[derive(Debug)]
+struct RuntimeAsymmetricPriceCell {
+    start_seconds: i64,
+    end_seconds_exclusive: i64,
+    minimum_price: f64,
+    maximum_price: f64,
+    side: RuntimeAsymmetricSide,
+    slope: f64,
+    intercept: f64,
+}
+
+impl RuntimeAsymmetricValueCalibration {
+    fn parent_probability(&self, raw_logit: f64, seconds_elapsed: i64) -> Result<f64> {
+        let band = self
+            .time_bands
+            .iter()
+            .find(|band| {
+                seconds_elapsed >= band.start_seconds
+                    && seconds_elapsed < band.end_seconds_exclusive
+            })
+            .context("BTC asymmetric model has no calibration time band")?;
+        Ok(sigmoid(
+            (raw_logit * band.slope + band.intercept).clamp(-40.0, 40.0),
+        ))
+    }
+
+    fn coherent_probability(
+        &self,
+        parent_yes: f64,
+        seconds_elapsed: i64,
+        yes_price: f64,
+        no_price: f64,
+    ) -> Result<f64> {
+        let cell = |side, price| {
+            self.side_price_cells.iter().find(|cell| {
+                cell.side == side
+                    && seconds_elapsed >= cell.start_seconds
+                    && seconds_elapsed < cell.end_seconds_exclusive
+                    && price >= cell.minimum_price
+                    && (price < cell.maximum_price || (cell.maximum_price == 1.0 && price <= 1.0))
+            })
+        };
+        let yes = cell(RuntimeAsymmetricSide::Yes, yes_price)
+            .context("BTC asymmetric model has no YES price calibration cell")?;
+        let no = cell(RuntimeAsymmetricSide::No, no_price)
+            .context("BTC asymmetric model has no NO price calibration cell")?;
+        let parent_yes = parent_yes.clamp(1e-9, 1.0 - 1e-9);
+        let yes_logit = (parent_yes / (1.0 - parent_yes)).ln();
+        let parent_no = 1.0 - parent_yes;
+        let no_logit = (parent_no / (1.0 - parent_no)).ln();
+        let coherent =
+            0.5 * ((yes_logit * yes.slope + yes.intercept) - (no_logit * no.slope + no.intercept));
+        let probability = sigmoid(coherent.clamp(-40.0, 40.0));
+        if !probability.is_finite() {
+            bail!("BTC asymmetric model produced a non-finite coherent probability");
+        }
+        Ok(probability)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RuntimeCalibrationDecisionRef<'a> {
     calibration: &'a RuntimeCalibration,
@@ -586,6 +787,7 @@ struct RuntimeModelFile {
     calibration: Option<RuntimeCalibrationFile>,
     time_bands: Option<Vec<RuntimeTimeBandFile>>,
     target: Option<RuntimeTargetFile>,
+    asymmetric_value_calibration: Option<RuntimeAsymmetricValueCalibrationFile>,
     decision: RuntimeDecisionFile,
     prediction_policy: RuntimePredictionPolicyFile,
     provenance: serde_json::Value,
@@ -668,6 +870,38 @@ struct RuntimeTimeBandFile {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeAsymmetricValueCalibrationFile {
+    time_bands: Vec<RuntimeAsymmetricTimeBandFile>,
+    side_price_cells: Vec<RuntimeAsymmetricPriceCellFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeAsymmetricTimeBandFile {
+    start_seconds: i64,
+    end_seconds_exclusive: i64,
+    slope: f64,
+    intercept: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeAsymmetricPriceCellFile {
+    start_seconds: i64,
+    end_seconds_exclusive: i64,
+    minimum_price: f64,
+    maximum_price: f64,
+    side: String,
+    slope: f64,
+    intercept: f64,
+    #[serde(rename = "fitted")]
+    _fitted: bool,
+    #[serde(rename = "fallback")]
+    _fallback: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum RuntimeTargetFile {
     OutcomeUp,
@@ -703,6 +937,10 @@ struct RuntimePredictionPolicyFile {
     minimum_seconds_after_open: i64,
     maximum_seconds_after_open: i64,
     cadence_seconds: i64,
+    #[serde(default)]
+    early_end_second: Option<i64>,
+    #[serde(default)]
+    early_cadence_seconds: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -768,7 +1006,10 @@ fn validate_manifest(
         || manifest.model_file != "model.json"
         || manifest.golden_vectors_file != "golden-vectors.json"
         || manifest.model_sha256 != selection.artifact_sha256
-        || directional_feature_names(&manifest.feature_schema_version).is_none()
+        || (directional_feature_names(&manifest.feature_schema_version).is_none()
+            && !manifest
+                .feature_schema_version
+                .starts_with("btc-5m-asymmetric-"))
         || manifest.feature_schema_sha256 != selection.feature_schema_sha256
     {
         bail!("BTC directional runtime model manifest does not match its frozen contract");
@@ -813,8 +1054,8 @@ fn valid_deployment_metadata(
     live_capital_allowed: bool,
 ) -> bool {
     !scope.trim().is_empty()
-        && !(scope == "paper_only" && (production_qualified || live_capital_allowed))
         && (!live_capital_allowed || production_qualified)
+        && (!production_qualified || scope != "paper_only")
 }
 
 fn compile_runtime_model(
@@ -825,7 +1066,8 @@ fn compile_runtime_model(
 ) -> Result<RuntimeDirectionalModel> {
     let legacy_schema = file.schema_version == RUNTIME_MODEL_SCHEMA_VERSION;
     let time_banded_schema = file.schema_version == RUNTIME_MODEL_TIME_BANDED_SCHEMA_VERSION;
-    if (!legacy_schema && !time_banded_schema)
+    let asymmetric_schema = file.schema_version == RUNTIME_MODEL_ASYMMETRIC_VALUE_SCHEMA_VERSION;
+    if (!legacy_schema && !time_banded_schema && !asymmetric_schema)
         || file.model_key != selection.model_key
         || file.features.schema_version != manifest.feature_schema_version
         || file.features.schema_sha256 != manifest.feature_schema_sha256
@@ -881,7 +1123,11 @@ fn compile_runtime_model(
     {
         bail!("BTC directional runtime model feature contract is malformed");
     }
-    validate_frozen_feature_order(&file.features.schema_version, &file.features.names)?;
+    if asymmetric_schema {
+        validate_asymmetric_feature_order(&file.features.names)?;
+    } else {
+        validate_frozen_feature_order(&file.features.schema_version, &file.features.names)?;
+    }
 
     let estimator = file.estimator;
     if estimator.estimator_type != "histogram_gradient_boosting_binary_classifier"
@@ -911,16 +1157,23 @@ fn compile_runtime_model(
     }
 
     let prediction_policy = file.prediction_policy;
-    if prediction_policy.policy_type != "first_confidence_crossing"
+    let scheduled = asymmetric_schema && prediction_policy.policy_type == "scheduled";
+    if (!scheduled && prediction_policy.policy_type != "first_confidence_crossing")
         || prediction_policy.minimum_seconds_after_open < 0
         || prediction_policy.maximum_seconds_after_open
             < prediction_policy.minimum_seconds_after_open
         || prediction_policy.maximum_seconds_after_open >= 300
         || prediction_policy.cadence_seconds <= 0
-        || (prediction_policy.maximum_seconds_after_open
-            - prediction_policy.minimum_seconds_after_open)
-            % prediction_policy.cadence_seconds
-            != 0
+        || (!scheduled
+            && (prediction_policy.maximum_seconds_after_open
+                - prediction_policy.minimum_seconds_after_open)
+                % prediction_policy.cadence_seconds
+                != 0)
+        || (scheduled
+            && (prediction_policy.early_end_second != Some(59)
+                || prediction_policy.early_cadence_seconds != Some(1)
+                || prediction_policy.minimum_seconds_after_open != 1
+                || prediction_policy.cadence_seconds != 5))
     {
         bail!("BTC directional runtime model prediction policy is invalid");
     }
@@ -928,9 +1181,11 @@ fn compile_runtime_model(
         minimum_seconds_after_open: prediction_policy.minimum_seconds_after_open,
         maximum_seconds_after_open: prediction_policy.maximum_seconds_after_open,
         cadence_seconds: prediction_policy.cadence_seconds,
+        early_end_second: prediction_policy.early_end_second,
+        early_cadence_seconds: prediction_policy.early_cadence_seconds,
     };
 
-    let (calibration_policy, target) = if legacy_schema {
+    let (calibration_policy, target, asymmetric_value_calibration) = if legacy_schema {
         if file.time_bands.is_some() || file.target.is_some() {
             bail!("BTC directional runtime model v1 contains unsupported time-band metadata");
         }
@@ -949,8 +1204,9 @@ fn compile_runtime_model(
                 confidence_threshold,
             },
             RuntimeTarget::OutcomeUp,
+            None,
         )
-    } else {
+    } else if time_banded_schema {
         if file.calibration.is_some() || decision.confidence_threshold.is_some() {
             bail!(
                 "BTC directional runtime model v2 must freeze calibration and confidence by time band"
@@ -966,7 +1222,35 @@ fn compile_runtime_model(
                 .context("BTC directional runtime model v2 requires a target contract")?,
             &file.features.names,
         )?;
-        (RuntimeCalibrationPolicy::TimeBanded { bands }, target)
+        (RuntimeCalibrationPolicy::TimeBanded { bands }, target, None)
+    } else {
+        if file.calibration.is_some()
+            || file.time_bands.is_some()
+            || file.target.is_some()
+            || decision.confidence_threshold.is_some()
+        {
+            bail!("BTC asymmetric runtime model contains directional calibration metadata");
+        }
+        let calibration = compile_asymmetric_value_calibration(
+            file.asymmetric_value_calibration
+                .context("BTC asymmetric runtime model requires its value calibration contract")?,
+            prediction_policy,
+        )?;
+        (
+            RuntimeCalibrationPolicy::Global {
+                calibration: RuntimeCalibration {
+                    slope: 1.0,
+                    intercept: 0.0,
+                    input_probability_minimum: 1e-9,
+                    input_probability_maximum: 1.0 - 1e-9,
+                    output_logit_minimum: -40.0,
+                    output_logit_maximum: 40.0,
+                },
+                confidence_threshold: 0.5,
+            },
+            RuntimeTarget::OutcomeUp,
+            Some(calibration),
+        )
     };
 
     Ok(RuntimeDirectionalModel {
@@ -987,6 +1271,7 @@ fn compile_runtime_model(
             probability_up_threshold: decision.probability_up_threshold,
         },
         prediction_policy,
+        asymmetric_value_calibration,
     })
 }
 
@@ -1006,6 +1291,94 @@ fn compile_calibration(file: RuntimeCalibrationFile) -> Result<RuntimeCalibratio
         input_probability_maximum: file.input_probability_clip.maximum,
         output_logit_minimum: file.output_logit_clip.minimum,
         output_logit_maximum: file.output_logit_clip.maximum,
+    })
+}
+
+fn compile_asymmetric_value_calibration(
+    file: RuntimeAsymmetricValueCalibrationFile,
+    prediction_policy: RuntimePredictionPolicy,
+) -> Result<RuntimeAsymmetricValueCalibration> {
+    if file.time_bands.is_empty() || file.side_price_cells.is_empty() {
+        bail!("BTC asymmetric value calibration contract is empty");
+    }
+    let mut expected_start = prediction_policy.minimum_seconds_after_open;
+    let mut time_bands = Vec::with_capacity(file.time_bands.len());
+    for band in file.time_bands {
+        if band.start_seconds != expected_start
+            || band.start_seconds >= band.end_seconds_exclusive
+            || !band.slope.is_finite()
+            || band.slope <= 0.0
+            || !band.intercept.is_finite()
+        {
+            bail!("BTC asymmetric time calibration contract is invalid");
+        }
+        expected_start = band.end_seconds_exclusive;
+        time_bands.push(RuntimeAsymmetricTimeBand {
+            start_seconds: band.start_seconds,
+            end_seconds_exclusive: band.end_seconds_exclusive,
+            slope: band.slope,
+            intercept: band.intercept,
+        });
+    }
+    if expected_start != prediction_policy.maximum_seconds_after_open + 1 {
+        bail!("BTC asymmetric time calibration does not cover its prediction policy");
+    }
+    let mut side_price_cells = Vec::with_capacity(file.side_price_cells.len());
+    for cell in file.side_price_cells {
+        let side = match cell.side.as_str() {
+            "yes" => RuntimeAsymmetricSide::Yes,
+            "no" => RuntimeAsymmetricSide::No,
+            _ => bail!("BTC asymmetric price calibration side is invalid"),
+        };
+        if cell.start_seconds < prediction_policy.minimum_seconds_after_open
+            || cell.end_seconds_exclusive > prediction_policy.maximum_seconds_after_open + 1
+            || cell.start_seconds >= cell.end_seconds_exclusive
+            || !cell.minimum_price.is_finite()
+            || !cell.maximum_price.is_finite()
+            || cell.minimum_price < 0.0
+            || cell.maximum_price > 1.0
+            || cell.minimum_price >= cell.maximum_price
+            || !cell.slope.is_finite()
+            || cell.slope <= 0.0
+            || !cell.intercept.is_finite()
+        {
+            bail!("BTC asymmetric price calibration cell is invalid");
+        }
+        side_price_cells.push(RuntimeAsymmetricPriceCell {
+            start_seconds: cell.start_seconds,
+            end_seconds_exclusive: cell.end_seconds_exclusive,
+            minimum_price: cell.minimum_price,
+            maximum_price: cell.maximum_price,
+            side,
+            slope: cell.slope,
+            intercept: cell.intercept,
+        });
+    }
+    for band in &time_bands {
+        for side in [RuntimeAsymmetricSide::Yes, RuntimeAsymmetricSide::No] {
+            let mut cells = side_price_cells
+                .iter()
+                .filter(|cell| {
+                    cell.side == side
+                        && cell.start_seconds == band.start_seconds
+                        && cell.end_seconds_exclusive == band.end_seconds_exclusive
+                })
+                .collect::<Vec<_>>();
+            cells.sort_by(|left, right| left.minimum_price.total_cmp(&right.minimum_price));
+            if cells.len() != 10
+                || cells.first().is_none_or(|cell| cell.minimum_price != 0.0)
+                || cells.last().is_none_or(|cell| cell.maximum_price != 1.0)
+                || cells
+                    .windows(2)
+                    .any(|pair| pair[0].maximum_price != pair[1].minimum_price)
+            {
+                bail!("BTC asymmetric price calibration cells do not cover a side/time band");
+            }
+        }
+    }
+    Ok(RuntimeAsymmetricValueCalibration {
+        time_bands,
+        side_price_cells,
     })
 }
 
@@ -1094,6 +1467,90 @@ fn validate_frozen_feature_order(
             "BTC directional runtime model feature order does not match schema {}",
             feature_schema_version
         );
+    }
+    Ok(())
+}
+
+const ASYMMETRIC_PM_FEATURE_NAMES: [&str; 13] = [
+    "pm_yes_cost_per_share",
+    "pm_no_cost_per_share",
+    "pm_yes_cost_logit",
+    "pm_no_cost_logit",
+    "pm_cost_overround",
+    "pm_yes_minus_no_cost",
+    "pm_yes_vwap_slippage",
+    "pm_no_vwap_slippage",
+    "pm_yes_depth_log",
+    "pm_no_depth_log",
+    "pm_depth_imbalance",
+    "pm_yes_book_age_seconds",
+    "pm_no_book_age_seconds",
+];
+
+const ASYMMETRIC_ORACLE_FEATURE_NAMES: [&str; 4] = [
+    "oracle_return_from_window_open_bps",
+    "oracle_round_age_seconds_scaled",
+    "oracle_update_count_since_open_scaled",
+    "binance_oracle_basis_bps",
+];
+
+pub const ASYMMETRIC_L2_FEATURE_NAMES: [&str; 40] = [
+    "spot_l2_midpoint_to_kline_close_bps",
+    "spot_l2_microprice_to_midpoint_bps",
+    "spot_l2_spread_bps",
+    "spot_l2_bid_depth_5_log",
+    "spot_l2_ask_depth_5_log",
+    "spot_l2_imbalance_5",
+    "spot_l2_bid_depth_10_log",
+    "spot_l2_ask_depth_10_log",
+    "spot_l2_imbalance_10",
+    "spot_l2_bid_depth_20_log",
+    "spot_l2_ask_depth_20_log",
+    "spot_l2_imbalance_20",
+    "spot_l2_bid_depth_slope_20",
+    "spot_l2_ask_depth_slope_20",
+    "spot_l2_bid_depth_concentration_20",
+    "spot_l2_ask_depth_concentration_20",
+    "spot_l2_bid_quote_replenishment_1s_log",
+    "spot_l2_ask_quote_replenishment_1s_log",
+    "spot_l2_bid_quote_churn_1s_log",
+    "spot_l2_ask_quote_churn_1s_log",
+    "spot_l2_midpoint_change_1s_bps",
+    "spot_l2_spread_change_1s_bps",
+    "spot_l2_depth_20_change_1s_bps",
+    "spot_l2_imbalance_20_change_1s",
+    "spot_l2_midpoint_change_5s_bps",
+    "spot_l2_spread_change_5s_bps",
+    "spot_l2_depth_20_change_5s_bps",
+    "spot_l2_imbalance_20_change_5s",
+    "spot_l2_midpoint_change_15s_bps",
+    "spot_l2_spread_change_15s_bps",
+    "spot_l2_depth_20_change_15s_bps",
+    "spot_l2_imbalance_20_change_15s",
+    "spot_l2_midpoint_change_30s_bps",
+    "spot_l2_spread_change_30s_bps",
+    "spot_l2_depth_20_change_30s_bps",
+    "spot_l2_imbalance_20_change_30s",
+    "spot_l2_midpoint_change_60s_bps",
+    "spot_l2_spread_change_60s_bps",
+    "spot_l2_depth_20_change_60s_bps",
+    "spot_l2_imbalance_20_change_60s",
+];
+
+fn validate_asymmetric_feature_order(feature_names: &[String]) -> Result<()> {
+    let expected_external: &[&str] = match feature_names.len() {
+        71 => &[],
+        75 => &ASYMMETRIC_ORACLE_FEATURE_NAMES,
+        111 => &ASYMMETRIC_L2_FEATURE_NAMES,
+        _ => bail!("BTC asymmetric runtime model feature count is unsupported"),
+    };
+    let expected = BTC_DIRECTIONAL_FEATURE_NAMES
+        .iter()
+        .copied()
+        .chain(expected_external.iter().copied())
+        .chain(ASYMMETRIC_PM_FEATURE_NAMES.iter().copied());
+    if feature_names.iter().map(String::as_str).ne(expected) {
+        bail!("BTC asymmetric runtime model feature order is invalid");
     }
     Ok(())
 }
@@ -1265,6 +1722,8 @@ mod tests {
     struct GoldenVectorsFile {
         schema_version: String,
         model_key: String,
+        #[serde(default)]
+        feature_schema_version: Option<String>,
         feature_schema_sha256: String,
         vectors: Vec<GoldenVector>,
     }
@@ -1276,6 +1735,10 @@ mod tests {
         source: Option<serde_json::Value>,
         seconds_elapsed: Option<i64>,
         feature_values: Vec<Option<f64>>,
+        #[serde(default)]
+        yes_ask_vwap: Option<f64>,
+        #[serde(default)]
+        no_ask_vwap: Option<f64>,
         expected: GoldenExpected,
     }
 
@@ -1331,7 +1794,10 @@ mod tests {
                 minimum_seconds_after_open: 60,
                 maximum_seconds_after_open: 240,
                 cadence_seconds: 5,
+                early_end_second: None,
+                early_cadence_seconds: None,
             },
+            asymmetric_value_calibration: None,
         }
     }
 
@@ -1556,6 +2022,8 @@ mod tests {
             minimum_seconds_after_open: 60,
             maximum_seconds_after_open: 240,
             cadence_seconds: 5,
+            early_end_second: None,
+            early_cadence_seconds: None,
         };
         let valid = vec![
             RuntimeTimeBandFile {
@@ -1695,8 +2163,12 @@ mod tests {
             assert!(
                 vectors.schema_version == GOLDEN_VECTORS_SCHEMA_VERSION
                     || vectors.schema_version == TIME_BANDED_GOLDEN_VECTORS_SCHEMA_VERSION
+                    || vectors.schema_version == ASYMMETRIC_VALUE_GOLDEN_VECTORS_SCHEMA_VERSION
             );
             assert_eq!(vectors.model_key, selection.model_key);
+            if let Some(feature_schema_version) = vectors.feature_schema_version.as_deref() {
+                assert_eq!(feature_schema_version, model.feature_schema_version());
+            }
             assert_eq!(
                 vectors.feature_schema_sha256,
                 selection.feature_schema_sha256
@@ -1713,6 +2185,26 @@ mod tests {
                     (GOLDEN_VECTORS_SCHEMA_VERSION, None) => model.score(&features).unwrap(),
                     (TIME_BANDED_GOLDEN_VECTORS_SCHEMA_VERSION, Some(seconds_elapsed)) => {
                         model.score_at_seconds(&features, seconds_elapsed).unwrap()
+                    }
+                    (ASYMMETRIC_VALUE_GOLDEN_VECTORS_SCHEMA_VERSION, Some(seconds_elapsed)) => {
+                        model
+                            .score_asymmetric_value_snapshot(
+                                &BtcDirectionalModelFeatureSnapshot {
+                                    model_key: selection.model_key.clone(),
+                                    model_artifact_sha256: selection.artifact_sha256.clone(),
+                                    feature_schema_version: model
+                                        .feature_schema_version()
+                                        .to_string(),
+                                    feature_schema_sha256: selection.feature_schema_sha256.clone(),
+                                    feature_as_of: Utc::now(),
+                                    seconds_elapsed,
+                                    feature_values: features.clone(),
+                                    input_sha256: "a".repeat(64),
+                                },
+                                vector.yes_ask_vwap.unwrap(),
+                                vector.no_ask_vwap.unwrap(),
+                            )
+                            .unwrap()
                     }
                     _ => panic!(
                         "{}:{} golden-vector elapsed-time contract mismatch",

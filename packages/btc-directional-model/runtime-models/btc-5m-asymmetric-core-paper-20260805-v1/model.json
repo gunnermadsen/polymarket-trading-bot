@@ -1813,6 +1813,12 @@
       }
     ]
   },
+  "decision": {
+    "below_confidence_action": "no_trade",
+    "down_action": "down",
+    "probability_up_threshold": 0.5,
+    "up_action": "up"
+  },
   "deployment": {
     "live_capital_allowed": false,
     "production_qualified": false,
@@ -30145,9 +30151,9 @@
   },
   "model_key": "btc-5m-asymmetric-core-paper-20260805-v1",
   "prediction_policy": {
+    "cadence_seconds": 5,
     "early_cadence_seconds": 1,
     "early_end_second": 59,
-    "later_cadence_seconds": 5,
     "maximum_seconds_after_open": 240,
     "minimum_seconds_after_open": 1,
     "type": "scheduled"
