@@ -238,3 +238,45 @@ def test_calibration_report_summary_discloses_parent_and_cell_fallbacks() -> Non
         "insufficient_markets": 2,
         "insufficient_utc_days": 2,
     }
+    assert summary["target_required_models"] == 0
+    assert summary["target_qualified"] is False
+
+
+def test_calibration_report_exposes_target_cell_qualification() -> None:
+    target = {
+        "required": True,
+        "qualified": False,
+        "required_fitted_cells": 8,
+        "fitted_cells": 7,
+        "fallback_cells": 1,
+    }
+    training = {
+        "profiles": {
+            "candidate": {
+                "calibration_bands": [
+                    {
+                        "converged": True,
+                        "slope": 1.0,
+                        "rows": 500,
+                        "markets": 100,
+                    }
+                ],
+                "side_price_time_calibration": {
+                    "minimum_utc_days_per_cell": 5,
+                    "target_contract": target,
+                    "cells": [
+                        {"fitted": False, "fallback": "single_class", "utc_days": 7}
+                    ],
+                },
+            }
+        }
+    }
+
+    summary = _calibration_report_summary(training)
+
+    assert summary["target_required_models"] == 1
+    assert summary["target_qualified_models"] == 0
+    assert summary["target_required_cells"] == 8
+    assert summary["target_fitted_cells"] == 7
+    assert summary["target_fallback_cells"] == 1
+    assert summary["target_qualified"] is False

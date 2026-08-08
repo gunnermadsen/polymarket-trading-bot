@@ -61,6 +61,7 @@ from .asymmetric_value_training import (
     asymmetric_probability_frame,
     asymmetric_value_feature_sets,
     fit_asymmetric_value_models,
+    target_calibration_gate_checks,
 )
 from .core_config import load_core_config
 from .core_extract import extract_core_source, file_sha256, write_json_atomic
@@ -282,6 +283,10 @@ def run_asymmetric_value_benchmark(
         )
         for name, frame in policy_frames.items()
     }
+    for name, profile in training["profiles"].items():
+        policy_evidence_checks_by_model[name].extend(
+            target_calibration_gate_checks(profile)
+        )
     primary_policy = next(
         policy for policy in config.policies if policy.selection_eligible
     )
@@ -2361,6 +2366,20 @@ def _markdown_report(result: dict[str, Any]) -> str:
             "Fallback reasons (a cell may have more than one): "
             f"`{calibration['fallback_reason_text']}`."
         ),
+        *(
+            [
+                (
+                    "Policy-driving YES/NO × 20–30-cent × early-time cells genuinely "
+                    f"fitted: `{calibration['target_fitted_cells']}/"
+                    f"{calibration['target_required_cells']}` across "
+                    f"`{calibration['target_qualified_models']}/"
+                    f"{calibration['target_required_models']}` candidate profiles. "
+                    f"Target qualification: `{calibration['target_qualified']}`."
+                )
+            ]
+            if calibration["target_required_models"]
+            else []
+        ),
         (
             "Every prediction is parent-time-calibrated. A specialized side/price correction "
             "is applied only where its frozen evidence gate passes; identity fallback leaves "
@@ -2594,6 +2613,11 @@ def _calibration_report_summary(training: dict[str, Any]) -> dict[str, Any]:
     reason_text = ", ".join(
         f"{reason}={count}" for reason, count in sorted(reason_counts.items())
     )
+    target_contracts = [
+        calibration.get("target_contract", {"required": False})
+        for calibration in calibrations
+    ]
+    required_targets = [target for target in target_contracts if target["required"]]
     return {
         "parent_calibrators": len(parent_bands),
         "valid_parent_calibrators": sum(
@@ -2620,6 +2644,23 @@ def _calibration_report_summary(training: dict[str, Any]) -> dict[str, Any]:
         ),
         "fallback_reason_counts": reason_counts,
         "fallback_reason_text": reason_text or "none",
+        "target_required_models": len(required_targets),
+        "target_qualified_models": sum(
+            bool(target["qualified"]) for target in required_targets
+        ),
+        "target_required_cells": sum(
+            int(target["required_fitted_cells"]) for target in required_targets
+        ),
+        "target_fitted_cells": sum(
+            int(target["fitted_cells"]) for target in required_targets
+        ),
+        "target_fallback_cells": sum(
+            int(target["fallback_cells"]) for target in required_targets
+        ),
+        "target_qualified": bool(
+            required_targets
+            and all(bool(target["qualified"]) for target in required_targets)
+        ),
     }
 
 

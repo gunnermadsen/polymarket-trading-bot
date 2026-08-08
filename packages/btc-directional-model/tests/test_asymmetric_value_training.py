@@ -27,9 +27,12 @@ from btc_directional_model.asymmetric_value_training import (
     AsymmetricCalibrationCell,
     AsymmetricValueModel,
     _coherent_calibration_objective,
+    _coherent_probability_from_parameters,
     _price_band_indices,
     asymmetric_value_feature_sets,
     fit_side_price_time_calibrators,
+    target_calibration_evidence,
+    target_calibration_gate_checks,
 )
 from btc_directional_model.chainlink_oi_features import CHAINLINK_CANDLE_FEATURES
 from btc_directional_model.core_training import ProbabilityCalibrator
@@ -268,6 +271,60 @@ def test_coherent_joint_calibration_gradient_matches_finite_difference() -> None
     np.testing.assert_allclose(gradient, numerical, rtol=1e-5, atol=1e-6)
 
 
+def test_coherent_calibration_objective_matches_runtime_probability() -> None:
+    parameters = np.asarray([1.2, 0.3, 0.8, -0.2], dtype=np.float64)
+    parent_logit = np.asarray([-0.7, 0.1, 0.9, -0.2], dtype=np.float64)
+    labels = np.asarray([0.0, 1.0, 1.0, 0.0], dtype=np.float64)
+    weights = np.asarray([0.10, 0.20, 0.30, 0.40], dtype=np.float64)
+    yes_prices = np.asarray([2, 2, 3, 2], dtype=np.int16)
+    no_prices = np.asarray([7, 6, 7, 7], dtype=np.int16)
+    active_keys = ((2, 0), (7, 1))
+    penalty_weights = np.asarray([0.7, 0.8], dtype=np.float64)
+    identity_l2 = 0.5
+    objective, _ = _coherent_calibration_objective(
+        parameters,
+        parent_logit,
+        labels,
+        weights,
+        yes_prices,
+        no_prices,
+        active_keys,
+        penalty_weights,
+        identity_l2,
+    )
+    slopes = np.ones((10, 2), dtype=np.float64)
+    intercepts = np.zeros_like(slopes)
+    for offset, key in enumerate(active_keys):
+        slopes[key] = parameters[2 * offset]
+        intercepts[key] = parameters[2 * offset + 1]
+    probability = _coherent_probability_from_parameters(
+        parent_logit,
+        yes_prices,
+        no_prices,
+        slopes,
+        intercepts,
+    )
+    expected_log_loss = -np.sum(
+        weights
+        * (
+            labels * np.log(probability)
+            + (1.0 - labels) * np.log(1.0 - probability)
+        )
+    )
+    delta = parameters.copy()
+    delta[0::2] -= 1.0
+    expected_penalty = 0.5 * identity_l2 * float(
+        (np.repeat(penalty_weights, 2) * delta) @ delta
+    )
+
+    np.testing.assert_allclose(
+        objective,
+        expected_log_loss + expected_penalty,
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
 def test_asymmetric_calibration_joblib_round_trip_preserves_routing() -> None:
     bundle = _calibrated_bundle()
     frame = pl.DataFrame(
@@ -331,3 +388,109 @@ def test_sparse_side_price_cells_fall_back_to_parent_time_calibration() -> None:
     assert "insufficient_markets" in (yes_twenty_to_thirty.fallback or "")
     assert yes_twenty_to_thirty.slope == 1.0
     assert yes_twenty_to_thirty.intercept == 0.0
+
+
+def test_target_calibration_fallback_is_explicitly_disqualifying() -> None:
+    config = load_asymmetric_value_config(
+        Path(__file__).parents[1]
+        / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+    )
+    calibrators = tuple(
+        TimeBandCalibrator(
+            start_second=start,
+            end_second_exclusive=end,
+            calibrator=ProbabilityCalibrator(1.0, 0.0, True, 1),
+            rows=1,
+            markets=1,
+        )
+        for start, end in config.calibration_bands
+    )
+    frame = pl.DataFrame(
+        {
+            "market_id": ["m1"],
+            "window_start": [datetime(2026, 7, 16, tzinfo=UTC)],
+            "seconds_elapsed": [1],
+            "yes_ask_vwap_5": [0.25],
+            "no_ask_vwap_5": [0.75],
+            "label_up": [1],
+        }
+    )
+
+    cells = fit_side_price_time_calibrators(
+        _ZeroLogitModel(),  # type: ignore[arg-type]
+        calibrators,
+        frame,
+        config,
+    )
+    evidence = target_calibration_evidence(cells, config)
+    checks = target_calibration_gate_checks(
+        {"side_price_time_calibration": {"target_contract": evidence}}
+    )
+
+    assert len(cells) == 160
+    assert len(evidence["cells"]) == 8
+    assert evidence["fitted_cells"] == 0
+    assert evidence["fallback_cells"] == 8
+    assert evidence["qualified"] is False
+    assert checks[0]["name"] == "target_calibration_cells_genuinely_fitted"
+    assert checks[0]["passed"] is False
+    assert all(not check["passed"] for check in checks[1:])
+    assert any(
+        "parent_fallback" in cell["failure_reasons"]
+        for cell in evidence["cells"]
+    )
+
+
+def test_all_eight_supported_target_cells_pass_qualification() -> None:
+    config = load_asymmetric_value_config(
+        Path(__file__).parents[1]
+        / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+    )
+    target = config.target_calibration
+    assert target is not None
+    cells: list[AsymmetricCalibrationCell] = []
+    for start, end in config.calibration_bands:
+        for price_index in range(10):
+            minimum_price = price_index / 10
+            maximum_price = (price_index + 1) / 10
+            for side in ("YES", "NO"):
+                targeted = (
+                    (start, end) in target.time_bands
+                    and np.isclose(minimum_price, target.minimum_price)
+                    and np.isclose(maximum_price, target.maximum_price)
+                )
+                cells.append(
+                    AsymmetricCalibrationCell(
+                        start_second=start,
+                        end_second_exclusive=end,
+                        minimum_price=minimum_price,
+                        maximum_price=maximum_price,
+                        side=side,
+                        slope=1.0,
+                        intercept=0.0,
+                        fitted=targeted,
+                        fallback=None if targeted else "parent_time",
+                        rows=100 if targeted else 0,
+                        markets=50 if targeted else 0,
+                        utc_days=5 if targeted else 0,
+                        positives=25 if targeted else 0,
+                        negatives=25 if targeted else 0,
+                        identity_l2_strength=1.0,
+                        converged=targeted,
+                        iterations=3 if targeted else 0,
+                        objective=0.5 if targeted else None,
+                        weighted_log_loss=0.5 if targeted else None,
+                    )
+                )
+
+    evidence = target_calibration_evidence(tuple(cells), config)
+    checks = target_calibration_gate_checks(
+        {"side_price_time_calibration": {"target_contract": evidence}}
+    )
+
+    assert len(cells) == 160
+    assert evidence["fitted_cells"] == 8
+    assert evidence["fallback_cells"] == 0
+    assert evidence["qualified"] is True
+    assert len(checks) == 9
+    assert all(check["passed"] for check in checks)
