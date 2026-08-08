@@ -64,7 +64,7 @@ MINIMUM_RECENT_L2_SECOND_COVERAGE = 0.99
 PMXT_PROVIDER = "pmxt_v2_execution_snapshots"
 PMXT_INGESTER = "polymarket_btc_five_minute_execution_snapshots"
 L2_INGESTER = "binance_spot_btcusdt_l2_one_second_features"
-ORACLE_CACHE_SCHEMA_VERSION = "btc-asymmetric-value-early-oracle-v2"
+ORACLE_CACHE_SCHEMA_VERSION = "btc-asymmetric-value-early-oracle-v3"
 DEVELOPMENT_ORACLE_CACHE = "development-oracle-propagation-2s.parquet"
 EVALUATION_ORACLE_CACHE = "evaluation-oracle-propagation-2s.parquet"
 
@@ -657,6 +657,13 @@ def _validate_oracle_feature_caches(
                         )
                         | (pl.col("oracle_age_seconds") < ORACLE_MINIMUM_PROPAGATION_SECONDS)
                         | (pl.col("oracle_age_seconds") > ORACLE_MAXIMUM_AGE_SECONDS)
+                        | pl.any_horizontal(
+                            [
+                                pl.col(feature).is_null()
+                                | ~pl.col(feature).cast(pl.Float64).is_finite()
+                                for feature in EARLY_CAUSAL_ORACLE_FEATURES
+                            ]
+                        )
                     )
                 )
             )

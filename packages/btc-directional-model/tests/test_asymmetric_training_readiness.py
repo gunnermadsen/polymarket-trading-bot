@@ -420,7 +420,7 @@ def test_target_profile_validates_one_110_day_development_oracle_cache(
     cache_path = tmp_path / DEVELOPMENT_ORACLE_CACHE
     window_starts = [READINESS_RANGE_START + timedelta(days=offset) for offset in range(110)]
     observed_at = [value + timedelta(seconds=10) for value in window_starts]
-    pl.DataFrame(
+    cache = pl.DataFrame(
         {
             "market_id": [f"market-{offset}" for offset in range(110)],
             "window_start": window_starts,
@@ -429,8 +429,13 @@ def test_target_profile_validates_one_110_day_development_oracle_cache(
             "observed_at": observed_at,
             "early_oracle_eligible": [True] * 110,
             "oracle_age_seconds": [5.0] * 110,
+            **{
+                feature: [float(index + 1)] * 110
+                for index, feature in enumerate(EARLY_CAUSAL_ORACLE_FEATURES)
+            },
         }
-    ).write_parquet(cache_path)
+    )
+    cache.write_parquet(cache_path)
     inventory = {
         "inventory_sha256": "a" * 64,
         "missing_days": [],
@@ -476,6 +481,19 @@ def test_target_profile_validates_one_110_day_development_oracle_cache(
     assert result["development"]["range_end"] == READINESS_RANGE_END.isoformat()
     assert result["development"]["source_days"] == 110
     assert inventory_sources == [config.oracle_source]
+
+    cache.with_columns(
+        pl.when(pl.col("market_id") == "market-0")
+        .then(None)
+        .otherwise(pl.col("oracle_return_from_window_open_bps"))
+        .alias("oracle_return_from_window_open_bps")
+    ).write_parquet(cache_path)
+    metadata_path = cache_path.with_suffix(".metadata.json")
+    metadata = json.loads(metadata_path.read_text())
+    metadata["sha256"] = file_sha256(cache_path)
+    metadata_path.write_text(json.dumps(metadata))
+    with pytest.raises(RuntimeError, match="causal violations"):
+        _validate_oracle_feature_caches(config, core_config)
 
 
 def test_target_profile_validates_one_110_day_development_pmxt_manifest(
