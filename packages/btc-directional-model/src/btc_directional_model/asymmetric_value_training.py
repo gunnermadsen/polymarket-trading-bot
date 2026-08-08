@@ -106,6 +106,43 @@ ORACLE_FEATURE_CANDIDATES = frozenset(
 )
 PRICE_BAND_WIDTH = 0.10
 PRICE_BAND_COUNT = 10
+POLICY_INACTIVE_IMPUTATION_STRATEGY = "constant_zero_fit_and_runtime_nonfinite"
+
+
+@dataclass(frozen=True)
+class PolicyInactiveFeatureMaturity:
+    """Explicit maturity evidence for a feature unavailable to the target policy."""
+
+    first_available_second: int
+    dependencies: tuple[str, ...]
+
+
+TARGET_POLICY_INACTIVE_FEATURE_MATURITY = {
+    "btc_return_60s_bps": PolicyInactiveFeatureMaturity(
+        first_available_second=61,
+        dependencies=("btc_log_close", "btc_log_close_lag_60_rows"),
+    ),
+    "btc_path_efficiency_60s": PolicyInactiveFeatureMaturity(
+        first_available_second=61,
+        dependencies=(
+            "btc_return_60s_bps",
+            "btc_log_return_1s_abs_rolling_sum_60_rows",
+        ),
+    ),
+    "btc_momentum_multihorizon_score": PolicyInactiveFeatureMaturity(
+        first_available_second=61,
+        dependencies=(
+            "btc_return_5s_bps",
+            "btc_return_15s_bps",
+            "btc_return_30s_bps",
+            "btc_return_60s_bps",
+        ),
+    ),
+    "btc_momentum_acceleration_15_vs_60": PolicyInactiveFeatureMaturity(
+        first_available_second=61,
+        dependencies=("btc_return_15s_bps", "btc_return_60s_bps"),
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -231,6 +268,7 @@ def fit_asymmetric_value_models(
         )
     target_fit_contract = target_fit_cohort_contract(config)
     target_fit_evidence: dict[str, dict[str, Any]] = {}
+    policy_inactive_evidence: dict[str, dict[str, Any]] = {}
     models: dict[str, AsymmetricValueModel] = {}
     summary: dict[str, Any] = {
         "selection_metric": "economic_policy_contract",
@@ -241,7 +279,10 @@ def fit_asymmetric_value_models(
         ),
         "earliest_decision_second": 1,
         "prediction_grid_points_per_market": len(config.prediction_seconds),
-        "unavailable_horizons": "fit-only median imputation; no future filling",
+        "unavailable_horizons": (
+            "target-policy-inactive features use explicit constant-zero fit and "
+            "runtime nonfinite imputation; no future filling"
+        ),
         "opening_boundary_features_used": False,
         "opening_boundary_exclusion_reason": (
             "historical opening-boundary facts lack a proven decision-time availability timestamp"
@@ -249,6 +290,11 @@ def fit_asymmetric_value_models(
         "oracle_feature_contract": list(EARLY_CAUSAL_ORACLE_FEATURES),
         "target_fit_cohort": {
             "contract": target_fit_contract,
+            "policy_inactive_feature_contract": (
+                _policy_inactive_feature_contract(
+                    target_fit_contract["maximum_entry_second"]
+                )
+            ),
         },
         "profiles": {},
     }
@@ -275,9 +321,16 @@ def fit_asymmetric_value_models(
         policy_frame = _window(scoring_source, config.policy.start, config.policy.end)
         if any(item.is_empty() for item in (fit_frame, calibration_frame, policy_frame)):
             raise RuntimeError(f"{name} fit, calibration, and policy frames must be non-empty")
-        features, feature_availability = _causal_feature_availability(
+        features, feature_availability, policy_inactive_features = (
+            _causal_feature_availability(
+                fit_frame,
+                feature_sets[name],
+                maximum_entry_second=target_fit_contract["maximum_entry_second"],
+            )
+        )
+        model_fit_frame = _impute_policy_inactive_features(
             fit_frame,
-            feature_sets[name],
+            policy_inactive_features,
         )
         if name in ORACLE_FEATURE_CANDIDATES and not set(
             EARLY_CAUSAL_ORACLE_FEATURES
@@ -310,7 +363,11 @@ def fit_asymmetric_value_models(
             feature_names=features,
             row_weight_policy=MARKET_EQUAL_ROW_WEIGHT_POLICY,
         )
-        fitted = fit_model(fit_frame, spec, parameters, core_config)
+        fitted = fit_model(model_fit_frame, spec, parameters, core_config)
+        policy_inactive_evidence[name] = _policy_inactive_model_evidence(
+            fitted,
+            policy_inactive_features,
+        )
         calibrators = fit_asymmetric_time_band_calibrators(
             fitted,
             calibration_frame,
@@ -363,6 +420,7 @@ def fit_asymmetric_value_models(
             "policy_rows": policy_frame.height,
             "policy_markets": policy_frame["market_id"].n_unique(),
             "feature_availability": feature_availability,
+            "policy_inactive_features": policy_inactive_evidence[name],
             "policy_probability_metrics": probability_metrics(
                 policy_frame,
                 policy_probability,
@@ -406,6 +464,9 @@ def fit_asymmetric_value_models(
             },
             "matched_control_key_checks": _matched_target_fit_key_checks(
                 target_fit_evidence
+            ),
+            "candidate_policy_inactive_feature_evidence": (
+                policy_inactive_evidence
             ),
         }
     )
@@ -711,7 +772,13 @@ def target_calibration_gate_checks(
 def _causal_feature_availability(
     fit_frame: pl.DataFrame,
     candidates: tuple[str, ...],
-) -> tuple[tuple[str, ...], dict[str, dict[str, Any]]]:
+    *,
+    maximum_entry_second: int,
+) -> tuple[
+    tuple[str, ...],
+    dict[str, dict[str, Any]],
+    tuple[str, ...],
+]:
     earliest = fit_frame.filter(pl.col("seconds_elapsed") == 1)
     if earliest.is_empty():
         raise RuntimeError("asymmetric-value fit evidence lacks second-1 rows")
@@ -735,6 +802,7 @@ def _causal_feature_availability(
             "second_1_imputed_fraction": float(1.0 - earliest_fraction),
             "fit_imputed_fraction": float(1.0 - fit_fraction),
             "retained": True,
+            "policy_inactive": False,
         }
         for feature, earliest_fraction, fit_fraction in zip(
             candidates,
@@ -743,17 +811,117 @@ def _causal_feature_availability(
             strict=True,
         )
     }
-    unavailable = [
+    unavailable = tuple(
         feature
         for feature in candidates
         if availability[feature]["fit_finite_fraction"] <= 0.0
-    ]
-    if unavailable:
+    )
+    unexpected_unavailable = tuple(
+        feature
+        for feature in unavailable
+        if feature not in TARGET_POLICY_INACTIVE_FEATURE_MATURITY
+        or TARGET_POLICY_INACTIVE_FEATURE_MATURITY[
+            feature
+        ].first_available_second
+        <= maximum_entry_second
+    )
+    if unexpected_unavailable:
         raise RuntimeError(
             "asymmetric-value features are nonfinite throughout fitting: "
-            + ", ".join(unavailable)
+            + ", ".join(unexpected_unavailable)
         )
-    return candidates, availability
+    for feature in unavailable:
+        maturity = TARGET_POLICY_INACTIVE_FEATURE_MATURITY[feature]
+        availability[feature].update(
+            {
+                "policy_inactive": True,
+                "first_available_second": maturity.first_available_second,
+                "maturity_dependencies": list(maturity.dependencies),
+                "imputation_strategy": POLICY_INACTIVE_IMPUTATION_STRATEGY,
+                "imputation_value": 0.0,
+            }
+        )
+    return candidates, availability, unavailable
+
+
+def _policy_inactive_feature_contract(
+    maximum_entry_second: int,
+) -> dict[str, Any]:
+    return {
+        "scope": "asymmetric_value_target_fit_and_runtime_target_rows",
+        "maximum_entry_second": maximum_entry_second,
+        "eligibility_rule": (
+            "first_available_second_strictly_greater_than_maximum_entry_second"
+        ),
+        "imputation_strategy": POLICY_INACTIVE_IMPUTATION_STRATEGY,
+        "imputation_value": 0.0,
+        "feature_maturity": {
+            feature: asdict(maturity)
+            for feature, maturity in TARGET_POLICY_INACTIVE_FEATURE_MATURITY.items()
+        },
+    }
+
+
+def _impute_policy_inactive_features(
+    fit_frame: pl.DataFrame,
+    features: tuple[str, ...],
+) -> pl.DataFrame:
+    if not features:
+        return fit_frame
+    missing = sorted(set(features) - set(fit_frame.columns))
+    if missing:
+        raise RuntimeError(
+            "policy-inactive target fit features are missing: " + ", ".join(missing)
+        )
+    matrix = fit_frame.select(pl.col(list(features)).cast(pl.Float64)).to_numpy()
+    unexpectedly_finite = tuple(
+        feature
+        for feature, values in zip(features, matrix.T, strict=True)
+        if np.isfinite(values).any()
+    )
+    if unexpectedly_finite:
+        raise RuntimeError(
+            "policy-inactive target fit features unexpectedly became finite: "
+            + ", ".join(unexpectedly_finite)
+        )
+    return fit_frame.with_columns(
+        *(pl.lit(0.0).cast(pl.Float64).alias(feature) for feature in features)
+    )
+
+
+def _policy_inactive_model_evidence(
+    fitted: FittedCoreModel,
+    features: tuple[str, ...],
+) -> dict[str, Any]:
+    missing = tuple(feature for feature in features if feature not in fitted.feature_names)
+    if missing:
+        raise RuntimeError(
+            "fitted model lost policy-inactive features: " + ", ".join(missing)
+        )
+    medians = {
+        feature: float(
+            fitted.imputation_medians[fitted.feature_names.index(feature)]
+        )
+        for feature in features
+    }
+    invalid = tuple(
+        feature
+        for feature, median in medians.items()
+        if not np.isfinite(median) or median != 0.0
+    )
+    if invalid:
+        raise RuntimeError(
+            "policy-inactive fitted medians must be zero: " + ", ".join(invalid)
+        )
+    return {
+        "features": list(features),
+        "feature_count": len(features),
+        "imputation_strategy": POLICY_INACTIVE_IMPUTATION_STRATEGY,
+        "imputation_value": 0.0,
+        "fit_values": "constant_zero",
+        "runtime_nonfinite_values": "stored_model_median",
+        "stored_model_medians": medians,
+    }
 
 
 def fit_asymmetric_time_band_calibrators(
