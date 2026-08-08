@@ -1457,6 +1457,7 @@ mod tests {
         at: DateTime<Utc>,
         max_reference_age: ChronoDuration,
         directional_feature_age: ChronoDuration,
+        max_directional_execution_age: ChronoDuration,
     ) -> OrderRequest {
         let mut request = request(dec!(2), dec!(0.40));
         let tick = BtcReferenceTickEvidence {
@@ -1507,7 +1508,7 @@ mod tests {
                 "ingest_sequence": 409,
             },
             "max_reference_age_ms": max_reference_age.num_milliseconds(),
-            "max_directional_feature_age_ms": 5_000,
+            "max_directional_feature_age_ms": max_directional_execution_age.num_milliseconds(),
             "evidence_sha256": "",
         }))
         .unwrap();
@@ -1586,6 +1587,7 @@ mod tests {
                 Utc::now(),
                 max_reference_age,
                 ChronoDuration::milliseconds(2_900),
+                ChronoDuration::seconds(5),
             ))
             .await
             .unwrap();
@@ -1614,6 +1616,69 @@ mod tests {
             order.request.metadata["reference_execution_submit"]["assessment"]
                 .get("directional_model_feature_age_ms")
                 .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn directional_execution_arrival_bound_accepts_latency_without_weakening_rejection() {
+        let max_reference_age = ChronoDuration::seconds(2);
+        let max_directional_execution_age = ChronoDuration::milliseconds(1_250);
+        let accepted_venue = guarded_venue(
+            registry_with_book(
+                Utc::now(),
+                vec![OrderbookLevel {
+                    price: dec!(0.40),
+                    size: dec!(10),
+                }],
+            ),
+            Duration::from_millis(150),
+            max_reference_age,
+            Some(max_directional_execution_age),
+        );
+        let accepted = accepted_venue
+            .submit_order(directional_model_guarded_request(
+                Utc::now(),
+                max_reference_age,
+                ChronoDuration::milliseconds(900),
+                max_directional_execution_age,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(accepted.state, OrderState::Filled);
+        assert_eq!(
+            accepted.request.metadata["reference_execution_arrival"]["status"],
+            "accepted"
+        );
+
+        let rejected_venue = guarded_venue(
+            registry_with_book(
+                Utc::now(),
+                vec![OrderbookLevel {
+                    price: dec!(0.40),
+                    size: dec!(10),
+                }],
+            ),
+            Duration::from_millis(150),
+            max_reference_age,
+            Some(max_directional_execution_age),
+        );
+        let rejected = rejected_venue
+            .submit_order(directional_model_guarded_request(
+                Utc::now(),
+                max_reference_age,
+                ChronoDuration::milliseconds(1_150),
+                max_directional_execution_age,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(rejected.state, OrderState::Rejected);
+        assert_eq!(
+            rejected.request.metadata["reject_reason"],
+            "stale_reference_execution_evidence"
+        );
+        assert_eq!(
+            rejected.request.metadata["reference_execution_arrival"]["status"],
+            "rejected"
         );
     }
 

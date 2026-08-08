@@ -323,6 +323,10 @@ fn resolve_btc_strategy(
         serde_json::Value::Null,
     );
     strategy_object.insert(
+        "max_directional_execution_age_ms".to_string(),
+        serde_json::Value::Null,
+    );
+    strategy_object.insert(
         "required_model_feeds".to_string(),
         serde_json::Value::Array(Vec::new()),
     );
@@ -1050,8 +1054,8 @@ impl BtcProcessManager {
         paper_venue_config: PaperVenueConfig,
         strategy: &BtcStrategyConfig,
     ) -> Result<BtcExecutionComponents> {
-        let max_directional_feature_age = strategy
-            .effective_max_directional_feature_age_ms()?
+        let max_directional_execution_age = strategy
+            .effective_max_directional_execution_age_ms()?
             .map(chrono::Duration::milliseconds);
         match execution_mode {
             BtcExecutionMode::Paper => {
@@ -1061,7 +1065,7 @@ impl BtcProcessManager {
                     strategy.max_depth_participation,
                     process_id,
                     chrono::Duration::milliseconds(strategy.max_reference_age_ms),
-                    max_directional_feature_age,
+                    max_directional_execution_age,
                 )?);
                 let venue: Arc<dyn ExecutionVenue> = paper_venue.clone();
                 let lifecycle: Arc<dyn BtcExecutionLifecycle> =
@@ -1087,7 +1091,7 @@ impl BtcProcessManager {
                     books,
                     process_id,
                     chrono::Duration::milliseconds(strategy.max_reference_age_ms),
-                    max_directional_feature_age,
+                    max_directional_execution_age,
                     chrono::Duration::milliseconds(strategy.max_book_age_ms),
                     strategy.max_depth_participation,
                 )?);
@@ -4193,6 +4197,7 @@ mod lifecycle_tests {
                 "min_seconds_after_open": 1,
                 "min_seconds_before_close": 244,
                 "max_directional_feature_age_ms": 1000,
+                "max_directional_execution_age_ms": 1250,
                 "min_entry_price": "0.20",
                 "max_entry_price": "0.30",
                 "spread_reserve_fraction": "0",
@@ -4215,6 +4220,14 @@ mod lifecycle_tests {
             Some(BtcDecisionStrategyConfig::BtcAsymmetricValueModel { .. })
         ));
         assert_eq!(strategy.required_model_feeds.len(), 2);
+        assert_eq!(strategy.max_directional_feature_age_ms, Some(1_000));
+        assert_eq!(strategy.max_directional_execution_age_ms, Some(1_250));
+        assert_eq!(
+            strategy
+                .effective_max_directional_execution_age_ms()
+                .unwrap(),
+            Some(1_250)
+        );
     }
 
     #[test]

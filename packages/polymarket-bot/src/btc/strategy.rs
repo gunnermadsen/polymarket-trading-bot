@@ -70,6 +70,7 @@ pub const BTC_MARKET_ANCHORED_DIRECTIONAL_PREDICTION_STRATEGY_FAMILY: &str =
 pub const BTC_DIRECTIONAL_MODEL_STRATEGY_FAMILY: &str = BTC_DIRECTIONAL_MODEL_FAMILY;
 pub const BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_VERSION: &str = "btc_5m_asymmetric_value_model_v1";
 pub const BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_FAMILY: &str = "btc_5m_asymmetric_value_model";
+const BTC_MAX_DIRECTIONAL_EXECUTION_ARRIVAL_ALLOWANCE_MS: i64 = 1_000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -186,6 +187,8 @@ pub struct BtcStrategyConfig {
     pub max_reference_age_ms: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_directional_feature_age_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_directional_execution_age_ms: Option<i64>,
     pub max_chainlink_open_delay_ms: i64,
     pub max_book_age_ms: i64,
     pub max_source_skew_ms: i64,
@@ -226,6 +229,7 @@ impl Default for BtcStrategyConfig {
             min_seconds_before_close: 20,
             max_reference_age_ms: 2_000,
             max_directional_feature_age_ms: None,
+            max_directional_execution_age_ms: None,
             max_chainlink_open_delay_ms: 5_000,
             max_book_age_ms: 2_000,
             max_source_skew_ms: 1_000,
@@ -292,6 +296,26 @@ impl BtcStrategyConfig {
             "BTC directional feature age bound must be positive and no greater than model cadence"
         );
         Ok(Some(max_age))
+    }
+
+    pub fn effective_max_directional_execution_age_ms(&self) -> anyhow::Result<Option<i64>> {
+        let Some(max_feature_age) = self.effective_max_directional_feature_age_ms()? else {
+            anyhow::ensure!(
+                self.max_directional_execution_age_ms.is_none(),
+                "non-model strategy cannot configure a directional execution age bound"
+            );
+            return Ok(None);
+        };
+        let max_execution_age = self
+            .max_directional_execution_age_ms
+            .unwrap_or(max_feature_age);
+        anyhow::ensure!(
+            max_execution_age >= max_feature_age
+                && max_execution_age
+                    <= max_feature_age + BTC_MAX_DIRECTIONAL_EXECUTION_ARRIVAL_ALLOWANCE_MS,
+            "BTC directional execution age bound must include the feature bound and no more than one second of arrival allowance"
+        );
+        Ok(Some(max_execution_age))
     }
 
     pub fn attribution(&self) -> Option<BtcStrategyAttribution<'_>> {
@@ -2108,6 +2132,10 @@ fn validate_config(config: &BtcStrategyConfig) -> Result<(), BtcRejectReason> {
         && config
             .max_directional_feature_age_ms
             .is_none_or(|max_age| max_age > 0)
+        && config
+            .max_directional_execution_age_ms
+            .is_none_or(|max_age| max_age > 0)
+        && config.effective_max_directional_execution_age_ms().is_ok()
         && config.max_chainlink_open_delay_ms > 0
         && config.max_book_age_ms > 0
         && config.max_source_skew_ms >= 0
@@ -3472,6 +3500,24 @@ mod tests {
             DeterministicBtcStrategy::evaluate(&config, &snapshot).reject_reason,
             Some(BtcRejectReason::StaleDirectionalFeatures)
         );
+    }
+
+    #[test]
+    fn directional_execution_freshness_allows_only_bounded_arrival_time() {
+        let mut config = directional_model_config();
+        config.max_directional_feature_age_ms = Some(3_000);
+        config.max_directional_execution_age_ms = Some(3_250);
+        config.validate().unwrap();
+        assert_eq!(
+            config.effective_max_directional_execution_age_ms().unwrap(),
+            Some(3_250)
+        );
+
+        config.max_directional_execution_age_ms = Some(2_999);
+        assert!(config.validate().is_err());
+
+        config.max_directional_execution_age_ms = Some(4_001);
+        assert!(config.validate().is_err());
     }
 
     fn decision_sha256(decision: &BtcDecision) -> String {

@@ -829,6 +829,7 @@ pub struct BtcProcessRunner {
     book_registry: Arc<tokio::sync::RwLock<BookRegistry>>,
     config: BtcProcessConfig,
     max_directional_feature_age_ms: Option<i64>,
+    max_directional_execution_age_ms: Option<i64>,
     initialized: OnceCell<()>,
     loss_regime_admission: Mutex<Option<LossRegimeAdmissionRuntime>>,
     shadow_predictive_regime_admission:
@@ -897,6 +898,9 @@ impl BtcProcessRunner {
         config.strategy.validate()?;
         let max_directional_feature_age_ms =
             config.strategy.effective_max_directional_feature_age_ms()?;
+        let max_directional_execution_age_ms = config
+            .strategy
+            .effective_max_directional_execution_age_ms()?;
         if config.strategy.attribution().is_none() {
             anyhow::bail!("BTC execution run strategy attribution is invalid");
         }
@@ -958,6 +962,7 @@ impl BtcProcessRunner {
             high_water_mark_entry_submission: Mutex::new(()),
             config,
             max_directional_feature_age_ms,
+            max_directional_execution_age_ms,
             initialized: OnceCell::new(),
             execution_reconcile_started_at: Mutex::new(None),
             directional_model_runtime: StdMutex::new(DirectionalModelProcessRuntime::default()),
@@ -2079,7 +2084,7 @@ impl BtcProcessRunner {
             fee_rate,
             BtcExecutionFreshnessBounds {
                 max_reference_age_ms: self.config.strategy.max_reference_age_ms,
-                max_directional_feature_age_ms: self.max_directional_feature_age_ms,
+                max_directional_feature_age_ms: self.max_directional_execution_age_ms,
             },
         )?;
         reference_execution_guard.insert_into_metadata(&mut request.metadata)?;
