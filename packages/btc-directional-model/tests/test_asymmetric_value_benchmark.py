@@ -17,13 +17,16 @@ from btc_directional_model.asymmetric_value_benchmark import (
     _calibration_report_summary,
     _candidate_frames,
     _candidate_grid_summary,
+    _common_incumbent_frequency_evidence,
     _configured_windows,
     _development_markdown_report,
     _evaluation_economics_table,
+    _fit_models_after_training_readiness,
     _frame_content_digest,
     _join_oracle_l2_candidate_features,
     _matched_control_noninferiority_checks,
     _matched_feature_attribution,
+    _matched_policy_probability_quality,
     _selected_matched_control,
     _validate_external_core_keys,
 )
@@ -32,6 +35,7 @@ from btc_directional_model.asymmetric_value_config import (
     load_asymmetric_value_config,
 )
 from btc_directional_model.asymmetric_value_data import EARLY_CAUSAL_ORACLE_FEATURES
+from btc_directional_model.asymmetric_value_evaluation import score_two_sided_value
 from btc_directional_model.asymmetric_value_training import (
     ASYMMETRIC_VALUE_CANDIDATES,
     CANDLE_MATCHED_CORE_PRICE_CONTROL,
@@ -323,7 +327,7 @@ def test_evaluation_economics_table_includes_every_predeclared_model() -> None:
     assert all(row["strict_market_coverage"] == 0.8 for row in table)
 
 
-def test_sparse_enriched_arm_must_beat_its_same_key_control() -> None:
+def test_sparse_enriched_arm_remains_structurally_eligible_but_unqualified() -> None:
     config = load_asymmetric_value_config(
         Path(__file__).parents[1]
         / "configs/btc-5m-directional-asymmetric-value-one-second-20260414-20260802.toml"
@@ -361,12 +365,197 @@ def test_sparse_enriched_arm_must_beat_its_same_key_control() -> None:
         config,
     )
 
-    assert CORE_L2_PRICE not in eligible
+    assert CORE_L2_PRICE in eligible
     assert CORE_PRICE in eligible
     assert PRICE_LOGISTIC not in eligible
     assert CORE_CANDLES_PRICE not in eligible
     assert CORE_ORACLE_L2_PRICE not in eligible
     assert not all(check["passed"] for check in checks[CORE_L2_PRICE])
+
+
+def test_target_readiness_is_sealed_before_any_model_fit(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import btc_directional_model.asymmetric_value_benchmark as benchmark
+
+    config = replace(
+        load_asymmetric_value_config(
+            Path(__file__).parents[1]
+            / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+        ),
+        feature_cache=tmp_path,
+    )
+    events: list[str] = []
+
+    def readiness(*_args, **_kwargs):
+        events.append("readiness")
+        return tmp_path / "readiness.json", {"ready": True}
+
+    def fit(*_args, **_kwargs):
+        events.append("fit")
+        return {}, {"profiles": {}}
+
+    monkeypatch.setattr(benchmark, "prepare_asymmetric_training_readiness", readiness)
+    monkeypatch.setattr(benchmark, "fit_asymmetric_value_models", fit)
+
+    _, _, readiness_path, readiness_payload = _fit_models_after_training_readiness(
+        {},
+        config,
+        object(),
+    )
+
+    assert events == ["readiness", "fit"]
+    assert readiness_path == tmp_path / "readiness.json"
+    assert readiness_payload == {"ready": True}
+
+
+def test_readiness_failure_prevents_model_fit(monkeypatch, tmp_path: Path) -> None:
+    import btc_directional_model.asymmetric_value_benchmark as benchmark
+
+    config = replace(
+        load_asymmetric_value_config(
+            Path(__file__).parents[1]
+            / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+        ),
+        feature_cache=tmp_path,
+    )
+    fit_called = False
+
+    def fail_readiness(*_args, **_kwargs):
+        raise RuntimeError("not ready")
+
+    def fit(*_args, **_kwargs):
+        nonlocal fit_called
+        fit_called = True
+        return {}, {}
+
+    monkeypatch.setattr(
+        benchmark,
+        "prepare_asymmetric_training_readiness",
+        fail_readiness,
+    )
+    monkeypatch.setattr(benchmark, "fit_asymmetric_value_models", fit)
+
+    with pytest.raises(RuntimeError, match="not ready"):
+        _fit_models_after_training_readiness({}, config, object())
+    assert fit_called is False
+
+
+def _frequency_prediction(market_id: str, model: str) -> pl.DataFrame:
+    start = datetime(2026, 7, 23, tzinfo=UTC)
+    return pl.DataFrame(
+        {
+            "market_id": [market_id],
+            "window_start": [start],
+            "observed_at": [start + timedelta(seconds=5)],
+            "seconds_elapsed": [5],
+            "label_up": [1],
+            "model": [model],
+            "probability_yes": [0.40],
+            "yes_ask_vwap_5": [0.25],
+            "no_ask_vwap_5": [0.75],
+            "yes_ask_depth": [20.0],
+            "no_ask_depth": [20.0],
+            "yes_execution_cost_per_share": [0.25],
+            "no_execution_cost_per_share": [0.75],
+            "yes_cost_per_share": [0.27],
+            "no_cost_per_share": [0.77],
+        }
+    )
+
+
+def test_incumbent_frequency_uses_only_the_exact_common_market_cohort() -> None:
+    config = load_asymmetric_value_config(
+        Path(__file__).parents[1]
+        / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+    )
+    policy = next(item for item in config.policies if item.selection_eligible)
+    scored = score_two_sided_value(
+        pl.concat(
+            (
+                _frequency_prediction("common-a", CORE_PRICE),
+                _frequency_prediction("candidate-only", CORE_PRICE),
+            )
+        )
+    )
+    incumbent_markets = pl.DataFrame(
+        {"market_id": ["common-a", "incumbent-only"]}
+    )
+
+    checks, ledgers = _common_incumbent_frequency_evidence(
+        scored,
+        incumbent_markets,
+        policy,
+        incumbent_rate=0.50,
+        config=config,
+        candidate_models=(CORE_PRICE,),
+    )
+
+    assert ledgers[CORE_PRICE]["market_id"].to_list() == ["common-a"]
+    assert checks[CORE_PRICE]["eligible_resolved_markets"] == 2
+    assert checks[CORE_PRICE]["candidate_source_rows_on_common_cohort"] == 1
+    assert checks[CORE_PRICE][
+        "candidate_trades_per_eligible_resolved_market"
+    ] == pytest.approx(0.50)
+    assert checks[CORE_PRICE]["common_cohort_metrics"]["trades"] == 1
+
+
+def test_probability_quality_hard_gates_only_deployable_added_sources() -> None:
+    config = replace(
+        load_asymmetric_value_config(
+            Path(__file__).parents[1]
+            / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+        ),
+        bootstrap_resamples=20,
+    )
+    start = datetime(2026, 7, 23, tzinfo=UTC)
+    labels = [1, 0, 1, 0]
+    models = (
+        CORE_ORACLE_PRICE,
+        ORACLE_MATCHED_CORE_PRICE_CONTROL,
+        CORE_L2_PRICE,
+        L2_MATCHED_CORE_PRICE_CONTROL,
+        CORE_ORACLE_L2_PRICE,
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+        SIDE_CONDITIONED_RESIDUAL_MODEL,
+    )
+    frames = []
+    for model in models:
+        windows = [start + timedelta(days=index) for index in range(4)]
+        seconds = [5, 10, 15, 20]
+        frames.append(
+            pl.DataFrame(
+                {
+                    "market_id": [f"m-{index}" for index in range(4)],
+                    "window_start": windows,
+                    "observed_at": [
+                        window + timedelta(seconds=second)
+                        for window, second in zip(windows, seconds, strict=True)
+                    ],
+                    "seconds_elapsed": seconds,
+                    "label_up": labels,
+                    "model": [model] * 4,
+                    "probability_yes": [0.70, 0.30, 0.70, 0.30],
+                    "yes_ask_vwap_5": [0.25] * 4,
+                    "no_ask_vwap_5": [0.75] * 4,
+                }
+            )
+        )
+
+    evidence = _matched_policy_probability_quality(
+        pl.concat(frames, how="vertical_relaxed"),
+        config,
+    )
+
+    for model in (CORE_ORACLE_PRICE, CORE_L2_PRICE):
+        assert evidence[model]["hard_gate"] is True
+        assert len(evidence[model]["checks"]) == 2
+        assert evidence[model]["scope"] == "by55_any_side_raw20_30c"
+    for model in (CORE_ORACLE_L2_PRICE, SIDE_CONDITIONED_RESIDUAL_MODEL):
+        assert evidence[model]["hard_gate"] is False
+        assert evidence[model]["checks"] == []
+        assert len(evidence[model]["diagnostic_checks"]) == 4
 
 
 def test_candidate_grid_materializes_missing_prediction_seconds() -> None:

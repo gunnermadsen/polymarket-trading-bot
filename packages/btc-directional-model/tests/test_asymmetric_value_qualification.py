@@ -19,6 +19,7 @@ from btc_directional_model.asymmetric_value_evaluation import (
     score_two_sided_value,
     selected_win_rate_advantage_gate_checks,
     temporal_confirmation_ablation,
+    vwap10_capacity_policy_ledger,
 )
 
 
@@ -73,15 +74,18 @@ def _prediction(
             "probability_yes": [probability_yes],
             "yes_best_ask": [yes_price],
             "yes_ask_vwap_5": [yes_price],
+            "yes_ask_vwap_10": [yes_price + 0.01],
             "yes_ask_depth": [depth],
             "no_best_ask": [no_price],
             "no_ask_vwap_5": [no_price],
+            "no_ask_vwap_10": [no_price + 0.01],
             "no_ask_depth": [depth],
             "yes_execution_cost_per_share": [yes_price],
             "no_execution_cost_per_share": [no_price],
             "yes_cost_per_share": [yes_cost],
             "no_cost_per_share": [no_cost],
             "fee_rate": [0.0],
+            "strict_both_side_eligible_10": [True],
         }
     )
 
@@ -182,6 +186,9 @@ def test_rejection_funnel_counts_side_overlap_as_one_aggregate_market() -> None:
         _prediction("both", 2, side="BOTH"),
         _prediction("shallow", 1, side="YES", depth=10.0),
         _prediction("shallow", 2, side="YES", depth=10.0),
+        _prediction("all-in-too-high", 1, side="YES").with_columns(
+            pl.lit(0.36).alias("yes_cost_per_share")
+        ),
     )
 
     funnel = rejection_funnel(
@@ -193,15 +200,124 @@ def test_rejection_funnel_counts_side_overlap_as_one_aggregate_market() -> None:
     stages = {stage["stage"]: stage for stage in funnel["stages"]}
 
     assert funnel["fresh_strict_execution_input"] is True
-    assert stages["source_candidate_rows"]["aggregate_rows"] == 4
-    assert stages["source_candidate_rows"]["yes_rows"] == 4
-    assert stages["source_candidate_rows"]["no_rows"] == 4
-    assert stages["time_raw_price"]["aggregate_markets"] == 2
+    assert stages["source_candidate_rows"]["aggregate_rows"] == 5
+    assert stages["source_candidate_rows"]["yes_rows"] == 5
+    assert stages["source_candidate_rows"]["no_rows"] == 5
+    assert stages["entry_time"]["aggregate_markets"] == 3
+    assert stages["raw_price_band"]["aggregate_markets"] == 3
+    assert stages["all_in_cost"]["aggregate_markets"] == 2
     assert stages["depth"]["aggregate_markets"] == 1
     assert stages["temporal_confirmation"]["yes_markets"] == 1
     assert stages["temporal_confirmation"]["no_markets"] == 1
     assert stages["temporal_confirmation"]["aggregate_markets"] == 1
     assert stages["selected_one_trade_per_market"]["aggregate_rows"] == 1
+
+
+def test_vwap10_reprices_the_same_selected_side_and_timestamp() -> None:
+    scored = _scored(
+        _prediction("same-market", 1, side="YES", depth=40.0),
+        _prediction("same-market", 2, side="NO", depth=100.0),
+    )
+    selected = policy_ledger(
+        scored,
+        _policy(),
+        quantity=5.0,
+        maximum_depth_participation=0.25,
+    )
+
+    capacity, diagnostics = vwap10_capacity_policy_ledger(
+        selected,
+        _policy(),
+        execution_reserve_per_share=0.01,
+        quantity=10.0,
+        maximum_depth_participation=0.25,
+    )
+
+    assert selected["seconds_elapsed"].item() == 1
+    assert selected["selected_yes"].item() is True
+    assert capacity["seconds_elapsed"].item() == 1
+    assert capacity["selected_yes"].item() is True
+    assert capacity["selected_share_price"].item() == pytest.approx(0.26)
+    assert capacity["quantity"].item() == pytest.approx(10.0)
+    assert diagnostics["side_or_timestamp_reselected"] is False
+    assert diagnostics["capacity_executable_coverage"] == pytest.approx(1.0)
+
+
+def test_vwap10_capacity_reports_unexecutable_selected_decisions() -> None:
+    selected = policy_ledger(
+        _scored(_prediction("shallow", 1, side="YES", depth=20.0)),
+        _policy(),
+        quantity=5.0,
+        maximum_depth_participation=0.25,
+    )
+
+    capacity, diagnostics = vwap10_capacity_policy_ledger(
+        selected,
+        _policy(),
+        execution_reserve_per_share=0.01,
+        quantity=10.0,
+        maximum_depth_participation=0.25,
+    )
+
+    assert capacity.is_empty()
+    assert diagnostics["selected_five_share_trades"] == 1
+    assert diagnostics["exact_selected_side_vwap10"] == 1
+    assert diagnostics["ten_share_depth_eligible"] == 0
+    assert diagnostics["capacity_executable_coverage"] == 0.0
+
+
+def test_vwap10_capacity_fails_closed_on_nonmonotonic_book_evidence() -> None:
+    selected = policy_ledger(
+        _scored(
+            _prediction("bad-book", 1, side="YES", depth=40.0).with_columns(
+                pl.lit(0.24).alias("yes_ask_vwap_10")
+            )
+        ),
+        _policy(),
+        quantity=5.0,
+        maximum_depth_participation=0.25,
+    )
+
+    with pytest.raises(ValueError, match="VWAP10 is below VWAP5"):
+        vwap10_capacity_policy_ledger(
+            selected,
+            _policy(),
+            execution_reserve_per_share=0.01,
+            quantity=10.0,
+            maximum_depth_participation=0.25,
+        )
+
+
+@pytest.mark.parametrize("missing_exact_price", [False, True])
+def test_vwap10_capacity_excludes_missing_or_ineligible_exact_books(
+    missing_exact_price: bool,
+) -> None:
+    prediction = _prediction("unavailable", 1, side="YES", depth=40.0)
+    if missing_exact_price:
+        prediction = prediction.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("yes_ask_vwap_10")
+        )
+    else:
+        prediction = prediction.with_columns(
+            pl.lit(False).alias("strict_both_side_eligible_10")
+        )
+    selected = policy_ledger(
+        _scored(prediction),
+        _policy(),
+        quantity=5.0,
+        maximum_depth_participation=0.25,
+    )
+
+    capacity, diagnostics = vwap10_capacity_policy_ledger(
+        selected,
+        _policy(),
+        execution_reserve_per_share=0.01,
+        quantity=10.0,
+        maximum_depth_participation=0.25,
+    )
+
+    assert capacity.is_empty()
+    assert diagnostics["capacity_executable_trades"] == 0
 
 
 def test_frequency_floor_requires_eighty_percent_of_supplied_incumbent() -> None:

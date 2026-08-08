@@ -50,7 +50,7 @@ from .spot_l2_chainlink_extract import (
     L2_SOURCE_SCHEMA_VERSION,
 )
 
-READINESS_SCHEMA_VERSION = "btc-asymmetric-training-readiness-v3"
+READINESS_SCHEMA_VERSION = "btc-asymmetric-training-readiness-v4"
 READINESS_RANGE_START = datetime(2026, 4, 14, tzinfo=UTC)
 READINESS_RANGE_END = datetime(2026, 8, 2, tzinfo=UTC)
 EXPECTED_DAILY_MARKETS = 288
@@ -525,7 +525,10 @@ def _validate_core_oracle_source(
         "source_contract": core_config.data.source_contract,
         "core_source_schema_version": core_source_schema_version(core_config.data.source_contract),
         "oracle_source_contract": CORE_ORACLE_SOURCE_CONTRACT,
-        "oracle_source_schema_version": CORE_ORACLE_ROUND_SCHEMA_VERSION,
+        "oracle_source_schema_version": CORE_ORACLE_SOURCE_SCHEMA_VERSION,
+        "oracle_round_partition_schema_version": (
+            CORE_ORACLE_ROUND_SCHEMA_VERSION
+        ),
         "source_directory": str(core_config.paths.source_data.resolve()),
         "oracle_source_directory": str(config.oracle_source.resolve()),
         "source_scopes": list(scopes),
@@ -802,12 +805,23 @@ def _validate_price_manifests(config: AsymmetricValueConfig) -> dict[str, Any]:
             child_manifests[cadence] = file_sha256(execution_config.output_dir / "manifest.json")
         output[scope] = {
             "days": len(dates),
-            "manifest_sha256": file_sha256(path),
+            "manifest_identity_sha256": _price_manifest_identity_sha256(
+                manifest
+            ),
+            "manifest_identity_excludes": ["created_at"],
             "child_manifest_sha256": child_manifests,
             "retained_rows": manifest["coverage_totals"]["retained_rows"],
             "strict_rows": manifest["coverage_totals"]["strict_rows"],
         }
     return output
+
+
+def _price_manifest_identity_sha256(manifest: dict[str, Any]) -> str:
+    stable = {
+        key: value for key, value in manifest.items() if key != "created_at"
+    }
+    canonical = json.dumps(stable, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def _oracle_cache_windows(
