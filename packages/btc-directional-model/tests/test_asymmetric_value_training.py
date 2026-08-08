@@ -167,18 +167,18 @@ def test_exact_model_matrix_and_attribution_control_contract() -> None:
         CORE_CANDLES_PRICE,
         CORE_ORACLE_L2_PRICE,
     )
-    assert {
-        name: len(feature_sets[name]) for name in ASYMMETRIC_VALUE_MODEL_MATRIX
-    } == EXPECTED_MODEL_FEATURE_COUNTS == {
-        CORE_PRICE: 71,
-        CORE_ORACLE_PRICE: 75,
-        CORE_L2_PRICE: 111,
-        CORE_CANDLES_PRICE: 79,
-        CORE_ORACLE_L2_PRICE: 115,
-    }
-    assert MODEL_SELECTION_ELIGIBLE == frozenset(
-        {CORE_PRICE, CORE_ORACLE_PRICE, CORE_L2_PRICE}
+    assert (
+        {name: len(feature_sets[name]) for name in ASYMMETRIC_VALUE_MODEL_MATRIX}
+        == EXPECTED_MODEL_FEATURE_COUNTS
+        == {
+            CORE_PRICE: 71,
+            CORE_ORACLE_PRICE: 75,
+            CORE_L2_PRICE: 111,
+            CORE_CANDLES_PRICE: 79,
+            CORE_ORACLE_L2_PRICE: 115,
+        }
     )
+    assert MODEL_SELECTION_ELIGIBLE == frozenset({CORE_PRICE, CORE_ORACLE_PRICE, CORE_L2_PRICE})
     assert CORE_ORACLE_L2_PRICE in OFFLINE_ONLY_CANDIDATES
     assert CORE_ORACLE_L2_PRICE not in MODEL_SELECTION_ELIGIBLE
     assert set(POLYMARKET_VALUE_FEATURES).issubset(feature_sets[CORE_PRICE])
@@ -194,9 +194,7 @@ def test_exact_model_matrix_and_attribution_control_contract() -> None:
         expected_sources = 2 if name == CORE_ORACLE_L2_PRICE else 1
         assert optional_sources <= expected_sources
     assert set(L2_FEATURES).issubset(feature_sets[CORE_ORACLE_L2_PRICE])
-    assert set(EARLY_CAUSAL_ORACLE_FEATURES).issubset(
-        feature_sets[CORE_ORACLE_L2_PRICE]
-    )
+    assert set(EARLY_CAUSAL_ORACLE_FEATURES).issubset(feature_sets[CORE_ORACLE_L2_PRICE])
 
 
 def test_hybrid_objective_matrix_is_exact_and_narrow() -> None:
@@ -228,8 +226,7 @@ def test_hybrid_objective_matrix_is_exact_and_narrow() -> None:
     }
     assert len(HYBRID_OBJECTIVE_CANDIDATES) == 10
     assert not any(
-        np.isclose(candidate.target_weight, 0.75)
-        for candidate in HYBRID_OBJECTIVE_CANDIDATES
+        np.isclose(candidate.target_weight, 0.75) for candidate in HYBRID_OBJECTIVE_CANDIDATES
     )
 
 
@@ -243,9 +240,7 @@ def test_hybrid_target_mask_preserves_exact_time_and_price_boundaries() -> None:
             "no_ask_vwap_5": [0.80, 0.70, 0.75, 0.80, 0.70, 0.25],
             "market_id": [f"m{index}" for index in range(6)],
             "window_start": [start] * 6,
-            "observed_at": [
-                start + timedelta(seconds=index + 1) for index in range(6)
-            ],
+            "observed_at": [start + timedelta(seconds=index + 1) for index in range(6)],
             "label_up": [0, 1, 0, 1, 0, 1],
         }
     )
@@ -296,9 +291,7 @@ def test_hybrid_fit_keeps_policy_inactive_runtime_median_neutral() -> None:
     frame = pl.DataFrame(
         {
             "market_id": [f"m{index // 2}" for index in range(rows)],
-            "window_start": [
-                start + timedelta(minutes=5 * (index // 2)) for index in range(rows)
-            ],
+            "window_start": [start + timedelta(minutes=5 * (index // 2)) for index in range(rows)],
             "observed_at": [
                 start
                 + timedelta(
@@ -315,11 +308,7 @@ def test_hybrid_fit_keeps_policy_inactive_runtime_median_neutral() -> None:
             "btc_return_60s_bps": np.where(seconds == 1, np.nan, 4.0),
         }
     )
-    candidate = next(
-        item
-        for item in HYBRID_OBJECTIVE_CANDIDATES
-        if item.name == "broad_current"
-    )
+    candidate = next(item for item in HYBRID_OBJECTIVE_CANDIDATES if item.name == "broad_current")
 
     model, evidence = fit_hybrid_histogram_model(
         frame,
@@ -330,12 +319,8 @@ def test_hybrid_fit_keeps_policy_inactive_runtime_median_neutral() -> None:
     )
 
     assert model.imputation_medians.tolist()[1] == 0.0
-    assert evidence["policy_inactive_feature_medians"] == {
-        "btc_return_60s_bps": 0.0
-    }
-    probability = model.raw_probability(
-        frame.filter(pl.col("seconds_elapsed") == 1)
-    )
+    assert evidence["policy_inactive_feature_medians"] == {"btc_return_60s_bps": 0.0}
+    probability = model.raw_probability(frame.filter(pl.col("seconds_elapsed") == 1))
     assert np.isfinite(probability).all()
 
 
@@ -343,12 +328,8 @@ def test_early_oracle_contract_excludes_unproven_boundary_features() -> None:
     feature_sets = asymmetric_value_feature_sets()
 
     assert "oracle_gap_to_opening_boundary_bps" not in EARLY_CAUSAL_ORACLE_FEATURES
-    assert "oracle_boundary_binance_path_agreement" not in (
-        EARLY_CAUSAL_ORACLE_FEATURES
-    )
-    assert set(EARLY_CAUSAL_ORACLE_FEATURES).issubset(
-        feature_sets[CORE_ORACLE_PRICE]
-    )
+    assert "oracle_boundary_binance_path_agreement" not in (EARLY_CAUSAL_ORACLE_FEATURES)
+    assert set(EARLY_CAUSAL_ORACLE_FEATURES).issubset(feature_sets[CORE_ORACLE_PRICE])
 
 
 def test_oracle_ablation_has_a_same_cohort_core_price_control() -> None:
@@ -372,9 +353,7 @@ def test_l2_ablation_has_a_same_cohort_core_price_control() -> None:
 
 
 def test_raw_price_band_boundaries_are_left_closed() -> None:
-    observed = _price_band_indices(
-        np.asarray([0.199999, 0.20, 0.299999, 0.30, 1.0])
-    )
+    observed = _price_band_indices(np.asarray([0.199999, 0.20, 0.299999, 0.30, 1.0]))
 
     assert observed.tolist() == [1, 2, 2, 3, 9]
 
@@ -413,9 +392,7 @@ def test_target_fit_cohort_uses_exact_time_and_half_open_either_side_boundaries(
         "accept_yes_min",
         "accept_no_below_max",
     }
-    assert _target_fit_key_digest(selected) == _target_fit_key_digest(
-        selected.reverse()
-    )
+    assert _target_fit_key_digest(selected) == _target_fit_key_digest(selected.reverse())
     assert target_fit_cohort_contract(config) == {
         "policy": "raw20_30_by55_edge_3c",
         "fit_window_start": "2026-04-14T00:00:00+00:00",
@@ -497,9 +474,12 @@ def test_target_policy_inactive_feature_allowlist_is_exact_and_maturity_bound() 
     }
 
     assert set(asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY) == expected
-    assert asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY[
-        "btc_path_efficiency_60s"
-    ].dependencies[0] == "btc_return_60s_bps"
+    assert (
+        asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY[
+            "btc_path_efficiency_60s"
+        ].dependencies[0]
+        == "btc_return_60s_bps"
+    )
     assert "btc_return_60s_bps" in (
         asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY[
             "btc_momentum_multihorizon_score"
@@ -525,9 +505,7 @@ def test_target_policy_inactive_maturity_matches_derived_core_features() -> None
             "label_up": [1] * len(seconds),
             "opening_boundary": [100_000.0] * len(seconds),
             "final_price": [100_100.0] * len(seconds),
-            "observed_at": [
-                start + timedelta(seconds=second) for second in seconds
-            ],
+            "observed_at": [start + timedelta(seconds=second) for second in seconds],
             "seconds_elapsed": seconds,
             "btc_open": [close - 0.1 for close in closes],
             "btc_high": [close + 0.5 for close in closes],
@@ -537,18 +515,14 @@ def test_target_policy_inactive_maturity_matches_derived_core_features() -> None
             "btc_quote_volume": [10_000.0 + second for second in seconds],
             "trade_count": [10] * len(seconds),
             "btc_taker_buy_base_volume": [0.5] * len(seconds),
-            "btc_taker_buy_quote_volume": [
-                5_000.0 + second / 2 for second in seconds
-            ],
+            "btc_taker_buy_quote_volume": [5_000.0 + second / 2 for second in seconds],
         }
     )
     derived = derive_core_point_in_time_features(source)
     inactive = tuple(asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY)
 
     for feature in inactive:
-        finite = derived.filter(
-            pl.col(feature).is_not_null() & pl.col(feature).is_finite()
-        )
+        finite = derived.filter(pl.col(feature).is_not_null() & pl.col(feature).is_finite())
         assert finite["seconds_elapsed"].min() == 60
         assert (
             asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY[
@@ -558,21 +532,17 @@ def test_target_policy_inactive_maturity_matches_derived_core_features() -> None
         )
 
     target_rows = derived.filter(pl.col("seconds_elapsed").is_between(1, 55))
-    _, availability, observed_inactive = (
-        asymmetric_training._causal_feature_availability(
-            target_rows,
-            inactive,
-            maximum_entry_second=55,
-        )
+    _, availability, observed_inactive = asymmetric_training._causal_feature_availability(
+        target_rows,
+        inactive,
+        maximum_entry_second=55,
     )
     assert observed_inactive == inactive
     assert all(availability[feature]["policy_inactive"] for feature in inactive)
 
 
 def test_feature_audit_allows_only_explicitly_immature_target_features() -> None:
-    inactive = tuple(
-        asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY
-    )
+    inactive = tuple(asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY)
     frame = pl.DataFrame(
         {
             "seconds_elapsed": [1, 55],
@@ -582,12 +552,10 @@ def test_feature_audit_allows_only_explicitly_immature_target_features() -> None
         }
     )
 
-    retained, availability, observed_inactive = (
-        asymmetric_training._causal_feature_availability(
-            frame,
-            ("active_signal", *inactive),
-            maximum_entry_second=55,
-        )
+    retained, availability, observed_inactive = asymmetric_training._causal_feature_availability(
+        frame,
+        ("active_signal", *inactive),
+        maximum_entry_second=55,
     )
 
     assert retained == ("active_signal", *inactive)
@@ -614,9 +582,7 @@ def test_policy_inactive_zero_medians_cannot_change_histogram_predictions() -> N
         / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
     )
     core_config = load_core_config(config.core_config)
-    inactive = tuple(
-        asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY
-    )
+    inactive = tuple(asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY)
     row_count = 200
     active = np.linspace(-2.0, 2.0, row_count)
     fit_frame = pl.DataFrame(
@@ -628,12 +594,10 @@ def test_policy_inactive_zero_medians_cannot_change_histogram_predictions() -> N
             **{feature: [None] * row_count for feature in inactive},
         }
     )
-    retained, _, observed_inactive = (
-        asymmetric_training._causal_feature_availability(
-            fit_frame,
-            ("active_signal", *inactive),
-            maximum_entry_second=55,
-        )
+    retained, _, observed_inactive = asymmetric_training._causal_feature_availability(
+        fit_frame,
+        ("active_signal", *inactive),
+        maximum_entry_second=55,
     )
     imputed = asymmetric_training._impute_policy_inactive_features(
         fit_frame,
@@ -659,16 +623,10 @@ def test_policy_inactive_zero_medians_cannot_change_histogram_predictions() -> N
         observed_inactive,
     )
     scoring = fit_frame.select("active_signal", *inactive)
-    zero = scoring.with_columns(
-        *(pl.lit(0.0).alias(feature) for feature in inactive)
-    )
-    large = scoring.with_columns(
-        *(pl.lit(1_000_000.0).alias(feature) for feature in inactive)
-    )
+    zero = scoring.with_columns(*(pl.lit(0.0).alias(feature) for feature in inactive))
+    large = scoring.with_columns(*(pl.lit(1_000_000.0).alias(feature) for feature in inactive))
 
-    assert evidence["stored_model_medians"] == {
-        feature: 0.0 for feature in inactive
-    }
+    assert evidence["stored_model_medians"] == {feature: 0.0 for feature in inactive}
     np.testing.assert_allclose(model.raw_probability(scoring), model.raw_probability(zero))
     np.testing.assert_allclose(model.raw_probability(scoring), model.raw_probability(large))
 
@@ -701,9 +659,7 @@ def test_model_wiring_fits_every_candidate_on_target_rows_and_seals_matched_keys
     all_features = set().union(*asymmetric_value_feature_sets().values())
     for feature in all_features - set(columns):
         columns[feature] = [0.0] * len(rows)
-    inactive = tuple(
-        asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY
-    )
+    inactive = tuple(asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY)
     for feature in inactive:
         columns[feature] = [None] * len(rows)
     source = pl.DataFrame(columns)
@@ -772,26 +728,22 @@ def test_model_wiring_fits_every_candidate_on_target_rows_and_seals_matched_keys
         assert profile["fit_rows"] == profile["target_fit_rows"] == 2
         assert profile["fit_markets"] == profile["target_fit_markets"] == 2
         assert profile["target_fit_contract"] == summary["target_fit_cohort"]["contract"]
-        assert profile["target_fit_key_sha256"] == summary["target_fit_cohort"][
-            "candidate_evidence"
-        ][name]["key_sha256"]
+        assert (
+            profile["target_fit_key_sha256"]
+            == summary["target_fit_cohort"]["candidate_evidence"][name]["key_sha256"]
+        )
         assert len(profile["target_fit_key_sha256"]) == 64
         expected_inactive = [] if name == PRICE_LOGISTIC else list(inactive)
         assert profile["policy_inactive_features"]["features"] == expected_inactive
-        assert summary["target_fit_cohort"][
-            "candidate_policy_inactive_feature_evidence"
-        ][name] == profile["policy_inactive_features"]
+        assert (
+            summary["target_fit_cohort"]["candidate_policy_inactive_feature_evidence"][name]
+            == profile["policy_inactive_features"]
+        )
         for feature in expected_inactive:
             assert fit_frame[feature].to_list() == [0.0, 0.0]
-            assert profile["feature_availability"][feature][
-                "policy_inactive"
-            ]
-            assert profile["feature_availability"][feature][
-                "imputation_value"
-            ] == 0.0
-    inactive_contract = summary["target_fit_cohort"][
-        "policy_inactive_feature_contract"
-    ]
+            assert profile["feature_availability"][feature]["policy_inactive"]
+            assert profile["feature_availability"][feature]["imputation_value"] == 0.0
+    inactive_contract = summary["target_fit_cohort"]["policy_inactive_feature_contract"]
     assert inactive_contract["imputation_value"] == 0.0
     assert set(inactive_contract["feature_maturity"]) == set(inactive)
     for candidate, control in MATCHED_ATTRIBUTION_CONTROLS.items():
@@ -799,9 +751,7 @@ def test_model_wiring_fits_every_candidate_on_target_rows_and_seals_matched_keys
             summary["profiles"][candidate]["target_fit_key_sha256"]
             == summary["profiles"][control]["target_fit_key_sha256"]
         )
-        assert summary["target_fit_cohort"]["matched_control_key_checks"][candidate][
-            "matched"
-        ]
+        assert summary["target_fit_cohort"]["matched_control_key_checks"][candidate]["matched"]
 
 
 def test_side_corrections_renormalize_and_ignore_evaluation_labels() -> None:
@@ -942,17 +892,11 @@ def test_coherent_calibration_objective_matches_runtime_probability() -> None:
         intercepts,
     )
     expected_log_loss = -np.sum(
-        weights
-        * (
-            labels * np.log(probability)
-            + (1.0 - labels) * np.log(1.0 - probability)
-        )
+        weights * (labels * np.log(probability) + (1.0 - labels) * np.log(1.0 - probability))
     )
     delta = parameters.copy()
     delta[0::2] -= 1.0
-    expected_penalty = 0.5 * identity_l2 * float(
-        (np.repeat(penalty_weights, 2) * delta) @ delta
-    )
+    expected_penalty = 0.5 * identity_l2 * float((np.repeat(penalty_weights, 2) * delta) @ delta)
 
     np.testing.assert_allclose(
         objective,
@@ -1018,9 +962,7 @@ def test_sparse_side_price_cells_fall_back_to_parent_time_calibration() -> None:
     yes_twenty_to_thirty = next(
         cell
         for cell in cells
-        if cell.start_second == 1
-        and cell.side == "YES"
-        and cell.minimum_price == 0.2
+        if cell.start_second == 1 and cell.side == "YES" and cell.minimum_price == 0.2
     )
     assert "insufficient_markets" in (yes_twenty_to_thirty.fallback or "")
     assert yes_twenty_to_thirty.slope == 1.0
@@ -1072,10 +1014,7 @@ def test_target_calibration_fallback_is_explicitly_disqualifying() -> None:
     assert checks[0]["name"] == "target_calibration_cells_genuinely_fitted"
     assert checks[0]["passed"] is False
     assert all(not check["passed"] for check in checks[1:])
-    assert any(
-        "parent_fallback" in cell["failure_reasons"]
-        for cell in evidence["cells"]
-    )
+    assert any("parent_fallback" in cell["failure_reasons"] for cell in evidence["cells"])
 
 
 def test_all_eight_supported_target_cells_pass_qualification() -> None:

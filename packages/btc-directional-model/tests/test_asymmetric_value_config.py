@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from btc_directional_model.asymmetric_value_config import (
+    HYBRID_DECISION_QUALITY_TRAINING_CONTRACT,
     TARGET_CALIBRATED_TRAINING_CONTRACT,
     load_asymmetric_value_config,
     validate_asymmetric_value_config,
@@ -24,6 +25,13 @@ def _target_calibrated_config_path() -> Path:
     return (
         Path(__file__).parents[1]
         / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+    )
+
+
+def _decision_quality_config_path() -> Path:
+    return (
+        Path(__file__).parents[1]
+        / "configs/btc-5m-directional-asymmetric-decision-quality-20260414-20260802.toml"
     )
 
 
@@ -132,3 +140,71 @@ def test_target_calibrated_contract_rejects_target_cell_fallback_weakening() -> 
         )
     with pytest.raises(ValueError, match="fresh forward evaluation"):
         validate_asymmetric_value_config(replace(config, evaluation=config.policy))
+
+
+def test_decision_quality_contract_freezes_matrix_folds_and_final_chronology() -> None:
+    config = load_asymmetric_value_config(_decision_quality_config_path())
+    contract = config.decision_quality
+
+    assert config.training_contract == HYBRID_DECISION_QUALITY_TRAINING_CONTRACT
+    assert contract is not None
+    assert tuple(fold.name for fold in contract.folds) == (
+        "jun11_jun18",
+        "jun18_jun25",
+        "jun25_jul02",
+        "jul02_jul09",
+        "jul09_jul16",
+    )
+    assert all(fold.fit.end == fold.calibration.start for fold in contract.folds)
+    assert all(fold.calibration.end == fold.validation.start for fold in contract.folds)
+    assert contract.final_fit.end == contract.final_calibration.start
+    assert contract.final_fit.end.isoformat() == "2026-07-23T00:00:00+00:00"
+    assert contract.final_calibration.end.isoformat() == "2026-08-02T00:00:00+00:00"
+    assert len(contract.candidates) == 10
+    assert sum(item.selection_eligible for item in contract.candidates) == 6
+    assert {item.target_weight for item in contract.candidates if item.selection_eligible} == {
+        0.25,
+        0.50,
+    }
+    assert len(contract.calibration_variants) == 6
+    assert {item.parent_source for item in contract.calibration_variants} == {
+        "alltime",
+        "targetpool",
+    }
+    assert {item.identity_l2 for item in contract.calibration_variants} == {
+        0.05,
+        0.20,
+        1.00,
+    }
+    assert config.evaluation is None
+
+
+def test_decision_quality_contract_rejects_matrix_or_fold_weakening() -> None:
+    config = load_asymmetric_value_config(_decision_quality_config_path())
+    contract = config.decision_quality
+    assert contract is not None
+
+    with pytest.raises(ValueError, match="candidate matrix changed"):
+        validate_asymmetric_value_config(
+            replace(
+                config,
+                decision_quality=replace(
+                    contract,
+                    candidates=contract.candidates[:-1],
+                ),
+            )
+        )
+    first = contract.folds[0]
+    with pytest.raises(ValueError, match="walk-forward folds changed"):
+        validate_asymmetric_value_config(
+            replace(
+                config,
+                decision_quality=replace(
+                    contract,
+                    folds=(
+                        replace(first, validation=first.calibration),
+                        *contract.folds[1:],
+                    ),
+                ),
+            )
+        )

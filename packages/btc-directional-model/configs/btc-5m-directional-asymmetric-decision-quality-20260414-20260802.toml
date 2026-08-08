@@ -1,0 +1,341 @@
+[benchmark]
+profile = "btc_asymmetric_value_hunter"
+training_contract = "hybrid_decision_quality"
+paper_only = true
+live_capital_allowed = false
+
+# These source partitions retain compatibility with the sealed readiness/cache contract.
+[windows.fit]
+start = "2026-04-14T00:00:00Z"
+end = "2026-07-16T00:00:00Z"
+
+[windows.calibration]
+start = "2026-07-16T00:00:00Z"
+end = "2026-07-23T00:00:00Z"
+
+[windows.policy]
+start = "2026-07-23T00:00:00Z"
+end = "2026-08-02T00:00:00Z"
+
+[timing]
+prediction_start_second = 1
+prediction_end_second = 240
+early_end_second = 59
+early_cadence_seconds = 1
+later_cadence_seconds = 5
+
+[economics]
+quantity = 5.0
+maximum_depth_participation = 0.25
+book_freshness_seconds = 2
+execution_reserve_per_share = 0.01
+confidence_control_minimum_edge_per_share = 0.015
+confidence_thresholds = [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.89]
+
+[[policies]]
+name = "raw20_30_by55_edge_3c"
+selection_eligible = true
+maximum_entry_second = 55
+minimum_share_price = 0.20
+maximum_share_price = 0.30
+maximum_cost_per_share = 0.35
+minimum_edge_per_share = 0.03
+
+[[policies]]
+name = "under30_by120_edge_3c"
+selection_eligible = false
+maximum_entry_second = 120
+minimum_share_price = 0.05
+maximum_share_price = 0.30
+maximum_cost_per_share = 0.35
+minimum_edge_per_share = 0.03
+
+[gates]
+minimum_calibration_markets_per_band = 500
+minimum_calibration_markets_per_cell = 50
+minimum_calibration_days_per_cell = 5
+minimum_policy_strict_markets = 1000
+minimum_policy_executable_days = 5
+minimum_policy_source_grid_coverage = 0.90
+minimum_policy_strict_grid_coverage = 0.40
+minimum_policy_candidate_grid_coverage = 0.40
+minimum_evaluation_strict_markets = 2000
+minimum_evaluation_executable_days = 10
+minimum_evaluation_source_grid_coverage = 0.90
+minimum_evaluation_strict_grid_coverage = 0.70
+minimum_evaluation_candidate_grid_coverage = 0.70
+minimum_policy_trades = 100
+minimum_evaluation_trades = 200
+minimum_profit_factor = 1.05
+minimum_net_expectancy_per_trade = 0.0
+minimum_capital_efficiency = 0.0
+minimum_stress_expectancy_per_trade = 0.0
+maximum_mean_cost_per_share = 0.70
+maximum_mean_share_price = 0.30
+maximum_selected_calibration_bias = 0.03
+maximum_loss_recovery_wins = 0.60
+maximum_average_loss = 1.60
+maximum_single_loss = 1.75
+minimum_side_trades = 20
+minimum_pre60_trades = 20
+minimum_20_30c_trades = 20
+
+[model]
+random_seed = 20260808
+bootstrap_resamples = 10000
+calibration_identity_l2 = 1.0
+calibration_bands = [
+  { start_second = 1, end_second_exclusive = 15 },
+  { start_second = 15, end_second_exclusive = 30 },
+  { start_second = 30, end_second_exclusive = 45 },
+  { start_second = 45, end_second_exclusive = 60 },
+  { start_second = 60, end_second_exclusive = 90 },
+  { start_second = 90, end_second_exclusive = 120 },
+  { start_second = 120, end_second_exclusive = 180 },
+  { start_second = 180, end_second_exclusive = 241 },
+]
+
+[model.target_calibration]
+minimum_price = 0.20
+maximum_price = 0.30
+sides = ["YES", "NO"]
+required_fitted_cells = 8
+time_bands = [
+  { start_second = 1, end_second_exclusive = 15 },
+  { start_second = 15, end_second_exclusive = 30 },
+  { start_second = 30, end_second_exclusive = 45 },
+  { start_second = 45, end_second_exclusive = 60 },
+]
+
+[model.decision_quality.final_fit]
+start = "2026-04-14T00:00:00Z"
+end = "2026-07-23T00:00:00Z"
+
+[model.decision_quality.final_calibration]
+start = "2026-07-23T00:00:00Z"
+end = "2026-08-02T00:00:00Z"
+
+[[model.decision_quality.folds]]
+name = "jun11_jun18"
+[model.decision_quality.folds.fit]
+start = "2026-04-14T00:00:00Z"
+end = "2026-06-04T00:00:00Z"
+[model.decision_quality.folds.calibration]
+start = "2026-06-04T00:00:00Z"
+end = "2026-06-11T00:00:00Z"
+[model.decision_quality.folds.validation]
+start = "2026-06-11T00:00:00Z"
+end = "2026-06-18T00:00:00Z"
+
+[[model.decision_quality.folds]]
+name = "jun18_jun25"
+[model.decision_quality.folds.fit]
+start = "2026-04-14T00:00:00Z"
+end = "2026-06-11T00:00:00Z"
+[model.decision_quality.folds.calibration]
+start = "2026-06-11T00:00:00Z"
+end = "2026-06-18T00:00:00Z"
+[model.decision_quality.folds.validation]
+start = "2026-06-18T00:00:00Z"
+end = "2026-06-25T00:00:00Z"
+
+[[model.decision_quality.folds]]
+name = "jun25_jul02"
+[model.decision_quality.folds.fit]
+start = "2026-04-14T00:00:00Z"
+end = "2026-06-18T00:00:00Z"
+[model.decision_quality.folds.calibration]
+start = "2026-06-18T00:00:00Z"
+end = "2026-06-25T00:00:00Z"
+[model.decision_quality.folds.validation]
+start = "2026-06-25T00:00:00Z"
+end = "2026-07-02T00:00:00Z"
+
+[[model.decision_quality.folds]]
+name = "jul02_jul09"
+[model.decision_quality.folds.fit]
+start = "2026-04-14T00:00:00Z"
+end = "2026-06-25T00:00:00Z"
+[model.decision_quality.folds.calibration]
+start = "2026-06-25T00:00:00Z"
+end = "2026-07-02T00:00:00Z"
+[model.decision_quality.folds.validation]
+start = "2026-07-02T00:00:00Z"
+end = "2026-07-09T00:00:00Z"
+
+[[model.decision_quality.folds]]
+name = "jul09_jul16"
+[model.decision_quality.folds.fit]
+start = "2026-04-14T00:00:00Z"
+end = "2026-07-02T00:00:00Z"
+[model.decision_quality.folds.calibration]
+start = "2026-07-02T00:00:00Z"
+end = "2026-07-09T00:00:00Z"
+[model.decision_quality.folds.validation]
+start = "2026-07-09T00:00:00Z"
+end = "2026-07-16T00:00:00Z"
+
+[[model.decision_quality.histogram_profiles]]
+name = "h0_current"
+learning_rate = 0.05
+max_iter = 160
+max_leaf_nodes = 15
+min_samples_leaf = 100
+l2_regularization = 0.10
+
+[[model.decision_quality.histogram_profiles]]
+name = "h1_regularized"
+learning_rate = 0.03
+max_iter = 180
+max_leaf_nodes = 7
+min_samples_leaf = 200
+l2_regularization = 2.0
+
+[[model.decision_quality.histogram_profiles]]
+name = "h2_regularized"
+learning_rate = 0.03
+max_iter = 200
+max_leaf_nodes = 15
+min_samples_leaf = 250
+l2_regularization = 5.0
+
+[[model.decision_quality.histogram_profiles]]
+name = "h3_regularized"
+learning_rate = 0.02
+max_iter = 240
+max_leaf_nodes = 7
+min_samples_leaf = 300
+l2_regularization = 10.0
+
+[[model.decision_quality.candidates]]
+name = "broad_current"
+target_weight = 0.0
+histogram_profile = "h0_current"
+selection_eligible = false
+
+[[model.decision_quality.candidates]]
+name = "target_only_current"
+target_weight = 1.0
+histogram_profile = "h0_current"
+selection_eligible = false
+
+[[model.decision_quality.candidates]]
+name = "hybrid_50_current"
+target_weight = 0.50
+histogram_profile = "h0_current"
+selection_eligible = false
+
+[[model.decision_quality.candidates]]
+name = "broad_regularized"
+target_weight = 0.0
+histogram_profile = "h2_regularized"
+selection_eligible = false
+
+[[model.decision_quality.candidates]]
+name = "hybrid_25_h1"
+target_weight = 0.25
+histogram_profile = "h1_regularized"
+selection_eligible = true
+
+[[model.decision_quality.candidates]]
+name = "hybrid_25_h2"
+target_weight = 0.25
+histogram_profile = "h2_regularized"
+selection_eligible = true
+
+[[model.decision_quality.candidates]]
+name = "hybrid_25_h3"
+target_weight = 0.25
+histogram_profile = "h3_regularized"
+selection_eligible = true
+
+[[model.decision_quality.candidates]]
+name = "hybrid_50_h1"
+target_weight = 0.50
+histogram_profile = "h1_regularized"
+selection_eligible = true
+
+[[model.decision_quality.candidates]]
+name = "hybrid_50_h2"
+target_weight = 0.50
+histogram_profile = "h2_regularized"
+selection_eligible = true
+
+[[model.decision_quality.candidates]]
+name = "hybrid_50_h3"
+target_weight = 0.50
+histogram_profile = "h3_regularized"
+selection_eligible = true
+
+[[model.decision_quality.calibration_variants]]
+parent_source = "alltime"
+identity_l2 = 0.05
+
+[[model.decision_quality.calibration_variants]]
+parent_source = "alltime"
+identity_l2 = 0.20
+
+[[model.decision_quality.calibration_variants]]
+parent_source = "alltime"
+identity_l2 = 1.00
+
+[[model.decision_quality.calibration_variants]]
+parent_source = "targetpool"
+identity_l2 = 0.05
+
+[[model.decision_quality.calibration_variants]]
+parent_source = "targetpool"
+identity_l2 = 0.20
+
+[[model.decision_quality.calibration_variants]]
+parent_source = "targetpool"
+identity_l2 = 1.00
+
+[model.decision_quality.gates]
+maximum_overall_bias = 0.03
+maximum_side_bias = 0.05
+maximum_cell_bias = 0.08
+maximum_ece = 0.05
+maximum_proper_score_noninferiority = 0.005
+minimum_targetpool_markets = 500
+minimum_noninferior_folds = 4
+
+[[model.decision_quality.price_strata]]
+minimum = 0.20
+maximum = 0.25
+
+[[model.decision_quality.price_strata]]
+minimum = 0.25
+maximum = 0.275
+
+[[model.decision_quality.price_strata]]
+minimum = 0.275
+maximum = 0.30
+
+[[model.decision_quality.time_strata]]
+start_second = 1
+end_second_exclusive = 15
+
+[[model.decision_quality.time_strata]]
+start_second = 15
+end_second_exclusive = 30
+
+[[model.decision_quality.time_strata]]
+start_second = 30
+end_second_exclusive = 45
+
+[[model.decision_quality.time_strata]]
+start_second = 45
+end_second_exclusive = 56
+
+[paths]
+core_config = "configs/btc-5m-directional-core-asymmetric-calibrated-20260414-20260802.toml"
+oracle_source = "data/btc-asymmetric-value-calibrated-20260414-20260802/core-oracle-source"
+l2_source = "data/btc-early-price-value-20260414-20260802/external/l2"
+candle_source = "data/btc-early-price-value-20260414-20260802/external/candles"
+price_source_sql = "sql/btc-execution-evidence.sql"
+price_cache = "data/btc-asymmetric-value-calibrated-20260414-20260802/executable-prices"
+feature_cache = "data/btc-asymmetric-value-calibrated-20260414-20260802/features"
+runs = "runs/btc-asymmetric-decision-quality-20260414-20260802"
+champion_model = "runtime-models/btc-5m-directional-boundary-alignment-20260421-20260720-paper-v1/model.json"
+champion_process = "../../infra/processes/btc-5m-directional-model-paper-boundary-alignment.json"
