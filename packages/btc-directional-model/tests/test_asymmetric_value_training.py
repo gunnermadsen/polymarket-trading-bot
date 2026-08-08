@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import io
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -318,6 +318,140 @@ def test_target_fit_cohort_preserves_equal_total_weight_per_market() -> None:
     np.testing.assert_allclose(totals, np.repeat(totals[0], len(totals)))
 
 
+def test_target_policy_inactive_feature_allowlist_is_exact_and_maturity_bound() -> None:
+    expected = {
+        "btc_return_60s_bps",
+        "btc_path_efficiency_60s",
+        "btc_momentum_multihorizon_score",
+        "btc_momentum_acceleration_15_vs_60",
+    }
+
+    assert set(asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY) == expected
+    assert {
+        maturity.first_available_second
+        for maturity in (
+            asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY.values()
+        )
+    } == {61}
+    assert asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY[
+        "btc_path_efficiency_60s"
+    ].dependencies[0] == "btc_return_60s_bps"
+    assert "btc_return_60s_bps" in (
+        asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY[
+            "btc_momentum_multihorizon_score"
+        ].dependencies
+    )
+    assert "btc_return_60s_bps" in (
+        asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY[
+            "btc_momentum_acceleration_15_vs_60"
+        ].dependencies
+    )
+
+
+def test_feature_audit_allows_only_explicitly_immature_target_features() -> None:
+    inactive = tuple(
+        asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY
+    )
+    frame = pl.DataFrame(
+        {
+            "seconds_elapsed": [1, 55],
+            "active_signal": [0.0, 1.0],
+            **{feature: [None, None] for feature in inactive},
+            "unexpected_feature": [None, None],
+        }
+    )
+
+    retained, availability, observed_inactive = (
+        asymmetric_training._causal_feature_availability(
+            frame,
+            ("active_signal", *inactive),
+            maximum_entry_second=55,
+        )
+    )
+
+    assert retained == ("active_signal", *inactive)
+    assert observed_inactive == inactive
+    assert availability["active_signal"]["policy_inactive"] is False
+    assert all(availability[name]["policy_inactive"] for name in inactive)
+    with pytest.raises(RuntimeError, match="unexpected_feature"):
+        asymmetric_training._causal_feature_availability(
+            frame,
+            ("active_signal", *inactive, "unexpected_feature"),
+            maximum_entry_second=55,
+        )
+    with pytest.raises(RuntimeError, match="btc_return_60s_bps"):
+        asymmetric_training._causal_feature_availability(
+            frame,
+            ("active_signal", *inactive),
+            maximum_entry_second=61,
+        )
+
+
+def test_policy_inactive_zero_medians_cannot_change_histogram_predictions() -> None:
+    config = load_asymmetric_value_config(
+        Path(__file__).parents[1]
+        / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+    )
+    core_config = load_core_config(config.core_config)
+    inactive = tuple(
+        asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY
+    )
+    row_count = 200
+    active = np.linspace(-2.0, 2.0, row_count)
+    fit_frame = pl.DataFrame(
+        {
+            "market_id": [f"m-{index}" for index in range(row_count)],
+            "seconds_elapsed": [1 + index % 55 for index in range(row_count)],
+            "label_up": (active > 0.0).astype(np.int8),
+            "active_signal": active,
+            **{feature: [None] * row_count for feature in inactive},
+        }
+    )
+    retained, _, observed_inactive = (
+        asymmetric_training._causal_feature_availability(
+            fit_frame,
+            ("active_signal", *inactive),
+            maximum_entry_second=55,
+        )
+    )
+    imputed = asymmetric_training._impute_policy_inactive_features(
+        fit_frame,
+        observed_inactive,
+    )
+    parameters = {
+        **asdict(core_config.model.histogram_candidates[0]),
+        "min_samples_leaf": 5,
+        "max_iter": 20,
+    }
+    model = asymmetric_training.fit_model(
+        imputed,
+        asymmetric_training.CandidateSpec(
+            name="target_inactive_test",
+            family="histogram",
+            feature_names=retained,
+        ),
+        parameters,
+        core_config,
+    )
+    evidence = asymmetric_training._policy_inactive_model_evidence(
+        model,
+        observed_inactive,
+    )
+    scoring = fit_frame.select("active_signal", *inactive)
+    zero = scoring.with_columns(
+        *(pl.lit(0.0).alias(feature) for feature in inactive)
+    )
+    large = scoring.with_columns(
+        *(pl.lit(1_000_000.0).alias(feature) for feature in inactive)
+    )
+
+    assert evidence["stored_model_medians"] == {
+        feature: 0.0 for feature in inactive
+    }
+    np.testing.assert_allclose(model.raw_probability(scoring), model.raw_probability(zero))
+    np.testing.assert_allclose(model.raw_probability(scoring), model.raw_probability(large))
+
+
 def test_model_wiring_fits_every_candidate_on_target_rows_and_seals_matched_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -346,6 +480,11 @@ def test_model_wiring_fits_every_candidate_on_target_rows_and_seals_matched_keys
     all_features = set().union(*asymmetric_value_feature_sets().values())
     for feature in all_features - set(columns):
         columns[feature] = [0.0] * len(rows)
+    inactive = tuple(
+        asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY
+    )
+    for feature in inactive:
+        columns[feature] = [None] * len(rows)
     source = pl.DataFrame(columns)
     frames = {name: source for name in ASYMMETRIC_VALUE_CANDIDATES}
     observed_fit_frames: dict[str, pl.DataFrame] = {}
@@ -356,7 +495,16 @@ def test_model_wiring_fits_every_candidate_on_target_rows_and_seals_matched_keys
         *_: object,
     ) -> object:
         observed_fit_frames[spec.name] = frame
-        return object()
+        return asymmetric_training.FittedCoreModel(
+            candidate_name=spec.name,
+            family=spec.family,
+            feature_names=spec.feature_names,
+            hyperparameters={},
+            imputation_medians=np.zeros(len(spec.feature_names), dtype=np.float64),
+            standardization_means=None,
+            standardization_scales=None,
+            estimator=None,
+        )
 
     class FakeBundle:
         def __init__(self, **_: object) -> None:
@@ -407,6 +555,24 @@ def test_model_wiring_fits_every_candidate_on_target_rows_and_seals_matched_keys
             "candidate_evidence"
         ][name]["key_sha256"]
         assert len(profile["target_fit_key_sha256"]) == 64
+        expected_inactive = [] if name == PRICE_LOGISTIC else list(inactive)
+        assert profile["policy_inactive_features"]["features"] == expected_inactive
+        assert summary["target_fit_cohort"][
+            "candidate_policy_inactive_feature_evidence"
+        ][name] == profile["policy_inactive_features"]
+        for feature in expected_inactive:
+            assert fit_frame[feature].to_list() == [0.0, 0.0]
+            assert profile["feature_availability"][feature][
+                "policy_inactive"
+            ]
+            assert profile["feature_availability"][feature][
+                "imputation_value"
+            ] == 0.0
+    inactive_contract = summary["target_fit_cohort"][
+        "policy_inactive_feature_contract"
+    ]
+    assert inactive_contract["imputation_value"] == 0.0
+    assert set(inactive_contract["feature_maturity"]) == set(inactive)
     for candidate, control in MATCHED_ATTRIBUTION_CONTROLS.items():
         assert (
             summary["profiles"][candidate]["target_fit_key_sha256"]
