@@ -45,6 +45,7 @@ from btc_directional_model.spot_l2_chainlink_extract import (
 )
 from btc_directional_model.spot_l2_chainlink_features import (
     L2_AUDIT_COLUMNS,
+    L2_CAUSAL_AUDIT_COLUMNS,
     L2_FEATURES,
     L2_SOURCE_FEATURE_COLUMNS,
     L2Normalizer,
@@ -157,6 +158,9 @@ def test_fixed_profile_schema_counts_and_feature_boundaries() -> None:
     assert config.feature_sets[CONTROL] == tuple(CORE_BOUNDARY_ENRICHED_FEATURES)
     assert len(set(config.feature_sets[COMBINED])) == 116
     assert not set(L2_AUDIT_COLUMNS).intersection(config.feature_sets[COMBINED])
+    assert not set(L2_CAUSAL_AUDIT_COLUMNS).intersection(
+        config.feature_sets[COMBINED]
+    )
 
 
 def test_execution_decision_grid_uses_unambiguous_integer_series() -> None:
@@ -177,6 +181,17 @@ def test_l2_join_requires_strictly_prior_availability_with_two_second_cap() -> N
     assert qualified.height == 1
     assert set(L2_FEATURES).issubset(qualified.columns)
     assert not set(L2_AUDIT_COLUMNS).intersection(qualified.columns)
+    assert set(L2_CAUSAL_AUDIT_COLUMNS).issubset(qualified.columns)
+    assert qualified["spot_l2_source_event_timestamp"].item() == (
+        DECISION - timedelta(seconds=2)
+    )
+    assert qualified["spot_l2_available_at"].item() == (
+        DECISION - timedelta(seconds=2)
+    )
+    assert qualified["spot_l2_availability_age_seconds"].item() == pytest.approx(
+        2.0
+    )
+    assert qualified["spot_l2_state_age_seconds"].item() == pytest.approx(2.0)
     assert qualified["spot_l2_midpoint_to_kline_close_bps"].item() == pytest.approx(0.0)
     assert qualified["spot_l2_microprice_to_midpoint_bps"].item() == pytest.approx(
         math.log(100_000.25 / 100_000.0) * 10_000.0

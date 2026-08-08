@@ -20,6 +20,12 @@ import numpy as np
 import polars as pl
 from scipy.optimize import minimize
 
+from .spot_l2_chainlink_features import (
+    L2_CAUSAL_AGE_COLUMNS,
+    L2_CAUSAL_TIMESTAMP_COLUMNS,
+    L2_MAXIMUM_CAUSAL_AGE_SECONDS,
+)
+
 YES = "YES"
 NO = "NO"
 SIDES = (YES, NO)
@@ -209,6 +215,7 @@ CAUSAL_TIMESTAMP_COLUMNS = (
     "no_received_at",
     "oracle_source_timestamp",
     "oracle_block_timestamp",
+    *L2_CAUSAL_TIMESTAMP_COLUMNS,
 )
 PRIOR_COLUMNS = ("pm_yes_cost_per_share", "pm_no_cost_per_share")
 NUMERIC_SOURCE_COLUMNS = tuple(
@@ -227,16 +234,13 @@ NUMERIC_SOURCE_COLUMNS = tuple(
 MATURITY_GATED_SOURCE_COLUMNS = {
     **{f"btc_return_{seconds}s_bps": seconds for seconds in (1, 5, 15, 30, 60)},
     **{f"btc_signed_flow_{seconds}s": seconds for seconds in (5, 30, 60)},
-    **{
-        f"spot_l2_midpoint_change_{seconds}s_bps": seconds
-        for seconds in (1, 5, 15, 30, 60)
-    },
 }
 REQUIRED_FEATURE_COLUMNS = tuple(
     dict.fromkeys(
         (
             *IDENTITY_COLUMNS,
             *CAUSAL_TIMESTAMP_COLUMNS,
+            *L2_CAUSAL_AGE_COLUMNS,
             "early_oracle_eligible",
             *NUMERIC_SOURCE_COLUMNS,
         )
@@ -479,7 +483,8 @@ class SideConditionedResidualModel:
                 "polymarket": "receipt timestamps and derived book ages revalidated",
                 "oracle": "source/block/decision ordering and derived age revalidated",
                 "spot_l2": (
-                    "finite fields from the upstream strictly-prior qualified L2 join"
+                    "source-event/availability/decision ordering, two-second "
+                    "freshness, and derived ages revalidated"
                 ),
             },
         }
@@ -599,7 +604,7 @@ def _derive_yes_features(frame: pl.DataFrame) -> np.ndarray:
         )
     )
     columns.extend(
-        mature_value(f"spot_l2_midpoint_change_{seconds}s_bps", seconds)
+        values[f"spot_l2_midpoint_change_{seconds}s_bps"]
         for seconds in (1, 5, 15, 30, 60)
     )
     columns.extend(
@@ -658,6 +663,7 @@ def _validate_input_frame(frame: pl.DataFrame, *, require_labels: bool) -> None:
             for name in NUMERIC_SOURCE_COLUMNS
             if name not in MATURITY_GATED_SOURCE_COLUMNS
         ),
+        *L2_CAUSAL_AGE_COLUMNS,
         "seconds_elapsed",
     )
     non_finite = frame.filter(
@@ -707,6 +713,25 @@ def _validate_input_frame(frame: pl.DataFrame, *, require_labels: bool) -> None:
         | (pl.col("oracle_block_timestamp") > pl.col("observed_at"))
     ).height:
         raise ValueError("source timestamps are missing or noncausal")
+    if frame.filter(
+        (pl.col("spot_l2_source_event_timestamp") > pl.col("spot_l2_available_at"))
+        | (pl.col("spot_l2_source_event_timestamp") >= pl.col("observed_at"))
+        | (pl.col("spot_l2_available_at") >= pl.col("observed_at"))
+    ).height:
+        raise ValueError("spot-L2 timestamps are noncausal")
+    if frame.filter(
+        ~pl.col("spot_l2_availability_age_seconds").is_between(
+            0.0,
+            float(L2_MAXIMUM_CAUSAL_AGE_SECONDS),
+            closed="right",
+        )
+        | ~pl.col("spot_l2_state_age_seconds").is_between(
+            0.0,
+            float(L2_MAXIMUM_CAUSAL_AGE_SECONDS),
+            closed="right",
+        )
+    ).height:
+        raise ValueError("spot-L2 ages violate the causal freshness contract")
     if frame.filter(~pl.col("early_oracle_eligible").fill_null(False)).height:
         raise ValueError("residual challenger requires a qualified causal Oracle join")
     if frame.filter(
@@ -722,10 +747,36 @@ def _validate_input_frame(frame: pl.DataFrame, *, require_labels: bool) -> None:
     derived_oracle_age = (
         pl.col("observed_at") - pl.col("oracle_block_timestamp")
     ).dt.total_seconds().cast(pl.Float64)
+    derived_l2_availability_age = (
+        (pl.col("observed_at") - pl.col("spot_l2_available_at"))
+        .dt.total_microseconds()
+        .cast(pl.Float64)
+        / 1_000_000.0
+    )
+    derived_l2_state_age = (
+        (pl.col("observed_at") - pl.col("spot_l2_source_event_timestamp"))
+        .dt.total_microseconds()
+        .cast(pl.Float64)
+        / 1_000_000.0
+    )
     if frame.filter(
         ((derived_yes_age - pl.col("pm_yes_book_age_seconds")).abs() > 1e-6)
         | ((derived_no_age - pl.col("pm_no_book_age_seconds")).abs() > 1e-6)
         | ((derived_oracle_age - pl.col("oracle_age_seconds")).abs() > 1e-6)
+        | (
+            (
+                derived_l2_availability_age
+                - pl.col("spot_l2_availability_age_seconds")
+            ).abs()
+            > 1e-6
+        )
+        | (
+            (
+                derived_l2_state_age
+                - pl.col("spot_l2_state_age_seconds")
+            ).abs()
+            > 1e-6
+        )
     ).height:
         raise ValueError("source ages disagree with their causal timestamps")
     if require_labels:
