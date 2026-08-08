@@ -51,9 +51,7 @@ def test_asymmetric_value_contract_rejects_primary_expensive_policy() -> None:
     invalid = replace(primary, maximum_share_price=0.90)
 
     with pytest.raises(ValueError, match="raw share-price"):
-        validate_asymmetric_value_config(
-            replace(config, policies=(invalid, *config.policies[1:]))
-        )
+        validate_asymmetric_value_config(replace(config, policies=(invalid, *config.policies[1:])))
 
 
 def test_asymmetric_value_contract_preserves_original_frozen_windows() -> None:
@@ -79,9 +77,7 @@ def test_asymmetric_value_contract_rejects_invalid_calibration_support() -> None
     config = load_asymmetric_value_config(_config_path())
 
     with pytest.raises(ValueError, match="identity L2"):
-        validate_asymmetric_value_config(
-            replace(config, calibration_identity_l2=0.0)
-        )
+        validate_asymmetric_value_config(replace(config, calibration_identity_l2=0.0))
     with pytest.raises(ValueError, match="day support exceeds"):
         validate_asymmetric_value_config(
             replace(
@@ -116,8 +112,11 @@ def test_target_calibrated_contract_freezes_windows_policy_and_cells() -> None:
     assert config.gates.maximum_selected_calibration_bias == 0.03
     assert core.split.holdout_start == core.split.holdout_end
     assert core.split.holdout_start == config.policy.end
-    assert core.data.source_contract == "btc_core_oracle_v1"
-    assert core.paths.source_data == config.oracle_source
+    assert core.data.source_contract == "btc_core_v1"
+    assert core.paths.source_data != config.oracle_source
+    assert core.paths.source_data.name == "core-market-source"
+    assert core.paths.development_feature_data.name == "core-base-development.parquet"
+    assert config.oracle_source.name == "core-oracle-source"
     assert "btc-asymmetric-value-calibrated" in str(config.oracle_source)
 
 
@@ -132,6 +131,4 @@ def test_target_calibrated_contract_rejects_target_cell_fallback_weakening() -> 
             )
         )
     with pytest.raises(ValueError, match="fresh forward evaluation"):
-        validate_asymmetric_value_config(
-            replace(config, evaluation=config.policy)
-        )
+        validate_asymmetric_value_config(replace(config, evaluation=config.policy))

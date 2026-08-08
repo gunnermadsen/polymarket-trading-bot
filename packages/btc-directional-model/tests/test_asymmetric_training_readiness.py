@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,8 +36,13 @@ from btc_directional_model.asymmetric_training_readiness import (
 )
 from btc_directional_model.asymmetric_value_config import load_asymmetric_value_config
 from btc_directional_model.asymmetric_value_data import EARLY_CAUSAL_ORACLE_FEATURES
+from btc_directional_model.core_config import (
+    CORE_ORACLE_SOURCE_CONTRACT,
+    CORE_SOURCE_CONTRACT,
+    load_core_config,
+)
 from btc_directional_model.core_execution import EXECUTION_EVIDENCE_CONTRACT
-from btc_directional_model.core_extract import CORE_ORACLE_SOURCE_CONTRACT, file_sha256
+from btc_directional_model.core_extract import file_sha256
 
 
 def config_path() -> Path:
@@ -44,6 +50,14 @@ def config_path() -> Path:
         Path(__file__).resolve().parents[1]
         / "configs"
         / "btc-5m-directional-asymmetric-value-one-second-20260414-20260802.toml"
+    )
+
+
+def target_core_config_path() -> Path:
+    return (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "btc-5m-directional-core-asymmetric-calibrated-20260414-20260802.toml"
     )
 
 
@@ -189,6 +203,8 @@ def test_sql_contract_names_the_canonical_spot_relations() -> None:
 
     assert len(contract["query_sha256"]) == 6
     sources = contract["relations"]
+    assert sources["target"]["core_source_contract"] == CORE_SOURCE_CONTRACT
+    assert sources["target"]["oracle_arm_source_contract"] == (CORE_ORACLE_SOURCE_CONTRACT)
     assert sources["polymarket_execution"]["provider"] == PMXT_PROVIDER
     assert sources["binance_spot_l2"]["information_dimension_count"] == 40
     assert (
@@ -291,9 +307,15 @@ def test_core_oracle_manifests_require_all_110_daily_partitions(
         "load_core_manifest",
         lambda _config, scope: manifests[scope],
     )
-    core_config = SimpleNamespace(paths=SimpleNamespace(source_data=tmp_path))
+    core_config = SimpleNamespace(
+        data=SimpleNamespace(source_contract=CORE_ORACLE_SOURCE_CONTRACT),
+        paths=SimpleNamespace(source_data=tmp_path),
+    )
 
-    legacy_config = SimpleNamespace(evaluation=SimpleNamespace())
+    legacy_config = SimpleNamespace(
+        evaluation=SimpleNamespace(),
+        oracle_source=tmp_path,
+    )
     result = _validate_core_oracle_source(legacy_config, core_config)
 
     assert result["daily_core_partitions"] == 110
@@ -313,43 +335,68 @@ def test_target_profile_uses_one_110_day_core_oracle_manifest(
     import btc_directional_model.asymmetric_training_readiness as readiness
 
     core, oracle = complete_core_oracle_partitions()
-    manifest = {
+    core_manifest = {
         "range_start": READINESS_RANGE_START.isoformat(),
         "range_end": READINESS_RANGE_END.isoformat(),
         "partitions": core,
+    }
+    oracle_manifest = {
+        **core_manifest,
         "oracle_partitions": oracle,
     }
-    (tmp_path / "manifest-pre_holdout.json").write_text("{}")
-    requested_scopes: list[str] = []
+    core_source = tmp_path / "core-market-source"
+    oracle_source = tmp_path / "core-oracle-source"
+    core_source.mkdir()
+    oracle_source.mkdir()
+    (core_source / "manifest-pre_holdout.json").write_text("{}")
+    (oracle_source / "manifest-pre_holdout.json").write_text("{}")
+    requested_sources: list[tuple[str, str]] = []
 
-    def load_manifest(_config, scope: str):
-        requested_scopes.append(scope)
-        return manifest
+    def load_manifest(source_config, scope: str):
+        requested_sources.append((source_config.data.source_contract, scope))
+        if source_config.data.source_contract == CORE_SOURCE_CONTRACT:
+            return core_manifest
+        return oracle_manifest
 
     monkeypatch.setattr(readiness, "load_core_manifest", load_manifest)
-    core_config = SimpleNamespace(paths=SimpleNamespace(source_data=tmp_path))
+    loaded = load_core_config(target_core_config_path())
+    core_config = replace(
+        loaded,
+        paths=replace(loaded.paths, source_data=core_source),
+    )
+    config = target_profile_config(oracle_source=oracle_source)
 
-    result = _validate_core_oracle_source(target_profile_config(), core_config)
+    result = _validate_core_oracle_source(config, core_config)
 
-    assert requested_scopes == ["pre_holdout"]
+    assert requested_sources == [
+        (CORE_SOURCE_CONTRACT, "pre_holdout"),
+        (CORE_ORACLE_SOURCE_CONTRACT, "pre_holdout"),
+    ]
     assert result["source_scopes"] == ["pre_holdout"]
+    assert result["source_contract"] == CORE_SOURCE_CONTRACT
+    assert result["daily_oracle_raw_partitions"] == 110
     assert result["daily_core_partitions"] == 110
     assert result["daily_oracle_partitions"] == 110
 
 
 def test_target_profile_round_contract_ends_at_policy_window(tmp_path: Path) -> None:
-    source = tmp_path / "core-oracle-source"
-    config = target_profile_config(oracle_source=source)
+    source = tmp_path / "core-market-source"
+    oracle_source = tmp_path / "core-oracle-source"
+    config = target_profile_config(oracle_source=oracle_source)
     core_config = SimpleNamespace(
         data=SimpleNamespace(
             range_start=READINESS_RANGE_START,
             range_end=READINESS_RANGE_END,
-            source_contract=CORE_ORACLE_SOURCE_CONTRACT,
+            source_contract=CORE_SOURCE_CONTRACT,
         ),
         paths=SimpleNamespace(source_data=source),
     )
 
     _validate_round_contract(config, core_config)
+
+    core_config.data.source_contract = CORE_ORACLE_SOURCE_CONTRACT
+    with pytest.raises(ValueError, match="btc_core_v1"):
+        _validate_round_contract(config, core_config)
 
 
 def test_target_profile_validates_one_110_day_development_oracle_cache(
@@ -381,7 +428,13 @@ def test_target_profile_validates_one_110_day_development_oracle_cache(
             for offset in range(110)
         ],
     }
-    monkeypatch.setattr(readiness, "oracle_source_inventory", lambda *_args: inventory)
+    inventory_sources: list[Path] = []
+
+    def source_inventory(source: Path, _days) -> dict[str, object]:
+        inventory_sources.append(source)
+        return inventory
+
+    monkeypatch.setattr(readiness, "oracle_source_inventory", source_inventory)
     cache_path.with_suffix(".metadata.json").write_text(
         json.dumps(
             {
@@ -398,7 +451,10 @@ def test_target_profile_validates_one_110_day_development_oracle_cache(
             }
         )
     )
-    config = target_profile_config(feature_cache=tmp_path)
+    config = target_profile_config(
+        feature_cache=tmp_path,
+        oracle_source=tmp_path / "oracle-source",
+    )
     core_config = SimpleNamespace(paths=SimpleNamespace(source_data=tmp_path))
 
     result = _validate_oracle_feature_caches(config, core_config)
@@ -407,6 +463,7 @@ def test_target_profile_validates_one_110_day_development_oracle_cache(
     assert result["development"]["range_start"] == READINESS_RANGE_START.isoformat()
     assert result["development"]["range_end"] == READINESS_RANGE_END.isoformat()
     assert result["development"]["source_days"] == 110
+    assert inventory_sources == [config.oracle_source]
 
 
 def test_target_profile_validates_one_110_day_development_pmxt_manifest(
