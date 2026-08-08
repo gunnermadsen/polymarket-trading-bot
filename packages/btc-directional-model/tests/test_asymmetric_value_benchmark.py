@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -12,23 +13,31 @@ from btc_directional_model.asymmetric_value_benchmark import (
     _candidate_grid_summary,
     _evaluation_economics_table,
     _frame_content_digest,
+    _join_oracle_l2_candidate_features,
     _matched_control_noninferiority_checks,
+    _matched_feature_attribution,
     _selected_matched_control,
     _validate_external_core_keys,
 )
 from btc_directional_model.asymmetric_value_config import (
+    AsymmetricValueConfig,
     load_asymmetric_value_config,
 )
+from btc_directional_model.asymmetric_value_data import EARLY_CAUSAL_ORACLE_FEATURES
 from btc_directional_model.asymmetric_value_training import (
     ASYMMETRIC_VALUE_CANDIDATES,
+    CANDLE_MATCHED_CORE_PRICE_CONTROL,
     CORE_CANDLES_PRICE,
     CORE_L2_PRICE,
+    CORE_ORACLE_L2_PRICE,
     CORE_ORACLE_PRICE,
     CORE_PRICE,
     L2_MATCHED_CORE_PRICE_CONTROL,
     ORACLE_MATCHED_CORE_PRICE_CONTROL,
     PRICE_LOGISTIC,
+    THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
 )
+from btc_directional_model.spot_l2_chainlink_features import L2_FEATURES
 
 
 def _core_frame() -> pl.DataFrame:
@@ -79,10 +88,15 @@ def test_selected_enriched_models_have_predeclared_matched_controls() -> None:
     assert _selected_matched_control(CORE_L2_PRICE) == (
         L2_MATCHED_CORE_PRICE_CONTROL
     )
-    assert _selected_matched_control(CORE_CANDLES_PRICE) == CORE_PRICE
+    assert _selected_matched_control(CORE_CANDLES_PRICE) == (
+        CANDLE_MATCHED_CORE_PRICE_CONTROL
+    )
+    assert _selected_matched_control(CORE_ORACLE_L2_PRICE) == (
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL
+    )
 
 
-def test_candidate_frames_predeclare_exact_seven_models() -> None:
+def test_candidate_frames_predeclare_model_matrix_and_matched_controls() -> None:
     frame = _core_frame()
 
     candidates = _candidate_frames(
@@ -90,9 +104,131 @@ def test_candidate_frames_predeclare_exact_seven_models() -> None:
         l2_price=frame,
         candle_price=frame,
         oracle_price=frame,
+        three_source_price=frame,
     )
 
     assert tuple(candidates) == ASYMMETRIC_VALUE_CANDIDATES
+
+
+def test_three_source_join_is_exact_key_intersection_without_filling() -> None:
+    start = datetime(2026, 7, 23, tzinfo=UTC)
+
+    def keyed(seconds: list[int]) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "market_id": [f"m-{second}" for second in seconds],
+                "window_start": [start] * len(seconds),
+                "observed_at": [
+                    start + timedelta(seconds=second) for second in seconds
+                ],
+                "seconds_elapsed": seconds,
+                "label_up": [1] * len(seconds),
+            }
+        )
+
+    oracle = keyed([5, 10]).with_columns(
+        *(
+            pl.lit(float(index + 1)).alias(name)
+            for index, name in enumerate(EARLY_CAUSAL_ORACLE_FEATURES)
+        )
+    )
+    l2 = keyed([10, 15]).with_columns(
+        *(
+            pl.lit(float(index + 1)).alias(name)
+            for index, name in enumerate(L2_FEATURES)
+        )
+    )
+
+    joined = _join_oracle_l2_candidate_features(oracle, l2)
+
+    assert joined["seconds_elapsed"].to_list() == [10]
+    assert set(EARLY_CAUSAL_ORACLE_FEATURES).issubset(joined.columns)
+    assert set(L2_FEATURES).issubset(joined.columns)
+
+
+def _attribution_inputs() -> tuple[
+    AsymmetricValueConfig,
+    str,
+    dict[str, dict[str, float]],
+    dict[str, pl.DataFrame],
+    dict[str, pl.DataFrame],
+]:
+    config = replace(
+        load_asymmetric_value_config(
+            Path(__file__).parents[1]
+            / "configs/btc-5m-directional-asymmetric-value-one-second-20260414-20260802.toml"
+        ),
+        bootstrap_resamples=20,
+    )
+    policy = next(item.name for item in config.policies if item.selection_eligible)
+    metrics = {
+        f"{name}::{policy}": {
+            "accuracy": 0.30,
+            "net_expectancy_per_trade": 0.10,
+            "stress_1c_net_expectancy_per_trade": 0.05,
+            "net_profit_per_resolved_market": 0.02,
+            "capital_efficiency": 0.04,
+            "profit_factor": 1.10,
+            "selected_calibration_bias": 0.01,
+            "trades_per_resolved_market": 0.05,
+        }
+        for name in ASYMMETRIC_VALUE_CANDIDATES
+    }
+    empty_ledger = pl.DataFrame(
+        schema={
+            "window_start": pl.Datetime("us", "UTC"),
+            "realized_net": pl.Float64,
+        }
+    )
+    ledgers = {
+        f"{name}::{policy}": empty_ledger
+        for name in ASYMMETRIC_VALUE_CANDIDATES
+    }
+    frames = {name: _core_frame() for name in ASYMMETRIC_VALUE_CANDIDATES}
+    return config, policy, metrics, ledgers, frames
+
+
+def test_policy_attribution_rejects_mismatched_market_second_keys() -> None:
+    config, policy, metrics, ledgers, frames = _attribution_inputs()
+    frames[ORACLE_MATCHED_CORE_PRICE_CONTROL] = frames[
+        ORACLE_MATCHED_CORE_PRICE_CONTROL
+    ].with_columns((pl.col("seconds_elapsed") + 1).alias("seconds_elapsed"))
+
+    with pytest.raises(RuntimeError, match="does not share exact market/second keys"):
+        _matched_feature_attribution(
+            metrics,
+            ledgers,
+            frames,
+            policy_name=policy,
+            config=config,
+            window=config.policy,
+            seed_offset=0,
+        )
+
+
+def test_policy_attribution_marks_combined_candidate_offline_only() -> None:
+    config, policy, metrics, ledgers, frames = _attribution_inputs()
+
+    evidence = _matched_feature_attribution(
+        metrics,
+        ledgers,
+        frames,
+        policy_name=policy,
+        config=config,
+        window=config.policy,
+        seed_offset=0,
+    )
+
+    combined = evidence["comparisons"][CORE_ORACLE_L2_PRICE]
+    assert combined["matched_control"] == (
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL
+    )
+    assert combined["candidate_feature_count"] == 115
+    assert combined["control_feature_count"] == 75
+    assert len(combined["added_features"]) == 40
+    assert combined["identical_market_second_keys_verified"]
+    assert not combined["selection_eligible"]
+    assert not combined["runtime_exportable"]
 
 
 def test_evaluation_economics_table_includes_every_predeclared_model() -> None:
@@ -123,7 +259,9 @@ def test_evaluation_economics_table_includes_every_predeclared_model() -> None:
 
     assert {row["model"] for row in table} == set(ASYMMETRIC_VALUE_CANDIDATES)
     assert sum(row["selected_on_policy_window"] for row in table) == 1
-    assert table[0]["net_profit_per_resolved_market"] == pytest.approx(0.6)
+    assert table[0]["net_profit_per_resolved_market"] == pytest.approx(
+        (len(ASYMMETRIC_VALUE_CANDIDATES) - 1) / 10.0
+    )
     assert all(row["strict_market_coverage"] == 0.8 for row in table)
 
 
@@ -167,7 +305,9 @@ def test_sparse_enriched_arm_must_beat_its_same_key_control() -> None:
 
     assert CORE_L2_PRICE not in eligible
     assert CORE_PRICE in eligible
-    assert PRICE_LOGISTIC in eligible
+    assert PRICE_LOGISTIC not in eligible
+    assert CORE_CANDLES_PRICE not in eligible
+    assert CORE_ORACLE_L2_PRICE not in eligible
     assert not all(check["passed"] for check in checks[CORE_L2_PRICE])
 
 

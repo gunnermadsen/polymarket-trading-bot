@@ -36,28 +36,73 @@ PRICE_LOGISTIC = "price_logistic_control"
 CORE_PRICE = "core_price_hgb"
 L2_MATCHED_CORE_PRICE_CONTROL = "l2_matched_core_price_hgb_control"
 CORE_L2_PRICE = "core_l2_price_hgb"
+CANDLE_MATCHED_CORE_PRICE_CONTROL = "candle_matched_core_price_hgb_control"
 CORE_CANDLES_PRICE = "core_chainlink_candles_price_hgb"
 CORE_ORACLE_PRICE = "core_oracle_price_hgb"
 ORACLE_MATCHED_CORE_PRICE_CONTROL = "oracle_matched_core_price_hgb_control"
+THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL = (
+    "three_source_matched_core_oracle_price_hgb_control"
+)
+CORE_ORACLE_L2_PRICE = "core_oracle_l2_price_hgb_offline"
 
 ASYMMETRIC_VALUE_CANDIDATES = (
     PRICE_LOGISTIC,
     CORE_PRICE,
     L2_MATCHED_CORE_PRICE_CONTROL,
     CORE_L2_PRICE,
+    CANDLE_MATCHED_CORE_PRICE_CONTROL,
     CORE_CANDLES_PRICE,
     ORACLE_MATCHED_CORE_PRICE_CONTROL,
     CORE_ORACLE_PRICE,
+    THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+    CORE_ORACLE_L2_PRICE,
+)
+
+ASYMMETRIC_VALUE_MODEL_MATRIX = (
+    CORE_PRICE,
+    CORE_ORACLE_PRICE,
+    CORE_L2_PRICE,
+    CORE_CANDLES_PRICE,
+    CORE_ORACLE_L2_PRICE,
+)
+
+MATCHED_ATTRIBUTION_CONTROLS = {
+    CORE_ORACLE_PRICE: ORACLE_MATCHED_CORE_PRICE_CONTROL,
+    CORE_L2_PRICE: L2_MATCHED_CORE_PRICE_CONTROL,
+    CORE_CANDLES_PRICE: CANDLE_MATCHED_CORE_PRICE_CONTROL,
+    CORE_ORACLE_L2_PRICE: THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+}
+
+EXPECTED_MODEL_FEATURE_COUNTS = {
+    CORE_PRICE: 71,
+    CORE_ORACLE_PRICE: 75,
+    CORE_L2_PRICE: 111,
+    CORE_CANDLES_PRICE: 79,
+    CORE_ORACLE_L2_PRICE: 115,
+}
+
+OFFLINE_ONLY_CANDIDATES = frozenset(
+    {
+        PRICE_LOGISTIC,
+        CANDLE_MATCHED_CORE_PRICE_CONTROL,
+        CORE_CANDLES_PRICE,
+        L2_MATCHED_CORE_PRICE_CONTROL,
+        ORACLE_MATCHED_CORE_PRICE_CONTROL,
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+        CORE_ORACLE_L2_PRICE,
+    }
 )
 
 MODEL_SELECTION_ELIGIBLE = frozenset(
-    set(ASYMMETRIC_VALUE_CANDIDATES)
-    - {
-        L2_MATCHED_CORE_PRICE_CONTROL,
-        ORACLE_MATCHED_CORE_PRICE_CONTROL,
+    {CORE_PRICE, CORE_ORACLE_PRICE, CORE_L2_PRICE}
+)
+ORACLE_FEATURE_CANDIDATES = frozenset(
+    {
+        CORE_ORACLE_PRICE,
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+        CORE_ORACLE_L2_PRICE,
     }
 )
-ORACLE_FEATURE_CANDIDATES = frozenset({CORE_ORACLE_PRICE})
 PRICE_BAND_WIDTH = 0.10
 PRICE_BAND_COUNT = 10
 
@@ -132,6 +177,9 @@ def asymmetric_value_feature_sets() -> dict[str, tuple[str, ...]]:
         CORE_PRICE: tuple(dict.fromkeys((*core, *price))),
         L2_MATCHED_CORE_PRICE_CONTROL: tuple(dict.fromkeys((*core, *price))),
         CORE_L2_PRICE: tuple(dict.fromkeys((*core, *L2_FEATURES, *price))),
+        CANDLE_MATCHED_CORE_PRICE_CONTROL: tuple(
+            dict.fromkeys((*core, *price))
+        ),
         CORE_CANDLES_PRICE: tuple(
             dict.fromkeys((*core, *CHAINLINK_CANDLE_FEATURES, *price))
         ),
@@ -139,6 +187,12 @@ def asymmetric_value_feature_sets() -> dict[str, tuple[str, ...]]:
             dict.fromkeys((*core, *price))
         ),
         CORE_ORACLE_PRICE: tuple(dict.fromkeys((*core, *oracle, *price))),
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL: tuple(
+            dict.fromkeys((*core, *oracle, *price))
+        ),
+        CORE_ORACLE_L2_PRICE: tuple(
+            dict.fromkeys((*core, *oracle, *L2_FEATURES, *price))
+        ),
     }
 
 
@@ -158,6 +212,14 @@ def fit_asymmetric_value_models(
 
     histogram = asdict(core_config.model.histogram_candidates[0])
     feature_sets = asymmetric_value_feature_sets()
+    observed_matrix_counts = {
+        name: len(feature_sets[name]) for name in ASYMMETRIC_VALUE_MODEL_MATRIX
+    }
+    if observed_matrix_counts != EXPECTED_MODEL_FEATURE_COUNTS:
+        raise RuntimeError(
+            "asymmetric-value model matrix feature counts changed: "
+            f"{observed_matrix_counts}"
+        )
     models: dict[str, AsymmetricValueModel] = {}
     summary: dict[str, Any] = {
         "selection_metric": "economic_policy_contract",
@@ -199,6 +261,7 @@ def fit_asymmetric_value_models(
         required_external = {
             CORE_L2_PRICE: set(L2_FEATURES),
             CORE_CANDLES_PRICE: set(CHAINLINK_CANDLE_FEATURES),
+            CORE_ORACLE_L2_PRICE: set(L2_FEATURES),
         }.get(name, set())
         if not required_external.issubset(features):
             raise RuntimeError(f"{name} lost its external feature contract")
@@ -246,6 +309,18 @@ def fit_asymmetric_value_models(
             "family": family,
             "features": list(features),
             "feature_count": len(features),
+            "model_matrix_member": name in ASYMMETRIC_VALUE_MODEL_MATRIX,
+            "selection_eligible": name in MODEL_SELECTION_ELIGIBLE,
+            "runtime_exportable": name not in OFFLINE_ONLY_CANDIDATES,
+            "runtime_export_blocker": (
+                "the current runtime has no combined Oracle plus spot-L2 feature contract"
+                if name == CORE_ORACLE_L2_PRICE
+                else (
+                    "offline attribution or negative-control artifact"
+                    if name in OFFLINE_ONLY_CANDIDATES
+                    else None
+                )
+            ),
             "training_cohort": _training_cohort(name),
             "scoring_cohort": _scoring_cohort(name),
             "fit_rows": fit_frame.height,
@@ -834,12 +909,19 @@ def _calibration_coverage(
 
 
 def _training_cohort(model: str) -> str:
-    if model in {PRICE_LOGISTIC, CORE_PRICE, CORE_CANDLES_PRICE}:
+    if model in {PRICE_LOGISTIC, CORE_PRICE}:
         return "exact_execution_price_cohort"
     if model in {L2_MATCHED_CORE_PRICE_CONTROL, CORE_L2_PRICE}:
         return "l2_exact_execution_cohort"
+    if model in {CANDLE_MATCHED_CORE_PRICE_CONTROL, CORE_CANDLES_PRICE}:
+        return "closed_candle_exact_execution_cohort"
     if model in {ORACLE_MATCHED_CORE_PRICE_CONTROL, CORE_ORACLE_PRICE}:
         return "causal_oracle_exact_execution_cohort"
+    if model in {
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+        CORE_ORACLE_L2_PRICE,
+    }:
+        return "causal_oracle_l2_exact_execution_cohort"
     raise ValueError(f"unknown asymmetric-value model: {model}")
 
 
