@@ -91,7 +91,10 @@ from .early_value_data import (
 )
 from .early_value_training import probability_metrics
 from .runtime_export import score_runtime_model
-from .spot_l2_chainlink_features import L2_FEATURES
+from .spot_l2_chainlink_features import (
+    L2_CAUSAL_AUDIT_COLUMNS,
+    L2_FEATURES,
+)
 
 ASYMMETRIC_VALUE_SCHEMA_VERSION = "btc-asymmetric-value-hunter-benchmark-v3"
 FROZEN_CHAMPION = "frozen_champion_reference_60s_plus"
@@ -2179,7 +2182,7 @@ def _join_oracle_l2_candidate_features(
 
     keys = ["market_id", "window_start", "observed_at", "seconds_elapsed"]
     required_oracle = {*keys, *EARLY_CAUSAL_ORACLE_FEATURES}
-    required_l2 = {*keys, *L2_FEATURES}
+    required_l2 = {*keys, *L2_FEATURES, *L2_CAUSAL_AUDIT_COLUMNS}
     missing_oracle = sorted(required_oracle - set(oracle_price.columns))
     missing_l2 = sorted(required_l2 - set(l2_price.columns))
     if missing_oracle or missing_l2:
@@ -2188,7 +2191,7 @@ def _join_oracle_l2_candidate_features(
             f"oracle={missing_oracle}; l2={missing_l2}"
         )
     joined = oracle_price.join(
-        l2_price.select(*keys, *L2_FEATURES),
+        l2_price.select(*keys, *L2_FEATURES, *L2_CAUSAL_AUDIT_COLUMNS),
         on=keys,
         how="inner",
         validate="1:1",
@@ -2330,6 +2333,8 @@ def _load_or_build_source_features(
         "source_metadata_sha256": _source_metadata_digest(source),
         "require_full_core_key_identity": require_full_identity,
     }
+    if source_family == "l2":
+        identity["causal_audit_columns"] = list(L2_CAUSAL_AUDIT_COLUMNS)
     if destination.is_file() and not force:
         if not metadata_path.is_file():
             raise RuntimeError(f"{source_family} feature cache lacks a provenance manifest")
