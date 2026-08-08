@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable, Sequence
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,12 @@ from .asymmetric_value_data import (
     ORACLE_MAXIMUM_AGE_SECONDS,
     ORACLE_MINIMUM_PROPAGATION_SECONDS,
 )
-from .core_config import CORE_ORACLE_SOURCE_CONTRACT, CoreTrainingConfig, load_core_config
+from .core_config import (
+    CORE_ORACLE_SOURCE_CONTRACT,
+    CORE_SOURCE_CONTRACT,
+    CoreTrainingConfig,
+    load_core_config,
+)
 from .core_execution import (
     EXECUTION_EVIDENCE_CONTRACT,
     EXECUTION_EVIDENCE_SCHEMA_VERSION,
@@ -28,8 +34,10 @@ from .core_execution import (
 from .core_extract import (
     CORE_ORACLE_ROUND_SCHEMA_VERSION,
     CORE_ORACLE_SOURCE_SCHEMA_VERSION,
+    CORE_SOURCE_SCHEMA_VERSION,
     POLYGON_CHAINLINK_BTCUSD_PROXY,
     configure_read_only_connection,
+    core_source_schema_version,
     database_connection,
     file_sha256,
     load_core_manifest,
@@ -42,7 +50,7 @@ from .spot_l2_chainlink_extract import (
     L2_SOURCE_SCHEMA_VERSION,
 )
 
-READINESS_SCHEMA_VERSION = "btc-asymmetric-training-readiness-v2"
+READINESS_SCHEMA_VERSION = "btc-asymmetric-training-readiness-v3"
 READINESS_RANGE_START = datetime(2026, 4, 14, tzinfo=UTC)
 READINESS_RANGE_END = datetime(2026, 8, 2, tzinfo=UTC)
 EXPECTED_DAILY_MARKETS = 288
@@ -65,7 +73,11 @@ CANONICAL_SOURCE_CONTRACT: dict[str, Any] = {
         "relation": "polymarket.btc_interval_markets",
         "field": "official_outcome",
         "allowed_values": ["up", "down"],
-        "core_source_schema_version": CORE_ORACLE_SOURCE_SCHEMA_VERSION,
+        "core_source_contract": CORE_SOURCE_CONTRACT,
+        "core_source_schema_version": CORE_SOURCE_SCHEMA_VERSION,
+        "oracle_arm_source_contract": CORE_ORACLE_SOURCE_CONTRACT,
+        "oracle_arm_source_schema_version": CORE_ORACLE_SOURCE_SCHEMA_VERSION,
+        "source_cache_policy": "distinct base-Core and Core-plus-Oracle caches",
     },
     "reference": {
         "relation": "polymarket.btc_market_reference_facts",
@@ -431,10 +443,15 @@ def _validate_round_contract(
         raise ValueError("Core source range does not begin at the readiness boundary")
     if core_config.data.range_end != READINESS_RANGE_END:
         raise ValueError("Core source range does not end at the readiness boundary")
-    if core_config.data.source_contract != CORE_ORACLE_SOURCE_CONTRACT:
-        raise ValueError("readiness requires a single btc_core_oracle_v1 source cache")
-    if core_config.paths.source_data.resolve() != config.oracle_source.resolve():
-        raise ValueError("Core and Oracle must use the same canonical source directory")
+    if evaluation is None:
+        if core_config.data.source_contract != CORE_SOURCE_CONTRACT:
+            raise ValueError("target readiness requires the btc_core_v1 base source")
+        if core_config.paths.source_data.resolve() == config.oracle_source.resolve():
+            raise ValueError("target readiness requires distinct Core and Oracle caches")
+    elif core_config.data.source_contract != CORE_ORACLE_SOURCE_CONTRACT:
+        raise ValueError("legacy readiness requires the btc_core_oracle_v1 source cache")
+    elif core_config.paths.source_data.resolve() != config.oracle_source.resolve():
+        raise ValueError("legacy Core and Oracle must use the same source directory")
 
 
 def _validate_sql_contracts(package_root: Path) -> dict[str, Any]:
@@ -457,21 +474,14 @@ def _validate_core_oracle_source(
     core_config: CoreTrainingConfig,
 ) -> dict[str, Any]:
     scopes = ("pre_holdout",) if config.evaluation is None else ("pre_holdout", "holdout")
-    manifests = {scope: load_core_manifest(core_config, scope) for scope in scopes}
+    core_manifests = {scope: load_core_manifest(core_config, scope) for scope in scopes}
+    _validate_source_manifest_ranges(core_manifests, label="Core")
     if config.evaluation is None:
-        if (
-            manifests["pre_holdout"].get("range_start") != READINESS_RANGE_START.isoformat()
-            or manifests["pre_holdout"].get("range_end") != READINESS_RANGE_END.isoformat()
-        ):
-            raise RuntimeError(
-                "target-calibrated Core+Oracle manifest does not cover the exact range"
-            )
-    elif (
-        manifests["pre_holdout"].get("range_start") != READINESS_RANGE_START.isoformat()
-        or manifests["pre_holdout"].get("range_end") != manifests["holdout"].get("range_start")
-        or manifests["holdout"].get("range_end") != READINESS_RANGE_END.isoformat()
-    ):
-        raise RuntimeError("Core+Oracle manifests do not cover the exact contiguous range")
+        oracle_config = _oracle_source_config(core_config, config.oracle_source)
+        oracle_manifests = {scope: load_core_manifest(oracle_config, scope) for scope in scopes}
+        _validate_source_manifest_ranges(oracle_manifests, label="Oracle arm")
+    else:
+        oracle_manifests = core_manifests
     expected_core = {
         f"{value}.parquet" for value in _date_strings(READINESS_RANGE_START, READINESS_RANGE_END)
     }
@@ -479,42 +489,105 @@ def _validate_core_oracle_source(
         f"oracle-{value}.parquet"
         for value in _date_strings(READINESS_RANGE_START, READINESS_RANGE_END)
     }
-    core_records = [record for manifest in manifests.values() for record in manifest["partitions"]]
+    core_records = [
+        record for manifest in core_manifests.values() for record in manifest["partitions"]
+    ]
+    oracle_raw_records = [
+        record for manifest in oracle_manifests.values() for record in manifest["partitions"]
+    ]
     oracle_records = [
-        record for manifest in manifests.values() for record in manifest["oracle_partitions"]
+        record for manifest in oracle_manifests.values() for record in manifest["oracle_partitions"]
     ]
     observed_core = {record["path"] for record in core_records}
+    observed_oracle_raw = {record["path"] for record in oracle_raw_records}
     observed_oracle = {record["path"] for record in oracle_records}
     if observed_core != expected_core or len(core_records) != 110:
         raise RuntimeError("Core source manifests do not contain exactly 110 daily partitions")
+    if observed_oracle_raw != expected_core or len(oracle_raw_records) != 110:
+        raise RuntimeError(
+            "Oracle-arm source manifests do not contain exactly 110 raw Core partitions"
+        )
     if observed_oracle != expected_oracle or len(oracle_records) != 110:
         raise RuntimeError("Oracle source manifests do not contain exactly 110 daily partitions")
-    for record in core_records:
+    for record in (*core_records, *oracle_raw_records):
         if int(record["incomplete_markets"]) or int(record["rows"]) != 300 * int(record["markets"]):
-            raise RuntimeError(f"incomplete Core source partition: {record['path']}")
+            raise RuntimeError(f"incomplete raw Core source partition: {record['path']}")
     for record in oracle_records:
         if int(record["rows"]) <= 0 or int(record["causality_violations"]):
             raise RuntimeError(f"invalid Oracle source partition: {record['path']}")
-    paths = {scope: core_config.paths.source_data / f"manifest-{scope}.json" for scope in manifests}
+    core_paths = {
+        scope: core_config.paths.source_data / f"manifest-{scope}.json" for scope in core_manifests
+    }
+    oracle_paths = {
+        scope: config.oracle_source / f"manifest-{scope}.json" for scope in oracle_manifests
+    }
     return {
-        "source_contract": CORE_ORACLE_SOURCE_CONTRACT,
-        "core_source_schema_version": CORE_ORACLE_SOURCE_SCHEMA_VERSION,
+        "source_contract": core_config.data.source_contract,
+        "core_source_schema_version": core_source_schema_version(core_config.data.source_contract),
+        "oracle_source_contract": CORE_ORACLE_SOURCE_CONTRACT,
         "oracle_source_schema_version": CORE_ORACLE_ROUND_SCHEMA_VERSION,
         "source_directory": str(core_config.paths.source_data.resolve()),
+        "oracle_source_directory": str(config.oracle_source.resolve()),
         "source_scopes": list(scopes),
         "daily_core_partitions": len(core_records),
+        "daily_oracle_raw_partitions": len(oracle_raw_records),
         "daily_oracle_partitions": len(oracle_records),
         "manifest_ranges": {
             scope: {
                 "range_start": manifest["range_start"],
                 "range_end": manifest["range_end"],
             }
-            for scope, manifest in manifests.items()
+            for scope, manifest in core_manifests.items()
         },
-        "manifest_sha256": {scope: file_sha256(path) for scope, path in paths.items()},
+        "oracle_manifest_ranges": {
+            scope: {
+                "range_start": manifest["range_start"],
+                "range_end": manifest["range_end"],
+            }
+            for scope, manifest in oracle_manifests.items()
+        },
+        "manifest_sha256": {scope: file_sha256(path) for scope, path in core_paths.items()},
+        "oracle_manifest_sha256": {
+            scope: file_sha256(path) for scope, path in oracle_paths.items()
+        },
         "july_31_present": "oracle-2026-07-31.parquet" in observed_oracle,
         "august_1_present": "oracle-2026-08-01.parquet" in observed_oracle,
     }
+
+
+def _oracle_source_config(
+    core_config: CoreTrainingConfig,
+    oracle_source: Path,
+) -> CoreTrainingConfig:
+    return replace(
+        core_config,
+        data=replace(
+            core_config.data,
+            source_contract=CORE_ORACLE_SOURCE_CONTRACT,
+        ),
+        paths=replace(core_config.paths, source_data=oracle_source),
+    )
+
+
+def _validate_source_manifest_ranges(
+    manifests: dict[str, dict[str, Any]],
+    *,
+    label: str,
+) -> None:
+    if set(manifests) == {"pre_holdout"}:
+        exact = (
+            manifests["pre_holdout"].get("range_start") == READINESS_RANGE_START.isoformat()
+            and manifests["pre_holdout"].get("range_end") == READINESS_RANGE_END.isoformat()
+        )
+    else:
+        exact = (
+            set(manifests) == {"pre_holdout", "holdout"}
+            and manifests["pre_holdout"].get("range_start") == READINESS_RANGE_START.isoformat()
+            and manifests["pre_holdout"].get("range_end") == manifests["holdout"].get("range_start")
+            and manifests["holdout"].get("range_end") == READINESS_RANGE_END.isoformat()
+        )
+    if not exact:
+        raise RuntimeError(f"{label} manifests do not cover the exact contiguous range")
 
 
 def _validate_oracle_feature_caches(
@@ -526,7 +599,7 @@ def _validate_oracle_feature_caches(
     inventories: dict[str, dict[str, Any]] = {}
     for scope, (start, end, filename) in windows.items():
         inventory = oracle_source_inventory(
-            core_config.paths.source_data,
+            config.oracle_source,
             _dates(start, end),
         )
         inventories[scope] = inventory

@@ -9,7 +9,7 @@ from datetime import datetime
 from itertools import pairwise
 from pathlib import Path
 
-from .core_config import load_core_config, parse_utc_day
+from .core_config import CORE_SOURCE_CONTRACT, load_core_config, parse_utc_day
 
 LEGACY_TRAINING_CONTRACT = "legacy_four_window"
 TARGET_CALIBRATED_TRAINING_CONTRACT = "early_price_target_calibrated"
@@ -121,11 +121,12 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
     benchmark = raw["benchmark"]
     if benchmark.get("profile") != "btc_asymmetric_value_hunter":
         raise ValueError("asymmetric-value benchmark profile identity changed")
-    if benchmark.get("paper_only") is not True or benchmark.get("live_capital_allowed") is not False:
+    if (
+        benchmark.get("paper_only") is not True
+        or benchmark.get("live_capital_allowed") is not False
+    ):
         raise ValueError("asymmetric-value benchmark must remain offline and paper-only")
-    training_contract = str(
-        benchmark.get("training_contract", LEGACY_TRAINING_CONTRACT)
-    )
+    training_contract = str(benchmark.get("training_contract", LEGACY_TRAINING_CONTRACT))
 
     def window(name: str) -> EvidenceWindow:
         values = raw["windows"][name]
@@ -192,17 +193,13 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
             for values in model["calibration_bands"]
         ),
         quantity=float(economics["quantity"]),
-        maximum_depth_participation=float(
-            economics["maximum_depth_participation"]
-        ),
+        maximum_depth_participation=float(economics["maximum_depth_participation"]),
         book_freshness_seconds=int(economics["book_freshness_seconds"]),
         execution_reserve_per_share=float(economics["execution_reserve_per_share"]),
         confidence_control_minimum_edge_per_share=float(
             economics["confidence_control_minimum_edge_per_share"]
         ),
-        confidence_thresholds=tuple(
-            float(value) for value in economics["confidence_thresholds"]
-        ),
+        confidence_thresholds=tuple(float(value) for value in economics["confidence_thresholds"]),
         policies=policies,
         gates=ValueGates(
             minimum_calibration_markets_per_band=int(
@@ -211,15 +208,9 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
             minimum_calibration_markets_per_cell=int(
                 gate_values["minimum_calibration_markets_per_cell"]
             ),
-            minimum_calibration_days_per_cell=int(
-                gate_values["minimum_calibration_days_per_cell"]
-            ),
-            minimum_policy_strict_markets=int(
-                gate_values["minimum_policy_strict_markets"]
-            ),
-            minimum_policy_executable_days=int(
-                gate_values["minimum_policy_executable_days"]
-            ),
+            minimum_calibration_days_per_cell=int(gate_values["minimum_calibration_days_per_cell"]),
+            minimum_policy_strict_markets=int(gate_values["minimum_policy_strict_markets"]),
+            minimum_policy_executable_days=int(gate_values["minimum_policy_executable_days"]),
             minimum_policy_source_grid_coverage=float(
                 gate_values["minimum_policy_source_grid_coverage"]
             ),
@@ -229,9 +220,7 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
             minimum_policy_candidate_grid_coverage=float(
                 gate_values["minimum_policy_candidate_grid_coverage"]
             ),
-            minimum_evaluation_strict_markets=int(
-                gate_values["minimum_evaluation_strict_markets"]
-            ),
+            minimum_evaluation_strict_markets=int(gate_values["minimum_evaluation_strict_markets"]),
             minimum_evaluation_executable_days=int(
                 gate_values["minimum_evaluation_executable_days"]
             ),
@@ -247,9 +236,7 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
             minimum_policy_trades=int(gate_values["minimum_policy_trades"]),
             minimum_evaluation_trades=int(gate_values["minimum_evaluation_trades"]),
             minimum_profit_factor=float(gate_values["minimum_profit_factor"]),
-            minimum_net_expectancy_per_trade=float(
-                gate_values["minimum_net_expectancy_per_trade"]
-            ),
+            minimum_net_expectancy_per_trade=float(gate_values["minimum_net_expectancy_per_trade"]),
             minimum_capital_efficiency=float(gate_values["minimum_capital_efficiency"]),
             minimum_stress_expectancy_per_trade=float(
                 gate_values["minimum_stress_expectancy_per_trade"]
@@ -330,7 +317,9 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
             "and seconds 60-240 every five seconds"
         )
     if config.price_seconds != expected_prices:
-        raise ValueError("asymmetric-value prices must cover seconds 1-59 and 60-240 every five seconds")
+        raise ValueError(
+            "asymmetric-value prices must cover seconds 1-59 and 60-240 every five seconds"
+        )
 
     expected_bands = (
         (1, 15),
@@ -343,7 +332,9 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
         (180, 241),
     )
     if config.calibration_bands != expected_bands:
-        raise ValueError("asymmetric-value calibration bands must preserve the causal time contract")
+        raise ValueError(
+            "asymmetric-value calibration bands must preserve the causal time contract"
+        )
     if config.training_contract == TARGET_CALIBRATED_TRAINING_CONTRACT:
         target = config.target_calibration
         if target is None:
@@ -356,15 +347,11 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
             or target.time_bands != required_target_bands
             or target.required_fitted_cells != 8
         ):
-            raise ValueError(
-                "target calibration must require eight YES/NO 20-30c early-time cells"
-            )
+            raise ValueError("target calibration must require eight YES/NO 20-30c early-time cells")
     if not math.isclose(config.quantity, 5.0):
         raise ValueError("asymmetric-value economics are fixed to five-share execution")
     if not math.isclose(config.maximum_depth_participation, 0.25):
-        raise ValueError(
-            "asymmetric-value execution must preserve 25% maximum depth participation"
-        )
+        raise ValueError("asymmetric-value execution must preserve 25% maximum depth participation")
     if config.book_freshness_seconds != 2:
         raise ValueError("asymmetric-value books must be no more than two seconds old")
     if not 0.0 <= config.execution_reserve_per_share <= 0.05:
@@ -373,15 +360,10 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
         raise ValueError("asymmetric-value confidence control edge is invalid")
     expected_thresholds = (0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.89)
     if config.confidence_thresholds != expected_thresholds:
-        raise ValueError(
-            "asymmetric-value confidence controls must cover 50%-89%"
-        )
+        raise ValueError("asymmetric-value confidence controls must cover 50%-89%")
     if config.random_seed < 0 or config.bootstrap_resamples < 1_000:
         raise ValueError("asymmetric-value randomness and bootstrap settings are invalid")
-    if (
-        not math.isfinite(config.calibration_identity_l2)
-        or config.calibration_identity_l2 <= 0.0
-    ):
+    if not math.isfinite(config.calibration_identity_l2) or config.calibration_identity_l2 <= 0.0:
         raise ValueError("asymmetric-value calibration identity L2 must be positive")
 
     if not config.policies:
@@ -394,9 +376,7 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
     for policy in config.policies:
         if policy.maximum_entry_second not in config.prediction_seconds:
             raise ValueError("policy maximum entry seconds must be model decision points")
-        if not (
-            0.0 < policy.minimum_share_price < policy.maximum_share_price < 0.89
-        ):
+        if not (0.0 < policy.minimum_share_price < policy.maximum_share_price < 0.89):
             raise ValueError("policy raw share-price ranges must be lower priced")
         if policy.maximum_share_price > policy.maximum_cost_per_share:
             raise ValueError("policy all-in cost cap cannot be below its raw share-price cap")
@@ -413,9 +393,7 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
             or not math.isclose(primary.maximum_cost_per_share, 0.35)
             or not math.isclose(primary.minimum_edge_per_share, 0.03)
         ):
-            raise ValueError(
-                "target-calibrated primary policy must preserve 20-30c by55 economics"
-            )
+            raise ValueError("target-calibrated primary policy must preserve 20-30c by55 economics")
 
     gates = config.gates
     if gates.minimum_policy_trades <= 0 or gates.minimum_evaluation_trades <= 0:
@@ -431,13 +409,8 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
     )
     if any(value <= 0 for value in evidence_gates):
         raise ValueError("asymmetric-value evidence sufficiency gates must be positive")
-    if (
-        gates.minimum_calibration_markets_per_cell
-        > gates.minimum_calibration_markets_per_band
-    ):
-        raise ValueError(
-            "asymmetric-value calibration-cell market support cannot exceed its band"
-        )
+    if gates.minimum_calibration_markets_per_cell > gates.minimum_calibration_markets_per_band:
+        raise ValueError("asymmetric-value calibration-cell market support cannot exceed its band")
     calibration_days = (config.calibration.end - config.calibration.start).days
     if gates.minimum_calibration_days_per_cell > calibration_days:
         raise ValueError(
@@ -460,7 +433,10 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
     )
     if any(not 0.0 < value <= 1.0 for value in source_coverage_gates):
         raise ValueError("asymmetric-value source coverage gates must be inside (0, 1]")
-    if gates.minimum_side_trades <= 0 or 2 * gates.minimum_side_trades > gates.minimum_policy_trades:
+    if (
+        gates.minimum_side_trades <= 0
+        or 2 * gates.minimum_side_trades > gates.minimum_policy_trades
+    ):
         raise ValueError("asymmetric-value side coverage gate is invalid")
     if gates.minimum_pre60_trades <= 0 or gates.minimum_20_30c_trades <= 0:
         raise ValueError("asymmetric-value lower-price/time trade gates must be positive")
@@ -497,14 +473,14 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
         required_inputs.append(config.oracle_source)
     missing = [str(path) for path in required_inputs if not path.exists()]
     if missing:
-        raise FileNotFoundError("required asymmetric-value evidence is missing: " + ", ".join(missing))
+        raise FileNotFoundError(
+            "required asymmetric-value evidence is missing: " + ", ".join(missing)
+        )
     if config.training_contract == TARGET_CALIBRATED_TRAINING_CONTRACT:
         core = load_core_config(config.core_config)
-        if core.data.source_contract != "btc_core_oracle_v1":
+        if core.data.source_contract != CORE_SOURCE_CONTRACT:
+            raise ValueError("target-calibrated training must use the base causal Core source")
+        if core.paths.source_data.resolve() == config.oracle_source.resolve():
             raise ValueError(
-                "target-calibrated training must extract the causal Core + Oracle source"
-            )
-        if core.paths.source_data.resolve() != config.oracle_source.resolve():
-            raise ValueError(
-                "target-calibrated Core and Oracle sources must share one exact-range cache"
+                "target-calibrated base Core and Oracle sources require distinct caches"
             )
