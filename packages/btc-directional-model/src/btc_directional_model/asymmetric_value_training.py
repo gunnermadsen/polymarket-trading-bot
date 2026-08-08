@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 from scipy.optimize import minimize
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from threadpoolctl import threadpool_limits
 
@@ -25,6 +26,8 @@ from .core_training import (
     CandidateSpec,
     FittedCoreModel,
     ProbabilityCalibrator,
+    feature_matrix,
+    finite_medians,
     fit_model,
 )
 from .early_value_training import (
@@ -107,6 +110,93 @@ ORACLE_FEATURE_CANDIDATES = frozenset(
 PRICE_BAND_WIDTH = 0.10
 PRICE_BAND_COUNT = 10
 POLICY_INACTIVE_IMPUTATION_STRATEGY = "constant_zero_fit_and_runtime_nonfinite"
+HYBRID_MARKET_EQUAL_ROW_WEIGHT_POLICY = "hybrid_broad_target_market_equal"
+
+
+@dataclass(frozen=True)
+class HybridHistogramProfile:
+    """Frozen HGB capacity and regularization contract."""
+
+    name: str
+    learning_rate: float
+    max_iter: int
+    max_leaf_nodes: int
+    min_samples_leaf: int
+    l2_regularization: float
+
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "learning_rate": self.learning_rate,
+            "max_iter": self.max_iter,
+            "max_leaf_nodes": self.max_leaf_nodes,
+            "min_samples_leaf": self.min_samples_leaf,
+            "l2_regularization": self.l2_regularization,
+        }
+
+
+@dataclass(frozen=True)
+class HybridObjectiveCandidate:
+    """One predeclared broad-plus-target objective candidate."""
+
+    name: str
+    target_weight: float
+    histogram_profile: str
+    selection_eligible: bool
+
+
+HYBRID_HISTOGRAM_PROFILES = {
+    "h0_current": HybridHistogramProfile(
+        name="h0_current",
+        learning_rate=0.05,
+        max_iter=160,
+        max_leaf_nodes=15,
+        min_samples_leaf=100,
+        l2_regularization=0.10,
+    ),
+    "h1_regularized": HybridHistogramProfile(
+        name="h1_regularized",
+        learning_rate=0.03,
+        max_iter=180,
+        max_leaf_nodes=7,
+        min_samples_leaf=200,
+        l2_regularization=2.0,
+    ),
+    "h2_regularized": HybridHistogramProfile(
+        name="h2_regularized",
+        learning_rate=0.03,
+        max_iter=200,
+        max_leaf_nodes=15,
+        min_samples_leaf=250,
+        l2_regularization=5.0,
+    ),
+    "h3_regularized": HybridHistogramProfile(
+        name="h3_regularized",
+        learning_rate=0.02,
+        max_iter=240,
+        max_leaf_nodes=7,
+        min_samples_leaf=300,
+        l2_regularization=10.0,
+    ),
+}
+
+HYBRID_OBJECTIVE_CANDIDATES = (
+    HybridObjectiveCandidate("broad_current", 0.0, "h0_current", False),
+    HybridObjectiveCandidate("target_only_current", 1.0, "h0_current", False),
+    HybridObjectiveCandidate("hybrid_50_current", 0.50, "h0_current", False),
+    HybridObjectiveCandidate("broad_regularized", 0.0, "h2_regularized", False),
+    HybridObjectiveCandidate("hybrid_25_h1", 0.25, "h1_regularized", True),
+    HybridObjectiveCandidate("hybrid_25_h2", 0.25, "h2_regularized", True),
+    HybridObjectiveCandidate("hybrid_25_h3", 0.25, "h3_regularized", True),
+    HybridObjectiveCandidate("hybrid_50_h1", 0.50, "h1_regularized", True),
+    HybridObjectiveCandidate("hybrid_50_h2", 0.50, "h2_regularized", True),
+    HybridObjectiveCandidate("hybrid_50_h3", 0.50, "h3_regularized", True),
+)
+
+HYBRID_SELECTION_ELIGIBLE = frozenset(
+    candidate.name
+    for candidate in HYBRID_OBJECTIVE_CANDIDATES
+    if candidate.selection_eligible
+)
 
 
 @dataclass(frozen=True)
@@ -551,6 +641,195 @@ def select_target_fit_cohort(
             f"{model} target fit cohort requires both outcomes; observed {sorted(labels)}"
         )
     return selected
+
+
+def hybrid_target_mask(
+    frame: pl.DataFrame,
+    config: AsymmetricValueConfig,
+) -> np.ndarray:
+    """Return the exact by-55, raw 20-30c opportunity membership mask."""
+
+    contract = target_fit_cohort_contract(config)
+    required = {
+        "seconds_elapsed",
+        "yes_ask_vwap_5",
+        "no_ask_vwap_5",
+    }
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError("hybrid target mask is missing: " + ", ".join(missing))
+    elapsed = frame["seconds_elapsed"].to_numpy()
+    yes_price = frame["yes_ask_vwap_5"].to_numpy()
+    no_price = frame["no_ask_vwap_5"].to_numpy()
+    minimum_price = float(contract["minimum_raw_share_price"])
+    maximum_price = float(contract["maximum_raw_share_price"])
+
+    def side_in_band(values: np.ndarray) -> np.ndarray:
+        return (
+            np.isfinite(values)
+            & (values >= minimum_price)
+            & (values < maximum_price)
+        )
+
+    return (
+        (elapsed >= int(contract["minimum_entry_second"]))
+        & (elapsed <= int(contract["maximum_entry_second"]))
+        & (side_in_band(yes_price) | side_in_band(no_price))
+    )
+
+
+def hybrid_market_equal_weights(
+    frame: pl.DataFrame,
+    config: AsymmetricValueConfig,
+    *,
+    target_weight: float,
+) -> np.ndarray:
+    """Mix independently market-equal broad and target opportunity objectives."""
+
+    if (
+        not np.isfinite(target_weight)
+        or target_weight < 0.0
+        or target_weight > 1.0
+    ):
+        raise ValueError("hybrid target weight must be inside [0, 1]")
+    if frame.is_empty():
+        raise ValueError("hybrid objective frame must be non-empty")
+    if "market_id" not in frame.columns:
+        raise ValueError("hybrid objective frame is missing market_id")
+    market_ids = frame["market_id"].cast(pl.String).to_numpy()
+    broad = _market_equal_weights_for_ids(market_ids)
+    selected = hybrid_target_mask(frame, config)
+    if not selected.any():
+        raise RuntimeError("hybrid objective has no target opportunity rows")
+    target = np.zeros(frame.height, dtype=np.float64)
+    target[selected] = _market_equal_weights_for_ids(market_ids[selected])
+    weights = (1.0 - target_weight) * broad + target_weight * target
+    if not np.isfinite(weights).all() or float(weights.sum()) <= 0.0:
+        raise RuntimeError("hybrid objective produced invalid weights")
+    # Preserve the objective ratios while keeping the estimator's mean weight at one.
+    return weights * (frame.height / float(weights.sum()))
+
+
+def hybrid_objective_weight_evidence(
+    frame: pl.DataFrame,
+    config: AsymmetricValueConfig,
+    *,
+    target_weight: float,
+) -> dict[str, Any]:
+    """Seal row, market, and realized component-weight evidence."""
+
+    selected = hybrid_target_mask(frame, config)
+    weights = hybrid_market_equal_weights(
+        frame,
+        config,
+        target_weight=target_weight,
+    )
+    total = float(weights.sum())
+    return {
+        "formula": "(1-alpha)*broad_market_equal + alpha*target_market_equal",
+        "component_normalization": "equal_total_per_market_independently",
+        "mean_weight_rescaled_to_one": True,
+        "target_weight": target_weight,
+        "source_rows": frame.height,
+        "source_markets": frame["market_id"].n_unique(),
+        "target_rows": int(selected.sum()),
+        "target_markets": frame.filter(pl.Series(selected))["market_id"].n_unique(),
+        "positive_weight_rows": int((weights > 0.0).sum()),
+        "realized_weight_on_target_rows": float(weights[selected].sum() / total),
+        "weight_sum": total,
+    }
+
+
+def fit_hybrid_histogram_model(
+    frame: pl.DataFrame,
+    feature_names: tuple[str, ...],
+    candidate: HybridObjectiveCandidate,
+    config: AsymmetricValueConfig,
+    core_config: CoreTrainingConfig,
+) -> tuple[FittedCoreModel, dict[str, Any]]:
+    """Fit one frozen hybrid Core+L2 HGB configuration."""
+
+    if candidate.histogram_profile not in HYBRID_HISTOGRAM_PROFILES:
+        raise ValueError(
+            f"unknown hybrid histogram profile: {candidate.histogram_profile}"
+        )
+    required = {"market_id", "label_up", *feature_names}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError(
+            f"{candidate.name} hybrid fit frame is missing: " + ", ".join(missing)
+        )
+    weights = hybrid_market_equal_weights(
+        frame,
+        config,
+        target_weight=candidate.target_weight,
+    )
+    effective = weights > 0.0
+    if not effective.any():
+        raise RuntimeError(f"{candidate.name} has no positive-weight fit rows")
+    matrix = feature_matrix(frame, feature_names)[effective]
+    labels = frame["label_up"].to_numpy()[effective]
+    fit_weights = weights[effective]
+    if np.unique(labels).size != 2:
+        raise RuntimeError(f"{candidate.name} hybrid fit requires both outcomes")
+    medians = finite_medians(matrix)
+    policy_inactive = tuple(
+        feature
+        for feature in TARGET_POLICY_INACTIVE_FEATURE_MATURITY
+        if feature in feature_names
+    )
+    for feature in policy_inactive:
+        medians[feature_names.index(feature)] = 0.0
+    transformed = np.where(np.isfinite(matrix), matrix, medians)
+    profile = HYBRID_HISTOGRAM_PROFILES[candidate.histogram_profile]
+    parameters = profile.parameters()
+    estimator = HistGradientBoostingClassifier(
+        **parameters,
+        early_stopping=False,
+        random_state=config.random_seed,
+    )
+    with threadpool_limits(limits=core_config.compute.threads_per_fit):
+        estimator.fit(transformed, labels, sample_weight=fit_weights)
+    model = FittedCoreModel(
+        candidate_name=candidate.name,
+        family="histogram",
+        feature_names=feature_names,
+        hyperparameters={
+            **parameters,
+            "target_weight": candidate.target_weight,
+            "histogram_profile": candidate.histogram_profile,
+        },
+        imputation_medians=medians,
+        standardization_means=None,
+        standardization_scales=None,
+        estimator=estimator,
+        row_weight_policy=HYBRID_MARKET_EQUAL_ROW_WEIGHT_POLICY,
+        row_weight_schedule=None,
+        recency_half_life_days=None,
+    )
+    evidence = hybrid_objective_weight_evidence(
+        frame,
+        config,
+        target_weight=candidate.target_weight,
+    )
+    evidence.update(
+        {
+            "candidate": candidate.name,
+            "selection_eligible": candidate.selection_eligible,
+            "histogram_profile": candidate.histogram_profile,
+            "hyperparameters": parameters,
+            "effective_fit_rows": int(effective.sum()),
+            "effective_fit_markets": frame.filter(pl.Series(effective))[
+                "market_id"
+            ].n_unique(),
+            "optimizer_converged": bool(estimator.n_iter_ <= estimator.max_iter),
+            "policy_inactive_feature_medians": {
+                feature: float(medians[feature_names.index(feature)])
+                for feature in policy_inactive
+            },
+        }
+    )
+    return model, evidence
 
 
 def _target_fit_cohort_evidence(

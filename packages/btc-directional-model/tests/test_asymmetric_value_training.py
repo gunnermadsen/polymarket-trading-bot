@@ -26,6 +26,9 @@ from btc_directional_model.asymmetric_value_training import (
     CORE_ORACLE_PRICE,
     CORE_PRICE,
     EXPECTED_MODEL_FEATURE_COUNTS,
+    HYBRID_HISTOGRAM_PROFILES,
+    HYBRID_OBJECTIVE_CANDIDATES,
+    HYBRID_SELECTION_ELIGIBLE,
     L2_MATCHED_CORE_PRICE_CONTROL,
     MATCHED_ATTRIBUTION_CONTROLS,
     MODEL_SELECTION_ELIGIBLE,
@@ -40,7 +43,11 @@ from btc_directional_model.asymmetric_value_training import (
     _price_band_indices,
     _target_fit_key_digest,
     asymmetric_value_feature_sets,
+    fit_hybrid_histogram_model,
     fit_side_price_time_calibrators,
+    hybrid_market_equal_weights,
+    hybrid_objective_weight_evidence,
+    hybrid_target_mask,
     select_target_fit_cohort,
     target_calibration_evidence,
     target_calibration_gate_checks,
@@ -66,6 +73,28 @@ class _ConstantLogitModel:
 
     def raw_logit(self, frame: pl.DataFrame) -> np.ndarray:
         return np.full(frame.height, np.log(0.7 / 0.3), dtype=np.float64)
+
+
+def _hybrid_config():
+    return load_asymmetric_value_config(
+        Path(__file__).parents[1]
+        / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+    )
+
+
+def _hybrid_weight_frame() -> pl.DataFrame:
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    return pl.DataFrame(
+        {
+            "market_id": ["a", "a", "a", "b", "b", "c"],
+            "window_start": [start] * 6,
+            "observed_at": [start + timedelta(seconds=value) for value in (1, 2, 60, 1, 60, 60)],
+            "seconds_elapsed": [1, 2, 60, 1, 60, 60],
+            "label_up": [0, 0, 0, 1, 1, 0],
+            "yes_ask_vwap_5": [0.20, 0.299999, 0.40, 0.40, 0.40, 0.40],
+            "no_ask_vwap_5": [0.80, 0.70, 0.60, 0.25, 0.60, 0.60],
+        }
+    )
 
 
 def _calibrated_bundle() -> AsymmetricValueModel:
@@ -168,6 +197,146 @@ def test_exact_model_matrix_and_attribution_control_contract() -> None:
     assert set(EARLY_CAUSAL_ORACLE_FEATURES).issubset(
         feature_sets[CORE_ORACLE_L2_PRICE]
     )
+
+
+def test_hybrid_objective_matrix_is_exact_and_narrow() -> None:
+    assert tuple(HYBRID_HISTOGRAM_PROFILES) == (
+        "h0_current",
+        "h1_regularized",
+        "h2_regularized",
+        "h3_regularized",
+    )
+    assert tuple(candidate.name for candidate in HYBRID_OBJECTIVE_CANDIDATES) == (
+        "broad_current",
+        "target_only_current",
+        "hybrid_50_current",
+        "broad_regularized",
+        "hybrid_25_h1",
+        "hybrid_25_h2",
+        "hybrid_25_h3",
+        "hybrid_50_h1",
+        "hybrid_50_h2",
+        "hybrid_50_h3",
+    )
+    assert HYBRID_SELECTION_ELIGIBLE == {
+        "hybrid_25_h1",
+        "hybrid_25_h2",
+        "hybrid_25_h3",
+        "hybrid_50_h1",
+        "hybrid_50_h2",
+        "hybrid_50_h3",
+    }
+    assert len(HYBRID_OBJECTIVE_CANDIDATES) == 10
+    assert not any(
+        np.isclose(candidate.target_weight, 0.75)
+        for candidate in HYBRID_OBJECTIVE_CANDIDATES
+    )
+
+
+def test_hybrid_target_mask_preserves_exact_time_and_price_boundaries() -> None:
+    config = _hybrid_config()
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    frame = pl.DataFrame(
+        {
+            "seconds_elapsed": [1, 55, 56, 1, 1, 1],
+            "yes_ask_vwap_5": [0.20, 0.299999, 0.25, 0.199999, 0.30, 0.40],
+            "no_ask_vwap_5": [0.80, 0.70, 0.75, 0.80, 0.70, 0.25],
+            "market_id": [f"m{index}" for index in range(6)],
+            "window_start": [start] * 6,
+            "observed_at": [
+                start + timedelta(seconds=index + 1) for index in range(6)
+            ],
+            "label_up": [0, 1, 0, 1, 0, 1],
+        }
+    )
+
+    assert hybrid_target_mask(frame, config).tolist() == [
+        True,
+        True,
+        False,
+        False,
+        False,
+        True,
+    ]
+
+
+def test_hybrid_weights_mix_independently_market_equal_components() -> None:
+    config = _hybrid_config()
+    frame = _hybrid_weight_frame()
+    broad = hybrid_market_equal_weights(frame, config, target_weight=0.0)
+    target = hybrid_market_equal_weights(frame, config, target_weight=1.0)
+    hybrid = hybrid_market_equal_weights(frame, config, target_weight=0.25)
+
+    market_ids = frame["market_id"].to_numpy()
+    for market in ("a", "b", "c"):
+        np.testing.assert_allclose(broad[market_ids == market].sum(), 2.0)
+    selected = hybrid_target_mask(frame, config)
+    assert np.all(target[~selected] == 0.0)
+    np.testing.assert_allclose(target[market_ids == "a"].sum(), 3.0)
+    np.testing.assert_allclose(target[market_ids == "b"].sum(), 3.0)
+    np.testing.assert_allclose(hybrid, 0.75 * broad + 0.25 * target)
+    np.testing.assert_allclose(hybrid.mean(), 1.0)
+    evidence = hybrid_objective_weight_evidence(
+        frame,
+        config,
+        target_weight=0.25,
+    )
+    assert evidence["source_rows"] == 6
+    assert evidence["target_rows"] == 3
+    assert evidence["target_markets"] == 2
+    assert evidence["positive_weight_rows"] == 6
+
+
+def test_hybrid_fit_keeps_policy_inactive_runtime_median_neutral() -> None:
+    config = _hybrid_config()
+    core_config = load_core_config(config.core_config)
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    rows = 400
+    seconds = np.where(np.arange(rows) % 2 == 0, 1, 60)
+    frame = pl.DataFrame(
+        {
+            "market_id": [f"m{index // 2}" for index in range(rows)],
+            "window_start": [
+                start + timedelta(minutes=5 * (index // 2)) for index in range(rows)
+            ],
+            "observed_at": [
+                start
+                + timedelta(
+                    minutes=5 * (index // 2),
+                    seconds=int(seconds[index]),
+                )
+                for index in range(rows)
+            ],
+            "seconds_elapsed": seconds,
+            "label_up": np.arange(rows) % 2,
+            "yes_ask_vwap_5": np.where(seconds == 1, 0.25, 0.45),
+            "no_ask_vwap_5": np.where(seconds == 1, 0.75, 0.55),
+            "simple_feature": np.linspace(-1.0, 1.0, rows),
+            "btc_return_60s_bps": np.where(seconds == 1, np.nan, 4.0),
+        }
+    )
+    candidate = next(
+        item
+        for item in HYBRID_OBJECTIVE_CANDIDATES
+        if item.name == "broad_current"
+    )
+
+    model, evidence = fit_hybrid_histogram_model(
+        frame,
+        ("simple_feature", "btc_return_60s_bps"),
+        candidate,
+        config,
+        core_config,
+    )
+
+    assert model.imputation_medians.tolist()[1] == 0.0
+    assert evidence["policy_inactive_feature_medians"] == {
+        "btc_return_60s_bps": 0.0
+    }
+    probability = model.raw_probability(
+        frame.filter(pl.col("seconds_elapsed") == 1)
+    )
+    assert np.isfinite(probability).all()
 
 
 def test_early_oracle_contract_excludes_unproven_boundary_features() -> None:
