@@ -13,13 +13,32 @@ from btc_directional_model.asymmetric_residual_value import (
     CROSS_SOURCE_CONFIRMATION,
     GROUP_PENALTIES,
     L2_CONFIRMATION,
+    REQUIRED_FEATURE_COLUMNS,
     RESIDUAL_FEATURE_NAMES,
     RESIDUAL_FEATURE_SPECS,
+    SIDE_CONDITIONED_RESIDUAL_MODEL,
     SideConditionedResidualModel,
     derive_side_conditioned_rows,
     feature_penalty_manifest,
     market_equal_side_weights,
     normalized_executable_cost_prior,
+)
+from btc_directional_model.asymmetric_value_benchmark import (
+    _fit_development_residual,
+    _project_candidate_source,
+    _residual_matched_attribution,
+)
+from btc_directional_model.asymmetric_value_config import load_asymmetric_value_config
+from btc_directional_model.asymmetric_value_evaluation import (
+    candidate_policy_key,
+    select_policy_candidate,
+)
+from btc_directional_model.asymmetric_value_training import (
+    ASYMMETRIC_VALUE_CANDIDATES,
+    CORE_ORACLE_L2_PRICE,
+    MODEL_SELECTION_ELIGIBLE,
+    THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+    asymmetric_value_feature_sets,
 )
 
 
@@ -27,9 +46,11 @@ def residual_frame(
     *,
     markets: int = 12,
     seconds: tuple[int, ...] = (1, 5, 15, 30, 60),
+    origin: datetime | None = None,
+    market_prefix: str = "market",
 ) -> pl.DataFrame:
     rows: list[dict[str, object]] = []
-    origin = datetime(2026, 6, 1, tzinfo=UTC)
+    origin = origin or datetime(2026, 6, 1, tzinfo=UTC)
     for market_index in range(markets):
         window_start = origin + timedelta(minutes=5 * market_index)
         label_up = market_index % 2
@@ -47,7 +68,7 @@ def residual_frame(
             no_cost = 0.58 + 0.04 * direction
             rows.append(
                 {
-                    "market_id": f"market-{market_index}",
+                    "market_id": f"{market_prefix}-{market_index}",
                     "window_start": window_start,
                     "observed_at": observed_at,
                     "seconds_elapsed": elapsed,
@@ -174,6 +195,24 @@ def test_market_equal_weights_total_one_even_with_unequal_decision_counts() -> N
 
 def test_explicit_maturity_flags_mask_unavailable_horizons_without_filling() -> None:
     frame = residual_frame(markets=1, seconds=(1, 5, 15, 30, 60))
+    for horizon in (1, 5, 15, 30, 60):
+        frame = frame.with_columns(
+            pl.when(pl.col("seconds_elapsed") < horizon)
+            .then(None)
+            .otherwise(pl.col(f"btc_return_{horizon}s_bps"))
+            .alias(f"btc_return_{horizon}s_bps"),
+            pl.when(pl.col("seconds_elapsed") < horizon)
+            .then(None)
+            .otherwise(pl.col(f"spot_l2_midpoint_change_{horizon}s_bps"))
+            .alias(f"spot_l2_midpoint_change_{horizon}s_bps"),
+        )
+    for horizon in (5, 30, 60):
+        frame = frame.with_columns(
+            pl.when(pl.col("seconds_elapsed") < horizon)
+            .then(None)
+            .otherwise(pl.col(f"btc_signed_flow_{horizon}s"))
+            .alias(f"btc_signed_flow_{horizon}s")
+        )
     rows = derive_side_conditioned_rows(frame, require_labels=False)
     yes = rows.features[0::2]
 
@@ -183,6 +222,18 @@ def test_explicit_maturity_flags_mask_unavailable_horizons_without_filling() -> 
         expected_flag = (np.asarray((1, 5, 15, 30, 60)) >= horizon).astype(float)
         np.testing.assert_array_equal(yes[:, flag_index], expected_flag)
         assert np.all(yes[expected_flag == 0.0, return_index] == 0.0)
+        assert frame.filter(pl.col("seconds_elapsed") < horizon)[
+            f"btc_return_{horizon}s_bps"
+        ].null_count() == int((expected_flag == 0.0).sum())
+
+
+def test_missing_mature_horizon_fails_closed() -> None:
+    frame = residual_frame(markets=1, seconds=(60,)).with_columns(
+        pl.lit(None).cast(pl.Float64).alias("btc_return_60s_bps")
+    )
+
+    with pytest.raises(ValueError, match="mature inputs.*btc_return_60s_bps"):
+        derive_side_conditioned_rows(frame, require_labels=False)
 
 
 def test_fit_is_deterministic_finite_and_joblib_compatible(tmp_path: Path) -> None:
@@ -256,3 +307,214 @@ def test_missing_or_noncausal_inputs_fail_closed(mutator: object, message: str) 
 
     with pytest.raises(ValueError, match=message):
         derive_side_conditioned_rows(mutator(frame), require_labels=False)  # type: ignore[operator]
+
+
+def _development_config():
+    return load_asymmetric_value_config(
+        Path(__file__).parents[1]
+        / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+    )
+
+
+def test_three_source_projection_retains_residual_audit_contract_without_filling() -> None:
+    frame = residual_frame(markets=1, seconds=(5,))
+    feature_sets = asymmetric_value_feature_sets()
+    model_features = {
+        *feature_sets[THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL],
+        *feature_sets[CORE_ORACLE_L2_PRICE],
+    }
+    required_execution = {
+        "fee_rate",
+        "yes_best_ask",
+        "yes_ask_vwap_5",
+        "yes_ask_depth",
+        "no_best_ask",
+        "no_ask_vwap_5",
+        "no_ask_depth",
+        "yes_cost_per_share",
+        "no_cost_per_share",
+        "yes_execution_cost_per_share",
+        "no_execution_cost_per_share",
+    }
+    frame = frame.with_columns(
+        *(
+            pl.lit(0.1).alias(name)
+            for name in sorted(model_features | required_execution)
+            if name not in frame.columns
+        )
+    )
+
+    projected = _project_candidate_source(
+        frame,
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+        CORE_ORACLE_L2_PRICE,
+    )
+
+    assert set(REQUIRED_FEATURE_COLUMNS).issubset(projected.columns)
+    assert projected["yes_received_at"].item() == frame["yes_received_at"].item()
+    assert projected["oracle_block_timestamp"].item() == (
+        frame["oracle_block_timestamp"].item()
+    )
+    assert projected.null_count().select(pl.sum_horizontal(pl.all())).item() == 0
+
+
+def test_development_wiring_fits_only_fit_rows_and_scores_exact_policy_rows(
+    tmp_path: Path,
+) -> None:
+    config = _development_config()
+    fit = residual_frame(
+        markets=24,
+        origin=config.fit.start,
+        market_prefix="fit",
+    )
+    policy = residual_frame(
+        markets=12,
+        origin=config.policy.start,
+        market_prefix="policy",
+    )
+    source = pl.concat((fit, policy), how="vertical_relaxed")
+
+    model, profile, policy_frame = _fit_development_residual(source, config)
+    original = model.predict_yes_probability(policy_frame)
+    flipped = model.predict_yes_probability(
+        policy_frame.with_columns((1 - pl.col("label_up")).alias("label_up"))
+    )
+
+    assert profile["fit_rows"] == fit.height
+    assert profile["fit_markets"] == fit["market_id"].n_unique()
+    assert profile["policy_rows"] == policy.height
+    assert profile["fit_window"] == {
+        "start": config.fit.start.isoformat(),
+        "end": config.fit.end.isoformat(),
+    }
+    assert profile["policy_window"] == {
+        "start": config.policy.start.isoformat(),
+        "end": config.policy.end.isoformat(),
+    }
+    assert profile["calibration_labels_consumed"] is False
+    assert profile["policy_labels_consumed_by_fit"] is False
+    assert profile["pnl_consumed_by_fit"] is False
+    assert profile["selection_eligible"] is False
+    assert profile["runtime_exportable"] is False
+    np.testing.assert_array_equal(original, flipped)
+
+    artifact = tmp_path / f"{SIDE_CONDITIONED_RESIDUAL_MODEL}.joblib"
+    joblib.dump(model, artifact, compress=3)
+    restored = joblib.load(artifact)
+    np.testing.assert_array_equal(
+        restored.predict_yes_probability(policy_frame),
+        original,
+    )
+
+
+def test_residual_is_matched_in_frontier_but_never_selection_eligible() -> None:
+    config = _development_config()
+    policy_name = next(
+        policy.name for policy in config.policies if policy.selection_eligible
+    )
+    frame = residual_frame(
+        markets=4,
+        origin=config.policy.start,
+        market_prefix="policy",
+    )
+    probability = {
+        "rows": frame.height,
+        "markets": frame["market_id"].n_unique(),
+        "accuracy": 0.6,
+        "brier_score": 0.2,
+        "log_loss": 0.6,
+        "mean_probability_yes": 0.5,
+        "actual_yes_rate": 0.5,
+    }
+    training = {
+        "profiles": {
+            SIDE_CONDITIONED_RESIDUAL_MODEL: {
+                "policy_probability_metrics": probability
+            },
+            THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL: {
+                "policy_probability_metrics": {**probability, "accuracy": 0.55}
+            },
+            CORE_ORACLE_L2_PRICE: {
+                "policy_probability_metrics": {**probability, "accuracy": 0.58}
+            },
+        }
+    }
+    economics = {
+        "trades": 1,
+        "accuracy": 1.0,
+        "net_expectancy_per_trade": 0.1,
+        "stress_1c_net_expectancy_per_trade": 0.05,
+        "net_profit_per_resolved_market": 0.01,
+        "capital_efficiency": 0.1,
+        "profit_factor": 2.0,
+        "selected_calibration_bias": 0.01,
+        "trades_per_resolved_market": 0.01,
+    }
+    benchmark_models = (
+        *ASYMMETRIC_VALUE_CANDIDATES,
+        SIDE_CONDITIONED_RESIDUAL_MODEL,
+    )
+    metrics = {
+        candidate_policy_key(model, policy_name): dict(economics)
+        for model in benchmark_models
+    }
+    empty_ledger = pl.DataFrame(
+        schema={
+            "window_start": pl.Datetime("us", "UTC"),
+            "realized_net": pl.Float64,
+        }
+    )
+    ledgers = {
+        candidate_policy_key(model, policy_name): empty_ledger
+        for model in benchmark_models
+    }
+    frames = {
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL: frame,
+        CORE_ORACLE_L2_PRICE: frame,
+        SIDE_CONDITIONED_RESIDUAL_MODEL: frame,
+    }
+
+    attribution = _residual_matched_attribution(
+        training,
+        metrics,
+        ledgers,
+        frames,
+        policy_name=policy_name,
+        config=config,
+    )
+    mismatched_frames = dict(frames)
+    mismatched_frames[CORE_ORACLE_L2_PRICE] = frame.with_columns(
+        (pl.col("seconds_elapsed") + 1).alias("seconds_elapsed")
+    )
+    with pytest.raises(RuntimeError, match="does not share exact keys"):
+        _residual_matched_attribution(
+            training,
+            metrics,
+            ledgers,
+            mismatched_frames,
+            policy_name=policy_name,
+            config=config,
+        )
+    selection = select_policy_candidate(
+        metrics,
+        config,
+        eligible_models=set(MODEL_SELECTION_ELIGIBLE),
+    )
+    residual_frontier = next(
+        row
+        for row in selection["frontier"]
+        if row["model"] == SIDE_CONDITIONED_RESIDUAL_MODEL
+    )
+
+    assert attribution["promotion_claim"] is False
+    assert attribution["selection_eligible"] is False
+    assert set(attribution["comparisons"]) == {
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+        CORE_ORACLE_L2_PRICE,
+    }
+    assert all(
+        comparison["identical_market_second_keys_verified"]
+        for comparison in attribution["comparisons"].values()
+    )
+    assert residual_frontier["selection_eligible"] is False
+    assert selection["selected_model"] in MODEL_SELECTION_ELIGIBLE

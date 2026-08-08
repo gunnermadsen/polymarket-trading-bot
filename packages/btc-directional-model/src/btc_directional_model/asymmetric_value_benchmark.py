@@ -15,6 +15,14 @@ import joblib
 import numpy as np
 import polars as pl
 
+from .asymmetric_residual_value import (
+    REQUIRED_FEATURE_COLUMNS,
+    RESIDUAL_FEATURE_NAMES,
+    SIDE_CONDITIONED_RESIDUAL_MODEL,
+    SideConditionedResidualModel,
+    feature_penalty_manifest,
+    market_equal_decision_weights,
+)
 from .asymmetric_value_config import AsymmetricValueConfig, EvidenceWindow
 from .asymmetric_value_data import (
     EARLY_CAUSAL_ORACLE_FEATURES,
@@ -81,6 +89,7 @@ from .early_value_data import (
     build_full_closed_candle_frame,
     build_partitioned_l2_frame,
 )
+from .early_value_training import probability_metrics
 from .runtime_export import score_runtime_model
 from .spot_l2_chainlink_features import L2_FEATURES
 
@@ -88,6 +97,13 @@ ASYMMETRIC_VALUE_SCHEMA_VERSION = "btc-asymmetric-value-hunter-benchmark-v3"
 FROZEN_CHAMPION = "frozen_champion_reference_60s_plus"
 DEVELOPMENT_ORACLE_CACHE = "development-oracle-propagation-2s.parquet"
 EVALUATION_ORACLE_CACHE = "evaluation-oracle-propagation-2s.parquet"
+DEVELOPMENT_BENCHMARK_MODELS = (
+    *ASYMMETRIC_VALUE_CANDIDATES,
+    SIDE_CONDITIONED_RESIDUAL_MODEL,
+)
+DEVELOPMENT_OFFLINE_ONLY_CANDIDATES = frozenset(
+    {*OFFLINE_ONLY_CANDIDATES, SIDE_CONDITIONED_RESIDUAL_MODEL}
+)
 
 
 def run_asymmetric_value_benchmark(
@@ -257,15 +273,56 @@ def run_asymmetric_value_benchmark(
         config,
         core_config,
     )
-    policy_frames = {
+    hgb_policy_frames = {
         name: _window(frame, config.policy.start, config.policy.end)
         for name, frame in development_model_frames.items()
     }
+    policy_predictions = _prediction_surface(hgb_policy_frames, models)
+    policy_frames = dict(hgb_policy_frames)
+    residual_model: SideConditionedResidualModel | None = None
+    if config.evaluation is None:
+        print(
+            "asymmetric-value: fitting offline side-conditioned residual diagnostic",
+            flush=True,
+        )
+        residual_model, residual_profile, residual_policy_frame = (
+            _fit_development_residual(
+                development_three_source_price_features,
+                config,
+            )
+        )
+        training["profiles"][SIDE_CONDITIONED_RESIDUAL_MODEL] = residual_profile
+        policy_frames[SIDE_CONDITIONED_RESIDUAL_MODEL] = residual_policy_frame
+        policy_predictions = pl.concat(
+            (
+                policy_predictions,
+                asymmetric_probability_frame(
+                    residual_policy_frame,
+                    residual_model.predict_yes_probability(
+                        residual_policy_frame
+                    ),
+                    model=SIDE_CONDITIONED_RESIDUAL_MODEL,
+                ),
+            ),
+            how="vertical_relaxed",
+        )
+    else:
+        training["offline_diagnostics"] = {
+            SIDE_CONDITIONED_RESIDUAL_MODEL: {
+                "status": "omitted_from_legacy_historical_evaluation",
+                "reason": (
+                    "the residual diagnostic belongs only to the fixed "
+                    "development-only contract; the legacy frozen evaluation "
+                    "candidate set remains unchanged"
+                ),
+                "selection_eligible": False,
+                "runtime_exportable": False,
+            }
+        }
     policy_candidate_strict_markets = {
         name: frame["market_id"].n_unique()
         for name, frame in policy_frames.items()
     }
-    policy_predictions = _prediction_surface(policy_frames, models)
     policy_scored = score_two_sided_value(policy_predictions)
     policy_joint_surface = joint_accuracy_value_surface(policy_scored)
     policy_both_side_surface = side_accuracy_value_surface(policy_predictions)
@@ -308,7 +365,8 @@ def run_asymmetric_value_benchmark(
         )
         for name, frame in policy_frames.items()
     }
-    for name, profile in training["profiles"].items():
+    for name in ASYMMETRIC_VALUE_CANDIDATES:
+        profile = training["profiles"][name]
         policy_evidence_checks_by_model[name].extend(
             target_calibration_gate_checks(profile)
         )
@@ -334,6 +392,18 @@ def run_asymmetric_value_benchmark(
     )
     for name, check in matched_control_checks.items():
         policy_evidence_checks_by_model[name].extend(check)
+    policy_residual_attribution = (
+        _residual_matched_attribution(
+            training,
+            policy_metrics,
+            policy_ledgers,
+            policy_frames,
+            policy_name=primary_policy.name,
+            config=config,
+        )
+        if residual_model is not None
+        else None
+    )
     selection = select_policy_candidate(
         policy_metrics,
         config,
@@ -350,7 +420,10 @@ def run_asymmetric_value_benchmark(
     model_dir = run_dir / "models"
     model_dir.mkdir()
     model_hashes: dict[str, str] = {}
-    for name, bundle in models.items():
+    artifact_models: dict[str, Any] = dict(models)
+    if residual_model is not None:
+        artifact_models[SIDE_CONDITIONED_RESIDUAL_MODEL] = residual_model
+    for name, bundle in artifact_models.items():
         path = model_dir / f"{name}.joblib"
         joblib.dump(bundle, path, compress=3)
         model_hashes[name] = file_sha256(path)
@@ -363,6 +436,11 @@ def run_asymmetric_value_benchmark(
         run_dir / "policy-feature-attribution.json",
         policy_feature_attribution,
     )
+    if policy_residual_attribution is not None:
+        write_json_atomic(
+            run_dir / "policy-residual-attribution.json",
+            policy_residual_attribution,
+        )
     selection_seal = {
         "schema_version": "btc-asymmetric-value-selection-seal-v3",
         "sealed_at": datetime.now(UTC).isoformat(),
@@ -371,6 +449,18 @@ def run_asymmetric_value_benchmark(
         "selected_model": selection["selected_model"],
         "selected_policy": selection["selected_policy"],
         "predeclared_evaluation_models": list(ASYMMETRIC_VALUE_CANDIDATES),
+        "development_diagnostic_models": (
+            [SIDE_CONDITIONED_RESIDUAL_MODEL]
+            if residual_model is not None
+            else []
+        ),
+        "residual_legacy_evaluation_contract": (
+            "not applicable; this run has no historical evaluation window"
+            if config.evaluation is None
+            else training["offline_diagnostics"][
+                SIDE_CONDITIONED_RESIDUAL_MODEL
+            ]["reason"]
+        ),
         "evaluation_policy_contract": {
             "policy": selection["selected_policy"],
             "quantity": config.quantity,
@@ -414,6 +504,12 @@ def run_asymmetric_value_benchmark(
         "policy_feature_attribution": policy_feature_attribution,
         "policy_feature_attribution_sha256": file_sha256(
             run_dir / "policy-feature-attribution.json"
+        ),
+        "policy_residual_attribution": policy_residual_attribution,
+        "policy_residual_attribution_sha256": (
+            file_sha256(run_dir / "policy-residual-attribution.json")
+            if policy_residual_attribution is not None
+            else None
         ),
         "implementation_sha256": implementation_sha256,
         "dependency_versions": dependency_versions,
@@ -477,6 +573,7 @@ def run_asymmetric_value_benchmark(
             policy_both_side_surface=policy_both_side_surface,
             policy_confidence_controls=policy_confidence_controls,
             policy_feature_attribution=policy_feature_attribution,
+            policy_residual_attribution=policy_residual_attribution,
             policy_evidence_checks_by_model=policy_evidence_checks_by_model,
             policy_grid_coverage=policy_grid_coverage,
             policy_candidate_coverage=policy_candidate_coverage,
@@ -1373,6 +1470,7 @@ def _finalize_development_only_benchmark(
     policy_both_side_surface: list[dict[str, Any]],
     policy_confidence_controls: dict[str, Any],
     policy_feature_attribution: dict[str, Any],
+    policy_residual_attribution: dict[str, Any] | None,
     policy_evidence_checks_by_model: dict[str, list[dict[str, Any]]],
     policy_grid_coverage: dict[str, Any],
     policy_candidate_coverage: dict[str, dict[str, Any]],
@@ -1392,7 +1490,7 @@ def _finalize_development_only_benchmark(
     selected_scored = policy_scored.filter(pl.col("model") == selected_model)
     primary_metrics = {
         model: policy_metrics[candidate_policy_key(model, selected_policy)]
-        for model in ASYMMETRIC_VALUE_CANDIDATES
+        for model in DEVELOPMENT_BENCHMARK_MODELS
     }
     economics = _evaluation_economics_table(
         primary_metrics,
@@ -1444,6 +1542,7 @@ def _finalize_development_only_benchmark(
         "policy-predictions.parquet",
         "policy-selection.json",
         "policy-feature-attribution.json",
+        "policy-residual-attribution.json",
         "selection-seal.json",
         "selected-development-policy-ledger.parquet",
         "development-model-policy-ledger.parquet",
@@ -1489,8 +1588,17 @@ def _finalize_development_only_benchmark(
             },
             "model_matrix_feature_counts": EXPECTED_MODEL_FEATURE_COUNTS,
             "selection_eligible_models": sorted(MODEL_SELECTION_ELIGIBLE),
-            "offline_only_candidates": sorted(OFFLINE_ONLY_CANDIDATES),
+            "offline_only_candidates": sorted(
+                DEVELOPMENT_OFFLINE_ONLY_CANDIDATES
+            ),
             "combined_oracle_l2_runtime_exportable": False,
+            "side_conditioned_residual": {
+                "model": SIDE_CONDITIONED_RESIDUAL_MODEL,
+                "selection_eligible": False,
+                "runtime_exportable": False,
+                "fit_labels": "exact three-source fit rows only",
+                "policy_role": "offline diagnostic only",
+            },
             "accuracy_gate_used": False,
             "market_equal_row_weights": True,
             "two_sided_value_selection": True,
@@ -1546,6 +1654,10 @@ def _finalize_development_only_benchmark(
             "policy_feature_attribution_artifact": (
                 "policy-feature-attribution.json"
             ),
+            "policy_residual_attribution": policy_residual_attribution,
+            "policy_residual_attribution_artifact": (
+                "policy-residual-attribution.json"
+            ),
         },
         "historical_development": {
             "status": (
@@ -1563,6 +1675,9 @@ def _finalize_development_only_benchmark(
             ),
             "model_economics": primary_metrics,
             "model_economics_leaderboard": economics,
+            "side_conditioned_residual_attribution": (
+                policy_residual_attribution
+            ),
             "confidence_threshold_controls": policy_confidence_controls,
         },
         "evaluation": {
@@ -1677,17 +1792,50 @@ def _development_markdown_report(result: dict[str, Any]) -> str:
             f"{_fmt(selected.get('loss_recovery_wins'))} |"
         ),
         "",
-        "## Forward qualification",
-        "",
-        "A promotion decision requires all of:",
-        "",
-        "- at least 21 complete UTC days and 2,000 strict markets;",
-        "- at least 200 trades, including 20 YES and 20 NO;",
-        "- positive lower-95% expectancy and capital efficiency under the frozen policy;",
-        "- positive +1c/share stress expectancy and all loss-severity gates; and",
-        "- no PnL-based early stopping.",
-        "",
     ]
+    residual = historical.get("side_conditioned_residual_attribution")
+    if residual is not None:
+        lines.extend(
+            [
+                "## Offline side-conditioned residual diagnostic",
+                "",
+                (
+                    "This residual is non-selectable and non-exportable. The "
+                    "comparisons use identical three-source keys and make no "
+                    "promotion claim."
+                ),
+                "",
+                "| Reference | Accuracy delta | Brier delta | Log-loss delta | EV/trade delta | Stress EV delta | Net/resolved delta |",
+                "|---|---:|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for comparison in residual["comparisons"].values():
+            probability = comparison["residual_minus_reference_probability"]
+            economics = comparison["residual_minus_reference_economics"]
+            lines.append(
+                f"| {comparison['reference_role']} | "
+                f"{_fmt(probability['accuracy'])} | "
+                f"{_fmt(probability['brier_score'])} | "
+                f"{_fmt(probability['log_loss'])} | "
+                f"{_fmt(economics['net_expectancy_per_trade'])} | "
+                f"{_fmt(economics['stress_1c_net_expectancy_per_trade'])} | "
+                f"{_fmt(economics['net_profit_per_resolved_market'])} |"
+            )
+    lines.extend(
+        [
+            "",
+            "## Forward qualification",
+            "",
+            "A promotion decision requires all of:",
+            "",
+            "- at least 21 complete UTC days and 2,000 strict markets;",
+            "- at least 200 trades, including 20 YES and 20 NO;",
+            "- positive lower-95% expectancy and capital efficiency under the frozen policy;",
+            "- positive +1c/share stress expectancy and all loss-severity gates; and",
+            "- no PnL-based early stopping.",
+            "",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -1710,6 +1858,180 @@ def _candidate_frames(
         CORE_ORACLE_PRICE: oracle_price,
         THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL: three_source_price,
         CORE_ORACLE_L2_PRICE: three_source_price,
+    }
+
+
+def _fit_development_residual(
+    three_source: pl.DataFrame,
+    config: AsymmetricValueConfig,
+) -> tuple[SideConditionedResidualModel, dict[str, Any], pl.DataFrame]:
+    """Fit the offline residual on fit labels and score only policy rows."""
+
+    if config.evaluation is not None:
+        raise ValueError(
+            "side-conditioned residual wiring requires a development-only run"
+        )
+    fit_frame = _window(three_source, config.fit.start, config.fit.end)
+    policy_frame = _window(three_source, config.policy.start, config.policy.end)
+    if fit_frame.is_empty() or policy_frame.is_empty():
+        raise RuntimeError(
+            "residual exact three-source fit and policy rows must be non-empty"
+        )
+    if (
+        config.fit.end > config.calibration.start
+        or config.calibration.end > config.policy.start
+    ):
+        raise RuntimeError("residual benchmark windows lost chronological isolation")
+
+    model, diagnostics = SideConditionedResidualModel.fit(fit_frame)
+    probability = model.predict_yes_probability(policy_frame)
+    manifest = model.manifest()
+    if manifest["selection_eligible"] or manifest["runtime_exportable"]:
+        raise RuntimeError("residual diagnostic became selectable or exportable")
+    profile = {
+        "family": "side_conditioned_regularized_logistic_residual",
+        "model_role": "offline_development_diagnostic",
+        "features": list(RESIDUAL_FEATURE_NAMES),
+        "feature_count": len(RESIDUAL_FEATURE_NAMES),
+        "model_matrix_member": False,
+        "selection_eligible": False,
+        "runtime_exportable": False,
+        "runtime_export_blocker": (
+            "offline side-conditioned residual has no runtime feature contract"
+        ),
+        "training_cohort": "causal_oracle_l2_exact_execution_cohort",
+        "scoring_cohort": "causal_oracle_l2_exact_execution_cohort",
+        "fit_rows": fit_frame.height,
+        "fit_markets": fit_frame["market_id"].n_unique(),
+        "fit_utc_days": fit_frame["window_start"].dt.date().n_unique(),
+        "fit_window": {
+            "start": config.fit.start.isoformat(),
+            "end": config.fit.end.isoformat(),
+        },
+        "calibration_labels_consumed": False,
+        "policy_labels_consumed_by_fit": False,
+        "pnl_consumed_by_fit": False,
+        "policy_rows": policy_frame.height,
+        "policy_markets": policy_frame["market_id"].n_unique(),
+        "policy_utc_days": policy_frame["window_start"].dt.date().n_unique(),
+        "policy_window": {
+            "start": config.policy.start.isoformat(),
+            "end": config.policy.end.isoformat(),
+        },
+        "fit_key_sha256": _frame_key_digest(fit_frame),
+        "policy_key_sha256": _frame_key_digest(policy_frame),
+        "fit_diagnostics": diagnostics.to_dict(),
+        "feature_penalty_manifest": feature_penalty_manifest(),
+        "model_manifest": manifest,
+        "policy_probability_metrics": probability_metrics(
+            policy_frame,
+            probability,
+            sample_weight=market_equal_decision_weights(policy_frame),
+        ),
+    }
+    return model, profile, policy_frame
+
+
+def _residual_matched_attribution(
+    training: dict[str, Any],
+    metrics: dict[str, dict[str, Any]],
+    ledgers: dict[str, pl.DataFrame],
+    frames: dict[str, pl.DataFrame],
+    *,
+    policy_name: str,
+    config: AsymmetricValueConfig,
+) -> dict[str, Any]:
+    """Compare the offline residual with exact three-source references."""
+
+    candidate = SIDE_CONDITIONED_RESIDUAL_MODEL
+    references = (
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+        CORE_ORACLE_L2_PRICE,
+    )
+    candidate_frame = frames[candidate]
+    candidate_digest = _frame_key_digest(candidate_frame)
+    candidate_probability = training["profiles"][candidate][
+        "policy_probability_metrics"
+    ]
+    candidate_key = candidate_policy_key(candidate, policy_name)
+    candidate_economics = metrics[candidate_key]
+    comparisons: dict[str, Any] = {}
+    probability_fields = ("accuracy", "brier_score", "log_loss")
+    economics_fields = (
+        "accuracy",
+        "net_expectancy_per_trade",
+        "stress_1c_net_expectancy_per_trade",
+        "net_profit_per_resolved_market",
+        "capital_efficiency",
+        "profit_factor",
+        "selected_calibration_bias",
+        "trades_per_resolved_market",
+    )
+    for offset, reference in enumerate(references):
+        reference_frame = frames[reference]
+        reference_digest = _frame_key_digest(reference_frame)
+        if (
+            candidate_frame.height != reference_frame.height
+            or candidate_digest != reference_digest
+        ):
+            raise RuntimeError(
+                f"{candidate} does not share exact keys with {reference}"
+            )
+        reference_probability = training["profiles"][reference][
+            "policy_probability_metrics"
+        ]
+        reference_key = candidate_policy_key(reference, policy_name)
+        reference_economics = metrics[reference_key]
+        comparisons[reference] = {
+            "reference": reference,
+            "reference_role": (
+                "same-key 75-feature Core+Oracle control"
+                if reference == THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL
+                else "same-key monolithic 115-feature combined candidate"
+            ),
+            "identical_market_second_keys_verified": True,
+            "probability_metrics": reference_probability,
+            "residual_minus_reference_probability": {
+                field: _finite_difference(
+                    candidate_probability.get(field),
+                    reference_probability.get(field),
+                )
+                for field in probability_fields
+            },
+            "economics": reference_economics,
+            "residual_minus_reference_economics": {
+                field: _finite_difference(
+                    candidate_economics.get(field),
+                    reference_economics.get(field),
+                )
+                for field in economics_fields
+            },
+            "paired_utc_day_net_profit": _paired_day_net_difference_bootstrap(
+                ledgers[candidate_key],
+                ledgers[reference_key],
+                config,
+                seed=config.random_seed + 27_000 + offset,
+                window_start=config.policy.start,
+                window_end=config.policy.end,
+            ),
+        }
+    return {
+        "schema_version": "btc-asymmetric-side-residual-attribution-v1",
+        "candidate": candidate,
+        "policy": policy_name,
+        "selection_eligible": False,
+        "runtime_exportable": False,
+        "promotion_claim": False,
+        "comparison_scope": "consumed chronological development evidence",
+        "decision_cohort": {
+            "rows": candidate_frame.height,
+            "markets": candidate_frame["market_id"].n_unique(),
+            "utc_days": candidate_frame["window_start"].dt.date().n_unique(),
+            "key_sha256": candidate_digest,
+        },
+        "probability_metrics": candidate_probability,
+        "economics": candidate_economics,
+        "comparisons": comparisons,
     }
 
 
@@ -1761,6 +2083,11 @@ def _project_candidate_source(
                     feature
                     for name in candidate_names
                     for feature in feature_sets[name]
+                ),
+                *(
+                    column
+                    for column in REQUIRED_FEATURE_COLUMNS
+                    if column in frame.columns
                 ),
             )
         )
@@ -1871,6 +2198,12 @@ def _join_oracle_l2_candidate_features(
     duplicate_keys = joined.group_by(*keys).len().filter(pl.col("len") != 1)
     if duplicate_keys.height:
         raise RuntimeError("three-source cohort contains duplicate market/second keys")
+    missing_residual = sorted(set(REQUIRED_FEATURE_COLUMNS) - set(joined.columns))
+    if missing_residual:
+        raise RuntimeError(
+            "three-source cohort lost residual audit or feature columns: "
+            + ", ".join(missing_residual)
+        )
     return joined.sort(keys)
 
 
@@ -2112,6 +2445,7 @@ def _implementation_digest(config: AsymmetricValueConfig) -> str:
         source_root / "asymmetric_value_data.py",
         source_root / "asymmetric_value_evaluation.py",
         source_root / "asymmetric_value_training.py",
+        source_root / "asymmetric_residual_value.py",
         source_root / "chainlink_oi_features.py",
         source_root / "core_config.py",
         source_root / "core_execution.py",
@@ -2783,7 +3117,11 @@ def _evaluation_economics_table(
     policy: str,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for model in ASYMMETRIC_VALUE_CANDIDATES:
+    ordered_models = [
+        *(model for model in ASYMMETRIC_VALUE_CANDIDATES if model in metrics),
+        *sorted(set(metrics) - set(ASYMMETRIC_VALUE_CANDIDATES)),
+    ]
+    for model in ordered_models:
         values = metrics[model]
         bootstrap = values.get("utc_day_block_bootstrap") or {}
         expectancy = bootstrap.get("net_expectancy_per_trade") or {}
@@ -3239,7 +3577,11 @@ def _markdown_report(result: dict[str, Any]) -> str:
 
 
 def _calibration_report_summary(training: dict[str, Any]) -> dict[str, Any]:
-    profiles = training["profiles"]
+    profiles = {
+        name: profile
+        for name, profile in training["profiles"].items()
+        if "calibration_bands" in profile
+    }
     parent_bands = [
         band
         for profile in profiles.values()
