@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -9,21 +10,40 @@ import polars as pl
 import pytest
 
 from btc_directional_model.asymmetric_decision_quality import (
+    DECISION_SELECTION_SEAL_SCHEMA_VERSION,
+    MATCHED_CORE_CONTROL_CANDIDATE_ID,
     OOF_SELECTION_COLUMNS,
+    POST_SELECTION_ATTRIBUTION_PAIRS,
     _decision_quality_gate_evidence,
+    _validate_attribution_pair_oof_grid,
+    _validate_matched_core_feature_contract,
+    _validate_matched_core_oof_grid,
     _validate_oof_selection_frame,
     _validate_parent_calibration_support,
     _window_evidence,
     calibration_variant_id,
     control_calibration_variant,
     decision_quality_metrics,
+    fit_final_matched_core_model,
+    fit_final_selected_attribution_pair,
+    fit_selected_attribution_pair_walk_forward,
+    fit_selected_matched_core_walk_forward,
     paired_probability_delta,
+    post_selection_attribution_candidate_id,
     select_decision_quality_candidate,
 )
 from btc_directional_model.asymmetric_value_config import (
     load_asymmetric_value_config,
 )
 from btc_directional_model.asymmetric_value_training import (
+    CANDLE_MATCHED_CORE_PRICE_CONTROL,
+    CORE_CANDLES_PRICE,
+    CORE_ORACLE_L2_PRICE,
+    CORE_ORACLE_PRICE,
+    L2_MATCHED_CORE_PRICE_CONTROL,
+    ORACLE_MATCHED_CORE_PRICE_CONTROL,
+    THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+    asymmetric_value_feature_sets,
     fit_asymmetric_time_band_calibrators,
 )
 from btc_directional_model.core_config import load_core_config
@@ -341,3 +361,503 @@ def test_fold_stability_requires_four_common_folds_against_both_controls() -> No
     assert by_name["noninferior_folds_to_target_only_current"]["observed"] == 4
     assert by_name["noninferior_folds_to_all_controls"]["observed"] == 3
     assert by_name["noninferior_folds_to_all_controls"]["passed"] is False
+
+
+def _selected_configuration() -> dict[str, object]:
+    return {
+        "status": "selected",
+        "selected_candidate_id": "hybrid_25_h3__alltime_l2_1_0",
+        "selected_base_candidate": "hybrid_25_h3",
+        "economics_used": False,
+    }
+
+
+def _matched_replay_frame(primary_oof: pl.DataFrame) -> pl.DataFrame:
+    selected_id = str(_selected_configuration()["selected_candidate_id"])
+    selected = primary_oof.filter(pl.col("candidate_id") == selected_id)
+    replay = selected.select(
+        "market_id",
+        "window_start",
+        "observed_at",
+        "seconds_elapsed",
+        "label_up",
+        "yes_target_eligible",
+        "no_target_eligible",
+    ).with_columns(
+        pl.when(pl.col("yes_target_eligible")).then(0.25).otherwise(0.75).alias("yes_ask_vwap_5"),
+        pl.when(pl.col("no_target_eligible")).then(0.25).otherwise(0.75).alias("no_ask_vwap_5"),
+    )
+    support = pl.DataFrame(
+        {
+            "market_id": ["fit-support", "calibration-support", "final-calibration"],
+            "window_start": [
+                datetime(2026, 4, 15, tzinfo=UTC),
+                datetime(2026, 6, 5, tzinfo=UTC),
+                datetime(2026, 7, 24, tzinfo=UTC),
+            ],
+            "observed_at": [
+                datetime(2026, 4, 15, 0, 0, 1, tzinfo=UTC),
+                datetime(2026, 6, 5, 0, 0, 1, tzinfo=UTC),
+                datetime(2026, 7, 24, 0, 0, 1, tzinfo=UTC),
+            ],
+            "seconds_elapsed": [1, 1, 1],
+            "label_up": [0, 1, 0],
+            "yes_target_eligible": [True, True, True],
+            "no_target_eligible": [False, False, False],
+            "yes_ask_vwap_5": [0.25, 0.25, 0.25],
+            "no_ask_vwap_5": [0.75, 0.75, 0.75],
+        }
+    )
+    return pl.concat((replay, support), how="vertical_relaxed")
+
+
+class _MatchedCoreFakeBundle:
+    def __init__(self) -> None:
+        self.name = "fake"
+
+    def probability(self, frame: pl.DataFrame) -> np.ndarray:
+        return np.where(frame["label_up"].to_numpy() == 1, 0.7, 0.3)
+
+
+def test_matched_core_replays_selected_configuration_on_exact_oof_grid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config()
+    core_config = load_core_config(config.core_config)
+    primary_oof, _ = _synthetic_oof()
+    frame = _matched_replay_frame(primary_oof)
+    fit_calls: list[dict[str, object]] = []
+    calibration_calls: list[dict[str, object]] = []
+
+    def fake_fit(
+        fit_frame: pl.DataFrame,
+        features: tuple[str, ...],
+        candidate: object,
+        *_args: object,
+    ) -> tuple[object, dict[str, object]]:
+        fit_calls.append(
+            {
+                "frame": fit_frame,
+                "features": features,
+                "candidate": candidate,
+            }
+        )
+        return object(), {"fit_rows": fit_frame.height}
+
+    def fake_calibration(
+        _model: object,
+        calibration_frame: pl.DataFrame,
+        *_args: object,
+        base_candidate: str,
+        variant: object,
+    ) -> tuple[_MatchedCoreFakeBundle, dict[str, object]]:
+        calibration_calls.append(
+            {
+                "frame": calibration_frame,
+                "base_candidate": base_candidate,
+                "variant": variant,
+            }
+        )
+        return _MatchedCoreFakeBundle(), {"target_calibration": {"qualified": True}}
+
+    monkeypatch.setattr(
+        "btc_directional_model.asymmetric_decision_quality.fit_hybrid_histogram_model",
+        fake_fit,
+    )
+    monkeypatch.setattr(
+        "btc_directional_model.asymmetric_decision_quality._fit_calibrated_bundle",
+        fake_calibration,
+    )
+
+    control, evidence = fit_selected_matched_core_walk_forward(
+        frame,
+        primary_oof,
+        _selected_configuration(),
+        config,
+        core_config,
+    )
+    selected = primary_oof.filter(
+        pl.col("candidate_id") == _selected_configuration()["selected_candidate_id"]
+    )
+
+    assert control["candidate_id"].unique().to_list() == [MATCHED_CORE_CONTROL_CANDIDATE_ID]
+    assert control["base_candidate"].unique().to_list() == [L2_MATCHED_CORE_PRICE_CONTROL]
+    assert evidence["selection_eligible"] is False
+    assert evidence["selected_grid_key_sha256"] == evidence["control_grid_key_sha256"]
+    assert len(fit_calls) == 5
+    assert len(calibration_calls) == 5
+    for call in fit_calls:
+        features = call["features"]
+        candidate = call["candidate"]
+        assert isinstance(features, tuple)
+        assert features == asymmetric_value_feature_sets()[L2_MATCHED_CORE_PRICE_CONTROL]
+        assert len(features) == 71
+        assert candidate.name == "hybrid_25_h3"  # type: ignore[attr-defined]
+        assert candidate.target_weight == pytest.approx(0.25)  # type: ignore[attr-defined]
+        assert candidate.histogram_profile == "h3_regularized"  # type: ignore[attr-defined]
+    assert all(
+        call["base_candidate"] == L2_MATCHED_CORE_PRICE_CONTROL for call in calibration_calls
+    )
+    assert all(call["variant"].parent_source == "alltime" for call in calibration_calls)  # type: ignore[union-attr]
+    assert all(call["variant"].identity_l2 == 1.0 for call in calibration_calls)  # type: ignore[union-attr]
+    _validate_matched_core_oof_grid(control, selected, config)
+    with pytest.raises(RuntimeError, match="exact selected key/label/eligibility grid"):
+        _validate_matched_core_oof_grid(
+            control,
+            selected.with_row_index("_row")
+            .with_columns(
+                pl.when(pl.col("_row") == 0)
+                .then(1 - pl.col("label_up"))
+                .otherwise(pl.col("label_up"))
+                .alias("label_up")
+            )
+            .drop("_row"),
+            config,
+        )
+
+
+def test_matched_core_final_fit_uses_frozen_windows_and_rejects_bad_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config()
+    core_config = load_core_config(config.core_config)
+    primary_oof, _ = _synthetic_oof()
+    frame = _matched_replay_frame(primary_oof)
+    observed: dict[str, object] = {}
+
+    def fake_fit(
+        fit_frame: pl.DataFrame,
+        features: tuple[str, ...],
+        candidate: object,
+        *_args: object,
+    ) -> tuple[object, dict[str, object]]:
+        observed["fit_frame"] = fit_frame
+        observed["features"] = features
+        observed["candidate"] = candidate
+        return object(), {"fit_rows": fit_frame.height}
+
+    def fake_calibration(
+        _model: object,
+        calibration_frame: pl.DataFrame,
+        *_args: object,
+        base_candidate: str,
+        variant: object,
+    ) -> tuple[_MatchedCoreFakeBundle, dict[str, object]]:
+        observed["calibration_frame"] = calibration_frame
+        observed["base_candidate"] = base_candidate
+        observed["variant"] = variant
+        return _MatchedCoreFakeBundle(), {"target_calibration": {"qualified": True}}
+
+    monkeypatch.setattr(
+        "btc_directional_model.asymmetric_decision_quality.fit_hybrid_histogram_model",
+        fake_fit,
+    )
+    monkeypatch.setattr(
+        "btc_directional_model.asymmetric_decision_quality._fit_calibrated_bundle",
+        fake_calibration,
+    )
+
+    bundle, evidence = fit_final_matched_core_model(
+        frame,
+        _selected_configuration(),
+        config,
+        core_config,
+    )
+
+    contract = config.decision_quality
+    assert contract is not None
+    fit_frame = observed["fit_frame"]
+    calibration_frame = observed["calibration_frame"]
+    assert isinstance(fit_frame, pl.DataFrame)
+    assert isinstance(calibration_frame, pl.DataFrame)
+    assert fit_frame["window_start"].min() >= contract.final_fit.start
+    assert fit_frame["window_start"].max() < contract.final_fit.end
+    assert calibration_frame["window_start"].min() >= contract.final_calibration.start
+    assert calibration_frame["window_start"].max() < contract.final_calibration.end
+    assert bundle.name == L2_MATCHED_CORE_PRICE_CONTROL
+    assert evidence["feature_count"] == 71
+    assert evidence["selection_eligible"] is False
+    assert evidence["economics_used"] is False
+    with pytest.raises(RuntimeError, match="economic evidence cannot select"):
+        fit_final_matched_core_model(
+            frame,
+            {**_selected_configuration(), "economics_used": True},
+            config,
+            core_config,
+        )
+    features = asymmetric_value_feature_sets()[L2_MATCHED_CORE_PRICE_CONTROL]
+    _validate_matched_core_feature_contract(features)
+    with pytest.raises(RuntimeError, match="exact 71-feature"):
+        _validate_matched_core_feature_contract(features[:-1])
+
+
+def _verified_selection_seal() -> dict[str, object]:
+    seal: dict[str, object] = {
+        "schema_version": DECISION_SELECTION_SEAL_SCHEMA_VERSION,
+        "economics_opened": False,
+        "selection_uses_economics": False,
+        "selection": _selected_configuration(),
+    }
+    seal["selection_identity_sha256"] = hashlib.sha256(
+        json.dumps(
+            seal,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode()
+    ).hexdigest()
+    return seal
+
+
+@pytest.mark.parametrize(
+    ("candidate_name", "control_name", "candidate_count", "control_count"),
+    (
+        (CORE_ORACLE_PRICE, ORACLE_MATCHED_CORE_PRICE_CONTROL, 75, 71),
+        (CORE_CANDLES_PRICE, CANDLE_MATCHED_CORE_PRICE_CONTROL, 79, 71),
+        (
+            CORE_ORACLE_L2_PRICE,
+            THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+            115,
+            75,
+        ),
+    ),
+)
+def test_post_selection_attribution_replays_exact_source_cohort_probability_only(
+    monkeypatch: pytest.MonkeyPatch,
+    candidate_name: str,
+    control_name: str,
+    candidate_count: int,
+    control_count: int,
+) -> None:
+    config = _config()
+    core_config = load_core_config(config.core_config)
+    primary_oof, _ = _synthetic_oof()
+    frame = _matched_replay_frame(primary_oof)
+    fit_calls: list[dict[str, object]] = []
+    calibration_calls: list[dict[str, object]] = []
+
+    def fake_fit(
+        fit_frame: pl.DataFrame,
+        features: tuple[str, ...],
+        candidate: object,
+        *_args: object,
+    ) -> tuple[object, dict[str, object]]:
+        fit_calls.append(
+            {
+                "frame": fit_frame,
+                "features": features,
+                "candidate": candidate,
+            }
+        )
+        return object(), {"fit_rows": fit_frame.height}
+
+    def fake_calibration(
+        _model: object,
+        calibration_frame: pl.DataFrame,
+        *_args: object,
+        base_candidate: str,
+        variant: object,
+    ) -> tuple[_MatchedCoreFakeBundle, dict[str, object]]:
+        calibration_calls.append(
+            {
+                "frame": calibration_frame,
+                "base_candidate": base_candidate,
+                "variant": variant,
+            }
+        )
+        return _MatchedCoreFakeBundle(), {"target_calibration": {"qualified": True}}
+
+    monkeypatch.setattr(
+        "btc_directional_model.asymmetric_decision_quality.fit_hybrid_histogram_model",
+        fake_fit,
+    )
+    monkeypatch.setattr(
+        "btc_directional_model.asymmetric_decision_quality._fit_calibrated_bundle",
+        fake_calibration,
+    )
+
+    oof_by_arm, evidence = fit_selected_attribution_pair_walk_forward(
+        frame,
+        _verified_selection_seal(),
+        config,
+        core_config,
+        feature_set_name=candidate_name,
+    )
+
+    assert POST_SELECTION_ATTRIBUTION_PAIRS[candidate_name] == (
+        control_name,
+        candidate_count,
+        control_count,
+    )
+    assert set(oof_by_arm) == {candidate_name, control_name}
+    assert len(fit_calls) == 10
+    assert len(calibration_calls) == 10
+    expected_features = asymmetric_value_feature_sets()
+    assert sum(call["features"] == expected_features[candidate_name] for call in fit_calls) == 5
+    assert sum(call["features"] == expected_features[control_name] for call in fit_calls) == 5
+    assert all(call["candidate"].name == "hybrid_25_h3" for call in fit_calls)  # type: ignore[union-attr]
+    assert all(call["candidate"].target_weight == 0.25 for call in fit_calls)  # type: ignore[union-attr]
+    assert all(call["candidate"].histogram_profile == "h3_regularized" for call in fit_calls)  # type: ignore[union-attr]
+    assert all(call["variant"].parent_source == "alltime" for call in calibration_calls)  # type: ignore[union-attr]
+    assert all(call["variant"].identity_l2 == 1.0 for call in calibration_calls)  # type: ignore[union-attr]
+    assert evidence["source_cohort"]["canonical_feature_set_name"] == candidate_name
+    assert evidence["source_cohort"]["rows"] == frame.height
+    assert evidence["candidate"]["feature_count"] == candidate_count
+    assert evidence["matched_control"]["feature_count"] == control_count
+    assert evidence["selection_eligible"] is False
+    assert evidence["probability_only"] is True
+    assert evidence["economics_used"] is False
+    assert evidence["all_calibrations_qualified"] is True
+    assert evidence["exact_within_pair_grid"] is True
+    assert evidence["candidate_grid_key_sha256"] == evidence["control_grid_key_sha256"]
+    assert evidence["candidate_minus_matched_control_probability"]["brier_delta"][
+        "point"
+    ] == pytest.approx(0.0)
+    for arm_name, arm in oof_by_arm.items():
+        assert tuple(arm.columns) == OOF_SELECTION_COLUMNS
+        assert arm["candidate_id"].unique().to_list() == [
+            post_selection_attribution_candidate_id(arm_name)
+        ]
+        assert arm["base_candidate"].unique().to_list() == [arm_name]
+    _validate_attribution_pair_oof_grid(
+        oof_by_arm[candidate_name],
+        oof_by_arm[control_name],
+        candidate_name=candidate_name,
+        control_name=control_name,
+        variant=calibration_calls[0]["variant"],  # type: ignore[arg-type]
+        config=config,
+    )
+    corrupted = (
+        oof_by_arm[control_name]
+        .with_row_index("_row")
+        .with_columns(
+            pl.when(pl.col("_row") == 0)
+            .then(1 - pl.col("label_up"))
+            .otherwise(pl.col("label_up"))
+            .alias("label_up")
+        )
+        .drop("_row")
+    )
+    with pytest.raises(RuntimeError, match="exact keys, labels, and eligibility"):
+        _validate_attribution_pair_oof_grid(
+            oof_by_arm[candidate_name],
+            corrupted,
+            candidate_name=candidate_name,
+            control_name=control_name,
+            variant=calibration_calls[0]["variant"],  # type: ignore[arg-type]
+            config=config,
+        )
+
+
+@pytest.mark.parametrize("candidate_name", tuple(POST_SELECTION_ATTRIBUTION_PAIRS))
+def test_final_post_selection_attribution_uses_frozen_windows_and_feature_counts(
+    monkeypatch: pytest.MonkeyPatch,
+    candidate_name: str,
+) -> None:
+    config = _config()
+    core_config = load_core_config(config.core_config)
+    primary_oof, _ = _synthetic_oof()
+    frame = _matched_replay_frame(primary_oof)
+    calls: list[dict[str, object]] = []
+
+    def fake_fit(
+        fit_frame: pl.DataFrame,
+        features: tuple[str, ...],
+        candidate: object,
+        *_args: object,
+    ) -> tuple[object, dict[str, object]]:
+        calls.append({"fit_frame": fit_frame, "features": features, "candidate": candidate})
+        return object(), {"fit_rows": fit_frame.height}
+
+    def fake_calibration(
+        _model: object,
+        calibration_frame: pl.DataFrame,
+        *_args: object,
+        base_candidate: str,
+        variant: object,
+    ) -> tuple[_MatchedCoreFakeBundle, dict[str, object]]:
+        calls.append(
+            {
+                "calibration_frame": calibration_frame,
+                "base_candidate": base_candidate,
+                "variant": variant,
+            }
+        )
+        return _MatchedCoreFakeBundle(), {"target_calibration": {"qualified": True}}
+
+    monkeypatch.setattr(
+        "btc_directional_model.asymmetric_decision_quality.fit_hybrid_histogram_model",
+        fake_fit,
+    )
+    monkeypatch.setattr(
+        "btc_directional_model.asymmetric_decision_quality._fit_calibrated_bundle",
+        fake_calibration,
+    )
+
+    models, evidence = fit_final_selected_attribution_pair(
+        frame,
+        _verified_selection_seal(),
+        config,
+        core_config,
+        feature_set_name=candidate_name,
+    )
+
+    contract = config.decision_quality
+    assert contract is not None
+    control_name, candidate_count, control_count = POST_SELECTION_ATTRIBUTION_PAIRS[candidate_name]
+    assert set(models) == {candidate_name, control_name}
+    assert models[candidate_name].name == candidate_name
+    assert models[control_name].name == control_name
+    assert evidence["arms"][candidate_name]["feature_count"] == candidate_count
+    assert evidence["arms"][control_name]["feature_count"] == control_count
+    assert evidence["final_fit_window"] == {
+        "start": contract.final_fit.start.isoformat(),
+        "end": contract.final_fit.end.isoformat(),
+    }
+    assert evidence["final_calibration_window"] == {
+        "start": contract.final_calibration.start.isoformat(),
+        "end": contract.final_calibration.end.isoformat(),
+    }
+    fit_frames = [call["fit_frame"] for call in calls if "fit_frame" in call]
+    calibration_frames = [
+        call["calibration_frame"] for call in calls if "calibration_frame" in call
+    ]
+    assert len(fit_frames) == 2
+    assert len(calibration_frames) == 2
+    assert all(frame_["window_start"].max() < contract.final_fit.end for frame_ in fit_frames)  # type: ignore[index]
+    assert all(
+        frame_["window_start"].min() >= contract.final_calibration.start
+        for frame_ in calibration_frames
+    )  # type: ignore[index]
+
+
+def test_post_selection_attribution_requires_unopened_verified_seal() -> None:
+    config = _config()
+    core_config = load_core_config(config.core_config)
+    primary_oof, _ = _synthetic_oof()
+    frame = _matched_replay_frame(primary_oof)
+
+    with pytest.raises(RuntimeError, match="verified decision seal"):
+        fit_selected_attribution_pair_walk_forward(
+            frame,
+            {**_verified_selection_seal(), "schema_version": "wrong"},
+            config,
+            core_config,
+            feature_set_name=CORE_ORACLE_PRICE,
+        )
+    with pytest.raises(RuntimeError, match="economics to remain sealed"):
+        fit_selected_attribution_pair_walk_forward(
+            frame,
+            {**_verified_selection_seal(), "economics_opened": True},
+            config,
+            core_config,
+            feature_set_name=CORE_ORACLE_PRICE,
+        )
+    with pytest.raises(ValueError, match="unsupported post-selection attribution"):
+        fit_selected_attribution_pair_walk_forward(
+            frame,
+            _verified_selection_seal(),
+            config,
+            core_config,
+            feature_set_name=L2_MATCHED_CORE_PRICE_CONTROL,
+        )

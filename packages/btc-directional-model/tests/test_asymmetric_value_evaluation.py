@@ -12,6 +12,7 @@ from btc_directional_model.asymmetric_value_config import (
     load_asymmetric_value_config,
 )
 from btc_directional_model.asymmetric_value_evaluation import (
+    accuracy_price_by_five_second_interval,
     accuracy_price_by_second,
     confidence_control_ledger,
     current_policy_reference_ledger,
@@ -21,6 +22,7 @@ from btc_directional_model.asymmetric_value_evaluation import (
     score_two_sided_value,
     select_policy_candidate,
     side_accuracy_value_surface,
+    side_time_price_strata_economics,
 )
 
 
@@ -258,7 +260,9 @@ def test_policy_selection_cannot_be_won_by_expensive_diagnostic() -> None:
         / "configs/btc-5m-directional-asymmetric-value-one-second-20260414-20260802.toml"
     )
     primary = next(policy for policy in config.policies if policy.selection_eligible)
-    diagnostic = next(policy for policy in config.policies if not policy.selection_eligible)
+    diagnostic = next(
+        policy for policy in config.policies if not policy.selection_eligible
+    )
     weak = {"trades": 0, "net_profit": 0.0}
     strong = {
         "trades": 10_000,
@@ -377,3 +381,194 @@ def test_per_second_report_keeps_models_separate() -> None:
     ]
     assert rows[0]["argmax_accuracy"] == 1.0
     assert rows[1]["argmax_accuracy"] == 0.0
+
+
+def test_five_second_report_has_fixed_half_open_intervals_and_selected_scores() -> None:
+    start = datetime(2026, 7, 16, tzinfo=UTC)
+    rows = []
+    for market, second, probability, label, yes_vwap, no_vwap in (
+        ("m-1", 1, 0.80, 1, 0.20, 0.81),
+        ("m-5", 5, 0.60, 1, 0.24, 0.77),
+        ("m-6", 6, 0.25, 0, 0.22, 0.79),
+        ("m-55", 55, 0.70, 1, 0.29, 0.72),
+    ):
+        rows.append(
+            _predictions(probability_yes=probability, label_up=label).with_columns(
+                pl.lit(market).alias("market_id"),
+                pl.lit(start + timedelta(minutes=len(rows) * 5)).alias("window_start"),
+                pl.lit(start + timedelta(seconds=second)).alias("observed_at"),
+                pl.lit(second).alias("seconds_elapsed"),
+                pl.lit(yes_vwap).alias("yes_ask_vwap_5"),
+                pl.lit(yes_vwap + 0.01).alias("yes_execution_cost_per_share"),
+                pl.lit(yes_vwap + 0.02).alias("yes_cost_per_share"),
+                pl.lit(no_vwap).alias("no_ask_vwap_5"),
+                pl.lit(no_vwap + 0.01).alias("no_execution_cost_per_share"),
+                pl.lit(no_vwap + 0.02).alias("no_cost_per_share"),
+            )
+        )
+    scored = score_two_sided_value(pl.concat(rows, how="vertical_relaxed"))
+
+    report = accuracy_price_by_five_second_interval(scored)
+
+    assert len(report) == 11
+    assert [row["interval"] for row in report] == [
+        "[1,6)",
+        "[6,11)",
+        "[11,16)",
+        "[16,21)",
+        "[21,26)",
+        "[26,31)",
+        "[31,36)",
+        "[36,41)",
+        "[41,46)",
+        "[46,51)",
+        "[51,56)",
+    ]
+    assert report[0]["rows"] == 2
+    assert report[0]["wins"] == 2
+    assert report[0]["accuracy"] == 1.0
+    assert report[0]["brier_score"] == pytest.approx((0.04 + 0.16) / 2.0)
+    assert report[0]["log_loss"] == pytest.approx(
+        (-math.log(0.8) - math.log(0.6)) / 2.0
+    )
+    assert report[0]["calibration_bias"] == pytest.approx(-0.30)
+    assert report[0]["mean_yes_vwap_5"] == pytest.approx(0.22)
+    assert report[0]["mean_no_vwap_5"] == pytest.approx(0.79)
+    assert report[0]["mean_selected_raw_share_price"] == pytest.approx(0.22)
+    assert report[1]["rows"] == 1
+    assert report[1]["wins"] == 0
+    assert report[1]["accuracy"] == 0.0
+    assert report[2]["rows"] == 0
+    assert report[2]["accuracy"] is None
+    assert report[-1]["rows"] == 1
+
+
+def test_five_second_report_rejects_missing_columns_and_out_of_scope_seconds() -> None:
+    scored = score_two_sided_value(_predictions())
+
+    with pytest.raises(ValueError, match="missing columns: no_ask_vwap_5"):
+        accuracy_price_by_five_second_interval(scored.drop("no_ask_vwap_5"))
+    with pytest.raises(ValueError, match=r"seconds in \[1, 56\)"):
+        accuracy_price_by_five_second_interval(
+            scored.with_columns(pl.lit(56).alias("seconds_elapsed"))
+        )
+
+
+def _strata_ledger() -> pl.DataFrame:
+    start = datetime(2026, 7, 16, tzinfo=UTC)
+    rows = []
+    for index, (second, price, selected_yes, won) in enumerate(
+        (
+            (1, 0.20, True, True),
+            (14, 0.249999, False, False),
+            (15, 0.25, True, False),
+            (30, 0.275, False, True),
+            (45, 0.299999, True, True),
+            (55, 0.20, False, False),
+        )
+    ):
+        execution_cost = price + 0.005
+        quantity = 5.0
+        return_value = (float(won) - execution_cost) * quantity
+        rows.append(
+            {
+                "model": "selected-model",
+                "policy": "primary",
+                "market_id": f"m-{index}",
+                "window_start": start + timedelta(minutes=5 * index),
+                "observed_at": start + timedelta(minutes=5 * index, seconds=second),
+                "seconds_elapsed": second,
+                "selected_yes": selected_yes,
+                "won": won,
+                "quantity": quantity,
+                "selected_probability": 0.40 if won else 0.35,
+                "selected_share_price": price,
+                "selected_admission_cost_per_share": price + 0.015,
+                "selected_execution_cost_per_share": execution_cost,
+                "selected_edge_per_share": 0.05,
+                "selected_underdog": True,
+                "realized_net": return_value,
+                "entry_debit": execution_cost * quantity,
+            }
+        )
+    return pl.DataFrame(rows)
+
+
+def test_side_time_price_strata_economics_respects_every_half_open_boundary() -> None:
+    report = side_time_price_strata_economics(
+        _strata_ledger(),
+        time_strata=((1, 15), (15, 30), (30, 45), (45, 56)),
+        price_strata=((0.20, 0.25), (0.25, 0.275), (0.275, 0.30)),
+    )
+
+    assert len(report) == 24
+    assert [
+        (row["side"], row["time_interval"], row["price_interval"]) for row in report
+    ] == sorted(
+        (
+            (side, time, price)
+            for side in ("YES", "NO")
+            for time in ("[1,15)", "[15,30)", "[30,45)", "[45,56)")
+            for price in ("[0.2,0.25)", "[0.25,0.275)", "[0.275,0.3)")
+        ),
+        key=lambda item: (
+            ("YES", "NO").index(item[0]),
+            ("[1,15)", "[15,30)", "[30,45)", "[45,56)").index(item[1]),
+            ("[0.2,0.25)", "[0.25,0.275)", "[0.275,0.3)").index(item[2]),
+        ),
+    )
+    yes_second_band = next(
+        row
+        for row in report
+        if row["side"] == "YES"
+        and row["time_start_second"] == 15
+        and row["price_start"] == 0.25
+    )
+    no_third_band = next(
+        row
+        for row in report
+        if row["side"] == "NO"
+        and row["time_start_second"] == 30
+        and row["price_start"] == 0.275
+    )
+    assert yes_second_band["trades"] == 1
+    assert yes_second_band["wins"] == 0
+    assert yes_second_band["net_expectancy_per_trade"] < 0.0
+    assert no_third_band["trades"] == 1
+    assert no_third_band["wins"] == 1
+    assert no_third_band["net_expectancy_per_trade"] > 0.0
+    assert sum(row["trades"] for row in report) == 6
+
+
+def test_side_time_price_strata_economics_fails_closed_on_scope_errors() -> None:
+    ledger = _strata_ledger()
+    kwargs = {
+        "time_strata": ((1, 15), (15, 30), (30, 45), (45, 56)),
+        "price_strata": ((0.20, 0.25), (0.25, 0.275), (0.275, 0.30)),
+    }
+
+    with pytest.raises(ValueError, match="one selected trade per market"):
+        side_time_price_strata_economics(
+            pl.concat((ledger, ledger.head(1)), how="vertical"),
+            **kwargs,
+        )
+    with pytest.raises(ValueError, match="price strata requires every row"):
+        side_time_price_strata_economics(
+            ledger.with_columns(
+                pl.when(pl.col("market_id") == "m-0")
+                .then(pl.lit(0.30))
+                .otherwise(pl.col("selected_share_price"))
+                .alias("selected_share_price")
+            ),
+            **kwargs,
+        )
+    with pytest.raises(ValueError, match="exactly one model"):
+        side_time_price_strata_economics(
+            ledger.with_columns(
+                pl.when(pl.col("market_id") == "m-0")
+                .then(pl.lit("other-model"))
+                .otherwise(pl.col("model"))
+                .alias("model")
+            ),
+            **kwargs,
+        )

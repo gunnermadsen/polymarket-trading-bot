@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from dataclasses import asdict
 from typing import Any
@@ -17,8 +18,15 @@ from .asymmetric_value_config import (
     DecisionQualityFold,
 )
 from .asymmetric_value_training import (
+    CANDLE_MATCHED_CORE_PRICE_CONTROL,
+    CORE_CANDLES_PRICE,
     CORE_L2_PRICE,
+    CORE_ORACLE_L2_PRICE,
+    CORE_ORACLE_PRICE,
     EXPECTED_MODEL_FEATURE_COUNTS,
+    L2_MATCHED_CORE_PRICE_CONTROL,
+    ORACLE_MATCHED_CORE_PRICE_CONTROL,
+    THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
     AsymmetricValueModel,
     HybridObjectiveCandidate,
     asymmetric_value_feature_sets,
@@ -31,6 +39,23 @@ from .asymmetric_value_training import (
 from .core_config import CoreTrainingConfig
 
 DECISION_QUALITY_SCHEMA_VERSION = "btc-asymmetric-decision-quality-v1"
+DECISION_SELECTION_SEAL_SCHEMA_VERSION = "btc-asymmetric-decision-selection-seal-v1"
+POST_SELECTION_ATTRIBUTION_SCHEMA_VERSION = (
+    "btc-asymmetric-post-selection-probability-attribution-v1"
+)
+MATCHED_CORE_CONTROL_CANDIDATE_ID = (
+    "l2_matched_core_price_hgb_control__quality_selected_configuration"
+)
+MATCHED_CORE_EXPECTED_FEATURE_COUNT = 71
+POST_SELECTION_ATTRIBUTION_PAIRS = {
+    CORE_ORACLE_PRICE: (ORACLE_MATCHED_CORE_PRICE_CONTROL, 75, 71),
+    CORE_CANDLES_PRICE: (CANDLE_MATCHED_CORE_PRICE_CONTROL, 79, 71),
+    CORE_ORACLE_L2_PRICE: (
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+        115,
+        75,
+    ),
+}
 OOF_SELECTION_COLUMNS = (
     "candidate_id",
     "base_candidate",
@@ -200,26 +225,11 @@ def fit_final_decision_quality_model(
     contract = config.decision_quality
     if contract is None:
         raise ValueError("final decision-quality fit requires its frozen config")
-    selected_id = selection.get("selected_candidate_id")
-    if not selected_id or selection.get("status") != "selected":
-        raise RuntimeError("no decision-quality configuration qualified for final fit")
-    base_name = str(selection["selected_base_candidate"])
-    candidate_config = next(
-        (item for item in contract.candidates if item.name == base_name),
-        None,
+    selected_id, candidate_config, variant = _resolve_selected_configuration(
+        selection,
+        config,
     )
-    if candidate_config is None or not candidate_config.selection_eligible:
-        raise RuntimeError("selected decision-quality base candidate is invalid")
-    variant = next(
-        (
-            item
-            for item in contract.calibration_variants
-            if calibration_variant_id(base_name, item) == selected_id
-        ),
-        None,
-    )
-    if variant is None:
-        raise RuntimeError("selected decision-quality calibration variant is invalid")
+    base_name = candidate_config.name
     fit_frame = _window(frame, contract.final_fit.start, contract.final_fit.end)
     calibration_frame = _window(
         frame,
@@ -255,6 +265,436 @@ def fit_final_decision_quality_model(
         "final_calibration_window": _window_evidence(contract.final_calibration),
         "fit": fit_evidence,
         "calibration": calibration_profile,
+    }
+
+
+def fit_selected_matched_core_walk_forward(
+    frame: pl.DataFrame,
+    selected_oof: pl.DataFrame,
+    selection: dict[str, Any],
+    config: AsymmetricValueConfig,
+    core_config: CoreTrainingConfig,
+) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """Replay the quality-selected configuration with Core features on the L2 cohort."""
+
+    contract = config.decision_quality
+    if contract is None:
+        raise ValueError("matched Core walk-forward requires its frozen config")
+    selected_id, candidate_config, variant = _resolve_selected_configuration(
+        selection,
+        config,
+    )
+    selected_grid = selected_oof.filter(pl.col("candidate_id") == selected_id)
+    if selected_grid.is_empty():
+        raise RuntimeError("quality-selected OOF candidate is absent from the primary grid")
+    _validate_selected_oof_configuration(
+        selected_grid,
+        selected_id=selected_id,
+        candidate=candidate_config,
+        variant=variant,
+        config=config,
+    )
+    features = asymmetric_value_feature_sets()[L2_MATCHED_CORE_PRICE_CONTROL]
+    _validate_matched_core_feature_contract(features)
+    predictions: list[pl.DataFrame] = []
+    fold_profiles: dict[str, Any] = {}
+    for fold in contract.folds:
+        fit_frame = _window(frame, fold.fit.start, fold.fit.end)
+        calibration_frame = _window(
+            frame,
+            fold.calibration.start,
+            fold.calibration.end,
+        )
+        validation_frame = _window(
+            frame,
+            fold.validation.start,
+            fold.validation.end,
+        )
+        _validate_fold_frames(
+            fold,
+            fit_frame,
+            calibration_frame,
+            validation_frame,
+        )
+        validation_target = validation_frame.filter(
+            pl.Series(hybrid_target_mask(validation_frame, config))
+        )
+        if validation_target.is_empty():
+            raise RuntimeError(f"{fold.name} matched Core validation target cohort is empty")
+        model, fit_evidence = fit_hybrid_histogram_model(
+            fit_frame,
+            features,
+            _training_candidate(candidate_config),
+            config,
+            core_config,
+        )
+        bundle, calibration_profile = _fit_calibrated_bundle(
+            model,
+            calibration_frame,
+            config,
+            core_config,
+            base_candidate=L2_MATCHED_CORE_PRICE_CONTROL,
+            variant=variant,
+        )
+        if not calibration_profile["target_calibration"]["qualified"]:
+            raise RuntimeError(f"{fold.name} matched Core calibration did not qualify")
+        probability = bundle.probability(validation_target)
+        predictions.append(
+            _selection_prediction_frame(
+                validation_target,
+                probability,
+                candidate_id=MATCHED_CORE_CONTROL_CANDIDATE_ID,
+                base_candidate=L2_MATCHED_CORE_PRICE_CONTROL,
+                fold=fold.name,
+                variant=variant,
+                config=config,
+            )
+        )
+        fold_profiles[fold.name] = {
+            "fold": _fold_evidence(
+                fold,
+                fit_frame,
+                calibration_frame,
+                validation_target,
+            ),
+            "fit": fit_evidence,
+            "calibration": calibration_profile,
+        }
+    control_oof = pl.concat(predictions, how="vertical_relaxed").sort(
+        "fold",
+        "window_start",
+        "market_id",
+        "seconds_elapsed",
+        "observed_at",
+    )
+    _validate_matched_core_oof_grid(control_oof, selected_grid, config)
+    return control_oof, {
+        "schema_version": DECISION_QUALITY_SCHEMA_VERSION,
+        "candidate_id": MATCHED_CORE_CONTROL_CANDIDATE_ID,
+        "base_candidate": L2_MATCHED_CORE_PRICE_CONTROL,
+        "selection_eligible": False,
+        "selected_configuration_id": selected_id,
+        "selected_base_candidate": candidate_config.name,
+        "parent_source": variant.parent_source,
+        "identity_l2": variant.identity_l2,
+        "feature_count": len(features),
+        "features": list(features),
+        "oof_rows": control_oof.height,
+        "oof_markets": control_oof["market_id"].n_unique(),
+        "selected_grid_key_sha256": _invariant_oof_grid_digest(selected_grid),
+        "control_grid_key_sha256": _invariant_oof_grid_digest(control_oof),
+        "fold_profiles": fold_profiles,
+        "economics_used": False,
+    }
+
+
+def fit_final_matched_core_model(
+    frame: pl.DataFrame,
+    selection: dict[str, Any],
+    config: AsymmetricValueConfig,
+    core_config: CoreTrainingConfig,
+) -> tuple[AsymmetricValueModel, dict[str, Any]]:
+    """Fit the nonselectable matched Core artifact after quality selection is sealed."""
+
+    contract = config.decision_quality
+    if contract is None:
+        raise ValueError("final matched Core fit requires its frozen config")
+    selected_id, candidate_config, variant = _resolve_selected_configuration(
+        selection,
+        config,
+    )
+    fit_frame = _window(frame, contract.final_fit.start, contract.final_fit.end)
+    calibration_frame = _window(
+        frame,
+        contract.final_calibration.start,
+        contract.final_calibration.end,
+    )
+    if fit_frame.is_empty() or calibration_frame.is_empty():
+        raise RuntimeError("final matched Core fit/calibration frames are empty")
+    features = asymmetric_value_feature_sets()[L2_MATCHED_CORE_PRICE_CONTROL]
+    _validate_matched_core_feature_contract(features)
+    model, fit_evidence = fit_hybrid_histogram_model(
+        fit_frame,
+        features,
+        _training_candidate(candidate_config),
+        config,
+        core_config,
+    )
+    bundle, calibration_profile = _fit_calibrated_bundle(
+        model,
+        calibration_frame,
+        config,
+        core_config,
+        base_candidate=L2_MATCHED_CORE_PRICE_CONTROL,
+        variant=variant,
+    )
+    if not calibration_profile["target_calibration"]["qualified"]:
+        raise RuntimeError("final matched Core calibration did not qualify")
+    bundle.name = L2_MATCHED_CORE_PRICE_CONTROL
+    return bundle, {
+        "candidate_id": MATCHED_CORE_CONTROL_CANDIDATE_ID,
+        "base_candidate": L2_MATCHED_CORE_PRICE_CONTROL,
+        "selection_eligible": False,
+        "selected_configuration_id": selected_id,
+        "selected_base_candidate": candidate_config.name,
+        "parent_source": variant.parent_source,
+        "identity_l2": variant.identity_l2,
+        "feature_count": len(features),
+        "features": list(features),
+        "final_fit_window": _window_evidence(contract.final_fit),
+        "final_calibration_window": _window_evidence(contract.final_calibration),
+        "fit": fit_evidence,
+        "calibration": calibration_profile,
+        "economics_used": False,
+    }
+
+
+def post_selection_attribution_candidate_id(feature_set_name: str) -> str:
+    """Return the stable probability-only identity for an attribution arm."""
+
+    return f"{feature_set_name}__quality_selected_configuration"
+
+
+def fit_selected_attribution_pair_walk_forward(
+    frame: pl.DataFrame,
+    selection_seal: dict[str, Any],
+    config: AsymmetricValueConfig,
+    core_config: CoreTrainingConfig,
+    *,
+    feature_set_name: str,
+) -> tuple[dict[str, pl.DataFrame], dict[str, Any]]:
+    """Replay one admissible source dimension after probability selection is sealed.
+
+    Both arms use the exact supplied source cohort, chronological folds, selected
+    hybrid objective, HGB profile, parent calibration source, and identity-L2.
+    The returned frames intentionally contain probability evidence only.
+    """
+
+    selection = _selection_from_probability_seal(selection_seal)
+    selected_id, candidate_config, variant = _resolve_selected_configuration(
+        selection,
+        config,
+    )
+    candidate_name, control_name, feature_sets = _resolve_attribution_feature_pair(feature_set_name)
+    contract = config.decision_quality
+    if contract is None:
+        raise ValueError("post-selection attribution requires its frozen config")
+    predictions: dict[str, list[pl.DataFrame]] = {
+        candidate_name: [],
+        control_name: [],
+    }
+    fold_profiles: dict[str, Any] = {}
+    for fold in contract.folds:
+        fit_frame = _window(frame, fold.fit.start, fold.fit.end)
+        calibration_frame = _window(
+            frame,
+            fold.calibration.start,
+            fold.calibration.end,
+        )
+        validation_frame = _window(
+            frame,
+            fold.validation.start,
+            fold.validation.end,
+        )
+        _validate_fold_frames(
+            fold,
+            fit_frame,
+            calibration_frame,
+            validation_frame,
+        )
+        validation_target = validation_frame.filter(
+            pl.Series(hybrid_target_mask(validation_frame, config))
+        )
+        if validation_target.is_empty():
+            raise RuntimeError(f"{fold.name} {candidate_name} attribution target cohort is empty")
+        fold_profiles[fold.name] = {
+            "fold": _fold_evidence(
+                fold,
+                fit_frame,
+                calibration_frame,
+                validation_target,
+            ),
+            "arms": {},
+        }
+        for arm_name in (candidate_name, control_name):
+            model, fit_evidence = fit_hybrid_histogram_model(
+                fit_frame,
+                feature_sets[arm_name],
+                _training_candidate(candidate_config),
+                config,
+                core_config,
+            )
+            bundle, calibration_profile = _fit_calibrated_bundle(
+                model,
+                calibration_frame,
+                config,
+                core_config,
+                base_candidate=arm_name,
+                variant=variant,
+            )
+            _require_qualified_attribution_calibration(
+                calibration_profile,
+                fold=fold.name,
+                feature_set_name=arm_name,
+            )
+            predictions[arm_name].append(
+                _selection_prediction_frame(
+                    validation_target,
+                    bundle.probability(validation_target),
+                    candidate_id=post_selection_attribution_candidate_id(arm_name),
+                    base_candidate=arm_name,
+                    fold=fold.name,
+                    variant=variant,
+                    config=config,
+                )
+            )
+            fold_profiles[fold.name]["arms"][arm_name] = {
+                "feature_count": len(feature_sets[arm_name]),
+                "fit": fit_evidence,
+                "calibration": calibration_profile,
+            }
+    oof_by_arm = {
+        arm_name: pl.concat(arm_predictions, how="vertical_relaxed").sort(
+            "fold",
+            "window_start",
+            "market_id",
+            "seconds_elapsed",
+            "observed_at",
+        )
+        for arm_name, arm_predictions in predictions.items()
+    }
+    _validate_attribution_pair_oof_grid(
+        oof_by_arm[candidate_name],
+        oof_by_arm[control_name],
+        candidate_name=candidate_name,
+        control_name=control_name,
+        variant=variant,
+        config=config,
+    )
+    candidate_grid_sha256 = _invariant_oof_grid_digest(oof_by_arm[candidate_name])
+    control_grid_sha256 = _invariant_oof_grid_digest(oof_by_arm[control_name])
+    probability_comparison = paired_probability_delta(
+        oof_by_arm[candidate_name],
+        oof_by_arm[control_name],
+        resamples=config.bootstrap_resamples,
+        seed=_stable_seed(
+            config.random_seed,
+            selected_id,
+            candidate_name,
+            control_name,
+            "post_selection_probability_attribution",
+        ),
+    )
+    return oof_by_arm, {
+        "schema_version": POST_SELECTION_ATTRIBUTION_SCHEMA_VERSION,
+        "source_cohort": _attribution_source_cohort_evidence(
+            frame,
+            feature_set_name=candidate_name,
+        ),
+        "candidate": _attribution_arm_evidence(
+            candidate_name,
+            feature_sets[candidate_name],
+            oof_by_arm[candidate_name],
+        ),
+        "matched_control": _attribution_arm_evidence(
+            control_name,
+            feature_sets[control_name],
+            oof_by_arm[control_name],
+        ),
+        "selected_configuration_id": selected_id,
+        "selected_base_candidate": candidate_config.name,
+        "parent_source": variant.parent_source,
+        "identity_l2": variant.identity_l2,
+        "selection_identity_sha256": selection_seal["selection_identity_sha256"],
+        "selection_eligible": False,
+        "probability_only": True,
+        "economics_used": False,
+        "all_calibrations_qualified": True,
+        "exact_within_pair_grid": candidate_grid_sha256 == control_grid_sha256,
+        "candidate_grid_key_sha256": candidate_grid_sha256,
+        "control_grid_key_sha256": control_grid_sha256,
+        "candidate_minus_matched_control_probability": probability_comparison,
+        "fold_profiles": fold_profiles,
+    }
+
+
+def fit_final_selected_attribution_pair(
+    frame: pl.DataFrame,
+    selection_seal: dict[str, Any],
+    config: AsymmetricValueConfig,
+    core_config: CoreTrainingConfig,
+    *,
+    feature_set_name: str,
+) -> tuple[dict[str, AsymmetricValueModel], dict[str, Any]]:
+    """Fit final probability artifacts for one sealed attribution pair."""
+
+    selection = _selection_from_probability_seal(selection_seal)
+    selected_id, candidate_config, variant = _resolve_selected_configuration(
+        selection,
+        config,
+    )
+    candidate_name, control_name, feature_sets = _resolve_attribution_feature_pair(feature_set_name)
+    contract = config.decision_quality
+    if contract is None:
+        raise ValueError("final post-selection attribution requires its frozen config")
+    fit_frame = _window(frame, contract.final_fit.start, contract.final_fit.end)
+    calibration_frame = _window(
+        frame,
+        contract.final_calibration.start,
+        contract.final_calibration.end,
+    )
+    if fit_frame.is_empty() or calibration_frame.is_empty():
+        raise RuntimeError("final attribution fit/calibration frames are empty")
+    models: dict[str, AsymmetricValueModel] = {}
+    arms: dict[str, Any] = {}
+    for arm_name in (candidate_name, control_name):
+        model, fit_evidence = fit_hybrid_histogram_model(
+            fit_frame,
+            feature_sets[arm_name],
+            _training_candidate(candidate_config),
+            config,
+            core_config,
+        )
+        bundle, calibration_profile = _fit_calibrated_bundle(
+            model,
+            calibration_frame,
+            config,
+            core_config,
+            base_candidate=arm_name,
+            variant=variant,
+        )
+        _require_qualified_attribution_calibration(
+            calibration_profile,
+            fold="final",
+            feature_set_name=arm_name,
+        )
+        bundle.name = arm_name
+        models[arm_name] = bundle
+        arms[arm_name] = {
+            "candidate_id": post_selection_attribution_candidate_id(arm_name),
+            "feature_count": len(feature_sets[arm_name]),
+            "features": list(feature_sets[arm_name]),
+            "fit": fit_evidence,
+            "calibration": calibration_profile,
+        }
+    return models, {
+        "schema_version": POST_SELECTION_ATTRIBUTION_SCHEMA_VERSION,
+        "source_cohort": _attribution_source_cohort_evidence(
+            frame,
+            feature_set_name=candidate_name,
+        ),
+        "selected_configuration_id": selected_id,
+        "selected_base_candidate": candidate_config.name,
+        "parent_source": variant.parent_source,
+        "identity_l2": variant.identity_l2,
+        "selection_identity_sha256": selection_seal["selection_identity_sha256"],
+        "selection_eligible": False,
+        "probability_only": True,
+        "economics_used": False,
+        "all_calibrations_qualified": True,
+        "final_fit_window": _window_evidence(contract.final_fit),
+        "final_calibration_window": _window_evidence(contract.final_calibration),
+        "arms": arms,
     }
 
 
@@ -886,12 +1326,346 @@ def _training_candidate(candidate: DecisionQualityCandidate) -> HybridObjectiveC
     )
 
 
+def _resolve_selected_configuration(
+    selection: dict[str, Any],
+    config: AsymmetricValueConfig,
+) -> tuple[str, DecisionQualityCandidate, DecisionQualityCalibrationVariant]:
+    contract = config.decision_quality
+    if contract is None:
+        raise ValueError("selected configuration resolution requires its frozen config")
+    if selection.get("status") != "selected":
+        raise RuntimeError("no decision-quality configuration qualified for matched replay")
+    if selection.get("economics_used") is True:
+        raise RuntimeError("economic evidence cannot select the matched Core configuration")
+    selected_id = selection.get("selected_candidate_id")
+    base_name = selection.get("selected_base_candidate")
+    if not isinstance(selected_id, str) or not selected_id:
+        raise RuntimeError("selected decision-quality candidate id is missing")
+    if not isinstance(base_name, str) or not base_name:
+        raise RuntimeError("selected decision-quality base candidate is missing")
+    candidate = next(
+        (item for item in contract.candidates if item.name == base_name),
+        None,
+    )
+    if candidate is None or not candidate.selection_eligible:
+        raise RuntimeError("selected decision-quality base candidate is invalid")
+    variant = next(
+        (
+            item
+            for item in contract.calibration_variants
+            if calibration_variant_id(base_name, item) == selected_id
+        ),
+        None,
+    )
+    if variant is None:
+        raise RuntimeError("selected decision-quality calibration variant is invalid")
+    return selected_id, candidate, variant
+
+
 def _validate_primary_feature_contract(features: tuple[str, ...]) -> None:
     expected = EXPECTED_MODEL_FEATURE_COUNTS[CORE_L2_PRICE]
     if len(features) != expected or len(set(features)) != expected:
         raise RuntimeError(
             f"decision-quality primary model requires the exact {expected}-feature Core+L2 contract"
         )
+
+
+def _validate_matched_core_feature_contract(features: tuple[str, ...]) -> None:
+    canonical = asymmetric_value_feature_sets()[L2_MATCHED_CORE_PRICE_CONTROL]
+    if (
+        features != canonical
+        or len(features) != MATCHED_CORE_EXPECTED_FEATURE_COUNT
+        or len(set(features)) != MATCHED_CORE_EXPECTED_FEATURE_COUNT
+    ):
+        raise RuntimeError(
+            "matched Core control requires the exact 71-feature L2-cohort Core contract"
+        )
+
+
+def _selection_from_probability_seal(
+    selection_seal: dict[str, Any],
+) -> dict[str, Any]:
+    if selection_seal.get("schema_version") != DECISION_SELECTION_SEAL_SCHEMA_VERSION:
+        raise RuntimeError("post-selection attribution requires a verified decision seal")
+    if selection_seal.get("economics_opened") is not False:
+        raise RuntimeError("post-selection attribution requires economics to remain sealed")
+    if selection_seal.get("selection_uses_economics") is not False:
+        raise RuntimeError("economic evidence cannot authorize probability attribution")
+    identity = selection_seal.get("selection_identity_sha256")
+    if not isinstance(identity, str) or len(identity) != 64:
+        raise RuntimeError("post-selection attribution seal identity is missing")
+    canonical = {
+        key: value
+        for key, value in selection_seal.items()
+        if key not in {"created_at", "run_id", "selection_identity_sha256"}
+    }
+    expected_identity = hashlib.sha256(
+        json.dumps(
+            canonical,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode()
+    ).hexdigest()
+    if identity != expected_identity:
+        raise RuntimeError("post-selection attribution seal identity changed")
+    selection = selection_seal.get("selection")
+    if not isinstance(selection, dict):
+        raise TypeError("post-selection attribution seal has no selected configuration")
+    if selection.get("economics_used") is not False:
+        raise RuntimeError("economic evidence cannot select probability attribution")
+    return selection
+
+
+def _resolve_attribution_feature_pair(
+    feature_set_name: str,
+) -> tuple[str, str, dict[str, tuple[str, ...]]]:
+    pair = POST_SELECTION_ATTRIBUTION_PAIRS.get(feature_set_name)
+    if pair is None:
+        supported = ", ".join(sorted(POST_SELECTION_ATTRIBUTION_PAIRS))
+        raise ValueError(
+            f"unsupported post-selection attribution feature set {feature_set_name!r}; "
+            f"expected one of: {supported}"
+        )
+    control_name, candidate_count, control_count = pair
+    canonical = asymmetric_value_feature_sets()
+    candidate_features = canonical[feature_set_name]
+    control_features = canonical[control_name]
+    if (
+        len(candidate_features) != candidate_count
+        or len(set(candidate_features)) != candidate_count
+        or EXPECTED_MODEL_FEATURE_COUNTS.get(feature_set_name) != candidate_count
+    ):
+        raise RuntimeError(
+            f"{feature_set_name} attribution requires its exact {candidate_count}-feature contract"
+        )
+    if (
+        len(control_features) != control_count
+        or len(set(control_features)) != control_count
+        or not set(control_features).issubset(candidate_features)
+    ):
+        raise RuntimeError(
+            f"{control_name} attribution requires its exact {control_count}-feature "
+            f"matched contract"
+        )
+    return (
+        feature_set_name,
+        control_name,
+        {
+            feature_set_name: candidate_features,
+            control_name: control_features,
+        },
+    )
+
+
+def _require_qualified_attribution_calibration(
+    calibration_profile: dict[str, Any],
+    *,
+    fold: str,
+    feature_set_name: str,
+) -> None:
+    target = calibration_profile.get("target_calibration")
+    if not isinstance(target, dict) or target.get("qualified") is not True:
+        raise RuntimeError(f"{fold} {feature_set_name} post-selection calibration did not qualify")
+
+
+def _validate_attribution_pair_oof_grid(
+    candidate: pl.DataFrame,
+    control: pl.DataFrame,
+    *,
+    candidate_name: str,
+    control_name: str,
+    variant: DecisionQualityCalibrationVariant,
+    config: AsymmetricValueConfig,
+) -> None:
+    contract = config.decision_quality
+    if contract is None:
+        raise ValueError("attribution OOF validation requires its frozen config")
+    expected_folds = {fold.name for fold in contract.folds}
+    for arm_name, frame in ((candidate_name, candidate), (control_name, control)):
+        if tuple(frame.columns) != OOF_SELECTION_COLUMNS:
+            raise RuntimeError(f"{arm_name} attribution OOF probability schema changed")
+        if FORBIDDEN_SELECTION_COLUMNS.intersection(frame.columns):
+            raise RuntimeError("economic fields entered post-selection attribution")
+        if frame.is_empty():
+            raise RuntimeError(f"{arm_name} attribution OOF grid is empty")
+        expected_metadata = {
+            "candidate_id": post_selection_attribution_candidate_id(arm_name),
+            "base_candidate": arm_name,
+            "parent_source": variant.parent_source,
+            "identity_l2": variant.identity_l2,
+        }
+        for column, expected in expected_metadata.items():
+            if frame[column].unique().to_list() != [expected]:
+                raise RuntimeError(f"{arm_name} attribution OOF {column} changed")
+        if set(frame["fold"].unique().to_list()) != expected_folds:
+            raise RuntimeError(f"{arm_name} attribution OOF folds are incomplete")
+    invariant_columns = (
+        "fold",
+        "market_id",
+        "window_start",
+        "observed_at",
+        "seconds_elapsed",
+        "label_up",
+        "yes_target_eligible",
+        "no_target_eligible",
+        "target_time_band",
+    )
+    key_columns = invariant_columns[:5]
+    for arm_name, frame in ((candidate_name, candidate), (control_name, control)):
+        if frame.select(*key_columns).is_duplicated().any():
+            raise RuntimeError(f"{arm_name} attribution OOF keys are duplicated")
+    candidate_grid = candidate.select(*invariant_columns).sort(*key_columns)
+    control_grid = control.select(*invariant_columns).sort(*key_columns)
+    if not candidate_grid.equals(control_grid):
+        raise RuntimeError(
+            "post-selection attribution arms do not share exact keys, labels, and eligibility"
+        )
+
+
+def _attribution_arm_evidence(
+    feature_set_name: str,
+    features: tuple[str, ...],
+    frame: pl.DataFrame,
+) -> dict[str, Any]:
+    return {
+        "feature_set_name": feature_set_name,
+        "candidate_id": post_selection_attribution_candidate_id(feature_set_name),
+        "feature_count": len(features),
+        "features": list(features),
+        "oof_rows": frame.height,
+        "oof_markets": frame["market_id"].n_unique(),
+        "oof_grid_key_sha256": _invariant_oof_grid_digest(frame),
+    }
+
+
+def _attribution_source_cohort_evidence(
+    frame: pl.DataFrame,
+    *,
+    feature_set_name: str,
+) -> dict[str, Any]:
+    columns = (
+        "market_id",
+        "window_start",
+        "observed_at",
+        "seconds_elapsed",
+        "label_up",
+    )
+    missing = sorted(set(columns) - set(frame.columns))
+    if missing:
+        raise ValueError("attribution source cohort is missing: " + ", ".join(missing))
+    digest = hashlib.sha256(b"btc-asymmetric-attribution-source-cohort-v1\n")
+    for row in frame.select(*columns).sort(*columns[:4]).iter_rows():
+        for value in row:
+            rendered = value.isoformat() if hasattr(value, "isoformat") else str(value)
+            encoded = rendered.encode()
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+    return {
+        "canonical_feature_set_name": feature_set_name,
+        "rows": frame.height,
+        "markets": frame["market_id"].n_unique(),
+        "range_start": frame["window_start"].min().isoformat(),
+        "range_end_inclusive": frame["window_start"].max().isoformat(),
+        "key_label_sha256": digest.hexdigest(),
+    }
+
+
+def _validate_selected_oof_configuration(
+    frame: pl.DataFrame,
+    *,
+    selected_id: str,
+    candidate: DecisionQualityCandidate,
+    variant: DecisionQualityCalibrationVariant,
+    config: AsymmetricValueConfig,
+) -> None:
+    required = set(OOF_SELECTION_COLUMNS)
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError("quality-selected OOF frame is missing: " + ", ".join(missing))
+    expected_metadata = {
+        "candidate_id": selected_id,
+        "base_candidate": candidate.name,
+        "parent_source": variant.parent_source,
+        "identity_l2": variant.identity_l2,
+    }
+    for column, expected in expected_metadata.items():
+        observed = frame[column].unique().to_list()
+        if observed != [expected]:
+            raise RuntimeError(f"quality-selected OOF {column} metadata changed")
+    contract = config.decision_quality
+    if contract is None:
+        raise ValueError("quality-selected OOF validation requires its frozen config")
+    if set(frame["fold"].unique().to_list()) != {fold.name for fold in contract.folds}:
+        raise RuntimeError("quality-selected OOF folds are incomplete")
+
+
+def _validate_matched_core_oof_grid(
+    control: pl.DataFrame,
+    selected: pl.DataFrame,
+    config: AsymmetricValueConfig,
+) -> None:
+    required = set(OOF_SELECTION_COLUMNS)
+    for name, frame in (("control", control), ("selected", selected)):
+        missing = sorted(required - set(frame.columns))
+        if missing:
+            raise ValueError(f"matched Core {name} OOF frame is missing: " + ", ".join(missing))
+        if frame.is_empty():
+            raise RuntimeError(f"matched Core {name} OOF grid is empty")
+    if control["candidate_id"].unique().to_list() != [MATCHED_CORE_CONTROL_CANDIDATE_ID]:
+        raise RuntimeError("matched Core OOF candidate identity changed")
+    if control["base_candidate"].unique().to_list() != [L2_MATCHED_CORE_PRICE_CONTROL]:
+        raise RuntimeError("matched Core OOF base identity changed")
+    contract = config.decision_quality
+    if contract is None:
+        raise ValueError("matched Core OOF validation requires its frozen config")
+    expected_folds = {fold.name for fold in contract.folds}
+    if set(control["fold"].unique().to_list()) != expected_folds:
+        raise RuntimeError("matched Core OOF folds are incomplete")
+    invariant_columns = (
+        "fold",
+        "market_id",
+        "window_start",
+        "observed_at",
+        "seconds_elapsed",
+        "label_up",
+        "yes_target_eligible",
+        "no_target_eligible",
+        "target_time_band",
+    )
+    key_columns = invariant_columns[:5]
+    if control.select(*key_columns).is_duplicated().any():
+        raise RuntimeError("matched Core OOF keys are duplicated")
+    if selected.select(*key_columns).is_duplicated().any():
+        raise RuntimeError("quality-selected OOF keys are duplicated")
+    control_grid = control.select(*invariant_columns).sort(*key_columns)
+    selected_grid = selected.select(*invariant_columns).sort(*key_columns)
+    if not control_grid.equals(selected_grid):
+        raise RuntimeError(
+            "matched Core OOF does not share the exact selected key/label/eligibility grid"
+        )
+
+
+def _invariant_oof_grid_digest(frame: pl.DataFrame) -> str:
+    columns = (
+        "fold",
+        "market_id",
+        "window_start",
+        "observed_at",
+        "seconds_elapsed",
+        "label_up",
+        "yes_target_eligible",
+        "no_target_eligible",
+        "target_time_band",
+    )
+    digest = hashlib.sha256(b"btc-asymmetric-matched-core-oof-grid-v1\n")
+    for row in frame.select(*columns).sort(*columns[:5]).iter_rows():
+        for value in row:
+            rendered = value.isoformat() if hasattr(value, "isoformat") else str(value)
+            encoded = rendered.encode()
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+    return digest.hexdigest()
 
 
 def _validate_parent_calibration_support(
