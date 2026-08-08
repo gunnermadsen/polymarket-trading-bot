@@ -40,6 +40,11 @@ from btc_directional_model.asymmetric_value_training import (
     THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
     asymmetric_value_feature_sets,
 )
+from btc_directional_model.spot_l2_chainlink_features import (
+    L2_CAUSAL_AGE_COLUMNS,
+    L2_CAUSAL_AUDIT_COLUMNS,
+    L2_CAUSAL_TIMESTAMP_COLUMNS,
+)
 
 
 def residual_frame(
@@ -61,6 +66,10 @@ def residual_frame(
             no_received_at = observed_at - timedelta(milliseconds=200)
             oracle_block_timestamp = observed_at - timedelta(seconds=2)
             oracle_source_timestamp = oracle_block_timestamp - timedelta(seconds=1)
+            spot_l2_available_at = observed_at - timedelta(milliseconds=300)
+            spot_l2_source_event_timestamp = observed_at - timedelta(
+                milliseconds=800
+            )
             path = direction * (2.0 + 0.08 * elapsed) + (market_index % 3 - 1) * 0.2
             oracle_return = direction * (1.5 + 0.05 * elapsed)
             microprice = direction * (0.4 + 0.01 * elapsed)
@@ -77,6 +86,12 @@ def residual_frame(
                     "no_received_at": no_received_at,
                     "oracle_source_timestamp": oracle_source_timestamp,
                     "oracle_block_timestamp": oracle_block_timestamp,
+                    "spot_l2_source_event_timestamp": (
+                        spot_l2_source_event_timestamp
+                    ),
+                    "spot_l2_available_at": spot_l2_available_at,
+                    "spot_l2_availability_age_seconds": 0.3,
+                    "spot_l2_state_age_seconds": 0.8,
                     "early_oracle_eligible": True,
                     "pm_yes_cost_per_share": yes_cost,
                     "pm_no_cost_per_share": no_cost,
@@ -193,7 +208,7 @@ def test_market_equal_weights_total_one_even_with_unequal_decision_counts() -> N
     assert weights[4:].sum() == pytest.approx(1.0)
 
 
-def test_explicit_maturity_flags_mask_unavailable_horizons_without_filling() -> None:
+def test_maturity_masks_unavailable_core_but_keeps_causal_l2_horizons() -> None:
     frame = residual_frame(markets=1, seconds=(1, 5, 15, 30, 60))
     for horizon in (1, 5, 15, 30, 60):
         frame = frame.with_columns(
@@ -201,10 +216,6 @@ def test_explicit_maturity_flags_mask_unavailable_horizons_without_filling() -> 
             .then(None)
             .otherwise(pl.col(f"btc_return_{horizon}s_bps"))
             .alias(f"btc_return_{horizon}s_bps"),
-            pl.when(pl.col("seconds_elapsed") < horizon)
-            .then(None)
-            .otherwise(pl.col(f"spot_l2_midpoint_change_{horizon}s_bps"))
-            .alias(f"spot_l2_midpoint_change_{horizon}s_bps"),
         )
     for horizon in (5, 30, 60):
         frame = frame.with_columns(
@@ -222,6 +233,13 @@ def test_explicit_maturity_flags_mask_unavailable_horizons_without_filling() -> 
         expected_flag = (np.asarray((1, 5, 15, 30, 60)) >= horizon).astype(float)
         np.testing.assert_array_equal(yes[:, flag_index], expected_flag)
         assert np.all(yes[expected_flag == 0.0, return_index] == 0.0)
+        l2_index = RESIDUAL_FEATURE_NAMES.index(
+            f"side_l2_midpoint_change_{horizon}s_bps"
+        )
+        np.testing.assert_array_equal(
+            yes[:, l2_index],
+            frame[f"spot_l2_midpoint_change_{horizon}s_bps"].to_numpy(),
+        )
         assert frame.filter(pl.col("seconds_elapsed") < horizon)[
             f"btc_return_{horizon}s_bps"
         ].null_count() == int((expected_flag == 0.0).sum())
@@ -300,6 +318,29 @@ def test_penalty_manifest_keeps_l2_confirmation_weaker_than_anchor() -> None:
             ),
             "missing or noncausal",
         ),
+        (
+            lambda frame: frame.with_columns(
+                (pl.col("observed_at") + pl.duration(microseconds=1)).alias(
+                    "spot_l2_available_at"
+                )
+            ),
+            "spot-L2 timestamps are noncausal",
+        ),
+        (
+            lambda frame: frame.with_columns(
+                (pl.col("observed_at") - pl.duration(seconds=3)).alias(
+                    "spot_l2_source_event_timestamp"
+                ),
+                pl.lit(3.0).alias("spot_l2_state_age_seconds"),
+            ),
+            "spot-L2 ages violate",
+        ),
+        (
+            lambda frame: frame.with_columns(
+                pl.lit(0.4).alias("spot_l2_availability_age_seconds")
+            ),
+            "source ages disagree",
+        ),
     ),
 )
 def test_missing_or_noncausal_inputs_fail_closed(mutator: object, message: str) -> None:
@@ -351,10 +392,13 @@ def test_three_source_projection_retains_residual_audit_contract_without_filling
     )
 
     assert set(REQUIRED_FEATURE_COLUMNS).issubset(projected.columns)
+    assert set(L2_CAUSAL_AUDIT_COLUMNS).issubset(projected.columns)
     assert projected["yes_received_at"].item() == frame["yes_received_at"].item()
     assert projected["oracle_block_timestamp"].item() == (
         frame["oracle_block_timestamp"].item()
     )
+    assert all(name in projected.columns for name in L2_CAUSAL_TIMESTAMP_COLUMNS)
+    assert all(name in projected.columns for name in L2_CAUSAL_AGE_COLUMNS)
     assert projected.null_count().select(pl.sum_horizontal(pl.all())).item() == 0
 
 

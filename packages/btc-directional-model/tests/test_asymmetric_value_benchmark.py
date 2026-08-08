@@ -49,7 +49,10 @@ from btc_directional_model.asymmetric_value_training import (
     PRICE_LOGISTIC,
     THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
 )
-from btc_directional_model.spot_l2_chainlink_features import L2_FEATURES
+from btc_directional_model.spot_l2_chainlink_features import (
+    L2_CAUSAL_AUDIT_COLUMNS,
+    L2_FEATURES,
+)
 
 
 def _core_frame() -> pl.DataFrame:
@@ -159,6 +162,7 @@ def test_three_source_join_is_exact_key_intersection_without_filling() -> None:
                 "seconds_elapsed",
                 "early_oracle_eligible",
                 *CAUSAL_TIMESTAMP_COLUMNS,
+                *L2_CAUSAL_AUDIT_COLUMNS,
                 *EARLY_CAUSAL_ORACLE_FEATURES,
                 *L2_FEATURES,
             }
@@ -181,7 +185,15 @@ def test_three_source_join_is_exact_key_intersection_without_filling() -> None:
         *(
             pl.lit(float(index + 1)).alias(name)
             for index, name in enumerate(L2_FEATURES)
-        )
+        ),
+        (pl.col("observed_at") - pl.duration(milliseconds=800)).alias(
+            "spot_l2_source_event_timestamp"
+        ),
+        (pl.col("observed_at") - pl.duration(milliseconds=300)).alias(
+            "spot_l2_available_at"
+        ),
+        pl.lit(0.3).alias("spot_l2_availability_age_seconds"),
+        pl.lit(0.8).alias("spot_l2_state_age_seconds"),
     )
 
     joined = _join_oracle_l2_candidate_features(oracle, l2)
@@ -189,6 +201,7 @@ def test_three_source_join_is_exact_key_intersection_without_filling() -> None:
     assert joined["seconds_elapsed"].to_list() == [10]
     assert set(EARLY_CAUSAL_ORACLE_FEATURES).issubset(joined.columns)
     assert set(L2_FEATURES).issubset(joined.columns)
+    assert set(L2_CAUSAL_AUDIT_COLUMNS).issubset(joined.columns)
     assert set(REQUIRED_FEATURE_COLUMNS).issubset(joined.columns)
     assert joined["yes_received_at"].item() == (
         start + timedelta(seconds=9, milliseconds=900)
