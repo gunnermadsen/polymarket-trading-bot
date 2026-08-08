@@ -41,6 +41,7 @@ from .asymmetric_value_data import (
     EARLY_CAUSAL_ORACLE_FEATURES,
     ORACLE_MAXIMUM_AGE_SECONDS,
     ORACLE_MINIMUM_PROPAGATION_SECONDS,
+    PRICE_MANIFEST_IDENTITY_EXCLUDES,
     attach_asymmetric_value_features,
     attach_early_causal_oracle_features,
     exact_price_by_second,
@@ -48,6 +49,7 @@ from .asymmetric_value_data import (
     extract_asymmetric_price_evidence,
     load_asymmetric_price_evidence,
     load_asymmetric_retained_execution_evidence,
+    price_manifest_identity_sha256,
     select_asymmetric_prediction_grid,
 )
 from .asymmetric_value_evaluation import (
@@ -119,7 +121,7 @@ from .spot_l2_chainlink_features import (
     L2_FEATURES,
 )
 
-ASYMMETRIC_VALUE_SCHEMA_VERSION = "btc-asymmetric-value-hunter-benchmark-v3"
+ASYMMETRIC_VALUE_SCHEMA_VERSION = "btc-asymmetric-value-hunter-benchmark-v4"
 FROZEN_CHAMPION = "frozen_champion_reference_60s_plus"
 DEVELOPMENT_ORACLE_CACHE = "development-oracle-propagation-2s.parquet"
 EVALUATION_ORACLE_CACHE = "evaluation-oracle-propagation-2s.parquet"
@@ -130,6 +132,27 @@ DEVELOPMENT_BENCHMARK_MODELS = (
 DEVELOPMENT_OFFLINE_ONLY_CANDIDATES = frozenset(
     {*OFFLINE_ONLY_CANDIDATES, SIDE_CONDITIONED_RESIDUAL_MODEL}
 )
+
+
+def _price_manifest_lineage(
+    *,
+    development: dict[str, Any],
+    evaluation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return stable manifest identities for selection seals and run lineage."""
+
+    manifests = {"development": development}
+    if evaluation is not None:
+        manifests["evaluation"] = evaluation
+    return {
+        "price_manifest_identity_excludes": list(PRICE_MANIFEST_IDENTITY_EXCLUDES),
+        **{
+            f"{scope}_price_manifest_identity_sha256": (
+                price_manifest_identity_sha256(manifest)
+            )
+            for scope, manifest in manifests.items()
+        },
+    }
 
 
 def run_asymmetric_value_benchmark(
@@ -597,7 +620,7 @@ def run_asymmetric_value_benchmark(
             compression="zstd",
         )
     selection_seal = {
-        "schema_version": "btc-asymmetric-value-selection-seal-v4",
+        "schema_version": "btc-asymmetric-value-selection-seal-v5",
         "sealed_at": datetime.now(UTC).isoformat(),
         "evaluation_opened": False,
         "selected_key": selection["selected_key"],
@@ -697,9 +720,7 @@ def run_asymmetric_value_benchmark(
             else None
         ),
         "price_query_sha256": file_sha256(config.price_source_sql),
-        "development_price_manifest_sha256": file_sha256(
-            config.price_cache / "development" / "manifest.json"
-        ),
+        **_price_manifest_lineage(development=development_price_manifest),
         "development_l2_features_sha256": file_sha256(
             config.feature_cache / "development-l2.parquet"
         ),
@@ -1556,11 +1577,9 @@ def run_asymmetric_value_benchmark(
             "evaluation_feature_attribution_sha256": file_sha256(
                 run_dir / "evaluation-feature-attribution.json"
             ),
-            "development_price_manifest_sha256": file_sha256(
-                config.price_cache / "development" / "manifest.json"
-            ),
-            "evaluation_price_manifest_sha256": file_sha256(
-                config.price_cache / "evaluation" / "manifest.json"
+            **_price_manifest_lineage(
+                development=development_price_manifest,
+                evaluation=evaluation_price_manifest,
             ),
             "development_l2_features_sha256": file_sha256(
                 config.feature_cache / "development-l2.parquet"
@@ -1913,9 +1932,7 @@ def _finalize_development_only_benchmark(
             "development_core_content_sha256": (
                 development_core_content_sha256
             ),
-            "development_price_manifest_sha256": file_sha256(
-                config.price_cache / "development" / "manifest.json"
-            ),
+            **_price_manifest_lineage(development=development_price_manifest),
             "development_oracle_features_sha256": file_sha256(
                 config.feature_cache / DEVELOPMENT_ORACLE_CACHE
             ),

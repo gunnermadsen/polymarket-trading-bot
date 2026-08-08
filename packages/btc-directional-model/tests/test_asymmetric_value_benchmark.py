@@ -28,6 +28,7 @@ from btc_directional_model.asymmetric_value_benchmark import (
     _matched_control_noninferiority_checks,
     _matched_feature_attribution,
     _matched_policy_probability_quality,
+    _price_manifest_lineage,
     _selected_matched_control,
     _validate_external_core_keys,
 )
@@ -85,6 +86,35 @@ def test_core_content_digest_is_order_invariant_and_value_sensitive() -> None:
 
     assert _frame_content_digest(core) == _frame_content_digest(reversed_core)
     assert _frame_content_digest(core) != _frame_content_digest(changed)
+
+
+def test_price_manifest_lineage_ignores_only_refresh_timestamp() -> None:
+    manifest = {
+        "schema_version": "btc-asymmetric-value-price-evidence-v2",
+        "scope": "development",
+        "created_at": "2026-08-08T00:00:00+00:00",
+        "coverage_totals": {"strict_rows": 900},
+    }
+    refreshed = {
+        **manifest,
+        "created_at": "2026-08-08T01:00:00+00:00",
+    }
+    source_changed = {
+        **refreshed,
+        "coverage_totals": {"strict_rows": 901},
+    }
+
+    sealed = _price_manifest_lineage(development=manifest)
+    refreshed_seal = _price_manifest_lineage(development=refreshed)
+    changed_seal = _price_manifest_lineage(development=source_changed)
+
+    assert sealed == refreshed_seal
+    assert sealed != changed_seal
+    assert sealed["price_manifest_identity_excludes"] == ["created_at"]
+    assert "development_price_manifest_sha256" not in sealed
+    assert sealed["development_price_manifest_identity_sha256"] != (
+        changed_seal["development_price_manifest_identity_sha256"]
+    )
 
 
 def test_external_cache_validation_binds_inherited_core_values() -> None:
