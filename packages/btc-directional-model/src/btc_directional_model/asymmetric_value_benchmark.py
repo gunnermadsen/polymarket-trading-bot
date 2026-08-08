@@ -33,6 +33,7 @@ from .asymmetric_training_readiness import (
     prepare_asymmetric_training_readiness,
 )
 from .asymmetric_value_config import (
+    HYBRID_DECISION_QUALITY_TRAINING_CONTRACT,
     TARGET_CALIBRATED_TRAINING_CONTRACT,
     AsymmetricValueConfig,
     EvidenceWindow,
@@ -293,6 +294,45 @@ def run_asymmetric_value_benchmark(
         CORE_CANDLES_PRICE,
     )
     del development_candles
+    development_model_frames = _candidate_frames(
+        price=development_price_features,
+        oracle_price=development_oracle_price_features,
+        l2_price=development_l2_price_features,
+        candle_price=development_candle_price_features,
+        three_source_price=development_three_source_price_features,
+    )
+    if config.training_contract == HYBRID_DECISION_QUALITY_TRAINING_CONTRACT:
+        contract = config.decision_quality
+        if contract is None:
+            raise RuntimeError("decision-quality training contract is missing")
+        oof_core = _window(
+            development,
+            contract.folds[0].validation.start,
+            contract.folds[-1].validation.end,
+        ).select("market_id", "window_start", "seconds_elapsed")
+        oof_grid_coverage = execution_grid_coverage(
+            config,
+            scope="development",
+            core=oof_core,
+        )
+        del development, development_executable_core, development_prices
+        gc.collect()
+        from .asymmetric_decision_quality_benchmark import (
+            run_decision_quality_benchmark,
+        )
+
+        return run_decision_quality_benchmark(
+            config=config,
+            core_config=core_config,
+            development_model_frames=development_model_frames,
+            oof_core=oof_core,
+            oof_grid_coverage=oof_grid_coverage,
+            development_coverage=development_coverage,
+            development_price_manifest=development_price_manifest,
+            implementation_sha256=implementation_sha256,
+            dependency_versions=dependency_versions,
+            current_process=current_process,
+        )
     policy_core = _window(
         development,
         config.policy.start,
@@ -303,13 +343,6 @@ def run_asymmetric_value_benchmark(
         config,
         scope="development",
         core=policy_core,
-    )
-    development_model_frames = _candidate_frames(
-        price=development_price_features,
-        oracle_price=development_oracle_price_features,
-        l2_price=development_l2_price_features,
-        candle_price=development_candle_price_features,
-        three_source_price=development_three_source_price_features,
     )
     del (
         development,
@@ -3216,6 +3249,8 @@ def _implementation_digest(config: AsymmetricValueConfig) -> str:
     source_root = Path(__file__).parent
     paths = [
         source_root / "asymmetric_value_benchmark.py",
+        source_root / "asymmetric_decision_quality.py",
+        source_root / "asymmetric_decision_quality_benchmark.py",
         source_root / "asymmetric_incumbent_replay.py",
         source_root / "asymmetric_training_readiness.py",
         source_root / "asymmetric_value_config.py",

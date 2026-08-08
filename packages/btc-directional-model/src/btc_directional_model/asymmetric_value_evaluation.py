@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
@@ -14,6 +15,7 @@ IMMEDIATE_FIRST_CROSSING = "immediate_first_crossing"
 EDGE_POSITIVE_2_OF_LAST_3_SECONDS = "edge_positive_2_of_last_3_seconds"
 MINIMUM_SELECTED_WIN_RATE_ADVANTAGE = 0.05
 VWAP10_TEN_SHARE_EXECUTION = "vwap10_10_share"
+FIVE_SECOND_REPORT_INTERVALS = tuple((start, start + 5) for start in range(1, 56, 5))
 
 _POLICY_REQUIRED_COLUMNS = {
     "model",
@@ -1855,6 +1857,278 @@ def accuracy_price_by_second(scored: pl.DataFrame) -> list[dict[str, Any]]:
     )
 
 
+def accuracy_price_by_five_second_interval(
+    scored: pl.DataFrame,
+) -> list[dict[str, Any]]:
+    """Report selected-opportunity quality and prices in fixed early intervals.
+
+    The report is deliberately restricted to one selected model/candidate/policy and
+    seconds 1 through 55. Every fixed interval is returned, including intervals with
+    no observations, so two benchmark runs have the same deterministic row shape.
+    Probability scores are for the selected opportunity side, not the YES class.
+    """
+
+    if scored.is_empty():
+        return []
+    required = {
+        "market_id",
+        "seconds_elapsed",
+        "won",
+        "selected_probability",
+        "yes_ask_vwap_5",
+        "no_ask_vwap_5",
+        "selected_share_price",
+        "selected_admission_cost_per_share",
+        "selected_edge_per_share",
+    }
+    _require_columns(scored, required, "five-second accuracy/price report")
+    scope = _single_selected_report_scope(scored, "five-second accuracy/price report")
+    _validate_selected_report_values(
+        scored,
+        context="five-second accuracy/price report",
+        finite_columns=(
+            "selected_probability",
+            "yes_ask_vwap_5",
+            "no_ask_vwap_5",
+            "selected_share_price",
+            "selected_admission_cost_per_share",
+            "selected_edge_per_share",
+        ),
+    )
+    seconds = scored["seconds_elapsed"].cast(pl.Float64).to_numpy()
+    if np.any((seconds < 1.0) | (seconds >= 56.0)):
+        raise ValueError(
+            "five-second accuracy/price report requires seconds in [1, 56)"
+        )
+    key_columns = ["market_id", "seconds_elapsed"]
+    if "window_start" in scored.columns:
+        key_columns.insert(1, "window_start")
+    if scored.select(*key_columns).is_duplicated().any():
+        raise ValueError(
+            "five-second accuracy/price report contains duplicate market/second rows"
+        )
+
+    report: list[dict[str, Any]] = []
+    for start_second, end_second in FIVE_SECOND_REPORT_INTERVALS:
+        interval = scored.filter(
+            pl.col("seconds_elapsed").is_between(
+                start_second,
+                end_second,
+                closed="left",
+            )
+        )
+        rows = interval.height
+        wins = int(interval["won"].cast(pl.Int64).sum()) if rows else 0
+        if rows:
+            probability = interval["selected_probability"].cast(pl.Float64).to_numpy()
+            outcome = interval["won"].cast(pl.Float64).to_numpy()
+            clipped = np.clip(probability, 1e-15, 1.0 - 1e-15)
+            brier = float(np.mean(np.square(probability - outcome)))
+            log_loss = float(
+                -np.mean(
+                    outcome * np.log(clipped) + (1.0 - outcome) * np.log(1.0 - clipped)
+                )
+            )
+            calibration_bias = float(np.mean(probability - outcome))
+        else:
+            brier = None
+            log_loss = None
+            calibration_bias = None
+        report.append(
+            {
+                **scope,
+                "interval_start_second": start_second,
+                "interval_end_second_exclusive": end_second,
+                "interval": f"[{start_second},{end_second})",
+                "rows": rows,
+                "markets": interval["market_id"].n_unique() if rows else 0,
+                "wins": wins,
+                "accuracy": wins / rows if rows else None,
+                "brier_score": brier,
+                "log_loss": log_loss,
+                "calibration_bias": calibration_bias,
+                "absolute_calibration_bias": (
+                    abs(calibration_bias) if calibration_bias is not None else None
+                ),
+                "mean_selected_probability": _finite_mean(
+                    interval,
+                    "selected_probability",
+                ),
+                "mean_yes_vwap_5": _finite_mean(interval, "yes_ask_vwap_5"),
+                "mean_no_vwap_5": _finite_mean(interval, "no_ask_vwap_5"),
+                "mean_selected_raw_share_price": _finite_mean(
+                    interval,
+                    "selected_share_price",
+                ),
+                "mean_selected_admission_cost_per_share": _finite_mean(
+                    interval,
+                    "selected_admission_cost_per_share",
+                ),
+                "mean_selected_modeled_edge_per_share": _finite_mean(
+                    interval,
+                    "selected_edge_per_share",
+                ),
+            }
+        )
+    return report
+
+
+def side_time_price_strata_economics(
+    ledger: pl.DataFrame,
+    *,
+    time_strata: tuple[tuple[int, int], ...],
+    price_strata: tuple[tuple[float, float], ...],
+) -> list[dict[str, Any]]:
+    """Report selected-ledger economics for configured side/time/price cells.
+
+    Both dimensions use half-open intervals. Every input trade must fall into exactly
+    one configured time cell and one configured raw-price cell; the function refuses
+    to silently discard trades outside the report scope. Empty cells are emitted to
+    preserve the fixed YES/NO x time x price report shape.
+    """
+
+    if ledger.is_empty():
+        return []
+    required = {
+        "market_id",
+        "window_start",
+        "observed_at",
+        "seconds_elapsed",
+        "selected_yes",
+        "won",
+        "quantity",
+        "selected_probability",
+        "selected_share_price",
+        "selected_admission_cost_per_share",
+        "selected_execution_cost_per_share",
+        "selected_edge_per_share",
+        "selected_underdog",
+        "realized_net",
+        "entry_debit",
+    }
+    _require_columns(ledger, required, "side/time/price economics report")
+    scope = _single_selected_report_scope(ledger, "side/time/price economics report")
+    normalized_time = _validated_half_open_strata(
+        time_strata,
+        context="side/time/price economics time strata",
+        integral=True,
+    )
+    normalized_price = _validated_half_open_strata(
+        price_strata,
+        context="side/time/price economics price strata",
+        integral=False,
+    )
+    _validate_selected_report_values(
+        ledger,
+        context="side/time/price economics report",
+        finite_columns=(
+            "quantity",
+            "selected_probability",
+            "selected_share_price",
+            "selected_admission_cost_per_share",
+            "selected_execution_cost_per_share",
+            "selected_edge_per_share",
+            "realized_net",
+            "entry_debit",
+        ),
+    )
+    if ledger["market_id"].is_duplicated().any():
+        raise ValueError(
+            "side/time/price economics report requires one selected trade per market"
+        )
+    _validate_rows_in_report_strata(
+        ledger,
+        column="seconds_elapsed",
+        strata=normalized_time,
+        context="side/time/price economics time strata",
+    )
+    _validate_rows_in_report_strata(
+        ledger,
+        column="selected_share_price",
+        strata=normalized_price,
+        context="side/time/price economics price strata",
+    )
+    if ledger.filter(pl.col("quantity") <= 0.0).height:
+        raise ValueError("side/time/price economics quantity must be positive")
+
+    report: list[dict[str, Any]] = []
+    for side, selected_yes in (("YES", True), ("NO", False)):
+        for time_start, time_end in normalized_time:
+            for price_start, price_end in normalized_price:
+                cell = ledger.filter(
+                    (pl.col("selected_yes") == selected_yes)
+                    & pl.col("seconds_elapsed").is_between(
+                        time_start,
+                        time_end,
+                        closed="left",
+                    )
+                    & pl.col("selected_share_price").is_between(
+                        price_start,
+                        price_end,
+                        closed="left",
+                    )
+                )
+                metrics = ledger_metrics(cell)
+                wins = int(cell["won"].cast(pl.Int64).sum()) if cell.height else 0
+                report.append(
+                    {
+                        **scope,
+                        "side": side,
+                        "time_start_second": int(time_start),
+                        "time_end_second_exclusive": int(time_end),
+                        "time_interval": f"[{int(time_start)},{int(time_end)})",
+                        "price_start": float(price_start),
+                        "price_end_exclusive": float(price_end),
+                        "price_interval": f"[{price_start:g},{price_end:g})",
+                        "rows": cell.height,
+                        "trades": cell.height,
+                        "markets": cell["market_id"].n_unique() if cell.height else 0,
+                        "wins": wins,
+                        "losses": cell.height - wins,
+                        "accuracy": wins / cell.height if cell.height else None,
+                        "net_profit": metrics.get("net_profit"),
+                        "net_expectancy_per_trade": metrics.get(
+                            "net_expectancy_per_trade"
+                        ),
+                        "entry_debit": metrics.get("entry_debit", 0.0),
+                        "capital_efficiency": metrics.get("capital_efficiency"),
+                        "profit_factor": metrics.get("profit_factor"),
+                        "profit_factor_no_losses": metrics.get(
+                            "profit_factor_no_losses",
+                            False,
+                        ),
+                        "stress_1c_net_profit": metrics.get("stress_1c_net_profit"),
+                        "stress_1c_net_expectancy_per_trade": metrics.get(
+                            "stress_1c_net_expectancy_per_trade"
+                        ),
+                        "mean_selected_probability": metrics.get(
+                            "mean_selected_probability"
+                        ),
+                        "mean_selected_raw_share_price": metrics.get(
+                            "mean_share_price"
+                        ),
+                        "mean_selected_admission_cost_per_share": metrics.get(
+                            "mean_admission_cost_per_share"
+                        ),
+                        "mean_selected_execution_cost_per_share": metrics.get(
+                            "mean_execution_cost_per_share"
+                        ),
+                        "mean_selected_modeled_edge_per_share": metrics.get(
+                            "mean_modeled_edge_per_share"
+                        ),
+                        "selected_win_rate_advantage": metrics.get(
+                            "selected_win_rate_advantage"
+                        ),
+                        "selected_calibration_bias": metrics.get(
+                            "selected_calibration_bias"
+                        ),
+                        "selected_brier_score": metrics.get("selected_brier_score"),
+                        "selected_log_loss": metrics.get("selected_log_loss"),
+                    }
+                )
+    return report
+
+
 def opportunity_calibration_by_price_band(
     scored: pl.DataFrame,
 ) -> list[dict[str, Any]]:
@@ -2135,6 +2409,110 @@ def _interval(values: np.ndarray) -> dict[str, float]:
         "median": float(np.quantile(values, 0.5)),
         "upper_95": float(np.quantile(values, 0.975)),
     }
+
+
+def _single_selected_report_scope(
+    frame: pl.DataFrame,
+    context: str,
+) -> dict[str, Any]:
+    scope: dict[str, Any] = {}
+    for column in ("candidate_id", "model", "policy"):
+        if column not in frame.columns:
+            continue
+        if frame[column].null_count() or frame[column].n_unique() != 1:
+            raise ValueError(f"{context} requires exactly one {column}")
+        scope[column] = frame[column].item(0)
+    return scope
+
+
+def _validate_selected_report_values(
+    frame: pl.DataFrame,
+    *,
+    context: str,
+    finite_columns: tuple[str, ...],
+) -> None:
+    if frame["market_id"].null_count():
+        raise ValueError(f"{context} contains a null market_id")
+    seconds = frame["seconds_elapsed"].cast(pl.Float64, strict=False).to_numpy()
+    if not np.all(np.isfinite(seconds)) or not np.all(seconds == np.floor(seconds)):
+        raise ValueError(f"{context} seconds_elapsed must contain finite integers")
+    for column in finite_columns:
+        values = frame[column].cast(pl.Float64, strict=False).to_numpy()
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"{context} contains non-finite {column}")
+    for column in ("won", "selected_yes", "selected_underdog"):
+        if column not in frame.columns:
+            continue
+        values = set(frame[column].unique().to_list())
+        if not values.issubset({0, 1}):
+            raise ValueError(f"{context} {column} must be binary")
+    probability = frame["selected_probability"].cast(pl.Float64).to_numpy()
+    if np.any((probability < 0.0) | (probability > 1.0)):
+        raise ValueError(f"{context} selected_probability must be inside [0, 1]")
+    for column in (
+        "yes_ask_vwap_5",
+        "no_ask_vwap_5",
+        "selected_share_price",
+    ):
+        if column not in frame.columns:
+            continue
+        values = frame[column].cast(pl.Float64).to_numpy()
+        if np.any((values < 0.0) | (values > 1.0)):
+            raise ValueError(f"{context} {column} must be inside [0, 1]")
+    for column in (
+        "quantity",
+        "selected_admission_cost_per_share",
+        "selected_execution_cost_per_share",
+        "entry_debit",
+    ):
+        if column in frame.columns and frame.filter(pl.col(column) < 0.0).height:
+            raise ValueError(f"{context} {column} must be nonnegative")
+
+
+def _validated_half_open_strata(
+    strata: tuple[tuple[int, int], ...] | tuple[tuple[float, float], ...],
+    *,
+    context: str,
+    integral: bool,
+) -> tuple[tuple[float, float], ...]:
+    if not strata:
+        raise ValueError(f"{context} must not be empty")
+    normalized: list[tuple[float, float]] = []
+    previous_upper: float | None = None
+    for bounds in strata:
+        if len(bounds) != 2:
+            raise ValueError(f"{context} entries must contain exactly two bounds")
+        lower, upper = float(bounds[0]), float(bounds[1])
+        if not np.isfinite(lower) or not np.isfinite(upper) or lower >= upper:
+            raise ValueError(f"{context} requires finite increasing bounds")
+        if integral and (lower != math.floor(lower) or upper != math.floor(upper)):
+            raise ValueError(f"{context} bounds must be integers")
+        if previous_upper is not None and lower < previous_upper:
+            raise ValueError(f"{context} must be sorted and non-overlapping")
+        normalized.append((lower, upper))
+        previous_upper = upper
+    return tuple(normalized)
+
+
+def _validate_rows_in_report_strata(
+    frame: pl.DataFrame,
+    *,
+    column: str,
+    strata: tuple[tuple[float, float], ...],
+    context: str,
+) -> None:
+    values = frame[column].cast(pl.Float64).to_numpy()
+    membership = np.zeros(len(values), dtype=np.int8)
+    for lower, upper in strata:
+        membership += ((values >= lower) & (values < upper)).astype(np.int8)
+    if np.any(membership != 1):
+        raise ValueError(f"{context} requires every row to match exactly one interval")
+
+
+def _finite_mean(frame: pl.DataFrame, column: str) -> float | None:
+    if frame.is_empty():
+        return None
+    return float(frame[column].mean())
 
 
 def _require_columns(frame: pl.DataFrame, required: set[str], context: str) -> None:
