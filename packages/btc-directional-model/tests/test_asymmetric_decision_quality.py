@@ -148,6 +148,7 @@ def test_walk_forward_source_audit_records_measured_synthetic_support() -> None:
     assert len(first["validation_cells"]) == 8
     assert [item["minimum_markets"] for item in first["validation_cells"]] == [1] * 8
     assert [item["minimum_utc_days"] for item in first["validation_cells"]] == [1] * 8
+    assert not any(item["required_two_classes"] for item in first["validation_cells"])
     assert all(item["classes"] == [0, 1] for item in first["validation_cells"])
 
 
@@ -210,6 +211,33 @@ def test_walk_forward_source_audit_checks_later_validation_cells_before_any_fit(
             load_core_config(config.core_config),
         )
     assert fit_calls == []
+
+
+def test_walk_forward_source_audit_allows_one_class_nonempty_validation_cell() -> None:
+    config = _config()
+    source = _synthetic_walk_forward_source().with_columns(
+        pl.when(
+            (pl.col("window_start").dt.date() == datetime(2026, 7, 6, tzinfo=UTC).date())
+            & (pl.col("market_id") == "val-2-1")
+            & (pl.col("seconds_elapsed") == 1)
+        )
+        .then(pl.lit(0.75))
+        .otherwise(pl.col("yes_ask_vwap_5"))
+        .alias("yes_ask_vwap_5")
+    )
+
+    evidence = audit_decision_quality_walk_forward_support(source, config)
+
+    fold = next(item for item in evidence["folds"] if item["name"] == "jul06_jul07")
+    cell = next(
+        item
+        for item in fold["validation_cells"]
+        if item["side"] == "YES" and item["start_second"] == 1
+    )
+    assert cell["classes"] == [0]
+    assert cell["required_two_classes"] is False
+    assert cell["passed"] is True
+    assert evidence["passed"] is True
 
 
 def test_under_supported_targetpool_falls_back_only_for_scoring_and_is_disqualified(
