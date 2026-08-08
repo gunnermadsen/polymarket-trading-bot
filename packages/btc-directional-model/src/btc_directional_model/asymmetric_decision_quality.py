@@ -707,12 +707,19 @@ def _fit_calibrated_bundle(
     base_candidate: str,
     variant: DecisionQualityCalibrationVariant,
 ) -> tuple[AsymmetricValueModel, dict[str, Any]]:
+    requested_parent_source = variant.parent_source
+    effective_parent_source = requested_parent_source
+    targetpool_support: dict[str, Any] | None = None
+    if requested_parent_source == "targetpool":
+        targetpool_support = _targetpool_parent_support(calibration_frame, config)
+        if not targetpool_support["qualified"]:
+            effective_parent_source = "alltime"
     calibrators = fit_asymmetric_time_band_calibrators(
         model,
         calibration_frame,
         config,
         core_config=core_config,
-        parent_source=variant.parent_source,
+        parent_source=effective_parent_source,
     )
     _validate_parent_calibration_support(calibrators, config)
     cells = fit_side_price_time_calibrators(
@@ -737,16 +744,21 @@ def _fit_calibrated_bundle(
     )
     target_evidence["positive_target_slopes"] = positive_target_slopes
     target_evidence["qualified"] = bool(target_evidence["qualified"] and positive_target_slopes)
+    if targetpool_support is not None and not targetpool_support["qualified"]:
+        target_evidence["qualified"] = False
+        target_evidence["parent_fallback_disqualified"] = True
     bundle = AsymmetricValueModel(
         name=calibration_variant_id(base_candidate, variant),
         model=model,
         time_calibrators=calibrators,
         cells=cells,
-        parent_calibration_source=variant.parent_source,
+        parent_calibration_source=effective_parent_source,
         identity_l2_strength=variant.identity_l2,
     )
     return bundle, {
-        "parent_source": variant.parent_source,
+        "parent_source": requested_parent_source,
+        "effective_parent_source": effective_parent_source,
+        "targetpool_support": targetpool_support,
         "identity_l2": variant.identity_l2,
         "parent_bands": [
             {
@@ -759,6 +771,36 @@ def _fit_calibrated_bundle(
             for band in calibrators
         ],
         "target_calibration": target_evidence,
+    }
+
+
+def _targetpool_parent_support(
+    frame: pl.DataFrame,
+    config: AsymmetricValueConfig,
+) -> dict[str, Any]:
+    contract = config.decision_quality
+    if contract is None:
+        raise ValueError("targetpool support requires decision-quality config")
+    selected = hybrid_target_mask(frame, config)
+    markets = frame["market_id"].cast(pl.String).to_numpy()[selected]
+    labels = frame["label_up"].to_numpy()[selected]
+    observed_markets = int(np.unique(markets).size)
+    observed_classes = int(np.unique(labels).size)
+    minimum_markets = contract.gates.minimum_targetpool_markets
+    qualified = bool(observed_markets >= minimum_markets and observed_classes == 2)
+    reason = None
+    if observed_markets < minimum_markets:
+        reason = "minimum_targetpool_markets"
+    elif observed_classes != 2:
+        reason = "targetpool_two_class_support"
+    return {
+        "rows": int(selected.sum()),
+        "markets": observed_markets,
+        "classes": observed_classes,
+        "minimum_markets": minimum_markets,
+        "qualified": qualified,
+        "fallback_parent_source": None if qualified else "alltime",
+        "disqualification_reason": reason,
     }
 
 

@@ -15,6 +15,7 @@ from btc_directional_model.asymmetric_decision_quality import (
     OOF_SELECTION_COLUMNS,
     POST_SELECTION_ATTRIBUTION_PAIRS,
     _decision_quality_gate_evidence,
+    _fit_calibrated_bundle,
     _validate_attribution_pair_oof_grid,
     _validate_matched_core_feature_contract,
     _validate_matched_core_oof_grid,
@@ -33,6 +34,7 @@ from btc_directional_model.asymmetric_decision_quality import (
     select_decision_quality_candidate,
 )
 from btc_directional_model.asymmetric_value_config import (
+    DecisionQualityCalibrationVariant,
     load_asymmetric_value_config,
 )
 from btc_directional_model.asymmetric_value_training import (
@@ -63,6 +65,83 @@ class _FeatureLogitModel:
 
     def raw_logit(self, frame: pl.DataFrame) -> np.ndarray:
         return frame["raw_logit"].to_numpy()
+
+
+def test_under_supported_targetpool_falls_back_only_for_scoring_and_is_disqualified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config()
+    core_config = load_core_config(config.core_config)
+    frame = pl.DataFrame(
+        {
+            "market_id": ["m1", "m2"],
+            "seconds_elapsed": [5, 5],
+            "yes_ask_vwap_5": [0.25, 0.25],
+            "no_ask_vwap_5": [0.75, 0.75],
+            "label_up": [0, 1],
+        }
+    )
+    calls: list[str] = []
+    calibrator = ProbabilityCalibrator(
+        slope=1.0,
+        intercept=0.0,
+        converged=True,
+        iterations=1,
+    )
+
+    def fake_parent(*args, parent_source: str, **kwargs):
+        calls.append(parent_source)
+        return tuple(
+            TimeBandCalibrator(
+                start_second=start,
+                end_second_exclusive=end,
+                calibrator=calibrator,
+                rows=1_000,
+                markets=500,
+            )
+            for start, end in config.calibration_bands
+        )
+
+    monkeypatch.setattr(
+        "btc_directional_model.asymmetric_decision_quality.fit_asymmetric_time_band_calibrators",
+        fake_parent,
+    )
+    monkeypatch.setattr(
+        "btc_directional_model.asymmetric_decision_quality.fit_side_price_time_calibrators",
+        lambda *args, **kwargs: (),
+    )
+    monkeypatch.setattr(
+        "btc_directional_model.asymmetric_decision_quality.target_calibration_evidence",
+        lambda *args, **kwargs: {"qualified": True},
+    )
+
+    bundle, profile = _fit_calibrated_bundle(
+        object(),
+        frame,
+        config,
+        core_config,
+        base_candidate="hybrid_25_h1",
+        variant=DecisionQualityCalibrationVariant(
+            parent_source="targetpool",
+            identity_l2=0.20,
+        ),
+    )
+
+    assert calls == ["alltime"]
+    assert bundle.parent_calibration_source == "alltime"
+    assert profile["parent_source"] == "targetpool"
+    assert profile["effective_parent_source"] == "alltime"
+    assert profile["targetpool_support"] == {
+        "rows": 2,
+        "markets": 2,
+        "classes": 2,
+        "minimum_markets": 500,
+        "qualified": False,
+        "fallback_parent_source": "alltime",
+        "disqualification_reason": "minimum_targetpool_markets",
+    }
+    assert profile["target_calibration"]["parent_fallback_disqualified"] is True
+    assert profile["target_calibration"]["qualified"] is False
 
 
 def test_targetpool_parent_replicates_across_early_runtime_bands() -> None:
