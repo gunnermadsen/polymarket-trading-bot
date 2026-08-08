@@ -9,6 +9,8 @@ from pathlib import Path
 
 from .admission_benchmark import run_admission_benchmark
 from .admission_config import load_admission_benchmark_config
+from .asymmetric_value_benchmark import run_asymmetric_value_benchmark
+from .asymmetric_value_config import load_asymmetric_value_config
 from .benchmark_config import load_entry_benchmark_config
 from .chainlink_oi_benchmark import run_chainlink_oi_benchmark
 from .chainlink_oi_config import load_chainlink_oi_benchmark_config
@@ -25,6 +27,8 @@ from .core_extract import extract_core_source, snapshot_residual_admission_sourc
 from .core_features import build_core_features
 from .core_report import generate_core_report
 from .core_training import develop_core_models, evaluate_core_holdout
+from .early_value_benchmark import run_early_value_benchmark
+from .early_value_config import load_early_value_config
 from .entry_benchmark import run_entry_benchmark
 from .extract import extract_source
 from .features import build_features
@@ -68,6 +72,8 @@ from .report import generate_report
 from .residual_admission_benchmark import run_residual_admission_benchmark
 from .residual_admission_config import load_residual_admission_config
 from .runtime_export import export_runtime_model
+from .spot_l2_chainlink_benchmark import run_spot_l2_chainlink_benchmark
+from .spot_l2_chainlink_config import load_spot_l2_chainlink_config
 from .train import train_models
 from .training_readiness import prepare_training_readiness
 
@@ -120,6 +126,14 @@ def main() -> None:
     entry_run = subparsers.add_parser("entry-benchmark-run")
     entry_run.add_argument("--config", type=Path, required=True)
     entry_run.add_argument("--force", action="store_true")
+    early_value_run = subparsers.add_parser("early-value-benchmark-run")
+    early_value_run.add_argument("--config", type=Path, required=True)
+    early_value_run.add_argument("--force", action="store_true")
+    asymmetric_value_run = subparsers.add_parser(
+        "asymmetric-value-benchmark-run"
+    )
+    asymmetric_value_run.add_argument("--config", type=Path, required=True)
+    asymmetric_value_run.add_argument("--force", action="store_true")
     oracle_book_run = subparsers.add_parser("oracle-book-benchmark-run")
     oracle_book_run.add_argument("--config", type=Path, required=True)
     price_aware_run = subparsers.add_parser("price-aware-benchmark-run")
@@ -166,6 +180,10 @@ def main() -> None:
     chainlink_oi_forward.add_argument("--end", type=_parse_utc_day, required=True)
     chainlink_oi_forward.add_argument("--output-root", type=Path, required=True)
     chainlink_oi_forward.add_argument("--runtime-model-root", type=Path)
+    spot_l2_chainlink_run = subparsers.add_parser(
+        "spot-l2-chainlink-candles-benchmark-run"
+    )
+    spot_l2_chainlink_run.add_argument("--config", type=Path, required=True)
     fixed_time_run = subparsers.add_parser("fixed-120-benchmark-run")
     fixed_time_run.add_argument("--config", type=Path, required=True)
     fixed_time_export = subparsers.add_parser("fixed-120-paper-candidate-export")
@@ -314,6 +332,24 @@ def main() -> None:
             )
         )
         return
+    if args.command == "early-value-benchmark-run":
+        config = load_early_value_config(args.config)
+        run_dir, result = run_early_value_benchmark(config, force=args.force)
+        print(f"report: {run_dir / 'benchmark-report.md'}")
+        print(f"selected probability model: {result['training']['selected_profile']}")
+        print("runtime/trading pipeline changes: none")
+        return
+    if args.command == "asymmetric-value-benchmark-run":
+        config = load_asymmetric_value_config(args.config)
+        run_dir, result = run_asymmetric_value_benchmark(
+            config,
+            force=args.force,
+        )
+        print(f"report: {run_dir / 'benchmark-report.md'}")
+        print(f"selected value hunter: {result['selection']['selected_key']}")
+        print(f"evaluation status: {result['evaluation']['status']}")
+        print("runtime/trading pipeline changes: none")
+        return
     if args.command == "oracle-book-benchmark-run":
         config = load_oracle_book_benchmark_config(args.config)
         run_dir, benchmark = run_oracle_book_benchmark(config)
@@ -405,6 +441,13 @@ def main() -> None:
             print(f"model SHA-256: {result.model_sha256}")
             print(f"feature schema SHA-256: {result.feature_schema_sha256}")
         print("scope: paper_only; production-qualified: false")
+        return
+    if args.command == "spot-l2-chainlink-candles-benchmark-run":
+        config = load_spot_l2_chainlink_config(args.config)
+        run_dir, _report = run_spot_l2_chainlink_benchmark(config)
+        print(f"report: {run_dir / 'benchmark-report.md'}")
+        print("advancement: paper-only forward validation at most")
+        print("runtime/deployment: unchanged")
         return
     if args.command == "fixed-120-benchmark-run":
         config = load_fixed_time_accuracy_config(args.config)

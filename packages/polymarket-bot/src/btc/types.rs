@@ -6,7 +6,10 @@ use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::directional_external_runtime::DirectionalExternalState;
+use super::{
+    binance_spot_l2::BinanceSpotL2FeatureWindow,
+    directional_external_runtime::DirectionalExternalState,
+};
 
 pub const BTC_INTERVAL_SECONDS: i64 = 300;
 pub const BTC_INTERVAL_SLUG_PREFIX: &str = "btc-updown-5m-";
@@ -658,6 +661,10 @@ pub struct RealtimeState {
     /// public realtime-state JSON contract.
     #[serde(skip)]
     pub binance_one_second_window: BinanceOneSecondWindow,
+    /// Compact, inference-only Binance spot L2 feature history. The reconstructed
+    /// full-depth book remains task-local and is never cloned into realtime state.
+    #[serde(skip)]
+    pub binance_spot_l2: BinanceSpotL2FeatureWindow,
     /// Bounded, inference-only external context shared by every directional-model process.
     #[serde(skip)]
     pub directional_external: DirectionalExternalState,
@@ -905,6 +912,7 @@ mod tests {
         let serialized = serde_json::to_value(state).unwrap();
 
         assert!(serialized.get("binance_one_second_window").is_none());
+        assert!(serialized.get("binance_spot_l2").is_none());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 SELECT
   candle.open_timestamp,
   candle.close_timestamp,
+  candle.close_timestamp AS available_at,
   candle.open_price::double precision AS open_price,
   candle.high_price::double precision AS high_price,
   candle.low_price::double precision AS low_price,

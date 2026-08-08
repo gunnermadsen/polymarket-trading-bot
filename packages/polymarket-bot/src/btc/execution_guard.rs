@@ -8,7 +8,10 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::directional_model::BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION;
-use super::strategy::BTC_DIRECTIONAL_MODEL_STRATEGY_FAMILY;
+use super::strategy::{
+    BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_FAMILY, BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_VERSION,
+    BTC_DIRECTIONAL_MODEL_STRATEGY_FAMILY,
+};
 use super::{
     strategy::{
         ApprovedIntent, BtcDecision, BtcFeatureSnapshot,
@@ -24,6 +27,8 @@ const LEGACY_BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION: &str =
     "btc_reference_execution_guard_directional_model_v1";
 pub const BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION: &str =
     "btc_reference_execution_guard_directional_model_v2";
+pub const BTC_ASYMMETRIC_VALUE_MODEL_EXECUTION_GUARD_VERSION: &str =
+    "btc_reference_execution_guard_asymmetric_value_model_v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BtcExecutionFreshnessBounds {
@@ -311,9 +316,11 @@ impl BtcReferenceExecutionGuard {
             "reference execution fee rate is invalid"
         );
 
-        let directional_model_strategy =
-            intent.strategy_version == BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION;
-        if directional_model_strategy {
+        let model_strategy = matches!(
+            intent.strategy_version.as_str(),
+            BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION | BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_VERSION
+        );
+        if model_strategy {
             ensure!(
                 max_directional_feature_age_ms.is_some_and(|max_age| max_age > 0),
                 "directional-model execution age bound must be positive"
@@ -324,7 +331,7 @@ impl BtcReferenceExecutionGuard {
                 "non-model execution cannot carry a directional feature age bound"
             );
         }
-        let directional_model = if directional_model_strategy {
+        let directional_model = if model_strategy {
             let features = snapshot
                 .directional_model
                 .as_ref()
@@ -345,34 +352,37 @@ impl BtcReferenceExecutionGuard {
             );
             None
         };
-        let (guard_version, chainlink_open, chainlink, selected_book) =
-            if directional_model_strategy {
-                (
-                    BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION.to_string(),
-                    None,
-                    None,
-                    Some(required_book_evidence(snapshot, intent)?),
-                )
-            } else {
-                (
-                    BTC_REFERENCE_EXECUTION_GUARD_VERSION.to_string(),
-                    Some(required_tick_evidence(
-                        "Chainlink open",
-                        snapshot.lineage.chainlink_open_tick_id,
-                        snapshot.lineage.chainlink_open_source_timestamp,
-                        snapshot.lineage.chainlink_open_received_at,
-                        snapshot.lineage.chainlink_open_ingest_sequence,
-                    )?),
-                    Some(required_tick_evidence(
-                        "Chainlink current",
-                        snapshot.lineage.chainlink_tick_id,
-                        snapshot.lineage.chainlink_source_timestamp,
-                        snapshot.lineage.chainlink_received_at,
-                        snapshot.lineage.chainlink_ingest_sequence,
-                    )?),
-                    None,
-                )
-            };
+        let (guard_version, chainlink_open, chainlink, selected_book) = if model_strategy {
+            (
+                if intent.strategy_version == BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION {
+                    BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION.to_string()
+                } else {
+                    BTC_ASYMMETRIC_VALUE_MODEL_EXECUTION_GUARD_VERSION.to_string()
+                },
+                None,
+                None,
+                Some(required_book_evidence(snapshot, intent)?),
+            )
+        } else {
+            (
+                BTC_REFERENCE_EXECUTION_GUARD_VERSION.to_string(),
+                Some(required_tick_evidence(
+                    "Chainlink open",
+                    snapshot.lineage.chainlink_open_tick_id,
+                    snapshot.lineage.chainlink_open_source_timestamp,
+                    snapshot.lineage.chainlink_open_received_at,
+                    snapshot.lineage.chainlink_open_ingest_sequence,
+                )?),
+                Some(required_tick_evidence(
+                    "Chainlink current",
+                    snapshot.lineage.chainlink_tick_id,
+                    snapshot.lineage.chainlink_source_timestamp,
+                    snapshot.lineage.chainlink_received_at,
+                    snapshot.lineage.chainlink_ingest_sequence,
+                )?),
+                None,
+            )
+        };
         let mut guard = Self {
             guard_version,
             process_id: snapshot.process_id,
@@ -460,6 +470,7 @@ impl BtcReferenceExecutionGuard {
             BTC_REFERENCE_EXECUTION_GUARD_VERSION
                 | LEGACY_BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
                 | BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
+                | BTC_ASYMMETRIC_VALUE_MODEL_EXECUTION_GUARD_VERSION
         ) || !supported_lineage_version(&self.lineage_version)
         {
             return Err(BtcReferenceExecutionRejectReason::UnsupportedVersion);
@@ -633,8 +644,11 @@ impl BtcReferenceExecutionGuard {
                     .chainlink
                     .as_ref()
                     .ok_or(BtcReferenceExecutionRejectReason::InvalidGuard)?;
-                if self.strategy_version == BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION
-                    || self.directional_model.is_some()
+                if matches!(
+                    self.strategy_version.as_str(),
+                    BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION
+                        | BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_VERSION
+                ) || self.directional_model.is_some()
                     || self.selected_book.is_some()
                     || self.max_directional_feature_age_ms.is_some()
                     || [chainlink_open, chainlink].into_iter().any(|evidence| {
@@ -645,7 +659,8 @@ impl BtcReferenceExecutionGuard {
                 }
             }
             LEGACY_BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
-            | BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION => {
+            | BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
+            | BTC_ASYMMETRIC_VALUE_MODEL_EXECUTION_GUARD_VERSION => {
                 let model = self
                     .directional_model
                     .as_ref()
@@ -656,9 +671,21 @@ impl BtcReferenceExecutionGuard {
                     .ok_or(BtcReferenceExecutionRejectReason::InvalidGuard)?;
                 let elapsed = Duration::try_seconds(model.seconds_elapsed)
                     .and_then(|elapsed| model.window_start.checked_add_signed(elapsed));
+                let asymmetric =
+                    self.guard_version == BTC_ASYMMETRIC_VALUE_MODEL_EXECUTION_GUARD_VERSION;
+                let expected_strategy_version = if asymmetric {
+                    BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_VERSION
+                } else {
+                    BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION
+                };
+                let expected_strategy_family = if asymmetric {
+                    BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_FAMILY
+                } else {
+                    BTC_DIRECTIONAL_MODEL_STRATEGY_FAMILY
+                };
                 if self.chainlink_open.is_some()
                     || self.chainlink.is_some()
-                    || self.strategy_version != BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION
+                    || self.strategy_version != expected_strategy_version
                     || model.model_key.trim().is_empty()
                     || !is_sha256(&model.artifact_sha256)
                     || !is_sha256(&model.feature_schema_sha256)
@@ -673,7 +700,8 @@ impl BtcReferenceExecutionGuard {
                     || book.ingest_sequence == 0
                     || (self.guard_version == LEGACY_BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
                         && self.max_directional_feature_age_ms.is_some())
-                    || (self.guard_version == BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
+                    || ((self.guard_version == BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
+                        || asymmetric)
                         && self
                             .max_directional_feature_age_ms
                             .is_none_or(|max_age| max_age <= 0))
@@ -684,7 +712,7 @@ impl BtcReferenceExecutionGuard {
                     .metadata
                     .get("strategy")
                     .and_then(serde_json::Value::as_str)
-                    != Some(BTC_DIRECTIONAL_MODEL_STRATEGY_FAMILY)
+                    != Some(expected_strategy_family)
                     || request
                         .metadata
                         .get("profile_id")
@@ -695,19 +723,21 @@ impl BtcReferenceExecutionGuard {
                         .get("profile_sha256")
                         .and_then(serde_json::Value::as_str)
                         != Some(model.artifact_sha256.as_str())
-                    || request
-                        .metadata
-                        .pointer("/prediction/status")
-                        .and_then(serde_json::Value::as_str)
-                        != Some("directional_prediction")
-                    || request
-                        .metadata
-                        .pointer("/prediction/outcome")
-                        .and_then(serde_json::Value::as_str)
-                        != Some(match self.outcome {
-                            BtcOutcome::Up => "up",
-                            BtcOutcome::Down => "down",
-                        })
+                    || (!asymmetric
+                        && (request
+                            .metadata
+                            .pointer("/prediction/status")
+                            .and_then(serde_json::Value::as_str)
+                            != Some("directional_prediction")
+                            || request
+                                .metadata
+                                .pointer("/prediction/outcome")
+                                .and_then(serde_json::Value::as_str)
+                                != Some(match self.outcome {
+                                    BtcOutcome::Up => "up",
+                                    BtcOutcome::Down => "down",
+                                })))
+                    || (asymmetric && request.metadata.get("prediction").is_some())
                 {
                     return Err(BtcReferenceExecutionRejectReason::IdentityMismatch);
                 }
@@ -742,7 +772,8 @@ impl BtcReferenceExecutionGuard {
                 }
             }
             LEGACY_BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
-            | BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION => {
+            | BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
+            | BTC_ASYMMETRIC_VALUE_MODEL_EXECUTION_GUARD_VERSION => {
                 let model = self
                     .directional_model
                     .as_ref()
@@ -837,7 +868,8 @@ impl BtcReferenceExecutionGuard {
                 };
                 serde_json::to_vec(&evidence)?
             }
-            BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION => {
+            BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
+            | BTC_ASYMMETRIC_VALUE_MODEL_EXECUTION_GUARD_VERSION => {
                 let evidence = DirectionalModelGuardHashEvidenceV2 {
                     guard_version: &self.guard_version,
                     process_id: self.process_id,
@@ -1180,6 +1212,16 @@ mod tests {
         request
     }
 
+    fn asymmetric_value_model_request(guard: &BtcReferenceExecutionGuard) -> OrderRequest {
+        let model = guard.directional_model.as_ref().unwrap();
+        let mut request = request(guard);
+        request.metadata["strategy"] = BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_FAMILY.into();
+        request.metadata["profile_id"] = model.model_key.clone().into();
+        request.metadata["profile_sha256"] = model.artifact_sha256.clone().into();
+        guard.insert_into_metadata(&mut request.metadata).unwrap();
+        request
+    }
+
     #[test]
     fn legacy_signal_id_json_preserves_guard_v1_hash() {
         let checked_at = Utc.with_ymd_and_hms(2026, 7, 21, 12, 0, 0).unwrap();
@@ -1344,6 +1386,44 @@ mod tests {
                 )
                 .unwrap_err(),
             BtcReferenceExecutionRejectReason::EvidenceHashMismatch
+        );
+    }
+
+    #[test]
+    fn asymmetric_value_model_guard_is_additive_and_requires_no_directional_prediction() {
+        let checked_at = Utc.with_ymd_and_hms(2026, 8, 6, 12, 0, 0).unwrap();
+        let mut guard = sealed_directional_model_guard(checked_at);
+        guard.guard_version = BTC_ASYMMETRIC_VALUE_MODEL_EXECUTION_GUARD_VERSION.to_string();
+        guard.strategy_version = BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_VERSION.to_string();
+        guard.reseal_for_test();
+        let request = asymmetric_value_model_request(&guard);
+
+        guard
+            .validate_for_request(
+                &request,
+                checked_at,
+                guard.process_id,
+                Duration::seconds(2),
+                Some(Duration::seconds(5)),
+            )
+            .unwrap();
+
+        let mut directional_metadata = request.clone();
+        directional_metadata.metadata["prediction"] = serde_json::json!({
+            "status": "directional_prediction",
+            "outcome": "up",
+        });
+        assert_eq!(
+            guard
+                .validate_for_request(
+                    &directional_metadata,
+                    checked_at,
+                    guard.process_id,
+                    Duration::seconds(2),
+                    Some(Duration::seconds(5)),
+                )
+                .unwrap_err(),
+            BtcReferenceExecutionRejectReason::IdentityMismatch
         );
     }
 

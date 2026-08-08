@@ -1,9 +1,12 @@
 pub mod admission;
+mod asymmetric_value_features;
+pub mod binance_spot_l2;
 pub mod directional_external_runtime;
 pub mod directional_features;
 pub mod directional_model;
 pub mod execution_guard;
 pub mod execution_lifecycle;
+pub mod feed_contract;
 pub mod feeds;
 pub mod live_execution;
 pub mod market;
@@ -27,6 +30,12 @@ pub use admission::{
     DAILY_REALIZED_PNL_HIGH_WATER_MARK_SCHEMA_VERSION, LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION,
     SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE,
     SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION,
+};
+pub use binance_spot_l2::{
+    parse_depth_snapshot, parse_depth_update, BinanceSpotL2ApplyOutcome,
+    BinanceSpotL2DepthSnapshot, BinanceSpotL2DepthUpdate, BinanceSpotL2Engine,
+    BinanceSpotL2FeatureWindow, BinanceSpotL2Level, BinanceSpotL2Side,
+    BINANCE_SPOT_L2_FEATURE_SCHEMA_VERSION,
 };
 pub use directional_external_runtime::{
     BinanceOpenInterestPoint, ChainlinkMidPoint, ChainlinkRefPricePoint,
@@ -60,11 +69,16 @@ pub use directional_model::{
 pub use execution_guard::{
     BtcDirectionalModelExecutionEvidence, BtcExecutionBookEvidence,
     BtcReferenceExecutionAssessment, BtcReferenceExecutionGuard, BtcReferenceExecutionRejectReason,
+    BTC_ASYMMETRIC_VALUE_MODEL_EXECUTION_GUARD_VERSION,
     BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION, BTC_REFERENCE_EXECUTION_GUARD_METADATA_KEY,
     BTC_REFERENCE_EXECUTION_GUARD_VERSION,
 };
 pub use execution_lifecycle::{
     BtcExecutionLifecycle, BtcExecutionMode, LiveExecutionLifecycle, PaperExecutionLifecycle,
+};
+pub use feed_contract::{
+    validate_feed_requirements, BtcModelFeedId, BtcModelFeedRequirement,
+    BTC_MODEL_FEED_CONTRACT_VERSION,
 };
 pub use feeds::{
     parse_binance_agg_trade, parse_binance_agg_trade_with_details, parse_binance_aggregate_trade,
@@ -94,9 +108,9 @@ pub use repository::{
     BtcRunManifest, FeedSession, PersistedOfficialResolution,
 };
 pub use runtime::{
-    runtime_status_from_inputs, BtcHeartbeatConfig, BtcPlaybookRuntimeHandle, BtcRuntime,
-    BtcRuntimeConfig, BtcRuntimeHandle, BtcRuntimeMetrics, BtcRuntimeStatus, BtcStrategyRunner,
-    NoopStrategyRunner, StrategyObservation,
+    runtime_status_from_inputs, BinanceSpotL2RuntimeMetrics, BtcHeartbeatConfig,
+    BtcPlaybookRuntimeHandle, BtcRuntime, BtcRuntimeConfig, BtcRuntimeHandle, BtcRuntimeMetrics,
+    BtcRuntimeStatus, BtcStrategyRunner, NoopStrategyRunner, StrategyObservation,
 };
 pub use strategy::*;
 pub use types::*;

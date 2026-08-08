@@ -1,0 +1,169 @@
+[benchmark]
+profile = "btc_asymmetric_value_hunter"
+paper_only = true
+live_capital_allowed = false
+
+[windows.fit]
+start = "2026-04-14T00:00:00Z"
+end = "2026-07-06T00:00:00Z"
+
+[windows.calibration]
+start = "2026-07-06T00:00:00Z"
+end = "2026-07-13T00:00:00Z"
+
+[windows.policy]
+start = "2026-07-13T00:00:00Z"
+end = "2026-07-20T00:00:00Z"
+
+[windows.evaluation]
+start = "2026-07-20T00:00:00Z"
+end = "2026-08-02T00:00:00Z"
+
+[timing]
+prediction_start_second = 5
+prediction_end_second = 240
+prediction_cadence_seconds = 5
+early_price_end_second = 59
+later_price_cadence_seconds = 5
+
+[economics]
+quantity = 5.0
+book_freshness_seconds = 2
+execution_reserve_per_share = 0.01
+confidence_control_minimum_edge_per_share = 0.015
+confidence_thresholds = [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.89]
+
+[[policies]]
+name = "raw20_30_by55_edge_3c"
+selection_eligible = true
+maximum_entry_second = 55
+minimum_share_price = 0.20
+maximum_share_price = 0.30
+maximum_cost_per_share = 0.35
+minimum_edge_per_share = 0.03
+
+[[policies]]
+name = "under30_by120_edge_3c"
+selection_eligible = false
+maximum_entry_second = 120
+minimum_share_price = 0.05
+maximum_share_price = 0.30
+maximum_cost_per_share = 0.35
+minimum_edge_per_share = 0.03
+
+[[policies]]
+name = "under30_by120_edge_5c"
+selection_eligible = false
+maximum_entry_second = 120
+minimum_share_price = 0.05
+maximum_share_price = 0.30
+maximum_cost_per_share = 0.35
+minimum_edge_per_share = 0.05
+
+[[policies]]
+name = "under40_by120_edge_5c"
+selection_eligible = false
+maximum_entry_second = 120
+minimum_share_price = 0.05
+maximum_share_price = 0.40
+maximum_cost_per_share = 0.45
+minimum_edge_per_share = 0.05
+
+[[policies]]
+name = "under70_by55_edge_3c"
+selection_eligible = false
+maximum_entry_second = 55
+minimum_share_price = 0.05
+maximum_share_price = 0.70
+maximum_cost_per_share = 0.70
+minimum_edge_per_share = 0.03
+
+[[policies]]
+name = "under70_by55_edge_5c"
+selection_eligible = false
+maximum_entry_second = 55
+minimum_share_price = 0.05
+maximum_share_price = 0.70
+maximum_cost_per_share = 0.70
+minimum_edge_per_share = 0.05
+
+[[policies]]
+name = "under70_by120_edge_5c"
+selection_eligible = false
+maximum_entry_second = 120
+minimum_share_price = 0.05
+maximum_share_price = 0.70
+maximum_cost_per_share = 0.70
+minimum_edge_per_share = 0.05
+
+[[policies]]
+name = "under70_by120_edge_7_5c"
+selection_eligible = false
+maximum_entry_second = 120
+minimum_share_price = 0.05
+maximum_share_price = 0.70
+maximum_cost_per_share = 0.70
+minimum_edge_per_share = 0.075
+
+[[policies]]
+name = "under70_by240_edge_5c"
+selection_eligible = false
+maximum_entry_second = 240
+minimum_share_price = 0.05
+maximum_share_price = 0.70
+maximum_cost_per_share = 0.70
+minimum_edge_per_share = 0.05
+
+[gates]
+minimum_calibration_markets_per_band = 500
+minimum_policy_strict_markets = 1000
+minimum_policy_executable_days = 5
+minimum_policy_source_grid_coverage = 0.90
+minimum_policy_strict_grid_coverage = 0.40
+minimum_policy_candidate_grid_coverage = 0.40
+minimum_evaluation_strict_markets = 2000
+minimum_evaluation_executable_days = 10
+minimum_evaluation_source_grid_coverage = 0.90
+minimum_evaluation_strict_grid_coverage = 0.70
+minimum_evaluation_candidate_grid_coverage = 0.70
+minimum_policy_trades = 100
+minimum_evaluation_trades = 200
+minimum_profit_factor = 1.05
+minimum_net_expectancy_per_trade = 0.0
+minimum_capital_efficiency = 0.0
+minimum_stress_expectancy_per_trade = 0.0
+maximum_mean_cost_per_share = 0.70
+maximum_mean_share_price = 0.30
+maximum_selected_calibration_bias = 0.05
+maximum_loss_recovery_wins = 0.60
+maximum_average_loss = 1.60
+maximum_single_loss = 1.75
+minimum_side_trades = 20
+minimum_pre60_trades = 20
+minimum_20_30c_trades = 20
+
+[model]
+random_seed = 20260804
+bootstrap_resamples = 10000
+calibration_bands = [
+  { start_second = 5, end_second_exclusive = 15 },
+  { start_second = 15, end_second_exclusive = 30 },
+  { start_second = 30, end_second_exclusive = 45 },
+  { start_second = 45, end_second_exclusive = 60 },
+  { start_second = 60, end_second_exclusive = 90 },
+  { start_second = 90, end_second_exclusive = 120 },
+  { start_second = 120, end_second_exclusive = 180 },
+  { start_second = 180, end_second_exclusive = 241 },
+]
+
+[paths]
+core_config = "configs/btc-5m-directional-core-early-value-20260414-20260802.toml"
+oracle_source = "data/btc-early-price-value-20260414-20260802/core-source"
+l2_source = "data/btc-early-price-value-20260414-20260802/external/l2"
+candle_source = "data/btc-early-price-value-20260414-20260802/external/candles"
+price_source_sql = "sql/btc-execution-evidence.sql"
+price_cache = "data/btc-asymmetric-value-hunter-20260414-20260802/executable-prices"
+feature_cache = "data/btc-asymmetric-value-hunter-20260414-20260802/features"
+runs = "runs/btc-asymmetric-value-hunter-20260414-20260802"
+champion_model = "runtime-models/btc-5m-directional-boundary-alignment-20260421-20260720-paper-v1/model.json"
+champion_process = "../../infra/processes/btc-5m-directional-model-paper-boundary-alignment.json"

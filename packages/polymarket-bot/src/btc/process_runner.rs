@@ -31,6 +31,7 @@ use super::{
         ShadowPredictiveRegimeEvaluation, ShadowPredictiveRegimeState,
         ShadowPredictiveRegimeTransition,
     },
+    asymmetric_value_features::build_asymmetric_value_feature_snapshot,
     directional_external_runtime::DirectionalExternalState,
     directional_features::{
         build_directional_features_for_schema_with_external,
@@ -1758,7 +1759,7 @@ impl BtcProcessRunner {
         let directional_selection = directional_model_selection(&self.config.strategy);
         let mut directional_candidate = None;
         let mut directional_opening_reference = None;
-        let (snapshot_identity_at, directional_model, directional_model_feature_error) =
+        let (snapshot_identity_at, directional_model, mut directional_model_feature_error) =
             if let Some(selection) = directional_selection.as_ref() {
                 let Some(latest_feature_as_of) = observation
                     .state
@@ -1813,9 +1814,13 @@ impl BtcProcessRunner {
                         return Ok(());
                     }
                 }
-                let opening_reference =
-                    if directional_schema_requires_opening_boundary(model.feature_schema_version())
-                    {
+                if model.is_asymmetric_value() {
+                    directional_candidate = Some(candidate);
+                    (feature_as_of, None, None)
+                } else {
+                    let opening_reference = if directional_schema_requires_opening_boundary(
+                        model.feature_schema_version(),
+                    ) {
                         self.repository
                             .load_directional_model_opening_reference(
                                 market,
@@ -1828,44 +1833,45 @@ impl BtcProcessRunner {
                     } else {
                         None
                     };
-                let opening_boundary = opening_reference.as_ref().map(|tick| tick.price);
-                directional_opening_reference = opening_reference;
-                let features = match directional_external_decision_snapshot(
-                    &observation.state.directional_external,
-                    feature_as_of,
-                    model.feature_schema_version(),
-                )
-                .and_then(|external| {
-                    let external_inputs = external.as_ref().map(|snapshot| snapshot.inputs());
-                    build_directional_features_for_schema_with_external(
-                        &observation.state.binance_one_second_window,
-                        market.window_start,
+                    let opening_boundary = opening_reference.as_ref().map(|tick| tick.price);
+                    directional_opening_reference = opening_reference;
+                    let features = match directional_external_decision_snapshot(
+                        &observation.state.directional_external,
                         feature_as_of,
                         model.feature_schema_version(),
-                        opening_boundary,
-                        external_inputs.as_ref(),
                     )
-                }) {
-                    Ok(features) => {
-                        directional_candidate = Some(candidate);
-                        (
+                    .and_then(|external| {
+                        let external_inputs = external.as_ref().map(|snapshot| snapshot.inputs());
+                        build_directional_features_for_schema_with_external(
+                            &observation.state.binance_one_second_window,
+                            market.window_start,
                             feature_as_of,
-                            Some(build_directional_model_feature_snapshot(
-                                selection, market, features,
-                            )?),
-                            None,
+                            model.feature_schema_version(),
+                            opening_boundary,
+                            external_inputs.as_ref(),
                         )
-                    }
-                    Err(error) => {
-                        directional_candidate = Some(candidate);
-                        (
-                            feature_as_of,
-                            None,
-                            Some(directional_feature_error_metadata(&error)),
-                        )
-                    }
-                };
-                features
+                    }) {
+                        Ok(features) => {
+                            directional_candidate = Some(candidate);
+                            (
+                                feature_as_of,
+                                Some(build_directional_model_feature_snapshot(
+                                    selection, market, features,
+                                )?),
+                                None,
+                            )
+                        }
+                        Err(error) => {
+                            directional_candidate = Some(candidate);
+                            (
+                                feature_as_of,
+                                None,
+                                Some(directional_feature_error_metadata(&error)),
+                            )
+                        }
+                    };
+                    features
+                }
             } else {
                 (observed_at, None, None)
             };
@@ -1898,7 +1904,7 @@ impl BtcProcessRunner {
         if directional_opening_reference.is_some() {
             inputs.chainlink_open = directional_opening_reference;
         }
-        let snapshot = build_snapshot(
+        let mut snapshot = build_snapshot(
             self.config.process_id,
             market,
             observed_at,
@@ -1908,6 +1914,28 @@ impl BtcProcessRunner {
             snapshot_identity_at,
             directional_model,
         );
+        if let Some(selection) = directional_selection.as_ref() {
+            let model = runtime_model(selection)
+                .context("failed to resolve configured BTC model for feature construction")?;
+            if model.is_asymmetric_value() && snapshot.directional_model.is_none() {
+                match build_asymmetric_value_feature_snapshot(
+                    selection,
+                    &model,
+                    &observation.state,
+                    market,
+                    snapshot_identity_at,
+                    &snapshot,
+                ) {
+                    Ok(features) => snapshot.directional_model = Some(features),
+                    Err(error) => {
+                        directional_model_feature_error = Some(serde_json::json!({
+                            "code": "asymmetric_value_features_unavailable",
+                            "detail": error.to_string(),
+                        }));
+                    }
+                }
+            }
+        }
         let mut decision = DeterministicBtcStrategy::evaluate_with_directional_model_entry_policy(
             &self.config.strategy,
             &snapshot,
@@ -2709,7 +2737,7 @@ fn snapshot_quality_flags(
     config: &BtcStrategyConfig,
 ) -> Vec<String> {
     let mut flags = Vec::new();
-    let directional_model = directional_model_configured(config);
+    let directional_model = runtime_model_configured(config);
     if !runtime_readiness_satisfied(config, readiness) {
         flags.push("runtime_not_ready".to_string());
         flags.extend(
@@ -2834,7 +2862,7 @@ fn runtime_readiness_satisfied(
     readiness: &super::types::Readiness,
 ) -> bool {
     readiness.ready
-        || (directional_model_configured(config)
+        || (runtime_model_configured(config)
             && !readiness.reasons.is_empty()
             && readiness
                 .reasons
@@ -2873,6 +2901,11 @@ fn directional_model_selection(config: &BtcStrategyConfig) -> Option<RuntimeMode
             model_key,
             artifact_sha256,
             feature_schema_sha256,
+        }
+        | BtcDecisionStrategyConfig::BtcAsymmetricValueModel {
+            model_key,
+            artifact_sha256,
+            feature_schema_sha256,
         } => Some(RuntimeModelSelection {
             model_key: model_key.clone(),
             artifact_sha256: artifact_sha256.clone(),
@@ -2886,6 +2919,14 @@ fn directional_model_configured(config: &BtcStrategyConfig) -> bool {
     matches!(
         config.decision_strategy.as_ref(),
         Some(BtcDecisionStrategyConfig::BtcDirectionalModel { .. })
+    )
+}
+
+fn runtime_model_configured(config: &BtcStrategyConfig) -> bool {
+    matches!(
+        config.decision_strategy.as_ref(),
+        Some(BtcDecisionStrategyConfig::BtcDirectionalModel { .. })
+            | Some(BtcDecisionStrategyConfig::BtcAsymmetricValueModel { .. })
     )
 }
 
@@ -2913,9 +2954,18 @@ fn latest_directional_model_candidate(
     if latest_seconds_elapsed < policy.minimum_seconds_after_open || policy.cadence_seconds <= 0 {
         return None;
     }
-    let seconds_elapsed = (policy.minimum_seconds_after_open
-        + ((latest_seconds_elapsed - policy.minimum_seconds_after_open) / policy.cadence_seconds)
-            * policy.cadence_seconds)
+    let (schedule_start, cadence) = match (policy.early_end_second, policy.early_cadence_seconds) {
+        (Some(end), Some(early_cadence)) if latest_seconds_elapsed <= end => {
+            (policy.minimum_seconds_after_open, early_cadence)
+        }
+        (Some(end), Some(_)) => (end + 1, policy.cadence_seconds),
+        _ => (policy.minimum_seconds_after_open, policy.cadence_seconds),
+    };
+    if latest_seconds_elapsed < schedule_start || cadence <= 0 {
+        return None;
+    }
+    let seconds_elapsed = (schedule_start
+        + ((latest_seconds_elapsed - schedule_start) / cadence) * cadence)
         .min(policy.maximum_seconds_after_open);
     policy.accepts(seconds_elapsed).then(|| {
         (
@@ -3626,6 +3676,8 @@ mod tests {
             minimum_seconds_after_open: 60,
             maximum_seconds_after_open: 240,
             cadence_seconds: 5,
+            early_end_second: None,
+            early_cadence_seconds: None,
         };
 
         assert_eq!(

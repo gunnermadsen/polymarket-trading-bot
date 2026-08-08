@@ -23,6 +23,7 @@ from .core_training import (
     FrozenTimeBandedTrainingBundle,
     FrozenTrainingBundle,
 )
+from .asymmetric_value_training import AsymmetricValueModel
 
 RUNTIME_MODEL_SCHEMA_VERSION = "capitonic-btc-directional-runtime-model-v1"
 TIME_BANDED_RUNTIME_MODEL_SCHEMA_VERSION = (
@@ -32,6 +33,12 @@ RUNTIME_MANIFEST_SCHEMA_VERSION = "capitonic-btc-directional-runtime-manifest-v1
 GOLDEN_VECTORS_SCHEMA_VERSION = "capitonic-btc-directional-golden-vectors-v1"
 TIME_BANDED_GOLDEN_VECTORS_SCHEMA_VERSION = (
     "capitonic-btc-directional-golden-vectors-v2"
+)
+ASYMMETRIC_VALUE_RUNTIME_MODEL_SCHEMA_VERSION = (
+    "capitonic-btc-asymmetric-value-runtime-model-v1"
+)
+ASYMMETRIC_VALUE_GOLDEN_VECTORS_SCHEMA_VERSION = (
+    "capitonic-btc-asymmetric-value-golden-vectors-v1"
 )
 MODEL_FILENAME = "model.json"
 MANIFEST_FILENAME = "manifest.json"
@@ -105,6 +112,178 @@ def export_runtime_model(
     }
     destination = output_root / model_key
     write_immutable_directory(destination, files)
+    return destination
+
+
+def export_asymmetric_value_runtime_model(
+    *,
+    model_path: Path,
+    output_root: Path,
+    model_key: str,
+    source_run_id: str,
+    source_benchmark_sha256: str,
+) -> Path:
+    """Export a frozen asymmetric-value model for native paper inference.
+
+    Unlike directional confidence models, this bundle keeps the calibrated
+    YES/NO price-cell surface.  The runtime selects an outcome from live CLOB
+    costs; it never converts this artifact into a high-confidence model.
+    """
+    if MODEL_KEY_PATTERN.fullmatch(model_key) is None:
+        raise ValueError("model key must contain only lowercase letters, digits, and hyphens")
+    if not re.fullmatch(r"[0-9a-f]{64}", source_benchmark_sha256):
+        raise ValueError("source benchmark SHA-256 must be a lowercase digest")
+    model_path = model_path.resolve()
+    source_model_sha256 = file_sha256(model_path)
+    bundle = joblib.load(model_path)
+    if not isinstance(bundle, AsymmetricValueModel):
+        raise TypeError("asymmetric runtime export requires AsymmetricValueModel")
+    model = bundle.model
+    if model.family != "histogram" or not isinstance(
+        model.estimator, HistGradientBoostingClassifier
+    ):
+        raise TypeError("asymmetric runtime export requires a histogram model")
+    if model.standardization_means is not None or model.standardization_scales is not None:
+        raise RuntimeError("asymmetric histogram model must not be standardized")
+    feature_names = list(model.feature_names)
+    medians = np.asarray(model.imputation_medians, dtype=np.float64)
+    if medians.shape != (len(feature_names),) or not np.isfinite(medians).all():
+        raise RuntimeError("asymmetric runtime export requires finite imputation medians")
+    if model.estimator.n_trees_per_iteration_ != 1 or model.estimator.classes_.tolist() != [0, 1]:
+        raise RuntimeError("asymmetric runtime export requires binary histogram trees")
+    bands = []
+    for band in bundle.time_calibrators:
+        if not band.calibrator.converged or band.calibrator.slope <= 0.0:
+            raise RuntimeError("asymmetric time calibrator is invalid")
+        bands.append({
+            "start_seconds": band.start_second,
+            "end_seconds_exclusive": band.end_second_exclusive,
+            "slope": finite_float(band.calibrator.slope, "time calibration slope"),
+            "intercept": finite_float(band.calibrator.intercept, "time calibration intercept"),
+        })
+    cells = []
+    for cell in bundle.cells:
+        if cell.side not in {"YES", "NO"}:
+            raise RuntimeError("asymmetric price cell has an invalid side")
+        if cell.slope <= 0.0:
+            raise RuntimeError("asymmetric price cell has an invalid slope")
+        cells.append({
+            "start_seconds": cell.start_second,
+            "end_seconds_exclusive": cell.end_second_exclusive,
+            "minimum_price": finite_float(cell.minimum_price, "cell minimum price"),
+            "maximum_price": finite_float(cell.maximum_price, "cell maximum price"),
+            "side": cell.side.lower(),
+            "slope": finite_float(cell.slope, "cell slope"),
+            "intercept": finite_float(cell.intercept, "cell intercept"),
+            "fitted": cell.fitted,
+            "fallback": cell.fallback,
+        })
+    estimator = model.estimator
+    payload = {
+        "schema_version": ASYMMETRIC_VALUE_RUNTIME_MODEL_SCHEMA_VERSION,
+        "model_key": model_key,
+        "features": {
+            "schema_version": f"{model_key}-features-v1",
+            "schema_sha256": feature_schema_sha256(f"{model_key}-features-v1", feature_names),
+            "names": feature_names,
+            "numeric_type": "float64",
+            "non_finite_policy": "median_imputation",
+            "imputation_medians": [finite_float(value, "imputation median") for value in medians],
+        },
+        "estimator": {
+            "type": "histogram_gradient_boosting_binary_classifier",
+            "class_order": [0, 1],
+            "output": "raw_logit",
+            "baseline_logit": finite_float(float(estimator._baseline_prediction[0, 0]), "baseline logit"),
+            "tree_values_include_learning_rate": True,
+            "split_comparison": "less_than_or_equal",
+            "trees": [export_tree(predictors[0], len(feature_names)) for predictors in estimator._predictors],
+        },
+        "asymmetric_value_calibration": {"time_bands": bands, "side_price_cells": cells},
+        "decision": {
+            "probability_up_threshold": 0.5,
+            "below_confidence_action": "no_trade",
+            "up_action": "up",
+            "down_action": "down",
+        },
+        "prediction_policy": {
+            "type": "scheduled",
+            "minimum_seconds_after_open": 1,
+            "maximum_seconds_after_open": 240,
+            "early_end_second": 59,
+            "early_cadence_seconds": 1,
+            "cadence_seconds": 5,
+        },
+        "deployment": {"scope": "paper_only", "production_qualified": False, "live_capital_allowed": False},
+        "provenance": {
+            "source_run_id": source_run_id,
+            "source_benchmark_sha256": source_benchmark_sha256,
+            "source_training_model_sha256": source_model_sha256,
+            "candidate": bundle.name,
+            "training_hyperparameters": model.hyperparameters,
+        },
+    }
+    model_bytes = canonical_json_bytes(payload)
+    golden_seconds_elapsed = 30
+    golden_yes_ask_vwap = 0.25
+    golden_no_ask_vwap = 0.75
+    golden_frame = pl.DataFrame({
+        **{
+            name: [finite_float(value, "golden feature")]
+            for name, value in zip(feature_names, medians, strict=True)
+        },
+        "seconds_elapsed": [golden_seconds_elapsed],
+        "yes_ask_vwap_5": [golden_yes_ask_vwap],
+        "no_ask_vwap_5": [golden_no_ask_vwap],
+    })
+    golden_raw_logit = finite_float(
+        float(bundle.model.raw_logit(golden_frame)[0]), "golden raw logit"
+    )
+    golden_probability = finite_float(
+        float(bundle.probability(golden_frame)[0]), "golden probability"
+    )
+    golden = {
+        "schema_version": ASYMMETRIC_VALUE_GOLDEN_VECTORS_SCHEMA_VERSION,
+        "model_key": model_key,
+        "feature_schema_version": payload["features"]["schema_version"],
+        "feature_schema_sha256": payload["features"]["schema_sha256"],
+        "vectors": [{
+            "id": "median-features-30s",
+            "source": None,
+            "seconds_elapsed": golden_seconds_elapsed,
+            "feature_values": payload["features"]["imputation_medians"],
+            "yes_ask_vwap": golden_yes_ask_vwap,
+            "no_ask_vwap": golden_no_ask_vwap,
+            "expected": {
+                "raw_logit": golden_raw_logit,
+                "probability_up": golden_probability,
+                "confidence": max(golden_probability, 1.0 - golden_probability),
+                "action": "up" if golden_probability >= 0.5 else "down",
+            },
+        }],
+    }
+    golden_bytes = canonical_json_bytes(golden)
+    manifest = {
+        "schema_version": RUNTIME_MANIFEST_SCHEMA_VERSION,
+        "model_key": model_key,
+        "model_file": MODEL_FILENAME,
+        "model_sha256": sha256_bytes(model_bytes),
+        "golden_vectors_file": GOLDEN_VECTORS_FILENAME,
+        "golden_vectors_sha256": sha256_bytes(golden_bytes),
+        "feature_schema_version": payload["features"]["schema_version"],
+        "feature_schema_sha256": payload["features"]["schema_sha256"],
+        "source_freeze_manifest_sha256": source_benchmark_sha256,
+        "source_training_model_sha256": source_model_sha256,
+        "deployment_scope": "paper_only",
+        "production_qualified": False,
+        "live_capital_allowed": False,
+    }
+    destination = output_root / model_key
+    write_immutable_directory(destination, {
+        MODEL_FILENAME: model_bytes,
+        MANIFEST_FILENAME: canonical_json_bytes(manifest),
+        GOLDEN_VECTORS_FILENAME: golden_bytes,
+    })
     return destination
 
 

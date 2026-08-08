@@ -773,6 +773,55 @@ pub fn build_directional_features_for_schema_with_external(
     opening_boundary: Option<Decimal>,
     external: Option<&DirectionalExternalFeatureInputs<'_>>,
 ) -> Result<DirectionalFeatureVector, DirectionalFeatureError> {
+    build_directional_features_for_schema_with_external_and_timing(
+        window,
+        window_start,
+        feature_as_of,
+        schema_version,
+        opening_boundary,
+        external,
+        DirectionalFeatureTimingPolicy::LegacyDirectional,
+        None,
+    )
+}
+
+/// Builds the frozen core feature vector on the asymmetric value model's
+/// manifest cadence without changing the legacy directional-model cadence.
+pub fn build_directional_features_for_asymmetric_value(
+    window: &BinanceOneSecondWindow,
+    window_start: DateTime<Utc>,
+    feature_as_of: DateTime<Utc>,
+    imputation_medians: &[f64],
+) -> Result<DirectionalFeatureVector, DirectionalFeatureError> {
+    build_directional_features_for_schema_with_external_and_timing(
+        window,
+        window_start,
+        feature_as_of,
+        BTC_DIRECTIONAL_FEATURE_SCHEMA_VERSION,
+        None,
+        None,
+        DirectionalFeatureTimingPolicy::AsymmetricValue,
+        Some(imputation_medians),
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectionalFeatureTimingPolicy {
+    LegacyDirectional,
+    AsymmetricValue,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_directional_features_for_schema_with_external_and_timing(
+    window: &BinanceOneSecondWindow,
+    window_start: DateTime<Utc>,
+    feature_as_of: DateTime<Utc>,
+    schema_version: &str,
+    opening_boundary: Option<Decimal>,
+    external: Option<&DirectionalExternalFeatureInputs<'_>>,
+    timing_policy: DirectionalFeatureTimingPolicy,
+    core_imputation_medians: Option<&[f64]>,
+) -> Result<DirectionalFeatureVector, DirectionalFeatureError> {
     let schema_version = canonical_feature_schema_version(schema_version).ok_or_else(|| {
         DirectionalFeatureError::UnsupportedFeatureSchema {
             schema_version: schema_version.to_string(),
@@ -789,7 +838,7 @@ pub fn build_directional_features_for_schema_with_external(
     } else {
         None
     };
-    let seconds_elapsed = validate_feature_time(window_start, feature_as_of)?;
+    let seconds_elapsed = validate_feature_time(window_start, feature_as_of, timing_policy)?;
     let prewindow_summaries =
         if schema_version == BTC_DIRECTIONAL_PATH_PREWINDOW_FEATURE_SCHEMA_VERSION {
             Some(collect_required_prewindow_summaries(window, window_start)?)
@@ -810,14 +859,28 @@ pub fn build_directional_features_for_schema_with_external(
     } else {
         schema_version
     };
-    let mut features = derive_directional_features(
-        &numeric,
-        feature_as_of,
-        seconds_elapsed,
-        base_schema,
-        opening_boundary,
-        prewindow_summaries.as_ref(),
-    )?;
+    let mut features = if timing_policy == DirectionalFeatureTimingPolicy::AsymmetricValue
+        && seconds_elapsed < BTC_DIRECTIONAL_FIRST_CANDIDATE_SECOND
+    {
+        derive_asymmetric_early_core_features(
+            &numeric,
+            feature_as_of,
+            seconds_elapsed,
+            core_imputation_medians.ok_or(DirectionalFeatureError::ExternalFeatureUnavailable {
+                source: "asymmetric_model",
+                reason: "core imputation medians were not supplied",
+            })?,
+        )?
+    } else {
+        derive_directional_features(
+            &numeric,
+            feature_as_of,
+            seconds_elapsed,
+            base_schema,
+            opening_boundary,
+            prewindow_summaries.as_ref(),
+        )?
+    };
     let requirements = directional_external_feature_requirements(schema_version);
     if requirements != DirectionalExternalFeatureRequirements::default() {
         let external = external.ok_or(DirectionalFeatureError::ExternalFeatureUnavailable {
@@ -888,6 +951,7 @@ fn canonical_feature_schema_version(schema_version: &str) -> Option<&'static str
 fn validate_feature_time(
     window_start: DateTime<Utc>,
     feature_as_of: DateTime<Utc>,
+    timing_policy: DirectionalFeatureTimingPolicy,
 ) -> Result<i64, DirectionalFeatureError> {
     let elapsed = feature_as_of.signed_duration_since(window_start);
     let seconds_elapsed = elapsed.num_seconds();
@@ -898,24 +962,33 @@ fn validate_feature_time(
             reason: DirectionalFeatureTimingReason::NotWholeSecond,
         });
     }
-    if seconds_elapsed < BTC_DIRECTIONAL_FIRST_CANDIDATE_SECOND {
+    let (first_candidate, last_candidate, on_cadence) = match timing_policy {
+        DirectionalFeatureTimingPolicy::LegacyDirectional => (
+            BTC_DIRECTIONAL_FIRST_CANDIDATE_SECOND,
+            BTC_DIRECTIONAL_LAST_CANDIDATE_SECOND,
+            (seconds_elapsed - BTC_DIRECTIONAL_FIRST_CANDIDATE_SECOND)
+                % BTC_DIRECTIONAL_CANDIDATE_CADENCE_SECONDS
+                == 0,
+        ),
+        DirectionalFeatureTimingPolicy::AsymmetricValue => {
+            (1, 240, seconds_elapsed <= 59 || seconds_elapsed % 5 == 0)
+        }
+    };
+    if seconds_elapsed < first_candidate {
         return Err(DirectionalFeatureError::InvalidTiming {
             feature_as_of,
             seconds_elapsed,
             reason: DirectionalFeatureTimingReason::BeforeFirstCandidate,
         });
     }
-    if seconds_elapsed > BTC_DIRECTIONAL_LAST_CANDIDATE_SECOND {
+    if seconds_elapsed > last_candidate {
         return Err(DirectionalFeatureError::InvalidTiming {
             feature_as_of,
             seconds_elapsed,
             reason: DirectionalFeatureTimingReason::AfterLastCandidate,
         });
     }
-    if (seconds_elapsed - BTC_DIRECTIONAL_FIRST_CANDIDATE_SECOND)
-        % BTC_DIRECTIONAL_CANDIDATE_CADENCE_SECONDS
-        != 0
-    {
+    if !on_cadence {
         return Err(DirectionalFeatureError::InvalidTiming {
             feature_as_of,
             seconds_elapsed,
@@ -1771,6 +1844,241 @@ fn unavailable(source: &'static str, reason: &'static str) -> DirectionalFeature
     DirectionalFeatureError::ExternalFeatureUnavailable { source, reason }
 }
 
+/// Reproduces the Python training frame before its frozen median imputer is applied.
+/// Features whose lookback is not yet causally available are replaced with the exact
+/// model-artifact median. The legacy directional builder never enters this path.
+fn derive_asymmetric_early_core_features(
+    candles: &[NumericCandle],
+    feature_as_of: DateTime<Utc>,
+    seconds_elapsed: i64,
+    imputation_medians: &[f64],
+) -> Result<DirectionalFeatureVector, DirectionalFeatureError> {
+    debug_assert!(seconds_elapsed < BTC_DIRECTIONAL_FIRST_CANDIDATE_SECOND);
+    debug_assert_eq!(candles.len(), seconds_elapsed as usize + 1);
+    if imputation_medians.len() < BTC_DIRECTIONAL_FEATURE_COUNT {
+        return Err(DirectionalFeatureError::ExternalFeatureUnavailable {
+            source: "asymmetric_model",
+            reason: "core imputation median width was smaller than the frozen core schema",
+        });
+    }
+
+    let end = candles.len() - 1;
+    let log_closes = candles
+        .iter()
+        .map(|candle| candle.close.ln())
+        .collect::<Vec<_>>();
+    let log_returns = (1..candles.len())
+        .map(|index| log_closes[index] - log_closes[index - 1])
+        .collect::<Vec<_>>();
+    let path_from_open = (log_closes[end] - log_closes[0]) * BPS;
+
+    let horizon = |seconds| early_horizon_return(&log_closes, end, seconds);
+    let return_1 = horizon(1);
+    let return_5 = horizon(5);
+    let return_15 = horizon(15);
+    let return_30 = horizon(30);
+    let return_60 = horizon(60);
+    let volatility = |window, minimum_samples| {
+        rolling_volatility(&log_returns, end, window, minimum_samples).map(|value| value * BPS)
+    };
+    let volatility_5 = volatility(5, 2);
+    let volatility_15 = volatility(15, 7);
+    let volatility_30 = volatility(30, 15);
+    let volatility_60 = volatility(60, 30);
+
+    let high_low_5 = rolling_high_low_partial(candles, end, 5, 2);
+    let high_low_30 = rolling_high_low_partial(candles, end, 30, 15);
+    let high_low_60 = rolling_high_low_partial(candles, end, 60, 30);
+    let range_bps = |high_low: Option<(f64, f64)>| {
+        high_low.map(|(high, low)| (high - low) / candles[end].close * BPS)
+    };
+    let range_position = |high_low: Option<(f64, f64)>| {
+        high_low.map(|(high, low)| (candles[end].close - low) / (high - low + EPSILON))
+    };
+
+    let quote_volume_5 = rolling_sum_partial(candles, end, 5, 2, |candle| candle.quote_volume);
+    let quote_volume_30 = rolling_sum_partial(candles, end, 30, 15, |candle| candle.quote_volume);
+    let quote_volume_60 = rolling_sum_partial(candles, end, 60, 30, |candle| candle.quote_volume);
+    let trade_count_5 = rolling_sum_partial(candles, end, 5, 2, |candle| candle.trade_count);
+    let trade_count_30 = rolling_sum_partial(candles, end, 30, 15, |candle| candle.trade_count);
+    let trade_count_60 = rolling_sum_partial(candles, end, 60, 30, |candle| candle.trade_count);
+    let taker_volume_5 =
+        rolling_sum_partial(candles, end, 5, 2, |candle| candle.taker_buy_quote_volume);
+    let taker_volume_30 =
+        rolling_sum_partial(candles, end, 30, 15, |candle| candle.taker_buy_quote_volume);
+    let taker_volume_60 =
+        rolling_sum_partial(candles, end, 60, 30, |candle| candle.taker_buy_quote_volume);
+    let share = |taker: Option<f64>, volume: Option<f64>| {
+        taker
+            .zip(volume)
+            .map(|(taker, volume)| taker / (volume + EPSILON))
+    };
+    let flow = |taker: Option<f64>, volume: Option<f64>| {
+        taker
+            .zip(volume)
+            .map(|(taker, volume)| (2.0 * taker - volume) / (volume + EPSILON))
+    };
+    let taker_share_5 = share(taker_volume_5, quote_volume_5);
+    let taker_share_30 = share(taker_volume_30, quote_volume_30);
+    let taker_share_60 = share(taker_volume_60, quote_volume_60);
+    let signed_flow_5 = flow(taker_volume_5, quote_volume_5);
+    let signed_flow_30 = flow(taker_volume_30, quote_volume_30);
+    let signed_flow_60 = flow(taker_volume_60, quote_volume_60);
+
+    let path_efficiency_30 = return_30
+        .zip(rolling_absolute_return_partial(&log_returns, end, 30, 15))
+        .map(|(ret, absolute)| ret.abs() / (absolute * BPS + EPSILON));
+    let path_efficiency_60 = return_60
+        .zip(rolling_absolute_return_partial(&log_returns, end, 60, 30))
+        .map(|(ret, absolute)| ret.abs() / (absolute * BPS + EPSILON));
+    let volatility_expansion = volatility_5
+        .zip(volatility_30)
+        .map(|(short, long)| short / (long + EPSILON));
+    let volume_surprise = quote_volume_5
+        .zip(quote_volume_60)
+        .map(|(short, long)| short / (long / 12.0 + EPSILON));
+
+    let path_stats = elapsed_path_stats(&log_closes);
+    let (elapsed_volatility_sum, elapsed_volatility_count) = (0..=end)
+        .filter_map(|row| rolling_volatility(&log_returns, row, 60, 30))
+        .fold((0.0, 0_usize), |(sum, count), value| {
+            (sum + value * BPS, count + 1)
+        });
+    let elapsed_volatility_mean = (elapsed_volatility_count > 0)
+        .then_some(elapsed_volatility_sum / elapsed_volatility_count as f64);
+    let terminal_denominator = volatility_60.map(|value| {
+        value * ((MARKET_WINDOW_SECONDS - seconds_elapsed).max(1) as f64).sqrt() + EPSILON
+    });
+    let terminal_volatility_z =
+        terminal_denominator.map(|denominator| path_from_open / denominator);
+    let terminal_abs_volatility_z =
+        terminal_denominator.map(|denominator| path_from_open.abs() / denominator);
+
+    let signed = |value: Option<f64>| value.map(sign);
+    let sign_5 = signed(return_5);
+    let sign_15 = signed(return_15);
+    let sign_30 = signed(return_30);
+    let sign_60 = signed(return_60);
+    let momentum_agreement_5_15 = sign_5.zip(sign_15).map(|(left, right)| left * right);
+    let momentum_agreement_15_30 = sign_15.zip(sign_30).map(|(left, right)| left * right);
+    let momentum_multihorizon = sign_5
+        .zip(sign_15)
+        .zip(sign_30)
+        .zip(sign_60)
+        .map(|(((a, b), c), d)| (a + b + c + d) / 4.0);
+    let momentum_acceleration_5_30 = return_5
+        .zip(return_30)
+        .map(|(short, long)| short - long * (5.0 / 30.0));
+    let momentum_acceleration_15_60 = return_15
+        .zip(return_60)
+        .map(|(short, long)| short - long * (15.0 / 60.0));
+    let reversal_5_30 = return_5
+        .zip(return_30)
+        .map(|(short, long)| f64::from(short * long < 0.0));
+
+    let close = candles[end].close;
+    let distance_high =
+        |high_low: Option<(f64, f64)>| high_low.map(|(high, _)| (high - close) / close * BPS);
+    let distance_low =
+        |high_low: Option<(f64, f64)>| high_low.map(|(_, low)| (close - low) / close * BPS);
+    let volatility_regime = volatility_60
+        .zip(elapsed_volatility_mean)
+        .map(|(current, mean)| current / (mean + EPSILON));
+    let flow_persistence_5_30 = signed_flow_5
+        .zip(signed_flow_30)
+        .map(|(short, long)| short * long);
+    let flow_persistence_30_60 = signed_flow_30
+        .zip(signed_flow_60)
+        .map(|(short, long)| short * long);
+    let price_flow_agreement_30 = sign_30
+        .zip(signed_flow_30)
+        .map(|(price, flow)| price * flow);
+    let price_flow_divergence_30 = sign_30
+        .zip(signed_flow_30)
+        .map(|(price, flow)| price * -flow);
+
+    let hour_angle = feature_as_of.hour() as f64 * std::f64::consts::TAU / 24.0;
+    let weekday_angle =
+        feature_as_of.weekday().number_from_monday() as f64 * std::f64::consts::TAU / 7.0;
+    let raw = [
+        Some(seconds_elapsed as f64 / MARKET_WINDOW_SECONDS as f64),
+        Some((MARKET_WINDOW_SECONDS - seconds_elapsed) as f64 / MARKET_WINDOW_SECONDS as f64),
+        Some(path_from_open),
+        return_1,
+        return_5,
+        return_15,
+        return_30,
+        return_60,
+        volatility_5,
+        volatility_15,
+        volatility_30,
+        volatility_60,
+        range_bps(high_low_5),
+        range_bps(high_low_30),
+        range_bps(high_low_60),
+        path_efficiency_30,
+        path_efficiency_60,
+        range_position(high_low_30),
+        volatility_expansion,
+        quote_volume_5.map(f64::ln_1p),
+        quote_volume_30.map(f64::ln_1p),
+        quote_volume_60.map(f64::ln_1p),
+        trade_count_5.map(f64::ln_1p),
+        trade_count_30.map(f64::ln_1p),
+        taker_share_5,
+        taker_share_30,
+        signed_flow_5,
+        signed_flow_30,
+        volume_surprise,
+        Some(hour_angle.sin()),
+        Some(hour_angle.cos()),
+        Some(weekday_angle.sin()),
+        Some(weekday_angle.cos()),
+        terminal_volatility_z,
+        terminal_abs_volatility_z,
+        Some(path_stats.cross_count as f64),
+        Some(path_stats.seconds_since_cross as f64),
+        Some(path_stats.positive_fraction),
+        Some(1.0 - path_stats.positive_fraction),
+        momentum_agreement_5_15,
+        momentum_agreement_15_30,
+        momentum_multihorizon,
+        momentum_acceleration_5_30,
+        momentum_acceleration_15_60,
+        reversal_5_30,
+        range_position(high_low_60),
+        distance_high(high_low_30),
+        distance_low(high_low_30),
+        distance_high(high_low_60),
+        distance_low(high_low_60),
+        volatility_regime,
+        trade_count_60.map(f64::ln_1p),
+        taker_share_60,
+        signed_flow_60,
+        flow_persistence_5_30,
+        flow_persistence_30_60,
+        price_flow_agreement_30,
+        price_flow_divergence_30,
+    ];
+    let mut values = Vec::with_capacity(BTC_DIRECTIONAL_FEATURE_COUNT);
+    for (index, candidate) in raw.into_iter().enumerate() {
+        let value = candidate.unwrap_or(imputation_medians[index]);
+        if !value.is_finite() {
+            return Err(DirectionalFeatureError::NonFiniteFeature {
+                index,
+                name: BTC_DIRECTIONAL_FEATURE_NAMES[index],
+            });
+        }
+        values.push(value);
+    }
+    Ok(DirectionalFeatureVector {
+        schema_version: BTC_DIRECTIONAL_FEATURE_SCHEMA_VERSION,
+        feature_as_of,
+        seconds_elapsed: seconds_elapsed as u16,
+        values,
+    })
+}
+
 fn derive_directional_features(
     candles: &[NumericCandle],
     feature_as_of: DateTime<Utc>,
@@ -2093,6 +2401,10 @@ fn horizon_return(log_closes: &[f64], end: usize, seconds: usize) -> f64 {
     (log_closes[end] - log_closes[end - seconds]) * BPS
 }
 
+fn early_horizon_return(log_closes: &[f64], end: usize, seconds: usize) -> Option<f64> {
+    (end >= seconds).then(|| (log_closes[end] - log_closes[end - seconds]) * BPS)
+}
+
 fn rolling_volatility(
     log_returns: &[f64],
     row: usize,
@@ -2127,6 +2439,20 @@ fn rolling_absolute_return(log_returns: &[f64], end: usize, window: usize) -> f6
         .sum()
 }
 
+fn rolling_absolute_return_partial(
+    log_returns: &[f64],
+    end: usize,
+    window: usize,
+    minimum_samples: usize,
+) -> Option<f64> {
+    if end == 0 {
+        return None;
+    }
+    let first_row = (end + 1).saturating_sub(window).max(1);
+    let samples = &log_returns[first_row - 1..end];
+    (samples.len() >= minimum_samples).then(|| samples.iter().map(|value| value.abs()).sum())
+}
+
 fn rolling_sum(
     candles: &[NumericCandle],
     end: usize,
@@ -2136,12 +2462,41 @@ fn rolling_sum(
     candles[end + 1 - window..=end].iter().map(value).sum()
 }
 
+fn rolling_sum_partial(
+    candles: &[NumericCandle],
+    end: usize,
+    window: usize,
+    minimum_samples: usize,
+    value: impl Fn(&NumericCandle) -> f64,
+) -> Option<f64> {
+    let first = (end + 1).saturating_sub(window);
+    let samples = &candles[first..=end];
+    (samples.len() >= minimum_samples).then(|| samples.iter().map(value).sum())
+}
+
 fn rolling_high_low(candles: &[NumericCandle], end: usize, window: usize) -> (f64, f64) {
     candles[end + 1 - window..=end]
         .iter()
         .fold((f64::NEG_INFINITY, f64::INFINITY), |(high, low), candle| {
             (high.max(candle.high), low.min(candle.low))
         })
+}
+
+fn rolling_high_low_partial(
+    candles: &[NumericCandle],
+    end: usize,
+    window: usize,
+    minimum_samples: usize,
+) -> Option<(f64, f64)> {
+    let first = (end + 1).saturating_sub(window);
+    let samples = &candles[first..=end];
+    (samples.len() >= minimum_samples).then(|| {
+        samples
+            .iter()
+            .fold((f64::NEG_INFINITY, f64::INFINITY), |(high, low), candle| {
+                (high.max(candle.high), low.min(candle.low))
+            })
+    })
 }
 
 fn rolling_range_bps(candles: &[NumericCandle], end: usize, window: usize) -> f64 {
@@ -3118,7 +3473,11 @@ mod tests {
         let valid = [60, 65, 120, 235, 240];
         for second in valid {
             assert_eq!(
-                validate_feature_time(window_start, window_start + Duration::seconds(second)),
+                validate_feature_time(
+                    window_start,
+                    window_start + Duration::seconds(second),
+                    DirectionalFeatureTimingPolicy::LegacyDirectional,
+                ),
                 Ok(second)
             );
         }
@@ -3136,7 +3495,8 @@ mod tests {
         assert_eq!(
             validate_feature_time(
                 window_start,
-                window_start + Duration::seconds(60) + Duration::milliseconds(1)
+                window_start + Duration::seconds(60) + Duration::milliseconds(1),
+                DirectionalFeatureTimingPolicy::LegacyDirectional,
             ),
             Err(DirectionalFeatureError::InvalidTiming {
                 feature_as_of: window_start + Duration::seconds(60) + Duration::milliseconds(1),
@@ -3144,6 +3504,89 @@ mod tests {
                 reason: DirectionalFeatureTimingReason::NotWholeSecond,
             })
         );
+    }
+
+    #[test]
+    fn asymmetric_value_timing_accepts_early_seconds_without_relaxing_legacy_timing() {
+        let window_start = Utc.with_ymd_and_hms(2026, 6, 14, 12, 35, 0).unwrap();
+        let window = BinanceOneSecondWindow::from_completed(
+            (0..=61)
+                .map(|second| fixture_candle(window_start, second))
+                .collect(),
+        )
+        .unwrap();
+
+        for second in [1, 5, 30, 55, 59, 60] {
+            let features = build_directional_features_for_asymmetric_value(
+                &window,
+                window_start,
+                window_start + Duration::seconds(second),
+                &[42.0; BTC_DIRECTIONAL_FEATURE_COUNT],
+            )
+            .unwrap();
+            assert_eq!(features.values.len(), BTC_DIRECTIONAL_FEATURE_COUNT);
+        }
+        let first_second = build_directional_features_for_asymmetric_value(
+            &window,
+            window_start,
+            window_start + Duration::seconds(1),
+            &[42.0; BTC_DIRECTIONAL_FEATURE_COUNT],
+        )
+        .unwrap();
+        assert_eq!(first_second.values[4], 42.0);
+        assert_eq!(first_second.values[7], 42.0);
+        assert_ne!(first_second.values[12], 42.0);
+        assert_close(first_second.values[2], -4.4709993428150065);
+        assert_close(first_second.values[12], 4.572043703535189);
+        assert_close(first_second.values[24], 0.4600074943792154);
+        assert_eq!(first_second.values[35], 1.0);
+        assert_eq!(first_second.values[36], 0.0);
+
+        let thirtieth_second = build_directional_features_for_asymmetric_value(
+            &window,
+            window_start,
+            window_start + Duration::seconds(30),
+            &[42.0; BTC_DIRECTIONAL_FEATURE_COUNT],
+        )
+        .unwrap();
+        assert_eq!(thirtieth_second.values[7], 42.0);
+        assert_eq!(thirtieth_second.values[16], 42.0);
+        assert_eq!(thirtieth_second.values[41], 42.0);
+        assert_close(thirtieth_second.values[6], 0.8999595024228313);
+        assert_close(thirtieth_second.values[11], 2.013414078535966);
+        assert_close(thirtieth_second.values[15], 0.03126886959448458);
+        assert_close(thirtieth_second.values[33], 0.027202447687763365);
+        assert_close(thirtieth_second.values[50], 0.9999999995033312);
+        let asymmetric_at_60 = build_directional_features_for_asymmetric_value(
+            &window,
+            window_start,
+            window_start + Duration::seconds(60),
+            &[42.0; BTC_DIRECTIONAL_FEATURE_COUNT],
+        )
+        .unwrap();
+        let legacy_at_60 =
+            build_directional_features(&window, window_start, window_start + Duration::seconds(60))
+                .unwrap();
+        assert_eq!(asymmetric_at_60, legacy_at_60);
+        assert!(matches!(
+            build_directional_features_for_asymmetric_value(
+                &window,
+                window_start,
+                window_start + Duration::seconds(61),
+                &[42.0; BTC_DIRECTIONAL_FEATURE_COUNT],
+            ),
+            Err(DirectionalFeatureError::InvalidTiming {
+                reason: DirectionalFeatureTimingReason::OffCadence,
+                ..
+            })
+        ));
+        assert!(matches!(
+            build_directional_features(&window, window_start, window_start + Duration::seconds(55),),
+            Err(DirectionalFeatureError::InvalidTiming {
+                reason: DirectionalFeatureTimingReason::BeforeFirstCandidate,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -3209,7 +3652,11 @@ mod tests {
     ) {
         let feature_as_of = window_start + Duration::seconds(second);
         assert_eq!(
-            validate_feature_time(window_start, feature_as_of),
+            validate_feature_time(
+                window_start,
+                feature_as_of,
+                DirectionalFeatureTimingPolicy::LegacyDirectional,
+            ),
             Err(DirectionalFeatureError::InvalidTiming {
                 feature_as_of,
                 seconds_elapsed: second,

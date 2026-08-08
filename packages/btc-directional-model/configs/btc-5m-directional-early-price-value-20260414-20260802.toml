@@ -1,0 +1,59 @@
+[benchmark]
+profile = "btc_early_price_value_hypothesis_v1"
+paper_only = true
+live_capital_allowed = false
+
+[windows.fit]
+start = "2026-04-14T00:00:00Z"
+end = "2026-07-06T00:00:00Z"
+
+[windows.calibration]
+start = "2026-07-06T00:00:00Z"
+end = "2026-07-13T00:00:00Z"
+
+[windows.policy]
+start = "2026-07-13T00:00:00Z"
+end = "2026-07-20T00:00:00Z"
+
+[windows.evaluation]
+start = "2026-07-20T00:00:00Z"
+end = "2026-08-02T00:00:00Z"
+
+[timing]
+prediction_start_second = 5
+prediction_end_second = 240
+prediction_cadence_seconds = 5
+early_price_end_second = 59
+later_price_cadence_seconds = 5
+
+[economics]
+quantity = 5.0
+book_freshness_seconds = 2
+minimum_edge_per_share = 0.015
+cheap_price_min = 0.20
+cheap_price_max = 0.30
+confidence_reference = 0.89
+
+[model]
+random_seed = 20260804
+bootstrap_resamples = 10000
+calibration_bands = [
+  { start_second = 5, end_second_exclusive = 15 },
+  { start_second = 15, end_second_exclusive = 30 },
+  { start_second = 30, end_second_exclusive = 45 },
+  { start_second = 45, end_second_exclusive = 60 },
+  { start_second = 60, end_second_exclusive = 90 },
+  { start_second = 90, end_second_exclusive = 120 },
+  { start_second = 120, end_second_exclusive = 180 },
+  { start_second = 180, end_second_exclusive = 241 },
+]
+
+[paths]
+core_config = "configs/btc-5m-directional-core-early-value-20260414-20260802.toml"
+l2_source = "data/btc-early-price-value-20260414-20260802/external/l2"
+candle_source = "data/btc-early-price-value-20260414-20260802/external/candles"
+refprice_source = "data/btc-early-price-value-20260414-20260802/external/chainlink-refprice.parquet"
+price_source_sql = "sql/btc-early-value-book-source.sql"
+price_cache = "data/btc-early-price-value-20260414-20260802/executable-prices"
+runs = "runs/btc-early-price-value-20260414-20260802"
+champion_model = "runtime-models/btc-5m-directional-boundary-alignment-20260421-20260720-paper-v1/model.json"
