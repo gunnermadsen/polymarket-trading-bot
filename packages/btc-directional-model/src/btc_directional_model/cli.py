@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .admission_benchmark import run_admission_benchmark
 from .admission_config import load_admission_benchmark_config
+from .asymmetric_training_readiness import prepare_asymmetric_training_readiness
 from .asymmetric_value_benchmark import run_asymmetric_value_benchmark
 from .asymmetric_value_config import load_asymmetric_value_config
 from .benchmark_config import load_entry_benchmark_config
@@ -134,6 +135,15 @@ def main() -> None:
     )
     asymmetric_value_run.add_argument("--config", type=Path, required=True)
     asymmetric_value_run.add_argument("--force", action="store_true")
+    asymmetric_readiness = subparsers.add_parser(
+        "asymmetric-training-readiness"
+    )
+    asymmetric_readiness.add_argument("--config", type=Path, required=True)
+    asymmetric_readiness.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+    )
     oracle_book_run = subparsers.add_parser("oracle-book-benchmark-run")
     oracle_book_run.add_argument("--config", type=Path, required=True)
     price_aware_run = subparsers.add_parser("price-aware-benchmark-run")
@@ -349,6 +359,16 @@ def main() -> None:
         print(f"selected value hunter: {result['selection']['selected_key']}")
         print(f"evaluation status: {result['evaluation']['status']}")
         print("runtime/trading pipeline changes: none")
+        return
+    if args.command == "asymmetric-training-readiness":
+        config = load_asymmetric_value_config(args.config)
+        destination, payload = prepare_asymmetric_training_readiness(
+            config,
+            output_dir=args.output_dir,
+        )
+        print(f"readiness manifest: {destination}")
+        print(f"ready: {str(payload['ready']).lower()}")
+        print("external SSD required: false")
         return
     if args.command == "oracle-book-benchmark-run":
         config = load_oracle_book_benchmark_config(args.config)
