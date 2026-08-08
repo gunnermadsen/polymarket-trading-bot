@@ -9,7 +9,13 @@ from datetime import datetime
 from itertools import pairwise
 from pathlib import Path
 
-from .core_config import parse_utc_day
+from .core_config import load_core_config, parse_utc_day
+
+LEGACY_TRAINING_CONTRACT = "legacy_four_window"
+TARGET_CALIBRATED_TRAINING_CONTRACT = "early_price_target_calibrated"
+SUPPORTED_TRAINING_CONTRACTS = frozenset(
+    {LEGACY_TRAINING_CONTRACT, TARGET_CALIBRATED_TRAINING_CONTRACT}
+)
 
 
 @dataclass(frozen=True)
@@ -62,13 +68,23 @@ class ValueGates:
 
 
 @dataclass(frozen=True)
+class TargetCalibrationContract:
+    minimum_price: float
+    maximum_price: float
+    sides: tuple[str, ...]
+    time_bands: tuple[tuple[int, int], ...]
+    required_fitted_cells: int
+
+
+@dataclass(frozen=True)
 class AsymmetricValueConfig:
     source_path: Path
     package_root: Path
+    training_contract: str
     fit: EvidenceWindow
     calibration: EvidenceWindow
     policy: EvidenceWindow
-    evaluation: EvidenceWindow
+    evaluation: EvidenceWindow | None
     prediction_seconds: tuple[int, ...]
     price_seconds: tuple[int, ...]
     calibration_bands: tuple[tuple[int, int], ...]
@@ -83,6 +99,7 @@ class AsymmetricValueConfig:
     random_seed: int
     bootstrap_resamples: int
     calibration_identity_l2: float
+    target_calibration: TargetCalibrationContract | None
     core_config: Path
     oracle_source: Path
     l2_source: Path
@@ -106,6 +123,9 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
         raise ValueError("asymmetric-value benchmark profile identity changed")
     if benchmark.get("paper_only") is not True or benchmark.get("live_capital_allowed") is not False:
         raise ValueError("asymmetric-value benchmark must remain offline and paper-only")
+    training_contract = str(
+        benchmark.get("training_contract", LEGACY_TRAINING_CONTRACT)
+    )
 
     def window(name: str) -> EvidenceWindow:
         values = raw["windows"][name]
@@ -141,14 +161,30 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
     )
     gate_values = raw["gates"]
     model = raw["model"]
+    target_raw = model.get("target_calibration")
+    target_calibration = (
+        TargetCalibrationContract(
+            minimum_price=float(target_raw["minimum_price"]),
+            maximum_price=float(target_raw["maximum_price"]),
+            sides=tuple(str(value) for value in target_raw["sides"]),
+            time_bands=tuple(
+                (int(values["start_second"]), int(values["end_second_exclusive"]))
+                for values in target_raw["time_bands"]
+            ),
+            required_fitted_cells=int(target_raw["required_fitted_cells"]),
+        )
+        if target_raw is not None
+        else None
+    )
     paths = raw["paths"]
     config = AsymmetricValueConfig(
         source_path=source_path,
         package_root=package_root,
+        training_contract=training_contract,
         fit=window("fit"),
         calibration=window("calibration"),
         policy=window("policy"),
-        evaluation=window("evaluation"),
+        evaluation=(window("evaluation") if "evaluation" in raw["windows"] else None),
         prediction_seconds=tuple(int(value) for value in prediction_seconds),
         price_seconds=tuple(int(value) for value in price_seconds),
         calibration_bands=tuple(
@@ -233,6 +269,7 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
         random_seed=int(model["random_seed"]),
         bootstrap_resamples=int(model["bootstrap_resamples"]),
         calibration_identity_l2=float(model["calibration_identity_l2"]),
+        target_calibration=target_calibration,
         core_config=package_root / str(paths["core_config"]),
         oracle_source=package_root / str(paths["oracle_source"]),
         l2_source=package_root / str(paths["l2_source"]),
@@ -249,11 +286,41 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
 
 
 def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
-    windows = (config.fit, config.calibration, config.policy, config.evaluation)
+    if config.training_contract not in SUPPORTED_TRAINING_CONTRACTS:
+        raise ValueError("asymmetric-value training contract is unsupported")
+    windows = (config.fit, config.calibration, config.policy)
     if any(item.start >= item.end for item in windows):
         raise ValueError("asymmetric-value evidence windows must have positive ranges")
     if any(left.end != right.start for left, right in pairwise(windows)):
-        raise ValueError("fit, calibration, policy, and evaluation windows must be contiguous")
+        raise ValueError("fit, calibration, and policy windows must be contiguous")
+    if config.training_contract == LEGACY_TRAINING_CONTRACT:
+        if config.evaluation is None or config.evaluation.start >= config.evaluation.end:
+            raise ValueError("legacy asymmetric-value evaluation must have a positive range")
+        if config.policy.end != config.evaluation.start:
+            raise ValueError(
+                "legacy asymmetric-value policy and evaluation windows must be contiguous"
+            )
+        if config.target_calibration is not None:
+            raise ValueError("legacy asymmetric-value training cannot require target cells")
+    else:
+        expected_windows = (
+            (config.fit.start.isoformat(), config.fit.end.isoformat()),
+            (config.calibration.start.isoformat(), config.calibration.end.isoformat()),
+            (config.policy.start.isoformat(), config.policy.end.isoformat()),
+        )
+        required_windows = (
+            ("2026-04-14T00:00:00+00:00", "2026-07-16T00:00:00+00:00"),
+            ("2026-07-16T00:00:00+00:00", "2026-07-23T00:00:00+00:00"),
+            ("2026-07-23T00:00:00+00:00", "2026-08-02T00:00:00+00:00"),
+        )
+        if expected_windows != required_windows:
+            raise ValueError(
+                "target-calibrated asymmetric-value windows must preserve the frozen contract"
+            )
+        if config.evaluation is not None:
+            raise ValueError(
+                "target-calibrated asymmetric-value training requires fresh forward evaluation"
+            )
 
     expected_predictions = (*range(1, 60), *range(60, 241, 5))
     expected_prices = expected_predictions
@@ -277,6 +344,21 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
     )
     if config.calibration_bands != expected_bands:
         raise ValueError("asymmetric-value calibration bands must preserve the causal time contract")
+    if config.training_contract == TARGET_CALIBRATED_TRAINING_CONTRACT:
+        target = config.target_calibration
+        if target is None:
+            raise ValueError("target-calibrated training requires a target-cell contract")
+        required_target_bands = expected_bands[:4]
+        if (
+            not math.isclose(target.minimum_price, 0.20)
+            or not math.isclose(target.maximum_price, 0.30)
+            or target.sides != ("YES", "NO")
+            or target.time_bands != required_target_bands
+            or target.required_fitted_cells != 8
+        ):
+            raise ValueError(
+                "target calibration must require eight YES/NO 20-30c early-time cells"
+            )
     if not math.isclose(config.quantity, 5.0):
         raise ValueError("asymmetric-value economics are fixed to five-share execution")
     if not math.isclose(config.maximum_depth_participation, 0.25):
@@ -322,6 +404,18 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
             raise ValueError("policy costs must remain inside the lower-price loss ceiling")
         if not math.isfinite(policy.minimum_edge_per_share) or policy.minimum_edge_per_share <= 0:
             raise ValueError("policy minimum edge must be finite and positive")
+    if config.training_contract == TARGET_CALIBRATED_TRAINING_CONTRACT:
+        primary = next(policy for policy in config.policies if policy.selection_eligible)
+        if (
+            primary.maximum_entry_second != 55
+            or not math.isclose(primary.minimum_share_price, 0.20)
+            or not math.isclose(primary.maximum_share_price, 0.30)
+            or not math.isclose(primary.maximum_cost_per_share, 0.35)
+            or not math.isclose(primary.minimum_edge_per_share, 0.03)
+        ):
+            raise ValueError(
+                "target-calibrated primary policy must preserve 20-30c by55 economics"
+            )
 
     gates = config.gates
     if gates.minimum_policy_trades <= 0 or gates.minimum_evaluation_trades <= 0:
@@ -348,6 +442,13 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
     if gates.minimum_calibration_days_per_cell > calibration_days:
         raise ValueError(
             "asymmetric-value calibration-cell day support exceeds the calibration window"
+        )
+    if config.training_contract == TARGET_CALIBRATED_TRAINING_CONTRACT and (
+        gates.minimum_calibration_markets_per_cell < 50
+        or gates.minimum_calibration_days_per_cell < 5
+    ):
+        raise ValueError(
+            "target calibration requires at least 50 markets and five UTC days per cell"
         )
     source_coverage_gates = (
         gates.minimum_policy_source_grid_coverage,
@@ -384,15 +485,26 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
     ):
         raise ValueError("asymmetric-value loss-severity gates must be positive")
 
-    required_inputs = (
+    required_inputs = [
         config.core_config,
-        config.oracle_source,
         config.l2_source,
         config.candle_source,
         config.price_source_sql,
         config.champion_model,
         config.champion_process,
-    )
+    ]
+    if config.training_contract == LEGACY_TRAINING_CONTRACT:
+        required_inputs.append(config.oracle_source)
     missing = [str(path) for path in required_inputs if not path.exists()]
     if missing:
         raise FileNotFoundError("required asymmetric-value evidence is missing: " + ", ".join(missing))
+    if config.training_contract == TARGET_CALIBRATED_TRAINING_CONTRACT:
+        core = load_core_config(config.core_config)
+        if core.data.source_contract != "btc_core_oracle_v1":
+            raise ValueError(
+                "target-calibrated training must extract the causal Core + Oracle source"
+            )
+        if core.paths.source_data.resolve() != config.oracle_source.resolve():
+            raise ValueError(
+                "target-calibrated Core and Oracle sources must share one exact-range cache"
+            )

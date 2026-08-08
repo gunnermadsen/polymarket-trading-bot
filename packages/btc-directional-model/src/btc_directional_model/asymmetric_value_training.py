@@ -235,6 +235,7 @@ def fit_asymmetric_value_models(
             calibration_frame,
             config,
         )
+        target_calibration = target_calibration_evidence(cells, config)
         bundle = AsymmetricValueModel(
             name=name,
             model=fitted,
@@ -285,11 +286,172 @@ def fit_asymmetric_value_models(
                 ),
                 "fitted_cells": sum(cell.fitted for cell in cells),
                 "fallback_cells": sum(not cell.fitted for cell in cells),
+                "target_contract": target_calibration,
                 "cells": [asdict(cell) for cell in cells],
             },
         }
         models[name] = bundle
     return models, summary
+
+
+def target_calibration_evidence(
+    cells: tuple[AsymmetricCalibrationCell, ...],
+    config: AsymmetricValueConfig,
+) -> dict[str, Any]:
+    """Report whether every policy-driving calibration cell was genuinely fitted."""
+
+    target = config.target_calibration
+    if target is None:
+        return {
+            "required": False,
+            "qualified": True,
+            "required_fitted_cells": 0,
+            "fitted_cells": 0,
+            "fallback_cells": 0,
+            "cells": [],
+        }
+
+    indexed = {
+        (
+            cell.start_second,
+            cell.end_second_exclusive,
+            round(cell.minimum_price, 10),
+            round(cell.maximum_price, 10),
+            cell.side,
+        ): cell
+        for cell in cells
+    }
+    evidence: list[dict[str, Any]] = []
+    for start, end in target.time_bands:
+        for side in target.sides:
+            key = (
+                start,
+                end,
+                round(target.minimum_price, 10),
+                round(target.maximum_price, 10),
+                side,
+            )
+            cell = indexed.get(key)
+            failure_reasons: list[str] = []
+            if cell is None:
+                failure_reasons.append("missing_cell")
+                evidence.append(
+                    {
+                        "start_second": start,
+                        "end_second_exclusive": end,
+                        "minimum_price": target.minimum_price,
+                        "maximum_price": target.maximum_price,
+                        "side": side,
+                        "present": False,
+                        "fitted": False,
+                        "fallback": "missing_cell",
+                        "markets": 0,
+                        "utc_days": 0,
+                        "positives": 0,
+                        "negatives": 0,
+                        "failure_reasons": failure_reasons,
+                        "passed": False,
+                    }
+                )
+                continue
+            if cell.markets < config.gates.minimum_calibration_markets_per_cell:
+                failure_reasons.append("insufficient_markets")
+            if cell.utc_days < config.gates.minimum_calibration_days_per_cell:
+                failure_reasons.append("insufficient_utc_days")
+            if cell.positives <= 0 or cell.negatives <= 0:
+                failure_reasons.append("single_class")
+            if not cell.fitted:
+                failure_reasons.append("parent_fallback")
+            if cell.fallback is not None:
+                failure_reasons.append(f"fallback:{cell.fallback}")
+            if not cell.converged:
+                failure_reasons.append("optimizer_not_converged")
+            if cell.objective is None or not np.isfinite(cell.objective):
+                failure_reasons.append("invalid_objective")
+            if cell.weighted_log_loss is None or not np.isfinite(
+                cell.weighted_log_loss
+            ):
+                failure_reasons.append("invalid_weighted_log_loss")
+            evidence.append(
+                {
+                    "start_second": start,
+                    "end_second_exclusive": end,
+                    "minimum_price": target.minimum_price,
+                    "maximum_price": target.maximum_price,
+                    "side": side,
+                    "present": True,
+                    "fitted": cell.fitted,
+                    "fallback": cell.fallback,
+                    "markets": cell.markets,
+                    "utc_days": cell.utc_days,
+                    "positives": cell.positives,
+                    "negatives": cell.negatives,
+                    "failure_reasons": failure_reasons,
+                    "passed": not failure_reasons,
+                }
+            )
+    fitted_cells = sum(bool(item["passed"]) for item in evidence)
+    qualified = bool(
+        len(evidence) == target.required_fitted_cells
+        and fitted_cells == target.required_fitted_cells
+    )
+    return {
+        "required": True,
+        "qualified": qualified,
+        "required_fitted_cells": target.required_fitted_cells,
+        "fitted_cells": fitted_cells,
+        "fallback_cells": len(evidence) - fitted_cells,
+        "minimum_markets_per_cell": (
+            config.gates.minimum_calibration_markets_per_cell
+        ),
+        "minimum_utc_days_per_cell": (
+            config.gates.minimum_calibration_days_per_cell
+        ),
+        "both_outcomes_required": True,
+        "cells": evidence,
+    }
+
+
+def target_calibration_gate_checks(
+    profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Translate target-cell evidence into explicit model qualification checks."""
+
+    target = profile["side_price_time_calibration"]["target_contract"]
+    if not target["required"]:
+        return []
+    checks = [
+        {
+            "name": "target_calibration_cells_genuinely_fitted",
+            "observed": int(target["fitted_cells"]),
+            "threshold": int(target["required_fitted_cells"]),
+            "operator": "==",
+            "passed": bool(target["qualified"]),
+            "fallback_cells": int(target["fallback_cells"]),
+        }
+    ]
+    checks.extend(
+        {
+            "name": (
+                "target_calibration_cell_"
+                f"{str(cell['side']).lower()}_"
+                f"{int(cell['start_second'])}_{int(cell['end_second_exclusive'])}_"
+                "20_30c"
+            ),
+            "observed": bool(cell["passed"]),
+            "threshold": True,
+            "operator": "==",
+            "passed": bool(cell["passed"]),
+            "markets": int(cell["markets"]),
+            "utc_days": int(cell["utc_days"]),
+            "positives": int(cell["positives"]),
+            "negatives": int(cell["negatives"]),
+            "fallback": cell["fallback"],
+            "failure_reasons": list(cell["failure_reasons"]),
+        }
+        for cell in target["cells"]
+    )
+    return checks
 
 
 def _causal_feature_availability(
