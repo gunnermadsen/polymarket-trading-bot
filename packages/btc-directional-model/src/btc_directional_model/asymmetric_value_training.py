@@ -97,9 +97,7 @@ OFFLINE_ONLY_CANDIDATES = frozenset(
     }
 )
 
-MODEL_SELECTION_ELIGIBLE = frozenset(
-    {CORE_PRICE, CORE_ORACLE_PRICE, CORE_L2_PRICE}
-)
+MODEL_SELECTION_ELIGIBLE = frozenset({CORE_PRICE, CORE_ORACLE_PRICE, CORE_L2_PRICE})
 ORACLE_FEATURE_CANDIDATES = frozenset(
     {
         CORE_ORACLE_PRICE,
@@ -193,9 +191,7 @@ HYBRID_OBJECTIVE_CANDIDATES = (
 )
 
 HYBRID_SELECTION_ELIGIBLE = frozenset(
-    candidate.name
-    for candidate in HYBRID_OBJECTIVE_CANDIDATES
-    if candidate.selection_eligible
+    candidate.name for candidate in HYBRID_OBJECTIVE_CANDIDATES if candidate.selection_eligible
 )
 
 
@@ -266,6 +262,8 @@ class AsymmetricValueModel:
     model: FittedCoreModel
     time_calibrators: tuple[TimeBandCalibrator, ...]
     cells: tuple[AsymmetricCalibrationCell, ...]
+    parent_calibration_source: str = "alltime"
+    identity_l2_strength: float = 1.0
 
     def probability(self, frame: pl.DataFrame) -> np.ndarray:
         parent_yes = _time_calibrated_probability(
@@ -305,22 +303,14 @@ def asymmetric_value_feature_sets() -> dict[str, tuple[str, ...]]:
         CORE_PRICE: tuple(dict.fromkeys((*core, *price))),
         L2_MATCHED_CORE_PRICE_CONTROL: tuple(dict.fromkeys((*core, *price))),
         CORE_L2_PRICE: tuple(dict.fromkeys((*core, *L2_FEATURES, *price))),
-        CANDLE_MATCHED_CORE_PRICE_CONTROL: tuple(
-            dict.fromkeys((*core, *price))
-        ),
-        CORE_CANDLES_PRICE: tuple(
-            dict.fromkeys((*core, *CHAINLINK_CANDLE_FEATURES, *price))
-        ),
-        ORACLE_MATCHED_CORE_PRICE_CONTROL: tuple(
-            dict.fromkeys((*core, *price))
-        ),
+        CANDLE_MATCHED_CORE_PRICE_CONTROL: tuple(dict.fromkeys((*core, *price))),
+        CORE_CANDLES_PRICE: tuple(dict.fromkeys((*core, *CHAINLINK_CANDLE_FEATURES, *price))),
+        ORACLE_MATCHED_CORE_PRICE_CONTROL: tuple(dict.fromkeys((*core, *price))),
         CORE_ORACLE_PRICE: tuple(dict.fromkeys((*core, *oracle, *price))),
         THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL: tuple(
             dict.fromkeys((*core, *oracle, *price))
         ),
-        CORE_ORACLE_L2_PRICE: tuple(
-            dict.fromkeys((*core, *oracle, *L2_FEATURES, *price))
-        ),
+        CORE_ORACLE_L2_PRICE: tuple(dict.fromkeys((*core, *oracle, *L2_FEATURES, *price))),
     }
 
 
@@ -353,8 +343,7 @@ def fit_asymmetric_value_models(
     }
     if observed_matrix_counts != EXPECTED_MODEL_FEATURE_COUNTS:
         raise RuntimeError(
-            "asymmetric-value model matrix feature counts changed: "
-            f"{observed_matrix_counts}"
+            f"asymmetric-value model matrix feature counts changed: {observed_matrix_counts}"
         )
     target_fit_contract = target_fit_cohort_contract(config)
     target_fit_evidence: dict[str, dict[str, Any]] = {}
@@ -381,9 +370,7 @@ def fit_asymmetric_value_models(
         "target_fit_cohort": {
             "contract": target_fit_contract,
             "policy_inactive_feature_contract": (
-                _policy_inactive_feature_contract(
-                    target_fit_contract["maximum_entry_second"]
-                )
+                _policy_inactive_feature_contract(target_fit_contract["maximum_entry_second"])
             ),
         },
         "profiles": {},
@@ -411,20 +398,18 @@ def fit_asymmetric_value_models(
         policy_frame = _window(scoring_source, config.policy.start, config.policy.end)
         if any(item.is_empty() for item in (fit_frame, calibration_frame, policy_frame)):
             raise RuntimeError(f"{name} fit, calibration, and policy frames must be non-empty")
-        features, feature_availability, policy_inactive_features = (
-            _causal_feature_availability(
-                fit_frame,
-                feature_sets[name],
-                maximum_entry_second=target_fit_contract["maximum_entry_second"],
-            )
+        features, feature_availability, policy_inactive_features = _causal_feature_availability(
+            fit_frame,
+            feature_sets[name],
+            maximum_entry_second=target_fit_contract["maximum_entry_second"],
         )
         model_fit_frame = _impute_policy_inactive_features(
             fit_frame,
             policy_inactive_features,
         )
-        if name in ORACLE_FEATURE_CANDIDATES and not set(
-            EARLY_CAUSAL_ORACLE_FEATURES
-        ).issubset(features):
+        if name in ORACLE_FEATURE_CANDIDATES and not set(EARLY_CAUSAL_ORACLE_FEATURES).issubset(
+            features
+        ):
             raise RuntimeError(f"{name} lost its causal oracle feature contract")
         required_external = {
             CORE_L2_PRICE: set(L2_FEATURES),
@@ -442,11 +427,7 @@ def fit_asymmetric_value_models(
             model=name,
         )
         family = "logistic" if name == PRICE_LOGISTIC else "histogram"
-        parameters = (
-            {"c": core_config.model.c_candidates[0]}
-            if family == "logistic"
-            else histogram
-        )
+        parameters = {"c": core_config.model.c_candidates[0]} if family == "logistic" else histogram
         spec = CandidateSpec(
             name=name,
             family=family,
@@ -528,12 +509,8 @@ def fit_asymmetric_value_models(
             ],
             "side_price_time_calibration": {
                 "price_band_width": PRICE_BAND_WIDTH,
-                "minimum_markets_per_cell": (
-                    config.gates.minimum_calibration_markets_per_cell
-                ),
-                "minimum_utc_days_per_cell": (
-                    config.gates.minimum_calibration_days_per_cell
-                ),
+                "minimum_markets_per_cell": (config.gates.minimum_calibration_markets_per_cell),
+                "minimum_utc_days_per_cell": (config.gates.minimum_calibration_days_per_cell),
                 "identity_l2_strength": config.calibration_identity_l2,
                 "identity_l2_normalization": (
                     "market-equal time-band weight exposure per side/price cell"
@@ -549,15 +526,10 @@ def fit_asymmetric_value_models(
         {
             "candidate_evidence": target_fit_evidence,
             "key_sha256_by_candidate": {
-                name: evidence["key_sha256"]
-                for name, evidence in target_fit_evidence.items()
+                name: evidence["key_sha256"] for name, evidence in target_fit_evidence.items()
             },
-            "matched_control_key_checks": _matched_target_fit_key_checks(
-                target_fit_evidence
-            ),
-            "candidate_policy_inactive_feature_evidence": (
-                policy_inactive_evidence
-            ),
+            "matched_control_key_checks": _matched_target_fit_key_checks(target_fit_evidence),
+            "candidate_policy_inactive_feature_evidence": (policy_inactive_evidence),
         }
     )
     return models, summary
@@ -604,9 +576,7 @@ def select_target_fit_cohort(
     }
     missing = sorted(required - set(source_fit_frame.columns))
     if missing:
-        raise ValueError(
-            f"{model} target fit source is missing columns: " + ", ".join(missing)
-        )
+        raise ValueError(f"{model} target fit source is missing columns: " + ", ".join(missing))
     contract = target_fit_cohort_contract(config)
 
     def side_in_target_band(column: str) -> pl.Expr:
@@ -626,10 +596,7 @@ def select_target_fit_cohort(
             contract["maximum_entry_second"],
             closed="both",
         )
-        & (
-            side_in_target_band("yes_ask_vwap_5")
-            | side_in_target_band("no_ask_vwap_5")
-        )
+        & (side_in_target_band("yes_ask_vwap_5") | side_in_target_band("no_ask_vwap_5"))
     ).sort("window_start", "market_id", "seconds_elapsed", "observed_at")
     if selected.is_empty():
         raise RuntimeError(f"{model} target fit cohort is empty")
@@ -665,11 +632,7 @@ def hybrid_target_mask(
     maximum_price = float(contract["maximum_raw_share_price"])
 
     def side_in_band(values: np.ndarray) -> np.ndarray:
-        return (
-            np.isfinite(values)
-            & (values >= minimum_price)
-            & (values < maximum_price)
-        )
+        return np.isfinite(values) & (values >= minimum_price) & (values < maximum_price)
 
     return (
         (elapsed >= int(contract["minimum_entry_second"]))
@@ -686,11 +649,7 @@ def hybrid_market_equal_weights(
 ) -> np.ndarray:
     """Mix independently market-equal broad and target opportunity objectives."""
 
-    if (
-        not np.isfinite(target_weight)
-        or target_weight < 0.0
-        or target_weight > 1.0
-    ):
+    if not np.isfinite(target_weight) or target_weight < 0.0 or target_weight > 1.0:
         raise ValueError("hybrid target weight must be inside [0, 1]")
     if frame.is_empty():
         raise ValueError("hybrid objective frame must be non-empty")
@@ -750,15 +709,11 @@ def fit_hybrid_histogram_model(
     """Fit one frozen hybrid Core+L2 HGB configuration."""
 
     if candidate.histogram_profile not in HYBRID_HISTOGRAM_PROFILES:
-        raise ValueError(
-            f"unknown hybrid histogram profile: {candidate.histogram_profile}"
-        )
+        raise ValueError(f"unknown hybrid histogram profile: {candidate.histogram_profile}")
     required = {"market_id", "label_up", *feature_names}
     missing = sorted(required - set(frame.columns))
     if missing:
-        raise ValueError(
-            f"{candidate.name} hybrid fit frame is missing: " + ", ".join(missing)
-        )
+        raise ValueError(f"{candidate.name} hybrid fit frame is missing: " + ", ".join(missing))
     weights = hybrid_market_equal_weights(
         frame,
         config,
@@ -774,9 +729,7 @@ def fit_hybrid_histogram_model(
         raise RuntimeError(f"{candidate.name} hybrid fit requires both outcomes")
     medians = finite_medians(matrix)
     policy_inactive = tuple(
-        feature
-        for feature in TARGET_POLICY_INACTIVE_FEATURE_MATURITY
-        if feature in feature_names
+        feature for feature in TARGET_POLICY_INACTIVE_FEATURE_MATURITY if feature in feature_names
     )
     for feature in policy_inactive:
         medians[feature_names.index(feature)] = 0.0
@@ -819,13 +772,10 @@ def fit_hybrid_histogram_model(
             "histogram_profile": candidate.histogram_profile,
             "hyperparameters": parameters,
             "effective_fit_rows": int(effective.sum()),
-            "effective_fit_markets": frame.filter(pl.Series(effective))[
-                "market_id"
-            ].n_unique(),
+            "effective_fit_markets": frame.filter(pl.Series(effective))["market_id"].n_unique(),
             "optimizer_converged": bool(estimator.n_iter_ <= estimator.max_iter),
             "policy_inactive_feature_medians": {
-                feature: float(medians[feature_names.index(feature)])
-                for feature in policy_inactive
+                feature: float(medians[feature_names.index(feature)]) for feature in policy_inactive
             },
         }
     )
@@ -854,14 +804,11 @@ def _matched_target_fit_key_checks(
         control_evidence = evidence[control]
         matched = bool(
             candidate_evidence["target_rows"] == control_evidence["target_rows"]
-            and candidate_evidence["target_markets"]
-            == control_evidence["target_markets"]
+            and candidate_evidence["target_markets"] == control_evidence["target_markets"]
             and candidate_evidence["key_sha256"] == control_evidence["key_sha256"]
         )
         if not matched:
-            raise RuntimeError(
-                f"{candidate} target fit keys do not match control {control}"
-            )
+            raise RuntimeError(f"{candidate} target fit keys do not match control {control}")
         checks[candidate] = {
             "candidate": candidate,
             "control": control,
@@ -962,9 +909,7 @@ def target_calibration_evidence(
                 failure_reasons.append("optimizer_not_converged")
             if cell.objective is None or not np.isfinite(cell.objective):
                 failure_reasons.append("invalid_objective")
-            if cell.weighted_log_loss is None or not np.isfinite(
-                cell.weighted_log_loss
-            ):
+            if cell.weighted_log_loss is None or not np.isfinite(cell.weighted_log_loss):
                 failure_reasons.append("invalid_weighted_log_loss")
             evidence.append(
                 {
@@ -995,12 +940,8 @@ def target_calibration_evidence(
         "required_fitted_cells": target.required_fitted_cells,
         "fitted_cells": fitted_cells,
         "fallback_cells": len(evidence) - fitted_cells,
-        "minimum_markets_per_cell": (
-            config.gates.minimum_calibration_markets_per_cell
-        ),
-        "minimum_utc_days_per_cell": (
-            config.gates.minimum_calibration_days_per_cell
-        ),
+        "minimum_markets_per_cell": (config.gates.minimum_calibration_markets_per_cell),
+        "minimum_utc_days_per_cell": (config.gates.minimum_calibration_days_per_cell),
         "both_outcomes_required": True,
         "cells": evidence,
     }
@@ -1066,12 +1007,8 @@ def _causal_feature_availability(
         raise RuntimeError(
             "asymmetric-value earliest feature audit is missing: " + ", ".join(missing)
         )
-    earliest_matrix = earliest.select(
-        pl.col(list(candidates)).cast(pl.Float64)
-    ).to_numpy()
-    fit_matrix = fit_frame.select(
-        pl.col(list(candidates)).cast(pl.Float64)
-    ).to_numpy()
+    earliest_matrix = earliest.select(pl.col(list(candidates)).cast(pl.Float64)).to_numpy()
+    fit_matrix = fit_frame.select(pl.col(list(candidates)).cast(pl.Float64)).to_numpy()
     earliest_fractions = np.isfinite(earliest_matrix).mean(axis=0)
     fit_fractions = np.isfinite(fit_matrix).mean(axis=0)
     availability = {
@@ -1091,17 +1028,13 @@ def _causal_feature_availability(
         )
     }
     unavailable = tuple(
-        feature
-        for feature in candidates
-        if availability[feature]["fit_finite_fraction"] <= 0.0
+        feature for feature in candidates if availability[feature]["fit_finite_fraction"] <= 0.0
     )
     unexpected_unavailable = tuple(
         feature
         for feature in unavailable
         if feature not in TARGET_POLICY_INACTIVE_FEATURE_MATURITY
-        or TARGET_POLICY_INACTIVE_FEATURE_MATURITY[
-            feature
-        ].first_available_second
+        or TARGET_POLICY_INACTIVE_FEATURE_MATURITY[feature].first_available_second
         <= maximum_entry_second
     )
     if unexpected_unavailable:
@@ -1129,9 +1062,7 @@ def _policy_inactive_feature_contract(
     return {
         "scope": "asymmetric_value_target_fit_and_runtime_target_rows",
         "maximum_entry_second": maximum_entry_second,
-        "eligibility_rule": (
-            "first_available_second_strictly_greater_than_maximum_entry_second"
-        ),
+        "eligibility_rule": ("first_available_second_strictly_greater_than_maximum_entry_second"),
         "imputation_strategy": POLICY_INACTIVE_IMPUTATION_STRATEGY,
         "imputation_value": 0.0,
         "feature_maturity": {
@@ -1149,9 +1080,7 @@ def _impute_policy_inactive_features(
         return fit_frame
     missing = sorted(set(features) - set(fit_frame.columns))
     if missing:
-        raise RuntimeError(
-            "policy-inactive target fit features are missing: " + ", ".join(missing)
-        )
+        raise RuntimeError("policy-inactive target fit features are missing: " + ", ".join(missing))
     matrix = fit_frame.select(pl.col(list(features)).cast(pl.Float64)).to_numpy()
     unexpectedly_finite = tuple(
         feature
@@ -1174,24 +1103,16 @@ def _policy_inactive_model_evidence(
 ) -> dict[str, Any]:
     missing = tuple(feature for feature in features if feature not in fitted.feature_names)
     if missing:
-        raise RuntimeError(
-            "fitted model lost policy-inactive features: " + ", ".join(missing)
-        )
+        raise RuntimeError("fitted model lost policy-inactive features: " + ", ".join(missing))
     medians = {
-        feature: float(
-            fitted.imputation_medians[fitted.feature_names.index(feature)]
-        )
+        feature: float(fitted.imputation_medians[fitted.feature_names.index(feature)])
         for feature in features
     }
     invalid = tuple(
-        feature
-        for feature, median in medians.items()
-        if not np.isfinite(median) or median != 0.0
+        feature for feature, median in medians.items() if not np.isfinite(median) or median != 0.0
     )
     if invalid:
-        raise RuntimeError(
-            "policy-inactive fitted medians must be zero: " + ", ".join(invalid)
-        )
+        raise RuntimeError("policy-inactive fitted medians must be zero: " + ", ".join(invalid))
     return {
         "features": list(features),
         "feature_count": len(features),
@@ -1209,49 +1130,99 @@ def fit_asymmetric_time_band_calibrators(
     config: AsymmetricValueConfig,
     *,
     core_config: CoreTrainingConfig,
+    parent_source: str = "alltime",
 ) -> tuple[TimeBandCalibrator, ...]:
     """Fit parent Platt scaling with market equality local to each time band."""
 
+    if parent_source not in {"alltime", "targetpool"}:
+        raise ValueError("unsupported asymmetric parent calibration source")
     logits = model.raw_logit(frame)
     labels = frame["label_up"].to_numpy()
     elapsed = frame["seconds_elapsed"].to_numpy()
     market_ids = frame["market_id"].cast(pl.String).to_numpy()
+    pooled: tuple[ProbabilityCalibrator, int, int] | None = None
+    if parent_source == "targetpool":
+        if config.decision_quality is None:
+            raise ValueError("targetpool calibration requires decision-quality config")
+        target_selected = hybrid_target_mask(frame, config)
+        pooled_markets = int(np.unique(market_ids[target_selected]).size)
+        if pooled_markets < config.decision_quality.gates.minimum_targetpool_markets:
+            raise RuntimeError("targetpool calibration lacks the required market support")
+        pooled = (
+            _fit_parent_probability_calibrator(
+                logits[target_selected],
+                labels[target_selected],
+                market_ids[target_selected],
+                random_seed=config.random_seed,
+                threads=core_config.compute.threads_per_fit,
+            ),
+            int(target_selected.sum()),
+            pooled_markets,
+        )
     fitted: list[TimeBandCalibrator] = []
     for start, end in config.calibration_bands:
         selected = (elapsed >= start) & (elapsed < end)
         if selected.sum() < 20 or np.unique(labels[selected]).size != 2:
-            raise RuntimeError(
-                f"calibration band {start}-{end} lacks two-class evidence"
-            )
-        weights = _market_equal_weights_for_ids(market_ids[selected])
-        estimator = LogisticRegression(
-            C=1_000_000,
-            solver="lbfgs",
-            max_iter=500,
-            tol=1e-9,
-            random_state=config.random_seed,
-        )
-        with threadpool_limits(limits=core_config.compute.threads_per_fit):
-            estimator.fit(
-                logits[selected].reshape(-1, 1),
+            raise RuntimeError(f"calibration band {start}-{end} lacks two-class evidence")
+        if parent_source == "targetpool" and end <= 60:
+            if pooled is None:
+                raise RuntimeError("targetpool parent calibration was not fitted")
+            calibrator, rows, markets = pooled
+        else:
+            calibrator = _fit_parent_probability_calibrator(
+                logits[selected],
                 labels[selected],
-                sample_weight=weights,
+                market_ids[selected],
+                random_seed=config.random_seed,
+                threads=core_config.compute.threads_per_fit,
             )
+            rows = int(selected.sum())
+            markets = int(np.unique(market_ids[selected]).size)
         fitted.append(
             TimeBandCalibrator(
                 start_second=start,
                 end_second_exclusive=end,
-                calibrator=ProbabilityCalibrator(
-                    slope=float(estimator.coef_[0, 0]),
-                    intercept=float(estimator.intercept_[0]),
-                    converged=bool(estimator.n_iter_[0] < estimator.max_iter),
-                    iterations=int(estimator.n_iter_[0]),
-                ),
-                rows=int(selected.sum()),
-                markets=int(np.unique(market_ids[selected]).size),
+                calibrator=calibrator,
+                rows=rows,
+                markets=markets,
             )
         )
     return tuple(fitted)
+
+
+def _fit_parent_probability_calibrator(
+    logits: np.ndarray,
+    labels: np.ndarray,
+    market_ids: np.ndarray,
+    *,
+    random_seed: int,
+    threads: int,
+) -> ProbabilityCalibrator:
+    if logits.size < 20 or np.unique(labels).size != 2:
+        raise RuntimeError("parent calibration lacks two-class evidence")
+    weights = _market_equal_weights_for_ids(market_ids)
+    estimator = LogisticRegression(
+        C=1_000_000,
+        solver="lbfgs",
+        max_iter=500,
+        tol=1e-9,
+        random_state=random_seed,
+    )
+    with threadpool_limits(limits=threads):
+        estimator.fit(
+            logits.reshape(-1, 1),
+            labels,
+            sample_weight=weights,
+        )
+    calibrator = ProbabilityCalibrator(
+        slope=float(estimator.coef_[0, 0]),
+        intercept=float(estimator.intercept_[0]),
+        converged=bool(estimator.n_iter_[0] < estimator.max_iter),
+        iterations=int(estimator.n_iter_[0]),
+    )
+    if not calibrator.converged or calibrator.slope <= 0.0:
+        raise RuntimeError("parent calibration must converge with a positive slope")
+    return calibrator
 
 
 def fit_side_price_time_calibrators(
@@ -1259,9 +1230,32 @@ def fit_side_price_time_calibrators(
     time_calibrators: tuple[TimeBandCalibrator, ...],
     frame: pl.DataFrame,
     config: AsymmetricValueConfig,
+    *,
+    identity_l2_strength: float | None = None,
+    slope_bounds: tuple[float | None, float | None] = (0.0, None),
+    intercept_bounds: tuple[float | None, float | None] = (None, None),
 ) -> tuple[AsymmetricCalibrationCell, ...]:
     """Fit coherent monotone side/price corrections by causal time band."""
 
+    identity_l2 = (
+        config.calibration_identity_l2 if identity_l2_strength is None else identity_l2_strength
+    )
+    if not np.isfinite(identity_l2) or identity_l2 <= 0.0:
+        raise ValueError("side calibration identity L2 must be finite and positive")
+    slope_min, slope_max = slope_bounds
+    intercept_min, intercept_max = intercept_bounds
+    if (
+        slope_min is None
+        or not np.isfinite(slope_min)
+        or slope_min < 0.0
+        or (slope_max is not None and slope_min >= slope_max)
+        or (
+            intercept_min is not None
+            and intercept_max is not None
+            and intercept_min >= intercept_max
+        )
+    ):
+        raise ValueError("side calibration parameter bounds are invalid")
     parent_yes = _time_calibrated_probability(
         model,
         time_calibrators,
@@ -1273,17 +1267,11 @@ def fit_side_price_time_calibrators(
     utc_days = frame["window_start"].dt.date().cast(pl.String).to_numpy()
     labels_yes = frame["label_up"].to_numpy().astype(np.int8)
     parent_logit = _logit(parent_yes)
-    yes_price_indices = _price_band_indices(
-        frame["yes_ask_vwap_5"].to_numpy()
-    )
-    no_price_indices = _price_band_indices(
-        frame["no_ask_vwap_5"].to_numpy()
-    )
+    yes_price_indices = _price_band_indices(frame["yes_ask_vwap_5"].to_numpy())
+    no_price_indices = _price_band_indices(frame["no_ask_vwap_5"].to_numpy())
     fitted: list[AsymmetricCalibrationCell] = []
     for time_band in time_calibrators:
-        time_mask = (elapsed >= time_band.start_second) & (
-            elapsed < time_band.end_second_exclusive
-        )
+        time_mask = (elapsed >= time_band.start_second) & (elapsed < time_band.end_second_exclusive)
         band_logit = parent_logit[time_mask]
         band_labels = labels_yes[time_mask]
         band_ids = market_ids[time_mask]
@@ -1297,12 +1285,8 @@ def fit_side_price_time_calibrators(
             minimum_price = price_index * PRICE_BAND_WIDTH
             maximum_price = (price_index + 1) * PRICE_BAND_WIDTH
             for side_index, side in enumerate(("YES", "NO")):
-                price_indices = (
-                    band_yes_prices if side == "YES" else band_no_prices
-                )
-                cell_labels = (
-                    band_labels if side == "YES" else 1 - band_labels
-                )
+                price_indices = band_yes_prices if side == "YES" else band_no_prices
+                cell_labels = band_labels if side == "YES" else 1 - band_labels
                 selected = price_indices == price_index
                 selected_labels = cell_labels[selected]
                 cell_ids = band_ids[selected]
@@ -1348,12 +1332,7 @@ def fit_side_price_time_calibrators(
                 [
                     np.sum(
                         band_weights[
-                            (
-                                band_yes_prices
-                                if side_index == 0
-                                else band_no_prices
-                            )
-                            == price_index
+                            (band_yes_prices if side_index == 0 else band_no_prices) == price_index
                         ]
                     )
                     for price_index, side_index in active_keys
@@ -1375,14 +1354,12 @@ def fit_side_price_time_calibrators(
                     band_no_prices,
                     tuple(active_keys),
                     penalty_weights,
-                    config.calibration_identity_l2,
+                    identity_l2,
                 ),
                 method="L-BFGS-B",
                 jac=True,
                 bounds=tuple(
-                    bound
-                    for _ in active_keys
-                    for bound in ((0.0, None), (None, None))
+                    bound for _ in active_keys for bound in (slope_bounds, intercept_bounds)
                 ),
                 options={
                     "maxiter": 500,
@@ -1394,7 +1371,8 @@ def fit_side_price_time_calibrators(
             optimizer_valid = bool(
                 result.success
                 and np.isfinite(result.x).all()
-                and np.all(result.x[0::2] >= 0.0)
+                and np.all(result.x[0::2] >= slope_min)
+                and (slope_max is None or np.all(result.x[0::2] <= slope_max))
             )
             if optimizer_valid:
                 for offset, key in enumerate(active_keys):
@@ -1423,7 +1401,7 @@ def fit_side_price_time_calibrators(
                         record["days"],
                         record["positives"],
                         record["negatives"],
-                        config.calibration_identity_l2,
+                        identity_l2,
                         fallback or "optimizer_not_converged",
                     )
                 )
@@ -1440,10 +1418,7 @@ def fit_side_price_time_calibrators(
             weighted_loss = float(
                 -np.sum(
                     weights
-                    * (
-                        cell_labels * np.log(clipped)
-                        + (1.0 - cell_labels) * np.log(1.0 - clipped)
-                    )
+                    * (cell_labels * np.log(clipped) + (1.0 - cell_labels) * np.log(1.0 - clipped))
                 )
             )
             fitted.append(
@@ -1462,7 +1437,7 @@ def fit_side_price_time_calibrators(
                     utc_days=record["days"],
                     positives=record["positives"],
                     negatives=record["negatives"],
-                    identity_l2_strength=config.calibration_identity_l2,
+                    identity_l2_strength=identity_l2,
                     converged=True,
                     iterations=int(result.nit) if result is not None else 0,
                     objective=float(result.fun) if result is not None else None,
@@ -1522,9 +1497,7 @@ def _time_calibrated_probability(
     elapsed = frame["seconds_elapsed"].to_numpy()
     output = np.full(frame.height, np.nan, dtype=np.float64)
     for band in calibrators:
-        selected = (elapsed >= band.start_second) & (
-            elapsed < band.end_second_exclusive
-        )
+        selected = (elapsed >= band.start_second) & (elapsed < band.end_second_exclusive)
         output[selected] = band.calibrator.probability(logits[selected])
     if not np.isfinite(output).all():
         raise RuntimeError(f"{model_name} time calibration does not cover all rows")
@@ -1537,9 +1510,7 @@ def _time_band_indices(
 ) -> np.ndarray:
     indices = np.full(len(elapsed), -1, dtype=np.int16)
     for index, band in enumerate(calibrators):
-        selected = (elapsed >= band.start_second) & (
-            elapsed < band.end_second_exclusive
-        )
+        selected = (elapsed >= band.start_second) & (elapsed < band.end_second_exclusive)
         indices[selected] = index
     if np.any(indices < 0):
         raise RuntimeError("time calibration indices do not cover the prediction frame")
@@ -1591,14 +1562,8 @@ def _coherent_probability_from_parameters(
     slopes: np.ndarray,
     intercepts: np.ndarray,
 ) -> np.ndarray:
-    yes_eta = (
-        parent_logit * slopes[yes_price_indices, 0]
-        + intercepts[yes_price_indices, 0]
-    )
-    no_eta = (
-        -parent_logit * slopes[no_price_indices, 1]
-        + intercepts[no_price_indices, 1]
-    )
+    yes_eta = parent_logit * slopes[yes_price_indices, 0] + intercepts[yes_price_indices, 0]
+    no_eta = -parent_logit * slopes[no_price_indices, 1] + intercepts[no_price_indices, 1]
     return _sigmoid(0.5 * (yes_eta - no_eta))
 
 
@@ -1618,42 +1583,28 @@ def _coherent_calibration_objective(
     for offset, key in enumerate(active_keys):
         slopes[key] = parameters[2 * offset]
         intercepts[key] = parameters[2 * offset + 1]
-    yes_eta = (
-        parent_logit * slopes[yes_price_indices, 0]
-        + intercepts[yes_price_indices, 0]
-    )
-    no_eta = (
-        -parent_logit * slopes[no_price_indices, 1]
-        + intercepts[no_price_indices, 1]
-    )
+    yes_eta = parent_logit * slopes[yes_price_indices, 0] + intercepts[yes_price_indices, 0]
+    no_eta = -parent_logit * slopes[no_price_indices, 1] + intercepts[no_price_indices, 1]
     eta = 0.5 * (yes_eta - no_eta)
     weighted_loss = np.sum(weights * (np.logaddexp(0.0, eta) - labels * eta))
     delta = parameters.copy()
     delta[0::2] -= 1.0
     parameter_penalty_weights = np.repeat(penalty_weights, 2)
-    penalty = 0.5 * identity_l2_strength * float(
-        (parameter_penalty_weights * delta) @ delta
-    )
+    penalty = 0.5 * identity_l2_strength * float((parameter_penalty_weights * delta) @ delta)
     error = weights * (_sigmoid(eta) - labels)
     gradient = np.empty_like(parameters)
     for offset, (price_index, side_index) in enumerate(active_keys):
         selected = (
-            yes_price_indices == price_index
-            if side_index == 0
-            else no_price_indices == price_index
+            yes_price_indices == price_index if side_index == 0 else no_price_indices == price_index
         )
         intercept_sign = 1.0 if side_index == 0 else -1.0
         gradient[2 * offset] = (
             np.sum(error[selected] * 0.5 * parent_logit[selected])
-            + identity_l2_strength
-            * penalty_weights[offset]
-            * delta[2 * offset]
+            + identity_l2_strength * penalty_weights[offset] * delta[2 * offset]
         )
         gradient[2 * offset + 1] = (
             np.sum(error[selected] * 0.5 * intercept_sign)
-            + identity_l2_strength
-            * penalty_weights[offset]
-            * delta[2 * offset + 1]
+            + identity_l2_strength * penalty_weights[offset] * delta[2 * offset + 1]
         )
     return float(weighted_loss + penalty), gradient
 
@@ -1676,9 +1627,7 @@ def _calibration_coverage(
 ) -> list[dict[str, int]]:
     coverage: list[dict[str, int]] = []
     for start, end in config.calibration_bands:
-        band = frame.filter(
-            pl.col("seconds_elapsed").is_between(start, end, closed="left")
-        )
+        band = frame.filter(pl.col("seconds_elapsed").is_between(start, end, closed="left"))
         markets = band["market_id"].n_unique()
         coverage.append(
             {
@@ -1728,36 +1677,36 @@ def asymmetric_probability_frame(
         "no_ask_vwap_10",
         "strict_both_side_eligible_10",
     )
-    capacity_columns = [
-        column
-        for column in expected_capacity_columns
-        if column in frame.columns
-    ]
+    capacity_columns = [column for column in expected_capacity_columns if column in frame.columns]
     if capacity_columns and len(capacity_columns) != len(expected_capacity_columns):
         raise RuntimeError("asymmetric probability frame has incomplete VWAP10 evidence")
-    return frame.select(
-        "market_id",
-        "window_start",
-        "observed_at",
-        "seconds_elapsed",
-        "label_up",
-        "fee_rate",
-        "yes_best_ask",
-        "yes_ask_vwap_5",
-        "yes_ask_depth",
-        "no_best_ask",
-        "no_ask_vwap_5",
-        "no_ask_depth",
-        *capacity_columns,
-        "yes_cost_per_share",
-        "no_cost_per_share",
-        "yes_execution_cost_per_share",
-        "no_execution_cost_per_share",
-    ).with_columns(
-        pl.lit(model).alias("model"),
-        pl.Series("probability_yes", probability_yes),
-    ).with_columns(
-        (1.0 - pl.col("probability_yes")).alias("probability_no"),
+    return (
+        frame.select(
+            "market_id",
+            "window_start",
+            "observed_at",
+            "seconds_elapsed",
+            "label_up",
+            "fee_rate",
+            "yes_best_ask",
+            "yes_ask_vwap_5",
+            "yes_ask_depth",
+            "no_best_ask",
+            "no_ask_vwap_5",
+            "no_ask_depth",
+            *capacity_columns,
+            "yes_cost_per_share",
+            "no_cost_per_share",
+            "yes_execution_cost_per_share",
+            "no_execution_cost_per_share",
+        )
+        .with_columns(
+            pl.lit(model).alias("model"),
+            pl.Series("probability_yes", probability_yes),
+        )
+        .with_columns(
+            (1.0 - pl.col("probability_yes")).alias("probability_no"),
+        )
     )
 
 

@@ -13,8 +13,19 @@ from .core_config import CORE_SOURCE_CONTRACT, load_core_config, parse_utc_day
 
 LEGACY_TRAINING_CONTRACT = "legacy_four_window"
 TARGET_CALIBRATED_TRAINING_CONTRACT = "early_price_target_calibrated"
+HYBRID_DECISION_QUALITY_TRAINING_CONTRACT = "hybrid_decision_quality"
 SUPPORTED_TRAINING_CONTRACTS = frozenset(
-    {LEGACY_TRAINING_CONTRACT, TARGET_CALIBRATED_TRAINING_CONTRACT}
+    {
+        LEGACY_TRAINING_CONTRACT,
+        TARGET_CALIBRATED_TRAINING_CONTRACT,
+        HYBRID_DECISION_QUALITY_TRAINING_CONTRACT,
+    }
+)
+TARGET_POLICY_TRAINING_CONTRACTS = frozenset(
+    {
+        TARGET_CALIBRATED_TRAINING_CONTRACT,
+        HYBRID_DECISION_QUALITY_TRAINING_CONTRACT,
+    }
 )
 
 
@@ -77,6 +88,67 @@ class TargetCalibrationContract:
 
 
 @dataclass(frozen=True)
+class DecisionQualityFold:
+    name: str
+    fit: EvidenceWindow
+    calibration: EvidenceWindow
+    validation: EvidenceWindow
+
+
+@dataclass(frozen=True)
+class DecisionQualityHistogramProfile:
+    name: str
+    learning_rate: float
+    max_iter: int
+    max_leaf_nodes: int
+    min_samples_leaf: int
+    l2_regularization: float
+
+
+@dataclass(frozen=True)
+class DecisionQualityCandidate:
+    name: str
+    target_weight: float
+    histogram_profile: str
+    selection_eligible: bool
+
+
+@dataclass(frozen=True)
+class DecisionQualityCalibrationVariant:
+    parent_source: str
+    identity_l2: float
+
+    @property
+    def name(self) -> str:
+        rendered_l2 = str(self.identity_l2).replace(".", "_")
+        return f"{self.parent_source}_l2_{rendered_l2}"
+
+
+@dataclass(frozen=True)
+class DecisionQualityGates:
+    maximum_overall_bias: float
+    maximum_side_bias: float
+    maximum_cell_bias: float
+    maximum_ece: float
+    maximum_proper_score_noninferiority: float
+    minimum_targetpool_markets: int
+    minimum_noninferior_folds: int
+
+
+@dataclass(frozen=True)
+class DecisionQualityContract:
+    folds: tuple[DecisionQualityFold, ...]
+    final_fit: EvidenceWindow
+    final_calibration: EvidenceWindow
+    histogram_profiles: tuple[DecisionQualityHistogramProfile, ...]
+    candidates: tuple[DecisionQualityCandidate, ...]
+    calibration_variants: tuple[DecisionQualityCalibrationVariant, ...]
+    gates: DecisionQualityGates
+    price_strata: tuple[tuple[float, float], ...]
+    time_strata: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True)
 class AsymmetricValueConfig:
     source_path: Path
     package_root: Path
@@ -100,6 +172,7 @@ class AsymmetricValueConfig:
     bootstrap_resamples: int
     calibration_identity_l2: float
     target_calibration: TargetCalibrationContract | None
+    decision_quality: DecisionQualityContract | None
     core_config: Path
     oracle_source: Path
     l2_source: Path
@@ -175,6 +248,80 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
             required_fitted_cells=int(target_raw["required_fitted_cells"]),
         )
         if target_raw is not None
+        else None
+    )
+    decision_raw = model.get("decision_quality")
+
+    def evidence_window(values: dict[str, object]) -> EvidenceWindow:
+        return EvidenceWindow(
+            start=parse_utc_day(values["start"]),
+            end=parse_utc_day(values["end"]),
+        )
+
+    decision_quality = (
+        DecisionQualityContract(
+            folds=tuple(
+                DecisionQualityFold(
+                    name=str(values["name"]),
+                    fit=evidence_window(values["fit"]),
+                    calibration=evidence_window(values["calibration"]),
+                    validation=evidence_window(values["validation"]),
+                )
+                for values in decision_raw["folds"]
+            ),
+            final_fit=evidence_window(decision_raw["final_fit"]),
+            final_calibration=evidence_window(decision_raw["final_calibration"]),
+            histogram_profiles=tuple(
+                DecisionQualityHistogramProfile(
+                    name=str(values["name"]),
+                    learning_rate=float(values["learning_rate"]),
+                    max_iter=int(values["max_iter"]),
+                    max_leaf_nodes=int(values["max_leaf_nodes"]),
+                    min_samples_leaf=int(values["min_samples_leaf"]),
+                    l2_regularization=float(values["l2_regularization"]),
+                )
+                for values in decision_raw["histogram_profiles"]
+            ),
+            candidates=tuple(
+                DecisionQualityCandidate(
+                    name=str(values["name"]),
+                    target_weight=float(values["target_weight"]),
+                    histogram_profile=str(values["histogram_profile"]),
+                    selection_eligible=bool(values["selection_eligible"]),
+                )
+                for values in decision_raw["candidates"]
+            ),
+            calibration_variants=tuple(
+                DecisionQualityCalibrationVariant(
+                    parent_source=str(values["parent_source"]),
+                    identity_l2=float(values["identity_l2"]),
+                )
+                for values in decision_raw["calibration_variants"]
+            ),
+            gates=DecisionQualityGates(
+                maximum_overall_bias=float(decision_raw["gates"]["maximum_overall_bias"]),
+                maximum_side_bias=float(decision_raw["gates"]["maximum_side_bias"]),
+                maximum_cell_bias=float(decision_raw["gates"]["maximum_cell_bias"]),
+                maximum_ece=float(decision_raw["gates"]["maximum_ece"]),
+                maximum_proper_score_noninferiority=float(
+                    decision_raw["gates"]["maximum_proper_score_noninferiority"]
+                ),
+                minimum_targetpool_markets=int(decision_raw["gates"]["minimum_targetpool_markets"]),
+                minimum_noninferior_folds=int(decision_raw["gates"]["minimum_noninferior_folds"]),
+            ),
+            price_strata=tuple(
+                (float(values["minimum"]), float(values["maximum"]))
+                for values in decision_raw["price_strata"]
+            ),
+            time_strata=tuple(
+                (
+                    int(values["start_second"]),
+                    int(values["end_second_exclusive"]),
+                )
+                for values in decision_raw["time_strata"]
+            ),
+        )
+        if decision_raw is not None
         else None
     )
     paths = raw["paths"]
@@ -257,6 +404,7 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
         bootstrap_resamples=int(model["bootstrap_resamples"]),
         calibration_identity_l2=float(model["calibration_identity_l2"]),
         target_calibration=target_calibration,
+        decision_quality=decision_quality,
         core_config=package_root / str(paths["core_config"]),
         oracle_source=package_root / str(paths["oracle_source"]),
         l2_source=package_root / str(paths["l2_source"]),
@@ -335,7 +483,7 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
         raise ValueError(
             "asymmetric-value calibration bands must preserve the causal time contract"
         )
-    if config.training_contract == TARGET_CALIBRATED_TRAINING_CONTRACT:
+    if config.training_contract in TARGET_POLICY_TRAINING_CONTRACTS:
         target = config.target_calibration
         if target is None:
             raise ValueError("target-calibrated training requires a target-cell contract")
@@ -384,7 +532,7 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
             raise ValueError("policy costs must remain inside the lower-price loss ceiling")
         if not math.isfinite(policy.minimum_edge_per_share) or policy.minimum_edge_per_share <= 0:
             raise ValueError("policy minimum edge must be finite and positive")
-    if config.training_contract == TARGET_CALIBRATED_TRAINING_CONTRACT:
+    if config.training_contract in TARGET_POLICY_TRAINING_CONTRACTS:
         primary = next(policy for policy in config.policies if policy.selection_eligible)
         if (
             primary.maximum_entry_second != 55
@@ -416,7 +564,7 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
         raise ValueError(
             "asymmetric-value calibration-cell day support exceeds the calibration window"
         )
-    if config.training_contract == TARGET_CALIBRATED_TRAINING_CONTRACT and (
+    if config.training_contract in TARGET_POLICY_TRAINING_CONTRACTS and (
         gates.minimum_calibration_markets_per_cell < 50
         or gates.minimum_calibration_days_per_cell < 5
     ):
@@ -476,7 +624,7 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
         raise FileNotFoundError(
             "required asymmetric-value evidence is missing: " + ", ".join(missing)
         )
-    if config.training_contract == TARGET_CALIBRATED_TRAINING_CONTRACT:
+    if config.training_contract in TARGET_POLICY_TRAINING_CONTRACTS:
         core = load_core_config(config.core_config)
         if core.data.source_contract != CORE_SOURCE_CONTRACT:
             raise ValueError("target-calibrated training must use the base causal Core source")
@@ -484,3 +632,158 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
             raise ValueError(
                 "target-calibrated base Core and Oracle sources require distinct caches"
             )
+    if config.training_contract == HYBRID_DECISION_QUALITY_TRAINING_CONTRACT:
+        _validate_decision_quality_contract(config)
+    elif config.decision_quality is not None:
+        raise ValueError("decision-quality configuration requires the hybrid training contract")
+
+
+def _validate_decision_quality_contract(config: AsymmetricValueConfig) -> None:
+    contract = config.decision_quality
+    if contract is None:
+        raise ValueError("hybrid decision-quality training requires its frozen contract")
+
+    def rendered(window: EvidenceWindow) -> tuple[str, str]:
+        return window.start.isoformat(), window.end.isoformat()
+
+    expected_folds = (
+        (
+            "jun11_jun18",
+            ("2026-04-14T00:00:00+00:00", "2026-06-04T00:00:00+00:00"),
+            ("2026-06-04T00:00:00+00:00", "2026-06-11T00:00:00+00:00"),
+            ("2026-06-11T00:00:00+00:00", "2026-06-18T00:00:00+00:00"),
+        ),
+        (
+            "jun18_jun25",
+            ("2026-04-14T00:00:00+00:00", "2026-06-11T00:00:00+00:00"),
+            ("2026-06-11T00:00:00+00:00", "2026-06-18T00:00:00+00:00"),
+            ("2026-06-18T00:00:00+00:00", "2026-06-25T00:00:00+00:00"),
+        ),
+        (
+            "jun25_jul02",
+            ("2026-04-14T00:00:00+00:00", "2026-06-18T00:00:00+00:00"),
+            ("2026-06-18T00:00:00+00:00", "2026-06-25T00:00:00+00:00"),
+            ("2026-06-25T00:00:00+00:00", "2026-07-02T00:00:00+00:00"),
+        ),
+        (
+            "jul02_jul09",
+            ("2026-04-14T00:00:00+00:00", "2026-06-25T00:00:00+00:00"),
+            ("2026-06-25T00:00:00+00:00", "2026-07-02T00:00:00+00:00"),
+            ("2026-07-02T00:00:00+00:00", "2026-07-09T00:00:00+00:00"),
+        ),
+        (
+            "jul09_jul16",
+            ("2026-04-14T00:00:00+00:00", "2026-07-02T00:00:00+00:00"),
+            ("2026-07-02T00:00:00+00:00", "2026-07-09T00:00:00+00:00"),
+            ("2026-07-09T00:00:00+00:00", "2026-07-16T00:00:00+00:00"),
+        ),
+    )
+    observed_folds = tuple(
+        (
+            fold.name,
+            rendered(fold.fit),
+            rendered(fold.calibration),
+            rendered(fold.validation),
+        )
+        for fold in contract.folds
+    )
+    if observed_folds != expected_folds:
+        raise ValueError("decision-quality walk-forward folds changed")
+    for fold in contract.folds:
+        if not (
+            fold.fit.start < fold.fit.end
+            and fold.fit.end == fold.calibration.start
+            and fold.calibration.start < fold.calibration.end
+            and fold.calibration.end == fold.validation.start
+            and fold.validation.start < fold.validation.end
+        ):
+            raise ValueError("decision-quality folds must be causal and contiguous")
+    if rendered(contract.final_fit) != (
+        "2026-04-14T00:00:00+00:00",
+        "2026-07-23T00:00:00+00:00",
+    ) or rendered(contract.final_calibration) != (
+        "2026-07-23T00:00:00+00:00",
+        "2026-08-02T00:00:00+00:00",
+    ):
+        raise ValueError("decision-quality final fit/calibration chronology changed")
+
+    expected_profiles = (
+        ("h0_current", 0.05, 160, 15, 100, 0.10),
+        ("h1_regularized", 0.03, 180, 7, 200, 2.0),
+        ("h2_regularized", 0.03, 200, 15, 250, 5.0),
+        ("h3_regularized", 0.02, 240, 7, 300, 10.0),
+    )
+    observed_profiles = tuple(
+        (
+            item.name,
+            item.learning_rate,
+            item.max_iter,
+            item.max_leaf_nodes,
+            item.min_samples_leaf,
+            item.l2_regularization,
+        )
+        for item in contract.histogram_profiles
+    )
+    if observed_profiles != expected_profiles:
+        raise ValueError("decision-quality HGB profiles changed")
+    expected_candidates = (
+        ("broad_current", 0.0, "h0_current", False),
+        ("target_only_current", 1.0, "h0_current", False),
+        ("hybrid_50_current", 0.50, "h0_current", False),
+        ("broad_regularized", 0.0, "h2_regularized", False),
+        ("hybrid_25_h1", 0.25, "h1_regularized", True),
+        ("hybrid_25_h2", 0.25, "h2_regularized", True),
+        ("hybrid_25_h3", 0.25, "h3_regularized", True),
+        ("hybrid_50_h1", 0.50, "h1_regularized", True),
+        ("hybrid_50_h2", 0.50, "h2_regularized", True),
+        ("hybrid_50_h3", 0.50, "h3_regularized", True),
+    )
+    observed_candidates = tuple(
+        (
+            item.name,
+            item.target_weight,
+            item.histogram_profile,
+            item.selection_eligible,
+        )
+        for item in contract.candidates
+    )
+    if observed_candidates != expected_candidates:
+        raise ValueError("decision-quality candidate matrix changed")
+    if len({item.name for item in contract.candidates}) != len(contract.candidates):
+        raise ValueError("decision-quality candidate names must be unique")
+    if not all(
+        item.histogram_profile in {profile.name for profile in contract.histogram_profiles}
+        for item in contract.candidates
+    ):
+        raise ValueError("decision-quality candidate references an unknown HGB profile")
+
+    expected_variants = (
+        ("alltime", 0.05),
+        ("alltime", 0.20),
+        ("alltime", 1.00),
+        ("targetpool", 0.05),
+        ("targetpool", 0.20),
+        ("targetpool", 1.00),
+    )
+    observed_variants = tuple(
+        (item.parent_source, item.identity_l2) for item in contract.calibration_variants
+    )
+    if observed_variants != expected_variants:
+        raise ValueError("decision-quality calibration matrix changed")
+    if contract.price_strata != (
+        (0.20, 0.25),
+        (0.25, 0.275),
+        (0.275, 0.30),
+    ) or contract.time_strata != ((1, 15), (15, 30), (30, 45), (45, 56)):
+        raise ValueError("decision-quality reporting strata changed")
+    gates = contract.gates
+    if (
+        not math.isclose(gates.maximum_overall_bias, 0.03)
+        or not math.isclose(gates.maximum_side_bias, 0.05)
+        or not math.isclose(gates.maximum_cell_bias, 0.08)
+        or not math.isclose(gates.maximum_ece, 0.05)
+        or not math.isclose(gates.maximum_proper_score_noninferiority, 0.005)
+        or gates.minimum_targetpool_markets != 500
+        or gates.minimum_noninferior_folds != 4
+    ):
+        raise ValueError("decision-quality probability gates changed")
