@@ -1097,6 +1097,18 @@ def asymmetric_probability_frame(
     *,
     model: str,
 ) -> pl.DataFrame:
+    expected_capacity_columns = (
+        "yes_ask_vwap_10",
+        "no_ask_vwap_10",
+        "strict_both_side_eligible_10",
+    )
+    capacity_columns = [
+        column
+        for column in expected_capacity_columns
+        if column in frame.columns
+    ]
+    if capacity_columns and len(capacity_columns) != len(expected_capacity_columns):
+        raise RuntimeError("asymmetric probability frame has incomplete VWAP10 evidence")
     return frame.select(
         "market_id",
         "window_start",
@@ -1110,6 +1122,7 @@ def asymmetric_probability_frame(
         "no_best_ask",
         "no_ask_vwap_5",
         "no_ask_depth",
+        *capacity_columns,
         "yes_cost_per_share",
         "no_cost_per_share",
         "yes_execution_cost_per_share",

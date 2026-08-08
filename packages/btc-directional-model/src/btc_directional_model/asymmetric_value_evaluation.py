@@ -13,6 +13,7 @@ EXECUTION_STRESS_PER_SHARE = 0.01
 IMMEDIATE_FIRST_CROSSING = "immediate_first_crossing"
 EDGE_POSITIVE_2_OF_LAST_3_SECONDS = "edge_positive_2_of_last_3_seconds"
 MINIMUM_SELECTED_WIN_RATE_ADVANTAGE = 0.05
+VWAP10_TEN_SHARE_EXECUTION = "vwap10_10_share"
 
 _POLICY_REQUIRED_COLUMNS = {
     "model",
@@ -112,6 +113,187 @@ def policy_ledger(
     return _first_policy_entries(eligible, policy.name, quantity)
 
 
+def vwap10_capacity_policy_ledger(
+    selected_ledger: pl.DataFrame,
+    policy: ValuePolicy,
+    *,
+    execution_reserve_per_share: float,
+    quantity: float = 10.0,
+    maximum_depth_participation: float,
+) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """Reprice the same selected decisions and sides at exact PMXT VWAP10.
+
+    This is an execution-capacity stress, not another fitted model or policy replay.
+    It never changes the chosen side or timestamp. Decisions without exact ten-share
+    evidence or 25%-participation depth remain visible in the coverage diagnostics
+    and are excluded from the capacity-executable ledger.
+    """
+
+    required = {
+        "fee_rate",
+        "yes_ask_vwap_10",
+        "no_ask_vwap_10",
+        "yes_ask_depth",
+        "no_ask_depth",
+        "strict_both_side_eligible_10",
+        "selected_yes",
+        "selected_probability",
+        "selected_share_price",
+        "won",
+    }
+    _require_columns(selected_ledger, required, "VWAP10 capacity stress")
+    if quantity != 10.0:
+        raise ValueError("VWAP10 capacity replay is fixed to exactly ten shares")
+    if (
+        not np.isfinite(maximum_depth_participation)
+        or maximum_depth_participation <= 0.0
+    ):
+        raise ValueError("VWAP10 depth participation must be finite and positive")
+    if (
+        not np.isfinite(execution_reserve_per_share)
+        or execution_reserve_per_share < 0.0
+    ):
+        raise ValueError("VWAP10 execution reserve must be finite and nonnegative")
+    invalid_fee = selected_ledger.filter(
+        pl.col("fee_rate").is_null()
+        | ~pl.col("fee_rate").is_finite()
+        | (pl.col("fee_rate") < 0.0)
+    )
+    if invalid_fee.height:
+        raise ValueError("VWAP10 capacity stress contains invalid fee evidence")
+
+    staged = selected_ledger.with_columns(
+        pl.when(pl.col("selected_yes"))
+        .then(pl.col("yes_ask_vwap_10"))
+        .otherwise(pl.col("no_ask_vwap_10"))
+        .alias("_vwap10_selected_share_price"),
+        pl.when(pl.col("selected_yes"))
+        .then(pl.col("yes_ask_depth"))
+        .otherwise(pl.col("no_ask_depth"))
+        .alias("_vwap10_selected_depth"),
+    ).with_columns(
+        (
+            pl.col("_vwap10_selected_share_price").is_not_null()
+            & pl.col("_vwap10_selected_share_price").is_finite()
+            & pl.col("_vwap10_selected_share_price").is_between(
+                0.0,
+                1.0,
+                closed="right",
+            )
+        )
+        .fill_null(False)
+        .alias("vwap10_exact_selected_side"),
+        (
+            pl.col("strict_both_side_eligible_10").fill_null(False)
+            & (
+                pl.col("_vwap10_selected_depth")
+                >= quantity / maximum_depth_participation
+            )
+        )
+        .fill_null(False)
+        .alias("vwap10_ten_share_depth_eligible"),
+    )
+    nonmonotonic = staged.filter(
+        pl.col("vwap10_exact_selected_side")
+        & (
+            pl.col("_vwap10_selected_share_price") + 1e-9
+            < pl.col("selected_share_price")
+        )
+    )
+    if nonmonotonic.height:
+        raise ValueError("selected-side VWAP10 is below VWAP5")
+
+    staged = staged.with_columns(
+        (
+            pl.col("vwap10_exact_selected_side")
+            & pl.col("vwap10_ten_share_depth_eligible")
+        ).alias("vwap10_capacity_executable"),
+        (
+            pl.col("fee_rate")
+            * pl.col("_vwap10_selected_share_price")
+            * (1.0 - pl.col("_vwap10_selected_share_price"))
+        ).alias("_vwap10_selected_fee_per_share"),
+    ).with_columns(
+        (
+            pl.col("_vwap10_selected_share_price")
+            + pl.col("_vwap10_selected_fee_per_share")
+        ).alias("_vwap10_selected_execution_cost_per_share"),
+    ).with_columns(
+        (
+            pl.col("_vwap10_selected_execution_cost_per_share")
+            + execution_reserve_per_share
+        ).alias("_vwap10_selected_admission_cost_per_share")
+    ).with_columns(
+        (
+            pl.col("selected_probability")
+            - pl.col("_vwap10_selected_admission_cost_per_share")
+        ).alias("_vwap10_selected_edge_per_share"),
+    )
+    staged = staged.with_columns(
+        (
+            pl.col("_vwap10_selected_share_price").is_between(
+                policy.minimum_share_price,
+                policy.maximum_share_price,
+                closed="left",
+            )
+            & (
+                pl.col("_vwap10_selected_admission_cost_per_share")
+                <= policy.maximum_cost_per_share
+            )
+            & (
+                pl.col("_vwap10_selected_edge_per_share")
+                >= policy.minimum_edge_per_share
+            )
+        )
+        .fill_null(False)
+        .alias("vwap10_primary_policy_economics_preserved")
+    )
+    executable = staged.filter(pl.col("vwap10_capacity_executable")).with_columns(
+        pl.col("_vwap10_selected_share_price").alias("selected_share_price"),
+        pl.col("_vwap10_selected_execution_cost_per_share").alias(
+            "selected_execution_cost_per_share"
+        ),
+        pl.col("_vwap10_selected_admission_cost_per_share").alias(
+            "selected_admission_cost_per_share"
+        ),
+        pl.col("_vwap10_selected_edge_per_share").alias(
+            "selected_edge_per_share"
+        ),
+        pl.lit(f"{policy.name}::{VWAP10_TEN_SHARE_EXECUTION}").alias("policy"),
+        pl.lit(quantity).alias("quantity"),
+        (
+            (
+                pl.col("won").cast(pl.Float64)
+                - pl.col("_vwap10_selected_execution_cost_per_share")
+            )
+            * quantity
+        ).alias("realized_net"),
+        (
+            pl.col("_vwap10_selected_execution_cost_per_share") * quantity
+        ).alias("entry_debit"),
+    )
+    input_rows = selected_ledger.height
+    diagnostics = {
+        "selected_five_share_trades": input_rows,
+        "exact_selected_side_vwap10": staged.filter(
+            pl.col("vwap10_exact_selected_side")
+        ).height,
+        "ten_share_depth_eligible": staged.filter(
+            pl.col("vwap10_ten_share_depth_eligible")
+        ).height,
+        "capacity_executable_trades": executable.height,
+        "capacity_executable_coverage": (
+            executable.height / input_rows if input_rows else 0.0
+        ),
+        "primary_policy_economics_preserved": executable.filter(
+            pl.col("vwap10_primary_policy_economics_preserved")
+        ).height,
+        "side_or_timestamp_reselected": False,
+        "vwap10_monotonic_to_vwap5_verified": True,
+    }
+    return executable, diagnostics
+
+
 def temporal_confirmation_policy_ledger(
     scored: pl.DataFrame,
     policy: ValuePolicy,
@@ -183,30 +365,44 @@ def _with_policy_stage_flags(
     if quantity <= 0.0 or maximum_depth_participation <= 0.0:
         raise ValueError("policy quantity and depth participation must be positive")
     within_time = pl.col("seconds_elapsed") <= policy.maximum_entry_second
-    yes_time_raw = (
-        within_time
+    yes_time = within_time
+    no_time = within_time
+    yes_raw = (
+        yes_time
         & pl.col("yes_ask_vwap_5").is_between(
             policy.minimum_share_price,
             policy.maximum_share_price,
             closed="left",
         )
-        & (pl.col("yes_cost_per_share") <= policy.maximum_cost_per_share)
     )
-    no_time_raw = (
-        within_time
+    no_raw = (
+        no_time
         & pl.col("no_ask_vwap_5").is_between(
             policy.minimum_share_price,
             policy.maximum_share_price,
             closed="left",
         )
+    )
+    yes_all_in = (
+        yes_raw
+        & (pl.col("yes_cost_per_share") <= policy.maximum_cost_per_share)
+    )
+    no_all_in = (
+        no_raw
         & (pl.col("no_cost_per_share") <= policy.maximum_cost_per_share)
     )
     staged = scored.with_columns(
-        yes_time_raw.fill_null(False).alias("_yes_time_raw_eligible"),
-        no_time_raw.fill_null(False).alias("_no_time_raw_eligible"),
+        yes_time.fill_null(False).alias("_yes_time_eligible"),
+        no_time.fill_null(False).alias("_no_time_eligible"),
+        yes_raw.fill_null(False).alias("_yes_raw_price_eligible"),
+        no_raw.fill_null(False).alias("_no_raw_price_eligible"),
+        yes_all_in.fill_null(False).alias("_yes_all_in_cost_eligible"),
+        no_all_in.fill_null(False).alias("_no_all_in_cost_eligible"),
+        yes_all_in.fill_null(False).alias("_yes_time_raw_eligible"),
+        no_all_in.fill_null(False).alias("_no_time_raw_eligible"),
     ).with_columns(
         (
-            pl.col("_yes_time_raw_eligible")
+            pl.col("_yes_all_in_cost_eligible")
             & (
                 quantity
                 <= pl.col("yes_ask_depth") * maximum_depth_participation
@@ -215,7 +411,7 @@ def _with_policy_stage_flags(
         .fill_null(False)
         .alias("_yes_depth_eligible"),
         (
-            pl.col("_no_time_raw_eligible")
+            pl.col("_no_all_in_cost_eligible")
             & (
                 quantity
                 <= pl.col("no_ask_depth") * maximum_depth_participation
@@ -438,9 +634,21 @@ def rejection_funnel(
         ),
         _funnel_stage_counts(
             staged,
-            "time_raw_price",
-            "_yes_time_raw_eligible",
-            "_no_time_raw_eligible",
+            "entry_time",
+            "_yes_time_eligible",
+            "_no_time_eligible",
+        ),
+        _funnel_stage_counts(
+            staged,
+            "raw_price_band",
+            "_yes_raw_price_eligible",
+            "_no_raw_price_eligible",
+        ),
+        _funnel_stage_counts(
+            staged,
+            "all_in_cost",
+            "_yes_all_in_cost_eligible",
+            "_no_all_in_cost_eligible",
         ),
         _funnel_stage_counts(
             staged,
@@ -469,7 +677,7 @@ def rejection_funnel(
         "fresh_strict_execution_contract": (
             "input frame is already filtered to fresh, strict execution evidence"
         ),
-        "time_raw_price_includes_all_in_cost_cap": True,
+        "time_raw_price_and_all_in_cost_reported_separately": True,
         "aggregate_market_counting": "unique union across YES and NO; never side-count sum",
         "stages": stages,
     }

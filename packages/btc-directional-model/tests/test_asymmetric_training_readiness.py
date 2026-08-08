@@ -42,7 +42,11 @@ from btc_directional_model.core_config import (
     load_core_config,
 )
 from btc_directional_model.core_execution import EXECUTION_EVIDENCE_CONTRACT
-from btc_directional_model.core_extract import file_sha256
+from btc_directional_model.core_extract import (
+    CORE_ORACLE_ROUND_SCHEMA_VERSION,
+    CORE_ORACLE_SOURCE_SCHEMA_VERSION,
+    file_sha256,
+)
 
 
 def config_path() -> Path:
@@ -320,6 +324,14 @@ def test_core_oracle_manifests_require_all_110_daily_partitions(
 
     assert result["daily_core_partitions"] == 110
     assert result["daily_oracle_partitions"] == 110
+    assert (
+        result["oracle_source_schema_version"]
+        == CORE_ORACLE_SOURCE_SCHEMA_VERSION
+    )
+    assert (
+        result["oracle_round_partition_schema_version"]
+        == CORE_ORACLE_ROUND_SCHEMA_VERSION
+    )
     assert result["july_31_present"] is True
     assert result["august_1_present"] is True
 
@@ -485,6 +497,7 @@ def test_target_profile_validates_one_110_day_development_pmxt_manifest(
         "quantity": 5.0,
         "freshness_seconds": 2,
         "proxy_prices_used": False,
+        "created_at": "2026-08-08T00:00:00+00:00",
         "coverage_by_day": [
             {"date": (READINESS_RANGE_START + timedelta(days=offset)).date().isoformat()}
             for offset in range(110)
@@ -495,7 +508,7 @@ def test_target_profile_validates_one_110_day_development_pmxt_manifest(
     child_ranges: list[tuple[datetime, datetime]] = []
 
     def load_child(config):
-        config.output_dir.mkdir(parents=True)
+        config.output_dir.mkdir(parents=True, exist_ok=True)
         (config.output_dir / "manifest.json").write_text("{}")
         child_ranges.append((config.range_start, config.range_end))
         return {
@@ -512,12 +525,22 @@ def test_target_profile_validates_one_110_day_development_pmxt_manifest(
 
     result = _validate_price_manifests(config)
 
+    manifest["created_at"] = "2026-08-08T01:00:00+00:00"
+    (scope_root / "manifest.json").write_text(json.dumps(manifest))
+    repeated = _validate_price_manifests(config)
+
     assert list(result) == ["development"]
     assert result["development"]["days"] == 110
+    assert result["development"]["manifest_identity_sha256"] == (
+        repeated["development"]["manifest_identity_sha256"]
+    )
+    assert result["development"]["manifest_identity_excludes"] == [
+        "created_at"
+    ]
     assert child_ranges == [
         (READINESS_RANGE_START, READINESS_RANGE_END),
         (READINESS_RANGE_START, READINESS_RANGE_END),
-    ]
+    ] * 2
 
 
 def test_readiness_manifest_reuses_identical_immutable_seal(

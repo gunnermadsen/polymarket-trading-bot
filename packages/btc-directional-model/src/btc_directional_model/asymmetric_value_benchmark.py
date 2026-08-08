@@ -15,6 +15,10 @@ import joblib
 import numpy as np
 import polars as pl
 
+from .asymmetric_incumbent_replay import (
+    DEFAULT_FROZEN_ASYMMETRIC_INCUMBENT_MODEL,
+    replay_frozen_asymmetric_incumbent,
+)
 from .asymmetric_residual_value import (
     REQUIRED_FEATURE_COLUMNS,
     RESIDUAL_FEATURE_NAMES,
@@ -23,7 +27,12 @@ from .asymmetric_residual_value import (
     feature_penalty_manifest,
     market_equal_decision_weights,
 )
-from .asymmetric_value_config import AsymmetricValueConfig, EvidenceWindow
+from .asymmetric_training_readiness import prepare_asymmetric_training_readiness
+from .asymmetric_value_config import (
+    TARGET_CALIBRATED_TRAINING_CONTRACT,
+    AsymmetricValueConfig,
+    EvidenceWindow,
+)
 from .asymmetric_value_data import (
     EARLY_CAUSAL_ORACLE_FEATURES,
     ORACLE_MAXIMUM_AGE_SECONDS,
@@ -38,6 +47,9 @@ from .asymmetric_value_data import (
     select_asymmetric_prediction_grid,
 )
 from .asymmetric_value_evaluation import (
+    EDGE_POSITIVE_2_OF_LAST_3_SECONDS,
+    IMMEDIATE_FIRST_CROSSING,
+    VWAP10_TEN_SHARE_EXECUTION,
     accuracy_price_by_second,
     add_bootstrap_metrics,
     bootstrap_ledger_metrics,
@@ -46,15 +58,22 @@ from .asymmetric_value_evaluation import (
     current_policy_reference_ledger,
     evaluate_policy_grid,
     evidence_gate_checks,
+    frequency_floor_check,
     joint_accuracy_value_surface,
     ledger_metrics,
+    matched_probability_quality,
+    matched_probability_quality_gate_checks,
     opportunity_calibration_by_price_band,
     policy_gate_checks,
     policy_ledger,
     price_band_metrics,
+    rejection_funnel,
     score_two_sided_value,
     select_policy_candidate,
+    selected_win_rate_advantage_gate_checks,
     side_accuracy_value_surface,
+    temporal_confirmation_ablation,
+    vwap10_capacity_policy_ledger,
 )
 from .asymmetric_value_training import (
     ASYMMETRIC_VALUE_CANDIDATES,
@@ -267,11 +286,12 @@ def run_asymmetric_value_benchmark(
     )
     gc.collect()
 
-    print("asymmetric-value: fitting price-aware champion-family candidates", flush=True)
-    models, training = fit_asymmetric_value_models(
-        development_model_frames,
-        config,
-        core_config,
+    models, training, readiness_path, readiness_payload = (
+        _fit_models_after_training_readiness(
+            development_model_frames,
+            config,
+            core_config,
+        )
     )
     hgb_policy_frames = {
         name: _window(frame, config.policy.start, config.policy.end)
@@ -319,10 +339,25 @@ def run_asymmetric_value_benchmark(
                 "runtime_exportable": False,
             }
         }
+    primary_policy = next(
+        policy for policy in config.policies if policy.selection_eligible
+    )
     policy_candidate_strict_markets = {
         name: frame["market_id"].n_unique()
         for name, frame in policy_frames.items()
     }
+    incumbent_replay = (
+        replay_frozen_asymmetric_incumbent(
+            hgb_policy_frames[CORE_ORACLE_PRICE]
+        )
+        if config.training_contract == TARGET_CALIBRATED_TRAINING_CONTRACT
+        else None
+    )
+    incumbent_evidence = (
+        _incumbent_replay_evidence(incumbent_replay, config)
+        if incumbent_replay is not None
+        else None
+    )
     policy_scored = score_two_sided_value(policy_predictions)
     policy_joint_surface = joint_accuracy_value_surface(policy_scored)
     policy_both_side_surface = side_accuracy_value_surface(policy_predictions)
@@ -370,9 +405,46 @@ def run_asymmetric_value_benchmark(
         policy_evidence_checks_by_model[name].extend(
             target_calibration_gate_checks(profile)
         )
-    primary_policy = next(
-        policy for policy in config.policies if policy.selection_eligible
+    if config.training_contract == TARGET_CALIBRATED_TRAINING_CONTRACT:
+        for name in sorted(MODEL_SELECTION_ELIGIBLE):
+            policy_evidence_checks_by_model[name].extend(
+                selected_win_rate_advantage_gate_checks(
+                    policy_metrics[
+                        candidate_policy_key(name, primary_policy.name)
+                    ]
+                )
+            )
+    policy_probability_quality = (
+        _matched_policy_probability_quality(policy_predictions, config)
+        if config.training_contract == TARGET_CALIBRATED_TRAINING_CONTRACT
+        else {}
     )
+    for name, evidence in policy_probability_quality.items():
+        policy_evidence_checks_by_model[name].extend(evidence["checks"])
+    policy_frequency_checks: dict[str, dict[str, Any]] = {}
+    policy_frequency_ledgers: dict[str, pl.DataFrame] = {}
+    if incumbent_evidence is not None:
+        incumbent_market_ids = hgb_policy_frames[CORE_ORACLE_PRICE].filter(
+            pl.col("seconds_elapsed") <= primary_policy.maximum_entry_second
+        ).select("market_id").unique()
+        common_market_count = incumbent_market_ids.height
+        if common_market_count != incumbent_evidence["eligible_resolved_markets"]:
+            raise RuntimeError("incumbent frequency denominator changed after replay")
+        policy_frequency_checks, policy_frequency_ledgers = (
+            _common_incumbent_frequency_evidence(
+                policy_scored,
+                incumbent_market_ids,
+                primary_policy,
+                incumbent_rate=float(
+                    incumbent_evidence[
+                        "trades_per_eligible_resolved_market"
+                    ]
+                ),
+                config=config,
+            )
+        )
+        for name, check in policy_frequency_checks.items():
+            policy_evidence_checks_by_model[name].append(check)
     policy_feature_attribution = _matched_feature_attribution(
         policy_metrics,
         policy_ledgers,
@@ -413,6 +485,53 @@ def run_asymmetric_value_benchmark(
     selected_matched_control = _selected_matched_control(
         selection["selected_model"]
     )
+    temporal_ledgers: dict[str, pl.DataFrame] = {}
+    temporal_evidence: dict[str, Any] = {}
+    rejection_funnels: dict[str, Any] = {}
+    vwap10_ledgers: dict[str, pl.DataFrame] = {}
+    vwap10_evidence: dict[str, Any] = {}
+    if config.training_contract == TARGET_CALIBRATED_TRAINING_CONTRACT:
+        if incumbent_evidence is None or readiness_path is None or readiness_payload is None:
+            raise RuntimeError("target-calibrated qualification evidence is incomplete")
+        temporal_ledgers, temporal_evidence = _temporal_policy_evidence(
+            policy_scored,
+            policy_frames,
+            primary_policy,
+            incumbent_rate=float(
+                incumbent_evidence["trades_per_eligible_resolved_market"]
+            ),
+            config=config,
+        )
+        rejection_funnels = _policy_rejection_funnels(
+            policy_scored,
+            primary_policy,
+            config,
+        )
+        vwap10_ledgers, vwap10_evidence = _vwap10_capacity_evidence(
+            policy_ledgers,
+            policy_frames,
+            primary_policy,
+            config,
+        )
+    development_qualification = {
+        "schema_version": "btc-asymmetric-development-qualification-v1",
+        "readiness": (
+            _readiness_evidence(readiness_path, readiness_payload)
+            if readiness_path is not None and readiness_payload is not None
+            else None
+        ),
+        "frozen_asymmetric_incumbent": incumbent_evidence,
+        "candidate_frequency_checks": policy_frequency_checks,
+        "candidate_frequency_ledger_artifact": (
+            "candidate-incumbent-common-frequency-ledger.parquet"
+            if policy_frequency_ledgers
+            else None
+        ),
+        "matched_probability_quality": policy_probability_quality,
+        "temporal_confirmation": temporal_evidence,
+        "rejection_funnels": rejection_funnels,
+        "vwap10_ten_share_capacity": vwap10_evidence,
+    }
 
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = config.runs / run_id
@@ -441,8 +560,35 @@ def run_asymmetric_value_benchmark(
             run_dir / "policy-residual-attribution.json",
             policy_residual_attribution,
         )
+    write_json_atomic(
+        run_dir / "development-qualification-evidence.json",
+        development_qualification,
+    )
+    if incumbent_replay is not None:
+        incumbent_replay.selected_trades.write_parquet(
+            run_dir / "frozen-asymmetric-incumbent-ledger.parquet",
+            compression="zstd",
+        )
+    if policy_frequency_ledgers:
+        pl.concat(
+            list(policy_frequency_ledgers.values()),
+            how="vertical_relaxed",
+        ).write_parquet(
+            run_dir / "candidate-incumbent-common-frequency-ledger.parquet",
+            compression="zstd",
+        )
+    if temporal_ledgers:
+        pl.concat(list(temporal_ledgers.values()), how="vertical_relaxed").write_parquet(
+            run_dir / "development-temporal-policy-ledger.parquet",
+            compression="zstd",
+        )
+    if vwap10_ledgers:
+        pl.concat(list(vwap10_ledgers.values()), how="vertical_relaxed").write_parquet(
+            run_dir / "development-vwap10-ten-share-ledger.parquet",
+            compression="zstd",
+        )
     selection_seal = {
-        "schema_version": "btc-asymmetric-value-selection-seal-v3",
+        "schema_version": "btc-asymmetric-value-selection-seal-v4",
         "sealed_at": datetime.now(UTC).isoformat(),
         "evaluation_opened": False,
         "selected_key": selection["selected_key"],
@@ -471,6 +617,10 @@ def run_asymmetric_value_benchmark(
             "qualification_limited_to_policy_window_selected_model": True,
         },
         "predeclared_frozen_evaluation_diagnostics": [
+            "frozen_asymmetric_incumbent_frequency",
+            "matched_probability_quality",
+            "immediate_vs_two_of_three_temporal_confirmation",
+            "vwap10_ten_share_capacity",
             "frozen_current_policy_full_exact_book_89",
             "frozen_current_policy_market_paired_89",
             "frozen_champion_low_price_value_60s_240s",
@@ -498,6 +648,10 @@ def run_asymmetric_value_benchmark(
         "policy_source_grid": policy_grid_coverage,
         "policy_candidate_grid": policy_candidate_coverage,
         "matched_control_noninferiority": matched_control_checks,
+        "development_qualification_evidence": development_qualification,
+        "development_qualification_evidence_sha256": file_sha256(
+            run_dir / "development-qualification-evidence.json"
+        ),
         "policy_cohort_key_sha256": {
             name: _frame_key_digest(frame) for name, frame in policy_frames.items()
         },
@@ -525,6 +679,14 @@ def run_asymmetric_value_benchmark(
         "champion_model_sha256": file_sha256(config.champion_model),
         "champion_process_sha256": file_sha256(config.champion_process),
         "frozen_current_policy_contract": current_process,
+        "training_readiness_manifest_sha256": (
+            file_sha256(readiness_path) if readiness_path is not None else None
+        ),
+        "frozen_asymmetric_incumbent_audit_hashes": (
+            incumbent_evidence["audit_hashes"]
+            if incumbent_evidence is not None
+            else None
+        ),
         "price_query_sha256": file_sha256(config.price_source_sql),
         "development_price_manifest_sha256": file_sha256(
             config.price_cache / "development" / "manifest.json"
@@ -574,6 +736,7 @@ def run_asymmetric_value_benchmark(
             policy_confidence_controls=policy_confidence_controls,
             policy_feature_attribution=policy_feature_attribution,
             policy_residual_attribution=policy_residual_attribution,
+            development_qualification=development_qualification,
             policy_evidence_checks_by_model=policy_evidence_checks_by_model,
             policy_grid_coverage=policy_grid_coverage,
             policy_candidate_coverage=policy_candidate_coverage,
@@ -1471,6 +1634,7 @@ def _finalize_development_only_benchmark(
     policy_confidence_controls: dict[str, Any],
     policy_feature_attribution: dict[str, Any],
     policy_residual_attribution: dict[str, Any] | None,
+    development_qualification: dict[str, Any],
     policy_evidence_checks_by_model: dict[str, list[dict[str, Any]]],
     policy_grid_coverage: dict[str, Any],
     policy_candidate_coverage: dict[str, dict[str, Any]],
@@ -1543,6 +1707,11 @@ def _finalize_development_only_benchmark(
         "policy-selection.json",
         "policy-feature-attribution.json",
         "policy-residual-attribution.json",
+        "development-qualification-evidence.json",
+        "frozen-asymmetric-incumbent-ledger.parquet",
+        "candidate-incumbent-common-frequency-ledger.parquet",
+        "development-temporal-policy-ledger.parquet",
+        "development-vwap10-ten-share-ledger.parquet",
         "selection-seal.json",
         "selected-development-policy-ledger.parquet",
         "development-model-policy-ledger.parquet",
@@ -1644,6 +1813,7 @@ def _finalize_development_only_benchmark(
             "historical_refprice_used": False,
             "spot_l2_missingness_filled": False,
             "external_ssd_required": False,
+            "training_readiness": development_qualification["readiness"],
         },
         "training": training,
         "selection": {
@@ -1657,6 +1827,10 @@ def _finalize_development_only_benchmark(
             "policy_residual_attribution": policy_residual_attribution,
             "policy_residual_attribution_artifact": (
                 "policy-residual-attribution.json"
+            ),
+            "development_qualification": development_qualification,
+            "development_qualification_artifact": (
+                "development-qualification-evidence.json"
             ),
         },
         "historical_development": {
@@ -1678,6 +1852,7 @@ def _finalize_development_only_benchmark(
             "side_conditioned_residual_attribution": (
                 policy_residual_attribution
             ),
+            "qualification_evidence": development_qualification,
             "confidence_threshold_controls": policy_confidence_controls,
         },
         "evaluation": {
@@ -1715,6 +1890,15 @@ def _finalize_development_only_benchmark(
             "implementation_sha256": implementation_sha256,
             "dependency_versions": dependency_versions,
             "selection_seal_sha256": selection_seal_sha256,
+            "development_qualification_sha256": file_sha256(
+                run_dir / "development-qualification-evidence.json"
+            ),
+            "training_readiness_manifest_sha256": development_qualification[
+                "readiness"
+            ]["manifest_sha256"],
+            "frozen_asymmetric_incumbent_audit_hashes": development_qualification[
+                "frozen_asymmetric_incumbent"
+            ]["audit_hashes"],
             "development_core_content_sha256": (
                 development_core_content_sha256
             ),
@@ -1760,6 +1944,7 @@ def _finalize_development_only_benchmark(
 def _development_markdown_report(result: dict[str, Any]) -> str:
     historical = result["historical_development"]
     selected = historical["selected_metrics"]
+    selected_model = historical["selected_key"].split("::", maxsplit=1)[0]
     lines = [
         "# BTC asymmetric-value training result",
         "",
@@ -1793,6 +1978,164 @@ def _development_markdown_report(result: dict[str, Any]) -> str:
         ),
         "",
     ]
+    leaderboard = historical.get("model_economics_leaderboard") or []
+    if leaderboard:
+        lines.extend(
+            [
+                "## Model economics leaderboard",
+                "",
+                (
+                    "Ranked by net profit per resolved market on the consumed "
+                    "policy window; controls and offline candidates are labeled."
+                ),
+                "",
+                "| Model | Deployable candidate | Trades | Accuracy | Mean share | Mean second | Net profit | EV/trade | EV lower 95% | Net/resolved | PF |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for row in leaderboard:
+            lines.append(
+                f"| {row['model']} | {row.get('selection_eligible')} | "
+                f"{row.get('trades')} | {_fmt(row.get('accuracy'))} | "
+                f"{_fmt(row.get('mean_share_price'))} | "
+                f"{_fmt(row.get('mean_entry_second'))} | "
+                f"{_fmt(row.get('net_profit'))} | "
+                f"{_fmt(row.get('net_expectancy_per_trade'))} | "
+                f"{_fmt(row.get('expectancy_lower_95'))} | "
+                f"{_fmt(row.get('net_profit_per_resolved_market'))} | "
+                f"{_fmt(row.get('profit_factor'))} |"
+            )
+        lines.append("")
+    qualification = historical.get("qualification_evidence") or {}
+    incumbent = qualification.get("frozen_asymmetric_incumbent")
+    frequency = (qualification.get("candidate_frequency_checks") or {}).get(
+        selected_model
+    )
+    if incumbent is not None and frequency is not None:
+        incumbent_metrics = incumbent.get("metrics") or {}
+        lines.extend(
+            [
+                "## Frozen incumbent comparison",
+                "",
+                "| Strategy | Trades | Trades/eligible market | Net profit | EV/trade | Frequency floor passed |",
+                "|---|---:|---:|---:|---:|---:|",
+                (
+                    f"| Frozen asymmetric incumbent | {incumbent.get('trades')} | "
+                    f"{_fmt(incumbent.get('trades_per_eligible_resolved_market'))} | "
+                    f"{_fmt(incumbent_metrics.get('net_profit'))} | "
+                    f"{_fmt(incumbent_metrics.get('net_expectancy_per_trade'))} | n/a |"
+                ),
+                (
+                    f"| Selected challenger | {frequency.get('candidate_trades')} | "
+                    f"{_fmt(frequency.get('candidate_trades_per_eligible_resolved_market'))} | "
+                    f"{_fmt(selected.get('net_profit'))} | "
+                    f"{_fmt(selected.get('net_expectancy_per_trade'))} | "
+                    f"{frequency.get('passed')} |"
+                ),
+                "",
+            ]
+        )
+    selected_checks = historical.get("selected_checks") or []
+    if selected_checks:
+        failed = [check["name"] for check in selected_checks if not check["passed"]]
+        lines.extend(
+            [
+                "## Qualification gates",
+                "",
+                f"Passed `{len(selected_checks) - len(failed)}` of `{len(selected_checks)}` selected-model checks.",
+                "",
+                (
+                    "Failed checks: " + ", ".join(f"`{name}`" for name in failed)
+                    if failed
+                    else "Failed checks: none."
+                ),
+                "",
+            ]
+        )
+    probability_quality = (
+        qualification.get("matched_probability_quality") or {}
+    ).get(selected_model)
+    if probability_quality is not None:
+        quality_metrics = probability_quality["metrics"]
+        brier = quality_metrics["brier_score"]
+        log_loss = quality_metrics["log_loss"]
+        lines.extend(
+            [
+                "## Matched target-opportunity probability quality",
+                "",
+                (
+                    f"Compared with `{probability_quality['matched_control']}` on "
+                    f"`{quality_metrics['matched_rows']}` identical by-55, 20–30¢ "
+                    "market/second rows."
+                ),
+                "",
+                "| Metric | Challenger minus control | Upper 95% | Noninferiority margin |",
+                "|---|---:|---:|---:|",
+                (
+                    f"| Brier | {_fmt(brier['candidate_minus_oracle_control'])} | "
+                    f"{_fmt(brier['candidate_minus_oracle_control_bootstrap']['upper_95'])} | 0.010000 |"
+                ),
+                (
+                    f"| Log loss | {_fmt(log_loss['candidate_minus_oracle_control'])} | "
+                    f"{_fmt(log_loss['candidate_minus_oracle_control_bootstrap']['upper_95'])} | 0.010000 |"
+                ),
+                "",
+            ]
+        )
+    temporal = (qualification.get("temporal_confirmation") or {}).get(
+        "models", {}
+    ).get(selected_model)
+    if temporal is not None:
+        immediate = temporal["rules"][IMMEDIATE_FIRST_CROSSING]["metrics"]
+        confirmed = temporal["rules"][
+            EDGE_POSITIVE_2_OF_LAST_3_SECONDS
+        ]["metrics"]
+        lines.extend(
+            [
+                "## Temporal confirmation diagnostic",
+                "",
+                "| Rule | Trades | Accuracy | EV/trade | Net/resolved |",
+                "|---|---:|---:|---:|---:|",
+                (
+                    f"| Immediate first crossing | {immediate.get('trades')} | "
+                    f"{_fmt(immediate.get('accuracy'))} | "
+                    f"{_fmt(immediate.get('net_expectancy_per_trade'))} | "
+                    f"{_fmt(immediate.get('net_profit_per_eligible_resolved_market'))} |"
+                ),
+                (
+                    f"| Same-side 2-of-3 seconds | {confirmed.get('trades')} | "
+                    f"{_fmt(confirmed.get('accuracy'))} | "
+                    f"{_fmt(confirmed.get('net_expectancy_per_trade'))} | "
+                    f"{_fmt(confirmed.get('net_profit_per_eligible_resolved_market'))} |"
+                ),
+                "",
+            ]
+        )
+    vwap10 = (qualification.get("vwap10_ten_share_capacity") or {}).get(
+        "models", {}
+    ).get(selected_model)
+    if vwap10 is not None:
+        coverage = vwap10["coverage"]
+        metrics = vwap10["metrics"]
+        lines.extend(
+            [
+                "## Exact VWAP10 capacity diagnostic",
+                "",
+                (
+                    f"The same selected side and timestamp was executable for "
+                    f"`{coverage.get('capacity_executable_trades')}` of "
+                    f"`{coverage.get('selected_five_share_trades')}` five-share "
+                    "decisions at ten shares."
+                ),
+                "",
+                (
+                    f"Ten-share EV/trade: `{_fmt(metrics.get('net_expectancy_per_trade'))}`; "
+                    f"net profit: `{_fmt(metrics.get('net_profit'))}`; "
+                    f"profit factor: `{_fmt(metrics.get('profit_factor'))}`."
+                ),
+                "",
+            ]
+        )
     residual = historical.get("side_conditioned_residual_attribution")
     if residual is not None:
         lines.extend(
@@ -2035,6 +2378,422 @@ def _residual_matched_attribution(
     }
 
 
+def _incumbent_replay_evidence(
+    replay: Any,
+    config: AsymmetricValueConfig,
+) -> dict[str, Any]:
+    ledger = replay.selected_trades
+    metrics = ledger_metrics(ledger)
+    metrics["utc_day_block_bootstrap"] = bootstrap_ledger_metrics(
+        ledger,
+        resamples=config.bootstrap_resamples,
+        seed=config.random_seed + 31_000,
+    )
+    metrics["eligible_resolved_markets"] = replay.eligible_resolved_markets
+    metrics["trades_per_eligible_resolved_market"] = (
+        replay.trades_per_eligible_resolved_market
+    )
+    metrics["net_profit_per_eligible_resolved_market"] = (
+        float(metrics.get("net_profit") or 0.0)
+        / replay.eligible_resolved_markets
+    )
+    return {
+        "model_key": replay.model_key,
+        "feature_contract": replay.feature_contract,
+        "policy": "raw20_30_by55_edge_3c",
+        "quantity": 5.0,
+        "maximum_depth_participation": 0.25,
+        "eligible_resolved_markets": replay.eligible_resolved_markets,
+        "trades": ledger.height,
+        "trades_per_eligible_resolved_market": (
+            replay.trades_per_eligible_resolved_market
+        ),
+        "metrics": metrics,
+        "audit_hashes": replay.audit_hashes,
+    }
+
+
+def _fit_models_after_training_readiness(
+    development_model_frames: dict[str, pl.DataFrame],
+    config: AsymmetricValueConfig,
+    core_config: Any,
+) -> tuple[dict[str, Any], dict[str, Any], Path | None, dict[str, Any] | None]:
+    """Seal target-source readiness before allowing any estimator fit."""
+
+    readiness_path: Path | None = None
+    readiness_payload: dict[str, Any] | None = None
+    if config.training_contract == TARGET_CALIBRATED_TRAINING_CONTRACT:
+        print(
+            "asymmetric-value: sealing fail-closed source readiness before fitting",
+            flush=True,
+        )
+        readiness_path, readiness_payload = (
+            prepare_asymmetric_training_readiness(
+                config,
+                output_dir=config.feature_cache / "training-readiness",
+            )
+        )
+    print("asymmetric-value: fitting price-aware champion-family candidates", flush=True)
+    models, training = fit_asymmetric_value_models(
+        development_model_frames,
+        config,
+        core_config,
+    )
+    return models, training, readiness_path, readiness_payload
+
+
+def _common_incumbent_frequency_evidence(
+    scored: pl.DataFrame,
+    incumbent_market_ids: pl.DataFrame,
+    policy: Any,
+    *,
+    incumbent_rate: float,
+    config: AsymmetricValueConfig,
+    candidate_models: tuple[str, ...] | None = None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, pl.DataFrame]]:
+    """Measure candidate frequency only on the incumbent's exact market cohort."""
+
+    if "market_id" not in incumbent_market_ids.columns:
+        raise ValueError("incumbent frequency cohort is missing market_id")
+    common_markets = incumbent_market_ids.select("market_id").unique()
+    common_market_count = common_markets.height
+    if common_market_count == 0:
+        raise ValueError("incumbent frequency cohort is empty")
+    models = candidate_models or tuple(sorted(MODEL_SELECTION_ELIGIBLE))
+    checks: dict[str, dict[str, Any]] = {}
+    ledgers: dict[str, pl.DataFrame] = {}
+    for name in models:
+        common_scored = scored.filter(pl.col("model") == name).join(
+            common_markets,
+            on="market_id",
+            how="inner",
+            validate="m:1",
+        )
+        common_ledger = policy_ledger(
+            common_scored,
+            policy,
+            quantity=config.quantity,
+            maximum_depth_participation=config.maximum_depth_participation,
+        )
+        check = frequency_floor_check(
+            candidate_trades=common_ledger.height,
+            eligible_resolved_markets=common_market_count,
+            incumbent_trades_per_eligible_resolved_market=incumbent_rate,
+        )
+        check["common_incumbent_market_cohort"] = True
+        check["candidate_source_rows_on_common_cohort"] = common_scored.height
+        checks[name] = check
+        ledgers[name] = common_ledger
+    return checks, ledgers
+
+
+def _matched_policy_probability_quality(
+    predictions: pl.DataFrame,
+    config: AsymmetricValueConfig,
+) -> dict[str, Any]:
+    references = {
+        CORE_ORACLE_PRICE: ORACLE_MATCHED_CORE_PRICE_CONTROL,
+        CORE_L2_PRICE: L2_MATCHED_CORE_PRICE_CONTROL,
+        CORE_ORACLE_L2_PRICE: THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+        SIDE_CONDITIONED_RESIDUAL_MODEL: (
+            THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL
+        ),
+    }
+    policy = next(item for item in config.policies if item.selection_eligible)
+    target_opportunity = (
+        (pl.col("seconds_elapsed") <= policy.maximum_entry_second)
+        & (
+            pl.col("yes_ask_vwap_5").is_between(
+                policy.minimum_share_price,
+                policy.maximum_share_price,
+                closed="left",
+            )
+            | pl.col("no_ask_vwap_5").is_between(
+                policy.minimum_share_price,
+                policy.maximum_share_price,
+                closed="left",
+            )
+        )
+    )
+    evidence: dict[str, Any] = {}
+    for offset, (candidate, reference) in enumerate(references.items()):
+        candidate_frame = predictions.filter(
+            (pl.col("model") == candidate) & target_opportunity
+        )
+        reference_frame = predictions.filter(
+            (pl.col("model") == reference) & target_opportunity
+        )
+        quality = matched_probability_quality(
+            candidate_frame,
+            reference_frame,
+            block_unit="utc_day",
+            resamples=config.bootstrap_resamples,
+            seed=config.random_seed + 32_000 + offset,
+        )
+        all_checks = matched_probability_quality_gate_checks(
+            quality,
+            brier_noninferiority_margin=0.01,
+            log_loss_noninferiority_margin=0.01,
+            minimum_brier_improvement=0.0,
+            minimum_log_loss_improvement=0.0,
+        )
+        hard_gate = candidate in {CORE_ORACLE_PRICE, CORE_L2_PRICE}
+        checks = [
+            check
+            for check in all_checks
+            if check["name"].endswith("_noninferior_to_oracle_control")
+        ]
+        evidence[candidate] = {
+            "candidate": candidate,
+            "matched_control": reference,
+            "identical_market_second_keys_required": True,
+            "scope": "by55_any_side_raw20_30c",
+            "maximum_entry_second": policy.maximum_entry_second,
+            "minimum_raw_share_price": policy.minimum_share_price,
+            "maximum_raw_share_price_exclusive": policy.maximum_share_price,
+            "candidate_key_sha256": _frame_key_digest(candidate_frame),
+            "matched_control_key_sha256": _frame_key_digest(reference_frame),
+            "selection_gate_contract": (
+                "paired UTC-day point and upper-95 deltas must stay within "
+                "the predeclared 0.01 Brier/log-loss noninferiority margins"
+            ),
+            "hard_gate": hard_gate,
+            "metrics": quality,
+            "checks": checks if hard_gate else [],
+            "diagnostic_checks": all_checks,
+        }
+    return evidence
+
+
+def _temporal_policy_evidence(
+    scored: pl.DataFrame,
+    frames: dict[str, pl.DataFrame],
+    policy: Any,
+    *,
+    incumbent_rate: float,
+    config: AsymmetricValueConfig,
+) -> tuple[dict[str, pl.DataFrame], dict[str, Any]]:
+    common_market_ids = frames[CORE_ORACLE_PRICE].filter(
+        pl.col("seconds_elapsed") <= policy.maximum_entry_second
+    ).select("market_id").unique()
+    eligible_markets = common_market_ids.height
+    models = [
+        name
+        for name in (
+            *sorted(MODEL_SELECTION_ELIGIBLE),
+            SIDE_CONDITIONED_RESIDUAL_MODEL,
+        )
+        if name in frames
+    ]
+    all_ledgers: dict[str, pl.DataFrame] = {}
+    evidence: dict[str, Any] = {}
+    for offset, model in enumerate(models):
+        model_scored = scored.filter(pl.col("model") == model).join(
+            common_market_ids,
+            on="market_id",
+            how="inner",
+            validate="m:1",
+        )
+        ledgers, metrics = temporal_confirmation_ablation(
+            model_scored,
+            policy,
+            quantity=config.quantity,
+            maximum_depth_participation=config.maximum_depth_participation,
+        )
+        model_evidence: dict[str, Any] = {}
+        for rule_offset, rule in enumerate(
+            (IMMEDIATE_FIRST_CROSSING, EDGE_POSITIVE_2_OF_LAST_3_SECONDS)
+        ):
+            ledger = ledgers[rule]
+            values = metrics[rule]
+            values["utc_day_block_bootstrap"] = bootstrap_ledger_metrics(
+                ledger,
+                resamples=config.bootstrap_resamples,
+                seed=(
+                    config.random_seed
+                    + 33_000
+                    + offset * 10
+                    + rule_offset
+                ),
+            )
+            values["eligible_resolved_markets"] = eligible_markets
+            values["trades_per_eligible_resolved_market"] = (
+                ledger.height / eligible_markets
+            )
+            values["net_profit_per_eligible_resolved_market"] = (
+                float(values.get("net_profit") or 0.0) / eligible_markets
+            )
+            frequency = frequency_floor_check(
+                candidate_trades=ledger.height,
+                eligible_resolved_markets=eligible_markets,
+                incumbent_trades_per_eligible_resolved_market=incumbent_rate,
+            )
+            economic_checks = [
+                *policy_gate_checks(
+                    values,
+                    config,
+                    policy_window=True,
+                ),
+                *selected_win_rate_advantage_gate_checks(values),
+            ]
+            model_evidence[rule] = {
+                "metrics": values,
+                "incumbent_frequency_check": frequency,
+                "economic_checks": economic_checks,
+                "economic_checks_passed": all(
+                    check["passed"] for check in economic_checks
+                ),
+            }
+            all_ledgers[f"{model}::{rule}"] = ledger
+        immediate = model_evidence[IMMEDIATE_FIRST_CROSSING]
+        confirmed = model_evidence[EDGE_POSITIVE_2_OF_LAST_3_SECONDS]
+        confirmation_improves_yield = (
+            confirmed["metrics"]["net_profit_per_eligible_resolved_market"]
+            > immediate["metrics"]["net_profit_per_eligible_resolved_market"]
+        )
+        confirmation_qualified = bool(
+            confirmation_improves_yield
+            and confirmed["incumbent_frequency_check"]["passed"]
+            and confirmed["economic_checks_passed"]
+        )
+        evidence[model] = {
+            "selection_eligible_model": model in MODEL_SELECTION_ELIGIBLE,
+            "rules": model_evidence,
+            "two_of_three_improves_net_profit_per_eligible_market": (
+                confirmation_improves_yield
+            ),
+            "diagnostic_preference": (
+                EDGE_POSITIVE_2_OF_LAST_3_SECONDS
+                if confirmation_qualified
+                else IMMEDIATE_FIRST_CROSSING
+            ),
+            "two_of_three_qualified_for_future_policy_test": (
+                confirmation_qualified
+            ),
+        }
+    return all_ledgers, {
+        "schema_version": "btc-asymmetric-temporal-confirmation-v1",
+        "confirmation_contract": (
+            "same side must satisfy the complete policy at the current second "
+            "and at one or more of exact causal seconds t-1/t-2"
+        ),
+        "promotion_contract": (
+            "2-of-3 must improve net profit per eligible resolved market, retain "
+            "at least 80% of incumbent frequency, and pass all economic gates"
+        ),
+        "selection_policy_changed": False,
+        "common_incumbent_eligible_resolved_markets": eligible_markets,
+        "models": evidence,
+    }
+
+
+def _policy_rejection_funnels(
+    scored: pl.DataFrame,
+    policy: Any,
+    config: AsymmetricValueConfig,
+) -> dict[str, Any]:
+    models = [
+        name
+        for name in (
+            *sorted(MODEL_SELECTION_ELIGIBLE),
+            SIDE_CONDITIONED_RESIDUAL_MODEL,
+        )
+        if name in scored["model"].unique().to_list()
+    ]
+    return {
+        model: {
+            rule: rejection_funnel(
+                scored.filter(pl.col("model") == model),
+                policy,
+                quantity=config.quantity,
+                maximum_depth_participation=(
+                    config.maximum_depth_participation
+                ),
+                confirmation_rule=rule,
+            )
+            for rule in (
+                IMMEDIATE_FIRST_CROSSING,
+                EDGE_POSITIVE_2_OF_LAST_3_SECONDS,
+            )
+        }
+        for model in models
+    }
+
+
+def _vwap10_capacity_evidence(
+    primary_ledgers: dict[str, pl.DataFrame],
+    frames: dict[str, pl.DataFrame],
+    policy: Any,
+    config: AsymmetricValueConfig,
+) -> tuple[dict[str, pl.DataFrame], dict[str, Any]]:
+    ledgers: dict[str, pl.DataFrame] = {}
+    evidence: dict[str, Any] = {}
+    for offset, model in enumerate(sorted(frames)):
+        ledger, diagnostics = vwap10_capacity_policy_ledger(
+            primary_ledgers[candidate_policy_key(model, policy.name)],
+            policy,
+            execution_reserve_per_share=(
+                config.execution_reserve_per_share
+            ),
+            quantity=10.0,
+            maximum_depth_participation=config.maximum_depth_participation,
+        )
+        metrics = ledger_metrics(ledger)
+        metrics["utc_day_block_bootstrap"] = bootstrap_ledger_metrics(
+            ledger,
+            resamples=config.bootstrap_resamples,
+            seed=config.random_seed + 34_000 + offset,
+        )
+        eligible_markets = frames[model].filter(
+            pl.col("seconds_elapsed") <= policy.maximum_entry_second
+        )["market_id"].n_unique()
+        metrics["eligible_resolved_markets"] = eligible_markets
+        metrics["trades_per_eligible_resolved_market"] = (
+            ledger.height / eligible_markets
+        )
+        metrics["net_profit_per_eligible_resolved_market"] = (
+            float(metrics.get("net_profit") or 0.0) / eligible_markets
+        )
+        ledgers[model] = ledger
+        evidence[model] = {
+            "coverage": diagnostics,
+            "metrics": metrics,
+        }
+    return ledgers, {
+        "schema_version": "btc-asymmetric-vwap10-capacity-v1",
+        "status": "exact_compact_snapshot_evidence_available",
+        "execution_contract": VWAP10_TEN_SHARE_EXECUTION,
+        "quantity": 10.0,
+        "maximum_depth_participation": config.maximum_depth_participation,
+        "probabilities_refit": False,
+        "model_selection_uses_capacity_stress": False,
+        "models": evidence,
+        "vwap15_vwap20": {
+            "status": "not_materialized_and_out_of_scope",
+            "reason": (
+                "the retained historical PMXT snapshot schema stores exact "
+                "VWAP1/5/10 but no reconstructable price ladder for VWAP15/20"
+            ),
+        },
+    }
+
+
+def _readiness_evidence(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("ready") is not True:
+        raise RuntimeError("training readiness payload is not ready")
+    return {
+        "manifest": str(path.resolve()),
+        "manifest_sha256": file_sha256(path),
+        "readiness_identity_sha256": payload["readiness_identity_sha256"],
+        "payload_sha256": payload["payload_sha256"],
+        "range_start": payload["range_start"],
+        "range_end": payload["range_end"],
+        "database_summary": payload["database_summary"],
+        "checks": payload["checks"],
+        "external_ssd_required": payload["external_ssd_required"],
+    }
+
+
 def _load_asymmetric_core_grid(
     core_config: Any,
     scope: str,
@@ -2060,6 +2819,16 @@ def _project_candidate_source(
     *candidate_names: str,
 ) -> pl.DataFrame:
     feature_sets = asymmetric_value_feature_sets()
+    expected_capacity_columns = (
+        "yes_ask_vwap_10",
+        "no_ask_vwap_10",
+        "strict_both_side_eligible_10",
+    )
+    capacity_columns = [
+        column for column in expected_capacity_columns if column in frame.columns
+    ]
+    if capacity_columns and len(capacity_columns) != len(expected_capacity_columns):
+        raise RuntimeError("candidate source has incomplete VWAP10 evidence")
     columns = list(
         dict.fromkeys(
             (
@@ -2075,6 +2844,7 @@ def _project_candidate_source(
                 "no_best_ask",
                 "no_ask_vwap_5",
                 "no_ask_depth",
+                *capacity_columns,
                 "yes_cost_per_share",
                 "no_cost_per_share",
                 "yes_execution_cost_per_share",
@@ -2441,6 +3211,8 @@ def _implementation_digest(config: AsymmetricValueConfig) -> str:
     source_root = Path(__file__).parent
     paths = [
         source_root / "asymmetric_value_benchmark.py",
+        source_root / "asymmetric_incumbent_replay.py",
+        source_root / "asymmetric_training_readiness.py",
         source_root / "asymmetric_value_config.py",
         source_root / "asymmetric_value_data.py",
         source_root / "asymmetric_value_evaluation.py",
@@ -2457,6 +3229,9 @@ def _implementation_digest(config: AsymmetricValueConfig) -> str:
         source_root / "runtime_export.py",
         source_root / "spot_l2_chainlink_features.py",
         config.package_root / "pyproject.toml",
+        config.package_root / "sql" / "btc-asymmetric-training-readiness.sql",
+        DEFAULT_FROZEN_ASYMMETRIC_INCUMBENT_MODEL,
+        DEFAULT_FROZEN_ASYMMETRIC_INCUMBENT_MODEL.with_name("manifest.json"),
         config.price_source_sql,
         config.source_path,
     ]
@@ -2760,8 +3535,6 @@ def _matched_control_noninferiority_checks(
                 "paired_day_net_difference": paired,
             },
         ]
-        if not all(check["passed"] for check in checks[model]):
-            eligible.discard(model)
     return checks, eligible
 
 
