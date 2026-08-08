@@ -648,6 +648,7 @@ def run_asymmetric_value_benchmark(
             "same_policy_applied_to_every_trained_model": True,
             "qualification_limited_to_policy_window_selected_model": True,
         },
+        "target_fit_cohort": training["target_fit_cohort"],
         "predeclared_frozen_evaluation_diagnostics": [
             "frozen_asymmetric_incumbent_frequency",
             "matched_probability_quality",

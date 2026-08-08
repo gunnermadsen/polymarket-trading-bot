@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import io
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import joblib
 import numpy as np
 import polars as pl
+import pytest
 
+import btc_directional_model.asymmetric_value_training as asymmetric_training
 from btc_directional_model.asymmetric_value_config import load_asymmetric_value_config
 from btc_directional_model.asymmetric_value_data import (
     EARLY_CAUSAL_ORACLE_FEATURES,
@@ -25,6 +27,7 @@ from btc_directional_model.asymmetric_value_training import (
     CORE_PRICE,
     EXPECTED_MODEL_FEATURE_COUNTS,
     L2_MATCHED_CORE_PRICE_CONTROL,
+    MATCHED_ATTRIBUTION_CONTROLS,
     MODEL_SELECTION_ELIGIBLE,
     OFFLINE_ONLY_CANDIDATES,
     ORACLE_MATCHED_CORE_PRICE_CONTROL,
@@ -35,13 +38,17 @@ from btc_directional_model.asymmetric_value_training import (
     _coherent_calibration_objective,
     _coherent_probability_from_parameters,
     _price_band_indices,
+    _target_fit_key_digest,
     asymmetric_value_feature_sets,
     fit_side_price_time_calibrators,
+    select_target_fit_cohort,
     target_calibration_evidence,
     target_calibration_gate_checks,
+    target_fit_cohort_contract,
 )
 from btc_directional_model.chainlink_oi_features import CHAINLINK_CANDLE_FEATURES
-from btc_directional_model.core_training import ProbabilityCalibrator
+from btc_directional_model.core_config import load_core_config
+from btc_directional_model.core_training import ProbabilityCalibrator, market_equal_weights
 from btc_directional_model.early_value_training import TimeBandCalibrator
 from btc_directional_model.spot_l2_chainlink_features import L2_FEATURES
 
@@ -200,6 +207,214 @@ def test_raw_price_band_boundaries_are_left_closed() -> None:
     )
 
     assert observed.tolist() == [1, 2, 2, 3, 9]
+
+
+def test_target_fit_cohort_uses_exact_time_and_half_open_either_side_boundaries() -> None:
+    config = load_asymmetric_value_config(
+        Path(__file__).parents[1]
+        / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+    )
+    start = config.fit.start
+    rows = [
+        ("accept_yes_min", 1, 0.20, 0.80, 0),
+        ("accept_no_below_max", 55, 0.70, 0.299999, 1),
+        ("reject_second_0", 0, 0.25, 0.75, 0),
+        ("reject_second_56", 56, 0.25, 0.75, 0),
+        ("reject_below_min", 5, 0.199999, 0.80, 1),
+        ("reject_exact_max", 5, 0.30, 0.70, 0),
+        ("reject_neither_side", 5, 0.50, 0.50, 1),
+        ("reject_nonfinite", 5, float("nan"), 0.70, 0),
+    ]
+    frame = pl.DataFrame(
+        {
+            "market_id": [row[0] for row in rows],
+            "window_start": [start for _ in rows],
+            "observed_at": [start + timedelta(seconds=row[1]) for row in rows],
+            "seconds_elapsed": [row[1] for row in rows],
+            "label_up": [row[4] for row in rows],
+            "yes_ask_vwap_5": [row[2] for row in rows],
+            "no_ask_vwap_5": [row[3] for row in rows],
+        }
+    )
+
+    selected = select_target_fit_cohort(frame, config, model="boundary_test")
+
+    assert set(selected["market_id"].to_list()) == {
+        "accept_yes_min",
+        "accept_no_below_max",
+    }
+    assert _target_fit_key_digest(selected) == _target_fit_key_digest(
+        selected.reverse()
+    )
+    assert target_fit_cohort_contract(config) == {
+        "policy": "raw20_30_by55_edge_3c",
+        "fit_window_start": "2026-04-14T00:00:00+00:00",
+        "fit_window_end_exclusive": "2026-07-16T00:00:00+00:00",
+        "minimum_entry_second": 1,
+        "maximum_entry_second": 55,
+        "entry_second_interval": "closed",
+        "minimum_raw_share_price": 0.20,
+        "maximum_raw_share_price": 0.30,
+        "raw_share_price_interval": "left_closed_right_open",
+        "side_eligibility": "either_yes_or_no_raw_vwap_5",
+        "price_columns": ["yes_ask_vwap_5", "no_ask_vwap_5"],
+        "label_column": "label_up",
+        "required_labels": [0, 1],
+    }
+
+
+def test_target_fit_cohort_fails_closed_without_both_outcomes() -> None:
+    config = load_asymmetric_value_config(
+        Path(__file__).parents[1]
+        / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+    )
+    start = config.fit.start
+    frame = pl.DataFrame(
+        {
+            "market_id": ["m1", "m2"],
+            "window_start": [start, start],
+            "observed_at": [
+                start + timedelta(seconds=1),
+                start + timedelta(seconds=2),
+            ],
+            "seconds_elapsed": [1, 2],
+            "label_up": [1, 1],
+            "yes_ask_vwap_5": [0.25, 0.25],
+            "no_ask_vwap_5": [0.75, 0.75],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="requires both outcomes"):
+        select_target_fit_cohort(frame, config, model="single_class")
+
+
+def test_target_fit_cohort_preserves_equal_total_weight_per_market() -> None:
+    config = load_asymmetric_value_config(
+        Path(__file__).parents[1]
+        / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+    )
+    start = config.fit.start
+    frame = pl.DataFrame(
+        {
+            "market_id": ["m1", "m1", "m1", "m2"],
+            "window_start": [start] * 4,
+            "observed_at": [start + timedelta(seconds=value) for value in (1, 2, 56, 1)],
+            "seconds_elapsed": [1, 2, 56, 1],
+            "label_up": [0, 1, 0, 1],
+            "yes_ask_vwap_5": [0.25, 0.25, 0.25, 0.25],
+            "no_ask_vwap_5": [0.75, 0.75, 0.75, 0.75],
+        }
+    )
+    selected = select_target_fit_cohort(frame, config, model="weight_test")
+    weights = market_equal_weights(selected)
+    totals = (
+        selected.with_columns(pl.Series("weight", weights))
+        .group_by("market_id")
+        .agg(pl.col("weight").sum())
+        .sort("market_id")["weight"]
+        .to_numpy()
+    )
+
+    np.testing.assert_allclose(totals, np.repeat(totals[0], len(totals)))
+
+
+def test_model_wiring_fits_every_candidate_on_target_rows_and_seals_matched_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_asymmetric_value_config(
+        Path(__file__).parents[1]
+        / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+    )
+    core_config = load_core_config(config.core_config)
+    rows = [
+        ("fit_yes", config.fit.start, 1, 0.20, 0.80, 0),
+        ("fit_no", config.fit.start + timedelta(minutes=5), 55, 0.75, 0.25, 1),
+        ("fit_late", config.fit.start + timedelta(minutes=10), 56, 0.25, 0.75, 0),
+        ("fit_mid", config.fit.start + timedelta(minutes=15), 5, 0.50, 0.50, 1),
+        ("calibration", config.calibration.start, 1, 0.25, 0.75, 0),
+        ("policy", config.policy.start, 1, 0.25, 0.75, 1),
+    ]
+    columns: dict[str, list[object]] = {
+        "market_id": [row[0] for row in rows],
+        "window_start": [row[1] for row in rows],
+        "observed_at": [row[1] + timedelta(seconds=row[2]) for row in rows],
+        "seconds_elapsed": [row[2] for row in rows],
+        "label_up": [row[5] for row in rows],
+        "yes_ask_vwap_5": [row[3] for row in rows],
+        "no_ask_vwap_5": [row[4] for row in rows],
+    }
+    all_features = set().union(*asymmetric_value_feature_sets().values())
+    for feature in all_features - set(columns):
+        columns[feature] = [0.0] * len(rows)
+    source = pl.DataFrame(columns)
+    frames = {name: source for name in ASYMMETRIC_VALUE_CANDIDATES}
+    observed_fit_frames: dict[str, pl.DataFrame] = {}
+
+    def fake_fit_model(
+        frame: pl.DataFrame,
+        spec: asymmetric_training.CandidateSpec,
+        *_: object,
+    ) -> object:
+        observed_fit_frames[spec.name] = frame
+        return object()
+
+    class FakeBundle:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def probability(self, frame: pl.DataFrame) -> np.ndarray:
+            return np.full(frame.height, 0.5, dtype=np.float64)
+
+    monkeypatch.setattr(asymmetric_training, "fit_model", fake_fit_model)
+    monkeypatch.setattr(
+        asymmetric_training,
+        "fit_asymmetric_time_band_calibrators",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        asymmetric_training,
+        "fit_side_price_time_calibrators",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        asymmetric_training,
+        "target_calibration_evidence",
+        lambda *_args, **_kwargs: {"required": False, "qualified": True},
+    )
+    monkeypatch.setattr(
+        asymmetric_training,
+        "_calibration_coverage",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(asymmetric_training, "AsymmetricValueModel", FakeBundle)
+
+    _, summary = asymmetric_training.fit_asymmetric_value_models(
+        frames,
+        config,
+        core_config,
+    )
+
+    assert set(observed_fit_frames) == set(ASYMMETRIC_VALUE_CANDIDATES)
+    for name, fit_frame in observed_fit_frames.items():
+        assert set(fit_frame["market_id"].to_list()) == {"fit_yes", "fit_no"}
+        profile = summary["profiles"][name]
+        assert profile["source_fit_rows"] == 4
+        assert profile["source_fit_markets"] == 4
+        assert profile["fit_rows"] == profile["target_fit_rows"] == 2
+        assert profile["fit_markets"] == profile["target_fit_markets"] == 2
+        assert profile["target_fit_contract"] == summary["target_fit_cohort"]["contract"]
+        assert profile["target_fit_key_sha256"] == summary["target_fit_cohort"][
+            "candidate_evidence"
+        ][name]["key_sha256"]
+        assert len(profile["target_fit_key_sha256"]) == 64
+    for candidate, control in MATCHED_ATTRIBUTION_CONTROLS.items():
+        assert (
+            summary["profiles"][candidate]["target_fit_key_sha256"]
+            == summary["profiles"][control]["target_fit_key_sha256"]
+        )
+        assert summary["target_fit_cohort"]["matched_control_key_checks"][candidate][
+            "matched"
+        ]
 
 
 def test_side_corrections_renormalize_and_ignore_evaluation_labels() -> None:

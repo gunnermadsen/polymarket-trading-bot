@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -201,7 +202,15 @@ def fit_asymmetric_value_models(
     config: AsymmetricValueConfig,
     core_config: CoreTrainingConfig,
 ) -> tuple[dict[str, AsymmetricValueModel], dict[str, Any]]:
-    required = {"market_id", "window_start", "seconds_elapsed", "label_up"}
+    required = {
+        "market_id",
+        "window_start",
+        "observed_at",
+        "seconds_elapsed",
+        "label_up",
+        "yes_ask_vwap_5",
+        "no_ask_vwap_5",
+    }
     expected = set(ASYMMETRIC_VALUE_CANDIDATES)
     if set(model_frames) != expected:
         raise ValueError("asymmetric-value model frames do not match the frozen candidates")
@@ -220,6 +229,8 @@ def fit_asymmetric_value_models(
             "asymmetric-value model matrix feature counts changed: "
             f"{observed_matrix_counts}"
         )
+    target_fit_contract = target_fit_cohort_contract(config)
+    target_fit_evidence: dict[str, dict[str, Any]] = {}
     models: dict[str, AsymmetricValueModel] = {}
     summary: dict[str, Any] = {
         "selection_metric": "economic_policy_contract",
@@ -236,12 +247,26 @@ def fit_asymmetric_value_models(
             "historical opening-boundary facts lack a proven decision-time availability timestamp"
         ),
         "oracle_feature_contract": list(EARLY_CAUSAL_ORACLE_FEATURES),
+        "target_fit_cohort": {
+            "contract": target_fit_contract,
+        },
         "profiles": {},
     }
     for name in ASYMMETRIC_VALUE_CANDIDATES:
         scoring_source = model_frames[name]
         training_source = scoring_source
-        fit_frame = _window(training_source, config.fit.start, config.fit.end)
+        source_fit_frame = _window(training_source, config.fit.start, config.fit.end)
+        if source_fit_frame.is_empty():
+            raise RuntimeError(f"{name} source fit frame must be non-empty")
+        fit_frame = select_target_fit_cohort(
+            source_fit_frame,
+            config,
+            model=name,
+        )
+        target_fit_evidence[name] = _target_fit_cohort_evidence(
+            source_fit_frame,
+            fit_frame,
+        )
         calibration_frame = _window(
             scoring_source,
             config.calibration.start,
@@ -324,8 +349,14 @@ def fit_asymmetric_value_models(
             ),
             "training_cohort": _training_cohort(name),
             "scoring_cohort": _scoring_cohort(name),
+            "source_fit_rows": source_fit_frame.height,
+            "source_fit_markets": source_fit_frame["market_id"].n_unique(),
             "fit_rows": fit_frame.height,
             "fit_markets": fit_frame["market_id"].n_unique(),
+            "target_fit_rows": fit_frame.height,
+            "target_fit_markets": fit_frame["market_id"].n_unique(),
+            "target_fit_contract": target_fit_contract,
+            "target_fit_key_sha256": target_fit_evidence[name]["key_sha256"],
             "calibration_rows": calibration_frame.height,
             "calibration_markets": calibration_frame["market_id"].n_unique(),
             "calibration_evidence": calibration_coverage,
@@ -366,7 +397,155 @@ def fit_asymmetric_value_models(
             },
         }
         models[name] = bundle
+    summary["target_fit_cohort"].update(
+        {
+            "candidate_evidence": target_fit_evidence,
+            "key_sha256_by_candidate": {
+                name: evidence["key_sha256"]
+                for name, evidence in target_fit_evidence.items()
+            },
+            "matched_control_key_checks": _matched_target_fit_key_checks(
+                target_fit_evidence
+            ),
+        }
+    )
     return models, summary
+
+
+def target_fit_cohort_contract(config: AsymmetricValueConfig) -> dict[str, Any]:
+    primary = [policy for policy in config.policies if policy.selection_eligible]
+    if len(primary) != 1:
+        raise RuntimeError("target fitting requires exactly one selection-eligible policy")
+    policy = primary[0]
+    return {
+        "policy": policy.name,
+        "fit_window_start": config.fit.start.isoformat(),
+        "fit_window_end_exclusive": config.fit.end.isoformat(),
+        "minimum_entry_second": min(config.prediction_seconds),
+        "maximum_entry_second": policy.maximum_entry_second,
+        "entry_second_interval": "closed",
+        "minimum_raw_share_price": policy.minimum_share_price,
+        "maximum_raw_share_price": policy.maximum_share_price,
+        "raw_share_price_interval": "left_closed_right_open",
+        "side_eligibility": "either_yes_or_no_raw_vwap_5",
+        "price_columns": ["yes_ask_vwap_5", "no_ask_vwap_5"],
+        "label_column": "label_up",
+        "required_labels": [0, 1],
+    }
+
+
+def select_target_fit_cohort(
+    source_fit_frame: pl.DataFrame,
+    config: AsymmetricValueConfig,
+    *,
+    model: str,
+) -> pl.DataFrame:
+    """Select the exact early, lower-price rows optimized by the primary policy."""
+
+    required = {
+        "market_id",
+        "window_start",
+        "observed_at",
+        "seconds_elapsed",
+        "label_up",
+        "yes_ask_vwap_5",
+        "no_ask_vwap_5",
+    }
+    missing = sorted(required - set(source_fit_frame.columns))
+    if missing:
+        raise ValueError(
+            f"{model} target fit source is missing columns: " + ", ".join(missing)
+        )
+    contract = target_fit_cohort_contract(config)
+
+    def side_in_target_band(column: str) -> pl.Expr:
+        return (
+            pl.col(column).is_not_null()
+            & pl.col(column).is_finite()
+            & pl.col(column).is_between(
+                contract["minimum_raw_share_price"],
+                contract["maximum_raw_share_price"],
+                closed="left",
+            )
+        )
+
+    selected = source_fit_frame.filter(
+        pl.col("seconds_elapsed").is_between(
+            contract["minimum_entry_second"],
+            contract["maximum_entry_second"],
+            closed="both",
+        )
+        & (
+            side_in_target_band("yes_ask_vwap_5")
+            | side_in_target_band("no_ask_vwap_5")
+        )
+    ).sort("window_start", "market_id", "seconds_elapsed", "observed_at")
+    if selected.is_empty():
+        raise RuntimeError(f"{model} target fit cohort is empty")
+    if selected["label_up"].null_count():
+        raise RuntimeError(f"{model} target fit cohort contains null outcomes")
+    labels = set(selected["label_up"].unique().to_list())
+    if labels != {0, 1}:
+        raise RuntimeError(
+            f"{model} target fit cohort requires both outcomes; observed {sorted(labels)}"
+        )
+    return selected
+
+
+def _target_fit_cohort_evidence(
+    source_fit_frame: pl.DataFrame,
+    target_fit_frame: pl.DataFrame,
+) -> dict[str, Any]:
+    return {
+        "source_rows": source_fit_frame.height,
+        "source_markets": source_fit_frame["market_id"].n_unique(),
+        "target_rows": target_fit_frame.height,
+        "target_markets": target_fit_frame["market_id"].n_unique(),
+        "key_sha256": _target_fit_key_digest(target_fit_frame),
+    }
+
+
+def _matched_target_fit_key_checks(
+    evidence: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    checks: dict[str, dict[str, Any]] = {}
+    for candidate, control in MATCHED_ATTRIBUTION_CONTROLS.items():
+        candidate_evidence = evidence[candidate]
+        control_evidence = evidence[control]
+        matched = bool(
+            candidate_evidence["target_rows"] == control_evidence["target_rows"]
+            and candidate_evidence["target_markets"]
+            == control_evidence["target_markets"]
+            and candidate_evidence["key_sha256"] == control_evidence["key_sha256"]
+        )
+        if not matched:
+            raise RuntimeError(
+                f"{candidate} target fit keys do not match control {control}"
+            )
+        checks[candidate] = {
+            "candidate": candidate,
+            "control": control,
+            "rows": candidate_evidence["target_rows"],
+            "markets": candidate_evidence["target_markets"],
+            "key_sha256": candidate_evidence["key_sha256"],
+            "matched": True,
+        }
+    return checks
+
+
+def _target_fit_key_digest(frame: pl.DataFrame) -> str:
+    keys = ["market_id", "window_start", "observed_at", "seconds_elapsed"]
+    missing = sorted(set(keys) - set(frame.columns))
+    if missing:
+        raise ValueError("target fit key digest is missing: " + ", ".join(missing))
+    digest = hashlib.sha256(b"btc-asymmetric-target-fit-key-v1\n")
+    for row in frame.select(*keys).sort(*keys).iter_rows():
+        for value in row:
+            rendered = value.isoformat() if hasattr(value, "isoformat") else str(value)
+            encoded = rendered.encode()
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+    return digest.hexdigest()
 
 
 def target_calibration_evidence(
