@@ -27,7 +27,10 @@ from .asymmetric_residual_value import (
     feature_penalty_manifest,
     market_equal_decision_weights,
 )
-from .asymmetric_training_readiness import prepare_asymmetric_training_readiness
+from .asymmetric_training_readiness import (
+    oracle_source_inventory,
+    prepare_asymmetric_training_readiness,
+)
 from .asymmetric_value_config import (
     TARGET_CALIBRATED_TRAINING_CONTRACT,
     AsymmetricValueConfig,
@@ -175,16 +178,18 @@ def run_asymmetric_value_benchmark(
         PRICE_LOGISTIC,
         CORE_PRICE,
     )
-    development_oracle_inventory = _oracle_source_inventory(
-        development_executable_core,
+    development_oracle_inventory = oracle_source_inventory(
         config.oracle_source,
+        development["window_start"].dt.date().unique().to_list(),
     )
     development_oracle = _load_or_build_oracle_core(
-        development_executable_core,
+        development,
         config,
         destination=config.feature_cache / DEVELOPMENT_ORACLE_CACHE,
         source_inventory=development_oracle_inventory,
         core_content_sha256=development_core_content_sha256,
+        expected_range_start=config.fit.start,
+        expected_range_end=config.policy.end,
         force=force,
     )
     development_oracle_price_features = _project_candidate_source(
@@ -811,16 +816,18 @@ def run_asymmetric_value_benchmark(
         PRICE_LOGISTIC,
         CORE_PRICE,
     )
-    evaluation_oracle_inventory = _oracle_source_inventory(
-        evaluation_executable_core,
+    evaluation_oracle_inventory = oracle_source_inventory(
         config.oracle_source,
+        evaluation["window_start"].dt.date().unique().to_list(),
     )
     evaluation_oracle = _load_or_build_oracle_core(
-        evaluation_executable_core,
+        evaluation,
         config,
         destination=config.feature_cache / EVALUATION_ORACLE_CACHE,
         source_inventory=evaluation_oracle_inventory,
         core_content_sha256=evaluation_core_content_sha256,
+        expected_range_start=config.evaluation.start,
+        expected_range_end=config.evaluation.end,
         force=force,
     )
     evaluation_oracle_price_features = _project_candidate_source(
@@ -2989,14 +2996,29 @@ def _load_or_build_oracle_core(
     destination: Path,
     source_inventory: dict[str, Any],
     core_content_sha256: str,
+    expected_range_start: datetime,
+    expected_range_end: datetime,
     force: bool,
 ) -> pl.DataFrame:
+    expected_dates = [
+        (expected_range_start + timedelta(days=offset)).date()
+        for offset in range((expected_range_end - expected_range_start).days)
+    ]
+    observed_dates = sorted(
+        core["window_start"].dt.date().unique().to_list()
+    )
+    if observed_dates != expected_dates:
+        raise RuntimeError(
+            "Oracle propagation base Core does not span the exact daily range"
+        )
     metadata_path = destination.with_suffix(".metadata.json")
     identity = {
         "schema_version": "btc-asymmetric-value-early-oracle-v2",
         "core_key_sha256": _frame_key_digest(core),
         "core_content_sha256": core_content_sha256,
         "source_inventory_sha256": source_inventory["inventory_sha256"],
+        "range_start": expected_range_start.isoformat(),
+        "range_end": expected_range_end.isoformat(),
         "minimum_propagation_seconds": ORACLE_MINIMUM_PROPAGATION_SECONDS,
         "maximum_age_seconds": ORACLE_MAXIMUM_AGE_SECONDS,
         "features": list(EARLY_CAUSAL_ORACLE_FEATURES),
@@ -3028,49 +3050,6 @@ def _load_or_build_oracle_core(
         },
     )
     return frame
-
-
-def _oracle_source_inventory(
-    core: pl.DataFrame,
-    source: Path,
-) -> dict[str, Any]:
-    days = sorted(core["window_start"].dt.date().unique().to_list())
-    records: list[dict[str, Any]] = []
-    missing: list[str] = []
-    for day in days:
-        raw_path = source / f"{day.isoformat()}.parquet"
-        oracle_path = source / f"oracle-{day.isoformat()}.parquet"
-        if not raw_path.is_file() or not oracle_path.is_file():
-            missing.append(day.isoformat())
-            continue
-        oracle = pl.read_parquet(oracle_path)
-        causality_violations = oracle.filter(
-            pl.col("oracle_source_timestamp") > pl.col("oracle_block_timestamp")
-        ).height
-        if causality_violations:
-            raise RuntimeError(f"oracle source contains causal violations: {oracle_path}")
-        records.append(
-            {
-                "date": day.isoformat(),
-                "raw_path": raw_path.name,
-                "raw_sha256": file_sha256(raw_path),
-                "oracle_path": oracle_path.name,
-                "oracle_sha256": file_sha256(oracle_path),
-                "oracle_rows": oracle.height,
-                "causality_violations": 0,
-            }
-        )
-    payload = {
-        "schema_version": "btc-asymmetric-value-oracle-source-inventory-v1",
-        "expected_days": len(days),
-        "available_days": len(records),
-        "missing_days": missing,
-        "records": records,
-    }
-    payload["inventory_sha256"] = hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    return payload
 
 
 def _load_or_build_source_features(
