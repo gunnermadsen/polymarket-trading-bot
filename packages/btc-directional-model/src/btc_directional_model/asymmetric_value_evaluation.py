@@ -10,6 +10,30 @@ import polars as pl
 from .asymmetric_value_config import AsymmetricValueConfig, ValuePolicy
 
 EXECUTION_STRESS_PER_SHARE = 0.01
+IMMEDIATE_FIRST_CROSSING = "immediate_first_crossing"
+EDGE_POSITIVE_2_OF_LAST_3_SECONDS = "edge_positive_2_of_last_3_seconds"
+MINIMUM_SELECTED_WIN_RATE_ADVANTAGE = 0.05
+
+_POLICY_REQUIRED_COLUMNS = {
+    "model",
+    "market_id",
+    "window_start",
+    "observed_at",
+    "seconds_elapsed",
+    "label_up",
+    "probability_yes",
+    "argmax_yes",
+    "yes_ask_vwap_5",
+    "no_ask_vwap_5",
+    "yes_ask_depth",
+    "no_ask_depth",
+    "yes_cost_per_share",
+    "no_cost_per_share",
+    "yes_execution_cost_per_share",
+    "no_execution_cost_per_share",
+    "yes_edge_per_share",
+    "no_edge_per_share",
+}
 
 
 def score_two_sided_value(predictions: pl.DataFrame) -> pl.DataFrame:
@@ -78,46 +102,229 @@ def policy_ledger(
     quantity: float,
     maximum_depth_participation: float,
 ) -> pl.DataFrame:
-    yes_eligible = (
-        pl.col("yes_ask_vwap_5").is_between(
+    staged = _with_policy_stage_flags(
+        scored,
+        policy,
+        quantity=quantity,
+        maximum_depth_participation=maximum_depth_participation,
+    )
+    eligible = _select_policy_side(staged, "_yes_edge_eligible", "_no_edge_eligible")
+    return _first_policy_entries(eligible, policy.name, quantity)
+
+
+def temporal_confirmation_policy_ledger(
+    scored: pl.DataFrame,
+    policy: ValuePolicy,
+    *,
+    quantity: float,
+    maximum_depth_participation: float,
+) -> pl.DataFrame:
+    """Apply the fixed same-side two-of-three-second confirmation rule.
+
+    A side must satisfy every current policy condition at the entry second and in at
+    least one of the exact decision seconds ``t-1`` or ``t-2``. Prior rows only count
+    when their observation timestamp precedes the candidate entry, preventing future
+    or merely row-adjacent observations from leaking into the confirmation.
+    """
+
+    staged = _with_policy_stage_flags(
+        scored,
+        policy,
+        quantity=quantity,
+        maximum_depth_participation=maximum_depth_participation,
+    )
+    confirmed = _with_temporal_confirmation_flags(staged)
+    eligible = _select_policy_side(
+        confirmed,
+        "_yes_temporally_confirmed",
+        "_no_temporally_confirmed",
+    )
+    return _first_policy_entries(
+        eligible,
+        f"{policy.name}::{EDGE_POSITIVE_2_OF_LAST_3_SECONDS}",
+        quantity,
+    )
+
+
+def temporal_confirmation_ablation(
+    scored: pl.DataFrame,
+    policy: ValuePolicy,
+    *,
+    quantity: float,
+    maximum_depth_participation: float,
+) -> tuple[dict[str, pl.DataFrame], dict[str, dict[str, Any]]]:
+    """Evaluate fixed immediate and causal confirmation rules on one scored frame."""
+
+    ledgers = {
+        IMMEDIATE_FIRST_CROSSING: policy_ledger(
+            scored,
+            policy,
+            quantity=quantity,
+            maximum_depth_participation=maximum_depth_participation,
+        ),
+        EDGE_POSITIVE_2_OF_LAST_3_SECONDS: temporal_confirmation_policy_ledger(
+            scored,
+            policy,
+            quantity=quantity,
+            maximum_depth_participation=maximum_depth_participation,
+        ),
+    }
+    return ledgers, {name: ledger_metrics(ledger) for name, ledger in ledgers.items()}
+
+
+def _with_policy_stage_flags(
+    scored: pl.DataFrame,
+    policy: ValuePolicy,
+    *,
+    quantity: float,
+    maximum_depth_participation: float,
+) -> pl.DataFrame:
+    _require_columns(scored, _POLICY_REQUIRED_COLUMNS, "asymmetric policy scoring")
+    if quantity <= 0.0 or maximum_depth_participation <= 0.0:
+        raise ValueError("policy quantity and depth participation must be positive")
+    within_time = pl.col("seconds_elapsed") <= policy.maximum_entry_second
+    yes_time_raw = (
+        within_time
+        & pl.col("yes_ask_vwap_5").is_between(
             policy.minimum_share_price,
             policy.maximum_share_price,
             closed="left",
         )
         & (pl.col("yes_cost_per_share") <= policy.maximum_cost_per_share)
-        & (pl.col("yes_edge_per_share") >= policy.minimum_edge_per_share)
-        & (
-            quantity
-            <= pl.col("yes_ask_depth") * maximum_depth_participation
-        )
     )
-    no_eligible = (
-        pl.col("no_ask_vwap_5").is_between(
+    no_time_raw = (
+        within_time
+        & pl.col("no_ask_vwap_5").is_between(
             policy.minimum_share_price,
             policy.maximum_share_price,
             closed="left",
         )
         & (pl.col("no_cost_per_share") <= policy.maximum_cost_per_share)
-        & (pl.col("no_edge_per_share") >= policy.minimum_edge_per_share)
-        & (
-            quantity
-            <= pl.col("no_ask_depth") * maximum_depth_participation
-        )
     )
-    eligible = scored.with_columns(
-        yes_eligible.alias("_yes_policy_eligible"),
-        no_eligible.alias("_no_policy_eligible"),
-    ).filter(
-        (pl.col("seconds_elapsed") <= policy.maximum_entry_second)
-        & (pl.col("_yes_policy_eligible") | pl.col("_no_policy_eligible"))
+    staged = scored.with_columns(
+        yes_time_raw.fill_null(False).alias("_yes_time_raw_eligible"),
+        no_time_raw.fill_null(False).alias("_no_time_raw_eligible"),
     ).with_columns(
-        pl.when(
-            pl.col("_yes_policy_eligible") & pl.col("_no_policy_eligible")
+        (
+            pl.col("_yes_time_raw_eligible")
+            & (
+                quantity
+                <= pl.col("yes_ask_depth") * maximum_depth_participation
+            )
         )
-        .then(pl.col("yes_edge_per_share") >= pl.col("no_edge_per_share"))
-        .otherwise(pl.col("_yes_policy_eligible"))
-        .alias("selected_yes")
+        .fill_null(False)
+        .alias("_yes_depth_eligible"),
+        (
+            pl.col("_no_time_raw_eligible")
+            & (
+                quantity
+                <= pl.col("no_ask_depth") * maximum_depth_participation
+            )
+        )
+        .fill_null(False)
+        .alias("_no_depth_eligible"),
+    )
+    return staged.with_columns(
+        (
+            pl.col("_yes_depth_eligible")
+            & (pl.col("yes_edge_per_share") >= policy.minimum_edge_per_share)
+        )
+        .fill_null(False)
+        .alias("_yes_edge_eligible"),
+        (
+            pl.col("_no_depth_eligible")
+            & (pl.col("no_edge_per_share") >= policy.minimum_edge_per_share)
+        )
+        .fill_null(False)
+        .alias("_no_edge_eligible"),
+    )
+
+
+def _with_temporal_confirmation_flags(staged: pl.DataFrame) -> pl.DataFrame:
+    keys = ["model", "market_id", "window_start", "seconds_elapsed"]
+    if staged.select(*keys).is_duplicated().any():
+        raise ValueError(
+            "temporal confirmation requires one frozen prediction per model/market/second"
+        )
+
+    confirmed = staged
+    for lag in (1, 2):
+        prior = staged.select(
+            *keys,
+            pl.col("observed_at").alias(f"_prior_{lag}_observed_at"),
+            pl.col("_yes_edge_eligible").alias(f"_prior_{lag}_yes_eligible"),
+            pl.col("_no_edge_eligible").alias(f"_prior_{lag}_no_eligible"),
+        ).with_columns((pl.col("seconds_elapsed") + lag).alias("seconds_elapsed"))
+        confirmed = confirmed.join(
+            prior,
+            on=keys,
+            how="left",
+            validate="1:1",
+        ).with_columns(
+            (
+                pl.col(f"_prior_{lag}_yes_eligible").fill_null(False)
+                & (
+                    pl.col(f"_prior_{lag}_observed_at").is_not_null()
+                    & (pl.col(f"_prior_{lag}_observed_at") < pl.col("observed_at"))
+                )
+            ).alias(f"_causal_prior_{lag}_yes"),
+            (
+                pl.col(f"_prior_{lag}_no_eligible").fill_null(False)
+                & (
+                    pl.col(f"_prior_{lag}_observed_at").is_not_null()
+                    & (pl.col(f"_prior_{lag}_observed_at") < pl.col("observed_at"))
+                )
+            ).alias(f"_causal_prior_{lag}_no"),
+        )
+
+    return confirmed.with_columns(
+        (
+            pl.col("_yes_edge_eligible")
+            & (
+                pl.col("_yes_edge_eligible").cast(pl.Int8)
+                + pl.col("_causal_prior_1_yes").cast(pl.Int8)
+                + pl.col("_causal_prior_2_yes").cast(pl.Int8)
+                >= 2
+            )
+        ).alias("_yes_temporally_confirmed"),
+        (
+            pl.col("_no_edge_eligible")
+            & (
+                pl.col("_no_edge_eligible").cast(pl.Int8)
+                + pl.col("_causal_prior_1_no").cast(pl.Int8)
+                + pl.col("_causal_prior_2_no").cast(pl.Int8)
+                >= 2
+            )
+        ).alias("_no_temporally_confirmed"),
+    )
+
+
+def _select_policy_side(
+    staged: pl.DataFrame,
+    yes_eligible_column: str,
+    no_eligible_column: str,
+) -> pl.DataFrame:
+    eligible = staged.filter(
+        pl.col(yes_eligible_column) | pl.col(no_eligible_column)
     ).with_columns(
+        pl.when(pl.col(yes_eligible_column) & pl.col(no_eligible_column))
+        .then(pl.col("yes_edge_per_share") >= pl.col("no_edge_per_share"))
+        .otherwise(pl.col(yes_eligible_column))
+        .alias("selected_yes")
+    )
+    internal = [
+        column
+        for column in eligible.columns
+        if column.startswith(
+            (
+                "_yes_",
+                "_no_",
+                "_prior_",
+                "_causal_prior_",
+            )
+        )
+    ]
+    return eligible.with_columns(
         pl.when(pl.col("selected_yes"))
         .then(pl.col("probability_yes"))
         .otherwise(1.0 - pl.col("probability_yes"))
@@ -142,16 +349,21 @@ def policy_ledger(
         .then(pl.col("label_up") == 1)
         .otherwise(pl.col("label_up") == 0)
         .alias("won"),
-        (pl.col("selected_yes") != pl.col("argmax_yes")).alias(
-            "selected_underdog"
-        ),
-    ).drop("_yes_policy_eligible", "_no_policy_eligible")
+        (pl.col("selected_yes") != pl.col("argmax_yes")).alias("selected_underdog"),
+    ).drop(*internal)
+
+
+def _first_policy_entries(
+    eligible: pl.DataFrame,
+    policy_name: str,
+    quantity: float,
+) -> pl.DataFrame:
     return (
         eligible.sort("model", "market_id", "seconds_elapsed", "observed_at")
         .group_by("model", "market_id", maintain_order=True)
         .first()
         .with_columns(
-            pl.lit(policy.name).alias("policy"),
+            pl.lit(policy_name).alias("policy"),
             pl.lit(quantity).alias("quantity"),
             (
                 (
@@ -163,6 +375,138 @@ def policy_ledger(
             (pl.col("selected_execution_cost_per_share") * quantity).alias("entry_debit"),
         )
     )
+
+
+def rejection_funnel(
+    scored: pl.DataFrame,
+    policy: ValuePolicy,
+    *,
+    quantity: float,
+    maximum_depth_participation: float,
+    confirmation_rule: str = EDGE_POSITIVE_2_OF_LAST_3_SECONDS,
+) -> dict[str, Any]:
+    """Count cumulative decision eligibility without double-counting aggregate markets.
+
+    The input is contractually the already-fresh, strict execution cohort. The helper
+    reports that boundary explicitly; it does not infer freshness from quote columns.
+    YES and NO support may overlap, while aggregate rows and markets are always the
+    union of the two side masks.
+    """
+
+    if confirmation_rule not in {
+        IMMEDIATE_FIRST_CROSSING,
+        EDGE_POSITIVE_2_OF_LAST_3_SECONDS,
+    }:
+        raise ValueError(f"unsupported temporal confirmation rule: {confirmation_rule}")
+    staged = _with_policy_stage_flags(
+        scored,
+        policy,
+        quantity=quantity,
+        maximum_depth_participation=maximum_depth_participation,
+    ).with_columns(
+        pl.lit(True).alias("_yes_source_candidate"),
+        pl.lit(True).alias("_no_source_candidate"),
+        pl.lit(True).alias("_yes_fresh_strict"),
+        pl.lit(True).alias("_no_fresh_strict"),
+    )
+    models = staged["model"].unique().to_list()
+    if len(models) > 1:
+        raise ValueError("rejection funnel requires one model at a time")
+
+    if confirmation_rule == EDGE_POSITIVE_2_OF_LAST_3_SECONDS:
+        staged = _with_temporal_confirmation_flags(staged)
+        yes_temporal = "_yes_temporally_confirmed"
+        no_temporal = "_no_temporally_confirmed"
+    else:
+        yes_temporal = "_yes_edge_eligible"
+        no_temporal = "_no_edge_eligible"
+
+    eligible = _select_policy_side(staged, yes_temporal, no_temporal)
+    selected = _first_policy_entries(eligible, policy.name, quantity)
+    stages = [
+        _funnel_stage_counts(
+            staged,
+            "source_candidate_rows",
+            "_yes_source_candidate",
+            "_no_source_candidate",
+        ),
+        _funnel_stage_counts(
+            staged,
+            "fresh_strict_execution",
+            "_yes_fresh_strict",
+            "_no_fresh_strict",
+        ),
+        _funnel_stage_counts(
+            staged,
+            "time_raw_price",
+            "_yes_time_raw_eligible",
+            "_no_time_raw_eligible",
+        ),
+        _funnel_stage_counts(
+            staged,
+            "depth",
+            "_yes_depth_eligible",
+            "_no_depth_eligible",
+        ),
+        _funnel_stage_counts(
+            staged,
+            "modeled_edge",
+            "_yes_edge_eligible",
+            "_no_edge_eligible",
+        ),
+        _funnel_stage_counts(
+            staged,
+            "temporal_confirmation",
+            yes_temporal,
+            no_temporal,
+        ),
+        _selected_funnel_counts(selected),
+    ]
+    return {
+        "model": models[0] if models else None,
+        "confirmation_rule": confirmation_rule,
+        "fresh_strict_execution_input": True,
+        "fresh_strict_execution_contract": (
+            "input frame is already filtered to fresh, strict execution evidence"
+        ),
+        "time_raw_price_includes_all_in_cost_cap": True,
+        "aggregate_market_counting": "unique union across YES and NO; never side-count sum",
+        "stages": stages,
+    }
+
+
+def _funnel_stage_counts(
+    frame: pl.DataFrame,
+    stage: str,
+    yes_column: str,
+    no_column: str,
+) -> dict[str, Any]:
+    yes = frame.filter(pl.col(yes_column))
+    no = frame.filter(pl.col(no_column))
+    aggregate = frame.filter(pl.col(yes_column) | pl.col(no_column))
+    return {
+        "stage": stage,
+        "aggregate_rows": aggregate.height,
+        "aggregate_markets": aggregate["market_id"].n_unique(),
+        "yes_rows": yes.height,
+        "yes_markets": yes["market_id"].n_unique(),
+        "no_rows": no.height,
+        "no_markets": no["market_id"].n_unique(),
+    }
+
+
+def _selected_funnel_counts(selected: pl.DataFrame) -> dict[str, Any]:
+    yes = selected.filter(pl.col("selected_yes"))
+    no = selected.filter(~pl.col("selected_yes"))
+    return {
+        "stage": "selected_one_trade_per_market",
+        "aggregate_rows": selected.height,
+        "aggregate_markets": selected["market_id"].n_unique(),
+        "yes_rows": yes.height,
+        "yes_markets": yes["market_id"].n_unique(),
+        "no_rows": no.height,
+        "no_markets": no["market_id"].n_unique(),
+    }
 
 
 def confidence_reference_ledger(
@@ -744,11 +1088,14 @@ def ledger_metrics(ledger: pl.DataFrame) -> dict[str, Any]:
             "pre60_trades": 0,
             "twenty_to_thirty_cent_trades": 0,
             "accuracy": None,
+            "selected_win_rate": None,
             "net_profit": 0.0,
             "net_expectancy_per_trade": None,
             "profit_factor": None,
             "capital_efficiency": None,
             "mean_admission_cost_per_share": None,
+            "conservative_all_in_break_even_probability": None,
+            "selected_win_rate_advantage": None,
             "mean_share_price": None,
             "absolute_selected_calibration_bias": None,
             "stress_1c_net_expectancy_per_trade": None,
@@ -799,6 +1146,10 @@ def ledger_metrics(ledger: pl.DataFrame) -> dict[str, Any]:
     clipped_probability = np.clip(selected_probability, 1e-9, 1.0 - 1e-9)
     calibration_bias = float(np.mean(selected_probability - won))
     selected_yes = ledger["selected_yes"]
+    conservative_break_even = float(
+        ledger["selected_admission_cost_per_share"].mean()
+    )
+    actual_win_rate = float(ledger["won"].mean())
     pre60_trades = ledger.filter(pl.col("seconds_elapsed") < 60).height
     twenty_to_thirty = ledger.filter(
         pl.col("selected_share_price").is_between(
@@ -819,7 +1170,8 @@ def ledger_metrics(ledger: pl.DataFrame) -> dict[str, Any]:
         "twenty_to_thirty_cent_trade_share": twenty_to_thirty / ledger.height,
         "underdog_trades": int(ledger["selected_underdog"].sum()),
         "underdog_trade_share": float(ledger["selected_underdog"].mean()),
-        "accuracy": float(ledger["won"].mean()),
+        "accuracy": actual_win_rate,
+        "selected_win_rate": actual_win_rate,
         "net_profit": net_profit,
         "net_expectancy_per_trade": float(profits.mean()),
         "profit_factor": gross_profit / gross_loss if gross_loss > 0 else None,
@@ -830,6 +1182,8 @@ def ledger_metrics(ledger: pl.DataFrame) -> dict[str, Any]:
         "mean_admission_cost_per_share": float(
             ledger["selected_admission_cost_per_share"].mean()
         ),
+        "conservative_all_in_break_even_probability": conservative_break_even,
+        "selected_win_rate_advantage": actual_win_rate - conservative_break_even,
         "mean_share_price": float(ledger["selected_share_price"].mean()),
         "median_admission_cost_per_share": float(
             ledger["selected_admission_cost_per_share"].median()
@@ -879,7 +1233,7 @@ def bootstrap_ledger_metrics(
     *,
     resamples: int,
     seed: int,
-) -> dict[str, dict[str, float]] | None:
+) -> dict[str, Any] | None:
     if ledger.is_empty():
         return None
     daily = (
@@ -888,24 +1242,332 @@ def bootstrap_ledger_metrics(
         .agg(
             pl.col("realized_net").sum().alias("net"),
             pl.col("entry_debit").sum().alias("debit"),
+            pl.col("won").cast(pl.Float64).sum().alias("wins"),
+            pl.col("selected_admission_cost_per_share").sum().alias(
+                "admission_cost"
+            ),
             pl.len().alias("trades"),
         )
         .sort("date")
     )
     net = daily["net"].to_numpy()
     debit = daily["debit"].to_numpy()
+    wins = daily["wins"].to_numpy()
+    admission_cost = daily["admission_cost"].to_numpy()
     trades = daily["trades"].to_numpy()
     rng = np.random.default_rng(seed)
     expectancy = np.empty(resamples, dtype=np.float64)
     capital_efficiency = np.empty(resamples, dtype=np.float64)
+    selected_win_rate_advantage = np.empty(resamples, dtype=np.float64)
     for index in range(resamples):
         chosen = rng.integers(0, len(net), len(net))
         expectancy[index] = net[chosen].sum() / max(trades[chosen].sum(), 1)
         capital_efficiency[index] = net[chosen].sum() / max(debit[chosen].sum(), 1e-12)
+        selected_win_rate_advantage[index] = (
+            wins[chosen].sum() - admission_cost[chosen].sum()
+        ) / max(trades[chosen].sum(), 1)
     return {
         "utc_day_blocks": int(daily.height),
         "net_expectancy_per_trade": _interval(expectancy),
         "capital_efficiency": _interval(capital_efficiency),
+        "selected_win_rate_advantage": _interval(selected_win_rate_advantage),
+    }
+
+
+def selected_win_rate_advantage_gate_checks(
+    metrics: dict[str, Any],
+    *,
+    minimum_point_advantage: float = MINIMUM_SELECTED_WIN_RATE_ADVANTAGE,
+) -> list[dict[str, Any]]:
+    """Require both a five-point advantage and a positive UTC-day lower bound."""
+
+    if not np.isfinite(minimum_point_advantage) or minimum_point_advantage < 0.0:
+        raise ValueError("minimum selected win-rate advantage must be finite and nonnegative")
+    point = metrics.get("selected_win_rate_advantage")
+    bootstrap = metrics.get("utc_day_block_bootstrap") or {}
+    lower = (bootstrap.get("selected_win_rate_advantage") or {}).get("lower_95")
+    return [
+        {
+            "name": "minimum_selected_win_rate_advantage",
+            "observed": point,
+            "threshold": minimum_point_advantage,
+            "operator": ">=",
+            "passed": bool(point is not None and np.isfinite(point) and point >= minimum_point_advantage),
+        },
+        {
+            "name": "positive_bootstrap_lower_selected_win_rate_advantage",
+            "observed": lower,
+            "threshold": 0.0,
+            "operator": ">",
+            "passed": bool(lower is not None and np.isfinite(lower) and lower > 0.0),
+        },
+    ]
+
+
+def frequency_floor_check(
+    *,
+    candidate_trades: int,
+    eligible_resolved_markets: int,
+    incumbent_trades_per_eligible_resolved_market: float,
+    minimum_incumbent_fraction: float = 0.80,
+) -> dict[str, Any]:
+    """Compare candidate market-level frequency with a supplied incumbent rate."""
+
+    if eligible_resolved_markets <= 0:
+        raise ValueError("frequency floor requires at least one eligible resolved market")
+    if candidate_trades < 0 or candidate_trades > eligible_resolved_markets:
+        raise ValueError("candidate trades must be inside the eligible resolved market count")
+    if (
+        not np.isfinite(incumbent_trades_per_eligible_resolved_market)
+        or incumbent_trades_per_eligible_resolved_market <= 0.0
+    ):
+        raise ValueError("incumbent trade frequency must be finite and positive")
+    if (
+        not np.isfinite(minimum_incumbent_fraction)
+        or not 0.0 < minimum_incumbent_fraction <= 1.0
+    ):
+        raise ValueError("minimum incumbent frequency fraction must be inside (0, 1]")
+
+    candidate_rate = candidate_trades / eligible_resolved_markets
+    required_rate = (
+        incumbent_trades_per_eligible_resolved_market * minimum_incumbent_fraction
+    )
+    return {
+        "name": "minimum_frequency_relative_to_incumbent",
+        "candidate_trades": candidate_trades,
+        "eligible_resolved_markets": eligible_resolved_markets,
+        "candidate_trades_per_eligible_resolved_market": candidate_rate,
+        "incumbent_trades_per_eligible_resolved_market": (
+            incumbent_trades_per_eligible_resolved_market
+        ),
+        "candidate_to_incumbent_frequency_ratio": (
+            candidate_rate / incumbent_trades_per_eligible_resolved_market
+        ),
+        "observed": candidate_rate,
+        "threshold": required_rate,
+        "minimum_incumbent_fraction": minimum_incumbent_fraction,
+        "operator": ">=",
+        "passed": candidate_rate >= required_rate,
+    }
+
+
+def matched_probability_quality(
+    candidate: pl.DataFrame,
+    oracle_control: pl.DataFrame,
+    *,
+    block_unit: str,
+    resamples: int,
+    seed: int,
+) -> dict[str, Any]:
+    """Compare probability quality on identical market/second observations.
+
+    Bootstrap sampling is paired by complete market or UTC-day blocks. No economic
+    outcome or PnL column participates in the calculation.
+    """
+
+    keys = ["market_id", "window_start", "seconds_elapsed"]
+    required = {*keys, "label_up", "probability_yes"}
+    _require_columns(candidate, required, "candidate probability quality")
+    _require_columns(oracle_control, required, "Oracle control probability quality")
+    if block_unit not in {"market", "utc_day"}:
+        raise ValueError("probability quality block_unit must be market or utc_day")
+    if resamples <= 0 or seed < 0:
+        raise ValueError("probability quality bootstrap settings are invalid")
+    if candidate.is_empty() or oracle_control.is_empty():
+        raise ValueError("matched probability quality requires at least one observation")
+    for name, frame in (("candidate", candidate), ("Oracle control", oracle_control)):
+        if frame.select(*keys).is_duplicated().any():
+            raise ValueError(f"{name} probability frame contains duplicate market/second keys")
+
+    candidate_keys = candidate.select(*keys).sort(keys)
+    oracle_keys = oracle_control.select(*keys).sort(keys)
+    if not candidate_keys.equals(oracle_keys, null_equal=True):
+        raise ValueError(
+            "candidate and Oracle control require identical market/second keys"
+        )
+    paired = candidate.select(
+        *keys,
+        pl.col("label_up").alias("candidate_label_up"),
+        pl.col("probability_yes").alias("candidate_probability_yes"),
+    ).join(
+        oracle_control.select(
+            *keys,
+            pl.col("label_up").alias("oracle_label_up"),
+            pl.col("probability_yes").alias("oracle_probability_yes"),
+        ),
+        on=keys,
+        how="inner",
+        validate="1:1",
+    )
+    if paired.filter(pl.col("candidate_label_up") != pl.col("oracle_label_up")).height:
+        raise ValueError("candidate and Oracle control labels differ on matched keys")
+
+    candidate_probability = paired["candidate_probability_yes"].to_numpy()
+    oracle_probability = paired["oracle_probability_yes"].to_numpy()
+    labels = paired["candidate_label_up"].to_numpy().astype(np.float64)
+    for name, probability in (
+        ("candidate", candidate_probability),
+        ("Oracle control", oracle_probability),
+    ):
+        if not np.all(np.isfinite(probability)) or np.any(
+            (probability < 0.0) | (probability > 1.0)
+        ):
+            raise ValueError(f"{name} probabilities must be finite and inside [0, 1]")
+    if not np.all(np.isin(labels, (0.0, 1.0))):
+        raise ValueError("matched probability labels must be binary")
+
+    candidate_brier = np.square(candidate_probability - labels)
+    oracle_brier = np.square(oracle_probability - labels)
+    candidate_clipped = np.clip(candidate_probability, 1e-15, 1.0 - 1e-15)
+    oracle_clipped = np.clip(oracle_probability, 1e-15, 1.0 - 1e-15)
+    candidate_log_loss = -(
+        labels * np.log(candidate_clipped)
+        + (1.0 - labels) * np.log(1.0 - candidate_clipped)
+    )
+    oracle_log_loss = -(
+        labels * np.log(oracle_clipped)
+        + (1.0 - labels) * np.log(1.0 - oracle_clipped)
+    )
+    paired = paired.with_columns(
+        pl.Series("_brier_delta", candidate_brier - oracle_brier),
+        pl.Series("_log_loss_delta", candidate_log_loss - oracle_log_loss),
+    )
+    bootstrap = _paired_probability_quality_bootstrap(
+        paired,
+        block_unit=block_unit,
+        resamples=resamples,
+        seed=seed,
+    )
+    brier_delta = float(np.mean(candidate_brier - oracle_brier))
+    log_loss_delta = float(np.mean(candidate_log_loss - oracle_log_loss))
+    return {
+        "matched_rows": paired.height,
+        "matched_markets": paired["market_id"].n_unique(),
+        "matched_utc_days": paired["window_start"].dt.date().n_unique(),
+        "block_unit": block_unit,
+        "block_count": bootstrap["block_count"],
+        "brier_score": {
+            "candidate": float(np.mean(candidate_brier)),
+            "oracle_control": float(np.mean(oracle_brier)),
+            "candidate_minus_oracle_control": brier_delta,
+            "improvement": -brier_delta,
+            "candidate_minus_oracle_control_bootstrap": bootstrap["brier_delta"],
+            "improvement_bootstrap": bootstrap["brier_improvement"],
+        },
+        "log_loss": {
+            "candidate": float(np.mean(candidate_log_loss)),
+            "oracle_control": float(np.mean(oracle_log_loss)),
+            "candidate_minus_oracle_control": log_loss_delta,
+            "improvement": -log_loss_delta,
+            "candidate_minus_oracle_control_bootstrap": bootstrap["log_loss_delta"],
+            "improvement_bootstrap": bootstrap["log_loss_improvement"],
+        },
+    }
+
+
+def matched_probability_quality_gate_checks(
+    metrics: dict[str, Any],
+    *,
+    brier_noninferiority_margin: float,
+    log_loss_noninferiority_margin: float,
+    minimum_brier_improvement: float = 0.0,
+    minimum_log_loss_improvement: float = 0.0,
+) -> list[dict[str, Any]]:
+    """Return robust paired noninferiority and improvement checks."""
+
+    thresholds = {
+        "brier_score": (brier_noninferiority_margin, minimum_brier_improvement),
+        "log_loss": (log_loss_noninferiority_margin, minimum_log_loss_improvement),
+    }
+    checks: list[dict[str, Any]] = []
+    for metric_name, (margin, minimum_improvement) in thresholds.items():
+        if not np.isfinite(margin) or margin < 0.0:
+            raise ValueError("probability noninferiority margins must be finite and nonnegative")
+        if not np.isfinite(minimum_improvement) or minimum_improvement < 0.0:
+            raise ValueError("minimum probability improvements must be finite and nonnegative")
+        values = metrics.get(metric_name) or {}
+        delta = values.get("candidate_minus_oracle_control")
+        delta_upper = (
+            values.get("candidate_minus_oracle_control_bootstrap") or {}
+        ).get("upper_95")
+        improvement = values.get("improvement")
+        improvement_lower = (values.get("improvement_bootstrap") or {}).get("lower_95")
+        checks.extend(
+            [
+                {
+                    "name": f"{metric_name}_noninferior_to_oracle_control",
+                    "observed": delta_upper,
+                    "point_estimate": delta,
+                    "threshold": margin,
+                    "operator": "<=",
+                    "passed": bool(
+                        delta is not None
+                        and delta_upper is not None
+                        and np.isfinite(delta)
+                        and np.isfinite(delta_upper)
+                        and delta <= margin
+                        and delta_upper <= margin
+                    ),
+                },
+                {
+                    "name": f"{metric_name}_improves_oracle_control",
+                    "observed": improvement_lower,
+                    "point_estimate": improvement,
+                    "threshold": minimum_improvement,
+                    "operator": ">",
+                    "passed": bool(
+                        improvement is not None
+                        and improvement_lower is not None
+                        and np.isfinite(improvement)
+                        and np.isfinite(improvement_lower)
+                        and improvement > minimum_improvement
+                        and improvement_lower > minimum_improvement
+                    ),
+                },
+            ]
+        )
+    return checks
+
+
+def _paired_probability_quality_bootstrap(
+    paired: pl.DataFrame,
+    *,
+    block_unit: str,
+    resamples: int,
+    seed: int,
+) -> dict[str, Any]:
+    if block_unit == "utc_day":
+        with_block = paired.with_columns(
+            pl.col("window_start").dt.date().alias("_quality_block")
+        )
+    else:
+        with_block = paired.with_columns(pl.col("market_id").alias("_quality_block"))
+    blocks = (
+        with_block.group_by("_quality_block")
+        .agg(
+            pl.col("_brier_delta").sum().alias("brier_delta_sum"),
+            pl.col("_log_loss_delta").sum().alias("log_loss_delta_sum"),
+            pl.len().alias("rows"),
+        )
+        .sort("_quality_block")
+    )
+    brier_sum = blocks["brier_delta_sum"].to_numpy()
+    log_loss_sum = blocks["log_loss_delta_sum"].to_numpy()
+    rows = blocks["rows"].to_numpy()
+    rng = np.random.default_rng(seed)
+    brier_delta = np.empty(resamples, dtype=np.float64)
+    log_loss_delta = np.empty(resamples, dtype=np.float64)
+    for index in range(resamples):
+        chosen = rng.integers(0, len(rows), len(rows))
+        denominator = max(rows[chosen].sum(), 1)
+        brier_delta[index] = brier_sum[chosen].sum() / denominator
+        log_loss_delta[index] = log_loss_sum[chosen].sum() / denominator
+    return {
+        "block_count": blocks.height,
+        "brier_delta": _interval(brier_delta),
+        "brier_improvement": _interval(-brier_delta),
+        "log_loss_delta": _interval(log_loss_delta),
+        "log_loss_improvement": _interval(-log_loss_delta),
     }
 
 
@@ -1265,6 +1927,12 @@ def _interval(values: np.ndarray) -> dict[str, float]:
         "median": float(np.quantile(values, 0.5)),
         "upper_95": float(np.quantile(values, 0.975)),
     }
+
+
+def _require_columns(frame: pl.DataFrame, required: set[str], context: str) -> None:
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError(f"{context} is missing columns: {', '.join(missing)}")
 
 
 def _wilson_interval(successes: int, observations: int) -> tuple[float, float]:
