@@ -48,6 +48,7 @@ from btc_directional_model.asymmetric_value_training import (
 )
 from btc_directional_model.chainlink_oi_features import CHAINLINK_CANDLE_FEATURES
 from btc_directional_model.core_config import load_core_config
+from btc_directional_model.core_features import derive_core_point_in_time_features
 from btc_directional_model.core_training import ProbabilityCalibrator, market_equal_weights
 from btc_directional_model.early_value_training import TimeBandCalibrator
 from btc_directional_model.spot_l2_chainlink_features import L2_FEATURES
@@ -327,12 +328,6 @@ def test_target_policy_inactive_feature_allowlist_is_exact_and_maturity_bound() 
     }
 
     assert set(asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY) == expected
-    assert {
-        maturity.first_available_second
-        for maturity in (
-            asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY.values()
-        )
-    } == {61}
     assert asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY[
         "btc_path_efficiency_60s"
     ].dependencies[0] == "btc_return_60s_bps"
@@ -346,6 +341,63 @@ def test_target_policy_inactive_feature_allowlist_is_exact_and_maturity_bound() 
             "btc_momentum_acceleration_15_vs_60"
         ].dependencies
     )
+
+
+def test_target_policy_inactive_maturity_matches_derived_core_features() -> None:
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    seconds = list(range(61))
+    closes = [100_000.0 + second for second in seconds]
+    source = pl.DataFrame(
+        {
+            "market_id": ["maturity-boundary"] * len(seconds),
+            "window_start": [start] * len(seconds),
+            "window_end": [start + timedelta(minutes=5)] * len(seconds),
+            "official_outcome": ["up"] * len(seconds),
+            "label_up": [1] * len(seconds),
+            "opening_boundary": [100_000.0] * len(seconds),
+            "final_price": [100_100.0] * len(seconds),
+            "observed_at": [
+                start + timedelta(seconds=second) for second in seconds
+            ],
+            "seconds_elapsed": seconds,
+            "btc_open": [close - 0.1 for close in closes],
+            "btc_high": [close + 0.5 for close in closes],
+            "btc_low": [close - 0.5 for close in closes],
+            "btc_close": closes,
+            "btc_base_volume": [1.0] * len(seconds),
+            "btc_quote_volume": [10_000.0 + second for second in seconds],
+            "trade_count": [10] * len(seconds),
+            "btc_taker_buy_base_volume": [0.5] * len(seconds),
+            "btc_taker_buy_quote_volume": [
+                5_000.0 + second / 2 for second in seconds
+            ],
+        }
+    )
+    derived = derive_core_point_in_time_features(source)
+    inactive = tuple(asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY)
+
+    for feature in inactive:
+        finite = derived.filter(
+            pl.col(feature).is_not_null() & pl.col(feature).is_finite()
+        )
+        assert finite["seconds_elapsed"].min() == 60
+        assert (
+            asymmetric_training.TARGET_POLICY_INACTIVE_FEATURE_MATURITY[
+                feature
+            ].first_available_second
+            == 60
+        )
+
+    target_rows = derived.filter(pl.col("seconds_elapsed").is_between(1, 55))
+    _, availability, observed_inactive = (
+        asymmetric_training._causal_feature_availability(
+            target_rows,
+            inactive,
+            maximum_entry_second=55,
+        )
+    )
+    assert observed_inactive == inactive
+    assert all(availability[feature]["policy_inactive"] for feature in inactive)
 
 
 def test_feature_audit_allows_only_explicitly_immature_target_features() -> None:
@@ -383,7 +435,7 @@ def test_feature_audit_allows_only_explicitly_immature_target_features() -> None
         asymmetric_training._causal_feature_availability(
             frame,
             ("active_signal", *inactive),
-            maximum_entry_second=61,
+            maximum_entry_second=60,
         )
 
 

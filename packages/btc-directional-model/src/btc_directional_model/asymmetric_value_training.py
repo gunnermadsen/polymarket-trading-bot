@@ -119,18 +119,18 @@ class PolicyInactiveFeatureMaturity:
 
 TARGET_POLICY_INACTIVE_FEATURE_MATURITY = {
     "btc_return_60s_bps": PolicyInactiveFeatureMaturity(
-        first_available_second=61,
+        first_available_second=60,
         dependencies=("btc_log_close", "btc_log_close_lag_60_rows"),
     ),
     "btc_path_efficiency_60s": PolicyInactiveFeatureMaturity(
-        first_available_second=61,
+        first_available_second=60,
         dependencies=(
             "btc_return_60s_bps",
             "btc_log_return_1s_abs_rolling_sum_60_rows",
         ),
     ),
     "btc_momentum_multihorizon_score": PolicyInactiveFeatureMaturity(
-        first_available_second=61,
+        first_available_second=60,
         dependencies=(
             "btc_return_5s_bps",
             "btc_return_15s_bps",
@@ -139,7 +139,7 @@ TARGET_POLICY_INACTIVE_FEATURE_MATURITY = {
         ),
     ),
     "btc_momentum_acceleration_15_vs_60": PolicyInactiveFeatureMaturity(
-        first_available_second=61,
+        first_available_second=60,
         dependencies=("btc_return_15s_bps", "btc_return_60s_bps"),
     ),
 }
