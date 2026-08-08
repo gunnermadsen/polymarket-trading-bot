@@ -27,6 +27,13 @@ def _config():
     )
 
 
+def _target_calibrated_config():
+    return load_asymmetric_value_config(
+        Path(__file__).parents[1]
+        / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+    )
+
+
 def _frames(*, price_label: int = 1, age_seconds: float = 0.5):
     observed = datetime(2026, 7, 16, 0, 0, 5, tzinfo=UTC)
     start = observed - timedelta(seconds=5)
@@ -148,6 +155,19 @@ def test_execution_evidence_uses_isolated_exact_cadences() -> None:
     assert early.range_end == config.evaluation.start
     assert "development" in early.output_dir.parts
     assert early.snapshot_schema_versions == ("btc5m-book-250ms-v1",)
+
+
+def test_target_calibrated_execution_uses_the_complete_development_range() -> None:
+    config = _target_calibrated_config()
+
+    early, later = _execution_evidence_configs(config, scope="development")
+
+    assert early.range_start == config.fit.start
+    assert early.range_end == config.policy.end
+    assert later.range_start == config.fit.start
+    assert later.range_end == config.policy.end
+    with pytest.raises(ValueError, match="no historical evaluation"):
+        _execution_evidence_configs(config, scope="evaluation")
 
 
 def test_execution_query_is_bounded_to_canonical_pmxt_artifacts() -> None:

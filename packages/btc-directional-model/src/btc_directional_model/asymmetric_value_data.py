@@ -813,7 +813,18 @@ def _scope_window(
     scope: Literal["development", "evaluation"],
 ) -> tuple[datetime, datetime]:
     if scope == "development":
-        return config.fit.start, config.evaluation.start
+        return (
+            config.fit.start,
+            (
+                config.evaluation.start
+                if config.evaluation is not None
+                else config.policy.end
+            ),
+        )
+    if config.evaluation is None:
+        raise ValueError(
+            "target-calibrated training has no historical evaluation window"
+        )
     return config.evaluation.start, config.evaluation.end
 
 

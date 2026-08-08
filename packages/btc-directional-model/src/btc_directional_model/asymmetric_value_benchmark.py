@@ -458,6 +458,35 @@ def run_asymmetric_value_benchmark(
     }
     write_json_atomic(run_dir / "selection-seal.json", selection_seal)
     selection_seal_sha256 = file_sha256(run_dir / "selection-seal.json")
+    if config.evaluation is None:
+        return _finalize_development_only_benchmark(
+            config=config,
+            run_dir=run_dir,
+            run_id=run_id,
+            training=training,
+            selection=selection,
+            selection_seal_sha256=selection_seal_sha256,
+            current_process=current_process,
+            development_coverage=development_coverage,
+            development_price_manifest=development_price_manifest,
+            development_oracle_inventory=development_oracle_inventory,
+            policy_metrics=policy_metrics,
+            policy_ledgers=policy_ledgers,
+            policy_scored=policy_scored,
+            policy_joint_surface=policy_joint_surface,
+            policy_both_side_surface=policy_both_side_surface,
+            policy_confidence_controls=policy_confidence_controls,
+            policy_feature_attribution=policy_feature_attribution,
+            policy_evidence_checks_by_model=policy_evidence_checks_by_model,
+            policy_grid_coverage=policy_grid_coverage,
+            policy_candidate_coverage=policy_candidate_coverage,
+            model_hashes=model_hashes,
+            implementation_sha256=implementation_sha256,
+            dependency_versions=dependency_versions,
+            development_core_content_sha256=(
+                development_core_content_sha256
+            ),
+        )
     del (
         development_price_features,
         development_oracle_price_features,
@@ -1323,6 +1352,343 @@ def run_asymmetric_value_benchmark(
         flush=True,
     )
     return run_dir, result
+
+
+def _finalize_development_only_benchmark(
+    *,
+    config: AsymmetricValueConfig,
+    run_dir: Path,
+    run_id: str,
+    training: dict[str, Any],
+    selection: dict[str, Any],
+    selection_seal_sha256: str,
+    current_process: dict[str, Any],
+    development_coverage: dict[str, Any],
+    development_price_manifest: dict[str, Any],
+    development_oracle_inventory: dict[str, Any],
+    policy_metrics: dict[str, dict[str, Any]],
+    policy_ledgers: dict[str, pl.DataFrame],
+    policy_scored: pl.DataFrame,
+    policy_joint_surface: list[dict[str, Any]],
+    policy_both_side_surface: list[dict[str, Any]],
+    policy_confidence_controls: dict[str, Any],
+    policy_feature_attribution: dict[str, Any],
+    policy_evidence_checks_by_model: dict[str, list[dict[str, Any]]],
+    policy_grid_coverage: dict[str, Any],
+    policy_candidate_coverage: dict[str, dict[str, Any]],
+    model_hashes: dict[str, str],
+    implementation_sha256: str,
+    dependency_versions: dict[str, str],
+    development_core_content_sha256: str,
+) -> tuple[Path, dict[str, Any]]:
+    """Seal consumed development evidence without opening a fake holdout."""
+
+    if config.evaluation is not None:
+        raise ValueError("development-only finalization requires no evaluation window")
+    selected_key = str(selection["selected_key"])
+    selected_model = str(selection["selected_model"])
+    selected_policy = str(selection["selected_policy"])
+    selected_ledger = policy_ledgers[selected_key]
+    selected_scored = policy_scored.filter(pl.col("model") == selected_model)
+    primary_metrics = {
+        model: policy_metrics[candidate_policy_key(model, selected_policy)]
+        for model in ASYMMETRIC_VALUE_CANDIDATES
+    }
+    economics = _evaluation_economics_table(
+        primary_metrics,
+        selected_model=selected_model,
+        policy=selected_policy,
+    )
+    nonempty_ledgers = [ledger for ledger in policy_ledgers.values() if ledger.height]
+    if not nonempty_ledgers:
+        raise RuntimeError("development policy grid produced no ledger rows")
+
+    selected_ledger.write_parquet(
+        run_dir / "selected-development-policy-ledger.parquet",
+        compression="zstd",
+    )
+    pl.concat(nonempty_ledgers, how="vertical_relaxed").write_parquet(
+        run_dir / "development-model-policy-ledger.parquet",
+        compression="zstd",
+    )
+    selected_scored.write_parquet(
+        run_dir / "selected-development-scored-opportunities.parquet",
+        compression="zstd",
+    )
+    pl.DataFrame(_policy_table(policy_metrics, selection["frontier"])).write_csv(
+        run_dir / "candidate-policy-economics.csv"
+    )
+    pl.DataFrame(economics).write_csv(
+        run_dir / "development-model-economics.csv"
+    )
+    pl.DataFrame(price_band_metrics(selected_ledger)).write_csv(
+        run_dir / "selected-price-band-economics.csv"
+    )
+    pl.DataFrame(accuracy_price_by_second(policy_scored)).write_csv(
+        run_dir / "accuracy-price-by-observation-second.csv"
+    )
+    pl.DataFrame(opportunity_calibration_by_price_band(policy_scored)).write_csv(
+        run_dir / "opportunity-calibration-by-price-band.csv"
+    )
+    pl.DataFrame(policy_confidence_controls["table"]).write_csv(
+        run_dir / "core-price-confidence-threshold-economics.csv"
+    )
+    pl.DataFrame(
+        [{"window": "policy", **row} for row in policy_joint_surface]
+    ).write_csv(run_dir / "model-second-side-price-band-surface.csv")
+    pl.DataFrame(
+        [{"window": "policy", **row} for row in policy_both_side_surface]
+    ).write_csv(run_dir / "model-second-yes-no-price-band-surface.csv")
+
+    artifact_names = [
+        "policy-predictions.parquet",
+        "policy-selection.json",
+        "policy-feature-attribution.json",
+        "selection-seal.json",
+        "selected-development-policy-ledger.parquet",
+        "development-model-policy-ledger.parquet",
+        "selected-development-scored-opportunities.parquet",
+        "candidate-policy-economics.csv",
+        "development-model-economics.csv",
+        "selected-price-band-economics.csv",
+        "accuracy-price-by-observation-second.csv",
+        "opportunity-calibration-by-price-band.csv",
+        "core-price-confidence-threshold-economics.csv",
+        "model-second-side-price-band-surface.csv",
+        "model-second-yes-no-price-band-surface.csv",
+    ]
+    now = datetime.now(UTC)
+    minimum_forward_start = datetime(2026, 8, 9, tzinfo=UTC)
+    next_full_utc_day = (now + timedelta(days=1)).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    fresh_forward_start = max(minimum_forward_start, next_full_utc_day)
+    selected_frontier = next(
+        row for row in selection["frontier"] if row["key"] == selected_key
+    )
+    result: dict[str, Any] = {
+        "schema_version": ASYMMETRIC_VALUE_SCHEMA_VERSION,
+        "run_id": run_id,
+        "created_at": now.isoformat(),
+        "objective": (
+            "find fee- and reserve-adjusted 20-30c YES or NO claims by second 55 "
+            "whose calibrated win probability supports positive asymmetric expectancy"
+        ),
+        "paper_only": True,
+        "live_capital_allowed": False,
+        "runtime_changed": False,
+        "trading_process_changed": False,
+        "core_contract_changed": False,
+        "model_contract": {
+            "candidate_estimator_families": {
+                name: values["family"]
+                for name, values in training["profiles"].items()
+            },
+            "model_matrix_feature_counts": EXPECTED_MODEL_FEATURE_COUNTS,
+            "selection_eligible_models": sorted(MODEL_SELECTION_ELIGIBLE),
+            "offline_only_candidates": sorted(OFFLINE_ONLY_CANDIDATES),
+            "combined_oracle_l2_runtime_exportable": False,
+            "accuracy_gate_used": False,
+            "market_equal_row_weights": True,
+            "two_sided_value_selection": True,
+            "underdog_selection_allowed": True,
+            "prediction_grid": (
+                "seconds 1-59 every second; seconds 60-240 every five seconds"
+            ),
+            "primary_policy": {
+                "name": selected_policy,
+                "quantity": config.quantity,
+                "maximum_depth_participation": (
+                    config.maximum_depth_participation
+                ),
+                "maximum_entry_second": 55,
+                "raw_share_price": {"minimum": 0.20, "maximum": 0.30},
+                "maximum_all_in_cost_per_share": 0.35,
+                "minimum_modeled_edge_per_share": 0.03,
+            },
+        },
+        "windows": {
+            name: {
+                "start": window.start.isoformat(),
+                "end": window.end.isoformat(),
+            }
+            for name, window in _configured_windows(config)
+        },
+        "split_basis": (
+            "fixed chronological development: fit Apr14-Jul15, calibration "
+            "Jul16-Jul22, policy Jul23-Aug1; no historical evaluation remains"
+        ),
+        "data": {
+            "coverage": development_coverage,
+            "policy_source_grid": policy_grid_coverage,
+            "policy_candidate_grid": policy_candidate_coverage,
+            "development_price_manifest": development_price_manifest,
+            "development_oracle_source_inventory": (
+                development_oracle_inventory
+            ),
+            "price_source": (
+                "immutable PMXT 250ms execution snapshots sampled at exact decisions"
+            ),
+            "proxy_prices_used": False,
+            "historical_refprice_used": False,
+            "spot_l2_missingness_filled": False,
+            "external_ssd_required": False,
+        },
+        "training": training,
+        "selection": {
+            **selection,
+            "seal_sha256": selection_seal_sha256,
+            "evaluation_opened_after_seal": False,
+            "policy_feature_attribution": policy_feature_attribution,
+            "policy_feature_attribution_artifact": (
+                "policy-feature-attribution.json"
+            ),
+        },
+        "historical_development": {
+            "status": (
+                "qualified_on_consumed_policy_window"
+                if selection["qualified_on_policy_window"]
+                else "not_qualified_on_consumed_policy_window"
+            ),
+            "consumed_evidence": True,
+            "independent_proof": False,
+            "selected_key": selected_key,
+            "selected_metrics": policy_metrics[selected_key],
+            "selected_checks": selected_frontier["checks"],
+            "policy_evidence_checks_by_model": (
+                policy_evidence_checks_by_model
+            ),
+            "model_economics": primary_metrics,
+            "model_economics_leaderboard": economics,
+            "confidence_threshold_controls": policy_confidence_controls,
+        },
+        "evaluation": {
+            "status": "awaiting_fresh_forward_evidence",
+            "qualified": False,
+            "historical_holdout_opened": False,
+            "earliest_fresh_full_utc_day": fresh_forward_start.isoformat(),
+            "stopping_rule": {
+                "minimum_complete_utc_days": 21,
+                "minimum_strict_markets": 2_000,
+                "minimum_selected_trades": 200,
+                "minimum_yes_trades": 20,
+                "minimum_no_trades": 20,
+                "stop_based_on_pnl": False,
+            },
+            "promotion_rule": (
+                "no candidate may replace the incumbent until every forward evidence, "
+                "calibration, expectancy, stress, risk, side, and frequency gate passes"
+            ),
+        },
+        "hypothesis": {
+            "historical_support_only": bool(
+                selection["qualified_on_policy_window"]
+            ),
+            "proven_for_promotion": False,
+            "fresh_forward_shadow_required": True,
+            "accuracy_is_reported_but_not_an_admission_gate": True,
+        },
+        "lineage": {
+            "benchmark_config_sha256": file_sha256(config.source_path),
+            "core_config_sha256": file_sha256(config.core_config),
+            "price_query_sha256": file_sha256(config.price_source_sql),
+            "champion_model_sha256": file_sha256(config.champion_model),
+            "champion_process_sha256": file_sha256(config.champion_process),
+            "implementation_sha256": implementation_sha256,
+            "dependency_versions": dependency_versions,
+            "selection_seal_sha256": selection_seal_sha256,
+            "development_core_content_sha256": (
+                development_core_content_sha256
+            ),
+            "development_price_manifest_sha256": file_sha256(
+                config.price_cache / "development" / "manifest.json"
+            ),
+            "development_oracle_features_sha256": file_sha256(
+                config.feature_cache / DEVELOPMENT_ORACLE_CACHE
+            ),
+            "development_l2_features_sha256": file_sha256(
+                config.feature_cache / "development-l2.parquet"
+            ),
+            "development_candle_features_sha256": file_sha256(
+                config.feature_cache / "development-candles.parquet"
+            ),
+            "model_artifact_sha256": model_hashes,
+            "development_artifact_sha256": {
+                name: file_sha256(run_dir / name) for name in artifact_names
+            },
+        },
+        "frozen_current_policy_contract": current_process,
+        "deployment": {
+            "authorized": False,
+            "runtime_exported": False,
+            "trading_process_changed": False,
+            "container_rebuilt": False,
+            "reason": "training and consumed chronological development evidence only",
+        },
+    }
+    write_json_atomic(run_dir / "benchmark.json", result)
+    (run_dir / "benchmark-report.md").write_text(
+        _development_markdown_report(result)
+    )
+    print(
+        "asymmetric-value: development sealed; selected="
+        f"{selected_key}; policy-qualified="
+        f"{selection['qualified_on_policy_window']}; fresh-forward-required=true",
+        flush=True,
+    )
+    return run_dir, result
+
+
+def _development_markdown_report(result: dict[str, Any]) -> str:
+    historical = result["historical_development"]
+    selected = historical["selected_metrics"]
+    lines = [
+        "# BTC asymmetric-value training result",
+        "",
+        "## Outcome",
+        "",
+        (
+            f"Selected `{historical['selected_key']}` on consumed chronological "
+            f"development evidence. Policy qualification: "
+            f"`{result['selection']['qualified_on_policy_window']}`."
+        ),
+        "",
+        (
+            "This is not independent proof and no deployment is authorized. Fresh "
+            f"forward evidence begins no earlier than "
+            f"`{result['evaluation']['earliest_fresh_full_utc_day']}`."
+        ),
+        "",
+        "## Selected policy economics",
+        "",
+        "| Trades | Accuracy | Mean share | Mean entry second | Net profit | EV/trade | Stress EV/trade | PF | Loss-recovery wins |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        (
+            f"| {selected.get('trades')} | {_fmt(selected.get('accuracy'))} | "
+            f"{_fmt(selected.get('mean_share_price'))} | "
+            f"{_fmt(selected.get('mean_entry_second'))} | "
+            f"{_fmt(selected.get('net_profit'))} | "
+            f"{_fmt(selected.get('net_expectancy_per_trade'))} | "
+            f"{_fmt(selected.get('stress_1c_net_expectancy_per_trade'))} | "
+            f"{_fmt(selected.get('profit_factor'))} | "
+            f"{_fmt(selected.get('loss_recovery_wins'))} |"
+        ),
+        "",
+        "## Forward qualification",
+        "",
+        "A promotion decision requires all of:",
+        "",
+        "- at least 21 complete UTC days and 2,000 strict markets;",
+        "- at least 200 trades, including 20 YES and 20 NO;",
+        "- positive lower-95% expectancy and capital efficiency under the frozen policy;",
+        "- positive +1c/share stress expectancy and all loss-severity gates; and",
+        "- no PnL-based early stopping.",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def _candidate_frames(
@@ -2262,12 +2628,7 @@ def _base_coverage_summary(
     config: AsymmetricValueConfig,
 ) -> dict[str, Any]:
     output: dict[str, Any] = {}
-    for name, evidence in (
-        ("fit", config.fit),
-        ("calibration", config.calibration),
-        ("policy", config.policy),
-        ("evaluation", config.evaluation),
-    ):
+    for name, evidence in _configured_windows(config):
         core_rows = _window(core, evidence.start, evidence.end)
         strict_rows = _window(strict, evidence.start, evidence.end)
         core_markets = core_rows["market_id"].n_unique()
@@ -2301,12 +2662,7 @@ def _add_joint_source_coverage(
 ) -> None:
     if source_family not in {"l2", "candle", "oracle_l2"}:
         raise ValueError(f"unsupported joint source coverage: {source_family}")
-    for name, evidence in (
-        ("fit", config.fit),
-        ("calibration", config.calibration),
-        ("policy", config.policy),
-        ("evaluation", config.evaluation),
-    ):
+    for name, evidence in _configured_windows(config):
         rows = _window(source, evidence.start, evidence.end)
         markets = rows["market_id"].n_unique() if not rows.is_empty() else 0
         core_markets = int(coverage[name]["core_resolved_markets"])
@@ -2315,6 +2671,19 @@ def _add_joint_source_coverage(
         coverage[name][f"joint_pmxt_{source_family}_market_coverage"] = (
             markets / core_markets if core_markets else 0.0
         )
+
+
+def _configured_windows(
+    config: AsymmetricValueConfig,
+) -> tuple[tuple[str, EvidenceWindow], ...]:
+    windows = [
+        ("fit", config.fit),
+        ("calibration", config.calibration),
+        ("policy", config.policy),
+    ]
+    if config.evaluation is not None:
+        windows.append(("evaluation", config.evaluation))
+    return tuple(windows)
 
 
 def _risk_shape_comparison(
