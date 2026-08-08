@@ -42,7 +42,7 @@ from .spot_l2_chainlink_extract import (
     L2_SOURCE_SCHEMA_VERSION,
 )
 
-READINESS_SCHEMA_VERSION = "btc-asymmetric-training-readiness-v1"
+READINESS_SCHEMA_VERSION = "btc-asymmetric-training-readiness-v2"
 READINESS_RANGE_START = datetime(2026, 4, 14, tzinfo=UTC)
 READINESS_RANGE_END = datetime(2026, 8, 2, tzinfo=UTC)
 EXPECTED_DAILY_MARKETS = 288
@@ -170,7 +170,7 @@ def prepare_asymmetric_training_readiness(
     output_dir: Path,
     connection: Any | None = None,
 ) -> tuple[Path, dict[str, Any]]:
-    """Validate every approved source and create a no-overwrite readiness seal."""
+    """Validate every approved source and create or reuse its immutable readiness seal."""
 
     core_config = load_core_config(config.core_config)
     _validate_round_contract(config, core_config)
@@ -187,7 +187,6 @@ def prepare_asymmetric_training_readiness(
 
     payload: dict[str, Any] = {
         "schema_version": READINESS_SCHEMA_VERSION,
-        "created_at": datetime.now(UTC).isoformat(),
         "ready": True,
         "range_start": READINESS_RANGE_START.isoformat(),
         "range_end": READINESS_RANGE_END.isoformat(),
@@ -209,11 +208,17 @@ def prepare_asymmetric_training_readiness(
             "no_proxy_polymarket_prices": True,
         },
     }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    payload["payload_sha256"] = hashlib.sha256(canonical.encode()).hexdigest()
+    payload["readiness_identity_sha256"] = _readiness_identity_sha256(payload)
+    payload["created_at"] = datetime.now(UTC).isoformat()
+    payload["payload_sha256"] = _payload_sha256(payload)
     output_dir.mkdir(parents=True, exist_ok=True)
     destination = output_dir / "asymmetric-training-readiness.json"
-    write_json_exclusive(destination, payload)
+    if destination.exists():
+        return destination, _reuse_identical_readiness_manifest(destination, payload)
+    try:
+        write_json_exclusive(destination, payload)
+    except FileExistsError:
+        return destination, _reuse_identical_readiness_manifest(destination, payload)
     return destination, payload
 
 
@@ -418,7 +423,9 @@ def _validate_round_contract(
     config: AsymmetricValueConfig,
     core_config: CoreTrainingConfig,
 ) -> None:
-    if config.fit.start != READINESS_RANGE_START or config.evaluation.end != READINESS_RANGE_END:
+    evaluation = config.evaluation
+    round_end = config.policy.end if evaluation is None else evaluation.end
+    if config.fit.start != READINESS_RANGE_START or round_end != READINESS_RANGE_END:
         raise ValueError("readiness requires exact [2026-04-14, 2026-08-02)")
     if core_config.data.range_start != READINESS_RANGE_START:
         raise ValueError("Core source range does not begin at the readiness boundary")
@@ -449,10 +456,17 @@ def _validate_core_oracle_source(
     config: AsymmetricValueConfig,
     core_config: CoreTrainingConfig,
 ) -> dict[str, Any]:
-    manifests = {
-        scope: load_core_manifest(core_config, scope) for scope in ("pre_holdout", "holdout")
-    }
-    if (
+    scopes = ("pre_holdout",) if config.evaluation is None else ("pre_holdout", "holdout")
+    manifests = {scope: load_core_manifest(core_config, scope) for scope in scopes}
+    if config.evaluation is None:
+        if (
+            manifests["pre_holdout"].get("range_start") != READINESS_RANGE_START.isoformat()
+            or manifests["pre_holdout"].get("range_end") != READINESS_RANGE_END.isoformat()
+        ):
+            raise RuntimeError(
+                "target-calibrated Core+Oracle manifest does not cover the exact range"
+            )
+    elif (
         manifests["pre_holdout"].get("range_start") != READINESS_RANGE_START.isoformat()
         or manifests["pre_holdout"].get("range_end") != manifests["holdout"].get("range_start")
         or manifests["holdout"].get("range_end") != READINESS_RANGE_END.isoformat()
@@ -487,6 +501,7 @@ def _validate_core_oracle_source(
         "core_source_schema_version": CORE_ORACLE_SOURCE_SCHEMA_VERSION,
         "oracle_source_schema_version": CORE_ORACLE_ROUND_SCHEMA_VERSION,
         "source_directory": str(core_config.paths.source_data.resolve()),
+        "source_scopes": list(scopes),
         "daily_core_partitions": len(core_records),
         "daily_oracle_partitions": len(oracle_records),
         "manifest_ranges": {
@@ -506,16 +521,15 @@ def _validate_oracle_feature_caches(
     config: AsymmetricValueConfig,
     core_config: CoreTrainingConfig,
 ) -> dict[str, Any]:
-    windows = {
-        "development": (config.fit.start, config.evaluation.start, DEVELOPMENT_ORACLE_CACHE),
-        "evaluation": (config.evaluation.start, config.evaluation.end, EVALUATION_ORACLE_CACHE),
-    }
+    windows = _oracle_cache_windows(config)
     output: dict[str, Any] = {}
+    inventories: dict[str, dict[str, Any]] = {}
     for scope, (start, end, filename) in windows.items():
         inventory = oracle_source_inventory(
             core_config.paths.source_data,
             _dates(start, end),
         )
+        inventories[scope] = inventory
         if inventory["missing_days"]:
             raise RuntimeError(
                 f"{scope} Oracle source is missing: " + ", ".join(inventory["missing_days"])
@@ -535,6 +549,25 @@ def _validate_oracle_feature_caches(
         except RuntimeError as error:
             raise RuntimeError(f"{scope} {error}") from error
         scan = pl.scan_parquet(cache_path)
+        observed_dates = (
+            scan.select(pl.col("window_start").dt.date().unique().sort())
+            .collect()
+            .get_column("window_start")
+            .to_list()
+        )
+        if observed_dates != list(_dates(start, end)):
+            raise RuntimeError(f"{scope} Oracle feature cache does not span its exact daily range")
+        summary = scan.select(
+            pl.len().alias("rows"),
+            pl.col("market_id").n_unique().alias("markets"),
+        ).collect()
+        if (
+            int(metadata.get("rows", -1)) != int(summary["rows"].item())
+            or int(metadata.get("markets", -1)) != int(summary["markets"].item())
+            or not _is_sha256(metadata.get("core_key_sha256"))
+            or not _is_sha256(metadata.get("core_content_sha256"))
+        ):
+            raise RuntimeError(f"{scope} Oracle feature cache provenance is incomplete")
         violations = (
             scan.filter(
                 (pl.col("oracle_source_timestamp") > pl.col("oracle_block_timestamp"))
@@ -566,15 +599,10 @@ def _validate_oracle_feature_caches(
             "metadata_sha256": file_sha256(metadata_path),
         }
     required_dates = {"2026-07-31", "2026-08-01"}
-    evaluation_dates = {
-        record["date"]
-        for record in oracle_source_inventory(
-            core_config.paths.source_data,
-            _dates(config.evaluation.start, config.evaluation.end),
-        )["records"]
-    }
-    if not required_dates.issubset(evaluation_dates):
-        raise RuntimeError("evaluation Oracle cache omits July 31 or August 1")
+    required_scope = "development" if config.evaluation is None else "evaluation"
+    required_scope_dates = {record["date"] for record in inventories[required_scope]["records"]}
+    if not required_dates.issubset(required_scope_dates):
+        raise RuntimeError(f"{required_scope} Oracle cache omits July 31 or August 1")
     return output
 
 
@@ -637,10 +665,7 @@ def _validate_external_source_cache(config: AsymmetricValueConfig) -> dict[str, 
 
 
 def _validate_price_manifests(config: AsymmetricValueConfig) -> dict[str, Any]:
-    windows = {
-        "development": (config.fit.start, config.evaluation.start),
-        "evaluation": (config.evaluation.start, config.evaluation.end),
-    }
+    windows = _price_windows(config)
     output: dict[str, Any] = {}
     for scope, (start, end) in windows.items():
         path = config.price_cache / scope / "manifest.json"
@@ -710,6 +735,87 @@ def _validate_price_manifests(config: AsymmetricValueConfig) -> dict[str, Any]:
             "strict_rows": manifest["coverage_totals"]["strict_rows"],
         }
     return output
+
+
+def _oracle_cache_windows(
+    config: AsymmetricValueConfig,
+) -> dict[str, tuple[datetime, datetime, str]]:
+    evaluation = config.evaluation
+    if evaluation is None:
+        return {
+            "development": (
+                config.fit.start,
+                config.policy.end,
+                DEVELOPMENT_ORACLE_CACHE,
+            )
+        }
+    return {
+        "development": (config.fit.start, evaluation.start, DEVELOPMENT_ORACLE_CACHE),
+        "evaluation": (evaluation.start, evaluation.end, EVALUATION_ORACLE_CACHE),
+    }
+
+
+def _price_windows(
+    config: AsymmetricValueConfig,
+) -> dict[str, tuple[datetime, datetime]]:
+    evaluation = config.evaluation
+    if evaluation is None:
+        return {"development": (config.fit.start, config.policy.end)}
+    return {
+        "development": (config.fit.start, evaluation.start),
+        "evaluation": (evaluation.start, evaluation.end),
+    }
+
+
+def _readiness_identity_sha256(payload: dict[str, Any]) -> str:
+    stable = {
+        key: value
+        for key, value in payload.items()
+        if key
+        not in {
+            "created_at",
+            "payload_sha256",
+            "readiness_identity_sha256",
+        }
+    }
+    canonical = json.dumps(stable, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _payload_sha256(payload: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        {key: value for key, value in payload.items() if key != "payload_sha256"},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _reuse_identical_readiness_manifest(
+    destination: Path,
+    expected: dict[str, Any],
+) -> dict[str, Any]:
+    existing = json.loads(destination.read_text())
+    if existing.get("schema_version") != READINESS_SCHEMA_VERSION:
+        raise RuntimeError("existing readiness manifest uses a different schema")
+    if existing.get("ready") is not True:
+        raise RuntimeError("existing readiness manifest is not ready")
+    if existing.get("payload_sha256") != _payload_sha256(existing):
+        raise RuntimeError("existing readiness manifest payload hash is invalid")
+    existing_identity = _readiness_identity_sha256(existing)
+    if existing.get("readiness_identity_sha256") != existing_identity:
+        raise RuntimeError("existing readiness manifest identity hash is invalid")
+    if existing_identity != expected["readiness_identity_sha256"]:
+        raise RuntimeError("existing immutable readiness manifest does not match current evidence")
+    return existing
 
 
 def _dates(start: datetime, end: datetime) -> tuple[date, ...]:
