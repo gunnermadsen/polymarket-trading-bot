@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -36,30 +37,112 @@ PRICE_LOGISTIC = "price_logistic_control"
 CORE_PRICE = "core_price_hgb"
 L2_MATCHED_CORE_PRICE_CONTROL = "l2_matched_core_price_hgb_control"
 CORE_L2_PRICE = "core_l2_price_hgb"
+CANDLE_MATCHED_CORE_PRICE_CONTROL = "candle_matched_core_price_hgb_control"
 CORE_CANDLES_PRICE = "core_chainlink_candles_price_hgb"
 CORE_ORACLE_PRICE = "core_oracle_price_hgb"
 ORACLE_MATCHED_CORE_PRICE_CONTROL = "oracle_matched_core_price_hgb_control"
+THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL = (
+    "three_source_matched_core_oracle_price_hgb_control"
+)
+CORE_ORACLE_L2_PRICE = "core_oracle_l2_price_hgb_offline"
 
 ASYMMETRIC_VALUE_CANDIDATES = (
     PRICE_LOGISTIC,
     CORE_PRICE,
     L2_MATCHED_CORE_PRICE_CONTROL,
     CORE_L2_PRICE,
+    CANDLE_MATCHED_CORE_PRICE_CONTROL,
     CORE_CANDLES_PRICE,
     ORACLE_MATCHED_CORE_PRICE_CONTROL,
     CORE_ORACLE_PRICE,
+    THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+    CORE_ORACLE_L2_PRICE,
+)
+
+ASYMMETRIC_VALUE_MODEL_MATRIX = (
+    CORE_PRICE,
+    CORE_ORACLE_PRICE,
+    CORE_L2_PRICE,
+    CORE_CANDLES_PRICE,
+    CORE_ORACLE_L2_PRICE,
+)
+
+MATCHED_ATTRIBUTION_CONTROLS = {
+    CORE_ORACLE_PRICE: ORACLE_MATCHED_CORE_PRICE_CONTROL,
+    CORE_L2_PRICE: L2_MATCHED_CORE_PRICE_CONTROL,
+    CORE_CANDLES_PRICE: CANDLE_MATCHED_CORE_PRICE_CONTROL,
+    CORE_ORACLE_L2_PRICE: THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+}
+
+EXPECTED_MODEL_FEATURE_COUNTS = {
+    CORE_PRICE: 71,
+    CORE_ORACLE_PRICE: 75,
+    CORE_L2_PRICE: 111,
+    CORE_CANDLES_PRICE: 79,
+    CORE_ORACLE_L2_PRICE: 115,
+}
+
+OFFLINE_ONLY_CANDIDATES = frozenset(
+    {
+        PRICE_LOGISTIC,
+        CANDLE_MATCHED_CORE_PRICE_CONTROL,
+        CORE_CANDLES_PRICE,
+        L2_MATCHED_CORE_PRICE_CONTROL,
+        ORACLE_MATCHED_CORE_PRICE_CONTROL,
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+        CORE_ORACLE_L2_PRICE,
+    }
 )
 
 MODEL_SELECTION_ELIGIBLE = frozenset(
-    set(ASYMMETRIC_VALUE_CANDIDATES)
-    - {
-        L2_MATCHED_CORE_PRICE_CONTROL,
-        ORACLE_MATCHED_CORE_PRICE_CONTROL,
+    {CORE_PRICE, CORE_ORACLE_PRICE, CORE_L2_PRICE}
+)
+ORACLE_FEATURE_CANDIDATES = frozenset(
+    {
+        CORE_ORACLE_PRICE,
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+        CORE_ORACLE_L2_PRICE,
     }
 )
-ORACLE_FEATURE_CANDIDATES = frozenset({CORE_ORACLE_PRICE})
 PRICE_BAND_WIDTH = 0.10
 PRICE_BAND_COUNT = 10
+POLICY_INACTIVE_IMPUTATION_STRATEGY = "constant_zero_fit_and_runtime_nonfinite"
+
+
+@dataclass(frozen=True)
+class PolicyInactiveFeatureMaturity:
+    """Explicit maturity evidence for a feature unavailable to the target policy."""
+
+    first_available_second: int
+    dependencies: tuple[str, ...]
+
+
+TARGET_POLICY_INACTIVE_FEATURE_MATURITY = {
+    "btc_return_60s_bps": PolicyInactiveFeatureMaturity(
+        first_available_second=60,
+        dependencies=("btc_log_close", "btc_log_close_lag_60_rows"),
+    ),
+    "btc_path_efficiency_60s": PolicyInactiveFeatureMaturity(
+        first_available_second=60,
+        dependencies=(
+            "btc_return_60s_bps",
+            "btc_log_return_1s_abs_rolling_sum_60_rows",
+        ),
+    ),
+    "btc_momentum_multihorizon_score": PolicyInactiveFeatureMaturity(
+        first_available_second=60,
+        dependencies=(
+            "btc_return_5s_bps",
+            "btc_return_15s_bps",
+            "btc_return_30s_bps",
+            "btc_return_60s_bps",
+        ),
+    ),
+    "btc_momentum_acceleration_15_vs_60": PolicyInactiveFeatureMaturity(
+        first_available_second=60,
+        dependencies=("btc_return_15s_bps", "btc_return_60s_bps"),
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -132,6 +215,9 @@ def asymmetric_value_feature_sets() -> dict[str, tuple[str, ...]]:
         CORE_PRICE: tuple(dict.fromkeys((*core, *price))),
         L2_MATCHED_CORE_PRICE_CONTROL: tuple(dict.fromkeys((*core, *price))),
         CORE_L2_PRICE: tuple(dict.fromkeys((*core, *L2_FEATURES, *price))),
+        CANDLE_MATCHED_CORE_PRICE_CONTROL: tuple(
+            dict.fromkeys((*core, *price))
+        ),
         CORE_CANDLES_PRICE: tuple(
             dict.fromkeys((*core, *CHAINLINK_CANDLE_FEATURES, *price))
         ),
@@ -139,6 +225,12 @@ def asymmetric_value_feature_sets() -> dict[str, tuple[str, ...]]:
             dict.fromkeys((*core, *price))
         ),
         CORE_ORACLE_PRICE: tuple(dict.fromkeys((*core, *oracle, *price))),
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL: tuple(
+            dict.fromkeys((*core, *oracle, *price))
+        ),
+        CORE_ORACLE_L2_PRICE: tuple(
+            dict.fromkeys((*core, *oracle, *L2_FEATURES, *price))
+        ),
     }
 
 
@@ -147,7 +239,15 @@ def fit_asymmetric_value_models(
     config: AsymmetricValueConfig,
     core_config: CoreTrainingConfig,
 ) -> tuple[dict[str, AsymmetricValueModel], dict[str, Any]]:
-    required = {"market_id", "window_start", "seconds_elapsed", "label_up"}
+    required = {
+        "market_id",
+        "window_start",
+        "observed_at",
+        "seconds_elapsed",
+        "label_up",
+        "yes_ask_vwap_5",
+        "no_ask_vwap_5",
+    }
     expected = set(ASYMMETRIC_VALUE_CANDIDATES)
     if set(model_frames) != expected:
         raise ValueError("asymmetric-value model frames do not match the frozen candidates")
@@ -158,6 +258,17 @@ def fit_asymmetric_value_models(
 
     histogram = asdict(core_config.model.histogram_candidates[0])
     feature_sets = asymmetric_value_feature_sets()
+    observed_matrix_counts = {
+        name: len(feature_sets[name]) for name in ASYMMETRIC_VALUE_MODEL_MATRIX
+    }
+    if observed_matrix_counts != EXPECTED_MODEL_FEATURE_COUNTS:
+        raise RuntimeError(
+            "asymmetric-value model matrix feature counts changed: "
+            f"{observed_matrix_counts}"
+        )
+    target_fit_contract = target_fit_cohort_contract(config)
+    target_fit_evidence: dict[str, dict[str, Any]] = {}
+    policy_inactive_evidence: dict[str, dict[str, Any]] = {}
     models: dict[str, AsymmetricValueModel] = {}
     summary: dict[str, Any] = {
         "selection_metric": "economic_policy_contract",
@@ -168,18 +279,40 @@ def fit_asymmetric_value_models(
         ),
         "earliest_decision_second": 1,
         "prediction_grid_points_per_market": len(config.prediction_seconds),
-        "unavailable_horizons": "fit-only median imputation; no future filling",
+        "unavailable_horizons": (
+            "target-policy-inactive features use explicit constant-zero fit and "
+            "runtime nonfinite imputation; no future filling"
+        ),
         "opening_boundary_features_used": False,
         "opening_boundary_exclusion_reason": (
             "historical opening-boundary facts lack a proven decision-time availability timestamp"
         ),
         "oracle_feature_contract": list(EARLY_CAUSAL_ORACLE_FEATURES),
+        "target_fit_cohort": {
+            "contract": target_fit_contract,
+            "policy_inactive_feature_contract": (
+                _policy_inactive_feature_contract(
+                    target_fit_contract["maximum_entry_second"]
+                )
+            ),
+        },
         "profiles": {},
     }
     for name in ASYMMETRIC_VALUE_CANDIDATES:
         scoring_source = model_frames[name]
         training_source = scoring_source
-        fit_frame = _window(training_source, config.fit.start, config.fit.end)
+        source_fit_frame = _window(training_source, config.fit.start, config.fit.end)
+        if source_fit_frame.is_empty():
+            raise RuntimeError(f"{name} source fit frame must be non-empty")
+        fit_frame = select_target_fit_cohort(
+            source_fit_frame,
+            config,
+            model=name,
+        )
+        target_fit_evidence[name] = _target_fit_cohort_evidence(
+            source_fit_frame,
+            fit_frame,
+        )
         calibration_frame = _window(
             scoring_source,
             config.calibration.start,
@@ -188,9 +321,16 @@ def fit_asymmetric_value_models(
         policy_frame = _window(scoring_source, config.policy.start, config.policy.end)
         if any(item.is_empty() for item in (fit_frame, calibration_frame, policy_frame)):
             raise RuntimeError(f"{name} fit, calibration, and policy frames must be non-empty")
-        features, feature_availability = _causal_feature_availability(
+        features, feature_availability, policy_inactive_features = (
+            _causal_feature_availability(
+                fit_frame,
+                feature_sets[name],
+                maximum_entry_second=target_fit_contract["maximum_entry_second"],
+            )
+        )
+        model_fit_frame = _impute_policy_inactive_features(
             fit_frame,
-            feature_sets[name],
+            policy_inactive_features,
         )
         if name in ORACLE_FEATURE_CANDIDATES and not set(
             EARLY_CAUSAL_ORACLE_FEATURES
@@ -199,6 +339,7 @@ def fit_asymmetric_value_models(
         required_external = {
             CORE_L2_PRICE: set(L2_FEATURES),
             CORE_CANDLES_PRICE: set(CHAINLINK_CANDLE_FEATURES),
+            CORE_ORACLE_L2_PRICE: set(L2_FEATURES),
         }.get(name, set())
         if not required_external.issubset(features):
             raise RuntimeError(f"{name} lost its external feature contract")
@@ -222,7 +363,11 @@ def fit_asymmetric_value_models(
             feature_names=features,
             row_weight_policy=MARKET_EQUAL_ROW_WEIGHT_POLICY,
         )
-        fitted = fit_model(fit_frame, spec, parameters, core_config)
+        fitted = fit_model(model_fit_frame, spec, parameters, core_config)
+        policy_inactive_evidence[name] = _policy_inactive_model_evidence(
+            fitted,
+            policy_inactive_features,
+        )
         calibrators = fit_asymmetric_time_band_calibrators(
             fitted,
             calibration_frame,
@@ -235,6 +380,7 @@ def fit_asymmetric_value_models(
             calibration_frame,
             config,
         )
+        target_calibration = target_calibration_evidence(cells, config)
         bundle = AsymmetricValueModel(
             name=name,
             model=fitted,
@@ -246,16 +392,35 @@ def fit_asymmetric_value_models(
             "family": family,
             "features": list(features),
             "feature_count": len(features),
+            "model_matrix_member": name in ASYMMETRIC_VALUE_MODEL_MATRIX,
+            "selection_eligible": name in MODEL_SELECTION_ELIGIBLE,
+            "runtime_exportable": name not in OFFLINE_ONLY_CANDIDATES,
+            "runtime_export_blocker": (
+                "the current runtime has no combined Oracle plus spot-L2 feature contract"
+                if name == CORE_ORACLE_L2_PRICE
+                else (
+                    "offline attribution or negative-control artifact"
+                    if name in OFFLINE_ONLY_CANDIDATES
+                    else None
+                )
+            ),
             "training_cohort": _training_cohort(name),
             "scoring_cohort": _scoring_cohort(name),
+            "source_fit_rows": source_fit_frame.height,
+            "source_fit_markets": source_fit_frame["market_id"].n_unique(),
             "fit_rows": fit_frame.height,
             "fit_markets": fit_frame["market_id"].n_unique(),
+            "target_fit_rows": fit_frame.height,
+            "target_fit_markets": fit_frame["market_id"].n_unique(),
+            "target_fit_contract": target_fit_contract,
+            "target_fit_key_sha256": target_fit_evidence[name]["key_sha256"],
             "calibration_rows": calibration_frame.height,
             "calibration_markets": calibration_frame["market_id"].n_unique(),
             "calibration_evidence": calibration_coverage,
             "policy_rows": policy_frame.height,
             "policy_markets": policy_frame["market_id"].n_unique(),
             "feature_availability": feature_availability,
+            "policy_inactive_features": policy_inactive_evidence[name],
             "policy_probability_metrics": probability_metrics(
                 policy_frame,
                 policy_probability,
@@ -285,17 +450,335 @@ def fit_asymmetric_value_models(
                 ),
                 "fitted_cells": sum(cell.fitted for cell in cells),
                 "fallback_cells": sum(not cell.fitted for cell in cells),
+                "target_contract": target_calibration,
                 "cells": [asdict(cell) for cell in cells],
             },
         }
         models[name] = bundle
+    summary["target_fit_cohort"].update(
+        {
+            "candidate_evidence": target_fit_evidence,
+            "key_sha256_by_candidate": {
+                name: evidence["key_sha256"]
+                for name, evidence in target_fit_evidence.items()
+            },
+            "matched_control_key_checks": _matched_target_fit_key_checks(
+                target_fit_evidence
+            ),
+            "candidate_policy_inactive_feature_evidence": (
+                policy_inactive_evidence
+            ),
+        }
+    )
     return models, summary
+
+
+def target_fit_cohort_contract(config: AsymmetricValueConfig) -> dict[str, Any]:
+    primary = [policy for policy in config.policies if policy.selection_eligible]
+    if len(primary) != 1:
+        raise RuntimeError("target fitting requires exactly one selection-eligible policy")
+    policy = primary[0]
+    return {
+        "policy": policy.name,
+        "fit_window_start": config.fit.start.isoformat(),
+        "fit_window_end_exclusive": config.fit.end.isoformat(),
+        "minimum_entry_second": min(config.prediction_seconds),
+        "maximum_entry_second": policy.maximum_entry_second,
+        "entry_second_interval": "closed",
+        "minimum_raw_share_price": policy.minimum_share_price,
+        "maximum_raw_share_price": policy.maximum_share_price,
+        "raw_share_price_interval": "left_closed_right_open",
+        "side_eligibility": "either_yes_or_no_raw_vwap_5",
+        "price_columns": ["yes_ask_vwap_5", "no_ask_vwap_5"],
+        "label_column": "label_up",
+        "required_labels": [0, 1],
+    }
+
+
+def select_target_fit_cohort(
+    source_fit_frame: pl.DataFrame,
+    config: AsymmetricValueConfig,
+    *,
+    model: str,
+) -> pl.DataFrame:
+    """Select the exact early, lower-price rows optimized by the primary policy."""
+
+    required = {
+        "market_id",
+        "window_start",
+        "observed_at",
+        "seconds_elapsed",
+        "label_up",
+        "yes_ask_vwap_5",
+        "no_ask_vwap_5",
+    }
+    missing = sorted(required - set(source_fit_frame.columns))
+    if missing:
+        raise ValueError(
+            f"{model} target fit source is missing columns: " + ", ".join(missing)
+        )
+    contract = target_fit_cohort_contract(config)
+
+    def side_in_target_band(column: str) -> pl.Expr:
+        return (
+            pl.col(column).is_not_null()
+            & pl.col(column).is_finite()
+            & pl.col(column).is_between(
+                contract["minimum_raw_share_price"],
+                contract["maximum_raw_share_price"],
+                closed="left",
+            )
+        )
+
+    selected = source_fit_frame.filter(
+        pl.col("seconds_elapsed").is_between(
+            contract["minimum_entry_second"],
+            contract["maximum_entry_second"],
+            closed="both",
+        )
+        & (
+            side_in_target_band("yes_ask_vwap_5")
+            | side_in_target_band("no_ask_vwap_5")
+        )
+    ).sort("window_start", "market_id", "seconds_elapsed", "observed_at")
+    if selected.is_empty():
+        raise RuntimeError(f"{model} target fit cohort is empty")
+    if selected["label_up"].null_count():
+        raise RuntimeError(f"{model} target fit cohort contains null outcomes")
+    labels = set(selected["label_up"].unique().to_list())
+    if labels != {0, 1}:
+        raise RuntimeError(
+            f"{model} target fit cohort requires both outcomes; observed {sorted(labels)}"
+        )
+    return selected
+
+
+def _target_fit_cohort_evidence(
+    source_fit_frame: pl.DataFrame,
+    target_fit_frame: pl.DataFrame,
+) -> dict[str, Any]:
+    return {
+        "source_rows": source_fit_frame.height,
+        "source_markets": source_fit_frame["market_id"].n_unique(),
+        "target_rows": target_fit_frame.height,
+        "target_markets": target_fit_frame["market_id"].n_unique(),
+        "key_sha256": _target_fit_key_digest(target_fit_frame),
+    }
+
+
+def _matched_target_fit_key_checks(
+    evidence: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    checks: dict[str, dict[str, Any]] = {}
+    for candidate, control in MATCHED_ATTRIBUTION_CONTROLS.items():
+        candidate_evidence = evidence[candidate]
+        control_evidence = evidence[control]
+        matched = bool(
+            candidate_evidence["target_rows"] == control_evidence["target_rows"]
+            and candidate_evidence["target_markets"]
+            == control_evidence["target_markets"]
+            and candidate_evidence["key_sha256"] == control_evidence["key_sha256"]
+        )
+        if not matched:
+            raise RuntimeError(
+                f"{candidate} target fit keys do not match control {control}"
+            )
+        checks[candidate] = {
+            "candidate": candidate,
+            "control": control,
+            "rows": candidate_evidence["target_rows"],
+            "markets": candidate_evidence["target_markets"],
+            "key_sha256": candidate_evidence["key_sha256"],
+            "matched": True,
+        }
+    return checks
+
+
+def _target_fit_key_digest(frame: pl.DataFrame) -> str:
+    keys = ["market_id", "window_start", "observed_at", "seconds_elapsed"]
+    missing = sorted(set(keys) - set(frame.columns))
+    if missing:
+        raise ValueError("target fit key digest is missing: " + ", ".join(missing))
+    digest = hashlib.sha256(b"btc-asymmetric-target-fit-key-v1\n")
+    for row in frame.select(*keys).sort(*keys).iter_rows():
+        for value in row:
+            rendered = value.isoformat() if hasattr(value, "isoformat") else str(value)
+            encoded = rendered.encode()
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+    return digest.hexdigest()
+
+
+def target_calibration_evidence(
+    cells: tuple[AsymmetricCalibrationCell, ...],
+    config: AsymmetricValueConfig,
+) -> dict[str, Any]:
+    """Report whether every policy-driving calibration cell was genuinely fitted."""
+
+    target = config.target_calibration
+    if target is None:
+        return {
+            "required": False,
+            "qualified": True,
+            "required_fitted_cells": 0,
+            "fitted_cells": 0,
+            "fallback_cells": 0,
+            "cells": [],
+        }
+
+    indexed = {
+        (
+            cell.start_second,
+            cell.end_second_exclusive,
+            round(cell.minimum_price, 10),
+            round(cell.maximum_price, 10),
+            cell.side,
+        ): cell
+        for cell in cells
+    }
+    evidence: list[dict[str, Any]] = []
+    for start, end in target.time_bands:
+        for side in target.sides:
+            key = (
+                start,
+                end,
+                round(target.minimum_price, 10),
+                round(target.maximum_price, 10),
+                side,
+            )
+            cell = indexed.get(key)
+            failure_reasons: list[str] = []
+            if cell is None:
+                failure_reasons.append("missing_cell")
+                evidence.append(
+                    {
+                        "start_second": start,
+                        "end_second_exclusive": end,
+                        "minimum_price": target.minimum_price,
+                        "maximum_price": target.maximum_price,
+                        "side": side,
+                        "present": False,
+                        "fitted": False,
+                        "fallback": "missing_cell",
+                        "markets": 0,
+                        "utc_days": 0,
+                        "positives": 0,
+                        "negatives": 0,
+                        "failure_reasons": failure_reasons,
+                        "passed": False,
+                    }
+                )
+                continue
+            if cell.markets < config.gates.minimum_calibration_markets_per_cell:
+                failure_reasons.append("insufficient_markets")
+            if cell.utc_days < config.gates.minimum_calibration_days_per_cell:
+                failure_reasons.append("insufficient_utc_days")
+            if cell.positives <= 0 or cell.negatives <= 0:
+                failure_reasons.append("single_class")
+            if not cell.fitted:
+                failure_reasons.append("parent_fallback")
+            if cell.fallback is not None:
+                failure_reasons.append(f"fallback:{cell.fallback}")
+            if not cell.converged:
+                failure_reasons.append("optimizer_not_converged")
+            if cell.objective is None or not np.isfinite(cell.objective):
+                failure_reasons.append("invalid_objective")
+            if cell.weighted_log_loss is None or not np.isfinite(
+                cell.weighted_log_loss
+            ):
+                failure_reasons.append("invalid_weighted_log_loss")
+            evidence.append(
+                {
+                    "start_second": start,
+                    "end_second_exclusive": end,
+                    "minimum_price": target.minimum_price,
+                    "maximum_price": target.maximum_price,
+                    "side": side,
+                    "present": True,
+                    "fitted": cell.fitted,
+                    "fallback": cell.fallback,
+                    "markets": cell.markets,
+                    "utc_days": cell.utc_days,
+                    "positives": cell.positives,
+                    "negatives": cell.negatives,
+                    "failure_reasons": failure_reasons,
+                    "passed": not failure_reasons,
+                }
+            )
+    fitted_cells = sum(bool(item["passed"]) for item in evidence)
+    qualified = bool(
+        len(evidence) == target.required_fitted_cells
+        and fitted_cells == target.required_fitted_cells
+    )
+    return {
+        "required": True,
+        "qualified": qualified,
+        "required_fitted_cells": target.required_fitted_cells,
+        "fitted_cells": fitted_cells,
+        "fallback_cells": len(evidence) - fitted_cells,
+        "minimum_markets_per_cell": (
+            config.gates.minimum_calibration_markets_per_cell
+        ),
+        "minimum_utc_days_per_cell": (
+            config.gates.minimum_calibration_days_per_cell
+        ),
+        "both_outcomes_required": True,
+        "cells": evidence,
+    }
+
+
+def target_calibration_gate_checks(
+    profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Translate target-cell evidence into explicit model qualification checks."""
+
+    target = profile["side_price_time_calibration"]["target_contract"]
+    if not target["required"]:
+        return []
+    checks = [
+        {
+            "name": "target_calibration_cells_genuinely_fitted",
+            "observed": int(target["fitted_cells"]),
+            "threshold": int(target["required_fitted_cells"]),
+            "operator": "==",
+            "passed": bool(target["qualified"]),
+            "fallback_cells": int(target["fallback_cells"]),
+        }
+    ]
+    checks.extend(
+        {
+            "name": (
+                "target_calibration_cell_"
+                f"{str(cell['side']).lower()}_"
+                f"{int(cell['start_second'])}_{int(cell['end_second_exclusive'])}_"
+                "20_30c"
+            ),
+            "observed": bool(cell["passed"]),
+            "threshold": True,
+            "operator": "==",
+            "passed": bool(cell["passed"]),
+            "markets": int(cell["markets"]),
+            "utc_days": int(cell["utc_days"]),
+            "positives": int(cell["positives"]),
+            "negatives": int(cell["negatives"]),
+            "fallback": cell["fallback"],
+            "failure_reasons": list(cell["failure_reasons"]),
+        }
+        for cell in target["cells"]
+    )
+    return checks
 
 
 def _causal_feature_availability(
     fit_frame: pl.DataFrame,
     candidates: tuple[str, ...],
-) -> tuple[tuple[str, ...], dict[str, dict[str, Any]]]:
+    *,
+    maximum_entry_second: int,
+) -> tuple[
+    tuple[str, ...],
+    dict[str, dict[str, Any]],
+    tuple[str, ...],
+]:
     earliest = fit_frame.filter(pl.col("seconds_elapsed") == 1)
     if earliest.is_empty():
         raise RuntimeError("asymmetric-value fit evidence lacks second-1 rows")
@@ -319,6 +802,7 @@ def _causal_feature_availability(
             "second_1_imputed_fraction": float(1.0 - earliest_fraction),
             "fit_imputed_fraction": float(1.0 - fit_fraction),
             "retained": True,
+            "policy_inactive": False,
         }
         for feature, earliest_fraction, fit_fraction in zip(
             candidates,
@@ -327,17 +811,117 @@ def _causal_feature_availability(
             strict=True,
         )
     }
-    unavailable = [
+    unavailable = tuple(
         feature
         for feature in candidates
         if availability[feature]["fit_finite_fraction"] <= 0.0
-    ]
-    if unavailable:
+    )
+    unexpected_unavailable = tuple(
+        feature
+        for feature in unavailable
+        if feature not in TARGET_POLICY_INACTIVE_FEATURE_MATURITY
+        or TARGET_POLICY_INACTIVE_FEATURE_MATURITY[
+            feature
+        ].first_available_second
+        <= maximum_entry_second
+    )
+    if unexpected_unavailable:
         raise RuntimeError(
             "asymmetric-value features are nonfinite throughout fitting: "
-            + ", ".join(unavailable)
+            + ", ".join(unexpected_unavailable)
         )
-    return candidates, availability
+    for feature in unavailable:
+        maturity = TARGET_POLICY_INACTIVE_FEATURE_MATURITY[feature]
+        availability[feature].update(
+            {
+                "policy_inactive": True,
+                "first_available_second": maturity.first_available_second,
+                "maturity_dependencies": list(maturity.dependencies),
+                "imputation_strategy": POLICY_INACTIVE_IMPUTATION_STRATEGY,
+                "imputation_value": 0.0,
+            }
+        )
+    return candidates, availability, unavailable
+
+
+def _policy_inactive_feature_contract(
+    maximum_entry_second: int,
+) -> dict[str, Any]:
+    return {
+        "scope": "asymmetric_value_target_fit_and_runtime_target_rows",
+        "maximum_entry_second": maximum_entry_second,
+        "eligibility_rule": (
+            "first_available_second_strictly_greater_than_maximum_entry_second"
+        ),
+        "imputation_strategy": POLICY_INACTIVE_IMPUTATION_STRATEGY,
+        "imputation_value": 0.0,
+        "feature_maturity": {
+            feature: asdict(maturity)
+            for feature, maturity in TARGET_POLICY_INACTIVE_FEATURE_MATURITY.items()
+        },
+    }
+
+
+def _impute_policy_inactive_features(
+    fit_frame: pl.DataFrame,
+    features: tuple[str, ...],
+) -> pl.DataFrame:
+    if not features:
+        return fit_frame
+    missing = sorted(set(features) - set(fit_frame.columns))
+    if missing:
+        raise RuntimeError(
+            "policy-inactive target fit features are missing: " + ", ".join(missing)
+        )
+    matrix = fit_frame.select(pl.col(list(features)).cast(pl.Float64)).to_numpy()
+    unexpectedly_finite = tuple(
+        feature
+        for feature, values in zip(features, matrix.T, strict=True)
+        if np.isfinite(values).any()
+    )
+    if unexpectedly_finite:
+        raise RuntimeError(
+            "policy-inactive target fit features unexpectedly became finite: "
+            + ", ".join(unexpectedly_finite)
+        )
+    return fit_frame.with_columns(
+        *(pl.lit(0.0).cast(pl.Float64).alias(feature) for feature in features)
+    )
+
+
+def _policy_inactive_model_evidence(
+    fitted: FittedCoreModel,
+    features: tuple[str, ...],
+) -> dict[str, Any]:
+    missing = tuple(feature for feature in features if feature not in fitted.feature_names)
+    if missing:
+        raise RuntimeError(
+            "fitted model lost policy-inactive features: " + ", ".join(missing)
+        )
+    medians = {
+        feature: float(
+            fitted.imputation_medians[fitted.feature_names.index(feature)]
+        )
+        for feature in features
+    }
+    invalid = tuple(
+        feature
+        for feature, median in medians.items()
+        if not np.isfinite(median) or median != 0.0
+    )
+    if invalid:
+        raise RuntimeError(
+            "policy-inactive fitted medians must be zero: " + ", ".join(invalid)
+        )
+    return {
+        "features": list(features),
+        "feature_count": len(features),
+        "imputation_strategy": POLICY_INACTIVE_IMPUTATION_STRATEGY,
+        "imputation_value": 0.0,
+        "fit_values": "constant_zero",
+        "runtime_nonfinite_values": "stored_model_median",
+        "stored_model_medians": medians,
+    }
 
 
 def fit_asymmetric_time_band_calibrators(
@@ -834,12 +1418,19 @@ def _calibration_coverage(
 
 
 def _training_cohort(model: str) -> str:
-    if model in {PRICE_LOGISTIC, CORE_PRICE, CORE_CANDLES_PRICE}:
+    if model in {PRICE_LOGISTIC, CORE_PRICE}:
         return "exact_execution_price_cohort"
     if model in {L2_MATCHED_CORE_PRICE_CONTROL, CORE_L2_PRICE}:
         return "l2_exact_execution_cohort"
+    if model in {CANDLE_MATCHED_CORE_PRICE_CONTROL, CORE_CANDLES_PRICE}:
+        return "closed_candle_exact_execution_cohort"
     if model in {ORACLE_MATCHED_CORE_PRICE_CONTROL, CORE_ORACLE_PRICE}:
         return "causal_oracle_exact_execution_cohort"
+    if model in {
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+        CORE_ORACLE_L2_PRICE,
+    }:
+        return "causal_oracle_l2_exact_execution_cohort"
     raise ValueError(f"unknown asymmetric-value model: {model}")
 
 
@@ -853,6 +1444,18 @@ def asymmetric_probability_frame(
     *,
     model: str,
 ) -> pl.DataFrame:
+    expected_capacity_columns = (
+        "yes_ask_vwap_10",
+        "no_ask_vwap_10",
+        "strict_both_side_eligible_10",
+    )
+    capacity_columns = [
+        column
+        for column in expected_capacity_columns
+        if column in frame.columns
+    ]
+    if capacity_columns and len(capacity_columns) != len(expected_capacity_columns):
+        raise RuntimeError("asymmetric probability frame has incomplete VWAP10 evidence")
     return frame.select(
         "market_id",
         "window_start",
@@ -866,6 +1469,7 @@ def asymmetric_probability_frame(
         "no_best_ask",
         "no_ask_vwap_5",
         "no_ask_depth",
+        *capacity_columns,
         "yes_cost_per_share",
         "no_cost_per_share",
         "yes_execution_cost_per_share",

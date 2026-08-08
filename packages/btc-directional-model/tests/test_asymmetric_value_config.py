@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from btc_directional_model.asymmetric_value_config import (
+    TARGET_CALIBRATED_TRAINING_CONTRACT,
     load_asymmetric_value_config,
     validate_asymmetric_value_config,
 )
@@ -16,6 +17,13 @@ def _config_path() -> Path:
     return (
         Path(__file__).parents[1]
         / "configs/btc-5m-directional-asymmetric-value-one-second-20260414-20260802.toml"
+    )
+
+
+def _target_calibrated_config_path() -> Path:
+    return (
+        Path(__file__).parents[1]
+        / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
     )
 
 
@@ -43,9 +51,7 @@ def test_asymmetric_value_contract_rejects_primary_expensive_policy() -> None:
     invalid = replace(primary, maximum_share_price=0.90)
 
     with pytest.raises(ValueError, match="raw share-price"):
-        validate_asymmetric_value_config(
-            replace(config, policies=(invalid, *config.policies[1:]))
-        )
+        validate_asymmetric_value_config(replace(config, policies=(invalid, *config.policies[1:])))
 
 
 def test_asymmetric_value_contract_preserves_original_frozen_windows() -> None:
@@ -71,9 +77,7 @@ def test_asymmetric_value_contract_rejects_invalid_calibration_support() -> None
     config = load_asymmetric_value_config(_config_path())
 
     with pytest.raises(ValueError, match="identity L2"):
-        validate_asymmetric_value_config(
-            replace(config, calibration_identity_l2=0.0)
-        )
+        validate_asymmetric_value_config(replace(config, calibration_identity_l2=0.0))
     with pytest.raises(ValueError, match="day support exceeds"):
         validate_asymmetric_value_config(
             replace(
@@ -81,3 +85,50 @@ def test_asymmetric_value_contract_rejects_invalid_calibration_support() -> None
                 gates=replace(config.gates, minimum_calibration_days_per_cell=8),
             )
         )
+
+
+def test_target_calibrated_contract_freezes_windows_policy_and_cells() -> None:
+    config = load_asymmetric_value_config(_target_calibrated_config_path())
+    core = load_core_config(config.core_config)
+    primary = next(policy for policy in config.policies if policy.selection_eligible)
+
+    assert config.training_contract == TARGET_CALIBRATED_TRAINING_CONTRACT
+    assert config.fit.start.isoformat() == "2026-04-14T00:00:00+00:00"
+    assert config.fit.end.isoformat() == "2026-07-16T00:00:00+00:00"
+    assert config.calibration.end.isoformat() == "2026-07-23T00:00:00+00:00"
+    assert config.policy.end.isoformat() == "2026-08-02T00:00:00+00:00"
+    assert config.evaluation is None
+    assert config.target_calibration is not None
+    assert config.target_calibration.required_fitted_cells == 8
+    assert config.target_calibration.time_bands == config.calibration_bands[:4]
+    assert config.target_calibration.sides == ("YES", "NO")
+    assert primary.maximum_entry_second == 55
+    assert primary.minimum_share_price == 0.20
+    assert primary.maximum_share_price == 0.30
+    assert primary.maximum_cost_per_share == 0.35
+    assert primary.minimum_edge_per_share == 0.03
+    assert config.maximum_depth_participation == 0.25
+    assert config.quantity == 5.0
+    assert config.gates.maximum_selected_calibration_bias == 0.03
+    assert core.split.holdout_start == core.split.holdout_end
+    assert core.split.holdout_start == config.policy.end
+    assert core.data.source_contract == "btc_core_v1"
+    assert core.paths.source_data != config.oracle_source
+    assert core.paths.source_data.name == "core-market-source"
+    assert core.paths.development_feature_data.name == "core-base-development.parquet"
+    assert config.oracle_source.name == "core-oracle-source"
+    assert "btc-asymmetric-value-calibrated" in str(config.oracle_source)
+
+
+def test_target_calibrated_contract_rejects_target_cell_fallback_weakening() -> None:
+    config = load_asymmetric_value_config(_target_calibrated_config_path())
+
+    with pytest.raises(ValueError, match="at least 50 markets"):
+        validate_asymmetric_value_config(
+            replace(
+                config,
+                gates=replace(config.gates, minimum_calibration_markets_per_cell=49),
+            )
+        )
+    with pytest.raises(ValueError, match="fresh forward evaluation"):
+        validate_asymmetric_value_config(replace(config, evaluation=config.policy))

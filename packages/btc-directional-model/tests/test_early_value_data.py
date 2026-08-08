@@ -13,6 +13,7 @@ from btc_directional_model.early_value_data import (
     build_strict_external_frame,
 )
 from btc_directional_model.spot_l2_chainlink_features import (
+    L2_CAUSAL_AUDIT_COLUMNS,
     L2_FEATURES,
     L2_SOURCE_FEATURE_COLUMNS,
 )
@@ -113,6 +114,7 @@ def test_partitioned_l2_builder_has_no_candle_dependency(tmp_path: Path) -> None
 
     assert result.select(*keys).equals(core.select(*keys))
     assert set(L2_FEATURES).issubset(result.columns)
+    assert set(L2_CAUSAL_AUDIT_COLUMNS).issubset(result.columns)
     assert set(CHAINLINK_CANDLE_FEATURES).isdisjoint(result.columns)
 
 
