@@ -28,6 +28,7 @@ from .asymmetric_residual_value import (
     market_equal_decision_weights,
 )
 from .asymmetric_training_readiness import (
+    ORACLE_CACHE_SCHEMA_VERSION,
     oracle_source_inventory,
     prepare_asymmetric_training_readiness,
 )
@@ -3013,7 +3014,7 @@ def _load_or_build_oracle_core(
         )
     metadata_path = destination.with_suffix(".metadata.json")
     identity = {
-        "schema_version": "btc-asymmetric-value-early-oracle-v2",
+        "schema_version": ORACLE_CACHE_SCHEMA_VERSION,
         "core_key_sha256": _frame_key_digest(core),
         "core_content_sha256": core_content_sha256,
         "source_inventory_sha256": source_inventory["inventory_sha256"],

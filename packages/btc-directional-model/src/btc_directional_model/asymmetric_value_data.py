@@ -477,6 +477,7 @@ def attach_early_causal_oracle_features(
                     maximum_age_seconds,
                     closed="both",
                 )
+                & _complete_early_oracle_features()
             )
             .fill_null(False)
             .alias("early_oracle_eligible")
@@ -522,11 +523,22 @@ def attach_early_causal_oracle_features(
             | (pl.col("oracle_block_timestamp") > pl.col("observed_at"))
             | (pl.col("oracle_age_seconds") < minimum_propagation_seconds)
             | (pl.col("oracle_age_seconds") > maximum_age_seconds)
+            | ~_complete_early_oracle_features()
         )
     )
     if violations.height:
         raise RuntimeError("early oracle feature cache contains causal violations")
     return enriched
+
+
+def _complete_early_oracle_features() -> pl.Expr:
+    return pl.all_horizontal(
+        [
+            pl.col(feature).is_not_null()
+            & pl.col(feature).cast(pl.Float64).is_finite()
+            for feature in EARLY_CAUSAL_ORACLE_FEATURES
+        ]
+    )
 
 
 def exact_price_by_second(prices: pl.DataFrame) -> list[dict[str, Any]]:
