@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -30,6 +31,7 @@ EARLY_CAUSAL_ORACLE_FEATURES = (
 )
 ORACLE_MINIMUM_PROPAGATION_SECONDS = 2
 ORACLE_MAXIMUM_AGE_SECONDS = 300
+PRICE_MANIFEST_IDENTITY_EXCLUDES = ("created_at",)
 
 PRICE_COLUMNS = (
     "market_id",
@@ -71,6 +73,18 @@ POLYMARKET_VALUE_FEATURES = (
     "pm_yes_book_age_seconds",
     "pm_no_book_age_seconds",
 )
+
+
+def price_manifest_identity_sha256(manifest: dict[str, Any]) -> str:
+    """Hash stable price-evidence content without its refresh timestamp."""
+
+    stable = {
+        key: value
+        for key, value in manifest.items()
+        if key not in PRICE_MANIFEST_IDENTITY_EXCLUDES
+    }
+    canonical = json.dumps(stable, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def select_asymmetric_prediction_grid(

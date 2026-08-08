@@ -17,6 +17,8 @@ from .asymmetric_value_data import (
     EARLY_CAUSAL_ORACLE_FEATURES,
     ORACLE_MAXIMUM_AGE_SECONDS,
     ORACLE_MINIMUM_PROPAGATION_SECONDS,
+    PRICE_MANIFEST_IDENTITY_EXCLUDES,
+    price_manifest_identity_sha256,
 )
 from .core_config import (
     CORE_ORACLE_SOURCE_CONTRACT,
@@ -812,23 +814,13 @@ def _validate_price_manifests(config: AsymmetricValueConfig) -> dict[str, Any]:
             child_manifests[cadence] = file_sha256(execution_config.output_dir / "manifest.json")
         output[scope] = {
             "days": len(dates),
-            "manifest_identity_sha256": _price_manifest_identity_sha256(
-                manifest
-            ),
-            "manifest_identity_excludes": ["created_at"],
+            "manifest_identity_sha256": price_manifest_identity_sha256(manifest),
+            "manifest_identity_excludes": list(PRICE_MANIFEST_IDENTITY_EXCLUDES),
             "child_manifest_sha256": child_manifests,
             "retained_rows": manifest["coverage_totals"]["retained_rows"],
             "strict_rows": manifest["coverage_totals"]["strict_rows"],
         }
     return output
-
-
-def _price_manifest_identity_sha256(manifest: dict[str, Any]) -> str:
-    stable = {
-        key: value for key, value in manifest.items() if key != "created_at"
-    }
-    canonical = json.dumps(stable, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def _oracle_cache_windows(
