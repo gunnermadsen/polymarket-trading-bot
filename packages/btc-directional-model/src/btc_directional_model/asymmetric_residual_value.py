@@ -27,6 +27,7 @@ PRIOR_CLIP = 1e-6
 RANDOM_SEED = 73
 MINIMUM_SCALE = 1e-9
 LOGIT_LIMIT = 40.0
+SIDE_CONDITIONED_RESIDUAL_MODEL = "side_conditioned_residual_value_offline"
 
 CORE_ORACLE_ANCHOR = "core_oracle_anchor"
 L2_CONFIRMATION = "l2_confirmation"
@@ -223,6 +224,14 @@ NUMERIC_SOURCE_COLUMNS = tuple(
         )
     )
 )
+MATURITY_GATED_SOURCE_COLUMNS = {
+    **{f"btc_return_{seconds}s_bps": seconds for seconds in (1, 5, 15, 30, 60)},
+    **{f"btc_signed_flow_{seconds}s": seconds for seconds in (5, 30, 60)},
+    **{
+        f"spot_l2_midpoint_change_{seconds}s_bps": seconds
+        for seconds in (1, 5, 15, 30, 60)
+    },
+}
 REQUIRED_FEATURE_COLUMNS = tuple(
     dict.fromkeys(
         (
@@ -553,6 +562,12 @@ def _market_equal_decision_weights(frame: pl.DataFrame) -> np.ndarray:
     )
 
 
+def market_equal_decision_weights(frame: pl.DataFrame) -> np.ndarray:
+    """Give every market total decision weight one."""
+
+    return _market_equal_decision_weights(frame)
+
+
 def _derive_yes_features(frame: pl.DataFrame) -> np.ndarray:
     elapsed = frame["seconds_elapsed"].to_numpy().astype(np.int64, copy=False)
     values: dict[str, np.ndarray] = {
@@ -563,13 +578,17 @@ def _derive_yes_features(frame: pl.DataFrame) -> np.ndarray:
     def mature(seconds: int) -> np.ndarray:
         return (elapsed >= seconds).astype(np.float64)
 
+    def mature_value(name: str, seconds: int) -> np.ndarray:
+        available = elapsed >= seconds
+        return np.where(available, values[name], 0.0)
+
     columns: list[np.ndarray] = [values["btc_path_from_window_open_bps"]]
     columns.extend(
-        values[f"btc_return_{seconds}s_bps"] * mature(seconds)
+        mature_value(f"btc_return_{seconds}s_bps", seconds)
         for seconds in (1, 5, 15, 30, 60)
     )
     columns.extend(
-        values[f"btc_signed_flow_{seconds}s"] * mature(seconds)
+        mature_value(f"btc_signed_flow_{seconds}s", seconds)
         for seconds in (5, 30, 60)
     )
     columns.extend(
@@ -580,7 +599,7 @@ def _derive_yes_features(frame: pl.DataFrame) -> np.ndarray:
         )
     )
     columns.extend(
-        values[f"spot_l2_midpoint_change_{seconds}s_bps"] * mature(seconds)
+        mature_value(f"spot_l2_midpoint_change_{seconds}s_bps", seconds)
         for seconds in (1, 5, 15, 30, 60)
     )
     columns.extend(
@@ -633,7 +652,14 @@ def _validate_input_frame(frame: pl.DataFrame, *, require_labels: bool) -> None:
     if frame.filter(pl.col("market_id").is_null() | (pl.col("market_id").str.len_chars() == 0)).height:
         raise ValueError("market_id must be non-null and non-empty")
 
-    numeric = (*NUMERIC_SOURCE_COLUMNS, "seconds_elapsed")
+    numeric = (
+        *(
+            name
+            for name in NUMERIC_SOURCE_COLUMNS
+            if name not in MATURITY_GATED_SOURCE_COLUMNS
+        ),
+        "seconds_elapsed",
+    )
     non_finite = frame.filter(
         pl.any_horizontal(
             [
@@ -644,6 +670,19 @@ def _validate_input_frame(frame: pl.DataFrame, *, require_labels: bool) -> None:
     )
     if non_finite.height:
         raise ValueError("side-conditioned residual inputs contain missing or non-finite values")
+    for name, minimum_elapsed in MATURITY_GATED_SOURCE_COLUMNS.items():
+        invalid_mature = frame.filter(
+            (pl.col(name).is_not_null() & ~pl.col(name).cast(pl.Float64).is_finite())
+            | (
+                (pl.col("seconds_elapsed") >= minimum_elapsed)
+                & pl.col(name).is_null()
+            )
+        )
+        if invalid_mature.height:
+            raise ValueError(
+                "side-conditioned residual mature inputs contain missing or "
+                f"non-finite values: {name}"
+            )
     elapsed = frame["seconds_elapsed"].cast(pl.Float64)
     if frame.filter(
         (pl.col("seconds_elapsed") < 1)

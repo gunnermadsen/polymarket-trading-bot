@@ -7,7 +7,13 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from btc_directional_model.asymmetric_residual_value import (
+    CAUSAL_TIMESTAMP_COLUMNS,
+    REQUIRED_FEATURE_COLUMNS,
+    SIDE_CONDITIONED_RESIDUAL_MODEL,
+)
 from btc_directional_model.asymmetric_value_benchmark import (
+    DEVELOPMENT_BENCHMARK_MODELS,
     _calibration_report_summary,
     _candidate_frames,
     _candidate_grid_summary,
@@ -110,6 +116,11 @@ def test_candidate_frames_predeclare_model_matrix_and_matched_controls() -> None
     )
 
     assert tuple(candidates) == ASYMMETRIC_VALUE_CANDIDATES
+    assert SIDE_CONDITIONED_RESIDUAL_MODEL not in ASYMMETRIC_VALUE_CANDIDATES
+    assert DEVELOPMENT_BENCHMARK_MODELS == (
+        *ASYMMETRIC_VALUE_CANDIDATES,
+        SIDE_CONDITIONED_RESIDUAL_MODEL,
+    )
 
 
 def test_three_source_join_is_exact_key_intersection_without_filling() -> None:
@@ -132,7 +143,35 @@ def test_three_source_join_is_exact_key_intersection_without_filling() -> None:
         *(
             pl.lit(float(index + 1)).alias(name)
             for index, name in enumerate(EARLY_CAUSAL_ORACLE_FEATURES)
-        )
+        ),
+        *(
+            pl.lit(1.0).alias(name)
+            for name in REQUIRED_FEATURE_COLUMNS
+            if name
+            not in {
+                "market_id",
+                "window_start",
+                "observed_at",
+                "seconds_elapsed",
+                "early_oracle_eligible",
+                *CAUSAL_TIMESTAMP_COLUMNS,
+                *EARLY_CAUSAL_ORACLE_FEATURES,
+                *L2_FEATURES,
+            }
+        ),
+        pl.lit(True).alias("early_oracle_eligible"),
+        (pl.col("observed_at") - pl.duration(milliseconds=100)).alias(
+            "yes_received_at"
+        ),
+        (pl.col("observed_at") - pl.duration(milliseconds=200)).alias(
+            "no_received_at"
+        ),
+        (pl.col("observed_at") - pl.duration(seconds=3)).alias(
+            "oracle_source_timestamp"
+        ),
+        (pl.col("observed_at") - pl.duration(seconds=2)).alias(
+            "oracle_block_timestamp"
+        ),
     )
     l2 = keyed([10, 15]).with_columns(
         *(
@@ -146,6 +185,10 @@ def test_three_source_join_is_exact_key_intersection_without_filling() -> None:
     assert joined["seconds_elapsed"].to_list() == [10]
     assert set(EARLY_CAUSAL_ORACLE_FEATURES).issubset(joined.columns)
     assert set(L2_FEATURES).issubset(joined.columns)
+    assert set(REQUIRED_FEATURE_COLUMNS).issubset(joined.columns)
+    assert joined["yes_received_at"].item() == (
+        start + timedelta(seconds=9, milliseconds=900)
+    )
 
 
 def _attribution_inputs() -> tuple[
@@ -452,6 +495,26 @@ def test_development_report_never_claims_independent_proof() -> None:
                 "profit_factor": 1.10,
                 "loss_recovery_wins": 0.40,
             },
+            "side_conditioned_residual_attribution": {
+                "promotion_claim": False,
+                "comparisons": {
+                    CORE_ORACLE_L2_PRICE: {
+                        "reference_role": (
+                            "same-key monolithic 115-feature combined candidate"
+                        ),
+                        "residual_minus_reference_probability": {
+                            "accuracy": 0.01,
+                            "brier_score": -0.01,
+                            "log_loss": -0.02,
+                        },
+                        "residual_minus_reference_economics": {
+                            "net_expectancy_per_trade": 0.03,
+                            "stress_1c_net_expectancy_per_trade": 0.02,
+                            "net_profit_per_resolved_market": 0.01,
+                        },
+                    }
+                },
+            },
         },
         "evaluation": {
             "earliest_fresh_full_utc_day": "2026-08-09T00:00:00+00:00"
@@ -463,3 +526,5 @@ def test_development_report_never_claims_independent_proof() -> None:
     assert "not independent proof" in report
     assert "no deployment is authorized" in report
     assert "no PnL-based early stopping" in report
+    assert "Offline side-conditioned residual diagnostic" in report
+    assert "make no promotion claim" in report
