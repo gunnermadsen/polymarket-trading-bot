@@ -11,6 +11,8 @@ from btc_directional_model.asymmetric_value_benchmark import (
     _calibration_report_summary,
     _candidate_frames,
     _candidate_grid_summary,
+    _configured_windows,
+    _development_markdown_report,
     _evaluation_economics_table,
     _frame_content_digest,
     _join_oracle_l2_candidate_features,
@@ -420,3 +422,44 @@ def test_calibration_report_exposes_target_cell_qualification() -> None:
     assert summary["target_fitted_cells"] == 7
     assert summary["target_fallback_cells"] == 1
     assert summary["target_qualified"] is False
+
+
+def test_target_calibrated_window_inventory_excludes_fake_evaluation() -> None:
+    config = load_asymmetric_value_config(
+        Path(__file__).parents[1]
+        / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+    )
+
+    windows = _configured_windows(config)
+
+    assert tuple(name for name, _ in windows) == ("fit", "calibration", "policy")
+    assert windows[-1][1].end == config.policy.end
+
+
+def test_development_report_never_claims_independent_proof() -> None:
+    result = {
+        "selection": {"qualified_on_policy_window": True},
+        "historical_development": {
+            "selected_key": "core_oracle_price_hgb::raw20_30_by55_edge_3c",
+            "selected_metrics": {
+                "trades": 100,
+                "accuracy": 0.30,
+                "mean_share_price": 0.25,
+                "mean_entry_second": 20.0,
+                "net_profit": 10.0,
+                "net_expectancy_per_trade": 0.10,
+                "stress_1c_net_expectancy_per_trade": 0.05,
+                "profit_factor": 1.10,
+                "loss_recovery_wins": 0.40,
+            },
+        },
+        "evaluation": {
+            "earliest_fresh_full_utc_day": "2026-08-09T00:00:00+00:00"
+        },
+    }
+
+    report = _development_markdown_report(result)
+
+    assert "not independent proof" in report
+    assert "no deployment is authorized" in report
+    assert "no PnL-based early stopping" in report
