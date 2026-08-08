@@ -303,6 +303,21 @@ def audit_decision_quality_walk_forward_support(
             config,
             minimum_markets=1,
         )
+        validation_cells = [
+            _target_cell_source_support(
+                validation_frame,
+                side=side,
+                start_second=start,
+                end_second_exclusive=end,
+                minimum_price=target.minimum_price,
+                maximum_price=target.maximum_price,
+                minimum_markets=1,
+                minimum_utc_days=1,
+                require_two_classes=False,
+            )
+            for start, end in target.time_bands
+            for side in target.sides
+        ]
         fold_failures = [
             f"cohort:{name}" for name, evidence in cohorts.items() if not evidence["passed"]
         ]
@@ -324,6 +339,13 @@ def audit_decision_quality_walk_forward_support(
         )
         if not validation_target["passed"]:
             fold_failures.append("validation_target")
+        fold_failures.extend(
+            "validation_cell:"
+            f"{item['side']}:"
+            f"{item['start_second']}-{item['end_second_exclusive']}"
+            for item in validation_cells
+            if not item["passed"]
+        )
         failures.extend(f"{fold.name}:{failure}" for failure in fold_failures)
         folds.append(
             {
@@ -337,6 +359,7 @@ def audit_decision_quality_walk_forward_support(
                 "targetpool_parent": targetpool_parent,
                 "target_cells": target_cells,
                 "validation_target": validation_target,
+                "validation_cells": validation_cells,
                 "failures": fold_failures,
                 "passed": not fold_failures,
             }
@@ -355,9 +378,12 @@ def audit_decision_quality_walk_forward_support(
             "targetpool_markets": contract.gates.minimum_targetpool_markets,
             "target_cell_markets": config.gates.minimum_calibration_markets_per_cell,
             "target_cell_utc_days": config.gates.minimum_calibration_days_per_cell,
+            "validation_cell_markets": 1,
+            "validation_cell_utc_days": 1,
             "two_class_targetpool": True,
             "two_class_target_cells": True,
             "two_class_validation_target": True,
+            "two_class_validation_cells": False,
         },
         "folds": folds,
         "failures": failures,
@@ -1960,6 +1986,7 @@ def _target_cell_source_support(
     maximum_price: float,
     minimum_markets: int,
     minimum_utc_days: int,
+    require_two_classes: bool = True,
 ) -> dict[str, Any]:
     if side not in {"YES", "NO"}:
         raise ValueError(f"unsupported target calibration side: {side}")
@@ -1984,11 +2011,13 @@ def _target_cell_source_support(
     negatives = int(side_labels.drop_nulls().len()) - positives
     markets = selected["market_id"].n_unique() - int(selected["market_id"].null_count() > 0)
     utc_days = selected["window_start"].dt.date().n_unique()
+    valid_labels = bool(labels and set(labels).issubset({0, 1}))
     passed = bool(
         selected.height > 0
         and selected["label_up"].null_count() == 0
         and selected["market_id"].null_count() == 0
-        and labels == [0, 1]
+        and valid_labels
+        and (not require_two_classes or labels == [0, 1])
         and markets >= minimum_markets
         and utc_days >= minimum_utc_days
     )
@@ -2006,7 +2035,7 @@ def _target_cell_source_support(
         "negatives": negatives,
         "minimum_markets": minimum_markets,
         "minimum_utc_days": minimum_utc_days,
-        "required_two_classes": True,
+        "required_two_classes": require_two_classes,
         "passed": passed,
     }
 
