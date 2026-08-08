@@ -187,6 +187,10 @@ def _decision_contract_evidence(config: AsymmetricValueConfig) -> dict[str, Any]
 
     return {
         "schema_version": DECISION_QUALITY_SCHEMA_VERSION,
+        "oof_evidence_scope": contract.oof_evidence_scope,
+        "oof_forward_proof": contract.oof_forward_proof,
+        "source_availability_rationale": contract.oof_source_availability_rationale,
+        "compressed_oof_validation_utc_days": 5,
         "folds": [
             {
                 "name": fold.name,
@@ -890,6 +894,7 @@ def run_decision_quality_benchmark(
         },
         "current_champion_reference": current_process,
         "selection": selection,
+        "walk_forward_source_support": training["walk_forward_source_support"],
         "selection_artifact": selection_path.name,
         "quality_candidate_artifact": quality_candidate_path.name,
         "oof_artifact": oof_path.name,

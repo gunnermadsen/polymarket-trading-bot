@@ -137,6 +137,9 @@ class DecisionQualityGates:
 
 @dataclass(frozen=True)
 class DecisionQualityContract:
+    oof_evidence_scope: str
+    oof_forward_proof: bool
+    oof_source_availability_rationale: str
     folds: tuple[DecisionQualityFold, ...]
     final_fit: EvidenceWindow
     final_calibration: EvidenceWindow
@@ -260,6 +263,11 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
 
     decision_quality = (
         DecisionQualityContract(
+            oof_evidence_scope=str(decision_raw["oof_evidence_scope"]),
+            oof_forward_proof=bool(decision_raw["oof_forward_proof"]),
+            oof_source_availability_rationale=str(
+                decision_raw["oof_source_availability_rationale"]
+            ),
             folds=tuple(
                 DecisionQualityFold(
                     name=str(values["name"]),
@@ -648,34 +656,34 @@ def _validate_decision_quality_contract(config: AsymmetricValueConfig) -> None:
 
     expected_folds = (
         (
-            "jun11_jun18",
-            ("2026-04-14T00:00:00+00:00", "2026-06-04T00:00:00+00:00"),
-            ("2026-06-04T00:00:00+00:00", "2026-06-11T00:00:00+00:00"),
-            ("2026-06-11T00:00:00+00:00", "2026-06-18T00:00:00+00:00"),
+            "jul04_jul05",
+            ("2026-04-14T00:00:00+00:00", "2026-06-06T00:00:00+00:00"),
+            ("2026-06-06T00:00:00+00:00", "2026-07-04T00:00:00+00:00"),
+            ("2026-07-04T00:00:00+00:00", "2026-07-05T00:00:00+00:00"),
         ),
         (
-            "jun18_jun25",
+            "jul05_jul06",
+            ("2026-04-14T00:00:00+00:00", "2026-06-07T00:00:00+00:00"),
+            ("2026-06-07T00:00:00+00:00", "2026-07-05T00:00:00+00:00"),
+            ("2026-07-05T00:00:00+00:00", "2026-07-06T00:00:00+00:00"),
+        ),
+        (
+            "jul06_jul07",
+            ("2026-04-14T00:00:00+00:00", "2026-06-08T00:00:00+00:00"),
+            ("2026-06-08T00:00:00+00:00", "2026-07-06T00:00:00+00:00"),
+            ("2026-07-06T00:00:00+00:00", "2026-07-07T00:00:00+00:00"),
+        ),
+        (
+            "jul07_jul08",
+            ("2026-04-14T00:00:00+00:00", "2026-06-09T00:00:00+00:00"),
+            ("2026-06-09T00:00:00+00:00", "2026-07-07T00:00:00+00:00"),
+            ("2026-07-07T00:00:00+00:00", "2026-07-08T00:00:00+00:00"),
+        ),
+        (
+            "jul08_jul09",
             ("2026-04-14T00:00:00+00:00", "2026-06-11T00:00:00+00:00"),
-            ("2026-06-11T00:00:00+00:00", "2026-06-18T00:00:00+00:00"),
-            ("2026-06-18T00:00:00+00:00", "2026-06-25T00:00:00+00:00"),
-        ),
-        (
-            "jun25_jul02",
-            ("2026-04-14T00:00:00+00:00", "2026-06-18T00:00:00+00:00"),
-            ("2026-06-18T00:00:00+00:00", "2026-06-25T00:00:00+00:00"),
-            ("2026-06-25T00:00:00+00:00", "2026-07-02T00:00:00+00:00"),
-        ),
-        (
-            "jul02_jul09",
-            ("2026-04-14T00:00:00+00:00", "2026-06-25T00:00:00+00:00"),
-            ("2026-06-25T00:00:00+00:00", "2026-07-02T00:00:00+00:00"),
-            ("2026-07-02T00:00:00+00:00", "2026-07-09T00:00:00+00:00"),
-        ),
-        (
-            "jul09_jul16",
-            ("2026-04-14T00:00:00+00:00", "2026-07-02T00:00:00+00:00"),
-            ("2026-07-02T00:00:00+00:00", "2026-07-09T00:00:00+00:00"),
-            ("2026-07-09T00:00:00+00:00", "2026-07-16T00:00:00+00:00"),
+            ("2026-06-11T00:00:00+00:00", "2026-07-08T00:00:00+00:00"),
+            ("2026-07-08T00:00:00+00:00", "2026-07-09T00:00:00+00:00"),
         ),
     )
     observed_folds = tuple(
@@ -689,6 +697,17 @@ def _validate_decision_quality_contract(config: AsymmetricValueConfig) -> None:
     )
     if observed_folds != expected_folds:
         raise ValueError("decision-quality walk-forward folds changed")
+    expected_rationale = (
+        "OOF is compressed to five source-complete UTC days (2026-07-04 through "
+        "2026-07-08); it is consumed development evidence only and cannot establish "
+        "fresh-forward performance."
+    )
+    if (
+        contract.oof_evidence_scope != "consumed_development_only"
+        or contract.oof_forward_proof is not False
+        or contract.oof_source_availability_rationale != expected_rationale
+    ):
+        raise ValueError("decision-quality OOF evidence scope changed")
     for fold in contract.folds:
         if not (
             fold.fit.start < fold.fit.end

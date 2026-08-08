@@ -37,12 +37,12 @@ def _config(tmp_path: Path):
 
 
 def _oof(candidate_id: str, *, when: datetime | None = None) -> pl.DataFrame:
-    window_start = when or datetime(2026, 6, 11, tzinfo=UTC)
+    window_start = when or datetime(2026, 7, 4, tzinfo=UTC)
     return pl.DataFrame(
         {
             "candidate_id": [candidate_id],
             "base_candidate": [candidate_id.split("__", maxsplit=1)[0]],
-            "fold": ["jun11_jun18"],
+            "fold": ["jul04_jul05"],
             "parent_source": ["alltime"],
             "identity_l2": [1.0],
             "market_id": ["m1"],
@@ -157,7 +157,7 @@ def _execution_source(*windows: datetime) -> pl.DataFrame:
 
 def test_oof_execution_join_excludes_final_calibration(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    validation = datetime(2026, 6, 11, tzinfo=UTC)
+    validation = datetime(2026, 7, 4, tzinfo=UTC)
     final_calibration = datetime(2026, 7, 23, tzinfo=UTC)
     selected = _oof("candidate", when=validation)
     source = _execution_source(final_calibration, validation)
@@ -259,6 +259,15 @@ def test_development_and_fresh_forward_evidence_thresholds_remain_distinct(
     assert result["forward_requirements"]["minimum_trade_utc_days"] == 10
     assert result["forward_requirements"]["minimum_strict_markets"] == 2_000
     assert result["forward_requirements"]["minimum_strict_grid_coverage"] == 0.70
+
+
+def test_decision_contract_records_compressed_development_oof_scope(tmp_path: Path) -> None:
+    evidence = benchmark._decision_contract_evidence(_config(tmp_path))
+
+    assert evidence["oof_evidence_scope"] == "consumed_development_only"
+    assert evidence["oof_forward_proof"] is False
+    assert evidence["compressed_oof_validation_utc_days"] == 5
+    assert "five source-complete UTC days" in evidence["source_availability_rationale"]
 
 
 def test_post_selection_attribution_manifest_fails_on_artifact_mutation(
@@ -378,6 +387,7 @@ def test_no_quality_winner_never_opens_economics(
     events: list[str] = []
     oof = _oof("control")
     training = {
+        "walk_forward_source_support": {"passed": True},
         "selection": {
             "status": "no_qualified_configuration",
             "selected_candidate_id": None,
@@ -448,7 +458,14 @@ def test_verified_seal_precedes_losing_winner_economic_reveal(
         benchmark,
         "fit_decision_quality_walk_forward",
         lambda *args, **kwargs: (
-            events.append("walk_forward") or (selected_oof, {"selection": selection})
+            events.append("walk_forward")
+            or (
+                selected_oof,
+                {
+                    "walk_forward_source_support": {"passed": True},
+                    "selection": selection,
+                },
+            )
         ),
     )
     matched = _oof(MATCHED_CORE_CONTROL_CANDIDATE_ID)

@@ -39,6 +39,9 @@ from .asymmetric_value_training import (
 from .core_config import CoreTrainingConfig
 
 DECISION_QUALITY_SCHEMA_VERSION = "btc-asymmetric-decision-quality-v1"
+WALK_FORWARD_SOURCE_SUPPORT_SCHEMA_VERSION = (
+    "btc-asymmetric-walk-forward-source-support-v1"
+)
 DECISION_SELECTION_SEAL_SCHEMA_VERSION = "btc-asymmetric-decision-selection-seal-v1"
 POST_SELECTION_ATTRIBUTION_SCHEMA_VERSION = (
     "btc-asymmetric-post-selection-probability-attribution-v1"
@@ -114,6 +117,8 @@ def fit_decision_quality_walk_forward(
         raise ValueError("decision-quality walk-forward requires its frozen config")
     features = asymmetric_value_feature_sets()[CORE_L2_PRICE]
     _validate_primary_feature_contract(features)
+    source_support = audit_decision_quality_walk_forward_support(frame, config)
+    support_by_fold = {item["name"]: item for item in source_support["folds"]}
     predictions: list[pl.DataFrame] = []
     fold_profiles: dict[str, Any] = {}
     expected_candidate_names = {item.name for item in contract.candidates}
@@ -142,6 +147,7 @@ def fit_decision_quality_walk_forward(
             raise RuntimeError(f"{fold.name} validation target cohort is empty")
         fold_profiles[fold.name] = {
             "fold": _fold_evidence(fold, fit_frame, calibration_frame, validation_target),
+            "source_support": support_by_fold[fold.name],
             "candidates": {},
         }
         for candidate_config in contract.candidates:
@@ -209,9 +215,160 @@ def fit_decision_quality_walk_forward(
         "oof_rows": oof.height,
         "oof_markets": oof["market_id"].n_unique(),
         "oof_key_sha256": decision_quality_oof_key_digest(oof),
+        "walk_forward_source_support": source_support,
         "fold_profiles": fold_profiles,
         "selection": selection,
     }
+
+
+def audit_decision_quality_walk_forward_support(
+    frame: pl.DataFrame,
+    config: AsymmetricValueConfig,
+) -> dict[str, Any]:
+    """Fail all frozen fold source checks before the first candidate fit."""
+
+    contract = config.decision_quality
+    target = config.target_calibration
+    if contract is None or target is None:
+        raise ValueError("walk-forward source support requires the frozen target contract")
+    required = {
+        "market_id",
+        "window_start",
+        "seconds_elapsed",
+        "label_up",
+        "yes_ask_vwap_5",
+        "no_ask_vwap_5",
+    }
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError("walk-forward source support is missing: " + ", ".join(missing))
+
+    support_frame = frame.select(*sorted(required))
+    folds: list[dict[str, Any]] = []
+    failures: list[str] = []
+    for fold in contract.folds:
+        fit_frame = _window(support_frame, fold.fit.start, fold.fit.end)
+        calibration_frame = _window(
+            support_frame,
+            fold.calibration.start,
+            fold.calibration.end,
+        )
+        validation_frame = _window(
+            support_frame,
+            fold.validation.start,
+            fold.validation.end,
+        )
+        cohorts = {
+            "fit": _source_cohort_support(fit_frame, require_two_classes=False),
+            "calibration": _source_cohort_support(
+                calibration_frame,
+                require_two_classes=False,
+            ),
+            "validation": _source_cohort_support(
+                validation_frame,
+                require_two_classes=False,
+            ),
+        }
+        fit_target = _targetpool_source_support(fit_frame, config, minimum_markets=1)
+        broad_parent_bands = [
+            _broad_parent_band_source_support(
+                calibration_frame,
+                start_second=start,
+                end_second_exclusive=end,
+                minimum_markets=config.gates.minimum_calibration_markets_per_band,
+            )
+            for start, end in config.calibration_bands
+        ]
+        targetpool_parent = _targetpool_source_support(
+            calibration_frame,
+            config,
+            minimum_markets=contract.gates.minimum_targetpool_markets,
+        )
+        target_cells = [
+            _target_cell_source_support(
+                calibration_frame,
+                side=side,
+                start_second=start,
+                end_second_exclusive=end,
+                minimum_price=target.minimum_price,
+                maximum_price=target.maximum_price,
+                minimum_markets=config.gates.minimum_calibration_markets_per_cell,
+                minimum_utc_days=config.gates.minimum_calibration_days_per_cell,
+            )
+            for start, end in target.time_bands
+            for side in target.sides
+        ]
+        validation_target = _targetpool_source_support(
+            validation_frame,
+            config,
+            minimum_markets=1,
+        )
+        fold_failures = [
+            f"cohort:{name}" for name, evidence in cohorts.items() if not evidence["passed"]
+        ]
+        if not fit_target["passed"]:
+            fold_failures.append("fit_target")
+        fold_failures.extend(
+            f"broad_parent:{item['start_second']}-{item['end_second_exclusive']}"
+            for item in broad_parent_bands
+            if not item["passed"]
+        )
+        if not targetpool_parent["passed"]:
+            fold_failures.append("targetpool_parent")
+        fold_failures.extend(
+            "target_cell:"
+            f"{item['side']}:"
+            f"{item['start_second']}-{item['end_second_exclusive']}"
+            for item in target_cells
+            if not item["passed"]
+        )
+        if not validation_target["passed"]:
+            fold_failures.append("validation_target")
+        failures.extend(f"{fold.name}:{failure}" for failure in fold_failures)
+        folds.append(
+            {
+                "name": fold.name,
+                "fit_window": _window_evidence(fold.fit),
+                "calibration_window": _window_evidence(fold.calibration),
+                "validation_window": _window_evidence(fold.validation),
+                "cohorts": cohorts,
+                "fit_target": fit_target,
+                "broad_parent_bands": broad_parent_bands,
+                "targetpool_parent": targetpool_parent,
+                "target_cells": target_cells,
+                "validation_target": validation_target,
+                "failures": fold_failures,
+                "passed": not fold_failures,
+            }
+        )
+    evidence = {
+        "schema_version": WALK_FORWARD_SOURCE_SUPPORT_SCHEMA_VERSION,
+        "audit_timing": "before_first_candidate_fit",
+        "selection_uses_economics": False,
+        "oof_evidence_scope": contract.oof_evidence_scope,
+        "oof_forward_proof": contract.oof_forward_proof,
+        "source_availability_rationale": contract.oof_source_availability_rationale,
+        "requirements": {
+            "broad_parent_markets_per_band": (
+                config.gates.minimum_calibration_markets_per_band
+            ),
+            "targetpool_markets": contract.gates.minimum_targetpool_markets,
+            "target_cell_markets": config.gates.minimum_calibration_markets_per_cell,
+            "target_cell_utc_days": config.gates.minimum_calibration_days_per_cell,
+            "two_class_targetpool": True,
+            "two_class_target_cells": True,
+            "two_class_validation_target": True,
+        },
+        "folds": folds,
+        "failures": failures,
+        "passed": not failures,
+    }
+    if failures:
+        raise RuntimeError(
+            "decision-quality walk-forward source support failed before fitting: "
+            + ", ".join(failures)
+        )
+    return evidence
 
 
 def fit_final_decision_quality_model(
@@ -1724,6 +1881,134 @@ def _validate_parent_calibration_support(
         raise RuntimeError(
             "parent calibration lacks the required market support: " + ", ".join(unsupported)
         )
+
+
+def _source_cohort_support(
+    frame: pl.DataFrame,
+    *,
+    require_two_classes: bool,
+) -> dict[str, Any]:
+    labels = sorted(int(value) for value in frame["label_up"].drop_nulls().unique().to_list())
+    label_nulls = frame["label_up"].null_count()
+    market_nulls = frame["market_id"].null_count()
+    passed = bool(
+        frame.height > 0
+        and label_nulls == 0
+        and market_nulls == 0
+        and (not require_two_classes or labels == [0, 1])
+    )
+    return {
+        "rows": frame.height,
+        "markets": frame["market_id"].n_unique() - int(market_nulls > 0),
+        "utc_days": frame["window_start"].dt.date().n_unique(),
+        "classes": labels,
+        "label_nulls": label_nulls,
+        "market_nulls": market_nulls,
+        "required_nonempty": True,
+        "required_two_classes": require_two_classes,
+        "passed": passed,
+    }
+
+
+def _targetpool_source_support(
+    frame: pl.DataFrame,
+    config: AsymmetricValueConfig,
+    *,
+    minimum_markets: int,
+) -> dict[str, Any]:
+    selected = hybrid_target_mask(frame, config)
+    target = frame.filter(pl.Series(selected))
+    evidence = _source_cohort_support(target, require_two_classes=True)
+    return {
+        **evidence,
+        "minimum_markets": minimum_markets,
+        "passed": bool(evidence["passed"] and evidence["markets"] >= minimum_markets),
+    }
+
+
+def _broad_parent_band_source_support(
+    frame: pl.DataFrame,
+    *,
+    start_second: int,
+    end_second_exclusive: int,
+    minimum_markets: int,
+) -> dict[str, Any]:
+    selected = frame.filter(
+        pl.col("seconds_elapsed").is_between(
+            start_second,
+            end_second_exclusive,
+            closed="left",
+        )
+    )
+    evidence = _source_cohort_support(selected, require_two_classes=True)
+    return {
+        "start_second": start_second,
+        "end_second_exclusive": end_second_exclusive,
+        **evidence,
+        "minimum_markets": minimum_markets,
+        "passed": bool(evidence["passed"] and evidence["markets"] >= minimum_markets),
+    }
+
+
+def _target_cell_source_support(
+    frame: pl.DataFrame,
+    *,
+    side: str,
+    start_second: int,
+    end_second_exclusive: int,
+    minimum_price: float,
+    maximum_price: float,
+    minimum_markets: int,
+    minimum_utc_days: int,
+) -> dict[str, Any]:
+    if side not in {"YES", "NO"}:
+        raise ValueError(f"unsupported target calibration side: {side}")
+    price_column = "yes_ask_vwap_5" if side == "YES" else "no_ask_vwap_5"
+    selected = frame.filter(
+        pl.col("seconds_elapsed").is_between(
+            start_second,
+            end_second_exclusive,
+            closed="left",
+        )
+        & pl.col(price_column).is_not_null()
+        & pl.col(price_column).is_finite()
+        & pl.col(price_column).is_between(
+            minimum_price,
+            maximum_price,
+            closed="left",
+        )
+    )
+    side_labels = selected["label_up"] if side == "YES" else 1 - selected["label_up"]
+    labels = sorted(int(value) for value in side_labels.drop_nulls().unique().to_list())
+    positives = int(side_labels.drop_nulls().sum()) if selected.height else 0
+    negatives = int(side_labels.drop_nulls().len()) - positives
+    markets = selected["market_id"].n_unique() - int(selected["market_id"].null_count() > 0)
+    utc_days = selected["window_start"].dt.date().n_unique()
+    passed = bool(
+        selected.height > 0
+        and selected["label_up"].null_count() == 0
+        and selected["market_id"].null_count() == 0
+        and labels == [0, 1]
+        and markets >= minimum_markets
+        and utc_days >= minimum_utc_days
+    )
+    return {
+        "side": side,
+        "start_second": start_second,
+        "end_second_exclusive": end_second_exclusive,
+        "minimum_price": minimum_price,
+        "maximum_price": maximum_price,
+        "rows": selected.height,
+        "markets": markets,
+        "utc_days": utc_days,
+        "classes": labels,
+        "positives": positives,
+        "negatives": negatives,
+        "minimum_markets": minimum_markets,
+        "minimum_utc_days": minimum_utc_days,
+        "required_two_classes": True,
+        "passed": passed,
+    }
 
 
 def _window(frame: pl.DataFrame, start: Any, end: Any) -> pl.DataFrame:
