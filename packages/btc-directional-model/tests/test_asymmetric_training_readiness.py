@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Self
 
+import polars as pl
 import pytest
 
 from btc_directional_model.asymmetric_training_readiness import (
@@ -22,6 +23,9 @@ from btc_directional_model.asymmetric_training_readiness import (
     READINESS_RANGE_END,
     READINESS_RANGE_START,
     _validate_core_oracle_source,
+    _validate_oracle_feature_caches,
+    _validate_price_manifests,
+    _validate_round_contract,
     _validate_sql_contracts,
     collect_database_inventory,
     oracle_source_inventory,
@@ -31,6 +35,8 @@ from btc_directional_model.asymmetric_training_readiness import (
 )
 from btc_directional_model.asymmetric_value_config import load_asymmetric_value_config
 from btc_directional_model.asymmetric_value_data import EARLY_CAUSAL_ORACLE_FEATURES
+from btc_directional_model.core_execution import EXECUTION_EVIDENCE_CONTRACT
+from btc_directional_model.core_extract import CORE_ORACLE_SOURCE_CONTRACT, file_sha256
 
 
 def config_path() -> Path:
@@ -39,6 +45,44 @@ def config_path() -> Path:
         / "configs"
         / "btc-5m-directional-asymmetric-value-one-second-20260414-20260802.toml"
     )
+
+
+def target_profile_config(**overrides: object) -> SimpleNamespace:
+    values: dict[str, object] = {
+        "fit": SimpleNamespace(start=READINESS_RANGE_START),
+        "policy": SimpleNamespace(end=READINESS_RANGE_END),
+        "evaluation": None,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def complete_core_oracle_partitions() -> tuple[
+    list[dict[str, object]],
+    list[dict[str, object]],
+]:
+    core: list[dict[str, object]] = []
+    oracle: list[dict[str, object]] = []
+    current = READINESS_RANGE_START
+    while current < READINESS_RANGE_END:
+        day = current.date().isoformat()
+        core.append(
+            {
+                "path": f"{day}.parquet",
+                "rows": 86_400,
+                "markets": 288,
+                "incomplete_markets": 0,
+            }
+        )
+        oracle.append(
+            {
+                "path": f"oracle-{day}.parquet",
+                "rows": 2_500,
+                "causality_violations": 0,
+            }
+        )
+        current += timedelta(days=1)
+    return core, oracle
 
 
 def complete_daily_inventory() -> list[dict[str, object]]:
@@ -225,27 +269,7 @@ def test_core_oracle_manifests_require_all_110_daily_partitions(
 ) -> None:
     import btc_directional_model.asymmetric_training_readiness as readiness
 
-    core: list[dict[str, object]] = []
-    oracle: list[dict[str, object]] = []
-    current = READINESS_RANGE_START
-    while current < READINESS_RANGE_END:
-        day = current.date().isoformat()
-        core.append(
-            {
-                "path": f"{day}.parquet",
-                "rows": 86_400,
-                "markets": 288,
-                "incomplete_markets": 0,
-            }
-        )
-        oracle.append(
-            {
-                "path": f"oracle-{day}.parquet",
-                "rows": 2_500,
-                "causality_violations": 0,
-            }
-        )
-        current += timedelta(days=1)
+    core, oracle = complete_core_oracle_partitions()
     manifests = {
         "pre_holdout": {
             "range_start": READINESS_RANGE_START.isoformat(),
@@ -269,7 +293,8 @@ def test_core_oracle_manifests_require_all_110_daily_partitions(
     )
     core_config = SimpleNamespace(paths=SimpleNamespace(source_data=tmp_path))
 
-    result = _validate_core_oracle_source(SimpleNamespace(), core_config)
+    legacy_config = SimpleNamespace(evaluation=SimpleNamespace())
+    result = _validate_core_oracle_source(legacy_config, core_config)
 
     assert result["daily_core_partitions"] == 110
     assert result["daily_oracle_partitions"] == 110
@@ -278,10 +303,170 @@ def test_core_oracle_manifests_require_all_110_daily_partitions(
 
     manifests["holdout"]["oracle_partitions"].pop()
     with pytest.raises(RuntimeError, match="exactly 110 daily partitions"):
-        _validate_core_oracle_source(SimpleNamespace(), core_config)
+        _validate_core_oracle_source(legacy_config, core_config)
 
 
-def test_readiness_manifest_is_create_once(monkeypatch, tmp_path: Path) -> None:
+def test_target_profile_uses_one_110_day_core_oracle_manifest(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import btc_directional_model.asymmetric_training_readiness as readiness
+
+    core, oracle = complete_core_oracle_partitions()
+    manifest = {
+        "range_start": READINESS_RANGE_START.isoformat(),
+        "range_end": READINESS_RANGE_END.isoformat(),
+        "partitions": core,
+        "oracle_partitions": oracle,
+    }
+    (tmp_path / "manifest-pre_holdout.json").write_text("{}")
+    requested_scopes: list[str] = []
+
+    def load_manifest(_config, scope: str):
+        requested_scopes.append(scope)
+        return manifest
+
+    monkeypatch.setattr(readiness, "load_core_manifest", load_manifest)
+    core_config = SimpleNamespace(paths=SimpleNamespace(source_data=tmp_path))
+
+    result = _validate_core_oracle_source(target_profile_config(), core_config)
+
+    assert requested_scopes == ["pre_holdout"]
+    assert result["source_scopes"] == ["pre_holdout"]
+    assert result["daily_core_partitions"] == 110
+    assert result["daily_oracle_partitions"] == 110
+
+
+def test_target_profile_round_contract_ends_at_policy_window(tmp_path: Path) -> None:
+    source = tmp_path / "core-oracle-source"
+    config = target_profile_config(oracle_source=source)
+    core_config = SimpleNamespace(
+        data=SimpleNamespace(
+            range_start=READINESS_RANGE_START,
+            range_end=READINESS_RANGE_END,
+            source_contract=CORE_ORACLE_SOURCE_CONTRACT,
+        ),
+        paths=SimpleNamespace(source_data=source),
+    )
+
+    _validate_round_contract(config, core_config)
+
+
+def test_target_profile_validates_one_110_day_development_oracle_cache(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import btc_directional_model.asymmetric_training_readiness as readiness
+
+    cache_path = tmp_path / DEVELOPMENT_ORACLE_CACHE
+    window_starts = [READINESS_RANGE_START + timedelta(days=offset) for offset in range(110)]
+    observed_at = [value + timedelta(seconds=10) for value in window_starts]
+    pl.DataFrame(
+        {
+            "market_id": [f"market-{offset}" for offset in range(110)],
+            "window_start": window_starts,
+            "oracle_source_timestamp": [value - timedelta(seconds=5) for value in observed_at],
+            "oracle_block_timestamp": [value - timedelta(seconds=5) for value in observed_at],
+            "observed_at": observed_at,
+            "early_oracle_eligible": [True] * 110,
+            "oracle_age_seconds": [5.0] * 110,
+        }
+    ).write_parquet(cache_path)
+    inventory = {
+        "inventory_sha256": "a" * 64,
+        "missing_days": [],
+        "available_days": 110,
+        "records": [
+            {"date": (READINESS_RANGE_START + timedelta(days=offset)).date().isoformat()}
+            for offset in range(110)
+        ],
+    }
+    monkeypatch.setattr(readiness, "oracle_source_inventory", lambda *_args: inventory)
+    cache_path.with_suffix(".metadata.json").write_text(
+        json.dumps(
+            {
+                "schema_version": ORACLE_CACHE_SCHEMA_VERSION,
+                "source_inventory_sha256": inventory["inventory_sha256"],
+                "minimum_propagation_seconds": ORACLE_MINIMUM_PROPAGATION_SECONDS,
+                "maximum_age_seconds": ORACLE_MAXIMUM_AGE_SECONDS,
+                "features": list(EARLY_CAUSAL_ORACLE_FEATURES),
+                "core_key_sha256": "b" * 64,
+                "core_content_sha256": "c" * 64,
+                "rows": 110,
+                "markets": 110,
+                "sha256": file_sha256(cache_path),
+            }
+        )
+    )
+    config = target_profile_config(feature_cache=tmp_path)
+    core_config = SimpleNamespace(paths=SimpleNamespace(source_data=tmp_path))
+
+    result = _validate_oracle_feature_caches(config, core_config)
+
+    assert list(result) == ["development"]
+    assert result["development"]["range_start"] == READINESS_RANGE_START.isoformat()
+    assert result["development"]["range_end"] == READINESS_RANGE_END.isoformat()
+    assert result["development"]["source_days"] == 110
+
+
+def test_target_profile_validates_one_110_day_development_pmxt_manifest(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import btc_directional_model.asymmetric_training_readiness as readiness
+
+    scope_root = tmp_path / "development"
+    scope_root.mkdir()
+    manifest = {
+        "schema_version": "btc-asymmetric-value-price-evidence-v2",
+        "scope": "development",
+        "range_start": READINESS_RANGE_START.isoformat(),
+        "range_end": READINESS_RANGE_END.isoformat(),
+        "source_contract": EXECUTION_EVIDENCE_CONTRACT,
+        "snapshot_provider": PMXT_PROVIDER,
+        "snapshot_schema_versions": [LEGACY_SNAPSHOT_SCHEMA_VERSION],
+        "quantity": 5.0,
+        "freshness_seconds": 2,
+        "proxy_prices_used": False,
+        "coverage_by_day": [
+            {"date": (READINESS_RANGE_START + timedelta(days=offset)).date().isoformat()}
+            for offset in range(110)
+        ],
+        "coverage_totals": {"retained_rows": 1_000, "strict_rows": 900},
+    }
+    (scope_root / "manifest.json").write_text(json.dumps(manifest))
+    child_ranges: list[tuple[datetime, datetime]] = []
+
+    def load_child(config):
+        config.output_dir.mkdir(parents=True)
+        (config.output_dir / "manifest.json").write_text("{}")
+        child_ranges.append((config.range_start, config.range_end))
+        return {
+            "source_contract": EXECUTION_EVIDENCE_CONTRACT,
+            "snapshot_schema_versions": [LEGACY_SNAPSHOT_SCHEMA_VERSION],
+        }
+
+    monkeypatch.setattr(readiness, "load_execution_evidence_manifest", load_child)
+    config = target_profile_config(
+        price_cache=tmp_path,
+        book_freshness_seconds=2,
+        quantity=5.0,
+    )
+
+    result = _validate_price_manifests(config)
+
+    assert list(result) == ["development"]
+    assert result["development"]["days"] == 110
+    assert child_ranges == [
+        (READINESS_RANGE_START, READINESS_RANGE_END),
+        (READINESS_RANGE_START, READINESS_RANGE_END),
+    ]
+
+
+def test_readiness_manifest_reuses_identical_immutable_seal(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     import btc_directional_model.asymmetric_training_readiness as readiness
 
     config = load_asymmetric_value_config(config_path())
@@ -327,10 +512,12 @@ def test_readiness_manifest_is_create_once(monkeypatch, tmp_path: Path) -> None:
     assert payload["ready"] is True
     assert len(payload["payload_sha256"]) == 64
     assert json.loads(destination.read_text())["payload_sha256"] == payload["payload_sha256"]
-    with pytest.raises(FileExistsError):
-        prepare_asymmetric_training_readiness(
-            config,
-            output_dir=tmp_path,
-            connection=object(),
-        )
+    repeated_destination, repeated_payload = prepare_asymmetric_training_readiness(
+        config,
+        output_dir=tmp_path,
+        connection=object(),
+    )
+    assert repeated_destination == destination
+    assert repeated_payload == payload
+    assert repeated_payload["readiness_identity_sha256"] == payload["readiness_identity_sha256"]
     assert DEVELOPMENT_ORACLE_CACHE.endswith(".parquet")
