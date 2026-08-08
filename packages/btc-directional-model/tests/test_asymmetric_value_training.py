@@ -16,14 +16,20 @@ from btc_directional_model.asymmetric_value_data import (
 )
 from btc_directional_model.asymmetric_value_training import (
     ASYMMETRIC_VALUE_CANDIDATES,
+    ASYMMETRIC_VALUE_MODEL_MATRIX,
+    CANDLE_MATCHED_CORE_PRICE_CONTROL,
     CORE_CANDLES_PRICE,
     CORE_L2_PRICE,
+    CORE_ORACLE_L2_PRICE,
     CORE_ORACLE_PRICE,
     CORE_PRICE,
+    EXPECTED_MODEL_FEATURE_COUNTS,
     L2_MATCHED_CORE_PRICE_CONTROL,
     MODEL_SELECTION_ELIGIBLE,
+    OFFLINE_ONLY_CANDIDATES,
     ORACLE_MATCHED_CORE_PRICE_CONTROL,
     PRICE_LOGISTIC,
+    THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
     AsymmetricCalibrationCell,
     AsymmetricValueModel,
     _coherent_calibration_objective,
@@ -101,7 +107,7 @@ def _calibrated_bundle() -> AsymmetricValueModel:
     )
 
 
-def test_exact_seven_bundle_contract_has_no_kitchen_sink_candidates() -> None:
+def test_exact_model_matrix_and_attribution_control_contract() -> None:
     feature_sets = asymmetric_value_feature_sets()
 
     assert ASYMMETRIC_VALUE_CANDIDATES == (
@@ -109,13 +115,37 @@ def test_exact_seven_bundle_contract_has_no_kitchen_sink_candidates() -> None:
         CORE_PRICE,
         L2_MATCHED_CORE_PRICE_CONTROL,
         CORE_L2_PRICE,
+        CANDLE_MATCHED_CORE_PRICE_CONTROL,
         CORE_CANDLES_PRICE,
         ORACLE_MATCHED_CORE_PRICE_CONTROL,
         CORE_ORACLE_PRICE,
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+        CORE_ORACLE_L2_PRICE,
     )
     assert set(feature_sets) == set(ASYMMETRIC_VALUE_CANDIDATES)
+    assert ASYMMETRIC_VALUE_MODEL_MATRIX == (
+        CORE_PRICE,
+        CORE_ORACLE_PRICE,
+        CORE_L2_PRICE,
+        CORE_CANDLES_PRICE,
+        CORE_ORACLE_L2_PRICE,
+    )
+    assert {
+        name: len(feature_sets[name]) for name in ASYMMETRIC_VALUE_MODEL_MATRIX
+    } == EXPECTED_MODEL_FEATURE_COUNTS == {
+        CORE_PRICE: 71,
+        CORE_ORACLE_PRICE: 75,
+        CORE_L2_PRICE: 111,
+        CORE_CANDLES_PRICE: 79,
+        CORE_ORACLE_L2_PRICE: 115,
+    }
+    assert MODEL_SELECTION_ELIGIBLE == frozenset(
+        {CORE_PRICE, CORE_ORACLE_PRICE, CORE_L2_PRICE}
+    )
+    assert CORE_ORACLE_L2_PRICE in OFFLINE_ONLY_CANDIDATES
+    assert CORE_ORACLE_L2_PRICE not in MODEL_SELECTION_ELIGIBLE
     assert set(POLYMARKET_VALUE_FEATURES).issubset(feature_sets[CORE_PRICE])
-    for features in feature_sets.values():
+    for name, features in feature_sets.items():
         optional_sources = sum(
             bool(set(source).intersection(features))
             for source in (
@@ -124,7 +154,12 @@ def test_exact_seven_bundle_contract_has_no_kitchen_sink_candidates() -> None:
                 EARLY_CAUSAL_ORACLE_FEATURES,
             )
         )
-        assert optional_sources <= 1
+        expected_sources = 2 if name == CORE_ORACLE_L2_PRICE else 1
+        assert optional_sources <= expected_sources
+    assert set(L2_FEATURES).issubset(feature_sets[CORE_ORACLE_L2_PRICE])
+    assert set(EARLY_CAUSAL_ORACLE_FEATURES).issubset(
+        feature_sets[CORE_ORACLE_L2_PRICE]
+    )
 
 
 def test_early_oracle_contract_excludes_unproven_boundary_features() -> None:

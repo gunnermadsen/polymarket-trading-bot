@@ -15,7 +15,7 @@ import joblib
 import numpy as np
 import polars as pl
 
-from .asymmetric_value_config import AsymmetricValueConfig
+from .asymmetric_value_config import AsymmetricValueConfig, EvidenceWindow
 from .asymmetric_value_data import (
     EARLY_CAUSAL_ORACLE_FEATURES,
     ORACLE_MAXIMUM_AGE_SECONDS,
@@ -50,14 +50,21 @@ from .asymmetric_value_evaluation import (
 )
 from .asymmetric_value_training import (
     ASYMMETRIC_VALUE_CANDIDATES,
+    ASYMMETRIC_VALUE_MODEL_MATRIX,
+    CANDLE_MATCHED_CORE_PRICE_CONTROL,
     CORE_CANDLES_PRICE,
     CORE_L2_PRICE,
+    CORE_ORACLE_L2_PRICE,
     CORE_ORACLE_PRICE,
     CORE_PRICE,
+    EXPECTED_MODEL_FEATURE_COUNTS,
     L2_MATCHED_CORE_PRICE_CONTROL,
+    MATCHED_ATTRIBUTION_CONTROLS,
     MODEL_SELECTION_ELIGIBLE,
+    OFFLINE_ONLY_CANDIDATES,
     ORACLE_MATCHED_CORE_PRICE_CONTROL,
     PRICE_LOGISTIC,
+    THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
     asymmetric_probability_frame,
     asymmetric_value_feature_sets,
     fit_asymmetric_value_models,
@@ -75,8 +82,9 @@ from .early_value_data import (
     build_partitioned_l2_frame,
 )
 from .runtime_export import score_runtime_model
+from .spot_l2_chainlink_features import L2_FEATURES
 
-ASYMMETRIC_VALUE_SCHEMA_VERSION = "btc-asymmetric-value-hunter-benchmark-v2"
+ASYMMETRIC_VALUE_SCHEMA_VERSION = "btc-asymmetric-value-hunter-benchmark-v3"
 FROZEN_CHAMPION = "frozen_champion_reference_60s_plus"
 DEVELOPMENT_ORACLE_CACHE = "development-oracle-propagation-2s.parquet"
 EVALUATION_ORACLE_CACHE = "evaluation-oracle-propagation-2s.parquet"
@@ -178,6 +186,21 @@ def run_asymmetric_value_benchmark(
     )
     del development_l2
     gc.collect()
+    development_three_source_price_features = _join_oracle_l2_candidate_features(
+        development_oracle_price_features,
+        development_l2_price_features,
+    )
+    _add_joint_source_coverage(
+        development_coverage,
+        development_three_source_price_features,
+        config,
+        source_family="oracle_l2",
+    )
+    development_three_source_price_features = _project_candidate_source(
+        development_three_source_price_features,
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+        CORE_ORACLE_L2_PRICE,
+    )
 
     development_candles = _load_or_build_source_features(
         development_executable_core,
@@ -199,6 +222,7 @@ def run_asymmetric_value_benchmark(
             development_prices,
             config,
         ),
+        CANDLE_MATCHED_CORE_PRICE_CONTROL,
         CORE_CANDLES_PRICE,
     )
     del development_candles
@@ -218,6 +242,7 @@ def run_asymmetric_value_benchmark(
         oracle_price=development_oracle_price_features,
         l2_price=development_l2_price_features,
         candle_price=development_candle_price_features,
+        three_source_price=development_three_source_price_features,
     )
     del (
         development,
@@ -290,6 +315,15 @@ def run_asymmetric_value_benchmark(
     primary_policy = next(
         policy for policy in config.policies if policy.selection_eligible
     )
+    policy_feature_attribution = _matched_feature_attribution(
+        policy_metrics,
+        policy_ledgers,
+        policy_frames,
+        policy_name=primary_policy.name,
+        config=config,
+        window=config.policy,
+        seed_offset=26_000,
+    )
     matched_control_checks, eligible_models = (
         _matched_control_noninferiority_checks(
             policy_metrics,
@@ -325,8 +359,12 @@ def run_asymmetric_value_benchmark(
         compression="zstd",
     )
     write_json_atomic(run_dir / "policy-selection.json", selection)
+    write_json_atomic(
+        run_dir / "policy-feature-attribution.json",
+        policy_feature_attribution,
+    )
     selection_seal = {
-        "schema_version": "btc-asymmetric-value-selection-seal-v2",
+        "schema_version": "btc-asymmetric-value-selection-seal-v3",
         "sealed_at": datetime.now(UTC).isoformat(),
         "evaluation_opened": False,
         "selected_key": selection["selected_key"],
@@ -373,6 +411,10 @@ def run_asymmetric_value_benchmark(
         "policy_cohort_key_sha256": {
             name: _frame_key_digest(frame) for name, frame in policy_frames.items()
         },
+        "policy_feature_attribution": policy_feature_attribution,
+        "policy_feature_attribution_sha256": file_sha256(
+            run_dir / "policy-feature-attribution.json"
+        ),
         "implementation_sha256": implementation_sha256,
         "dependency_versions": dependency_versions,
         "development_core_content_sha256": development_core_content_sha256,
@@ -421,6 +463,7 @@ def run_asymmetric_value_benchmark(
         development_oracle_price_features,
         development_l2_price_features,
         development_candle_price_features,
+        development_three_source_price_features,
         development_model_frames,
         policy_frames,
         policy_predictions,
@@ -498,6 +541,7 @@ def run_asymmetric_value_benchmark(
         CORE_ORACLE_PRICE,
     )
     del evaluation_oracle
+    gc.collect()
 
     evaluation_l2 = _load_or_build_source_features(
         evaluation_executable_core,
@@ -523,6 +567,22 @@ def run_asymmetric_value_benchmark(
         CORE_L2_PRICE,
     )
     del evaluation_l2
+    gc.collect()
+    evaluation_three_source_price_features = _join_oracle_l2_candidate_features(
+        evaluation_oracle_price_features,
+        evaluation_l2_price_features,
+    )
+    _add_joint_source_coverage(
+        evaluation_coverage,
+        evaluation_three_source_price_features,
+        config,
+        source_family="oracle_l2",
+    )
+    evaluation_three_source_price_features = _project_candidate_source(
+        evaluation_three_source_price_features,
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
+        CORE_ORACLE_L2_PRICE,
+    )
 
     evaluation_candles = _load_or_build_source_features(
         evaluation_executable_core,
@@ -544,6 +604,7 @@ def run_asymmetric_value_benchmark(
             evaluation_prices,
             config,
         ),
+        CANDLE_MATCHED_CORE_PRICE_CONTROL,
         CORE_CANDLES_PRICE,
     )
     del evaluation_candles
@@ -552,6 +613,7 @@ def run_asymmetric_value_benchmark(
         oracle_price=evaluation_oracle_price_features,
         l2_price=evaluation_l2_price_features,
         candle_price=evaluation_candle_price_features,
+        three_source_price=evaluation_three_source_price_features,
     )
     selected_evaluation_frame = evaluation_model_frames[selection["selected_model"]]
     coverage = {
@@ -627,6 +689,21 @@ def run_asymmetric_value_benchmark(
         },
         resolved_markets=evaluation["market_id"].n_unique(),
         strict_markets_by_model=evaluation_candidate_strict_markets,
+    )
+    evaluation_feature_attribution = _matched_feature_attribution(
+        {
+            candidate_policy_key(name, selected_policy.name): values
+            for name, values in evaluation_model_metrics.items()
+        },
+        {
+            candidate_policy_key(name, selected_policy.name): ledger
+            for name, ledger in evaluation_ledgers.items()
+        },
+        evaluation_model_frames,
+        policy_name=selected_policy.name,
+        config=config,
+        window=config.evaluation,
+        seed_offset=36_000,
     )
     evaluation_confidence_controls = _confidence_threshold_window(
         evaluation_predictions,
@@ -866,6 +943,10 @@ def run_asymmetric_value_benchmark(
     pl.DataFrame(evaluation_economics_leaderboard).write_csv(
         run_dir / "evaluation-model-economics.csv"
     )
+    write_json_atomic(
+        run_dir / "evaluation-feature-attribution.json",
+        evaluation_feature_attribution,
+    )
     pl.DataFrame(confidence_controls["table"]).write_csv(
         run_dir / "core-price-confidence-threshold-economics.csv"
     )
@@ -901,6 +982,7 @@ def run_asymmetric_value_benchmark(
         "exact-price-by-observation-second.csv",
         "opportunity-calibration-by-price-band.csv",
         "evaluation-model-economics.csv",
+        "evaluation-feature-attribution.json",
         "core-price-confidence-threshold-economics.csv",
         "model-second-side-price-band-surface.csv",
         "model-second-yes-no-price-band-surface.csv",
@@ -943,17 +1025,31 @@ def run_asymmetric_value_benchmark(
             ),
             "causal_oracle_features": list(EARLY_CAUSAL_ORACLE_FEATURES),
             "feature_and_source_ablation_candidates": [
-                CORE_PRICE,
-                CORE_ORACLE_PRICE,
-                CORE_L2_PRICE,
-                CORE_CANDLES_PRICE,
+                *ASYMMETRIC_VALUE_MODEL_MATRIX,
             ],
+            "model_matrix_feature_counts": EXPECTED_MODEL_FEATURE_COUNTS,
+            "selection_eligible_models": sorted(MODEL_SELECTION_ELIGIBLE),
+            "offline_only_candidates": sorted(OFFLINE_ONLY_CANDIDATES),
+            "combined_oracle_l2_candidate": {
+                "model": CORE_ORACLE_L2_PRICE,
+                "feature_count": EXPECTED_MODEL_FEATURE_COUNTS[
+                    CORE_ORACLE_L2_PRICE
+                ],
+                "runtime_exportable": False,
+                "selection_eligible": False,
+                "deployment_blocker": (
+                    "the current runtime has no combined Oracle plus spot-L2 "
+                    "feature contract"
+                ),
+            },
             "matched_feature_controls": [
                 ORACLE_MATCHED_CORE_PRICE_CONTROL,
                 L2_MATCHED_CORE_PRICE_CONTROL,
+                CANDLE_MATCHED_CORE_PRICE_CONTROL,
+                THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL,
             ],
             "kitchen_sink_candidates_used": False,
-            "candle_arm_uses_full_pmxt_cohort": True,
+            "matched_attribution_uses_identical_market_second_keys": True,
             "primary_maximum_admission_cost_per_share": max(
                 policy.maximum_cost_per_share
                 for policy in config.policies
@@ -1026,6 +1122,10 @@ def run_asymmetric_value_benchmark(
             **selection,
             "seal_sha256": selection_seal_sha256,
             "evaluation_opened_after_seal": True,
+            "policy_feature_attribution": policy_feature_attribution,
+            "policy_feature_attribution_artifact": (
+                "policy-feature-attribution.json"
+            ),
         },
         "evaluation": {
             "status": evaluation_status,
@@ -1056,6 +1156,10 @@ def run_asymmetric_value_benchmark(
             "evaluation_model_economics_leaderboard": (
                 evaluation_economics_leaderboard
             ),
+            "feature_attribution": evaluation_feature_attribution,
+            "feature_attribution_artifact": (
+                "evaluation-feature-attribution.json"
+            ),
             "core_price_confidence_threshold_controls": confidence_controls,
             "core_price_confidence_threshold_artifact": (
                 "core-price-confidence-threshold-economics.csv"
@@ -1071,6 +1175,12 @@ def run_asymmetric_value_benchmark(
                 "metrics": matched_control_metrics,
                 "same_evaluation_keys_as_selected": bool(
                     selected_matched_control is not None
+                    and _frame_key_digest(
+                        evaluation_model_frames[selection["selected_model"]]
+                    )
+                    == _frame_key_digest(
+                        evaluation_model_frames[selected_matched_control]
+                    )
                 ),
             },
             "frozen_current_policy_full_exact_book_89": (
@@ -1139,6 +1249,12 @@ def run_asymmetric_value_benchmark(
             ),
             "policy_selection_sha256": file_sha256(
                 run_dir / "policy-selection.json"
+            ),
+            "policy_feature_attribution_sha256": file_sha256(
+                run_dir / "policy-feature-attribution.json"
+            ),
+            "evaluation_feature_attribution_sha256": file_sha256(
+                run_dir / "evaluation-feature-attribution.json"
             ),
             "development_price_manifest_sha256": file_sha256(
                 config.price_cache / "development" / "manifest.json"
@@ -1215,15 +1331,19 @@ def _candidate_frames(
     oracle_price: pl.DataFrame,
     l2_price: pl.DataFrame,
     candle_price: pl.DataFrame,
+    three_source_price: pl.DataFrame,
 ) -> dict[str, pl.DataFrame]:
     return {
         PRICE_LOGISTIC: price,
         CORE_PRICE: price,
         L2_MATCHED_CORE_PRICE_CONTROL: l2_price,
         CORE_L2_PRICE: l2_price,
+        CANDLE_MATCHED_CORE_PRICE_CONTROL: candle_price,
         CORE_CANDLES_PRICE: candle_price,
         ORACLE_MATCHED_CORE_PRICE_CONTROL: oracle_price,
         CORE_ORACLE_PRICE: oracle_price,
+        THREE_SOURCE_MATCHED_CORE_ORACLE_PRICE_CONTROL: three_source_price,
+        CORE_ORACLE_L2_PRICE: three_source_price,
     }
 
 
@@ -1356,6 +1476,36 @@ def _join_early_oracle(
         how="inner",
         validate="1:1",
     )
+
+
+def _join_oracle_l2_candidate_features(
+    oracle_price: pl.DataFrame,
+    l2_price: pl.DataFrame,
+) -> pl.DataFrame:
+    """Build the exact three-source cohort without filling either feed."""
+
+    keys = ["market_id", "window_start", "observed_at", "seconds_elapsed"]
+    required_oracle = {*keys, *EARLY_CAUSAL_ORACLE_FEATURES}
+    required_l2 = {*keys, *L2_FEATURES}
+    missing_oracle = sorted(required_oracle - set(oracle_price.columns))
+    missing_l2 = sorted(required_l2 - set(l2_price.columns))
+    if missing_oracle or missing_l2:
+        raise RuntimeError(
+            "three-source feature join is missing columns: "
+            f"oracle={missing_oracle}; l2={missing_l2}"
+        )
+    joined = oracle_price.join(
+        l2_price.select(*keys, *L2_FEATURES),
+        on=keys,
+        how="inner",
+        validate="1:1",
+    )
+    if joined.is_empty():
+        raise RuntimeError("causal Oracle and spot-L2 sources have no common decision rows")
+    duplicate_keys = joined.group_by(*keys).len().filter(pl.col("len") != 1)
+    if duplicate_keys.height:
+        raise RuntimeError("three-source cohort contains duplicate market/second keys")
+    return joined.sort(keys)
 
 
 def _load_or_build_oracle_core(
@@ -1745,13 +1895,107 @@ def _champion_probability_frame(
 
 
 def _selected_matched_control(model: str) -> str | None:
-    if model == CORE_ORACLE_PRICE:
-        return ORACLE_MATCHED_CORE_PRICE_CONTROL
-    if model == CORE_L2_PRICE:
-        return L2_MATCHED_CORE_PRICE_CONTROL
-    if model == CORE_CANDLES_PRICE:
-        return CORE_PRICE
-    return None
+    return MATCHED_ATTRIBUTION_CONTROLS.get(model)
+
+
+def _matched_feature_attribution(
+    metrics: dict[str, dict[str, Any]],
+    ledgers: dict[str, pl.DataFrame],
+    frames: dict[str, pl.DataFrame],
+    *,
+    policy_name: str,
+    config: AsymmetricValueConfig,
+    window: EvidenceWindow,
+    seed_offset: int,
+) -> dict[str, Any]:
+    """Attribute each optional source on identical eligible decision keys."""
+
+    feature_sets = asymmetric_value_feature_sets()
+    natural_metrics = {
+        model: metrics[candidate_policy_key(model, policy_name)]
+        for model in ASYMMETRIC_VALUE_MODEL_MATRIX
+    }
+    comparisons: dict[str, Any] = {}
+    for offset, candidate in enumerate(ASYMMETRIC_VALUE_MODEL_MATRIX):
+        control = MATCHED_ATTRIBUTION_CONTROLS.get(candidate)
+        if control is None:
+            continue
+        candidate_frame = frames[candidate]
+        control_frame = frames[control]
+        candidate_digest = _frame_key_digest(candidate_frame)
+        control_digest = _frame_key_digest(control_frame)
+        if (
+            candidate_frame.height != control_frame.height
+            or candidate_digest != control_digest
+        ):
+            raise RuntimeError(
+                f"{candidate} attribution control {control} does not share exact "
+                "market/second keys"
+            )
+        candidate_key = candidate_policy_key(candidate, policy_name)
+        control_key = candidate_policy_key(control, policy_name)
+        candidate_metrics = metrics[candidate_key]
+        control_metrics = metrics[control_key]
+        differences = {
+            name: _finite_difference(
+                candidate_metrics.get(name),
+                control_metrics.get(name),
+            )
+            for name in (
+                "accuracy",
+                "net_expectancy_per_trade",
+                "stress_1c_net_expectancy_per_trade",
+                "net_profit_per_resolved_market",
+                "capital_efficiency",
+                "profit_factor",
+                "selected_calibration_bias",
+                "trades_per_resolved_market",
+            )
+        }
+        comparisons[candidate] = {
+            "candidate": candidate,
+            "matched_control": control,
+            "candidate_feature_count": len(feature_sets[candidate]),
+            "control_feature_count": len(feature_sets[control]),
+            "added_features": sorted(
+                set(feature_sets[candidate]) - set(feature_sets[control])
+            ),
+            "selection_eligible": candidate in MODEL_SELECTION_ELIGIBLE,
+            "runtime_exportable": candidate not in OFFLINE_ONLY_CANDIDATES,
+            "identical_market_second_keys_verified": True,
+            "decision_cohort": {
+                "rows": candidate_frame.height,
+                "markets": candidate_frame["market_id"].n_unique(),
+                "utc_days": candidate_frame["window_start"].dt.date().n_unique(),
+                "key_sha256": candidate_digest,
+            },
+            "candidate_natural_cohort_metrics": candidate_metrics,
+            "matched_control_metrics": control_metrics,
+            "candidate_minus_control": differences,
+            "paired_utc_day_net_profit": _paired_day_net_difference_bootstrap(
+                ledgers[candidate_key],
+                ledgers[control_key],
+                config,
+                seed=config.random_seed + seed_offset + offset,
+                window_start=window.start,
+                window_end=window.end,
+            ),
+        }
+    return {
+        "schema_version": "btc-asymmetric-value-feature-attribution-v1",
+        "policy": policy_name,
+        "window": {
+            "start": window.start.isoformat(),
+            "end": window.end.isoformat(),
+        },
+        "model_matrix": list(ASYMMETRIC_VALUE_MODEL_MATRIX),
+        "natural_cohort_model_metrics": natural_metrics,
+        "comparisons": comparisons,
+        "comparison_rule": (
+            "candidate and control are independently fit and scored on identical "
+            "market_id/window_start/observed_at/seconds_elapsed keys"
+        ),
+    }
 
 
 def _matched_control_noninferiority_checks(
@@ -1834,10 +2078,14 @@ def _paired_day_net_difference_bootstrap(
     config: AsymmetricValueConfig,
     *,
     seed: int,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
 ) -> dict[str, Any]:
     days = []
-    current = config.policy.start.date()
-    while current < config.policy.end.date():
+    start = window_start or config.policy.start
+    end = window_end or config.policy.end
+    current = start.date()
+    while current < end.date():
         days.append(current)
         current += timedelta(days=1)
 
@@ -2051,7 +2299,7 @@ def _add_joint_source_coverage(
     *,
     source_family: str,
 ) -> None:
-    if source_family not in {"l2", "candle"}:
+    if source_family not in {"l2", "candle", "oracle_l2"}:
         raise ValueError(f"unsupported joint source coverage: {source_family}")
     for name, evidence in (
         ("fit", config.fit),
@@ -2453,6 +2701,35 @@ def _markdown_report(result: dict[str, Any]) -> str:
             f"{_fmt(row['expectancy_lower_95'])} | "
             f"{_fmt(row['capital_efficiency'])} | "
             f"{_fmt(row['loss_recovery_wins'])} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Matched source attribution",
+            "",
+            (
+                "Each candidate and control was independently fit and scored on the "
+                "same market/second keys. The combined Oracle+L2 arm is offline-only "
+                "and cannot be exported to the current runtime."
+            ),
+            "",
+            "| Candidate | Matched control | Rows | Added features | Accuracy delta | EV/trade delta | Net/resolved delta | Paired-day net lower 95% | Exportable |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for attribution in evaluation["feature_attribution"]["comparisons"].values():
+        delta = attribution["candidate_minus_control"]
+        paired = attribution["paired_utc_day_net_profit"]
+        lines.append(
+            f"| {attribution['candidate']} | {attribution['matched_control']} | "
+            f"{attribution['decision_cohort']['rows']} | "
+            f"{len(attribution['added_features'])} | "
+            f"{_fmt(delta['accuracy'])} | "
+            f"{_fmt(delta['net_expectancy_per_trade'])} | "
+            f"{_fmt(delta['net_profit_per_resolved_market'])} | "
+            f"{_fmt(paired['lower_95'])} | "
+            f"{attribution['runtime_exportable']} |"
         )
 
     lines.extend(
