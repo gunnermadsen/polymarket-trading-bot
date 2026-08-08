@@ -24,6 +24,7 @@ from btc_directional_model.asymmetric_value_benchmark import (
     _fit_models_after_training_readiness,
     _frame_content_digest,
     _join_oracle_l2_candidate_features,
+    _load_or_build_oracle_core,
     _matched_control_noninferiority_checks,
     _matched_feature_attribution,
     _matched_policy_probability_quality,
@@ -94,6 +95,28 @@ def test_external_cache_validation_binds_inherited_core_values() -> None:
     _validate_external_core_keys(external, core)
     with pytest.raises(RuntimeError, match="core values changed"):
         _validate_external_core_keys(changed, core)
+
+
+def test_oracle_propagation_cache_requires_the_full_daily_core_range(
+    tmp_path: Path,
+) -> None:
+    config = load_asymmetric_value_config(
+        Path(__file__).parents[1]
+        / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+    )
+    incomplete = pl.DataFrame({"window_start": [config.fit.start]})
+
+    with pytest.raises(RuntimeError, match="exact daily range"):
+        _load_or_build_oracle_core(
+            incomplete,
+            config,
+            destination=tmp_path / "oracle.parquet",
+            source_inventory={"inventory_sha256": "0" * 64},
+            core_content_sha256="1" * 64,
+            expected_range_start=config.fit.start,
+            expected_range_end=config.policy.end,
+            force=False,
+        )
 
 
 def test_selected_enriched_models_have_predeclared_matched_controls() -> None:
