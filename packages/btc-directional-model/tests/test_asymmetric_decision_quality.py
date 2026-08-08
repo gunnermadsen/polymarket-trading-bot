@@ -9,6 +9,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+import btc_directional_model.asymmetric_decision_quality as decision_quality
 from btc_directional_model.asymmetric_decision_quality import (
     DECISION_SELECTION_SEAL_SCHEMA_VERSION,
     MATCHED_CORE_CONTROL_CANDIDATE_ID,
@@ -22,9 +23,11 @@ from btc_directional_model.asymmetric_decision_quality import (
     _validate_oof_selection_frame,
     _validate_parent_calibration_support,
     _window_evidence,
+    audit_decision_quality_walk_forward_support,
     calibration_variant_id,
     control_calibration_variant,
     decision_quality_metrics,
+    fit_decision_quality_walk_forward,
     fit_final_matched_core_model,
     fit_final_selected_attribution_pair,
     fit_selected_attribution_pair_walk_forward,
@@ -65,6 +68,110 @@ class _FeatureLogitModel:
 
     def raw_logit(self, frame: pl.DataFrame) -> np.ndarray:
         return frame["raw_logit"].to_numpy()
+
+
+def _synthetic_walk_forward_source() -> pl.DataFrame:
+    rows: list[dict[str, object]] = []
+    band_seconds = (1, 15, 30, 45, 60, 90, 120, 180)
+
+    def add_market(market_id: str, window_start: datetime, label: int, side: str) -> None:
+        for second in band_seconds:
+            rows.append(
+                {
+                    "market_id": market_id,
+                    "window_start": window_start,
+                    "seconds_elapsed": second,
+                    "label_up": label,
+                    "yes_ask_vwap_5": 0.25 if side == "YES" else 0.75,
+                    "no_ask_vwap_5": 0.25 if side == "NO" else 0.75,
+                }
+            )
+
+    fit_day = datetime(2026, 5, 1, tzinfo=UTC)
+    for market_index in range(4):
+        add_market(
+            f"fit-{market_index}",
+            fit_day + timedelta(minutes=5 * market_index),
+            market_index % 2,
+            "YES" if market_index < 2 else "NO",
+        )
+
+    support_days = (
+        datetime(2026, 6, 11, tzinfo=UTC),
+        datetime(2026, 6, 12, tzinfo=UTC),
+        datetime(2026, 6, 29, tzinfo=UTC),
+        datetime(2026, 6, 30, tzinfo=UTC),
+        datetime(2026, 7, 1, tzinfo=UTC),
+    )
+    for market_index in range(500):
+        day = support_days[market_index % len(support_days)]
+        add_market(
+            f"cal-{market_index}",
+            day + timedelta(minutes=5 * (market_index // len(support_days))),
+            market_index % 2,
+            "YES" if (market_index // 2) % 2 == 0 else "NO",
+        )
+
+    for day_offset in range(5):
+        validation_day = datetime(2026, 7, 4 + day_offset, tzinfo=UTC)
+        for market_index in range(4):
+            add_market(
+                f"val-{day_offset}-{market_index}",
+                validation_day + timedelta(minutes=5 * market_index),
+                market_index % 2,
+                "YES" if market_index < 2 else "NO",
+            )
+    return pl.DataFrame(rows)
+
+
+def test_walk_forward_source_audit_records_measured_synthetic_support() -> None:
+    config = _config()
+
+    evidence = audit_decision_quality_walk_forward_support(
+        _synthetic_walk_forward_source(),
+        config,
+    )
+
+    assert evidence["passed"] is True
+    assert evidence["audit_timing"] == "before_first_candidate_fit"
+    assert evidence["oof_evidence_scope"] == "consumed_development_only"
+    assert evidence["oof_forward_proof"] is False
+    assert len(evidence["folds"]) == 5
+    first = evidence["folds"][0]
+    assert first["name"] == "jul04_jul05"
+    assert [item["markets"] for item in first["broad_parent_bands"]] == [500] * 8
+    assert first["targetpool_parent"]["markets"] == 500
+    assert first["targetpool_parent"]["classes"] == [0, 1]
+    assert [item["markets"] for item in first["target_cells"]] == [250] * 8
+    assert [item["utc_days"] for item in first["target_cells"]] == [5] * 8
+    assert all(item["classes"] == [0, 1] for item in first["target_cells"])
+
+
+def test_walk_forward_source_audit_checks_later_folds_before_any_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config()
+    source = _synthetic_walk_forward_source().filter(
+        pl.col("window_start").dt.date() != datetime(2026, 7, 8, tzinfo=UTC).date()
+    )
+    fit_calls: list[str] = []
+
+    def record_fit(*args, **kwargs):
+        fit_calls.append("fit")
+        raise AssertionError("candidate fit must not run")
+
+    monkeypatch.setattr(decision_quality, "fit_hybrid_histogram_model", record_fit)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"jul08_jul09:cohort:validation.*jul08_jul09:validation_target",
+    ):
+        fit_decision_quality_walk_forward(
+            source,
+            config,
+            load_core_config(config.core_config),
+        )
+    assert fit_calls == []
 
 
 def test_under_supported_targetpool_falls_back_only_for_scoring_and_is_disqualified(
@@ -264,7 +371,6 @@ def _synthetic_oof() -> tuple[pl.DataFrame, dict[str, object]]:
             second = (1, 15, 30, 45)[market_index % 4]
             side_yes = (market_index // 4) % 2 == 0
             window_start = fold.validation.start + timedelta(
-                days=market_index % 7,
                 minutes=5 * market_index,
             )
             for candidate_id in candidate_ids:
@@ -471,12 +577,12 @@ def _matched_replay_frame(primary_oof: pl.DataFrame) -> pl.DataFrame:
             "market_id": ["fit-support", "calibration-support", "final-calibration"],
             "window_start": [
                 datetime(2026, 4, 15, tzinfo=UTC),
-                datetime(2026, 6, 5, tzinfo=UTC),
+                datetime(2026, 6, 11, tzinfo=UTC),
                 datetime(2026, 7, 24, tzinfo=UTC),
             ],
             "observed_at": [
                 datetime(2026, 4, 15, 0, 0, 1, tzinfo=UTC),
-                datetime(2026, 6, 5, 0, 0, 1, tzinfo=UTC),
+                datetime(2026, 6, 11, 0, 0, 1, tzinfo=UTC),
                 datetime(2026, 7, 24, 0, 0, 1, tzinfo=UTC),
             ],
             "seconds_elapsed": [1, 1, 1],

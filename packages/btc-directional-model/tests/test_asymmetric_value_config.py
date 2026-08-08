@@ -149,14 +149,31 @@ def test_decision_quality_contract_freezes_matrix_folds_and_final_chronology() -
     assert config.training_contract == HYBRID_DECISION_QUALITY_TRAINING_CONTRACT
     assert contract is not None
     assert tuple(fold.name for fold in contract.folds) == (
-        "jun11_jun18",
-        "jun18_jun25",
-        "jun25_jul02",
-        "jul02_jul09",
-        "jul09_jul16",
+        "jul04_jul05",
+        "jul05_jul06",
+        "jul06_jul07",
+        "jul07_jul08",
+        "jul08_jul09",
+    )
+    assert tuple(fold.fit.end.isoformat() for fold in contract.folds) == (
+        "2026-06-06T00:00:00+00:00",
+        "2026-06-07T00:00:00+00:00",
+        "2026-06-08T00:00:00+00:00",
+        "2026-06-09T00:00:00+00:00",
+        "2026-06-11T00:00:00+00:00",
+    )
+    assert tuple(fold.validation.start.isoformat() for fold in contract.folds) == (
+        "2026-07-04T00:00:00+00:00",
+        "2026-07-05T00:00:00+00:00",
+        "2026-07-06T00:00:00+00:00",
+        "2026-07-07T00:00:00+00:00",
+        "2026-07-08T00:00:00+00:00",
     )
     assert all(fold.fit.end == fold.calibration.start for fold in contract.folds)
     assert all(fold.calibration.end == fold.validation.start for fold in contract.folds)
+    assert contract.oof_evidence_scope == "consumed_development_only"
+    assert contract.oof_forward_proof is False
+    assert "five source-complete UTC days" in contract.oof_source_availability_rationale
     assert contract.final_fit.end == contract.final_calibration.start
     assert contract.final_fit.end.isoformat() == "2026-07-23T00:00:00+00:00"
     assert contract.final_calibration.end.isoformat() == "2026-08-02T00:00:00+00:00"
