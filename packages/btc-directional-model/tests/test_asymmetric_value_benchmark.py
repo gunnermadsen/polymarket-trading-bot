@@ -498,6 +498,7 @@ def test_incumbent_frequency_uses_only_the_exact_common_market_cohort() -> None:
     assert checks[CORE_PRICE][
         "candidate_trades_per_eligible_resolved_market"
     ] == pytest.approx(0.50)
+    assert checks[CORE_PRICE]["common_cohort_metrics"]["trades"] == 1
 
 
 def test_probability_quality_hard_gates_only_deployable_added_sources() -> None:

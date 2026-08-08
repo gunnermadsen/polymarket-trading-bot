@@ -2016,6 +2016,7 @@ def _development_markdown_report(result: dict[str, Any]) -> str:
     )
     if incumbent is not None and frequency is not None:
         incumbent_metrics = incumbent.get("metrics") or {}
+        challenger_metrics = frequency.get("common_cohort_metrics") or {}
         lines.extend(
             [
                 "## Frozen incumbent comparison",
@@ -2031,8 +2032,8 @@ def _development_markdown_report(result: dict[str, Any]) -> str:
                 (
                     f"| Selected challenger | {frequency.get('candidate_trades')} | "
                     f"{_fmt(frequency.get('candidate_trades_per_eligible_resolved_market'))} | "
-                    f"{_fmt(selected.get('net_profit'))} | "
-                    f"{_fmt(selected.get('net_expectancy_per_trade'))} | "
+                    f"{_fmt(challenger_metrics.get('net_profit'))} | "
+                    f"{_fmt(challenger_metrics.get('net_expectancy_per_trade'))} | "
                     f"{frequency.get('passed')} |"
                 ),
                 "",
@@ -2485,6 +2486,7 @@ def _common_incumbent_frequency_evidence(
         )
         check["common_incumbent_market_cohort"] = True
         check["candidate_source_rows_on_common_cohort"] = common_scored.height
+        check["common_cohort_metrics"] = ledger_metrics(common_ledger)
         checks[name] = check
         ledgers[name] = common_ledger
     return checks, ledgers
