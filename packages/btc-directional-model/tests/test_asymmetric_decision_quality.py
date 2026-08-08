@@ -145,6 +145,10 @@ def test_walk_forward_source_audit_records_measured_synthetic_support() -> None:
     assert [item["markets"] for item in first["target_cells"]] == [250] * 8
     assert [item["utc_days"] for item in first["target_cells"]] == [5] * 8
     assert all(item["classes"] == [0, 1] for item in first["target_cells"])
+    assert len(first["validation_cells"]) == 8
+    assert [item["minimum_markets"] for item in first["validation_cells"]] == [1] * 8
+    assert [item["minimum_utc_days"] for item in first["validation_cells"]] == [1] * 8
+    assert all(item["classes"] == [0, 1] for item in first["validation_cells"])
 
 
 def test_walk_forward_source_audit_checks_later_folds_before_any_fit(
@@ -165,6 +169,40 @@ def test_walk_forward_source_audit_checks_later_folds_before_any_fit(
     with pytest.raises(
         RuntimeError,
         match=r"jul08_jul09:cohort:validation.*jul08_jul09:validation_target",
+    ):
+        fit_decision_quality_walk_forward(
+            source,
+            config,
+            load_core_config(config.core_config),
+        )
+    assert fit_calls == []
+
+
+def test_walk_forward_source_audit_checks_later_validation_cells_before_any_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config()
+    source = _synthetic_walk_forward_source().with_columns(
+        pl.when(
+            (pl.col("window_start").dt.date() == datetime(2026, 7, 8, tzinfo=UTC).date())
+            & pl.col("market_id").is_in(("val-4-0", "val-4-1"))
+            & (pl.col("seconds_elapsed") == 45)
+        )
+        .then(pl.lit(0.75))
+        .otherwise(pl.col("yes_ask_vwap_5"))
+        .alias("yes_ask_vwap_5")
+    )
+    fit_calls: list[str] = []
+
+    def record_fit(*args, **kwargs):
+        fit_calls.append("fit")
+        raise AssertionError("candidate fit must not run")
+
+    monkeypatch.setattr(decision_quality, "fit_hybrid_histogram_model", record_fit)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"jul08_jul09:validation_cell:YES:45-60",
     ):
         fit_decision_quality_walk_forward(
             source,
