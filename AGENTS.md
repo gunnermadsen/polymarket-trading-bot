@@ -27,12 +27,15 @@ Think of Capitonic as a vision to generate income through systems with automatio
 - Refactoring should not render trading processes as no longer compatible. 
 - Refactoring a system, introducing a new system, or removing a system and causing a lack of compatibility is an anti pattern in the trading bot.
 
-# Database
-- all database mutations or changes must be executed through database migrations.
+# Database and migrations
+- all non trading process database mutations or changes must be executed through database migrations.
 - all diagnostic database queries to read the database must be optimized for performance to prevent database crashes.
+- do not scan large tables without considering performance ramifications.
 - use the db-migrate microservice job to apply migrations
 - apply migrations by creating new migration files inside packages/db-migrate/src/migrations
-- then recreate the container:
+- always confirm a migration was already applied before running migrations.
+- never create trading processes through migrations. always use the api endpoint for trading  process creation or modification.
+- apply migrations by recreating the container:
 
 ```bash
 docker compose up -d --force-recreate --no-deps db-migrate
