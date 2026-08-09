@@ -12,6 +12,7 @@ import numpy as np
 import polars as pl
 
 from .asymmetric_value_config import (
+    EARLY_NO_CALIBRATION_DECISION_QUALITY_STUDY,
     AsymmetricValueConfig,
     DecisionQualityCalibrationVariant,
     DecisionQualityCandidate,
@@ -89,6 +90,26 @@ FORBIDDEN_SELECTION_COLUMNS = frozenset(
         "modeled_edge",
     }
 )
+
+EARLY_NO_VALIDATION_REQUIREMENTS = {
+    "validation_utc_days": 10,
+    "strict_markets": 2_000,
+    "strict_markets_per_day": 200,
+    "targetpool_markets_per_day": 50,
+    "early_no_rows": 200,
+    "early_no_markets": 50,
+    "early_no_utc_days": 8,
+    "early_no_markets_per_outcome": 15,
+}
+EARLY_NO_CALIBRATION_REQUIREMENTS = {
+    "markets": 100,
+    "utc_days": 14,
+    "markets_per_outcome": 25,
+}
+EARLY_NO_MAXIMUM_ABSOLUTE_BIAS = 0.05
+EARLY_NO_MAXIMUM_ECE = 0.08
+EARLY_NO_MINIMUM_CHALLENGER_BIAS_IMPROVEMENT = 0.02
+EARLY_NO_PROPER_SCORE_NONINFERIORITY = 0.005
 
 
 def calibration_variant_id(
@@ -243,8 +264,10 @@ def audit_decision_quality_walk_forward_support(
     if missing:
         raise ValueError("walk-forward source support is missing: " + ", ".join(missing))
 
+    early_no_study = _is_early_no_calibration_study(config)
     support_frame = frame.select(*sorted(required))
     folds: list[dict[str, Any]] = []
+    validation_frames: list[pl.DataFrame] = []
     failures: list[str] = []
     for fold in contract.folds:
         fit_frame = _window(support_frame, fold.fit.start, fold.fit.end)
@@ -292,8 +315,21 @@ def audit_decision_quality_walk_forward_support(
                 end_second_exclusive=end,
                 minimum_price=target.minimum_price,
                 maximum_price=target.maximum_price,
-                minimum_markets=config.gates.minimum_calibration_markets_per_cell,
-                minimum_utc_days=config.gates.minimum_calibration_days_per_cell,
+                minimum_markets=(
+                    EARLY_NO_CALIBRATION_REQUIREMENTS["markets"]
+                    if early_no_study and side == "NO" and start == 1 and end == 15
+                    else config.gates.minimum_calibration_markets_per_cell
+                ),
+                minimum_utc_days=(
+                    EARLY_NO_CALIBRATION_REQUIREMENTS["utc_days"]
+                    if early_no_study and side == "NO" and start == 1 and end == 15
+                    else config.gates.minimum_calibration_days_per_cell
+                ),
+                minimum_markets_per_outcome=(
+                    EARLY_NO_CALIBRATION_REQUIREMENTS["markets_per_outcome"]
+                    if early_no_study and side == "NO" and start == 1 and end == 15
+                    else 0
+                ),
             )
             for start, end in target.time_bands
             for side in target.sides
@@ -301,7 +337,11 @@ def audit_decision_quality_walk_forward_support(
         validation_target = _targetpool_source_support(
             validation_frame,
             config,
-            minimum_markets=1,
+            minimum_markets=(
+                EARLY_NO_VALIDATION_REQUIREMENTS["targetpool_markets_per_day"]
+                if early_no_study
+                else 1
+            ),
         )
         validation_cells = [
             _target_cell_source_support(
@@ -339,6 +379,12 @@ def audit_decision_quality_walk_forward_support(
         )
         if not validation_target["passed"]:
             fold_failures.append("validation_target")
+        if (
+            early_no_study
+            and cohorts["validation"]["markets"]
+            < EARLY_NO_VALIDATION_REQUIREMENTS["strict_markets_per_day"]
+        ):
+            fold_failures.append("validation_strict_markets")
         fold_failures.extend(
             "validation_cell:"
             f"{item['side']}:"
@@ -347,6 +393,7 @@ def audit_decision_quality_walk_forward_support(
             if not item["passed"]
         )
         failures.extend(f"{fold.name}:{failure}" for failure in fold_failures)
+        validation_frames.append(validation_frame)
         folds.append(
             {
                 "name": fold.name,
@@ -364,6 +411,42 @@ def audit_decision_quality_walk_forward_support(
                 "passed": not fold_failures,
             }
         )
+    aggregate_validation: dict[str, Any] | None = None
+    if early_no_study:
+        validation_union = pl.concat(validation_frames, how="vertical_relaxed")
+        early_no = _target_cell_source_support(
+            validation_union,
+            side="NO",
+            start_second=1,
+            end_second_exclusive=15,
+            minimum_price=target.minimum_price,
+            maximum_price=target.maximum_price,
+            minimum_markets=EARLY_NO_VALIDATION_REQUIREMENTS["early_no_markets"],
+            minimum_utc_days=EARLY_NO_VALIDATION_REQUIREMENTS["early_no_utc_days"],
+            minimum_markets_per_outcome=(
+                EARLY_NO_VALIDATION_REQUIREMENTS["early_no_markets_per_outcome"]
+            ),
+            require_two_classes=True,
+        )
+        strict_markets = validation_union["market_id"].n_unique()
+        validation_utc_days = validation_union["window_start"].dt.date().n_unique()
+        aggregate_failures: list[str] = []
+        if validation_utc_days != EARLY_NO_VALIDATION_REQUIREMENTS["validation_utc_days"]:
+            aggregate_failures.append("validation_utc_days")
+        if strict_markets < EARLY_NO_VALIDATION_REQUIREMENTS["strict_markets"]:
+            aggregate_failures.append("validation_strict_markets")
+        if early_no["rows"] < EARLY_NO_VALIDATION_REQUIREMENTS["early_no_rows"]:
+            aggregate_failures.append("early_no_rows")
+        if not early_no["passed"]:
+            aggregate_failures.append("early_no_support")
+        failures.extend(f"aggregate:{failure}" for failure in aggregate_failures)
+        aggregate_validation = {
+            "validation_utc_days": validation_utc_days,
+            "strict_markets": strict_markets,
+            "early_no": early_no,
+            "failures": aggregate_failures,
+            "passed": not aggregate_failures,
+        }
     evidence = {
         "schema_version": WALK_FORWARD_SOURCE_SUPPORT_SCHEMA_VERSION,
         "audit_timing": "before_first_candidate_fit",
@@ -384,8 +467,16 @@ def audit_decision_quality_walk_forward_support(
             "two_class_target_cells": True,
             "two_class_validation_target": True,
             "two_class_validation_cells": False,
+            "early_no_study": early_no_study,
+            "early_no_validation": (
+                dict(EARLY_NO_VALIDATION_REQUIREMENTS) if early_no_study else None
+            ),
+            "early_no_calibration": (
+                dict(EARLY_NO_CALIBRATION_REQUIREMENTS) if early_no_study else None
+            ),
         },
         "folds": folds,
+        "aggregate_validation": aggregate_validation,
         "failures": failures,
         "passed": not failures,
     }
@@ -1092,6 +1183,19 @@ def select_decision_quality_candidate(
         control_calibration_variant(),
     )
     references = {"broad_current": broad_id, "target_only_current": target_id}
+    early_no_study = _is_early_no_calibration_study(config)
+    lead_control_id: str | None = None
+    if early_no_study:
+        selected_base = next(
+            item for item in contract.candidates if item.selection_eligible
+        )
+        lead_variant = next(
+            item
+            for item in contract.calibration_variants
+            if item.name == "targetpool_control"
+        )
+        lead_control_id = calibration_variant_id(selected_base.name, lead_variant)
+        references["lead_control"] = lead_control_id
     metrics_by_candidate: dict[str, Any] = {}
     for candidate_id in sorted(oof["candidate_id"].unique().to_list()):
         candidate_frame = oof.filter(pl.col("candidate_id") == candidate_id)
@@ -1112,6 +1216,23 @@ def select_decision_quality_candidate(
                 )
                 for name, reference_id in references.items()
             }
+            early_no_comparison = None
+            if lead_control_id is not None:
+                early_no_comparison = paired_probability_delta(
+                    _early_no_probability_frame(
+                        oof.filter(pl.col("candidate_id") == candidate_id)
+                    ),
+                    _early_no_probability_frame(
+                        oof.filter(pl.col("candidate_id") == lead_control_id)
+                    ),
+                    resamples=config.bootstrap_resamples,
+                    seed=_stable_seed(
+                        config.random_seed,
+                        candidate_id,
+                        lead_control_id,
+                        "early_no",
+                    ),
+                )
             calibration_ok = all(
                 fold_profiles[fold.name]["candidates"][base.name]["calibrations"][candidate_id][
                     "target_calibration"
@@ -1126,6 +1247,13 @@ def select_decision_quality_candidate(
                 references=references,
                 contract=contract,
                 calibration_ok=calibration_ok,
+                lead_control_id=lead_control_id,
+                lead_control_metrics=(
+                    metrics_by_candidate[lead_control_id]
+                    if lead_control_id is not None
+                    else None
+                ),
+                early_no_comparison=early_no_comparison,
             )
             records.append(
                 {
@@ -1137,6 +1265,7 @@ def select_decision_quality_candidate(
                     "identity_l2": variant.identity_l2,
                     "metrics": metrics,
                     "comparisons": comparisons,
+                    "early_no_comparison_to_control": early_no_comparison,
                     "gates": gates,
                     "qualified": all(item["passed"] for item in gates),
                 }
@@ -1147,6 +1276,8 @@ def select_decision_quality_candidate(
         oof,
         resamples=config.bootstrap_resamples,
         seed=config.random_seed,
+        early_no_study=early_no_study,
+        lead_control_id=lead_control_id,
     )
     if not rank_trace:
         return {
@@ -1156,6 +1287,7 @@ def select_decision_quality_candidate(
             "candidate_records": records,
             "rank_trace": [],
             "economics_used": False,
+            "lead_control_candidate_id": lead_control_id,
         }
     winner_id = rank_trace[0]["candidate_id"]
     winner = next(record for record in records if record["candidate_id"] == winner_id)
@@ -1166,6 +1298,7 @@ def select_decision_quality_candidate(
         "candidate_records": records,
         "rank_trace": rank_trace,
         "economics_used": False,
+        "lead_control_candidate_id": lead_control_id,
     }
 
 
@@ -1201,6 +1334,26 @@ def decision_quality_metrics(frame: pl.DataFrame) -> dict[str, Any]:
                 _market_equal_weights(market_ids[cell_selected]),
             )
     return result
+
+
+def _early_no_probability_frame(frame: pl.DataFrame) -> pl.DataFrame:
+    return frame.filter(
+        pl.col("no_target_eligible") & (pl.col("target_time_band") == "1_15")
+    )
+
+
+def _early_no_metrics(frame: pl.DataFrame) -> dict[str, Any]:
+    selected = _early_no_probability_frame(frame)
+    if selected.is_empty():
+        raise RuntimeError("early-NO probability metric cohort is empty")
+    probability = 1.0 - selected["probability_yes"].to_numpy()
+    labels = 1.0 - selected["label_up"].to_numpy().astype(np.float64)
+    market_ids = selected["market_id"].cast(pl.String).to_numpy()
+    return _weighted_probability_metrics(
+        probability,
+        labels,
+        _market_equal_weights(market_ids),
+    )
 
 
 def paired_probability_delta(
@@ -1326,6 +1479,9 @@ def _decision_quality_gate_evidence(
     references: dict[str, str],
     contract: Any,
     calibration_ok: bool,
+    lead_control_id: str | None = None,
+    lead_control_metrics: dict[str, Any] | None = None,
+    early_no_comparison: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     gates = contract.gates
     overall = metrics["overall"]
@@ -1388,6 +1544,62 @@ def _decision_quality_gate_evidence(
             ),
         )
     )
+    if lead_control_id is not None:
+        if lead_control_metrics is None or early_no_comparison is None:
+            raise RuntimeError("early-NO gates require their frozen lead-control evidence")
+        early_no = metrics["time_cells"]["NO_1_15"]
+        lead_early_no = lead_control_metrics["time_cells"]["NO_1_15"]
+        evidence.extend(
+            (
+                _check(
+                    "early_no_absolute_bias",
+                    abs(early_no["bias"]),
+                    EARLY_NO_MAXIMUM_ABSOLUTE_BIAS,
+                    "<=",
+                ),
+                _check(
+                    "early_no_ece",
+                    early_no["ece"],
+                    EARLY_NO_MAXIMUM_ECE,
+                    "<=",
+                ),
+            )
+        )
+        if candidate_id == lead_control_id:
+            evidence.append(
+                _check(
+                    "challenger_early_no_bias_improvement",
+                    True,
+                    True,
+                    "==",
+                )
+            )
+        else:
+            evidence.append(
+                _check(
+                    "challenger_early_no_bias_improvement",
+                    abs(lead_early_no["bias"]) - abs(early_no["bias"]),
+                    EARLY_NO_MINIMUM_CHALLENGER_BIAS_IMPROVEMENT,
+                    ">=",
+                )
+            )
+        for metric in ("brier_delta", "log_loss_delta"):
+            evidence.extend(
+                (
+                    _check(
+                        f"early_no_{metric}_point_noninferior_to_lead_control",
+                        early_no_comparison[metric]["point"],
+                        0.0,
+                        "<=",
+                    ),
+                    _check(
+                        f"early_no_{metric}_upper_95_noninferior_to_lead_control",
+                        early_no_comparison[metric]["upper_95"],
+                        EARLY_NO_PROPER_SCORE_NONINFERIORITY,
+                        "<=",
+                    ),
+                )
+            )
     candidate_frame = oof.filter(pl.col("candidate_id") == candidate_id)
     folds = sorted(candidate_frame["fold"].unique().to_list())
     candidate_fold_metrics = {
@@ -1440,6 +1652,45 @@ def _decision_quality_gate_evidence(
             ">=",
         )
     )
+    if lead_control_id is not None:
+        lead_frame = oof.filter(pl.col("candidate_id") == lead_control_id)
+        early_noninferior_folds = 0
+        early_supported_folds = 0
+        for fold in folds:
+            candidate_early = _early_no_probability_frame(
+                candidate_frame.filter(pl.col("fold") == fold)
+            )
+            lead_early = _early_no_probability_frame(
+                lead_frame.filter(pl.col("fold") == fold)
+            )
+            if candidate_early.is_empty() or lead_early.is_empty():
+                continue
+            early_supported_folds += 1
+            candidate_early_metrics = _early_no_metrics(candidate_early)
+            lead_early_metrics = _early_no_metrics(lead_early)
+            jointly_worse = (
+                candidate_early_metrics["brier"] > lead_early_metrics["brier"]
+                and candidate_early_metrics["log_loss"]
+                > lead_early_metrics["log_loss"]
+            )
+            early_noninferior_folds += int(not jointly_worse)
+        evidence.extend(
+            (
+                _check("validation_fold_count", len(folds), 10, "=="),
+                _check(
+                    "early_no_supported_folds",
+                    early_supported_folds,
+                    EARLY_NO_VALIDATION_REQUIREMENTS["early_no_utc_days"],
+                    ">=",
+                ),
+                _check(
+                    "early_no_noninferior_folds_to_lead_control",
+                    early_noninferior_folds,
+                    contract.gates.minimum_noninferior_folds,
+                    ">=",
+                ),
+            )
+        )
     return evidence
 
 
@@ -1449,6 +1700,8 @@ def _rank_decision_quality_candidates(
     *,
     resamples: int,
     seed: int,
+    early_no_study: bool = False,
+    lead_control_id: str | None = None,
 ) -> list[dict[str, Any]]:
     if not records:
         return []
@@ -1464,18 +1717,36 @@ def _rank_decision_quality_candidates(
     )
     threshold = minimum["metrics"]["overall"]["log_loss"] + minimum_frame_se
     one_se = [record for record in records if record["metrics"]["overall"]["log_loss"] <= threshold]
-    regularization_rank = {"h1_regularized": 1, "h2_regularized": 2, "h3_regularized": 3}
-    ranked = sorted(
-        one_se,
-        key=lambda item: (
-            item["metrics"]["overall"]["brier"],
-            abs(item["metrics"]["overall"]["bias"]),
-            -regularization_rank[item["histogram_profile"]],
-            -item["identity_l2"],
-            item["target_weight"],
-            item["candidate_id"],
-        ),
-    )
+    if early_no_study:
+        if lead_control_id is None:
+            raise RuntimeError("early-NO ranking requires the frozen lead-control id")
+        ranked = sorted(
+            one_se,
+            key=lambda item: (
+                item["metrics"]["time_cells"]["NO_1_15"]["brier"],
+                abs(item["metrics"]["time_cells"]["NO_1_15"]["bias"]),
+                item["metrics"]["overall"]["brier"],
+                item["candidate_id"] != lead_control_id,
+                item["candidate_id"],
+            ),
+        )
+    else:
+        regularization_rank = {
+            "h1_regularized": 1,
+            "h2_regularized": 2,
+            "h3_regularized": 3,
+        }
+        ranked = sorted(
+            one_se,
+            key=lambda item: (
+                item["metrics"]["overall"]["brier"],
+                abs(item["metrics"]["overall"]["bias"]),
+                -regularization_rank[item["histogram_profile"]],
+                -item["identity_l2"],
+                item["target_weight"],
+                item["candidate_id"],
+            ),
+        )
     return [
         {
             "rank": index + 1,
@@ -1483,6 +1754,11 @@ def _rank_decision_quality_candidates(
             "log_loss": item["metrics"]["overall"]["log_loss"],
             "brier": item["metrics"]["overall"]["brier"],
             "absolute_bias": abs(item["metrics"]["overall"]["bias"]),
+            "early_no_brier": item["metrics"]["time_cells"]["NO_1_15"]["brier"],
+            "early_no_absolute_bias": abs(
+                item["metrics"]["time_cells"]["NO_1_15"]["bias"]
+            ),
+            "lead_control_tie_preferred": item["candidate_id"] == lead_control_id,
             "one_standard_error_threshold": threshold,
         }
         for index, item in enumerate(ranked)
@@ -2020,6 +2296,7 @@ def _target_cell_source_support(
     maximum_price: float,
     minimum_markets: int,
     minimum_utc_days: int,
+    minimum_markets_per_outcome: int = 0,
     require_two_classes: bool = True,
 ) -> dict[str, Any]:
     if side not in {"YES", "NO"}:
@@ -2044,6 +2321,8 @@ def _target_cell_source_support(
     positives = int(side_labels.drop_nulls().sum()) if selected.height else 0
     negatives = int(side_labels.drop_nulls().len()) - positives
     markets = selected["market_id"].n_unique() - int(selected["market_id"].null_count() > 0)
+    positive_markets = selected.filter(side_labels == 1)["market_id"].n_unique()
+    negative_markets = selected.filter(side_labels == 0)["market_id"].n_unique()
     utc_days = selected["window_start"].dt.date().n_unique()
     valid_labels = bool(labels and set(labels).issubset({0, 1}))
     passed = bool(
@@ -2054,6 +2333,8 @@ def _target_cell_source_support(
         and (not require_two_classes or labels == [0, 1])
         and markets >= minimum_markets
         and utc_days >= minimum_utc_days
+        and positive_markets >= minimum_markets_per_outcome
+        and negative_markets >= minimum_markets_per_outcome
     )
     return {
         "side": side,
@@ -2067,11 +2348,22 @@ def _target_cell_source_support(
         "classes": labels,
         "positives": positives,
         "negatives": negatives,
+        "positive_markets": positive_markets,
+        "negative_markets": negative_markets,
         "minimum_markets": minimum_markets,
         "minimum_utc_days": minimum_utc_days,
+        "minimum_markets_per_outcome": minimum_markets_per_outcome,
         "required_two_classes": require_two_classes,
         "passed": passed,
     }
+
+
+def _is_early_no_calibration_study(config: AsymmetricValueConfig) -> bool:
+    contract = config.decision_quality
+    return bool(
+        contract is not None
+        and contract.study == EARLY_NO_CALIBRATION_DECISION_QUALITY_STUDY
+    )
 
 
 def _window(frame: pl.DataFrame, start: Any, end: Any) -> pl.DataFrame:
