@@ -116,6 +116,111 @@ def test_empty_new_day_validation_cell_blocks_before_any_fit(
         )
 
 
+def test_duplicate_source_key_blocks_before_any_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config()
+    source = _complete_support_frame()
+    source = pl.concat((source, source.head(1)), how="vertical_relaxed")
+    monkeypatch.setattr(
+        quality,
+        "fit_hybrid_histogram_model",
+        lambda *args, **kwargs: pytest.fail("fit ran after duplicate source key"),
+    )
+
+    with pytest.raises(RuntimeError, match="source:duplicate_market_time_keys"):
+        quality.fit_decision_quality_walk_forward(
+            source,
+            config,
+            load_core_config(config.core_config),
+        )
+
+
+class _FinalBundle:
+    def __init__(self) -> None:
+        self.name = "fake"
+
+
+def _selected_early_no_configuration() -> dict[str, object]:
+    return {
+        "status": "selected",
+        "selected_candidate_id": "hybrid_50_h3__targetpool_early_no_offset",
+        "selected_base_candidate": "hybrid_50_h3",
+        "economics_used": False,
+    }
+
+
+def test_final_model_enforces_and_seals_early_no_calibration_support(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config()
+    fit_calls: list[int] = []
+
+    def fake_fit(frame: pl.DataFrame, *args, **kwargs):
+        fit_calls.append(frame.height)
+        return object(), {"fit_rows": frame.height}
+
+    monkeypatch.setattr(quality, "fit_hybrid_histogram_model", fake_fit)
+    monkeypatch.setattr(
+        quality,
+        "_fit_calibrated_bundle",
+        lambda *args, **kwargs: (
+            _FinalBundle(),
+            {"target_calibration": {"qualified": True}},
+        ),
+    )
+
+    bundle, evidence = quality.fit_final_decision_quality_model(
+        _complete_support_frame(),
+        _selected_early_no_configuration(),
+        config,
+        load_core_config(config.core_config),
+    )
+
+    support = evidence["final_early_no_calibration_support"]
+    assert bundle.name == CORE_L2_PRICE
+    assert fit_calls
+    assert support["passed"] is True
+    assert support["minimum_markets"] == 100
+    assert support["minimum_utc_days"] == 14
+    assert support["minimum_markets_per_outcome"] == 25
+
+
+def test_final_model_rejects_early_no_support_before_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config()
+    contract = config.decision_quality
+    assert contract is not None
+    source = _complete_support_frame().filter(
+        ~(
+            pl.col("window_start").is_between(
+                contract.final_calibration.start,
+                contract.final_calibration.end,
+                closed="left",
+            )
+            & pl.col("seconds_elapsed").is_between(1, 15, closed="left")
+            & pl.col("no_ask_vwap_5").is_between(0.20, 0.30, closed="left")
+        )
+    )
+    monkeypatch.setattr(
+        quality,
+        "fit_hybrid_histogram_model",
+        lambda *args, **kwargs: pytest.fail("fit ran without final early-NO support"),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="selected final early-NO calibration support did not qualify",
+    ):
+        quality.fit_final_decision_quality_model(
+            source,
+            _selected_early_no_configuration(),
+            config,
+            load_core_config(config.core_config),
+        )
+
+
 def _ranking_frame(*candidate_ids: str) -> pl.DataFrame:
     start = datetime(2026, 8, 10, tzinfo=UTC)
     rows: list[dict[str, object]] = []
