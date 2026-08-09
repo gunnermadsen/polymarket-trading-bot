@@ -903,6 +903,7 @@ def _fit_calibrated_bundle(
         config,
         core_config=core_config,
         parent_source=effective_parent_source,
+        calibration_weighting=variant.calibration_weighting,
     )
     _validate_parent_calibration_support(calibrators, config)
     cells = fit_side_price_time_calibrators(
@@ -913,6 +914,8 @@ def _fit_calibrated_bundle(
         identity_l2_strength=variant.identity_l2,
         slope_bounds=(0.05, 3.0),
         intercept_bounds=(-2.0, 2.0),
+        calibration_weighting=variant.calibration_weighting,
+        early_no_intercept_only=variant.early_no_intercept_only,
     )
     target_evidence = target_calibration_evidence(cells, config)
     target_cells = [
@@ -927,6 +930,34 @@ def _fit_calibrated_bundle(
     )
     target_evidence["positive_target_slopes"] = positive_target_slopes
     target_evidence["qualified"] = bool(target_evidence["qualified"] and positive_target_slopes)
+    early_no_cells = [
+        cell
+        for cell in target_cells
+        if cell.start_second == 1
+        and cell.end_second_exclusive == 15
+        and cell.side == "NO"
+    ]
+    early_no_parameterization_qualified = bool(
+        len(early_no_cells) == 1
+        and (
+            not variant.early_no_intercept_only
+            or math.isclose(early_no_cells[0].slope, 1.0, abs_tol=1e-12)
+        )
+    )
+    target_evidence["early_no_parameterization"] = {
+        "start_second": 1,
+        "end_second_exclusive": 15,
+        "minimum_price": 0.20,
+        "maximum_price": 0.30,
+        "side": "NO",
+        "intercept_only": variant.early_no_intercept_only,
+        "slope": early_no_cells[0].slope if len(early_no_cells) == 1 else None,
+        "intercept": early_no_cells[0].intercept if len(early_no_cells) == 1 else None,
+        "qualified": early_no_parameterization_qualified,
+    }
+    target_evidence["qualified"] = bool(
+        target_evidence["qualified"] and early_no_parameterization_qualified
+    )
     if targetpool_support is not None and not targetpool_support["qualified"]:
         target_evidence["qualified"] = False
         target_evidence["parent_fallback_disqualified"] = True
@@ -939,10 +970,13 @@ def _fit_calibrated_bundle(
         identity_l2_strength=variant.identity_l2,
     )
     return bundle, {
+        "calibration_variant": variant.name,
         "parent_source": requested_parent_source,
         "effective_parent_source": effective_parent_source,
         "targetpool_support": targetpool_support,
         "identity_l2": variant.identity_l2,
+        "calibration_weighting": variant.calibration_weighting,
+        "early_no_intercept_only": variant.early_no_intercept_only,
         "parent_bands": [
             {
                 "start_second": band.start_second,
