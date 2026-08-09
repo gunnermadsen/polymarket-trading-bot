@@ -75,6 +75,9 @@ def complete_inventory() -> list[dict[str, object]]:
                 "l2_rows": EXPECTED_DAILY_ONE_SECOND_ROWS,
                 "l2_qualified_seconds": EXPECTED_DAILY_ONE_SECOND_ROWS,
                 "l2_causality_violations": 0,
+                "l2_cryptohft_rows": EXPECTED_DAILY_ONE_SECOND_ROWS,
+                "l2_coinapi_rows": 0,
+                "l2_huggingface_rows": 0,
                 "l2_providers": ["cryptohftdata"],
                 "l2_materialization_contracts": [
                     L2_MATERIALIZATION_CONTRACTS[0]
@@ -139,6 +142,7 @@ def test_frozen_contract_preserves_quarantine_and_planned_validation() -> None:
     assert contract.quarantine_end == PLANNED_VALIDATION_START
     assert contract.minimum_source_grid_coverage == 0.90
     assert contract.minimum_l2_second_coverage == 0.95
+    assert contract.minimum_primary_l2_provider_fraction == 0.95
 
     with pytest.raises(ValueError, match="shifted frozen config"):
         validate_new_day_readiness_contract(
@@ -196,6 +200,7 @@ def test_missing_spot_l2_and_pmxt_fail_with_material_reasons() -> None:
         {
             "l2_rows": 0,
             "l2_qualified_seconds": 0,
+            "l2_cryptohft_rows": 0,
             "l2_materialization_contracts": [],
             "pmxt_completed_hours": 0,
             "pmxt_artifact_rows": 0,
@@ -239,6 +244,7 @@ def test_binance_must_be_exact_and_spot_l2_must_retain_95_percent() -> None:
             "binance_qualified_seconds": 86_399,
             "l2_rows": 82_079,
             "l2_qualified_seconds": 82_079,
+            "l2_cryptohft_rows": 82_079,
         }
     )
 
@@ -285,6 +291,7 @@ def test_unmounted_archive_and_upstream_l2_contract_are_explicit(
         external_archive_mount=tmp_path / "unmounted",
         pmxt_cache_root=tmp_path / "unmounted" / "pmxt",
         spot_l2_archive_root=tmp_path / "unmounted" / "spot-l2",
+        coinapi_archive_root=tmp_path / "unmounted" / "spot-l2",
     )
     rows = complete_inventory()
     for row in rows:
@@ -292,6 +299,7 @@ def test_unmounted_archive_and_upstream_l2_contract_are_explicit(
             {
                 "l2_rows": 0,
                 "l2_qualified_seconds": 0,
+                "l2_cryptohft_rows": 0,
                 "l2_materialization_contracts": [],
             }
         )
@@ -318,7 +326,39 @@ def test_unmounted_archive_and_upstream_l2_contract_are_explicit(
     assert payload["status"] == "blocked_archive_unmounted"
     assert payload["ready"] is False
     assert payload["upstream_materialization"]["binance_spot_l2"]["status"] == (
-        "blocked_upstream_materialization_contract"
+        "materialization_path_available_requires_provider_regime_qualification"
     )
+    assert payload["upstream_materialization"]["binance_spot_l2"][
+        "existing_no_rust_alternative"
+    ]["status"] == "available_but_provider_regime_unqualified"
     assert payload["checks"]["oracle_and_candles_inventory_only"] is True
     assert destination.is_file()
+
+
+def test_coinapi_only_validation_regime_fails_closed() -> None:
+    contract = load_new_day_readiness_contract(config_path())
+    rows = complete_inventory()
+    rows[0].update(
+        {
+            "l2_cryptohft_rows": 0,
+            "l2_coinapi_rows": EXPECTED_DAILY_ONE_SECOND_ROWS,
+            "l2_materialization_contracts": [
+                "coinapi-binance-spot-btcusdt-l2-snapshots-v1"
+            ],
+        }
+    )
+
+    result = assess_new_day_database_inventory(
+        rows,
+        contract,
+        observed_at=completed_assessment_time(),
+    )
+    blocker = next(
+        item
+        for item in result["mandatory_blockers"]
+        if item["code"] == "spot_l2_primary_provider_fraction"
+    )
+
+    assert result["ready"] is False
+    assert blocker["observed"] == 0.0
+    assert blocker["required"] == 0.95

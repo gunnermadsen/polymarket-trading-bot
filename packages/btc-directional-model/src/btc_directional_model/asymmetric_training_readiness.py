@@ -73,8 +73,8 @@ ORACLE_CACHE_SCHEMA_VERSION = "btc-asymmetric-value-early-oracle-v3"
 DEVELOPMENT_ORACLE_CACHE = "development-oracle-propagation-2s.parquet"
 EVALUATION_ORACLE_CACHE = "evaluation-oracle-propagation-2s.parquet"
 
-NEW_DAY_READINESS_SCHEMA_VERSION = "btc-asymmetric-new-day-readiness-v1"
-NEW_DAY_READINESS_CONTRACT = "early-no-cross-day-source-readiness-v1"
+NEW_DAY_READINESS_SCHEMA_VERSION = "btc-asymmetric-new-day-readiness-v2"
+NEW_DAY_READINESS_CONTRACT = "early-no-cross-day-source-readiness-v2"
 PLANNED_VALIDATION_START = datetime(2026, 8, 10, tzinfo=UTC)
 PLANNED_VALIDATION_END = datetime(2026, 8, 20, tzinfo=UTC)
 QUARANTINE_START = datetime(2026, 8, 2, tzinfo=UTC)
@@ -88,6 +88,13 @@ EXPECTED_DAILY_PREDICTION_ROWS = (
     EXPECTED_DAILY_MARKETS * len(ASYMMETRIC_PREDICTION_SECONDS)
 )
 SPOT_L2_CURRENT_MATERIALIZATION_END = datetime(2026, 8, 2, tzinfo=UTC)
+CRYPTOHFT_L2_MATERIALIZATION_CONTRACT = (
+    "cryptohft-binance-spot-btcusdt-l2-features-v1"
+)
+COINAPI_L2_MATERIALIZATION_CONTRACT = (
+    "coinapi-binance-spot-btcusdt-l2-snapshots-v1"
+)
+COINAPI_DIRECT_MATERIALIZER = "scripts/materialize-coinapi-binance-spot-l2.mjs"
 
 
 @dataclass(frozen=True)
@@ -105,11 +112,14 @@ class NewDayReadinessContract:
     minimum_opening_boundary_coverage: float
     minimum_source_grid_coverage: float
     minimum_l2_second_coverage: float
+    minimum_primary_l2_provider_fraction: float
     minimum_candidate_grid_coverage: float
     external_archive_mount: Path
     pmxt_cache_root: Path
     spot_l2_archive_root: Path
     spot_l2_sentinel: str
+    spot_l2_sentinel_content: str
+    coinapi_archive_root: Path
 
 
 _NEW_DAY_INTEGER_FIELDS = (
@@ -131,6 +141,9 @@ _NEW_DAY_INTEGER_FIELDS = (
     "l2_rows",
     "l2_qualified_seconds",
     "l2_causality_violations",
+    "l2_cryptohft_rows",
+    "l2_coinapi_rows",
+    "l2_huggingface_rows",
     "oracle_rounds",
     "oracle_causality_violations",
     "chainlink_candle_rows",
@@ -188,6 +201,14 @@ CANONICAL_SOURCE_CONTRACT: dict[str, Any] = {
         "ingester_key": L2_INGESTER,
         "source_schema_version": L2_SOURCE_SCHEMA_VERSION,
         "materialization_contracts": list(L2_MATERIALIZATION_CONTRACTS),
+        "primary_materialization_contract": (
+            CRYPTOHFT_L2_MATERIALIZATION_CONTRACT
+        ),
+        "minimum_primary_provider_fraction": 0.95,
+        "coinapi_role": (
+            "accepted canonical supplement; primary validation regime requires "
+            "separate source-equivalence qualification"
+        ),
         "information_dimension_count": len(L2_INFORMATION_COLUMNS),
         "information_columns": list(L2_INFORMATION_COLUMNS),
     },
@@ -259,12 +280,15 @@ _NEW_DAY_SQL_CONTRACT = (
     "polymarket.btc_market_reference_facts",
     "polymarket.binance_one_second_klines",
     "polymarket.binance_spot_btcusdt_l2_training_features",
+    "polymarket.binance_spot_btcusdt_l2_one_second_features",
     "polymarket.btc_market_execution_snapshots",
     "polymarket.backfill_artifacts",
     "polymarket.polygon_chainlink_btcusd_oracle_rounds",
     "polymarket.chainlink_btcusd_one_minute_candles",
     PMXT_PROVIDER,
     LEGACY_SNAPSHOT_SCHEMA_VERSION,
+    CRYPTOHFT_L2_MATERIALIZATION_CONTRACT,
+    COINAPI_L2_MATERIALIZATION_CONTRACT,
 )
 
 
@@ -294,6 +318,9 @@ def load_new_day_readiness_contract(path: Path) -> NewDayReadinessContract:
         minimum_l2_second_coverage=float(
             values["minimum_l2_second_coverage"]
         ),
+        minimum_primary_l2_provider_fraction=float(
+            values["minimum_primary_l2_provider_fraction"]
+        ),
         minimum_candidate_grid_coverage=float(
             values["minimum_candidate_grid_coverage"]
         ),
@@ -301,6 +328,8 @@ def load_new_day_readiness_contract(path: Path) -> NewDayReadinessContract:
         pmxt_cache_root=Path(str(archives["pmxt_cache_root"])),
         spot_l2_archive_root=Path(str(archives["spot_l2_archive_root"])),
         spot_l2_sentinel=str(archives["spot_l2_sentinel"]),
+        spot_l2_sentinel_content=str(archives["spot_l2_sentinel_content"]),
+        coinapi_archive_root=Path(str(archives["coinapi_archive_root"])),
     )
     validate_new_day_readiness_contract(contract)
     return contract
@@ -353,6 +382,10 @@ def validate_new_day_readiness_contract(
         ("minimum_source_grid_coverage", contract.minimum_source_grid_coverage),
         ("minimum_l2_second_coverage", contract.minimum_l2_second_coverage),
         (
+            "minimum_primary_l2_provider_fraction",
+            contract.minimum_primary_l2_provider_fraction,
+        ),
+        (
             "minimum_candidate_grid_coverage",
             contract.minimum_candidate_grid_coverage,
         ),
@@ -363,12 +396,15 @@ def validate_new_day_readiness_contract(
         raise ValueError("new-day source-grid coverage must remain 90%")
     if contract.minimum_l2_second_coverage != 0.95:
         raise ValueError("new-day spot-L2 daily coverage must remain 95%")
+    if contract.minimum_primary_l2_provider_fraction != 0.95:
+        raise ValueError("new-day primary spot-L2 provider share must remain 95%")
     if contract.minimum_candidate_grid_coverage != 0.70:
         raise ValueError("new-day strict candidate-grid coverage must remain 70%")
     for name, value in (
         ("external archive mount", contract.external_archive_mount),
         ("PMXT cache root", contract.pmxt_cache_root),
         ("spot-L2 archive root", contract.spot_l2_archive_root),
+        ("CoinAPI archive root", contract.coinapi_archive_root),
     ):
         if not value.is_absolute():
             raise ValueError(f"{name} must be absolute")
@@ -376,6 +412,10 @@ def validate_new_day_readiness_contract(
         contract.spot_l2_sentinel
     ).name != contract.spot_l2_sentinel:
         raise ValueError("spot-L2 sentinel must be one relative file name")
+    if contract.spot_l2_sentinel_content != "cryptohft-btcusdt-l2-archive-v1\n":
+        raise ValueError("spot-L2 sentinel content contract changed")
+    if contract.coinapi_archive_root != contract.spot_l2_archive_root:
+        raise ValueError("CoinAPI and primary spot-L2 archives must share the durable root")
 
 
 def collect_new_day_database_inventory(
@@ -431,6 +471,19 @@ def _new_day_metrics(
     l2_coverage = (
         int(row["l2_qualified_seconds"]) / EXPECTED_DAILY_ONE_SECOND_ROWS
     )
+    l2_total_provider_rows = sum(
+        int(row[field])
+        for field in (
+            "l2_cryptohft_rows",
+            "l2_coinapi_rows",
+            "l2_huggingface_rows",
+        )
+    )
+    primary_l2_provider_fraction = (
+        int(row["l2_cryptohft_rows"]) / l2_total_provider_rows
+        if l2_total_provider_rows
+        else 0.0
+    )
     pmxt_coverage = int(row["pmxt_exact_grid_keys"]) / (
         EXPECTED_DAILY_PREDICTION_ROWS
     )
@@ -443,6 +496,8 @@ def _new_day_metrics(
             "opening_boundary_coverage": opening_coverage,
             "binance_second_coverage": binance_coverage,
             "l2_second_coverage": l2_coverage,
+            "l2_total_provider_rows": l2_total_provider_rows,
+            "primary_l2_provider_fraction": primary_l2_provider_fraction,
             "pmxt_exact_grid_coverage": pmxt_coverage,
             "strict_candidate_grid_coverage": strict_coverage,
             "joint_source_grid_coverage": min(
@@ -578,6 +633,21 @@ def _new_day_closed_blockers(
         "spot_l2_coverage",
         row["l2_second_coverage"],
         contract.minimum_l2_second_coverage,
+    )
+    expect(
+        int(row["l2_total_provider_rows"]) == int(row["l2_rows"]),
+        "binance_spot_l2",
+        "spot_l2_provider_row_reconciliation",
+        int(row["l2_total_provider_rows"]),
+        int(row["l2_rows"]),
+    )
+    expect(
+        float(row["primary_l2_provider_fraction"])
+        >= contract.minimum_primary_l2_provider_fraction,
+        "binance_spot_l2",
+        "spot_l2_primary_provider_fraction",
+        row["primary_l2_provider_fraction"],
+        contract.minimum_primary_l2_provider_fraction,
     )
     for field, code, required in (
         ("pmxt_completed_hours", "pmxt_completed_hours", 24),
@@ -733,17 +803,29 @@ def inspect_external_archive_status(
     required = set(required_materialization_sources)
     needs_pmxt = "polymarket_execution" in required
     needs_l2 = "binance_spot_l2" in required
-    mount_present = contract.external_archive_mount.is_dir()
+    mount_directory_present = contract.external_archive_mount.is_dir()
+    mount_present = contract.external_archive_mount.is_mount()
     pmxt_present = contract.pmxt_cache_root.is_dir()
     l2_present = contract.spot_l2_archive_root.is_dir()
+    coinapi_present = contract.coinapi_archive_root.is_dir()
     sentinel_path = contract.spot_l2_archive_root / contract.spot_l2_sentinel
     sentinel_present = sentinel_path.is_file()
+    sentinel_content_valid = False
+    if sentinel_present:
+        try:
+            sentinel_content_valid = (
+                sentinel_path.read_text() == contract.spot_l2_sentinel_content
+            )
+        except OSError:
+            sentinel_content_valid = False
     if not (needs_pmxt or needs_l2):
         status = "not_required_database_sources_ready"
     elif not mount_present:
         status = "blocked_archive_unmounted"
-    elif needs_l2 and (not l2_present or not sentinel_present):
-        status = "blocked_spot_l2_archive_contract"
+    elif needs_l2 and (
+        not l2_present or not sentinel_present or not sentinel_content_valid
+    ):
+        status = "blocked_primary_spot_l2_archive_contract"
     elif needs_pmxt and not pmxt_present:
         status = "blocked_pmxt_cache_path_missing"
     else:
@@ -752,6 +834,7 @@ def inspect_external_archive_status(
         "status": status,
         "required_for": sorted(required & {"polymarket_execution", "binance_spot_l2"}),
         "mount_root": str(contract.external_archive_mount),
+        "mount_directory_present": mount_directory_present,
         "mount_present": mount_present,
         "pmxt_cache_root": str(contract.pmxt_cache_root),
         "pmxt_cache_present": pmxt_present,
@@ -759,6 +842,14 @@ def inspect_external_archive_status(
         "spot_l2_archive_present": l2_present,
         "spot_l2_sentinel": str(sentinel_path),
         "spot_l2_sentinel_present": sentinel_present,
+        "spot_l2_sentinel_content_valid": sentinel_content_valid,
+        "coinapi_archive_root": str(contract.coinapi_archive_root),
+        "coinapi_archive_present": coinapi_present,
+        "coinapi_direct_materializer": COINAPI_DIRECT_MATERIALIZER,
+        "coinapi_materialization_contract": COINAPI_L2_MATERIALIZATION_CONTRACT,
+        "coinapi_provider_regime_status": (
+            "unqualified_for_primary_validation_provider"
+        ),
         "fallback_directory_created": False,
     }
 
@@ -788,11 +879,13 @@ def prepare_new_day_training_readiness(
     l2_ready = bool(database["daily"]) and all(
         float(row["l2_second_coverage"])
         >= contract.minimum_l2_second_coverage
+        and float(row["primary_l2_provider_fraction"])
+        >= contract.minimum_primary_l2_provider_fraction
         for row in database["daily"]
     )
     spot_l2_upstream = {
         "status": (
-            "blocked_upstream_materialization_contract"
+            "materialization_path_available_requires_provider_regime_qualification"
             if not l2_ready
             and contract.validation_start >= SPOT_L2_CURRENT_MATERIALIZATION_END
             else "satisfied_by_canonical_database_rows"
@@ -807,10 +900,29 @@ def prepare_new_day_training_readiness(
         "planner_source": (
             "packages/polymarket-bot/src/bin/binance-spot-l2-backfill-plan.rs"
         ),
+        "primary_materialization_contract": (
+            CRYPTOHFT_L2_MATERIALIZATION_CONTRACT
+        ),
+        "primary_path_status": (
+            "blocked_by_current_rust_range_end"
+            if not l2_ready
+            else "satisfied_by_canonical_database_rows"
+        ),
+        "existing_no_rust_alternative": {
+            "materializer": COINAPI_DIRECT_MATERIALIZER,
+            "materialization_contract": COINAPI_L2_MATERIALIZATION_CONTRACT,
+            "status": "available_but_provider_regime_unqualified",
+            "maximum_role_without_separate_qualification": (
+                "supplement_below_five_percent_of_daily_rows"
+            ),
+        },
+        "minimum_primary_provider_fraction": (
+            contract.minimum_primary_l2_provider_fraction
+        ),
         "rust_change_in_this_scope": False,
     }
     archive_sources = set(database["required_materialization_sources"])
-    if spot_l2_upstream["status"] == "blocked_upstream_materialization_contract":
+    if not l2_ready:
         archive_sources.add("binance_spot_l2")
     archive = inspect_external_archive_status(
         contract,
@@ -830,12 +942,15 @@ def prepare_new_day_training_readiness(
         "blocked_archive_unmounted" in statuses
     ):
         status = "blocked_archive_unmounted"
-    elif database["required_materialization_sources"] and (
-        "blocked_upstream_materialization_contract" in statuses
-    ):
-        status = "blocked_upstream_materialization_contract"
     elif not_yet_available:
         status = "not_yet_available"
+    elif (
+        "materialization_path_available_requires_provider_regime_qualification"
+        in statuses
+    ):
+        status = (
+            "materialization_path_available_requires_provider_regime_qualification"
+        )
     else:
         status = "blocked_source_materialization"
     payload: dict[str, Any] = {
