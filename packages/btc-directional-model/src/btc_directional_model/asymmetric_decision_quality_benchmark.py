@@ -17,6 +17,7 @@ from .asymmetric_decision_quality import (
     FORBIDDEN_SELECTION_COLUMNS,
     MATCHED_CORE_CONTROL_CANDIDATE_ID,
     POST_SELECTION_ATTRIBUTION_PAIRS,
+    calibration_variant_id,
     decision_quality_oof_key_digest,
     fit_decision_quality_walk_forward,
     fit_final_decision_quality_model,
@@ -28,7 +29,10 @@ from .asymmetric_decision_quality import (
 )
 from .asymmetric_incumbent_replay import replay_frozen_asymmetric_incumbent
 from .asymmetric_training_readiness import prepare_asymmetric_training_readiness
-from .asymmetric_value_config import AsymmetricValueConfig
+from .asymmetric_value_config import (
+    EARLY_NO_CALIBRATION_DECISION_QUALITY_STUDY,
+    AsymmetricValueConfig,
+)
 from .asymmetric_value_data import price_manifest_identity_sha256
 from .asymmetric_value_evaluation import (
     IMMEDIATE_FIRST_CROSSING,
@@ -73,6 +77,21 @@ DEVELOPMENT_OOF_GATE_SCOPE = {
     "minimum_candidate_grid_coverage": 0.40,
     "fresh_forward_contract_is_separate": True,
 }
+EARLY_NO_DEVELOPMENT_OOF_GATE_SCOPE = {
+    "name": "new_cross_day_development",
+    "policy_window_gates": True,
+    "minimum_trades": 200,
+    "minimum_trade_utc_days": 10,
+    "minimum_strict_markets": 2_000,
+    "minimum_strict_grid_coverage": 0.70,
+    "minimum_candidate_grid_coverage": 0.70,
+    "fresh_forward_contract_is_separate": True,
+}
+HISTORICAL_INCUMBENT_FREQUENCY_RATE = 0.04877032096706961
+HISTORICAL_INCUMBENT_FREQUENCY_FLOOR = 0.03901625677365569
+HISTORICAL_INCUMBENT_FREQUENCY_PROVENANCE_SHA256 = (
+    "40e89cfd77165d7fee57715e2988d1862c175561cb19c6e84adf5d01e031fa11"
+)
 
 _SELECTION_FORBIDDEN_KEYS = frozenset(
     {
@@ -132,6 +151,12 @@ def load_verified_decision_selection_seal(path: Path) -> dict[str, Any]:
     selection_evidence = json.loads(selection_artifact.read_text())
     if selection_evidence.get("selection") != payload.get("selection"):
         raise RuntimeError("decision-selection seal does not match its selection evidence")
+    if payload["selection"].get("status") == "blocked_source_readiness":
+        if payload.get("oof_artifact") is not None or payload.get("final_model") is not None:
+            raise RuntimeError("source-readiness block contains fitted artifacts")
+        if payload.get("economics_opened") is not False:
+            raise RuntimeError("source-readiness block opened economics")
+        return payload
     oof_artifact = run_dir / str(payload.get("oof_artifact"))
     if not oof_artifact.is_file():
         raise RuntimeError("decision-selection OOF artifact is missing")
@@ -190,7 +215,8 @@ def _decision_contract_evidence(config: AsymmetricValueConfig) -> dict[str, Any]
         "oof_evidence_scope": contract.oof_evidence_scope,
         "oof_forward_proof": contract.oof_forward_proof,
         "source_availability_rationale": contract.oof_source_availability_rationale,
-        "compressed_oof_validation_utc_days": 5,
+        "compressed_oof_validation_utc_days": len(contract.folds),
+        "validation_utc_days": len(contract.folds),
         "folds": [
             {
                 "name": fold.name,
@@ -208,6 +234,33 @@ def _decision_contract_evidence(config: AsymmetricValueConfig) -> dict[str, Any]
         "price_strata": [list(value) for value in contract.price_strata],
         "time_strata": [list(value) for value in contract.time_strata],
     }
+
+
+def _is_early_no_study(config: AsymmetricValueConfig) -> bool:
+    contract = config.decision_quality
+    return bool(
+        contract is not None
+        and contract.study == EARLY_NO_CALIBRATION_DECISION_QUALITY_STUDY
+    )
+
+
+def _lead_control_candidate_id(config: AsymmetricValueConfig) -> str:
+    contract = config.decision_quality
+    if contract is None:
+        raise ValueError("lead control requires the decision-quality contract")
+    selected_base = next(item for item in contract.candidates if item.selection_eligible)
+    control = next(
+        item for item in contract.calibration_variants if item.name == "targetpool_control"
+    )
+    return calibration_variant_id(selected_base.name, control)
+
+
+def _development_gate_scope(config: AsymmetricValueConfig) -> dict[str, Any]:
+    return dict(
+        EARLY_NO_DEVELOPMENT_OOF_GATE_SCOPE
+        if _is_early_no_study(config)
+        else DEVELOPMENT_OOF_GATE_SCOPE
+    )
 
 
 def _stable_seed(base_seed: int, *parts: str) -> int:
@@ -348,6 +401,8 @@ def _matched_economic_checks(
     candidate_metrics: dict[str, Any],
     control_metrics: dict[str, Any],
     paired_day_net: dict[str, Any],
+    *,
+    prefix: str = "matched_core",
 ) -> list[dict[str, Any]]:
     candidate_expectancy = candidate_metrics.get("net_expectancy_per_trade")
     control_expectancy = control_metrics.get("net_expectancy_per_trade")
@@ -365,21 +420,21 @@ def _matched_economic_checks(
     )
     return [
         {
-            "name": "matched_core_point_expectancy_noninferiority",
+            "name": f"{prefix}_point_expectancy_noninferiority",
             "observed": expectancy_delta,
             "threshold": 0.0,
             "operator": ">=",
             "passed": bool(expectancy_delta is not None and expectancy_delta >= 0.0),
         },
         {
-            "name": "matched_core_opportunity_yield_noninferiority",
+            "name": f"{prefix}_opportunity_yield_noninferiority",
             "observed": yield_delta,
             "threshold": 0.0,
             "operator": ">=",
             "passed": bool(yield_delta is not None and yield_delta >= 0.0),
         },
         {
-            "name": "matched_core_paired_day_net_lower_95_noninferiority",
+            "name": f"{prefix}_paired_day_net_lower_95_noninferiority",
             "observed": paired_day_net["lower_95"],
             "threshold": 0.0,
             "operator": ">=",
@@ -600,18 +655,275 @@ def _post_selection_attribution_economics(
     return result
 
 
+def _early_no_frequency_checks(
+    *,
+    candidate_trades: int,
+    lead_control_trades: int,
+    eligible_resolved_markets: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    historical = frequency_floor_check(
+        candidate_trades=candidate_trades,
+        eligible_resolved_markets=eligible_resolved_markets,
+        incumbent_trades_per_eligible_resolved_market=(
+            HISTORICAL_INCUMBENT_FREQUENCY_RATE
+        ),
+    )
+    historical.update(
+        {
+            "name": "minimum_frequency_relative_to_sealed_historical_incumbent",
+            "threshold": HISTORICAL_INCUMBENT_FREQUENCY_FLOOR,
+            "historical_incumbent_trades": 117,
+            "historical_incumbent_eligible_markets": 2_399,
+            "historical_incumbent_artifact_provenance_sha256": (
+                HISTORICAL_INCUMBENT_FREQUENCY_PROVENANCE_SHA256
+            ),
+            "historical_reference_only": True,
+            "common_market_replay_claimed": False,
+        }
+    )
+    candidate_rate = candidate_trades / eligible_resolved_markets
+    lead_rate = lead_control_trades / eligible_resolved_markets
+    required_rate = 0.80 * lead_rate
+    lead = {
+        "name": "minimum_frequency_relative_to_new_day_lead_control",
+        "candidate_trades": candidate_trades,
+        "lead_control_trades": lead_control_trades,
+        "eligible_resolved_markets": eligible_resolved_markets,
+        "candidate_trades_per_eligible_resolved_market": candidate_rate,
+        "lead_control_trades_per_eligible_resolved_market": lead_rate,
+        "observed": candidate_rate,
+        "threshold": required_rate,
+        "minimum_lead_control_fraction": 0.80,
+        "operator": ">=",
+        "passed": candidate_rate >= required_rate,
+        "same_new_day_eligible_cohort": True,
+        "common_market_replay_claimed": False,
+    }
+    return historical, lead
+
+
+def _reveal_early_no_economics(
+    *,
+    seal_path: Path,
+    l2_frame: pl.DataFrame,
+    oof_core: pl.DataFrame,
+    oof_grid_coverage: dict[str, Any],
+    config: AsymmetricValueConfig,
+) -> dict[str, Any]:
+    """Open only the sealed winner, frozen lead control, and matched Core attribution."""
+
+    seal = load_verified_decision_selection_seal(seal_path)
+    selection = seal["selection"]
+    if selection.get("status") != "selected":
+        raise RuntimeError("economic reveal requires a quality-selected configuration")
+    selected_id = str(selection["selected_candidate_id"])
+    lead_control_id = _lead_control_candidate_id(config)
+    if seal.get("economic_reveal_candidate_ids") != [selected_id, lead_control_id]:
+        raise RuntimeError("early-NO economic reveal candidates were not probability-sealed")
+    sealed_oof = pl.read_parquet(seal_path.parent / seal["oof_artifact"])
+    selected_oof = sealed_oof.filter(pl.col("candidate_id") == selected_id)
+    lead_control_oof = sealed_oof.filter(pl.col("candidate_id") == lead_control_id)
+    matched_core_oof = pl.read_parquet(
+        seal_path.parent / seal["matched_core_oof_artifact"]
+    )
+    if selected_oof.is_empty() or lead_control_oof.is_empty():
+        raise RuntimeError("sealed early-NO economic candidate evidence is incomplete")
+    matched_probability = paired_probability_delta(
+        selected_oof,
+        matched_core_oof,
+        resamples=config.bootstrap_resamples,
+        seed=_stable_seed(config.random_seed, selected_id, "matched_core_probability"),
+    )
+    if matched_probability != seal["matched_core_probability"]:
+        raise RuntimeError("sealed matched Core probability evidence changed")
+
+    predictions = {
+        "selected": _join_oof_probability_to_execution(
+            selected_oof,
+            l2_frame,
+            model=selected_id,
+            config=config,
+        ),
+        "lead_control": _join_oof_probability_to_execution(
+            lead_control_oof,
+            l2_frame,
+            model=lead_control_id,
+            config=config,
+        ),
+        "matched_core": _join_oof_probability_to_execution(
+            matched_core_oof,
+            l2_frame,
+            model=MATCHED_CORE_CONTROL_ID,
+            config=config,
+        ),
+    }
+    evidence_by_arm = {
+        name: _economic_model_evidence(frame, config)
+        for name, frame in predictions.items()
+    }
+    candidate_scored, candidate_ledger, candidate_metrics = evidence_by_arm["selected"]
+    lead_scored, lead_ledger, lead_metrics = evidence_by_arm["lead_control"]
+    core_scored, core_ledger, core_metrics = evidence_by_arm["matched_core"]
+
+    from .asymmetric_value_benchmark import (
+        _candidate_grid_summary,
+        _paired_day_net_difference_bootstrap,
+    )
+
+    contract = config.decision_quality
+    assert contract is not None
+    window_start = contract.folds[0].validation.start
+    window_end = contract.folds[-1].validation.end
+    oof_source = l2_frame.filter(
+        pl.col("window_start").is_between(window_start, window_end, closed="left")
+    )
+    eligible_markets = oof_source.select("market_id").unique()
+    resolved_markets = eligible_markets.height
+    if resolved_markets <= 0:
+        raise RuntimeError("early-NO economics require strict joint source markets")
+    for metrics in (candidate_metrics, lead_metrics, core_metrics):
+        metrics["eligible_resolved_markets"] = resolved_markets
+        metrics["eligible_market_cohort"] = "joint_core_spot_l2_strict_pmxt"
+        metrics["net_profit_per_resolved_market"] = (
+            float(metrics["net_profit"]) / resolved_markets
+        )
+    candidate_grid = _candidate_grid_summary(oof_source, oof_core, config)
+    checks = policy_gate_checks(candidate_metrics, config, policy_window=True)
+    checks.extend(selected_win_rate_advantage_gate_checks(candidate_metrics))
+    checks.extend(
+        evidence_gate_checks(
+            oof_source,
+            config,
+            policy_window=True,
+            source_grid_coverage=float(oof_grid_coverage["retained_coverage"]),
+            strict_grid_coverage=float(oof_grid_coverage["strict_coverage"]),
+            candidate_grid_coverage=float(candidate_grid["prediction_grid_coverage"]),
+        )
+    )
+    checks.extend(_matched_probability_checks(matched_probability))
+    core_paired_day_net = _paired_day_net_difference_bootstrap(
+        candidate_ledger,
+        core_ledger,
+        config,
+        seed=_stable_seed(config.random_seed, selected_id, "matched_core_net"),
+        window_start=window_start,
+        window_end=window_end,
+    )
+    checks.extend(_matched_economic_checks(candidate_metrics, core_metrics, core_paired_day_net))
+    lead_paired_day_net = _paired_day_net_difference_bootstrap(
+        candidate_ledger,
+        lead_ledger,
+        config,
+        seed=_stable_seed(config.random_seed, selected_id, "lead_control_net"),
+        window_start=window_start,
+        window_end=window_end,
+    )
+    checks.extend(
+        _matched_economic_checks(
+            candidate_metrics,
+            lead_metrics,
+            lead_paired_day_net,
+            prefix="lead_control",
+        )
+    )
+    historical_frequency, lead_frequency = _early_no_frequency_checks(
+        candidate_trades=candidate_ledger.height,
+        lead_control_trades=lead_ledger.height,
+        eligible_resolved_markets=resolved_markets,
+    )
+    checks.extend((historical_frequency, lead_frequency))
+
+    primary = next(policy for policy in config.policies if policy.selection_eligible)
+    temporal_ledgers, temporal_metrics = temporal_confirmation_ablation(
+        candidate_scored,
+        primary,
+        quantity=config.quantity,
+        maximum_depth_participation=config.maximum_depth_participation,
+    )
+    vwap10_ledger, vwap10_evidence = vwap10_capacity_policy_ledger(
+        candidate_ledger,
+        primary,
+        execution_reserve_per_share=config.execution_reserve_per_share,
+        quantity=10.0,
+        maximum_depth_participation=config.maximum_depth_participation,
+    )
+    qualified = all(check["passed"] for check in checks)
+    return {
+        "schema_version": DEVELOPMENT_ECONOMIC_REVEAL_SCHEMA_VERSION,
+        "selection_seal_sha256": file_sha256(seal_path),
+        "selection_identity_sha256": seal["selection_identity_sha256"],
+        "selected_candidate_id": selected_id,
+        "lead_control_candidate_id": lead_control_id,
+        "selected_scored": candidate_scored,
+        "selected_ledger": candidate_ledger,
+        "lead_control_scored": lead_scored,
+        "lead_control_ledger": lead_ledger,
+        "matched_core_scored": core_scored,
+        "matched_core_ledger": core_ledger,
+        "temporal_ledgers": temporal_ledgers,
+        "vwap10_ledger": vwap10_ledger,
+        "evidence": {
+            "status": "economically_qualified" if qualified else "blocked",
+            "qualified": qualified,
+            "selected_metrics": candidate_metrics,
+            "lead_control_metrics": lead_metrics,
+            "matched_core_metrics": core_metrics,
+            "matched_probability": matched_probability,
+            "matched_paired_day_net": core_paired_day_net,
+            "lead_control_paired_day_net": lead_paired_day_net,
+            "evidence_scope": _development_gate_scope(config),
+            "frequency": {
+                "historical_incumbent_floor": historical_frequency,
+                "new_day_lead_control_floor": lead_frequency,
+                "eligible_market_count": resolved_markets,
+                "eligible_market_sha256": _market_id_digest(eligible_markets),
+                "same_new_day_eligible_cohort": True,
+                "common_market_replay_claimed": False,
+            },
+            "checks": checks,
+            "candidate_grid": candidate_grid,
+            "rejection_funnel": rejection_funnel(
+                candidate_scored,
+                primary,
+                quantity=config.quantity,
+                maximum_depth_participation=config.maximum_depth_participation,
+                confirmation_rule=IMMEDIATE_FIRST_CROSSING,
+            ),
+            "temporal_confirmation": temporal_metrics,
+            "vwap10_capacity": vwap10_evidence,
+            "source_attribution_executed": False,
+            "source_attribution_reason": (
+                "early-NO study freezes Core+spot-L2 and excludes Oracle, candles, "
+                "and three-source attribution"
+            ),
+            "accuracy_price_by_second": accuracy_price_by_second(candidate_scored),
+        },
+    }
+
+
 def reveal_decision_quality_economics(
     *,
     seal_path: Path,
-    attribution_manifest_path: Path,
+    attribution_manifest_path: Path | None,
     development_model_frames: dict[str, pl.DataFrame],
     l2_frame: pl.DataFrame,
-    oracle_frame: pl.DataFrame,
+    oracle_frame: pl.DataFrame | None,
     oof_core: pl.DataFrame,
     oof_grid_coverage: dict[str, Any],
     config: AsymmetricValueConfig,
 ) -> dict[str, Any]:
     """Reveal economics for the sealed winner and no other candidate."""
+
+    if _is_early_no_study(config):
+        return _reveal_early_no_economics(
+            seal_path=seal_path,
+            l2_frame=l2_frame,
+            oof_core=oof_core,
+            oof_grid_coverage=oof_grid_coverage,
+            config=config,
+        )
+    if attribution_manifest_path is None or oracle_frame is None:
+        raise ValueError("legacy decision-quality economics require attribution and Oracle")
 
     seal = load_verified_decision_selection_seal(seal_path)
     selection = seal["selection"]
@@ -819,39 +1131,133 @@ def run_decision_quality_benchmark(
     oof_core: pl.DataFrame,
     oof_grid_coverage: dict[str, Any],
     development_coverage: dict[str, Any],
-    development_price_manifest: dict[str, Any],
+    development_price_manifest: dict[str, Any] | None,
     implementation_sha256: str,
     dependency_versions: dict[str, str],
     current_process: dict[str, Any],
+    readiness: tuple[Path, dict[str, Any]] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """Run the probability-selected benchmark and reveal only its sealed winner."""
 
     if config.decision_quality is None:
         raise ValueError("decision-quality runner requires its frozen contract")
-    required_frames = {
-        CORE_L2_PRICE,
-        CORE_ORACLE_PRICE,
-        CORE_CANDLES_PRICE,
-        CORE_ORACLE_L2_PRICE,
-    }
+    early_no_study = _is_early_no_study(config)
+    print(
+        "asymmetric decision quality: sealing fail-closed readiness before fitting",
+        flush=True,
+    )
+    if readiness is None and early_no_study:
+        raise ValueError(
+            "early-NO runner requires an injected sealed new-day readiness result"
+        )
+    readiness_path, readiness_payload = (
+        readiness
+        if readiness is not None
+        else prepare_asymmetric_training_readiness(
+            config,
+            output_dir=config.feature_cache / "training-readiness",
+        )
+    )
+    if readiness_payload.get("ready") is not True:
+        if not early_no_study:
+            raise RuntimeError("decision-quality source readiness did not pass")
+        run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        run_dir = config.runs / run_id
+        run_dir.mkdir(parents=True, exist_ok=False)
+        selection = {
+            "status": "blocked_source_readiness",
+            "selected_candidate_id": None,
+            "selected_base_candidate": None,
+            "candidate_records": [],
+            "rank_trace": [],
+            "economics_used": False,
+            "readiness_status": readiness_payload.get("status", "blocked"),
+            "readiness_failures": readiness_payload.get(
+                "blocking_statuses",
+                readiness_payload.get("failures", []),
+            ),
+        }
+        selection_path = run_dir / "decision-quality-selection.json"
+        write_json_atomic(
+            selection_path,
+            {"selection": selection, "readiness": readiness_payload},
+        )
+        seal_path, verified_seal = write_decision_selection_seal(
+            run_dir,
+            {
+                "run_id": run_id,
+                "training_contract": config.training_contract,
+                "config_sha256": file_sha256(config.source_path),
+                "implementation_sha256": implementation_sha256,
+                "dependency_versions": dependency_versions,
+                "decision_contract": _decision_contract_evidence(config),
+                "readiness": {
+                    "manifest_sha256": file_sha256(readiness_path),
+                    "ready": False,
+                    "status": readiness_payload.get("status", "blocked"),
+                    "readiness_identity_sha256": readiness_payload.get(
+                        "readiness_identity_sha256"
+                    ),
+                    "payload_sha256": readiness_payload.get("payload_sha256"),
+                },
+                "source_lineage": {
+                    "polymarket_price_manifest_identity_sha256": None,
+                    "proxy_prices_used": False,
+                    "sources_extracted": False,
+                    "oracle_candles_materialized": False,
+                },
+                "current_champion_reference": current_process,
+                "selection": selection,
+                "selection_artifact": selection_path.name,
+                "oof_artifact": None,
+                "final_model": None,
+                "matched_core_probability": None,
+                "artifact_sha256": {
+                    selection_path.name: file_sha256(selection_path),
+                },
+                "selection_uses_economics": False,
+                "forbidden_selection_keys": sorted(_SELECTION_FORBIDDEN_KEYS),
+            },
+        )
+        result = _benchmark_result(
+            config=config,
+            run_id=run_id,
+            selection=selection,
+            selection_seal=verified_seal,
+            selection_seal_sha256=file_sha256(seal_path),
+            development_coverage=development_coverage,
+            economic_evidence=None,
+            artifact_hashes={
+                selection_path.name: file_sha256(selection_path),
+                seal_path.name: file_sha256(seal_path),
+            },
+        )
+        report_path = run_dir / "benchmark-report.md"
+        report_path.write_text(_decision_quality_markdown_report(result))
+        result["artifact_sha256"][report_path.name] = file_sha256(report_path)
+        write_json_atomic(run_dir / "benchmark.json", result)
+        return run_dir, result
+
+    required_frames = (
+        {CORE_L2_PRICE}
+        if early_no_study
+        else {
+            CORE_L2_PRICE,
+            CORE_ORACLE_PRICE,
+            CORE_CANDLES_PRICE,
+            CORE_ORACLE_L2_PRICE,
+        }
+    )
     missing_frames = sorted(required_frames - set(development_model_frames))
     if missing_frames:
         raise ValueError(
             "decision-quality runner is missing model frames: " + ", ".join(missing_frames)
         )
-    print(
-        "asymmetric decision quality: sealing fail-closed readiness before fitting",
-        flush=True,
-    )
-    readiness_path, readiness_payload = prepare_asymmetric_training_readiness(
-        config,
-        output_dir=config.feature_cache / "training-readiness",
-    )
-    if readiness_payload.get("ready") is not True:
-        raise RuntimeError("decision-quality source readiness did not pass")
+    if development_price_manifest is None:
+        raise ValueError("ready decision-quality runner requires exact PM price lineage")
 
     print(
-        "asymmetric decision quality: fitting five probability-only walk-forward folds",
+        "asymmetric decision quality: fitting probability-only walk-forward folds",
         flush=True,
     )
     l2_frame = development_model_frames[CORE_L2_PRICE]
@@ -882,15 +1288,25 @@ def run_decision_quality_benchmark(
             "manifest_sha256": file_sha256(readiness_path),
             "readiness_identity_sha256": readiness_payload["readiness_identity_sha256"],
             "payload_sha256": readiness_payload["payload_sha256"],
-            "range_start": readiness_payload["range_start"],
-            "range_end": readiness_payload["range_end"],
+            "range_start": readiness_payload.get("range_start")
+            or readiness_payload["validation"]["range_start"],
+            "range_end": readiness_payload.get("range_end")
+            or readiness_payload["validation"]["range_end"],
         },
         "source_lineage": {
             "polymarket_price_manifest_identity_sha256": (
                 price_manifest_identity_sha256(development_price_manifest)
             ),
             "proxy_prices_used": False,
-            "external_ssd_required": readiness_payload["external_ssd_required"],
+            "external_ssd_required": readiness_payload.get(
+                "external_ssd_required",
+                bool(
+                    (readiness_payload.get("external_archive") or {}).get(
+                        "required_for"
+                    )
+                ),
+            ),
+            "oracle_candles_materialized": not early_no_study,
         },
         "current_champion_reference": current_process,
         "selection": selection,
@@ -1021,19 +1437,26 @@ def run_decision_quality_benchmark(
             },
             "matched_core_probability": matched_probability,
             "matched_core_oof_artifact": matched_core_path.name,
+            "economic_reveal_candidate_ids": (
+                [selected_id, _lead_control_candidate_id(config)]
+                if early_no_study
+                else [selected_id]
+            ),
         },
     )
-    print(
-        "asymmetric decision quality: replaying sealed source-attribution controls",
-        flush=True,
-    )
-    attribution_manifest_path = _fit_post_selection_attribution(
-        run_dir=run_dir,
-        development_model_frames=development_model_frames,
-        selection_seal=verified_seal,
-        config=config,
-        core_config=core_config,
-    )
+    attribution_manifest_path: Path | None = None
+    if not early_no_study:
+        print(
+            "asymmetric decision quality: replaying sealed source-attribution controls",
+            flush=True,
+        )
+        attribution_manifest_path = _fit_post_selection_attribution(
+            run_dir=run_dir,
+            development_model_frames=development_model_frames,
+            selection_seal=verified_seal,
+            config=config,
+            core_config=core_config,
+        )
     print(
         "asymmetric decision quality: probability seal verified; revealing fixed-policy OOF economics",
         flush=True,
@@ -1043,7 +1466,9 @@ def run_decision_quality_benchmark(
         attribution_manifest_path=attribution_manifest_path,
         development_model_frames=development_model_frames,
         l2_frame=l2_frame,
-        oracle_frame=development_model_frames[CORE_ORACLE_PRICE],
+        oracle_frame=(
+            None if early_no_study else development_model_frames[CORE_ORACLE_PRICE]
+        ),
         oof_core=oof_core,
         oof_grid_coverage=oof_grid_coverage,
         config=config,
@@ -1054,20 +1479,28 @@ def run_decision_quality_benchmark(
     matched_core_ledger = reveal.pop("matched_core_ledger")
     temporal_ledgers = reveal.pop("temporal_ledgers")
     vwap10_ledger = reveal.pop("vwap10_ledger")
-    incumbent_ledger = reveal.pop("incumbent_ledger")
-    common_frequency_ledger = reveal.pop("common_frequency_ledger")
+    lead_control_scored = reveal.pop("lead_control_scored", None)
+    lead_control_ledger = reveal.pop("lead_control_ledger", None)
+    incumbent_ledger = reveal.pop("incumbent_ledger", None)
+    common_frequency_ledger = reveal.pop("common_frequency_ledger", None)
     selected_scored_path = run_dir / "selected-oof-scored-opportunities.parquet"
     selected_ledger_path = run_dir / "selected-oof-policy-ledger.parquet"
     matched_scored_path = run_dir / "matched-core-oof-scored-opportunities.parquet"
     matched_ledger_path = run_dir / "matched-core-oof-policy-ledger.parquet"
+    lead_scored_path = run_dir / "lead-control-oof-scored-opportunities.parquet"
+    lead_ledger_path = run_dir / "lead-control-oof-policy-ledger.parquet"
     incumbent_ledger_path = run_dir / "frozen-incumbent-oof-policy-ledger.parquet"
     common_frequency_path = run_dir / "selected-common-frequency-ledger.parquet"
     selected_scored.write_parquet(selected_scored_path, compression="zstd")
     selected_ledger.write_parquet(selected_ledger_path, compression="zstd")
     matched_core_scored.write_parquet(matched_scored_path, compression="zstd")
     matched_core_ledger.write_parquet(matched_ledger_path, compression="zstd")
-    incumbent_ledger.write_parquet(incumbent_ledger_path, compression="zstd")
-    common_frequency_ledger.write_parquet(common_frequency_path, compression="zstd")
+    if lead_control_scored is not None and lead_control_ledger is not None:
+        lead_control_scored.write_parquet(lead_scored_path, compression="zstd")
+        lead_control_ledger.write_parquet(lead_ledger_path, compression="zstd")
+    if incumbent_ledger is not None and common_frequency_ledger is not None:
+        incumbent_ledger.write_parquet(incumbent_ledger_path, compression="zstd")
+        common_frequency_ledger.write_parquet(common_frequency_path, compression="zstd")
     temporal_path = run_dir / "temporal-confirmation-ledger.parquet"
     if temporal_ledgers:
         pl.concat(list(temporal_ledgers.values()), how="vertical_relaxed").write_parquet(
@@ -1098,27 +1531,40 @@ def run_decision_quality_benchmark(
     reveal_path = run_dir / "development-economic-reveal.json"
     write_json_atomic(reveal_path, reveal)
 
-    attribution_payload = _load_verified_post_selection_attribution(
-        attribution_manifest_path,
-        selection_identity_sha256=verified_seal["selection_identity_sha256"],
+    attribution_payload = (
+        _load_verified_post_selection_attribution(
+            attribution_manifest_path,
+            selection_identity_sha256=verified_seal["selection_identity_sha256"],
+        )
+        if attribution_manifest_path is not None
+        else {"artifact_sha256": {}}
     )
     artifact_hashes = {
         **artifact_sha256,
         **attribution_payload["artifact_sha256"],
-        attribution_manifest_path.name: file_sha256(attribution_manifest_path),
         seal_path.name: file_sha256(seal_path),
         selected_scored_path.name: file_sha256(selected_scored_path),
         selected_ledger_path.name: file_sha256(selected_ledger_path),
         matched_scored_path.name: file_sha256(matched_scored_path),
         matched_ledger_path.name: file_sha256(matched_ledger_path),
-        incumbent_ledger_path.name: file_sha256(incumbent_ledger_path),
-        common_frequency_path.name: file_sha256(common_frequency_path),
         vwap10_path.name: file_sha256(vwap10_path),
         per_second_path.name: file_sha256(per_second_path),
         five_second_path.name: file_sha256(five_second_path),
         strata_path.name: file_sha256(strata_path),
         reveal_path.name: file_sha256(reveal_path),
     }
+    if attribution_manifest_path is not None:
+        artifact_hashes[attribution_manifest_path.name] = file_sha256(
+            attribution_manifest_path
+        )
+    for optional_path in (
+        lead_scored_path,
+        lead_ledger_path,
+        incumbent_ledger_path,
+        common_frequency_path,
+    ):
+        if optional_path.is_file():
+            artifact_hashes[optional_path.name] = file_sha256(optional_path)
     if temporal_path.is_file():
         artifact_hashes[temporal_path.name] = file_sha256(temporal_path)
     result = _benchmark_result(
@@ -1167,6 +1613,10 @@ def _quality_selection_summary(selection: dict[str, Any]) -> dict[str, Any]:
             "base_candidate": record["base_candidate"],
             "qualified": bool(record["qualified"]),
             "overall": record["metrics"]["overall"],
+            "early_no": (record["metrics"].get("time_cells") or {}).get("NO_1_15"),
+            "early_no_comparison_to_control": record.get(
+                "early_no_comparison_to_control"
+            ),
             "failed_gates": [gate for gate in record["gates"] if not gate["passed"]],
         }
         for record in records
@@ -1202,6 +1652,7 @@ def _quality_candidate_rows(selection: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for record in selection.get("candidate_records") or []:
         overall = record["metrics"]["overall"]
+        early_no = (record["metrics"].get("time_cells") or {}).get("NO_1_15") or {}
         failed = [gate["name"] for gate in record["gates"] if not gate["passed"]]
         rows.append(
             {
@@ -1218,6 +1669,10 @@ def _quality_candidate_rows(selection: dict[str, Any]) -> list[dict[str, Any]]:
                 "brier": overall["brier"],
                 "bias": overall["bias"],
                 "ece": overall["ece"],
+                "early_no_brier": early_no.get("brier"),
+                "early_no_log_loss": early_no.get("log_loss"),
+                "early_no_bias": early_no.get("bias"),
+                "early_no_ece": early_no.get("ece"),
                 "failed_gate_count": len(failed),
                 "failed_gates": ";".join(failed),
             }
@@ -1236,11 +1691,14 @@ def _benchmark_result(
     economic_evidence: dict[str, Any] | None,
     artifact_hashes: dict[str, str],
 ) -> dict[str, Any]:
+    early_no_study = _is_early_no_study(config)
     selected_id = selection.get("selected_candidate_id")
     economically_qualified = bool(
         economic_evidence is not None and economic_evidence.get("qualified") is True
     )
-    if selected_id is None:
+    if selection.get("status") == "blocked_source_readiness":
+        evaluation_status = "blocked_source_readiness"
+    elif selected_id is None:
         evaluation_status = "blocked_no_quality_configuration"
     elif economically_qualified:
         evaluation_status = "awaiting_fresh_forward_evidence"
@@ -1271,7 +1729,12 @@ def _benchmark_result(
         "evaluation": {
             "status": evaluation_status,
             "independent_forward_complete": False,
-            "fresh_forward_start_not_before": "2026-08-09T00:00:00+00:00",
+            "fresh_forward_start_not_before": (
+                "2026-08-21T00:00:00+00:00"
+                if early_no_study
+                else "2026-08-09T00:00:00+00:00"
+            ),
+            "fresh_forward_start_rule": "first_full_utc_day_after_artifact_seal",
         },
         "forward_requirements": {
             "minimum_complete_utc_days": 21,
@@ -1283,8 +1746,28 @@ def _benchmark_result(
             "minimum_source_grid_coverage": 0.90,
             "minimum_strict_grid_coverage": 0.70,
             "minimum_candidate_grid_coverage": 0.70,
+            "minimum_probability_noninferior_utc_days": (
+                17 if early_no_study else None
+            ),
+            "probability_noninferiority_denominator_utc_days": (
+                21 if early_no_study else None
+            ),
+            "minimum_early_no_opportunity_rows": 100 if early_no_study else None,
+            "minimum_early_no_opportunity_utc_days": 10 if early_no_study else None,
+            "early_no_definition": (
+                {
+                    "side": "NO",
+                    "start_second": 1,
+                    "end_second_exclusive": 15,
+                    "minimum_raw_share_price": 0.20,
+                    "maximum_raw_share_price_exclusive": 0.30,
+                }
+                if early_no_study
+                else None
+            ),
             "pnl_early_stopping_allowed": False,
             "all_development_gates_must_repeat": True,
+            "executable_forward_subsystem_added": False,
         },
         "deployment": {
             "authorized": False,
@@ -1314,8 +1797,10 @@ def _decision_quality_markdown_report(result: dict[str, Any]) -> str:
         "- Runtime, Rust bot, trading processes, and the trading pipeline: unchanged",
     ]
     quality_record = quality.get("selected")
+    strongest_observed_only = False
     if quality_record is None and quality["candidate_summaries"]:
         quality_record = quality["candidate_summaries"][0]
+        strongest_observed_only = True
     if quality_record is not None:
         overall = quality_record["overall"]
         lines.extend(
@@ -1324,6 +1809,7 @@ def _decision_quality_markdown_report(result: dict[str, Any]) -> str:
                 "## Walk-forward decision quality",
                 "",
                 f"- Configuration: `{quality_record['candidate_id']}`",
+                f"- Evidence role: `{'strongest_observed_not_selected' if strongest_observed_only else 'probability_selected'}`",
                 f"- Market-equal log loss: {overall['log_loss']:.6f}",
                 f"- Market-equal Brier score: {overall['brier']:.6f}",
                 f"- Calibration bias: {overall['bias']:.2%}",
@@ -1332,6 +1818,16 @@ def _decision_quality_markdown_report(result: dict[str, Any]) -> str:
             )
         )
         failed = quality_record["failed_gates"]
+        early_no = quality_record.get("early_no")
+        if early_no is not None:
+            lines.extend(
+                (
+                    f"- Early-NO 1–14s Brier: {early_no['brier']:.6f}",
+                    f"- Early-NO 1–14s log loss: {early_no['log_loss']:.6f}",
+                    f"- Early-NO 1–14s bias: {early_no['bias']:.2%}",
+                    f"- Early-NO 1–14s ECE: {early_no['ece']:.2%}",
+                )
+            )
         if failed:
             lines.append("- Failed probability gates: " + ", ".join(item["name"] for item in failed))
     evidence = development.get("evidence")
@@ -1373,4 +1869,31 @@ def _decision_quality_markdown_report(result: dict[str, Any]) -> str:
                     f"vs matched control ${control.get('net_expectancy_per_trade') or 0.0:.4f}; "
                     f"net ${candidate.get('net_profit') or 0.0:.2f} vs ${control.get('net_profit') or 0.0:.2f}."
                 )
+        lead_control = evidence.get("lead_control_metrics")
+        if lead_control is not None:
+            lines.extend(
+                (
+                    "",
+                    "## Frozen lead-control economics",
+                    "",
+                    f"- Trades: {lead_control['trades']}",
+                    f"- Net PnL: ${lead_control['net_profit']:.2f}",
+                    f"- Net expectancy/trade: ${lead_control.get('net_expectancy_per_trade') or 0.0:.4f}",
+                    "- Frequency evidence uses the same new-day eligible denominator; it is not a historical common-market replay.",
+                )
+            )
+    forward = result.get("forward_requirements") or {}
+    if forward.get("minimum_probability_noninferior_utc_days") is not None:
+        lines.extend(
+            (
+                "",
+                "## Fresh-forward proof contract",
+                "",
+                f"- Complete UTC days: {forward['minimum_complete_utc_days']}",
+                f"- Probability-noninferior days: {forward['minimum_probability_noninferior_utc_days']} / {forward['probability_noninferiority_denominator_utc_days']}",
+                f"- Strict markets / trades: {forward['minimum_strict_markets']} / {forward['minimum_selected_trades']}",
+                f"- Early-NO opportunities: {forward['minimum_early_no_opportunity_rows']} rows across {forward['minimum_early_no_opportunity_utc_days']} UTC days",
+                "- No executable forward subsystem was added.",
+            )
+        )
     return "\n".join(lines) + "\n"
