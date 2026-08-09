@@ -9,7 +9,11 @@ from pathlib import Path
 
 from .admission_benchmark import run_admission_benchmark
 from .admission_config import load_admission_benchmark_config
-from .asymmetric_training_readiness import prepare_asymmetric_training_readiness
+from .asymmetric_training_readiness import (
+    load_new_day_readiness_contract,
+    prepare_asymmetric_training_readiness,
+    prepare_new_day_training_readiness,
+)
 from .asymmetric_value_benchmark import run_asymmetric_value_benchmark
 from .asymmetric_value_config import load_asymmetric_value_config
 from .benchmark_config import load_entry_benchmark_config
@@ -140,6 +144,15 @@ def main() -> None:
     )
     asymmetric_readiness.add_argument("--config", type=Path, required=True)
     asymmetric_readiness.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+    )
+    new_day_readiness = subparsers.add_parser(
+        "asymmetric-new-day-readiness"
+    )
+    new_day_readiness.add_argument("--config", type=Path, required=True)
+    new_day_readiness.add_argument(
         "--output-dir",
         type=Path,
         required=True,
@@ -369,6 +382,21 @@ def main() -> None:
         print(f"readiness manifest: {destination}")
         print(f"ready: {str(payload['ready']).lower()}")
         print("external SSD required: false")
+        return
+    if args.command == "asymmetric-new-day-readiness":
+        contract = load_new_day_readiness_contract(args.config)
+        destination, payload = prepare_new_day_training_readiness(
+            contract,
+            package_root=Path(__file__).resolve().parents[2],
+            output_dir=args.output_dir,
+        )
+        print(f"readiness manifest: {destination}")
+        print(f"status: {payload['status']}")
+        print(f"ready: {str(payload['ready']).lower()}")
+        print(
+            "external archive status: "
+            f"{payload['external_archive']['status']}"
+        )
         return
     if args.command == "oracle-book-benchmark-run":
         config = load_oracle_book_benchmark_config(args.config)

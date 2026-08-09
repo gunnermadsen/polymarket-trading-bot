@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tomllib
 from collections.abc import Iterable, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,7 @@ from .core_extract import (
     database_connection,
     file_sha256,
     load_core_manifest,
+    write_json_atomic,
     write_json_exclusive,
 )
 from .spot_l2_chainlink_extract import (
@@ -58,6 +60,7 @@ READINESS_RANGE_END = datetime(2026, 8, 2, tzinfo=UTC)
 EXPECTED_DAILY_MARKETS = 288
 EXPECTED_DAILY_ONE_SECOND_ROWS = 86_400
 EXPECTED_DAILY_CANDLES = 1_440
+EXPECTED_DAILY_PMXT_ARTIFACT_ROWS = 345_600
 MINIMUM_OPENING_BOUNDARY_COVERAGE = 0.95
 MINIMUM_PMXT_HOURLY_COVERAGE = 0.98
 MINIMUM_L2_SECOND_COVERAGE = 0.70
@@ -69,6 +72,80 @@ L2_INGESTER = "binance_spot_btcusdt_l2_one_second_features"
 ORACLE_CACHE_SCHEMA_VERSION = "btc-asymmetric-value-early-oracle-v3"
 DEVELOPMENT_ORACLE_CACHE = "development-oracle-propagation-2s.parquet"
 EVALUATION_ORACLE_CACHE = "evaluation-oracle-propagation-2s.parquet"
+
+NEW_DAY_READINESS_SCHEMA_VERSION = "btc-asymmetric-new-day-readiness-v1"
+NEW_DAY_READINESS_CONTRACT = "early-no-cross-day-source-readiness-v1"
+PLANNED_VALIDATION_START = datetime(2026, 8, 10, tzinfo=UTC)
+PLANNED_VALIDATION_END = datetime(2026, 8, 20, tzinfo=UTC)
+QUARANTINE_START = datetime(2026, 8, 2, tzinfo=UTC)
+QUARANTINE_END = PLANNED_VALIDATION_START
+NEW_DAY_VALIDATION_DAYS = 10
+ASYMMETRIC_PREDICTION_SECONDS = (
+    *range(1, 60),
+    *range(60, 241, 5),
+)
+EXPECTED_DAILY_PREDICTION_ROWS = (
+    EXPECTED_DAILY_MARKETS * len(ASYMMETRIC_PREDICTION_SECONDS)
+)
+SPOT_L2_CURRENT_MATERIALIZATION_END = datetime(2026, 8, 2, tzinfo=UTC)
+
+
+@dataclass(frozen=True)
+class NewDayReadinessContract:
+    """Frozen source-only contract for untouched cross-day validation."""
+
+    source_path: Path
+    contract: str
+    frozen_at: datetime
+    quarantine_start: datetime
+    quarantine_end: datetime
+    validation_start: datetime
+    validation_end: datetime
+    expected_daily_markets: int
+    minimum_opening_boundary_coverage: float
+    minimum_source_grid_coverage: float
+    minimum_l2_second_coverage: float
+    minimum_candidate_grid_coverage: float
+    external_archive_mount: Path
+    pmxt_cache_root: Path
+    spot_l2_archive_root: Path
+    spot_l2_sentinel: str
+
+
+_NEW_DAY_INTEGER_FIELDS = (
+    "labeled_markets",
+    "up_markets",
+    "down_markets",
+    "opening_boundary_markets",
+    "final_price_markets",
+    "reference_causality_violations",
+    "binance_one_second_rows",
+    "binance_qualified_seconds",
+    "binance_causality_violations",
+    "pmxt_completed_hours",
+    "pmxt_artifact_rows",
+    "pmxt_exact_grid_rows",
+    "pmxt_exact_grid_keys",
+    "pmxt_strict_grid_rows",
+    "pmxt_causality_violations",
+    "l2_rows",
+    "l2_qualified_seconds",
+    "l2_causality_violations",
+    "oracle_rounds",
+    "oracle_causality_violations",
+    "chainlink_candle_rows",
+    "chainlink_candle_causality_violations",
+)
+
+_MATERIALIZATION_SOURCES = frozenset(
+    {
+        "official_outcome",
+        "reference_facts",
+        "binance_one_second",
+        "binance_spot_l2",
+        "polymarket_execution",
+    }
+)
 
 CANONICAL_SOURCE_CONTRACT: dict[str, Any] = {
     "target": {
@@ -176,6 +253,673 @@ _SQL_CONTRACTS = {
         LEGACY_SNAPSHOT_SCHEMA_VERSION,
     ),
 }
+
+_NEW_DAY_SQL_CONTRACT = (
+    "polymarket.btc_interval_markets",
+    "polymarket.btc_market_reference_facts",
+    "polymarket.binance_one_second_klines",
+    "polymarket.binance_spot_btcusdt_l2_training_features",
+    "polymarket.btc_market_execution_snapshots",
+    "polymarket.backfill_artifacts",
+    "polymarket.polygon_chainlink_btcusd_oracle_rounds",
+    "polymarket.chainlink_btcusd_one_minute_candles",
+    PMXT_PROVIDER,
+    LEGACY_SNAPSHOT_SCHEMA_VERSION,
+)
+
+
+def load_new_day_readiness_contract(path: Path) -> NewDayReadinessContract:
+    """Load the frozen, source-only cross-day readiness contract."""
+
+    source_path = path.resolve()
+    with source_path.open("rb") as handle:
+        raw = tomllib.load(handle)
+    values = raw["readiness"]
+    archives = raw["external_archive"]
+    contract = NewDayReadinessContract(
+        source_path=source_path,
+        contract=str(values["contract"]),
+        frozen_at=_parse_utc_datetime(values["frozen_at"]),
+        quarantine_start=_parse_utc_datetime(values["quarantine_start"]),
+        quarantine_end=_parse_utc_datetime(values["quarantine_end"]),
+        validation_start=_parse_utc_datetime(values["validation_start"]),
+        validation_end=_parse_utc_datetime(values["validation_end"]),
+        expected_daily_markets=int(values["expected_daily_markets"]),
+        minimum_opening_boundary_coverage=float(
+            values["minimum_opening_boundary_coverage"]
+        ),
+        minimum_source_grid_coverage=float(
+            values["minimum_source_grid_coverage"]
+        ),
+        minimum_l2_second_coverage=float(
+            values["minimum_l2_second_coverage"]
+        ),
+        minimum_candidate_grid_coverage=float(
+            values["minimum_candidate_grid_coverage"]
+        ),
+        external_archive_mount=Path(str(archives["mount_root"])),
+        pmxt_cache_root=Path(str(archives["pmxt_cache_root"])),
+        spot_l2_archive_root=Path(str(archives["spot_l2_archive_root"])),
+        spot_l2_sentinel=str(archives["spot_l2_sentinel"]),
+    )
+    validate_new_day_readiness_contract(contract)
+    return contract
+
+
+def validate_new_day_readiness_contract(
+    contract: NewDayReadinessContract,
+) -> None:
+    """Reject a mutable, contaminated, or underspecified validation window."""
+
+    if contract.contract != NEW_DAY_READINESS_CONTRACT:
+        raise ValueError("new-day readiness contract identity changed")
+    for name, value in (
+        ("quarantine_start", contract.quarantine_start),
+        ("quarantine_end", contract.quarantine_end),
+        ("validation_start", contract.validation_start),
+        ("validation_end", contract.validation_end),
+    ):
+        if value.utcoffset() != timedelta(0) or value.time() != datetime.min.time():
+            raise ValueError(f"{name} must be aligned to a UTC day")
+    if contract.frozen_at.utcoffset() != timedelta(0):
+        raise ValueError("frozen_at must be UTC")
+    if (
+        contract.quarantine_start != QUARANTINE_START
+        or contract.quarantine_end != QUARANTINE_END
+    ):
+        raise ValueError("new-day readiness quarantine must remain [2026-08-02, 2026-08-10)")
+    if contract.validation_end - contract.validation_start != timedelta(
+        days=NEW_DAY_VALIDATION_DAYS
+    ):
+        raise ValueError("new-day validation must contain exactly ten full UTC days")
+    if contract.validation_start < PLANNED_VALIDATION_START:
+        raise ValueError("new-day validation cannot precede 2026-08-10")
+    if contract.frozen_at >= contract.validation_start:
+        raise ValueError(
+            "validation was not frozen before its first UTC day; create a shifted frozen config"
+        )
+    if (
+        contract.validation_start == PLANNED_VALIDATION_START
+        and contract.validation_end != PLANNED_VALIDATION_END
+    ):
+        raise ValueError("planned validation must remain [2026-08-10, 2026-08-20)")
+    if contract.expected_daily_markets != EXPECTED_DAILY_MARKETS:
+        raise ValueError("new-day readiness requires 288 five-minute markets per UTC day")
+    for name, value in (
+        (
+            "minimum_opening_boundary_coverage",
+            contract.minimum_opening_boundary_coverage,
+        ),
+        ("minimum_source_grid_coverage", contract.minimum_source_grid_coverage),
+        ("minimum_l2_second_coverage", contract.minimum_l2_second_coverage),
+        (
+            "minimum_candidate_grid_coverage",
+            contract.minimum_candidate_grid_coverage,
+        ),
+    ):
+        if not 0.0 < value <= 1.0:
+            raise ValueError(f"{name} must be inside (0, 1]")
+    if contract.minimum_source_grid_coverage != 0.90:
+        raise ValueError("new-day source-grid coverage must remain 90%")
+    if contract.minimum_l2_second_coverage != 0.95:
+        raise ValueError("new-day spot-L2 daily coverage must remain 95%")
+    if contract.minimum_candidate_grid_coverage != 0.70:
+        raise ValueError("new-day strict candidate-grid coverage must remain 70%")
+    for name, value in (
+        ("external archive mount", contract.external_archive_mount),
+        ("PMXT cache root", contract.pmxt_cache_root),
+        ("spot-L2 archive root", contract.spot_l2_archive_root),
+    ):
+        if not value.is_absolute():
+            raise ValueError(f"{name} must be absolute")
+    if not contract.spot_l2_sentinel.strip() or Path(
+        contract.spot_l2_sentinel
+    ).name != contract.spot_l2_sentinel:
+        raise ValueError("spot-L2 sentinel must be one relative file name")
+
+
+def collect_new_day_database_inventory(
+    package_root: Path,
+    contract: NewDayReadinessContract,
+    *,
+    connection: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Collect one bounded row per requested UTC day from canonical relations."""
+
+    validate_new_day_readiness_contract(contract)
+    query_path = package_root / "sql" / "btc-asymmetric-new-day-readiness.sql"
+    query = query_path.read_text()
+    owned_connection = connection is None
+    active = connection if connection is not None else database_connection()
+    try:
+        if owned_connection:
+            configure_read_only_connection(active)
+        with active.cursor() as cursor:
+            cursor.execute(
+                query,
+                {
+                    "range_start": contract.validation_start,
+                    "range_end": contract.validation_end,
+                    "oracle_feed_proxy_address": POLYGON_CHAINLINK_BTCUSD_PROXY,
+                },
+            )
+            names = [
+                column.name if hasattr(column, "name") else column[0]
+                for column in cursor.description
+            ]
+            rows = [
+                _json_ready(dict(zip(names, row, strict=True)))
+                for row in cursor.fetchall()
+            ]
+    finally:
+        if owned_connection:
+            active.close()
+    return rows
+
+
+def _new_day_metrics(
+    source_row: dict[str, Any],
+) -> dict[str, Any]:
+    row = dict(source_row)
+    labeled = int(row["labeled_markets"])
+    opening_coverage = (
+        int(row["opening_boundary_markets"]) / labeled if labeled else 0.0
+    )
+    binance_coverage = (
+        int(row["binance_qualified_seconds"]) / EXPECTED_DAILY_ONE_SECOND_ROWS
+    )
+    l2_coverage = (
+        int(row["l2_qualified_seconds"]) / EXPECTED_DAILY_ONE_SECOND_ROWS
+    )
+    pmxt_coverage = int(row["pmxt_exact_grid_keys"]) / (
+        EXPECTED_DAILY_PREDICTION_ROWS
+    )
+    strict_coverage = int(row["pmxt_strict_grid_rows"]) / (
+        EXPECTED_DAILY_PREDICTION_ROWS
+    )
+    row.update(
+        {
+            "expected_prediction_rows": EXPECTED_DAILY_PREDICTION_ROWS,
+            "opening_boundary_coverage": opening_coverage,
+            "binance_second_coverage": binance_coverage,
+            "l2_second_coverage": l2_coverage,
+            "pmxt_exact_grid_coverage": pmxt_coverage,
+            "strict_candidate_grid_coverage": strict_coverage,
+            "joint_source_grid_coverage": min(
+                binance_coverage,
+                l2_coverage,
+                pmxt_coverage,
+            ),
+        }
+    )
+    return row
+
+
+def _new_day_nonblocking_inventory(
+    row: dict[str, Any],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "date": str(row["date"]),
+            "source": source,
+            "blocking": False,
+            "rows": int(row[count_name]),
+            "causality_violations": int(row[violations_name]),
+        }
+        for source, count_name, violations_name in (
+            (
+                "polygon_chainlink_oracle",
+                "oracle_rounds",
+                "oracle_causality_violations",
+            ),
+            (
+                "chainlink_candles",
+                "chainlink_candle_rows",
+                "chainlink_candle_causality_violations",
+            ),
+        )
+    ]
+
+
+def _new_day_closed_blockers(
+    row: dict[str, Any],
+    contract: NewDayReadinessContract,
+) -> list[dict[str, Any]]:
+    day = str(row["date"])
+    blockers: list[dict[str, Any]] = []
+
+    def expect(
+        passed: bool,
+        source: str,
+        code: str,
+        observed: Any,
+        required: Any,
+    ) -> None:
+        if not passed:
+            blockers.append(
+                {
+                    "date": day,
+                    "source": source,
+                    "code": code,
+                    "observed": observed,
+                    "required": required,
+                }
+            )
+
+    labeled = int(row["labeled_markets"])
+    outcomes = {"up": int(row["up_markets"]), "down": int(row["down_markets"])}
+    expect(
+        labeled == contract.expected_daily_markets,
+        "official_outcome",
+        "incomplete_daily_labels",
+        labeled,
+        contract.expected_daily_markets,
+    )
+    expect(
+        all(outcomes.values()),
+        "official_outcome",
+        "missing_outcome_side",
+        outcomes,
+        "both sides",
+    )
+    expect(
+        float(row["opening_boundary_coverage"])
+        >= contract.minimum_opening_boundary_coverage,
+        "reference_facts",
+        "opening_boundary_coverage",
+        row["opening_boundary_coverage"],
+        contract.minimum_opening_boundary_coverage,
+    )
+    for source, prefix in (
+        ("reference_facts", "reference"),
+        ("binance_one_second", "binance"),
+        ("binance_spot_l2", "l2"),
+        ("polymarket_execution", "pmxt"),
+    ):
+        value = int(row[f"{prefix}_causality_violations"])
+        expect(value == 0, source, f"{prefix}_causality_violation", value, 0)
+    expect(
+        int(row["binance_one_second_rows"])
+        == int(row["binance_qualified_seconds"]),
+        "binance_one_second",
+        "duplicate_one_second_rows",
+        int(row["binance_one_second_rows"]),
+        int(row["binance_qualified_seconds"]),
+    )
+    expect(
+        int(row["binance_qualified_seconds"]) == EXPECTED_DAILY_ONE_SECOND_ROWS,
+        "binance_one_second",
+        "one_second_coverage",
+        int(row["binance_qualified_seconds"]),
+        EXPECTED_DAILY_ONE_SECOND_ROWS,
+    )
+    expect(
+        int(row["l2_rows"]) == int(row["l2_qualified_seconds"]),
+        "binance_spot_l2",
+        "duplicate_spot_l2_seconds",
+        int(row["l2_rows"]),
+        int(row["l2_qualified_seconds"]),
+    )
+    l2_contracts = set(row.get("l2_materialization_contracts", []))
+    allowed_l2 = set(L2_MATERIALIZATION_CONTRACTS)
+    expect(
+        not int(row["l2_rows"])
+        or bool(l2_contracts)
+        and l2_contracts.issubset(allowed_l2),
+        "binance_spot_l2",
+        "unexpected_spot_l2_lineage",
+        sorted(l2_contracts),
+        sorted(allowed_l2),
+    )
+    expect(
+        float(row["l2_second_coverage"])
+        >= contract.minimum_l2_second_coverage,
+        "binance_spot_l2",
+        "spot_l2_coverage",
+        row["l2_second_coverage"],
+        contract.minimum_l2_second_coverage,
+    )
+    for field, code, required in (
+        ("pmxt_completed_hours", "pmxt_completed_hours", 24),
+        (
+            "pmxt_artifact_rows",
+            "pmxt_artifact_rows",
+            EXPECTED_DAILY_PMXT_ARTIFACT_ROWS,
+        ),
+    ):
+        value = int(row[field])
+        expect(value == required, "polymarket_execution", code, value, required)
+    for field, code, required in (
+        ("pmxt_providers", "unexpected_pmxt_provider", [PMXT_PROVIDER]),
+        (
+            "pmxt_schema_versions",
+            "unexpected_pmxt_schema",
+            [LEGACY_SNAPSHOT_SCHEMA_VERSION],
+        ),
+    ):
+        observed = list(row.get(field, []))
+        expect(
+            observed in ([], required),
+            "polymarket_execution",
+            code,
+            observed,
+            required,
+        )
+    expect(
+        int(row["pmxt_exact_grid_rows"]) == int(row["pmxt_exact_grid_keys"]),
+        "polymarket_execution",
+        "duplicate_pmxt_grid_keys",
+        int(row["pmxt_exact_grid_rows"]),
+        int(row["pmxt_exact_grid_keys"]),
+    )
+    for field, code, required in (
+        (
+            "pmxt_exact_grid_coverage",
+            "pmxt_exact_grid_coverage",
+            contract.minimum_source_grid_coverage,
+        ),
+        (
+            "strict_candidate_grid_coverage",
+            "pmxt_strict_candidate_grid_coverage",
+            contract.minimum_candidate_grid_coverage,
+        ),
+    ):
+        observed = float(row[field])
+        expect(
+            observed >= required,
+            "polymarket_execution",
+            code,
+            observed,
+            required,
+        )
+    return blockers
+
+
+def assess_new_day_database_inventory(
+    rows: Sequence[dict[str, Any]],
+    contract: NewDayReadinessContract,
+    *,
+    observed_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Assess mandatory source grids without making Oracle/candles blocking."""
+
+    validate_new_day_readiness_contract(contract)
+    assessment_time = observed_at or datetime.now(UTC)
+    if assessment_time.utcoffset() != timedelta(0):
+        raise ValueError("new-day readiness assessment time must be UTC")
+    expected_dates = _date_strings(
+        contract.validation_start,
+        contract.validation_end,
+    )
+    if [str(row.get("date")) for row in rows] != expected_dates:
+        raise RuntimeError(
+            "new-day inventory does not contain the exact requested UTC days"
+        )
+    blockers: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+    daily: list[dict[str, Any]] = []
+
+    for source_row in rows:
+        missing = [
+            name for name in _NEW_DAY_INTEGER_FIELDS if name not in source_row
+        ]
+        if missing:
+            raise RuntimeError(
+                "new-day readiness row is missing fields: " + ", ".join(missing)
+            )
+        row = _new_day_metrics(dict(source_row))
+        day = str(row["date"])
+        diagnostics.extend(_new_day_nonblocking_inventory(row))
+
+        day_end = datetime.fromisoformat(day).replace(tzinfo=UTC) + timedelta(
+            days=1
+        )
+        if assessment_time < day_end:
+            blockers.append(
+                {
+                    "date": day,
+                    "source": "daily_cohort",
+                    "code": "not_yet_available",
+                    "observed": assessment_time.isoformat(),
+                    "required": day_end.isoformat(),
+                }
+            )
+            row["availability_status"] = "not_yet_available"
+            row["daily_inventory_sha256"] = _canonical_sha256(row)
+            daily.append(row)
+            continue
+        row["availability_status"] = "closed"
+        blockers.extend(_new_day_closed_blockers(row, contract))
+        row["daily_inventory_sha256"] = _canonical_sha256(row)
+        daily.append(row)
+
+    materialization_sources = sorted(
+        {
+            str(item["source"])
+            for item in blockers
+            if item["source"] in _MATERIALIZATION_SOURCES
+        }
+    )
+    return {
+        "ready": not blockers,
+        "days": len(daily),
+        "mandatory_blockers": blockers,
+        "required_materialization_sources": materialization_sources,
+        "nonblocking_source_inventory": diagnostics,
+        "daily": daily,
+        "daily_inventory_sha256": _canonical_sha256(daily),
+        "checks": {
+            "exact_ten_days": len(daily) == NEW_DAY_VALIDATION_DAYS,
+            "assessment_time": assessment_time.isoformat(),
+            "not_yet_available_days": sum(
+                row["availability_status"] == "not_yet_available"
+                for row in daily
+            ),
+            "oracle_blocking": False,
+            "chainlink_candles_blocking": False,
+            "polymarket_proxy_prices_used": False,
+            "canonical_spot_l2_only": True,
+        },
+    }
+
+
+def inspect_external_archive_status(
+    contract: NewDayReadinessContract,
+    *,
+    required_materialization_sources: Sequence[str],
+) -> dict[str, Any]:
+    """Expose an unmounted SSD without creating fallback directories."""
+
+    required = set(required_materialization_sources)
+    needs_pmxt = "polymarket_execution" in required
+    needs_l2 = "binance_spot_l2" in required
+    mount_present = contract.external_archive_mount.is_dir()
+    pmxt_present = contract.pmxt_cache_root.is_dir()
+    l2_present = contract.spot_l2_archive_root.is_dir()
+    sentinel_path = contract.spot_l2_archive_root / contract.spot_l2_sentinel
+    sentinel_present = sentinel_path.is_file()
+    if not (needs_pmxt or needs_l2):
+        status = "not_required_database_sources_ready"
+    elif not mount_present:
+        status = "blocked_archive_unmounted"
+    elif needs_l2 and (not l2_present or not sentinel_present):
+        status = "blocked_spot_l2_archive_contract"
+    elif needs_pmxt and not pmxt_present:
+        status = "blocked_pmxt_cache_path_missing"
+    else:
+        status = "available_for_materialization"
+    return {
+        "status": status,
+        "required_for": sorted(required & {"polymarket_execution", "binance_spot_l2"}),
+        "mount_root": str(contract.external_archive_mount),
+        "mount_present": mount_present,
+        "pmxt_cache_root": str(contract.pmxt_cache_root),
+        "pmxt_cache_present": pmxt_present,
+        "spot_l2_archive_root": str(contract.spot_l2_archive_root),
+        "spot_l2_archive_present": l2_present,
+        "spot_l2_sentinel": str(sentinel_path),
+        "spot_l2_sentinel_present": sentinel_present,
+        "fallback_directory_created": False,
+    }
+
+
+def prepare_new_day_training_readiness(
+    contract: NewDayReadinessContract,
+    *,
+    package_root: Path,
+    output_dir: Path,
+    connection: Any | None = None,
+    observed_at: datetime | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    """Write a fail-closed preflight for the frozen new-day source cohort."""
+
+    validate_new_day_readiness_contract(contract)
+    sql_contract = _validate_new_day_sql_contract(package_root)
+    rows = collect_new_day_database_inventory(
+        package_root,
+        contract,
+        connection=connection,
+    )
+    database = assess_new_day_database_inventory(
+        rows,
+        contract,
+        observed_at=observed_at,
+    )
+    l2_ready = bool(database["daily"]) and all(
+        float(row["l2_second_coverage"])
+        >= contract.minimum_l2_second_coverage
+        for row in database["daily"]
+    )
+    spot_l2_upstream = {
+        "status": (
+            "blocked_upstream_materialization_contract"
+            if not l2_ready
+            and contract.validation_start >= SPOT_L2_CURRENT_MATERIALIZATION_END
+            else "satisfied_by_canonical_database_rows"
+        ),
+        "current_range_end_exclusive": (
+            SPOT_L2_CURRENT_MATERIALIZATION_END.isoformat()
+        ),
+        "required_range_end_exclusive": contract.validation_end.isoformat(),
+        "request_validation_source": (
+            "packages/polymarket-bot/src/ingestion/job.rs"
+        ),
+        "planner_source": (
+            "packages/polymarket-bot/src/bin/binance-spot-l2-backfill-plan.rs"
+        ),
+        "rust_change_in_this_scope": False,
+    }
+    archive_sources = set(database["required_materialization_sources"])
+    if spot_l2_upstream["status"] == "blocked_upstream_materialization_contract":
+        archive_sources.add("binance_spot_l2")
+    archive = inspect_external_archive_status(
+        contract,
+        required_materialization_sources=sorted(archive_sources),
+    )
+    not_yet_available = any(
+        item["code"] == "not_yet_available"
+        for item in database["mandatory_blockers"]
+    )
+    statuses = [
+        archive["status"],
+        spot_l2_upstream["status"],
+    ]
+    if database["ready"]:
+        status = "ready"
+    elif database["required_materialization_sources"] and (
+        "blocked_archive_unmounted" in statuses
+    ):
+        status = "blocked_archive_unmounted"
+    elif database["required_materialization_sources"] and (
+        "blocked_upstream_materialization_contract" in statuses
+    ):
+        status = "blocked_upstream_materialization_contract"
+    elif not_yet_available:
+        status = "not_yet_available"
+    else:
+        status = "blocked_source_materialization"
+    payload: dict[str, Any] = {
+        "schema_version": NEW_DAY_READINESS_SCHEMA_VERSION,
+        "status": status,
+        "blocking_statuses": sorted(
+            {
+                status,
+                archive["status"],
+                spot_l2_upstream["status"],
+            }
+            - {
+                "available_for_materialization",
+                "not_required_database_sources_ready",
+                "satisfied_by_canonical_database_rows",
+            }
+        ),
+        "ready": database["ready"],
+        "contract": contract.contract,
+        "contract_frozen_at": contract.frozen_at.isoformat(),
+        "config_path": str(contract.source_path),
+        "config_sha256": file_sha256(contract.source_path),
+        "quarantine": {
+            "range_start": contract.quarantine_start.isoformat(),
+            "range_end": contract.quarantine_end.isoformat(),
+            "usage": "research_feedback_only_never_unseen_validation_or_forward_proof",
+        },
+        "validation": {
+            "range_start": contract.validation_start.isoformat(),
+            "range_end": contract.validation_end.isoformat(),
+            "range_semantics": "half_open_full_utc_days",
+            "days": NEW_DAY_VALIDATION_DAYS,
+            "planned_window_used": (
+                contract.validation_start == PLANNED_VALIDATION_START
+                and contract.validation_end == PLANNED_VALIDATION_END
+            ),
+        },
+        "blocking_sources": [
+            "official_outcome",
+            "reference_facts",
+            "binance_one_second",
+            "binance_spot_l2",
+            "polymarket_execution",
+        ],
+        "nonblocking_sources": [
+            "polygon_chainlink_oracle",
+            "chainlink_candles",
+        ],
+        "canonical_source_contract": CANONICAL_SOURCE_CONTRACT,
+        "sql_contract": sql_contract,
+        "database": database,
+        "external_archive": archive,
+        "upstream_materialization": {"binance_spot_l2": spot_l2_upstream},
+        "checks": {
+            "no_proxy_polymarket_prices": True,
+            "oracle_and_candles_inventory_only": True,
+            "quarantine_excluded_from_validation": True,
+            "validation_frozen_before_first_day": (
+                contract.frozen_at < contract.validation_start
+            ),
+            "no_rust_or_trading_pipeline_change": True,
+        },
+    }
+    payload["readiness_identity_sha256"] = _readiness_identity_sha256(payload)
+    payload["created_at"] = datetime.now(UTC).isoformat()
+    payload["payload_sha256"] = _payload_sha256(payload)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    destination = output_dir / "asymmetric-new-day-readiness.json"
+    if destination.exists():
+        existing = json.loads(destination.read_text())
+        if existing.get("ready") is True:
+            existing_identity = _readiness_identity_sha256(existing)
+            if (
+                existing.get("schema_version") != NEW_DAY_READINESS_SCHEMA_VERSION
+                or existing.get("payload_sha256") != _payload_sha256(existing)
+                or existing.get("readiness_identity_sha256") != existing_identity
+                or existing_identity != payload["readiness_identity_sha256"]
+            ):
+                raise RuntimeError(
+                    "existing immutable new-day readiness seal changed"
+                )
+            return destination, existing
+    write_json_atomic(destination, payload)
+    return destination, payload
 
 
 def prepare_asymmetric_training_readiness(
@@ -469,6 +1213,22 @@ def _validate_sql_contracts(package_root: Path) -> dict[str, Any]:
     if "polymarket.binance_btcusdt_l2_training_features" in l2_text:
         raise RuntimeError("futures L2 relation cannot substitute for spot L2")
     return {"query_sha256": hashes, "relations": CANONICAL_SOURCE_CONTRACT}
+
+
+def _validate_new_day_sql_contract(package_root: Path) -> dict[str, Any]:
+    contract = _validate_sql_contracts(package_root)
+    path = package_root / "sql" / "btc-asymmetric-new-day-readiness.sql"
+    text = path.read_text()
+    missing = [fragment for fragment in _NEW_DAY_SQL_CONTRACT if fragment not in text]
+    if missing:
+        raise RuntimeError(
+            "btc-asymmetric-new-day-readiness.sql no longer matches its "
+            "canonical relation contract"
+        )
+    return {
+        **contract,
+        "new_day_query_sha256": file_sha256(path),
+    }
 
 
 def _validate_core_oracle_source(
@@ -915,6 +1675,22 @@ def _dates(start: datetime, end: datetime) -> tuple[date, ...]:
 
 def _date_strings(start: datetime, end: datetime) -> list[str]:
     return [value.isoformat() for value in _dates(start, end)]
+
+
+def _parse_utc_datetime(value: Any) -> datetime:
+    parsed = datetime.fromisoformat(str(value))
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError("new-day readiness timestamps must include UTC")
+    return parsed.astimezone(UTC)
+
+
+def _canonical_sha256(value: Any) -> str:
+    canonical = json.dumps(
+        _json_ready(value),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def _json_ready(value: Any) -> Any:
