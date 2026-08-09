@@ -41,7 +41,7 @@ from .core_config import CoreTrainingConfig
 
 DECISION_QUALITY_SCHEMA_VERSION = "btc-asymmetric-decision-quality-v1"
 WALK_FORWARD_SOURCE_SUPPORT_SCHEMA_VERSION = (
-    "btc-asymmetric-walk-forward-source-support-v1"
+    "btc-asymmetric-walk-forward-source-support-v2"
 )
 DECISION_SELECTION_SEAL_SCHEMA_VERSION = "btc-asymmetric-decision-selection-seal-v1"
 POST_SELECTION_ATTRIBUTION_SCHEMA_VERSION = (
@@ -266,9 +266,19 @@ def audit_decision_quality_walk_forward_support(
 
     early_no_study = _is_early_no_calibration_study(config)
     support_frame = frame.select(*sorted(required))
+    source_key_columns = ("market_id", "window_start", "seconds_elapsed")
+    duplicate_source_keys = (
+        support_frame.group_by(*source_key_columns)
+        .len()
+        .filter(pl.col("len") != 1)
+    )
     folds: list[dict[str, Any]] = []
     validation_frames: list[pl.DataFrame] = []
-    failures: list[str] = []
+    failures: list[str] = (
+        ["source:duplicate_market_time_keys"]
+        if duplicate_source_keys.height
+        else []
+    )
     for fold in contract.folds:
         fit_frame = _window(support_frame, fold.fit.start, fold.fit.end)
         calibration_frame = _window(
@@ -454,6 +464,13 @@ def audit_decision_quality_walk_forward_support(
         "oof_evidence_scope": contract.oof_evidence_scope,
         "oof_forward_proof": contract.oof_forward_proof,
         "source_availability_rationale": contract.oof_source_availability_rationale,
+        "source_key_contract": {
+            "columns": list(source_key_columns),
+            "rows": support_frame.height,
+            "unique_keys": support_frame.select(*source_key_columns).n_unique(),
+            "duplicate_key_groups": duplicate_source_keys.height,
+            "passed": duplicate_source_keys.is_empty(),
+        },
         "requirements": {
             "broad_parent_markets_per_band": (
                 config.gates.minimum_calibration_markets_per_band
@@ -512,6 +529,29 @@ def fit_final_decision_quality_model(
     )
     if fit_frame.is_empty() or calibration_frame.is_empty():
         raise RuntimeError("final decision-quality fit/calibration frames are empty")
+    final_early_no_support: dict[str, Any] | None = None
+    if _is_early_no_calibration_study(config):
+        target = config.target_calibration
+        if target is None:
+            raise RuntimeError("early-NO final calibration requires its target contract")
+        final_early_no_support = _target_cell_source_support(
+            calibration_frame,
+            side="NO",
+            start_second=1,
+            end_second_exclusive=15,
+            minimum_price=target.minimum_price,
+            maximum_price=target.maximum_price,
+            minimum_markets=EARLY_NO_CALIBRATION_REQUIREMENTS["markets"],
+            minimum_utc_days=EARLY_NO_CALIBRATION_REQUIREMENTS["utc_days"],
+            minimum_markets_per_outcome=(
+                EARLY_NO_CALIBRATION_REQUIREMENTS["markets_per_outcome"]
+            ),
+            require_two_classes=True,
+        )
+        if not final_early_no_support["passed"]:
+            raise RuntimeError(
+                "selected final early-NO calibration support did not qualify"
+            )
     features = asymmetric_value_feature_sets()[CORE_L2_PRICE]
     _validate_primary_feature_contract(features)
     model, fit_evidence = fit_hybrid_histogram_model(
@@ -537,6 +577,7 @@ def fit_final_decision_quality_model(
         "selected_base_candidate": base_name,
         "final_fit_window": _window_evidence(contract.final_fit),
         "final_calibration_window": _window_evidence(contract.final_calibration),
+        "final_early_no_calibration_support": final_early_no_support,
         "fit": fit_evidence,
         "calibration": calibration_profile,
     }
