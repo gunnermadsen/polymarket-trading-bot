@@ -1784,10 +1784,15 @@ def _decision_quality_markdown_report(result: dict[str, Any]) -> str:
     selection = result["selection"]
     quality = result["decision_quality"]
     development = result["development"]
+    selection_summary = (
+        "A model was selected on walk-forward probability quality before any PnL was opened."
+        if selection["selected_candidate_id"] is not None
+        else "No model was selected; readiness or probability gates stopped the run before any PnL was opened."
+    )
     lines = [
         "# Asymmetric decision-quality benchmark",
         "",
-        "The model was selected on walk-forward probability quality before any PnL was opened.",
+        selection_summary,
         "",
         f"- Decision-quality status: `{selection['status']}`",
         f"- Selected configuration: `{selection['selected_candidate_id']}`",
