@@ -905,10 +905,14 @@ def test_outer_runner_blocks_before_any_source_materialization(
     monkeypatch.setattr(value_benchmark, "_dependency_versions", dict)
     monkeypatch.setattr(value_benchmark, "load_core_config", lambda *_: object())
     monkeypatch.setattr(value_benchmark, "_current_process_contract", lambda *_: {})
+    def fake_readiness(*args, **kwargs):
+        captured["readiness_output_dir"] = kwargs["output_dir"]
+        return readiness_result
+
     monkeypatch.setattr(
         value_benchmark,
         "prepare_asymmetric_training_readiness",
-        lambda *args, **kwargs: readiness_result,
+        fake_readiness,
     )
     monkeypatch.setattr(
         value_benchmark,
@@ -927,6 +931,9 @@ def test_outer_runner_blocks_before_any_source_materialization(
     assert run_dir == tmp_path / "blocked-run"
     assert result == {"status": "blocked"}
     assert captured["readiness"] == readiness_result
+    assert Path(captured["readiness_output_dir"]).name == (
+        "historical-cross-day-readiness"
+    )
     assert captured["development_model_frames"] == {}
     assert captured["development_price_manifest"] is None
 
