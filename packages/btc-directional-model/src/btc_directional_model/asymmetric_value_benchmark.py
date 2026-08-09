@@ -178,7 +178,7 @@ def run_asymmetric_value_benchmark(
     if early_no_study:
         decision_readiness = prepare_asymmetric_training_readiness(
             config,
-            output_dir=config.feature_cache / "training-readiness",
+            output_dir=config.feature_cache / "historical-cross-day-readiness",
         )
         if decision_readiness[1].get("ready") is not True:
             from .asymmetric_decision_quality_benchmark import (
