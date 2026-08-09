@@ -16,6 +16,7 @@ import numpy as np
 import polars as pl
 from sklearn.ensemble import HistGradientBoostingClassifier
 
+from .asymmetric_value_training import AsymmetricValueModel
 from .core_extract import file_sha256
 from .core_training import (
     CORE_FREEZE_SCHEMA_VERSION,
@@ -23,7 +24,6 @@ from .core_training import (
     FrozenTimeBandedTrainingBundle,
     FrozenTrainingBundle,
 )
-from .asymmetric_value_training import AsymmetricValueModel
 
 RUNTIME_MODEL_SCHEMA_VERSION = "capitonic-btc-directional-runtime-model-v1"
 TIME_BANDED_RUNTIME_MODEL_SCHEMA_VERSION = (
