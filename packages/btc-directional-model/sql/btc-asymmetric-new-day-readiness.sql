@@ -223,6 +223,32 @@ l2 AS (
     AND feature.second_start < %(range_end)s
   GROUP BY 1
 ),
+l2_provider_rows AS (
+  SELECT
+    date_trunc('day', feature.second_start, 'UTC') AS day_start,
+    count(*) FILTER (
+      WHERE artifact.metadata ->> 'materialization_contract' =
+        'cryptohft-binance-spot-btcusdt-l2-features-v1'
+    )::bigint AS cryptohft_rows,
+    count(*) FILTER (
+      WHERE artifact.metadata ->> 'materialization_contract' =
+        'coinapi-binance-spot-btcusdt-l2-snapshots-v1'
+    )::bigint AS coinapi_rows,
+    count(*) FILTER (
+      WHERE artifact.metadata ->> 'materialization_contract' =
+        'huggingface-goooddy-binance-spot-btcusdt-l2-features-v1'
+    )::bigint AS huggingface_rows
+  FROM polymarket.binance_spot_btcusdt_l2_one_second_features feature
+  JOIN polymarket.backfill_artifacts artifact
+    ON artifact.artifact_id = feature.artifact_id
+   AND artifact.ingester_key =
+     'binance_spot_btcusdt_l2_one_second_features'
+   AND artifact.status = 'completed'
+  WHERE feature.symbol = 'BTCUSDT'
+    AND feature.second_start >= %(range_start)s
+    AND feature.second_start < %(range_end)s
+  GROUP BY 1
+),
 l2_lineage AS (
   SELECT
     artifact.source_date::timestamp AT TIME ZONE 'UTC' AS day_start,
@@ -326,6 +352,11 @@ SELECT
   COALESCE(l2.rows, 0)::bigint AS l2_rows,
   COALESCE(l2.qualified_seconds, 0)::bigint AS l2_qualified_seconds,
   COALESCE(l2.causality_violations, 0)::bigint AS l2_causality_violations,
+  COALESCE(l2_provider_rows.cryptohft_rows, 0)::bigint
+    AS l2_cryptohft_rows,
+  COALESCE(l2_provider_rows.coinapi_rows, 0)::bigint AS l2_coinapi_rows,
+  COALESCE(l2_provider_rows.huggingface_rows, 0)::bigint
+    AS l2_huggingface_rows,
   COALESCE(l2_lineage.providers, ARRAY[]::text[]) AS l2_providers,
   COALESCE(
     l2_lineage.materialization_contracts,
@@ -352,6 +383,7 @@ LEFT JOIN binance USING (day_start)
 LEFT JOIN pmxt_artifacts USING (day_start)
 LEFT JOIN pmxt_grid USING (day_start)
 LEFT JOIN l2 USING (day_start)
+LEFT JOIN l2_provider_rows USING (day_start)
 LEFT JOIN l2_lineage USING (day_start)
 LEFT JOIN oracle USING (day_start)
 LEFT JOIN candles USING (day_start)
