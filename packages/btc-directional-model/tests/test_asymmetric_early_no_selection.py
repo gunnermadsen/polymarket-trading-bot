@@ -479,6 +479,9 @@ def test_unready_new_day_cohort_seals_block_without_fitting_or_economics(
     assert result["development"]["economic_reveal_status"] == "not_opened"
     assert not (run_dir / "decision-quality-oof-predictions.parquet").exists()
     assert not (run_dir / "development-economic-reveal.json").exists()
+    report = (run_dir / "benchmark-report.md").read_text()
+    assert "No model was selected" in report
+    assert "The model was selected" not in report
     sealed = benchmark.load_verified_decision_selection_seal(
         run_dir / "decision-selection-seal.json"
     )
