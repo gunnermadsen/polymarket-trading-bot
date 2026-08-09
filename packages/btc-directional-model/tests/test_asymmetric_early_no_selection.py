@@ -736,3 +736,151 @@ def test_economic_reveal_opens_only_sealed_arms_and_uses_joint_strict_denominato
     assert evidence["frequency"]["eligible_market_count"] == 2_000
     assert evidence["frequency"]["common_market_replay_claimed"] is False
     assert evidence["source_attribution_executed"] is False
+
+
+def test_outer_runner_blocks_before_any_source_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    readiness_result = _blocked_readiness(tmp_path)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(value_benchmark, "_implementation_digest", lambda *_: "a" * 64)
+    monkeypatch.setattr(value_benchmark, "_dependency_versions", dict)
+    monkeypatch.setattr(value_benchmark, "load_core_config", lambda *_: object())
+    monkeypatch.setattr(value_benchmark, "_current_process_contract", lambda *_: {})
+    monkeypatch.setattr(
+        value_benchmark,
+        "load_new_day_readiness_contract",
+        lambda *_: object(),
+    )
+    monkeypatch.setattr(
+        value_benchmark,
+        "prepare_new_day_training_readiness",
+        lambda *args, **kwargs: readiness_result,
+    )
+    monkeypatch.setattr(
+        value_benchmark,
+        "extract_core_source",
+        lambda *args, **kwargs: pytest.fail("Core extraction preceded readiness"),
+    )
+
+    def fake_runner(**kwargs):
+        captured.update(kwargs)
+        return tmp_path / "blocked-run", {"status": "blocked"}
+
+    monkeypatch.setattr(benchmark, "run_decision_quality_benchmark", fake_runner)
+
+    run_dir, result = value_benchmark.run_asymmetric_value_benchmark(config)
+
+    assert run_dir == tmp_path / "blocked-run"
+    assert result == {"status": "blocked"}
+    assert captured["readiness"] == readiness_result
+    assert captured["development_model_frames"] == {}
+    assert captured["development_price_manifest"] is None
+
+
+def test_ready_outer_runner_materializes_only_core_l2_and_exact_pm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    readiness_path = tmp_path / "ready.json"
+    write_json_atomic(readiness_path, {"ready": True})
+    readiness_result = (readiness_path, {"ready": True})
+    validation_start = datetime(2026, 8, 10, tzinfo=UTC)
+    development = pl.DataFrame(
+        {
+            "market_id": ["market-1"],
+            "window_start": [validation_start],
+            "seconds_elapsed": [1],
+            "observed_at": [validation_start + timedelta(seconds=1)],
+            "label_up": [1],
+        }
+    )
+    captured: dict[str, object] = {}
+    observed_source_families: list[str] = []
+
+    monkeypatch.setattr(value_benchmark, "_implementation_digest", lambda *_: "a" * 64)
+    monkeypatch.setattr(value_benchmark, "_dependency_versions", dict)
+    monkeypatch.setattr(value_benchmark, "load_core_config", lambda *_: object())
+    monkeypatch.setattr(value_benchmark, "_current_process_contract", lambda *_: {})
+    monkeypatch.setattr(
+        value_benchmark,
+        "load_new_day_readiness_contract",
+        lambda *_: object(),
+    )
+    monkeypatch.setattr(
+        value_benchmark,
+        "prepare_new_day_training_readiness",
+        lambda *args, **kwargs: readiness_result,
+    )
+    monkeypatch.setattr(value_benchmark, "extract_core_source", lambda *args, **kwargs: None)
+    monkeypatch.setattr(value_benchmark, "build_core_features", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        value_benchmark,
+        "_load_asymmetric_core_grid",
+        lambda *args, **kwargs: development,
+    )
+    monkeypatch.setattr(
+        value_benchmark,
+        "extract_asymmetric_price_evidence",
+        lambda *args, **kwargs: {"proxy_prices_used": False},
+    )
+    monkeypatch.setattr(
+        value_benchmark,
+        "load_asymmetric_price_evidence",
+        lambda *args, **kwargs: pl.DataFrame(),
+    )
+    monkeypatch.setattr(
+        value_benchmark,
+        "attach_asymmetric_value_features",
+        lambda frame, *args, **kwargs: frame,
+    )
+    monkeypatch.setattr(
+        value_benchmark,
+        "_base_coverage_summary",
+        lambda *args, **kwargs: {},
+    )
+    monkeypatch.setattr(
+        value_benchmark,
+        "_project_candidate_source",
+        lambda frame, *args, **kwargs: frame,
+    )
+
+    def fake_source(frame, config, *, source_family, **kwargs):
+        observed_source_families.append(source_family)
+        return frame
+
+    monkeypatch.setattr(value_benchmark, "_load_or_build_source_features", fake_source)
+    monkeypatch.setattr(
+        value_benchmark,
+        "_add_joint_source_coverage",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        value_benchmark,
+        "execution_grid_coverage",
+        lambda *args, **kwargs: {"strict_coverage": 1.0},
+    )
+    monkeypatch.setattr(
+        value_benchmark,
+        "oracle_source_inventory",
+        lambda *args, **kwargs: pytest.fail("Oracle materialized in early-NO study"),
+    )
+
+    def fake_runner(**kwargs):
+        captured.update(kwargs)
+        return tmp_path / "ready-run", {"status": "ready"}
+
+    monkeypatch.setattr(benchmark, "run_decision_quality_benchmark", fake_runner)
+
+    run_dir, result = value_benchmark.run_asymmetric_value_benchmark(config)
+
+    assert run_dir == tmp_path / "ready-run"
+    assert result == {"status": "ready"}
+    assert observed_source_families == ["l2"]
+    assert set(captured["development_model_frames"]) == {CORE_L2_PRICE}
+    assert captured["readiness"] == readiness_result
+    assert captured["development_price_manifest"] == {"proxy_prices_used": False}

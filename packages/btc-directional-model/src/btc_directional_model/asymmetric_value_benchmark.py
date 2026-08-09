@@ -29,10 +29,13 @@ from .asymmetric_residual_value import (
 )
 from .asymmetric_training_readiness import (
     ORACLE_CACHE_SCHEMA_VERSION,
+    load_new_day_readiness_contract,
     oracle_source_inventory,
     prepare_asymmetric_training_readiness,
+    prepare_new_day_training_readiness,
 )
 from .asymmetric_value_config import (
+    EARLY_NO_CALIBRATION_DECISION_QUALITY_STUDY,
     HYBRID_DECISION_QUALITY_TRAINING_CONTRACT,
     TARGET_CALIBRATED_TRAINING_CONTRACT,
     AsymmetricValueConfig,
@@ -133,6 +136,17 @@ DEVELOPMENT_BENCHMARK_MODELS = (
 DEVELOPMENT_OFFLINE_ONLY_CANDIDATES = frozenset(
     {*OFFLINE_ONLY_CANDIDATES, SIDE_CONDITIONED_RESIDUAL_MODEL}
 )
+EARLY_NO_NEW_DAY_READINESS_CONFIG = (
+    "btc-5m-directional-asymmetric-new-day-readiness-20260810-20260820.toml"
+)
+
+
+def _is_early_no_decision_quality(config: AsymmetricValueConfig) -> bool:
+    contract = config.decision_quality
+    return bool(
+        contract is not None
+        and contract.study == EARLY_NO_CALIBRATION_DECISION_QUALITY_STUDY
+    )
 
 
 def _price_manifest_lineage(
@@ -165,6 +179,35 @@ def run_asymmetric_value_benchmark(
     dependency_versions = _dependency_versions()
     core_config = load_core_config(config.core_config)
     current_process = _current_process_contract(config)
+    early_no_study = _is_early_no_decision_quality(config)
+    new_day_readiness: tuple[Path, dict[str, Any]] | None = None
+    if early_no_study:
+        readiness_contract = load_new_day_readiness_contract(
+            config.package_root / "configs" / EARLY_NO_NEW_DAY_READINESS_CONFIG
+        )
+        new_day_readiness = prepare_new_day_training_readiness(
+            readiness_contract,
+            package_root=config.package_root,
+            output_dir=config.feature_cache / "new-day-readiness",
+        )
+        if new_day_readiness[1].get("ready") is not True:
+            from .asymmetric_decision_quality_benchmark import (
+                run_decision_quality_benchmark,
+            )
+
+            return run_decision_quality_benchmark(
+                config=config,
+                core_config=core_config,
+                development_model_frames={},
+                oof_core=pl.DataFrame(),
+                oof_grid_coverage={},
+                development_coverage={},
+                development_price_manifest=None,
+                implementation_sha256=implementation_sha256,
+                dependency_versions=dependency_versions,
+                current_process=current_process,
+                readiness=new_day_readiness,
+            )
     print("asymmetric-value: preparing pre-evaluation causal features", flush=True)
     extract_core_source(core_config, "pre_holdout", force=force)
     build_core_features(core_config, "pre_holdout", force=force)
@@ -203,31 +246,33 @@ def run_asymmetric_value_benchmark(
         PRICE_LOGISTIC,
         CORE_PRICE,
     )
-    development_oracle_inventory = oracle_source_inventory(
-        config.oracle_source,
-        development["window_start"].dt.date().unique().to_list(),
-    )
-    development_oracle = _load_or_build_oracle_core(
-        development,
-        config,
-        destination=config.feature_cache / DEVELOPMENT_ORACLE_CACHE,
-        source_inventory=development_oracle_inventory,
-        core_content_sha256=development_core_content_sha256,
-        expected_range_start=config.fit.start,
-        expected_range_end=config.policy.end,
-        force=force,
-    )
-    development_oracle_price_features = _project_candidate_source(
-        attach_asymmetric_value_features(
-            development_oracle,
-            development_prices,
+    development_oracle_price_features: pl.DataFrame | None = None
+    if not early_no_study:
+        development_oracle_inventory = oracle_source_inventory(
+            config.oracle_source,
+            development["window_start"].dt.date().unique().to_list(),
+        )
+        development_oracle = _load_or_build_oracle_core(
+            development,
             config,
-        ).filter(pl.col("early_oracle_eligible")),
-        ORACLE_MATCHED_CORE_PRICE_CONTROL,
-        CORE_ORACLE_PRICE,
-    )
-    del development_oracle
-    gc.collect()
+            destination=config.feature_cache / DEVELOPMENT_ORACLE_CACHE,
+            source_inventory=development_oracle_inventory,
+            core_content_sha256=development_core_content_sha256,
+            expected_range_start=config.fit.start,
+            expected_range_end=config.policy.end,
+            force=force,
+        )
+        development_oracle_price_features = _project_candidate_source(
+            attach_asymmetric_value_features(
+                development_oracle,
+                development_prices,
+                config,
+            ).filter(pl.col("early_oracle_eligible")),
+            ORACLE_MATCHED_CORE_PRICE_CONTROL,
+            CORE_ORACLE_PRICE,
+        )
+        del development_oracle
+        gc.collect()
 
     development_l2 = _load_or_build_source_features(
         development_executable_core,
@@ -254,6 +299,43 @@ def run_asymmetric_value_benchmark(
     )
     del development_l2
     gc.collect()
+    if early_no_study:
+        if new_day_readiness is None:
+            raise RuntimeError("early-NO readiness was not prepared before materialization")
+        contract = config.decision_quality
+        if contract is None:
+            raise RuntimeError("early-NO decision-quality contract is missing")
+        oof_core = _window(
+            development,
+            contract.folds[0].validation.start,
+            contract.folds[-1].validation.end,
+        ).select("market_id", "window_start", "seconds_elapsed")
+        oof_grid_coverage = execution_grid_coverage(
+            config,
+            scope="development",
+            core=oof_core,
+        )
+        del development, development_executable_core, development_prices
+        gc.collect()
+        from .asymmetric_decision_quality_benchmark import (
+            run_decision_quality_benchmark,
+        )
+
+        return run_decision_quality_benchmark(
+            config=config,
+            core_config=core_config,
+            development_model_frames={CORE_L2_PRICE: development_l2_price_features},
+            oof_core=oof_core,
+            oof_grid_coverage=oof_grid_coverage,
+            development_coverage=development_coverage,
+            development_price_manifest=development_price_manifest,
+            implementation_sha256=implementation_sha256,
+            dependency_versions=dependency_versions,
+            current_process=current_process,
+            readiness=new_day_readiness,
+        )
+    if development_oracle_price_features is None:
+        raise RuntimeError("legacy asymmetric benchmark requires Oracle features")
     development_three_source_price_features = _join_oracle_l2_candidate_features(
         development_oracle_price_features,
         development_l2_price_features,
