@@ -13,7 +13,11 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from threadpoolctl import threadpool_limits
 
-from .asymmetric_value_config import AsymmetricValueConfig
+from .asymmetric_value_config import (
+    DAY_MARKET_ROW_EQUAL_CALIBRATION_WEIGHTING,
+    MARKET_EQUAL_CALIBRATION_WEIGHTING,
+    AsymmetricValueConfig,
+)
 from .asymmetric_value_data import (
     EARLY_CAUSAL_ORACLE_FEATURES,
     POLYMARKET_VALUE_FEATURES,
@@ -1131,6 +1135,7 @@ def fit_asymmetric_time_band_calibrators(
     *,
     core_config: CoreTrainingConfig,
     parent_source: str = "alltime",
+    calibration_weighting: str = MARKET_EQUAL_CALIBRATION_WEIGHTING,
 ) -> tuple[TimeBandCalibrator, ...]:
     """Fit parent Platt scaling with market equality local to each time band."""
 
@@ -1140,6 +1145,8 @@ def fit_asymmetric_time_band_calibrators(
     labels = frame["label_up"].to_numpy()
     elapsed = frame["seconds_elapsed"].to_numpy()
     market_ids = frame["market_id"].cast(pl.String).to_numpy()
+    utc_days = frame["window_start"].dt.date().cast(pl.String).to_numpy()
+    _validate_calibration_weighting(calibration_weighting)
     pooled: tuple[ProbabilityCalibrator, int, int] | None = None
     if parent_source == "targetpool":
         if config.decision_quality is None:
@@ -1153,8 +1160,10 @@ def fit_asymmetric_time_band_calibrators(
                 logits[target_selected],
                 labels[target_selected],
                 market_ids[target_selected],
+                utc_days[target_selected],
                 random_seed=config.random_seed,
                 threads=core_config.compute.threads_per_fit,
+                calibration_weighting=calibration_weighting,
             ),
             int(target_selected.sum()),
             pooled_markets,
@@ -1173,8 +1182,10 @@ def fit_asymmetric_time_band_calibrators(
                 logits[selected],
                 labels[selected],
                 market_ids[selected],
+                utc_days[selected],
                 random_seed=config.random_seed,
                 threads=core_config.compute.threads_per_fit,
+                calibration_weighting=calibration_weighting,
             )
             rows = int(selected.sum())
             markets = int(np.unique(market_ids[selected]).size)
@@ -1194,13 +1205,19 @@ def _fit_parent_probability_calibrator(
     logits: np.ndarray,
     labels: np.ndarray,
     market_ids: np.ndarray,
+    utc_days: np.ndarray,
     *,
     random_seed: int,
     threads: int,
+    calibration_weighting: str,
 ) -> ProbabilityCalibrator:
     if logits.size < 20 or np.unique(labels).size != 2:
         raise RuntimeError("parent calibration lacks two-class evidence")
-    weights = _market_equal_weights_for_ids(market_ids)
+    weights = _calibration_weights_for_ids(
+        market_ids,
+        utc_days,
+        calibration_weighting=calibration_weighting,
+    )
     estimator = LogisticRegression(
         C=1_000_000,
         solver="lbfgs",
@@ -1234,12 +1251,15 @@ def fit_side_price_time_calibrators(
     identity_l2_strength: float | None = None,
     slope_bounds: tuple[float | None, float | None] = (0.0, None),
     intercept_bounds: tuple[float | None, float | None] = (None, None),
+    calibration_weighting: str = MARKET_EQUAL_CALIBRATION_WEIGHTING,
+    early_no_intercept_only: bool = False,
 ) -> tuple[AsymmetricCalibrationCell, ...]:
     """Fit coherent monotone side/price corrections by causal time band."""
 
     identity_l2 = (
         config.calibration_identity_l2 if identity_l2_strength is None else identity_l2_strength
     )
+    _validate_calibration_weighting(calibration_weighting)
     if not np.isfinite(identity_l2) or identity_l2 <= 0.0:
         raise ValueError("side calibration identity L2 must be finite and positive")
     slope_min, slope_max = slope_bounds
@@ -1278,7 +1298,11 @@ def fit_side_price_time_calibrators(
         band_days = utc_days[time_mask]
         band_yes_prices = yes_price_indices[time_mask]
         band_no_prices = no_price_indices[time_mask]
-        band_weights = _market_equal_weights_for_ids(band_ids)
+        band_weights = _calibration_weights_for_ids(
+            band_ids,
+            band_days,
+            calibration_weighting=calibration_weighting,
+        )
         cell_records: list[dict[str, Any]] = []
         active_keys: list[tuple[int, int]] = []
         for price_index in range(PRICE_BAND_COUNT):
@@ -1343,6 +1367,22 @@ def fit_side_price_time_calibrators(
                 np.asarray((1.0, 0.0), dtype=np.float64),
                 len(active_keys),
             )
+            parameter_bounds = tuple(
+                bound
+                for price_index, side_index in active_keys
+                for bound in (
+                    (
+                        (1.0, 1.0)
+                        if early_no_intercept_only
+                        and time_band.start_second == 1
+                        and time_band.end_second_exclusive == 15
+                        and price_index == 2
+                        and side_index == 1
+                        else slope_bounds
+                    ),
+                    intercept_bounds,
+                )
+            )
             result = minimize(
                 _coherent_calibration_objective,
                 initial,
@@ -1358,9 +1398,7 @@ def fit_side_price_time_calibrators(
                 ),
                 method="L-BFGS-B",
                 jac=True,
-                bounds=tuple(
-                    bound for _ in active_keys for bound in (slope_bounds, intercept_bounds)
-                ),
+                bounds=parameter_bounds,
                 options={
                     "maxiter": 500,
                     "ftol": 1e-9,
@@ -1412,7 +1450,11 @@ def fit_side_price_time_calibrators(
                 if record["side"] == "YES"
                 else 1.0 - coherent_probability[selected]
             )
-            weights = _market_equal_weights_for_ids(record["ids"])
+            weights = _calibration_weights_for_ids(
+                record["ids"],
+                band_days[selected],
+                calibration_weighting=calibration_weighting,
+            )
             cell_labels = record["labels"]
             clipped = np.clip(side_probability, 1e-9, 1.0 - 1e-9)
             weighted_loss = float(
@@ -1553,6 +1595,51 @@ def _market_equal_weights_for_ids(market_ids: np.ndarray) -> np.ndarray:
     _, inverse, counts = np.unique(market_ids, return_inverse=True, return_counts=True)
     weights = 1.0 / counts[inverse].astype(np.float64)
     return weights / weights.sum()
+
+
+def _day_market_row_equal_weights(
+    market_ids: np.ndarray,
+    utc_days: np.ndarray,
+) -> np.ndarray:
+    """Give each day, then market, then row equal calibration influence."""
+
+    ids = np.asarray(market_ids)
+    days = np.asarray(utc_days)
+    if ids.ndim != 1 or days.ndim != 1 or ids.size != days.size or ids.size == 0:
+        raise ValueError("day-balanced calibration requires aligned non-empty vectors")
+    unique_days = np.unique(days)
+    weights = np.zeros(ids.size, dtype=np.float64)
+    for day in unique_days:
+        day_selected = days == day
+        day_markets = np.unique(ids[day_selected])
+        for market_id in day_markets:
+            market_selected = day_selected & (ids == market_id)
+            weights[market_selected] = 1.0 / (
+                unique_days.size * day_markets.size * int(market_selected.sum())
+            )
+    if not np.isfinite(weights).all() or np.any(weights <= 0.0):
+        raise RuntimeError("day-balanced calibration produced invalid weights")
+    return weights / weights.sum()
+
+
+def _validate_calibration_weighting(calibration_weighting: str) -> None:
+    if calibration_weighting not in {
+        MARKET_EQUAL_CALIBRATION_WEIGHTING,
+        DAY_MARKET_ROW_EQUAL_CALIBRATION_WEIGHTING,
+    }:
+        raise ValueError("unsupported calibration weighting")
+
+
+def _calibration_weights_for_ids(
+    market_ids: np.ndarray,
+    utc_days: np.ndarray,
+    *,
+    calibration_weighting: str,
+) -> np.ndarray:
+    _validate_calibration_weighting(calibration_weighting)
+    if calibration_weighting == DAY_MARKET_ROW_EQUAL_CALIBRATION_WEIGHTING:
+        return _day_market_row_equal_weights(market_ids, utc_days)
+    return _market_equal_weights_for_ids(market_ids)
 
 
 def _coherent_probability_from_parameters(

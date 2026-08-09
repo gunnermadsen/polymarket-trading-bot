@@ -14,6 +14,10 @@ from .core_config import CORE_SOURCE_CONTRACT, load_core_config, parse_utc_day
 LEGACY_TRAINING_CONTRACT = "legacy_four_window"
 TARGET_CALIBRATED_TRAINING_CONTRACT = "early_price_target_calibrated"
 HYBRID_DECISION_QUALITY_TRAINING_CONTRACT = "hybrid_decision_quality"
+ARCHITECTURE_SEARCH_DECISION_QUALITY_STUDY = "architecture_search"
+EARLY_NO_CALIBRATION_DECISION_QUALITY_STUDY = "early_no_calibration"
+MARKET_EQUAL_CALIBRATION_WEIGHTING = "market_equal"
+DAY_MARKET_ROW_EQUAL_CALIBRATION_WEIGHTING = "day_market_row_equal"
 SUPPORTED_TRAINING_CONTRACTS = frozenset(
     {
         LEGACY_TRAINING_CONTRACT,
@@ -117,9 +121,14 @@ class DecisionQualityCandidate:
 class DecisionQualityCalibrationVariant:
     parent_source: str
     identity_l2: float
+    variant_id: str | None = None
+    calibration_weighting: str = MARKET_EQUAL_CALIBRATION_WEIGHTING
+    early_no_intercept_only: bool = False
 
     @property
     def name(self) -> str:
+        if self.variant_id is not None:
+            return self.variant_id
         rendered_l2 = str(self.identity_l2).replace(".", "_")
         return f"{self.parent_source}_l2_{rendered_l2}"
 
@@ -137,6 +146,7 @@ class DecisionQualityGates:
 
 @dataclass(frozen=True)
 class DecisionQualityContract:
+    study: str
     oof_evidence_scope: str
     oof_forward_proof: bool
     oof_source_availability_rationale: str
@@ -263,6 +273,12 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
 
     decision_quality = (
         DecisionQualityContract(
+            study=str(
+                decision_raw.get(
+                    "study",
+                    ARCHITECTURE_SEARCH_DECISION_QUALITY_STUDY,
+                )
+            ),
             oof_evidence_scope=str(decision_raw["oof_evidence_scope"]),
             oof_forward_proof=bool(decision_raw["oof_forward_proof"]),
             oof_source_availability_rationale=str(
@@ -303,6 +319,20 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
                 DecisionQualityCalibrationVariant(
                     parent_source=str(values["parent_source"]),
                     identity_l2=float(values["identity_l2"]),
+                    variant_id=(
+                        str(values["name"])
+                        if values.get("name") is not None
+                        else None
+                    ),
+                    calibration_weighting=str(
+                        values.get(
+                            "calibration_weighting",
+                            MARKET_EQUAL_CALIBRATION_WEIGHTING,
+                        )
+                    ),
+                    early_no_intercept_only=bool(
+                        values.get("early_no_intercept_only", False)
+                    ),
                 )
                 for values in decision_raw["calibration_variants"]
             ),
@@ -451,10 +481,20 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
             (config.calibration.start.isoformat(), config.calibration.end.isoformat()),
             (config.policy.start.isoformat(), config.policy.end.isoformat()),
         )
+        decision_study = (
+            config.decision_quality.study
+            if config.decision_quality is not None
+            else ARCHITECTURE_SEARCH_DECISION_QUALITY_STUDY
+        )
+        policy_end = (
+            "2026-08-20T00:00:00+00:00"
+            if decision_study == EARLY_NO_CALIBRATION_DECISION_QUALITY_STUDY
+            else "2026-08-02T00:00:00+00:00"
+        )
         required_windows = (
             ("2026-04-14T00:00:00+00:00", "2026-07-16T00:00:00+00:00"),
             ("2026-07-16T00:00:00+00:00", "2026-07-23T00:00:00+00:00"),
-            ("2026-07-23T00:00:00+00:00", "2026-08-02T00:00:00+00:00"),
+            ("2026-07-23T00:00:00+00:00", policy_end),
         )
         if expected_windows != required_windows:
             raise ValueError(
@@ -619,12 +659,17 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
 
     required_inputs = [
         config.core_config,
-        config.l2_source,
-        config.candle_source,
         config.price_source_sql,
         config.champion_model,
         config.champion_process,
     ]
+    decision_study = (
+        config.decision_quality.study
+        if config.decision_quality is not None
+        else ARCHITECTURE_SEARCH_DECISION_QUALITY_STUDY
+    )
+    if decision_study != EARLY_NO_CALIBRATION_DECISION_QUALITY_STUDY:
+        required_inputs.extend((config.l2_source, config.candle_source))
     if config.training_contract == LEGACY_TRAINING_CONTRACT:
         required_inputs.append(config.oracle_source)
     missing = [str(path) for path in required_inputs if not path.exists()]
@@ -650,6 +695,15 @@ def _validate_decision_quality_contract(config: AsymmetricValueConfig) -> None:
     contract = config.decision_quality
     if contract is None:
         raise ValueError("hybrid decision-quality training requires its frozen contract")
+    if contract.study == EARLY_NO_CALIBRATION_DECISION_QUALITY_STUDY:
+        _validate_early_no_calibration_contract(config)
+        return
+    if contract.study != ARCHITECTURE_SEARCH_DECISION_QUALITY_STUDY:
+        raise ValueError("decision-quality study is unsupported")
+    if len({item.name for item in contract.calibration_variants}) != len(
+        contract.calibration_variants
+    ):
+        raise ValueError("decision-quality calibration variant names must be unique")
 
     def rendered(window: EvidenceWindow) -> tuple[str, str]:
         return window.start.isoformat(), window.end.isoformat()
@@ -776,7 +830,7 @@ def _validate_decision_quality_contract(config: AsymmetricValueConfig) -> None:
     ):
         raise ValueError("decision-quality candidate references an unknown HGB profile")
 
-    expected_variants = (
+    expected_variant_pairs = (
         ("alltime", 0.05),
         ("alltime", 0.20),
         ("alltime", 1.00),
@@ -785,7 +839,24 @@ def _validate_decision_quality_contract(config: AsymmetricValueConfig) -> None:
         ("targetpool", 1.00),
     )
     observed_variants = tuple(
-        (item.parent_source, item.identity_l2) for item in contract.calibration_variants
+        (
+            item.parent_source,
+            item.identity_l2,
+            item.variant_id,
+            item.calibration_weighting,
+            item.early_no_intercept_only,
+        )
+        for item in contract.calibration_variants
+    )
+    expected_variants = tuple(
+        (
+            parent_source,
+            identity_l2,
+            None,
+            MARKET_EQUAL_CALIBRATION_WEIGHTING,
+            False,
+        )
+        for parent_source, identity_l2 in expected_variant_pairs
     )
     if observed_variants != expected_variants:
         raise ValueError("decision-quality calibration matrix changed")
@@ -806,3 +877,170 @@ def _validate_decision_quality_contract(config: AsymmetricValueConfig) -> None:
         or gates.minimum_noninferior_folds != 4
     ):
         raise ValueError("decision-quality probability gates changed")
+
+
+def _validate_early_no_calibration_contract(config: AsymmetricValueConfig) -> None:
+    contract = config.decision_quality
+    if contract is None:
+        raise ValueError("early-NO calibration requires its frozen contract")
+
+    def rendered(window: EvidenceWindow) -> tuple[str, str]:
+        return window.start.isoformat(), window.end.isoformat()
+
+    validation_days = tuple(range(10, 20))
+    expected_folds = tuple(
+        (
+            f"aug{day:02d}_aug{day + 1:02d}",
+            (
+                "2026-04-14T00:00:00+00:00",
+                f"2026-07-{day + 3:02d}T00:00:00+00:00",
+            ),
+            (
+                f"2026-07-{day + 3:02d}T00:00:00+00:00",
+                f"2026-08-{day:02d}T00:00:00+00:00",
+            ),
+            (
+                f"2026-08-{day:02d}T00:00:00+00:00",
+                f"2026-08-{day + 1:02d}T00:00:00+00:00",
+            ),
+        )
+        for day in validation_days
+    )
+    observed_folds = tuple(
+        (
+            fold.name,
+            rendered(fold.fit),
+            rendered(fold.calibration),
+            rendered(fold.validation),
+        )
+        for fold in contract.folds
+    )
+    if observed_folds != expected_folds:
+        raise ValueError("early-NO calibration walk-forward folds changed")
+    if any((fold.calibration.end - fold.calibration.start).days != 28 for fold in contract.folds):
+        raise ValueError("early-NO calibration requires rolling 28-day calibration windows")
+    if any((fold.validation.end - fold.validation.start).days != 1 for fold in contract.folds):
+        raise ValueError("early-NO calibration requires one-day validation folds")
+    for fold in contract.folds:
+        if not (
+            fold.fit.start < fold.fit.end
+            and fold.fit.end == fold.calibration.start
+            and fold.calibration.end == fold.validation.start
+            and fold.validation.start < fold.validation.end
+        ):
+            raise ValueError("early-NO calibration folds must be causal and contiguous")
+    expected_rationale = (
+        "Ten frozen source-complete UTC days from 2026-08-10 through 2026-08-19 "
+        "provide new cross-day development evidence; they are not fresh-forward proof."
+    )
+    if (
+        contract.oof_evidence_scope != "new_cross_day_development"
+        or contract.oof_forward_proof is not False
+        or contract.oof_source_availability_rationale != expected_rationale
+    ):
+        raise ValueError("early-NO calibration OOF evidence scope changed")
+    if rendered(contract.final_fit) != (
+        "2026-04-14T00:00:00+00:00",
+        "2026-07-23T00:00:00+00:00",
+    ) or rendered(contract.final_calibration) != (
+        "2026-07-23T00:00:00+00:00",
+        "2026-08-20T00:00:00+00:00",
+    ):
+        raise ValueError("early-NO calibration final chronology changed")
+
+    observed_profiles = tuple(
+        (
+            item.name,
+            item.learning_rate,
+            item.max_iter,
+            item.max_leaf_nodes,
+            item.min_samples_leaf,
+            item.l2_regularization,
+        )
+        for item in contract.histogram_profiles
+    )
+    if observed_profiles != (
+        ("h0_current", 0.05, 160, 15, 100, 0.10),
+        ("h3_regularized", 0.02, 240, 7, 300, 10.0),
+    ):
+        raise ValueError("early-NO calibration HGB profiles changed")
+    observed_candidates = tuple(
+        (
+            item.name,
+            item.target_weight,
+            item.histogram_profile,
+            item.selection_eligible,
+        )
+        for item in contract.candidates
+    )
+    if observed_candidates != (
+        ("broad_current", 0.0, "h0_current", False),
+        ("target_only_current", 1.0, "h0_current", False),
+        ("hybrid_50_h3", 0.50, "h3_regularized", True),
+    ):
+        raise ValueError("early-NO calibration candidate matrix changed")
+    if len({item.name for item in contract.candidates}) != len(contract.candidates):
+        raise ValueError("early-NO calibration candidate names must be unique")
+
+    observed_variants = tuple(
+        (
+            item.name,
+            item.parent_source,
+            item.identity_l2,
+            item.calibration_weighting,
+            item.early_no_intercept_only,
+        )
+        for item in contract.calibration_variants
+    )
+    if len({item.name for item in contract.calibration_variants}) != len(
+        contract.calibration_variants
+    ):
+        raise ValueError("early-NO calibration variant names must be unique")
+    if observed_variants != (
+        (
+            "targetpool_control",
+            "targetpool",
+            1.0,
+            MARKET_EQUAL_CALIBRATION_WEIGHTING,
+            False,
+        ),
+        (
+            "targetpool_day_balanced",
+            "targetpool",
+            1.0,
+            DAY_MARKET_ROW_EQUAL_CALIBRATION_WEIGHTING,
+            False,
+        ),
+        (
+            "targetpool_early_no_offset",
+            "targetpool",
+            1.0,
+            MARKET_EQUAL_CALIBRATION_WEIGHTING,
+            True,
+        ),
+        (
+            "targetpool_day_balanced_early_no_offset",
+            "targetpool",
+            1.0,
+            DAY_MARKET_ROW_EQUAL_CALIBRATION_WEIGHTING,
+            True,
+        ),
+    ):
+        raise ValueError("early-NO calibration variant matrix changed")
+    if contract.price_strata != (
+        (0.20, 0.25),
+        (0.25, 0.275),
+        (0.275, 0.30),
+    ) or contract.time_strata != ((1, 15), (15, 30), (30, 45), (45, 56)):
+        raise ValueError("early-NO calibration reporting strata changed")
+    gates = contract.gates
+    if (
+        not math.isclose(gates.maximum_overall_bias, 0.03)
+        or not math.isclose(gates.maximum_side_bias, 0.05)
+        or not math.isclose(gates.maximum_cell_bias, 0.08)
+        or not math.isclose(gates.maximum_ece, 0.05)
+        or not math.isclose(gates.maximum_proper_score_noninferiority, 0.005)
+        or gates.minimum_targetpool_markets != 500
+        or gates.minimum_noninferior_folds != 8
+    ):
+        raise ValueError("early-NO calibration probability gates changed")
