@@ -155,7 +155,7 @@ def _execution_source(*windows: datetime) -> pl.DataFrame:
     )
 
 
-def test_oof_execution_join_excludes_final_calibration(tmp_path: Path) -> None:
+def test_oof_execution_join_rejects_rows_outside_validation_union(tmp_path: Path) -> None:
     config = _config(tmp_path)
     validation = datetime(2026, 7, 4, tzinfo=UTC)
     final_calibration = datetime(2026, 7, 23, tzinfo=UTC)
@@ -171,13 +171,38 @@ def test_oof_execution_join_excludes_final_calibration(tmp_path: Path) -> None:
 
     assert joined.height == 1
     assert joined["window_start"].to_list() == [validation]
-    with pytest.raises(RuntimeError, match="final calibration rows"):
+    with pytest.raises(RuntimeError, match="outside the OOF validation union"):
         benchmark._join_oof_probability_to_execution(
             _oof("candidate", when=final_calibration),
             source,
             model="candidate",
             config=config,
         )
+
+
+def test_oof_execution_join_accepts_fold_row_overlapping_final_calibration(
+    tmp_path: Path,
+) -> None:
+    source_path = (
+        Path(__file__).parents[1]
+        / "configs/btc-5m-directional-asymmetric-early-no-calibration-20260414-20260802.toml"
+    )
+    config = replace(
+        load_asymmetric_value_config(source_path),
+        feature_cache=tmp_path / "features",
+        runs=tmp_path / "runs",
+    )
+    validation = datetime(2026, 7, 21, tzinfo=UTC)
+
+    joined = benchmark._join_oof_probability_to_execution(
+        _oof("candidate", when=validation),
+        _execution_source(validation).with_columns(pl.lit("m1").alias("market_id")),
+        model="candidate",
+        config=config,
+    )
+
+    assert joined.height == 1
+    assert joined["window_start"].to_list() == [validation]
 
 
 def test_economic_reveal_consumes_selected_probability_from_sealed_artifact(
@@ -249,7 +274,10 @@ def test_development_and_fresh_forward_evidence_thresholds_remain_distinct(
             "rank_trace": [],
             "economics_used": False,
         },
-        selection_seal={"selection_identity_sha256": "a" * 64},
+        selection_seal={
+            "selection_identity_sha256": "a" * 64,
+            "created_at": "2026-08-09T13:00:00+00:00",
+        },
         selection_seal_sha256="b" * 64,
         development_coverage={},
         economic_evidence=None,
@@ -259,13 +287,17 @@ def test_development_and_fresh_forward_evidence_thresholds_remain_distinct(
     assert result["forward_requirements"]["minimum_trade_utc_days"] == 10
     assert result["forward_requirements"]["minimum_strict_markets"] == 2_000
     assert result["forward_requirements"]["minimum_strict_grid_coverage"] == 0.70
+    assert result["evaluation"]["fresh_forward_start_not_before"] == (
+        "2026-08-10T00:00:00+00:00"
+    )
 
 
-def test_decision_contract_records_compressed_development_oof_scope(tmp_path: Path) -> None:
+def test_decision_contract_records_historical_development_oof_scope(tmp_path: Path) -> None:
     evidence = benchmark._decision_contract_evidence(_config(tmp_path))
 
     assert evidence["oof_evidence_scope"] == "consumed_development_only"
     assert evidence["oof_forward_proof"] is False
+    assert evidence["historical_oof_validation_utc_days"] == 5
     assert evidence["compressed_oof_validation_utc_days"] == 5
     assert "five source-complete UTC days" in evidence["source_availability_rationale"]
 
@@ -284,9 +316,7 @@ def test_post_selection_attribution_manifest_fails_on_artifact_mutation(
         "pairs": {name: {} for name in benchmark.POST_SELECTION_ATTRIBUTION_PAIRS},
         "artifact_sha256": {artifact.name: file_sha256(artifact)},
     }
-    payload["attribution_identity_sha256"] = benchmark._post_selection_attribution_identity(
-        payload
-    )
+    payload["attribution_identity_sha256"] = benchmark._post_selection_attribution_identity(payload)
     manifest = tmp_path / "post-selection-attribution.json"
     write_json_atomic(manifest, payload)
 
@@ -393,7 +423,7 @@ def test_no_quality_winner_never_opens_economics(
             "selected_candidate_id": None,
             "selected_base_candidate": None,
             "economics_used": False,
-        }
+        },
     }
     monkeypatch.setattr(
         benchmark,

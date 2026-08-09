@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import tomllib
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
 
@@ -319,20 +319,14 @@ def load_asymmetric_value_config(path: Path) -> AsymmetricValueConfig:
                 DecisionQualityCalibrationVariant(
                     parent_source=str(values["parent_source"]),
                     identity_l2=float(values["identity_l2"]),
-                    variant_id=(
-                        str(values["name"])
-                        if values.get("name") is not None
-                        else None
-                    ),
+                    variant_id=(str(values["name"]) if values.get("name") is not None else None),
                     calibration_weighting=str(
                         values.get(
                             "calibration_weighting",
                             MARKET_EQUAL_CALIBRATION_WEIGHTING,
                         )
                     ),
-                    early_no_intercept_only=bool(
-                        values.get("early_no_intercept_only", False)
-                    ),
+                    early_no_intercept_only=bool(values.get("early_no_intercept_only", False)),
                 )
                 for values in decision_raw["calibration_variants"]
             ),
@@ -486,15 +480,10 @@ def validate_asymmetric_value_config(config: AsymmetricValueConfig) -> None:
             if config.decision_quality is not None
             else ARCHITECTURE_SEARCH_DECISION_QUALITY_STUDY
         )
-        policy_end = (
-            "2026-08-20T00:00:00+00:00"
-            if decision_study == EARLY_NO_CALIBRATION_DECISION_QUALITY_STUDY
-            else "2026-08-02T00:00:00+00:00"
-        )
         required_windows = (
             ("2026-04-14T00:00:00+00:00", "2026-07-16T00:00:00+00:00"),
             ("2026-07-16T00:00:00+00:00", "2026-07-23T00:00:00+00:00"),
-            ("2026-07-23T00:00:00+00:00", policy_end),
+            ("2026-07-23T00:00:00+00:00", "2026-08-02T00:00:00+00:00"),
         )
         if expected_windows != required_windows:
             raise ValueError(
@@ -887,24 +876,38 @@ def _validate_early_no_calibration_contract(config: AsymmetricValueConfig) -> No
     def rendered(window: EvidenceWindow) -> tuple[str, str]:
         return window.start.isoformat(), window.end.isoformat()
 
-    validation_days = tuple(range(10, 20))
+    validation_starts = tuple(
+        parse_utc_day(day)
+        for day in (
+            "2026-07-21T00:00:00Z",
+            "2026-07-22T00:00:00Z",
+            "2026-07-23T00:00:00Z",
+            "2026-07-24T00:00:00Z",
+            "2026-07-25T00:00:00Z",
+            "2026-07-28T00:00:00Z",
+            "2026-07-29T00:00:00Z",
+            "2026-07-30T00:00:00Z",
+            "2026-07-31T00:00:00Z",
+            "2026-08-01T00:00:00Z",
+        )
+    )
     expected_folds = tuple(
         (
-            f"aug{day:02d}_aug{day + 1:02d}",
+            f"{validation_start:%b%d}_{validation_start + timedelta(days=1):%b%d}".lower(),
             (
                 "2026-04-14T00:00:00+00:00",
-                f"2026-07-{day + 3:02d}T00:00:00+00:00",
+                (validation_start - timedelta(days=28)).isoformat(),
             ),
             (
-                f"2026-07-{day + 3:02d}T00:00:00+00:00",
-                f"2026-08-{day:02d}T00:00:00+00:00",
+                (validation_start - timedelta(days=28)).isoformat(),
+                validation_start.isoformat(),
             ),
             (
-                f"2026-08-{day:02d}T00:00:00+00:00",
-                f"2026-08-{day + 1:02d}T00:00:00+00:00",
+                validation_start.isoformat(),
+                (validation_start + timedelta(days=1)).isoformat(),
             ),
         )
-        for day in validation_days
+        for validation_start in validation_starts
     )
     observed_folds = tuple(
         (
@@ -930,21 +933,22 @@ def _validate_early_no_calibration_contract(config: AsymmetricValueConfig) -> No
         ):
             raise ValueError("early-NO calibration folds must be causal and contiguous")
     expected_rationale = (
-        "Ten frozen source-complete UTC days from 2026-08-10 through 2026-08-19 "
-        "provide new cross-day development evidence; they are not fresh-forward proof."
+        "Ten source-supported historical UTC days from 2026-07-21 through 2026-08-01 "
+        "provide consumed cross-day development evidence; July 26-27 are excluded for "
+        "source coverage, and no result is fresh-forward proof."
     )
     if (
-        contract.oof_evidence_scope != "new_cross_day_development"
+        contract.oof_evidence_scope != "consumed_cross_day_development"
         or contract.oof_forward_proof is not False
         or contract.oof_source_availability_rationale != expected_rationale
     ):
         raise ValueError("early-NO calibration OOF evidence scope changed")
     if rendered(contract.final_fit) != (
         "2026-04-14T00:00:00+00:00",
-        "2026-07-23T00:00:00+00:00",
+        "2026-07-16T00:00:00+00:00",
     ) or rendered(contract.final_calibration) != (
-        "2026-07-23T00:00:00+00:00",
-        "2026-08-20T00:00:00+00:00",
+        "2026-07-16T00:00:00+00:00",
+        "2026-08-02T00:00:00+00:00",
     ):
         raise ValueError("early-NO calibration final chronology changed")
 

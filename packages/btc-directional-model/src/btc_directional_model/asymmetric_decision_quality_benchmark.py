@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,8 @@ from .asymmetric_decision_quality import (
     POST_SELECTION_ATTRIBUTION_PAIRS,
     calibration_variant_id,
     decision_quality_oof_key_digest,
+    decision_quality_validation_dates,
+    decision_quality_validation_union,
     fit_decision_quality_walk_forward,
     fit_final_decision_quality_model,
     fit_final_matched_core_model,
@@ -78,7 +80,7 @@ DEVELOPMENT_OOF_GATE_SCOPE = {
     "fresh_forward_contract_is_separate": True,
 }
 EARLY_NO_DEVELOPMENT_OOF_GATE_SCOPE = {
-    "name": "new_cross_day_development",
+    "name": "consumed_cross_day_development",
     "policy_window_gates": True,
     "minimum_trades": 200,
     "minimum_trade_utc_days": 10,
@@ -215,6 +217,7 @@ def _decision_contract_evidence(config: AsymmetricValueConfig) -> dict[str, Any]
         "oof_evidence_scope": contract.oof_evidence_scope,
         "oof_forward_proof": contract.oof_forward_proof,
         "source_availability_rationale": contract.oof_source_availability_rationale,
+        "historical_oof_validation_utc_days": len(contract.folds),
         "compressed_oof_validation_utc_days": len(contract.folds),
         "validation_utc_days": len(contract.folds),
         "folds": [
@@ -291,31 +294,13 @@ def _join_oof_probability_to_execution(
     if contract is None:
         raise ValueError("OOF execution join requires the decision-quality contract")
     keys = ["market_id", "window_start", "observed_at", "seconds_elapsed"]
-    if probability_frame.filter(
-        pl.col("window_start").is_between(
-            contract.final_calibration.start,
-            contract.final_calibration.end,
-            closed="left",
-        )
-    ).height:
-        raise RuntimeError("final calibration rows entered the economic reveal")
-    if probability_frame.filter(
-        ~pl.col("window_start").is_between(
-            contract.folds[0].validation.start,
-            contract.folds[-1].validation.end,
-            closed="left",
-        )
-    ).height:
+    if decision_quality_validation_union(probability_frame, config).height != (
+        probability_frame.height
+    ):
         raise RuntimeError("economic reveal contains rows outside the OOF validation union")
     if probability_frame.select(*keys).is_duplicated().any():
         raise RuntimeError("selected OOF probability keys are duplicated")
-    source = source_frame.filter(
-        pl.col("window_start").is_between(
-            contract.folds[0].validation.start,
-            contract.folds[-1].validation.end,
-            closed="left",
-        )
-    )
+    source = decision_quality_validation_union(source_frame, config)
     if source.select(*keys).is_duplicated().any():
         raise RuntimeError("OOF execution source keys are duplicated")
     probability = probability_frame.select(
@@ -334,15 +319,6 @@ def _join_oof_probability_to_execution(
         raise RuntimeError("OOF execution join did not preserve every selected key")
     if joined.filter(pl.col("label_up") != pl.col("_oof_label_up")).height:
         raise RuntimeError("OOF execution labels changed after selection")
-    forbidden_final_calibration = joined.filter(
-        pl.col("window_start").is_between(
-            contract.final_calibration.start,
-            contract.final_calibration.end,
-            closed="left",
-        )
-    )
-    if forbidden_final_calibration.height:
-        raise RuntimeError("final calibration rows entered the economic reveal")
     predictions = asymmetric_probability_frame(
         joined,
         joined["probability_yes"].to_numpy(),
@@ -598,13 +574,7 @@ def _post_selection_attribution_economics(
     result: dict[str, Any] = {}
     for feature_set_name, pair in sorted(payload["pairs"].items()):
         source_frame = development_model_frames[feature_set_name]
-        source_oof = source_frame.filter(
-            pl.col("window_start").is_between(
-                contract.folds[0].validation.start,
-                contract.folds[-1].validation.end,
-                closed="left",
-            )
-        )
+        source_oof = decision_quality_validation_union(source_frame, config)
         source_resolved_markets = source_oof["market_id"].n_unique()
         if source_resolved_markets <= 0:
             raise RuntimeError(f"{feature_set_name} attribution OOF source cohort is empty")
@@ -638,8 +608,7 @@ def _post_selection_attribution_economics(
                 feature_set_name,
                 "post_selection_attribution_net",
             ),
-            window_start=contract.folds[0].validation.start,
-            window_end=contract.folds[-1].validation.end,
+            utc_days=decision_quality_validation_dates(config),
         )
         result[feature_set_name] = {
             "selection_eligible": False,
@@ -685,7 +654,7 @@ def _early_no_frequency_checks(
     lead_rate = lead_control_trades / eligible_resolved_markets
     required_rate = 0.80 * lead_rate
     lead = {
-        "name": "minimum_frequency_relative_to_new_day_lead_control",
+        "name": "minimum_frequency_relative_to_same_oof_lead_control",
         "candidate_trades": candidate_trades,
         "lead_control_trades": lead_control_trades,
         "eligible_resolved_markets": eligible_resolved_markets,
@@ -696,7 +665,7 @@ def _early_no_frequency_checks(
         "minimum_lead_control_fraction": 0.80,
         "operator": ">=",
         "passed": candidate_rate >= required_rate,
-        "same_new_day_eligible_cohort": True,
+        "same_oof_eligible_cohort": True,
         "common_market_replay_claimed": False,
     }
     return historical, lead
@@ -772,11 +741,8 @@ def _reveal_early_no_economics(
 
     contract = config.decision_quality
     assert contract is not None
-    window_start = contract.folds[0].validation.start
-    window_end = contract.folds[-1].validation.end
-    oof_source = l2_frame.filter(
-        pl.col("window_start").is_between(window_start, window_end, closed="left")
-    )
+    validation_dates = decision_quality_validation_dates(config)
+    oof_source = decision_quality_validation_union(l2_frame, config)
     eligible_markets = oof_source.select("market_id").unique()
     resolved_markets = eligible_markets.height
     if resolved_markets <= 0:
@@ -806,8 +772,7 @@ def _reveal_early_no_economics(
         core_ledger,
         config,
         seed=_stable_seed(config.random_seed, selected_id, "matched_core_net"),
-        window_start=window_start,
-        window_end=window_end,
+        utc_days=validation_dates,
     )
     checks.extend(_matched_economic_checks(candidate_metrics, core_metrics, core_paired_day_net))
     lead_paired_day_net = _paired_day_net_difference_bootstrap(
@@ -815,8 +780,7 @@ def _reveal_early_no_economics(
         lead_ledger,
         config,
         seed=_stable_seed(config.random_seed, selected_id, "lead_control_net"),
-        window_start=window_start,
-        window_end=window_end,
+        utc_days=validation_dates,
     )
     checks.extend(
         _matched_economic_checks(
@@ -874,10 +838,10 @@ def _reveal_early_no_economics(
             "evidence_scope": _development_gate_scope(config),
             "frequency": {
                 "historical_incumbent_floor": historical_frequency,
-                "new_day_lead_control_floor": lead_frequency,
+                "same_oof_lead_control_floor": lead_frequency,
                 "eligible_market_count": resolved_markets,
                 "eligible_market_sha256": _market_id_digest(eligible_markets),
-                "same_new_day_eligible_cohort": True,
+                "same_oof_eligible_cohort": True,
                 "common_market_replay_claimed": False,
             },
             "checks": checks,
@@ -978,13 +942,7 @@ def reveal_decision_quality_economics(
 
     contract = config.decision_quality
     assert contract is not None
-    oof_source = l2_frame.filter(
-        pl.col("window_start").is_between(
-            contract.folds[0].validation.start,
-            contract.folds[-1].validation.end,
-            closed="left",
-        )
-    )
+    oof_source = decision_quality_validation_union(l2_frame, config)
     candidate_grid = _candidate_grid_summary(oof_source, oof_core, config)
     # Consumed OOF development evidence intentionally uses the frozen 100-trade,
     # five-day, 1,000-market and 40%-grid gates. Fresh forward evidence has the
@@ -1012,18 +970,11 @@ def reveal_decision_quality_economics(
         control_ledger,
         config,
         seed=_stable_seed(config.random_seed, selected_id, "matched_core_net"),
-        window_start=contract.folds[0].validation.start,
-        window_end=contract.folds[-1].validation.end,
+        utc_days=decision_quality_validation_dates(config),
     )
     checks.extend(_matched_economic_checks(candidate_metrics, control_metrics, paired_day_net))
 
-    incumbent_frame = oracle_frame.filter(
-        pl.col("window_start").is_between(
-            contract.folds[0].validation.start,
-            contract.folds[-1].validation.end,
-            closed="left",
-        )
-    )
+    incumbent_frame = decision_quality_validation_union(oracle_frame, config)
     incumbent = replay_frozen_asymmetric_incumbent(incumbent_frame)
     incumbent_markets = (
         incumbent_frame.filter(pl.col("seconds_elapsed") <= 55).select("market_id").unique()
@@ -1148,7 +1099,7 @@ def run_decision_quality_benchmark(
     )
     if readiness is None and early_no_study:
         raise ValueError(
-            "early-NO runner requires an injected sealed new-day readiness result"
+            "early-NO runner requires an injected sealed source-readiness result"
         )
     readiness_path, readiness_payload = (
         readiness
@@ -1692,6 +1643,16 @@ def _benchmark_result(
     artifact_hashes: dict[str, str],
 ) -> dict[str, Any]:
     early_no_study = _is_early_no_study(config)
+    seal_created_at = datetime.fromisoformat(str(selection_seal["created_at"]))
+    fresh_forward_start = (
+        seal_created_at.astimezone(UTC).replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        + timedelta(days=1)
+    ).isoformat()
     selected_id = selection.get("selected_candidate_id")
     economically_qualified = bool(
         economic_evidence is not None and economic_evidence.get("qualified") is True
@@ -1729,11 +1690,7 @@ def _benchmark_result(
         "evaluation": {
             "status": evaluation_status,
             "independent_forward_complete": False,
-            "fresh_forward_start_not_before": (
-                "2026-08-21T00:00:00+00:00"
-                if early_no_study
-                else "2026-08-09T00:00:00+00:00"
-            ),
+            "fresh_forward_start_not_before": fresh_forward_start,
             "fresh_forward_start_rule": "first_full_utc_day_after_artifact_seal",
         },
         "forward_requirements": {
@@ -1746,12 +1703,8 @@ def _benchmark_result(
             "minimum_source_grid_coverage": 0.90,
             "minimum_strict_grid_coverage": 0.70,
             "minimum_candidate_grid_coverage": 0.70,
-            "minimum_probability_noninferior_utc_days": (
-                17 if early_no_study else None
-            ),
-            "probability_noninferiority_denominator_utc_days": (
-                21 if early_no_study else None
-            ),
+            "minimum_probability_noninferior_utc_days": (17 if early_no_study else None),
+            "probability_noninferiority_denominator_utc_days": (21 if early_no_study else None),
             "minimum_early_no_opportunity_rows": 100 if early_no_study else None,
             "minimum_early_no_opportunity_utc_days": 10 if early_no_study else None,
             "early_no_definition": (
@@ -1884,7 +1837,7 @@ def _decision_quality_markdown_report(result: dict[str, Any]) -> str:
                     f"- Trades: {lead_control['trades']}",
                     f"- Net PnL: ${lead_control['net_profit']:.2f}",
                     f"- Net expectancy/trade: ${lead_control.get('net_expectancy_per_trade') or 0.0:.4f}",
-                    "- Frequency evidence uses the same new-day eligible denominator; it is not a historical common-market replay.",
+                    "- Frequency evidence uses the same historical OOF eligible denominator; it is not an independent forward comparison.",
                 )
             )
     forward = result.get("forward_requirements") or {}

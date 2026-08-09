@@ -6,7 +6,7 @@ import gc
 import hashlib
 import json
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -15,6 +15,7 @@ import joblib
 import numpy as np
 import polars as pl
 
+from .asymmetric_decision_quality import decision_quality_validation_union
 from .asymmetric_incumbent_replay import (
     DEFAULT_FROZEN_ASYMMETRIC_INCUMBENT_MODEL,
     replay_frozen_asymmetric_incumbent,
@@ -29,10 +30,8 @@ from .asymmetric_residual_value import (
 )
 from .asymmetric_training_readiness import (
     ORACLE_CACHE_SCHEMA_VERSION,
-    load_new_day_readiness_contract,
     oracle_source_inventory,
     prepare_asymmetric_training_readiness,
-    prepare_new_day_training_readiness,
 )
 from .asymmetric_value_config import (
     EARLY_NO_CALIBRATION_DECISION_QUALITY_STUDY,
@@ -136,11 +135,6 @@ DEVELOPMENT_BENCHMARK_MODELS = (
 DEVELOPMENT_OFFLINE_ONLY_CANDIDATES = frozenset(
     {*OFFLINE_ONLY_CANDIDATES, SIDE_CONDITIONED_RESIDUAL_MODEL}
 )
-EARLY_NO_NEW_DAY_READINESS_CONFIG = (
-    "btc-5m-directional-asymmetric-new-day-readiness-20260810-20260820.toml"
-)
-
-
 def _is_early_no_decision_quality(config: AsymmetricValueConfig) -> bool:
     contract = config.decision_quality
     return bool(
@@ -180,17 +174,13 @@ def run_asymmetric_value_benchmark(
     core_config = load_core_config(config.core_config)
     current_process = _current_process_contract(config)
     early_no_study = _is_early_no_decision_quality(config)
-    new_day_readiness: tuple[Path, dict[str, Any]] | None = None
+    decision_readiness: tuple[Path, dict[str, Any]] | None = None
     if early_no_study:
-        readiness_contract = load_new_day_readiness_contract(
-            config.package_root / "configs" / EARLY_NO_NEW_DAY_READINESS_CONFIG
+        decision_readiness = prepare_asymmetric_training_readiness(
+            config,
+            output_dir=config.feature_cache / "training-readiness",
         )
-        new_day_readiness = prepare_new_day_training_readiness(
-            readiness_contract,
-            package_root=config.package_root,
-            output_dir=config.feature_cache / "new-day-readiness",
-        )
-        if new_day_readiness[1].get("ready") is not True:
+        if decision_readiness[1].get("ready") is not True:
             from .asymmetric_decision_quality_benchmark import (
                 run_decision_quality_benchmark,
             )
@@ -206,7 +196,7 @@ def run_asymmetric_value_benchmark(
                 implementation_sha256=implementation_sha256,
                 dependency_versions=dependency_versions,
                 current_process=current_process,
-                readiness=new_day_readiness,
+                readiness=decision_readiness,
             )
     print("asymmetric-value: preparing pre-evaluation causal features", flush=True)
     extract_core_source(core_config, "pre_holdout", force=force)
@@ -300,16 +290,14 @@ def run_asymmetric_value_benchmark(
     del development_l2
     gc.collect()
     if early_no_study:
-        if new_day_readiness is None:
+        if decision_readiness is None:
             raise RuntimeError("early-NO readiness was not prepared before materialization")
         contract = config.decision_quality
         if contract is None:
             raise RuntimeError("early-NO decision-quality contract is missing")
-        oof_core = _window(
-            development,
-            contract.folds[0].validation.start,
-            contract.folds[-1].validation.end,
-        ).select("market_id", "window_start", "seconds_elapsed")
+        oof_core = decision_quality_validation_union(development, config).select(
+            "market_id", "window_start", "seconds_elapsed"
+        )
         oof_grid_coverage = execution_grid_coverage(
             config,
             scope="development",
@@ -332,7 +320,7 @@ def run_asymmetric_value_benchmark(
             implementation_sha256=implementation_sha256,
             dependency_versions=dependency_versions,
             current_process=current_process,
-            readiness=new_day_readiness,
+            readiness=decision_readiness,
         )
     if development_oracle_price_features is None:
         raise RuntimeError("legacy asymmetric benchmark requires Oracle features")
@@ -387,11 +375,9 @@ def run_asymmetric_value_benchmark(
         contract = config.decision_quality
         if contract is None:
             raise RuntimeError("decision-quality training contract is missing")
-        oof_core = _window(
-            development,
-            contract.folds[0].validation.start,
-            contract.folds[-1].validation.end,
-        ).select("market_id", "window_start", "seconds_elapsed")
+        oof_core = decision_quality_validation_union(development, config).select(
+            "market_id", "window_start", "seconds_elapsed"
+        )
         oof_grid_coverage = execution_grid_coverage(
             config,
             scope="development",
@@ -3675,14 +3661,22 @@ def _paired_day_net_difference_bootstrap(
     seed: int,
     window_start: datetime | None = None,
     window_end: datetime | None = None,
+    utc_days: tuple[date, ...] | None = None,
 ) -> dict[str, Any]:
-    days = []
-    start = window_start or config.policy.start
-    end = window_end or config.policy.end
-    current = start.date()
-    while current < end.date():
-        days.append(current)
-        current += timedelta(days=1)
+    if utc_days is not None:
+        if not utc_days or len(set(utc_days)) != len(utc_days):
+            raise ValueError("paired bootstrap UTC days must be nonempty and unique")
+        days = list(utc_days)
+    else:
+        days = []
+        start = window_start or config.policy.start
+        end = window_end or config.policy.end
+        current = start.date()
+        while current < end.date():
+            days.append(current)
+            current += timedelta(days=1)
+    if not days:
+        raise ValueError("paired bootstrap requires at least one UTC day")
 
     def daily_net(ledger: pl.DataFrame) -> dict[Any, float]:
         if ledger.is_empty():
