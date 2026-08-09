@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 from dataclasses import asdict
+from datetime import date
 from typing import Any
 
 import numpy as np
@@ -124,6 +125,39 @@ def control_calibration_variant() -> DecisionQualityCalibrationVariant:
         parent_source="alltime",
         identity_l2=1.0,
     )
+
+
+def decision_quality_validation_union(
+    frame: pl.DataFrame,
+    config: AsymmetricValueConfig,
+) -> pl.DataFrame:
+    """Return only the exact frozen validation windows, including gapped studies."""
+
+    contract = config.decision_quality
+    if contract is None:
+        raise ValueError("validation-union projection requires its frozen contract")
+    selected = pl.lit(False)
+    for fold in contract.folds:
+        selected = selected | pl.col("window_start").is_between(
+            fold.validation.start,
+            fold.validation.end,
+            closed="left",
+        )
+    return frame.filter(selected)
+
+
+def decision_quality_validation_dates(
+    config: AsymmetricValueConfig,
+) -> tuple[date, ...]:
+    """Return the exact UTC dates represented by one-day validation folds."""
+
+    contract = config.decision_quality
+    if contract is None:
+        raise ValueError("validation dates require the frozen decision contract")
+    dates = tuple(fold.validation.start.date() for fold in contract.folds)
+    if len(set(dates)) != len(dates):
+        raise RuntimeError("decision-quality validation dates are duplicated")
+    return dates
 
 
 def fit_decision_quality_walk_forward(

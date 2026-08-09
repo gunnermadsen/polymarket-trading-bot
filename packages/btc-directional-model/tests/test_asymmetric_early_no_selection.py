@@ -20,7 +20,7 @@ from btc_directional_model.core_extract import file_sha256, write_json_atomic
 def _config(tmp_path: Path | None = None):
     source = (
         Path(__file__).parents[1]
-        / "configs/btc-5m-directional-asymmetric-early-no-calibration-20260414-20260820.toml"
+        / "configs/btc-5m-directional-asymmetric-early-no-calibration-20260414-20260802.toml"
     )
     config = load_asymmetric_value_config(source)
     if tmp_path is None:
@@ -34,7 +34,7 @@ def _config(tmp_path: Path | None = None):
 
 def _complete_support_frame() -> pl.DataFrame:
     start = datetime(2026, 4, 14, tzinfo=UTC)
-    end = datetime(2026, 8, 20, tzinfo=UTC)
+    end = datetime(2026, 8, 2, tzinfo=UTC)
     rows: list[dict[str, object]] = []
     day = start
     while day < end:
@@ -58,7 +58,7 @@ def _complete_support_frame() -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
-def test_new_day_support_freezes_ten_days_and_early_no_outcomes() -> None:
+def test_historical_cross_day_support_freezes_ten_days_and_early_no_outcomes() -> None:
     evidence = quality.audit_decision_quality_walk_forward_support(
         _complete_support_frame(),
         _config(),
@@ -85,16 +85,79 @@ def test_new_day_support_freezes_ten_days_and_early_no_outcomes() -> None:
     assert all(cell["minimum_markets_per_outcome"] == 25 for cell in early_cells)
 
 
-def test_empty_new_day_validation_cell_blocks_before_any_fit(
+def test_historical_validation_union_excludes_july_26_and_27() -> None:
+    config = _config()
+    starts = [
+        datetime(2026, 7, 25, tzinfo=UTC),
+        datetime(2026, 7, 26, tzinfo=UTC),
+        datetime(2026, 7, 27, tzinfo=UTC),
+        datetime(2026, 7, 28, tzinfo=UTC),
+    ]
+    frame = pl.DataFrame(
+        {
+            "window_start": starts,
+            "market_id": ["jul25", "jul26", "jul27", "jul28"],
+        }
+    )
+
+    selected = quality.decision_quality_validation_union(frame, config)
+
+    assert selected["market_id"].to_list() == ["jul25", "jul28"]
+    assert [value.isoformat() for value in quality.decision_quality_validation_dates(config)] == [
+        "2026-07-21",
+        "2026-07-22",
+        "2026-07-23",
+        "2026-07-24",
+        "2026-07-25",
+        "2026-07-28",
+        "2026-07-29",
+        "2026-07-30",
+        "2026-07-31",
+        "2026-08-01",
+    ]
+
+
+def test_paired_bootstrap_uses_only_explicit_historical_validation_days() -> None:
+    config = _config()
+    validation_days = quality.decision_quality_validation_dates(config)
+    candidate_starts = [
+        datetime.combine(day, datetime.min.time(), tzinfo=UTC) for day in validation_days
+    ] + [
+        datetime(2026, 7, 26, tzinfo=UTC),
+        datetime(2026, 7, 27, tzinfo=UTC),
+    ]
+    candidate = pl.DataFrame(
+        {
+            "window_start": candidate_starts,
+            "realized_net": [1.0] * len(validation_days) + [-100.0, -100.0],
+        }
+    )
+    control = pl.DataFrame(
+        {
+            "window_start": candidate_starts[: len(validation_days)],
+            "realized_net": [0.0] * len(validation_days),
+        }
+    )
+
+    evidence = value_benchmark._paired_day_net_difference_bootstrap(
+        candidate,
+        control,
+        config,
+        seed=7,
+        utc_days=validation_days,
+    )
+
+    assert evidence["utc_days"] == 10
+    assert evidence["mean_daily_net_difference"] == pytest.approx(1.0)
+
+
+def test_empty_historical_validation_cell_blocks_before_any_fit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _config()
     frame = _complete_support_frame().filter(
         ~(
-            (
-                pl.col("window_start").dt.date()
-                == datetime(2026, 8, 19, tzinfo=UTC).date()
-            )
+            (pl.col("window_start").dt.date() == datetime(2026, 8, 1, tzinfo=UTC).date())
             & (pl.col("seconds_elapsed") == 45)
             & (pl.col("yes_ask_vwap_5") == 0.25)
         )
@@ -107,7 +170,7 @@ def test_empty_new_day_validation_cell_blocks_before_any_fit(
 
     with pytest.raises(
         RuntimeError,
-        match="aug19_aug20:validation_cell:YES:45-60",
+        match="aug01_aug02:validation_cell:YES:45-60",
     ):
         quality.fit_decision_quality_walk_forward(
             frame,
@@ -222,7 +285,7 @@ def test_final_model_rejects_early_no_support_before_fit(
 
 
 def _ranking_frame(*candidate_ids: str) -> pl.DataFrame:
-    start = datetime(2026, 8, 10, tzinfo=UTC)
+    start = datetime(2026, 7, 21, tzinfo=UTC)
     rows: list[dict[str, object]] = []
     for candidate_id in candidate_ids:
         for day in range(10):
@@ -261,9 +324,7 @@ def _rank_record(
         "target_weight": 0.5,
         "metrics": {
             "overall": {"log_loss": 0.55, "brier": overall_brier, "bias": 0.0},
-            "time_cells": {
-                "NO_1_15": {"brier": early_brier, "bias": early_bias}
-            },
+            "time_cells": {"NO_1_15": {"brier": early_brier, "bias": early_bias}},
         },
     }
 
@@ -327,12 +388,8 @@ def _four_arm_oof() -> tuple[pl.DataFrame, dict[str, object]]:
             for band_index, (start_second, _) in enumerate(contract.time_strata):
                 for market_index in range(20):
                     label = market_index % 2
-                    market_id = (
-                        f"f{fold_index}-{side}-{band_index}-m{market_index}"
-                    )
-                    window_start = fold.validation.start + timedelta(
-                        minutes=market_index
-                    )
+                    market_id = f"f{fold_index}-{side}-{band_index}-m{market_index}"
+                    window_start = fold.validation.start + timedelta(minutes=market_index)
                     for candidate_id in candidate_ids:
                         bias = 0.0
                         if candidate_id == broad_id:
@@ -351,9 +408,7 @@ def _four_arm_oof() -> tuple[pl.DataFrame, dict[str, object]]:
                             strength = 0.975
                         probability_yes = strength if label else 1.0 - strength
                         if side == "NO" and band_index == 0 and bias:
-                            probability_no = (
-                                strength if label == 0 else 1.0 - strength
-                            ) + bias
+                            probability_no = (strength if label == 0 else 1.0 - strength) + bias
                             probability_yes = 1.0 - probability_no
                         rows.append(
                             {
@@ -368,8 +423,7 @@ def _four_arm_oof() -> tuple[pl.DataFrame, dict[str, object]]:
                                 "identity_l2": 1.0,
                                 "market_id": market_id,
                                 "window_start": window_start,
-                                "observed_at": window_start
-                                + timedelta(seconds=start_second),
+                                "observed_at": window_start + timedelta(seconds=start_second),
                                 "seconds_elapsed": start_second,
                                 "label_up": label,
                                 "probability_yes": probability_yes,
@@ -404,13 +458,8 @@ def test_four_arm_selection_enforces_early_no_control_gates_and_stability() -> N
     selection = quality.select_decision_quality_candidate(oof, profiles, _config())
 
     assert len(selection["candidate_records"]) == 4
-    assert selection["selected_candidate_id"] == (
-        "hybrid_50_h3__targetpool_early_no_offset"
-    )
-    records = {
-        record["candidate_id"]: record
-        for record in selection["candidate_records"]
-    }
+    assert selection["selected_candidate_id"] == ("hybrid_50_h3__targetpool_early_no_offset")
+    records = {record["candidate_id"]: record for record in selection["candidate_records"]}
     control = records["hybrid_50_h3__targetpool_control"]
     challenger = records["hybrid_50_h3__targetpool_early_no_offset"]
     weak_bias = records["hybrid_50_h3__targetpool_day_balanced"]
@@ -420,15 +469,17 @@ def test_four_arm_selection_enforces_early_no_control_gates_and_stability() -> N
 
     assert control_gates["challenger_early_no_bias_improvement"]["passed"] is True
     assert challenger_gates["challenger_early_no_bias_improvement"]["observed"] >= 0.02
-    assert challenger_gates["early_no_brier_delta_point_noninferior_to_lead_control"][
-        "threshold"
-    ] == 0.0
-    assert challenger_gates[
-        "early_no_log_loss_delta_upper_95_noninferior_to_lead_control"
-    ]["threshold"] == 0.005
-    assert challenger_gates["early_no_noninferior_folds_to_lead_control"][
-        "observed"
-    ] == 10
+    assert (
+        challenger_gates["early_no_brier_delta_point_noninferior_to_lead_control"]["threshold"]
+        == 0.0
+    )
+    assert (
+        challenger_gates["early_no_log_loss_delta_upper_95_noninferior_to_lead_control"][
+            "threshold"
+        ]
+        == 0.005
+    )
+    assert challenger_gates["early_no_noninferior_folds_to_lead_control"]["observed"] == 10
     assert challenger_gates["noninferior_folds_to_all_controls"]["observed"] == 10
     assert weak_gates["challenger_early_no_bias_improvement"]["passed"] is False
 
@@ -439,12 +490,12 @@ def _blocked_readiness(tmp_path: Path) -> tuple[Path, dict[str, object]]:
         "status": "blocked_source_readiness",
         "blocking_statuses": ["missing_complete_day"],
     }
-    path = tmp_path / "new-day-readiness.json"
+    path = tmp_path / "historical-readiness.json"
     write_json_atomic(path, payload)
     return path, payload
 
 
-def test_unready_new_day_cohort_seals_block_without_fitting_or_economics(
+def test_unready_historical_cohort_seals_block_without_fitting_or_economics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -452,12 +503,12 @@ def test_unready_new_day_cohort_seals_block_without_fitting_or_economics(
     monkeypatch.setattr(
         benchmark,
         "fit_decision_quality_walk_forward",
-        lambda *args, **kwargs: pytest.fail("fit ran before new-day readiness"),
+        lambda *args, **kwargs: pytest.fail("fit ran before historical readiness"),
     )
     monkeypatch.setattr(
         benchmark,
         "reveal_decision_quality_economics",
-        lambda **kwargs: pytest.fail("economics opened before new-day readiness"),
+        lambda **kwargs: pytest.fail("economics opened before historical readiness"),
     )
 
     run_dir, result = benchmark.run_decision_quality_benchmark(
@@ -496,8 +547,8 @@ def test_unready_new_day_cohort_seals_block_without_fitting_or_economics(
     assert forward["executable_forward_subsystem_added"] is False
 
 
-def test_early_no_runner_never_falls_back_to_legacy_readiness(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="injected sealed new-day readiness"):
+def test_early_no_runner_requires_injected_historical_readiness(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="injected sealed source-readiness"):
         benchmark.run_decision_quality_benchmark(
             config=_config(tmp_path),
             core_config=object(),
@@ -512,7 +563,7 @@ def test_early_no_runner_never_falls_back_to_legacy_readiness(tmp_path: Path) ->
         )
 
 
-def test_frequency_uses_sealed_history_and_same_new_day_lead_denominator() -> None:
+def test_frequency_uses_sealed_history_and_same_oof_lead_denominator() -> None:
     historical, lead = benchmark._early_no_frequency_checks(
         candidate_trades=200,
         lead_control_trades=250,
@@ -529,17 +580,17 @@ def test_frequency_uses_sealed_history_and_same_new_day_lead_denominator() -> No
     assert historical["common_market_replay_claimed"] is False
     assert lead["threshold"] == pytest.approx(0.10)
     assert lead["passed"] is True
-    assert lead["same_new_day_eligible_cohort"] is True
+    assert lead["same_oof_eligible_cohort"] is True
     assert lead["common_market_replay_claimed"] is False
 
 
 def _single_oof(candidate_id: str) -> pl.DataFrame:
-    window_start = datetime(2026, 8, 10, tzinfo=UTC)
+    window_start = datetime(2026, 7, 21, tzinfo=UTC)
     return pl.DataFrame(
         {
             "candidate_id": [candidate_id],
             "base_candidate": ["hybrid_50_h3"],
-            "fold": ["aug10_aug11"],
+            "fold": ["jul21_jul22"],
             "parent_source": ["targetpool"],
             "identity_l2": [1.0],
             "market_id": ["m1"],
@@ -562,10 +613,8 @@ def _ready_readiness(tmp_path: Path) -> tuple[Path, dict[str, object]]:
         "blocking_statuses": [],
         "readiness_identity_sha256": "b" * 64,
         "payload_sha256": "c" * 64,
-        "validation": {
-            "range_start": "2026-08-10T00:00:00+00:00",
-            "range_end": "2026-08-20T00:00:00+00:00",
-        },
+        "range_start": "2026-04-14T00:00:00+00:00",
+        "range_end": "2026-08-02T00:00:00+00:00",
         "external_archive": {"required_for": []},
     }
     path = tmp_path / "ready.json"
@@ -682,9 +731,7 @@ def _economic_seal(
     oof_path = tmp_path / "decision-quality-oof-predictions.parquet"
     oof.write_parquet(oof_path)
     matched_path = tmp_path / "matched-core-oof-predictions.parquet"
-    _single_oof(quality.MATCHED_CORE_CONTROL_CANDIDATE_ID).write_parquet(
-        matched_path
-    )
+    _single_oof(quality.MATCHED_CORE_CONTROL_CANDIDATE_ID).write_parquet(matched_path)
     seal_path, _ = benchmark.write_decision_selection_seal(
         tmp_path,
         {
@@ -803,7 +850,7 @@ def test_economic_reveal_opens_only_sealed_arms_and_uses_joint_strict_denominato
         "_paired_day_net_difference_bootstrap",
         lambda *args, **kwargs: {"lower_95": 0.0},
     )
-    validation_start = datetime(2026, 8, 10, tzinfo=UTC)
+    validation_start = datetime(2026, 7, 21, tzinfo=UTC)
     l2_frame = pl.DataFrame(
         {
             "market_id": [f"joint-{index}" for index in range(2_000)],
@@ -860,12 +907,7 @@ def test_outer_runner_blocks_before_any_source_materialization(
     monkeypatch.setattr(value_benchmark, "_current_process_contract", lambda *_: {})
     monkeypatch.setattr(
         value_benchmark,
-        "load_new_day_readiness_contract",
-        lambda *_: object(),
-    )
-    monkeypatch.setattr(
-        value_benchmark,
-        "prepare_new_day_training_readiness",
+        "prepare_asymmetric_training_readiness",
         lambda *args, **kwargs: readiness_result,
     )
     monkeypatch.setattr(
@@ -897,7 +939,7 @@ def test_ready_outer_runner_materializes_only_core_l2_and_exact_pm(
     readiness_path = tmp_path / "ready.json"
     write_json_atomic(readiness_path, {"ready": True})
     readiness_result = (readiness_path, {"ready": True})
-    validation_start = datetime(2026, 8, 10, tzinfo=UTC)
+    validation_start = datetime(2026, 7, 21, tzinfo=UTC)
     development = pl.DataFrame(
         {
             "market_id": ["market-1"],
@@ -916,12 +958,7 @@ def test_ready_outer_runner_materializes_only_core_l2_and_exact_pm(
     monkeypatch.setattr(value_benchmark, "_current_process_contract", lambda *_: {})
     monkeypatch.setattr(
         value_benchmark,
-        "load_new_day_readiness_contract",
-        lambda *_: object(),
-    )
-    monkeypatch.setattr(
-        value_benchmark,
-        "prepare_new_day_training_readiness",
+        "prepare_asymmetric_training_readiness",
         lambda *args, **kwargs: readiness_result,
     )
     monkeypatch.setattr(value_benchmark, "extract_core_source", lambda *args, **kwargs: None)

@@ -31,7 +31,7 @@ from btc_directional_model.early_value_training import TimeBandCalibrator
 def _config():
     return load_asymmetric_value_config(
         Path(__file__).parents[1]
-        / "configs/btc-5m-directional-asymmetric-early-no-calibration-20260414-20260820.toml"
+        / "configs/btc-5m-directional-asymmetric-early-no-calibration-20260414-20260802.toml"
     )
 
 
@@ -48,12 +48,27 @@ def test_early_no_contract_freezes_architecture_matrix_and_chronology() -> None:
     assert contract is not None
     assert contract.study == EARLY_NO_CALIBRATION_DECISION_QUALITY_STUDY
     assert len(contract.folds) == 10
-    assert all((fold.calibration.end - fold.calibration.start).days == 28 for fold in contract.folds)
+    assert all(
+        (fold.calibration.end - fold.calibration.start).days == 28 for fold in contract.folds
+    )
     assert all((fold.validation.end - fold.validation.start).days == 1 for fold in contract.folds)
-    assert contract.folds[0].validation.start == datetime(2026, 8, 10, tzinfo=UTC)
-    assert contract.folds[-1].validation.end == datetime(2026, 8, 20, tzinfo=UTC)
-    assert contract.final_fit.end == datetime(2026, 7, 23, tzinfo=UTC)
-    assert contract.final_calibration.end == datetime(2026, 8, 20, tzinfo=UTC)
+    assert [fold.validation.start.date().isoformat() for fold in contract.folds] == [
+        "2026-07-21",
+        "2026-07-22",
+        "2026-07-23",
+        "2026-07-24",
+        "2026-07-25",
+        "2026-07-28",
+        "2026-07-29",
+        "2026-07-30",
+        "2026-07-31",
+        "2026-08-01",
+    ]
+    assert contract.oof_evidence_scope == "consumed_cross_day_development"
+    assert contract.oof_forward_proof is False
+    assert contract.final_fit.end == datetime(2026, 7, 16, tzinfo=UTC)
+    assert contract.final_calibration.start == datetime(2026, 7, 16, tzinfo=UTC)
+    assert contract.final_calibration.end == datetime(2026, 8, 2, tzinfo=UTC)
     assert [
         (
             candidate.name,
@@ -92,14 +107,9 @@ def test_early_no_contract_freezes_architecture_matrix_and_chronology() -> None:
 
     core = load_core_config(config.core_config)
     assert core.data.range_start == datetime(2026, 4, 14, tzinfo=UTC)
-    assert core.data.range_end == datetime(2026, 8, 20, tzinfo=UTC)
-    assert "btc-asymmetric-early-no-calibration-20260414-20260820" in str(
-        core.paths.source_data
-    )
-    assert "20260802" not in str(core.paths.source_data)
-    assert "btc-asymmetric-early-no-calibration-20260414-20260820" in str(
-        config.feature_cache
-    )
+    assert core.data.range_end == datetime(2026, 8, 2, tzinfo=UTC)
+    assert "btc-asymmetric-value-calibrated-20260414-20260802" in str(core.paths.source_data)
+    assert "btc-asymmetric-value-calibrated-20260414-20260802" in str(config.feature_cache)
 
 
 def test_day_market_row_weights_are_equal_at_every_hierarchy() -> None:
