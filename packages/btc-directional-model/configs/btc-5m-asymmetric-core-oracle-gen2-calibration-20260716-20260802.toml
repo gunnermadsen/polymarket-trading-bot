@@ -1,0 +1,174 @@
+[benchmark]
+profile = "btc_asymmetric_incumbent_calibration"
+paper_only = true
+live_capital_allowed = false
+evidence_scope = "consumed_cross_day_development"
+
+[incumbent]
+process_id = "81f82de7-002b-4ac7-814b-236c6742d81c"
+model_key = "btc-5m-asymmetric-core-oracle-paper-20260805-v1"
+model_sha256 = "2c91e894356f6fee7fe9514e24c39da6e11602ffcb7f961f64848bde72418db9"
+feature_schema_sha256 = "fe2a5aaee3df1ef899d2553712555091aa29b7481b3fed7805ba140dc8aa5014"
+feature_count = 75
+estimator_sha256 = "3d9c577c8be1203c3d31829a2d22dbefaf4f77149d7312798fa23d0b99a9a11f"
+features_sha256 = "4bbce850498ce292002558588d22d5de31e5327c0dbfe4ee3f2f320b0903681d"
+parent_time_calibrators_sha256 = "667c26f3fb20239e6634d353156b976b85b3aa70a2e79000eed1a2e7d0810f42"
+non_target_cells_sha256 = "e8493bfe9e04eae3f4246a61174d58e56a3e4043bbd4bab6a89a2e5258ca9629"
+total_cells = 160
+target_cells = 8
+
+[windows.calibration_fit]
+start = "2026-07-16T00:00:00Z"
+end = "2026-07-23T00:00:00Z"
+
+[windows.matched_comparison]
+start = "2026-07-23T00:00:00Z"
+end = "2026-08-02T00:00:00Z"
+
+[windows.final_refit]
+start = "2026-07-16T00:00:00Z"
+end = "2026-08-02T00:00:00Z"
+
+[policy]
+name = "raw20_30_by55_edge_3c"
+quantity = 5.0
+vwap_quantity = 5.0
+maximum_depth_participation = 0.25
+execution_reserve_per_share = 0.01
+minimum_edge_per_share = 0.03
+minimum_share_price = 0.20
+maximum_share_price = 0.30
+maximum_cost_per_share = 0.35
+minimum_entry_second = 1
+maximum_entry_second = 55
+
+[calibration]
+minimum_price = 0.20
+maximum_price = 0.30
+sides = ["YES", "NO"]
+minimum_markets_per_cell = 50
+minimum_days_per_cell = 7
+identity_l2 = 1.0
+slope_minimum = 0.05
+slope_maximum = 3.0
+compression_slope_minimum = 0.50
+compression_slope_maximum = 1.00
+intercept_minimum = -2.0
+intercept_maximum = 2.0
+time_bands = [
+  { start_second = 1, end_second_exclusive = 15 },
+  { start_second = 15, end_second_exclusive = 30 },
+  { start_second = 30, end_second_exclusive = 45 },
+  { start_second = 45, end_second_exclusive = 60 },
+]
+
+[[calibration.arms]]
+name = "I0_incumbent"
+kind = "incumbent_identity"
+weighting = "none"
+
+[[calibration.arms]]
+name = "C1_supported"
+kind = "independent_cells"
+weighting = "market_equal"
+
+[[calibration.arms]]
+name = "C2_compressed"
+kind = "shared_compression"
+weighting = "market_equal"
+
+[[calibration.arms]]
+name = "C3_day_balanced"
+kind = "independent_cells"
+weighting = "day_market_row_equal"
+
+[model]
+random_seed = 20260809
+bootstrap_resamples = 10000
+optimizer_max_iterations = 500
+optimizer_ftol = 1e-9
+optimizer_gtol = 1e-9
+optimizer_max_line_search_steps = 50
+
+[probability_gates]
+maximum_paired_degradation_upper_95 = 0.005
+maximum_selected_opportunity_bias = 0.02694
+maximum_cell_bias = 0.05
+minimum_noninferior_days = 8
+required_comparison_days = 10
+require_brier_noninferiority = true
+require_log_loss_noninferiority = true
+require_one_proper_score_improvement = true
+require_all_target_cells_fitted = true
+require_both_outcomes_per_cell = true
+
+[correction_gates]
+minimum_net_corrected_decisions = 2
+minimum_improvement_days = 3
+minimum_correctness_margin = 0.026231
+minimum_correctness_margin_delta = 0.0
+require_positive_candidate_only_stressed_pnl = true
+
+[economic_gates]
+minimum_incumbent_frequency_fraction = 0.80
+minimum_yes_entries = 20
+minimum_no_entries = 20
+minimum_stressed_expectancy_per_trade = 0.0
+minimum_profit_factor = 1.05
+maximum_mean_share_price = 0.2466
+maximum_loss_recovery_burden = 0.40
+maximum_average_loss = 1.390
+maximum_single_loss = 1.674
+maximum_drawdown = 19.18
+maximum_primary_metric_regression_fraction = 0.10
+minimum_paired_profit_per_market_lower_95 = 0.0
+
+[historical_baseline]
+trades = 117
+wins = 34
+losses = 83
+win_rate = 0.2906
+net_profit = 21.20
+expectancy_per_trade = 0.1812
+profit_factor = 1.202
+maximum_drawdown = 17.44
+loss_recovery_burden = 0.341
+
+[conditional_estimator]
+enabled = true
+trigger = "no_supported_calibration_challenger_passed_probability_gates"
+maximum_total_challengers = 5
+forbidden_triggers = [
+  "support_failure",
+  "technical_failure",
+  "economic_failure",
+  "forward_failure",
+]
+
+[conditional_estimator.histogram]
+learning_rate = 0.02
+max_iter = 240
+max_leaf_nodes = 7
+min_samples_leaf = 300
+l2_regularization = 10.0
+
+[[conditional_estimator.candidates]]
+name = "E1_hybrid50_h3"
+target_weight = 0.50
+boundary_weighted = false
+
+[[conditional_estimator.candidates]]
+name = "E2_hybrid50_h3_boundary_weighted"
+target_weight = 0.50
+boundary_weighted = true
+boundary_minimum_edge = 0.02
+boundary_maximum_edge = 0.04
+boundary_closed = "both"
+boundary_multiplier = 2.0
+weighting = "market_equal_renormalized"
+
+[paths]
+asymmetric_value_config = "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+incumbent_runtime_dir = "runtime-models/btc-5m-asymmetric-core-oracle-paper-20260805-v1"
+incumbent_model = "runtime-models/btc-5m-asymmetric-core-oracle-paper-20260805-v1/model.json"
+runs = "runs/btc-asymmetric-core-oracle-gen2-calibration-20260716-20260802"
