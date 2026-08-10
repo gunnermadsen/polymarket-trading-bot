@@ -53,7 +53,8 @@ docker compose \
 ```
 
 The service joins the existing TimescaleDB network and does not start or depend
-on the trading bot. Its API is bound to `127.0.0.1:8098` by Compose.
+on the trading bot. Its API is bound to `127.0.0.1:8099` by Compose, avoiding
+the trading bot's development port.
 
 ## Control API
 
