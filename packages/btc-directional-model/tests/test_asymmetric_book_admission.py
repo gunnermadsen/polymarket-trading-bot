@@ -79,6 +79,13 @@ def test_config_pins_incumbent_chronology_candidates_and_deployment_boundary() -
 
     with pytest.raises(ValueError, match="deployment boundary"):
         validate_book_admission_config(replace(config, runtime_deployable=True))
+    with pytest.raises(ValueError, match="economic gates weakened"):
+        validate_book_admission_config(
+            replace(
+                config,
+                economic_gates=replace(config.economic_gates, maximum_drawdown=999.0),
+            )
+        )
 
 
 def test_side_orientation_uses_raw_price_eligibility_and_fee_sensitive_cost_edge() -> None:

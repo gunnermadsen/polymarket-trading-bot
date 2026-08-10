@@ -1000,7 +1000,11 @@ def _validate_gate_contract(config: BookAdmissionConfig) -> None:
         or economic.minimum_stressed_expectancy_per_trade < 0.0
         or economic.minimum_profit_factor < 1.05
         or economic.minimum_profit_factor_fraction_of_incumbent < 0.90
+        or economic.maximum_mean_share_price > 0.2466
         or economic.maximum_loss_recovery_burden > 0.40
+        or economic.maximum_average_loss > 1.390
+        or economic.maximum_single_loss > 1.674
+        or economic.maximum_drawdown > 19.18
         or economic.maximum_primary_metric_regression_fraction > 0.10
         or not economic.require_positive_both_sides
         or not economic.development_lower_95_is_report_only

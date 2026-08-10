@@ -77,8 +77,46 @@ def test_current_side_orients_both_current_and_prior_values() -> None:
     prior_imbalance = (3.21 - 3.80) / (3.21 + 3.80)
     current_imbalance = (3.38 - 3.65) / (3.38 + 3.65)
     assert second_6["pm_depth_imbalance_delta_5s"] == pytest.approx(
-        current_imbalance - prior_imbalance
+        -(current_imbalance - prior_imbalance)
     )
+
+
+def test_conditional_maturity_includes_exact_horizon_boundary() -> None:
+    observed = attach_causal_book_dynamics(
+        _frame(
+            [
+                _row("market-a", 1, selected_side="YES", yes_cost=0.20, no_cost=0.80),
+                _row("market-a", 5, selected_side="YES", yes_cost=0.25, no_cost=0.75),
+            ]
+        )
+    )
+
+    horizon = book_dynamics_evidence(observed)["horizon_maturity"]["5s"]
+    assert horizon["causally_mature_rows"] == 1
+    assert horizon["conditional_available_rows"] == 0
+    assert horizon["conditional_available_rate"] == 0.0
+
+
+def test_exact_horizon_lags_are_available_when_second_zero_exists() -> None:
+    observed = attach_causal_book_dynamics(
+        _frame(
+            [
+                _row("market-a", 0, selected_side="NO", yes_cost=0.80, no_cost=0.20),
+                _row("market-a", 1, selected_side="NO", yes_cost=0.79, no_cost=0.21),
+                _row("market-a", 5, selected_side="NO", yes_cost=0.75, no_cost=0.25),
+                _row("market-a", 15, selected_side="NO", yes_cost=0.70, no_cost=0.30),
+            ]
+        )
+    )
+
+    for horizon in BOOK_DYNAMICS_HORIZONS_SECONDS:
+        boundary = observed.filter(pl.col("seconds_elapsed") == horizon).row(
+            0, named=True
+        )
+        assert boundary[f"pm_book_horizon_{horizon}s_mature"] is True
+        assert boundary[f"pm_selected_cost_delta_{horizon}s"] == pytest.approx(
+            boundary["pm_no_cost_per_share"] - 0.20
+        )
 
 
 def test_all_eight_deltas_are_emitted_for_each_horizon() -> None:
@@ -155,9 +193,9 @@ def test_feature_digests_are_order_invariant_and_content_sensitive() -> None:
     one_second = evidence["horizon_maturity"]["1s"]
     assert one_second["available_rows"] == 1
     assert one_second["raw_rate"] == pytest.approx(1 / 3)
-    assert one_second["causally_mature_rows"] == 1
+    assert one_second["causally_mature_rows"] == 3
     assert one_second["conditional_available_rows"] == 1
-    assert one_second["conditional_available_rate"] == 1.0
+    assert one_second["conditional_available_rate"] == pytest.approx(1 / 3)
     assert evidence["horizon_maturity"]["5s"]["conditional_available_rate"] is None
 
 

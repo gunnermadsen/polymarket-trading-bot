@@ -29,7 +29,7 @@ class BookDeltaBase:
     """One frozen current-minus-causal-lag transformation."""
 
     name: str
-    orientation: Literal["selected", "direct"]
+    orientation: Literal["selected", "selected_signed", "direct"]
     yes_feature: str
     no_feature: str | None = None
 
@@ -78,7 +78,7 @@ BOOK_DELTA_BASES = (
     ),
     BookDeltaBase(
         name="depth_imbalance",
-        orientation="direct",
+        orientation="selected_signed",
         yes_feature="pm_depth_imbalance",
     ),
 )
@@ -156,7 +156,7 @@ def attach_causal_book_dynamics(
             maintain_order="left",
         ).with_columns(
             (
-                (pl.col("seconds_elapsed") > horizon)
+                (pl.col("seconds_elapsed") >= horizon)
                 & pl.col(lag_observed).is_not_null()
             ).alias(maturity)
         )
@@ -321,7 +321,7 @@ def _validate_source_frame(
 def _horizon_maturity_evidence(frame: pl.DataFrame, horizon: int) -> dict[str, int | float | None]:
     maturity = f"pm_book_horizon_{horizon}s_mature"
     available_rows = int(frame[maturity].sum())
-    causally_mature = frame.filter(pl.col("seconds_elapsed") > horizon)
+    causally_mature = frame.filter(pl.col("seconds_elapsed") >= horizon)
     causally_mature_rows = causally_mature.height
     conditional_available_rows = int(causally_mature[maturity].sum())
     return {
@@ -440,6 +440,12 @@ def _validate_enriched_frame(frame: pl.DataFrame) -> None:
 def _oriented_values(base: BookDeltaBase, horizon: int) -> tuple[pl.Expr, pl.Expr]:
     if base.orientation == "direct":
         return pl.col(base.yes_feature), pl.col(_lag_name(base.yes_feature, horizon))
+    if base.orientation == "selected_signed":
+        sign = pl.when(pl.col(SELECTED_SIDE_COLUMN) == "YES").then(1.0).otherwise(-1.0)
+        return (
+            sign * pl.col(base.yes_feature),
+            sign * pl.col(_lag_name(base.yes_feature, horizon)),
+        )
     if base.no_feature is None:
         raise RuntimeError(f"selected book delta {base.name} has no NO feature")
     is_yes = pl.col(SELECTED_SIDE_COLUMN) == "YES"
