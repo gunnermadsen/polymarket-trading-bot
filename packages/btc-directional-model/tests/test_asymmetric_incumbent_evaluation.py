@@ -97,6 +97,12 @@ def test_probability_only_first_crossing_recomputes_edges_and_strips_economics()
         "won",
     }.intersection(selected.columns)
 
+    selected_metrics = incumbent_probability_metrics(selected)
+    assert selected_metrics["overall"]["actual_rate"] == pytest.approx(1.0)
+    assert selected_metrics["overall"]["mean_probability"] == pytest.approx(
+        (0.70 + 0.75) / 2.0
+    )
+
     with pytest.raises(ValueError, match="cannot receive economic columns"):
         probability_only_first_crossings(frame.with_columns(pl.lit(1.0).alias("realized_net")))
 

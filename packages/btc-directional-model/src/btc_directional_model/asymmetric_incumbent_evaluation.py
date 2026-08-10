@@ -202,9 +202,24 @@ def incumbent_probability_metrics(
 
     probability = frame["probability_yes"].to_numpy().astype(np.float64)
     labels = frame["label_up"].to_numpy().astype(np.float64)
+    aggregate_probability = probability
+    aggregate_labels = labels
+    if {"selected_probability", "selected_label"}.issubset(frame.columns):
+        aggregate_probability = frame["selected_probability"].to_numpy().astype(np.float64)
+        aggregate_labels = frame["selected_label"].to_numpy().astype(np.float64)
+        if not np.all(np.isin(aggregate_labels, (0.0, 1.0))):
+            raise ValueError("selected probability labels must be binary")
+        if not np.all(np.isfinite(aggregate_probability)) or np.any(
+            (aggregate_probability < 0.0) | (aggregate_probability > 1.0)
+        ):
+            raise ValueError("selected probabilities must be finite and inside [0, 1]")
     market_ids = frame["market_id"].cast(pl.String).to_numpy()
     result: dict[str, Any] = {
-        "overall": _probability_metrics(probability, labels, market_ids),
+        "overall": _probability_metrics(
+            aggregate_probability,
+            aggregate_labels,
+            market_ids,
+        ),
         "sides": {},
         "time_cells": {},
         "utc_days": {},
@@ -214,8 +229,8 @@ def incumbent_probability_metrics(
     for utc_day in sorted(set(dates)):
         mask = np.asarray([value == utc_day for value in dates], dtype=bool)
         result["utc_days"][utc_day.isoformat()] = _probability_metrics(
-            probability[mask],
-            labels[mask],
+            aggregate_probability[mask],
+            aggregate_labels[mask],
             market_ids[mask],
         )
 
