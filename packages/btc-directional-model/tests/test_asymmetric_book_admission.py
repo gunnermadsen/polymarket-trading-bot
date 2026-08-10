@@ -231,7 +231,9 @@ def test_linear_fit_is_selected_side_coherent_deterministic_and_serializable(
     assert restored_score.probability_sha256 == score.probability_sha256
 
 
-def test_small_histogram_candidate_uses_frozen_hyperparameters() -> None:
+def test_small_histogram_candidate_uses_frozen_hyperparameters(
+    tmp_path: Path,
+) -> None:
     config = load_book_admission_config(CONFIG_PATH)
     fit = _synthetic_frame(datetime(2026, 6, 20, tzinfo=UTC), 520)
     calibration = _synthetic_frame(datetime(2026, 7, 18, tzinfo=UTC), 80, offset=520)
@@ -244,6 +246,16 @@ def test_small_histogram_candidate_uses_frozen_hyperparameters() -> None:
     assert model.histogram_estimator.max_leaf_nodes == 5
     assert model.histogram_estimator.min_samples_leaf == 250
     assert np.isfinite(score.frame[PROBABILITY_COLUMN].to_numpy()).all()
+
+    artifact = tmp_path / "d4.pkl"
+    semantic_sha256 = model.semantic_sha256
+    serialization = model.serialize(artifact)
+    assert serialization["model_semantic_sha256"] == semantic_sha256
+    for _ in range(3):
+        restored = load_book_admission_model(artifact)
+        restored_score = score_book_admission_model(restored, calibration, config)
+        assert restored.semantic_sha256 == semantic_sha256
+        assert restored_score.probability_sha256 == score.probability_sha256
 
 
 def _synthetic_frame(start: datetime, rows: int, *, offset: int = 0) -> pl.DataFrame:

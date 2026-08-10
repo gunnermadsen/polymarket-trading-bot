@@ -21,6 +21,7 @@ from typing import Any, Literal
 
 import numpy as np
 import polars as pl
+from joblib import hash as joblib_hash
 from scipy.optimize import minimize, minimize_scalar
 from sklearn.ensemble import HistGradientBoostingRegressor
 
@@ -336,9 +337,9 @@ class FittedBookAdmissionModel:
     def semantic_payload(self) -> dict[str, Any]:
         estimator_sha = None
         if self.histogram_estimator is not None:
-            estimator_sha = hashlib.sha256(
-                pickle.dumps(self.histogram_estimator, protocol=5)
-            ).hexdigest()
+            estimator_sha = _histogram_estimator_semantic_sha256(
+                self.histogram_estimator
+            )
         return {
             "schema_version": self.schema_version,
             "candidate": asdict(self.candidate),
@@ -1317,6 +1318,22 @@ def _sigmoid(values: np.ndarray) -> np.ndarray:
 
 def _logit(values: np.ndarray) -> np.ndarray:
     return np.log(values) - np.log1p(-values)
+
+
+def _histogram_estimator_semantic_sha256(
+    estimator: HistGradientBoostingRegressor,
+) -> str:
+    """Hash fitted estimator state without relying on unstable pickle memoization."""
+
+    canonical_estimator = pickle.loads(pickle.dumps(estimator, protocol=5))
+    state_token = joblib_hash(
+        canonical_estimator,
+        hash_name="sha1",
+        coerce_mmap=True,
+    )
+    digest = hashlib.sha256(b"btc-asymmetric-book-admission-hgb-state-v1\n")
+    digest.update(state_token.encode())
+    return digest.hexdigest()
 
 
 def _canonical_sha256(value: Any) -> str:
