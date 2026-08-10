@@ -193,6 +193,53 @@ def test_simultaneous_bootstrap_is_paired_shared_and_deterministic() -> None:
         )
 
 
+def test_simultaneous_bootstrap_supports_two_predeclared_estimator_arms() -> None:
+    incumbent, calibration_challengers = _matched_probability_frames()
+    challengers = {
+        "E1": calibration_challengers["C1"],
+        "E2": calibration_challengers["C3"],
+    }
+
+    first = simultaneous_paired_probability_bootstrap(
+        incumbent,
+        challengers,
+        resamples=500,
+        seed=19,
+    )
+    second = simultaneous_paired_probability_bootstrap(
+        incumbent,
+        challengers,
+        resamples=500,
+        seed=19,
+    )
+
+    assert first == second
+    assert first["challengers"] == ["E1", "E2"]
+    assert set(first["comparisons"]) == {"E1", "E2"}
+    assert first["comparisons"]["E1"]["brier_delta"]["point"] < 0.0
+    assert first["comparisons"]["E2"]["brier_delta"]["point"] > 0.0
+
+
+@pytest.mark.parametrize("challenger_count", [0, 1, 4])
+def test_probability_comparison_rejects_challenger_counts_outside_two_or_three(
+    challenger_count: int,
+) -> None:
+    incumbent, calibration_challengers = _matched_probability_frames()
+    source = tuple(calibration_challengers.values())
+    challengers = {
+        f"candidate-{index}": source[index % len(source)]
+        for index in range(challenger_count)
+    }
+
+    with pytest.raises(ValueError, match="requires two or three challengers"):
+        simultaneous_paired_probability_bootstrap(
+            incumbent,
+            challengers,
+            resamples=100,
+            seed=17,
+        )
+
+
 def _selection_frames() -> tuple[pl.DataFrame, dict[str, pl.DataFrame]]:
     start = datetime(2026, 7, 23, tzinfo=UTC)
     seconds = (5, 20, 35, 50)
@@ -331,6 +378,63 @@ def test_selection_uses_probability_only_gates_and_deterministic_rank() -> None:
     rendered = repr(selection)
     for forbidden in PROBABILITY_SELECTION_FORBIDDEN_COLUMNS:
         assert f"'{forbidden}'" not in rendered
+
+
+def test_selection_supports_only_two_predeclared_estimator_arms_deterministically() -> None:
+    incumbent, calibration_challengers = _selection_frames()
+    challengers = {
+        "E1": calibration_challengers["C1"].with_columns(
+            pl.lit("E1").alias("candidate_id")
+        ),
+        "E2": calibration_challengers["C2"].with_columns(
+            pl.lit("E2").alias("candidate_id")
+        ),
+    }
+    support = {candidate_id: _complete_calibration_support() for candidate_id in challengers}
+
+    first = select_incumbent_calibration_challenger(
+        incumbent,
+        challengers,
+        support,
+        resamples=500,
+        seed=37,
+    )
+    second = select_incumbent_calibration_challenger(
+        incumbent,
+        challengers,
+        support,
+        resamples=500,
+        seed=37,
+    )
+
+    assert first == second
+    assert first["status"] == "selected"
+    assert first["selected_candidate_id"] == "E1"
+    assert first["simultaneous_comparison"]["challengers"] == ["E1", "E2"]
+    assert {record["candidate_id"] for record in first["candidate_records"]} == {"E1", "E2"}
+    assert "D0" not in repr(first)
+
+
+@pytest.mark.parametrize("challenger_count", [1, 4])
+def test_selection_rejects_challenger_counts_outside_two_or_three(
+    challenger_count: int,
+) -> None:
+    incumbent, calibration_challengers = _selection_frames()
+    source = tuple(calibration_challengers.values())
+    challengers = {
+        f"candidate-{index}": source[index % len(source)]
+        for index in range(challenger_count)
+    }
+    support = {candidate_id: _complete_calibration_support() for candidate_id in challengers}
+
+    with pytest.raises(ValueError, match="requires two or three challengers"):
+        select_incumbent_calibration_challenger(
+            incumbent,
+            challengers,
+            support,
+            resamples=100,
+            seed=31,
+        )
 
 
 def test_target_opportunity_cohort_requires_prices_and_filters_before_scoring() -> None:
