@@ -55,6 +55,8 @@ const MAX_AUTHORIZATION_BODY_BYTES: usize = 65_536;
 const MAX_HISTORY_BODY_BYTES: usize = 2_097_152;
 const GAP_REPAIRS_PER_POLL: i64 = 8;
 const AUTHORIZATION_REFRESH_MARGIN_SECONDS: i64 = 30;
+// Chainlink publishes a closed candle after one additional full minute.
+const PROVIDER_PUBLICATION_DELAY_SECONDS: i64 = MINUTE_SECONDS * 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -602,25 +604,28 @@ impl ChainlinkBtcusdOneMinuteOhlcStrategy {
         state: &mut CandleRunState,
         shutdown: &CancellationToken,
     ) -> Result<(), StrategyError> {
-        let last_closed = last_fully_closed_open(Utc::now())?;
-        if state.last_open.is_some_and(|cursor| cursor > last_closed) {
+        let latest_safe_open = latest_safely_published_open(Utc::now())?;
+        if state
+            .last_open
+            .is_some_and(|cursor| cursor > latest_safe_open)
+        {
             return Err(integrity_error(
                 "chainlink_candle_cursor_in_future",
                 format!(
-                    "durable Chainlink candle cursor {:?} is newer than last fully closed minute {last_closed}",
+                    "durable Chainlink candle cursor {:?} is newer than the latest safely published minute {latest_safe_open}",
                     state.last_open
                 ),
             ));
         }
 
-        let (request_start, mut gaps) = self.capture_window(state.last_open, last_closed);
+        let (request_start, mut gaps) = self.capture_window(state.last_open, latest_safe_open);
         let page = self
-            .fetch_history_page(state, request_start, last_closed, shutdown)
+            .fetch_history_page(state, request_start, latest_safe_open, shutdown)
             .await?;
         gaps.extend(find_missing_ranges(
             &page.candles,
             request_start,
-            last_closed,
+            latest_safe_open,
         ));
         gaps.sort_unstable();
         gaps.dedup();
@@ -631,12 +636,12 @@ impl ChainlinkBtcusdOneMinuteOhlcStrategy {
     fn capture_window(
         &self,
         cursor: Option<DateTime<Utc>>,
-        last_closed: DateTime<Utc>,
+        latest_safe_open: DateTime<Utc>,
     ) -> (DateTime<Utc>, Vec<SourceGap>) {
         let epoch = Utc.timestamp_opt(0, 0).single().expect("Unix epoch exists");
         match cursor {
             None => {
-                let start = last_closed
+                let start = latest_safe_open
                     - chrono::Duration::minutes(i64::from(
                         self.config.startup_lookback_minutes.saturating_sub(1),
                     ));
@@ -647,7 +652,7 @@ impl ChainlinkBtcusdOneMinuteOhlcStrategy {
                     - chrono::Duration::minutes(i64::from(
                         self.config.overlap_minutes.saturating_sub(1),
                     ));
-                let recent_start = last_closed
+                let recent_start = latest_safe_open
                     - chrono::Duration::minutes(i64::from(
                         self.config.request_window_minutes.saturating_sub(1),
                     ));
@@ -685,11 +690,11 @@ impl ChainlinkBtcusdOneMinuteOhlcStrategy {
                 "Chainlink candle request range is not a bounded aligned minute window",
             ));
         }
-        let last_closed = last_fully_closed_open(Utc::now())?;
-        if end > last_closed {
+        let latest_safe_open = latest_safely_published_open(Utc::now())?;
+        if end > latest_safe_open {
             return Err(integrity_error(
                 "chainlink_candle_open_request_range",
-                "attempted to request a Chainlink candle that is not fully closed",
+                "attempted to request a Chainlink candle newer than the provider publication cutoff",
             ));
         }
 
@@ -1771,19 +1776,22 @@ fn gap_source_range(gap: &DataGap) -> Result<SourceGap, StrategyError> {
     Ok(SourceGap { start, end })
 }
 
-fn last_fully_closed_open(now: DateTime<Utc>) -> Result<DateTime<Utc>, StrategyError> {
+fn latest_safely_published_open(now: DateTime<Utc>) -> Result<DateTime<Utc>, StrategyError> {
     let current_minute = now
         .timestamp()
         .div_euclid(MINUTE_SECONDS)
         .saturating_mul(MINUTE_SECONDS);
-    Utc.timestamp_opt(current_minute.saturating_sub(MINUTE_SECONDS), 0)
-        .single()
-        .ok_or_else(|| {
-            integrity_error(
-                "chainlink_candle_closed_minute_out_of_range",
-                "last fully closed Chainlink minute is outside the supported range",
-            )
-        })
+    Utc.timestamp_opt(
+        current_minute.saturating_sub(PROVIDER_PUBLICATION_DELAY_SECONDS),
+        0,
+    )
+    .single()
+    .ok_or_else(|| {
+        integrity_error(
+            "chainlink_candle_closed_minute_out_of_range",
+            "latest safely published Chainlink minute is outside the supported range",
+        )
+    })
 }
 
 fn is_minute_aligned(timestamp: DateTime<Utc>) -> bool {
@@ -2172,14 +2180,52 @@ mod tests {
     }
 
     #[test]
-    fn closed_minute_boundary_excludes_the_current_minute() {
+    fn publication_cutoff_excludes_the_current_and_trailing_closed_minute() {
         let now = Utc
             .timestamp_opt(1_722_470_539, 999_999_999)
             .single()
             .expect("timestamp");
         assert_eq!(
-            last_fully_closed_open(now).expect("closed minute"),
+            latest_safely_published_open(now).expect("safe provider minute"),
+            minute(1_722_470_400)
+        );
+    }
+
+    #[test]
+    fn publication_cutoff_advances_only_at_a_utc_minute_boundary() {
+        let before_boundary = Utc
+            .timestamp_opt(1_722_470_579, 999_999_999)
+            .single()
+            .expect("timestamp");
+        let at_boundary = minute(1_722_470_580);
+        assert_eq!(
+            latest_safely_published_open(before_boundary).expect("safe provider minute"),
+            minute(1_722_470_400)
+        );
+        assert_eq!(
+            latest_safely_published_open(at_boundary).expect("safe provider minute"),
             minute(1_722_470_460)
+        );
+    }
+
+    #[test]
+    fn provider_publication_tail_is_never_classified_as_a_gap() {
+        let start = minute(1_722_470_400);
+        let now = Utc
+            .timestamp_opt(1_722_470_699, 999_999_999)
+            .single()
+            .expect("timestamp");
+        let safe_end = latest_safely_published_open(now).expect("safe provider minute");
+        let candles = decode_history_body(HISTORY_FIXTURE, start, safe_end, now)
+            .expect("fixture spans the safely published range");
+        assert_eq!(safe_end, minute(1_722_470_520));
+        assert!(find_missing_ranges(&candles, start, safe_end).is_empty());
+        assert_eq!(
+            find_missing_ranges(&candles, start, safe_end + chrono::Duration::minutes(1)),
+            vec![SourceGap {
+                start: minute(1_722_470_580),
+                end: minute(1_722_470_580),
+            }]
         );
     }
 

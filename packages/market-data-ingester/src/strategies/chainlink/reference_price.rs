@@ -33,8 +33,7 @@ use crate::{
         StrategyErrorKind,
     },
     persistence::{
-        ArtifactBatch, ArtifactRepository, GapRepository, NewCaptureArtifact, NewDataGap,
-        ProfileRepository, StrategyDegradation, StrategyProgress,
+        ArtifactBatch, ArtifactRepository, NewCaptureArtifact, ProfileRepository, StrategyProgress,
     },
     runtime::{StrategyFactory, StrategyFactoryError},
 };
@@ -50,7 +49,6 @@ const DEFAULT_REST_BASE_URL: &str = "https://api.dataengine.chain.link";
 const BTCUSD_FEED_ID: &str = "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8";
 const MAX_HTTP_RESPONSE_BYTES: usize = 4 * 1_048_576;
 const MAX_INSERT_ROWS: usize = 1_000;
-const GAP_REPAIRS_PER_POLL: i64 = 8;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -272,7 +270,6 @@ impl StrategyFactory for ChainlinkBtcusdReferencePriceFactory {
             client,
             pool: pool.clone(),
             artifacts: ArtifactRepository::new(pool.clone()),
-            gaps: GapRepository::new(pool.clone()),
             profiles: ProfileRepository::new(pool),
         }))
     }
@@ -289,7 +286,6 @@ struct ChainlinkBtcusdReferencePriceStrategy {
     client: Client,
     pool: PgPool,
     artifacts: ArtifactRepository,
-    gaps: GapRepository,
     profiles: ProfileRepository,
 }
 
@@ -366,7 +362,6 @@ impl ChainlinkBtcusdReferencePriceStrategy {
     ) -> Result<(), StrategyError> {
         let observations = self.fetch_recent(checkpoint).await?;
         if observations.is_empty() {
-            self.reconcile_gaps(checkpoint).await?;
             return Ok(());
         }
 
@@ -376,7 +371,6 @@ impl ChainlinkBtcusdReferencePriceStrategy {
             .max()
             .expect("nonempty observations have a receipt timestamp");
         let artifact = self.ensure_artifact(received_at, checkpoint).await?;
-        let gaps = find_gaps(&observations, checkpoint.last_source_timestamp_seconds);
         let maximum_source_timestamp = observations
             .iter()
             .map(|observation| observation.source_timestamp)
@@ -391,47 +385,6 @@ impl ChainlinkBtcusdReferencePriceStrategy {
         let persisted = self
             .persist_observations(&mut transaction, artifact.artifact_id, &observations)
             .await?;
-
-        for gap in gaps {
-            self.gaps
-                .detect_in(
-                    &mut transaction,
-                    &NewDataGap {
-                        strategy_key: STRATEGY_KEY,
-                        detected_artifact_id: Some(artifact.artifact_id),
-                        gap_kind: "source_time_discontinuity".to_owned(),
-                        reason_code: "chainlink_reference_second_missing".to_owned(),
-                        reason_message: Some(
-                            "Chainlink returned a non-contiguous one-second report series"
-                                .to_owned(),
-                        ),
-                        source_time_start: Some(gap.start),
-                        source_time_end: Some(gap.end),
-                        start_cursor: Some(gap.start.timestamp().to_string()),
-                        end_cursor: Some(gap.end.timestamp().to_string()),
-                    },
-                )
-                .await
-                .map_err(integrity_error("chainlink_reference_record_gap"))?;
-            let marked = self
-                .profiles
-                .mark_degraded_in(
-                    &mut transaction,
-                    STRATEGY_KEY,
-                    &self.lease_owner,
-                    self.lease_token,
-                    self.profile_generation,
-                    &StrategyDegradation {
-                        reason_code: "chainlink_reference_gap".to_owned(),
-                        reason_message: "source returned a non-contiguous report series".to_owned(),
-                    },
-                )
-                .await
-                .map_err(database_error("chainlink_reference_mark_degraded"))?;
-            if !marked {
-                return Err(lease_lost("recording a Chainlink reference-price gap"));
-            }
-        }
 
         self.record_artifact_batch(&mut transaction, artifact.artifact_id, &persisted)
             .await?;
@@ -475,7 +428,6 @@ impl ChainlinkBtcusdReferencePriceStrategy {
             .await
             .map_err(database_error("chainlink_reference_commit_transaction"))?;
         *checkpoint = next_checkpoint;
-        self.reconcile_gaps(checkpoint).await?;
         Ok(())
     }
 
@@ -664,12 +616,6 @@ impl PersistedBatch {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct SourceGap {
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SourceSecondRange {
     start: i64,
@@ -731,55 +677,6 @@ fn plan_live_fetch_range(
         ));
     }
     Ok(range)
-}
-
-fn bounded_gap_repair_range(
-    gap_start: i64,
-    gap_end: i64,
-    max_seconds: u64,
-) -> Result<Option<SourceSecondRange>, StrategyError> {
-    if gap_start < 0 || gap_end < gap_start || max_seconds == 0 {
-        return Err(integrity(
-            "chainlink_reference_gap_repair_range_invalid",
-            "Chainlink gap repair range is invalid",
-        ));
-    }
-    let seconds = gap_end
-        .checked_sub(gap_start)
-        .and_then(|difference| difference.checked_add(1))
-        .ok_or_else(|| {
-            integrity(
-                "chainlink_reference_gap_range_overflow",
-                "Chainlink gap range exceeded timestamp capacity",
-            )
-        })?;
-    let seconds = u64::try_from(seconds).map_err(|_| {
-        integrity(
-            "chainlink_reference_gap_range_overflow",
-            "Chainlink gap range exceeded timestamp capacity",
-        )
-    })?;
-    Ok((seconds <= max_seconds).then_some(SourceSecondRange {
-        start: gap_start,
-        end: gap_end,
-    }))
-}
-
-fn gap_second_count_is_complete(
-    range: SourceSecondRange,
-    distinct_source_seconds: i64,
-) -> Result<bool, StrategyError> {
-    let expected = range
-        .end
-        .checked_sub(range.start)
-        .and_then(|difference| difference.checked_add(1))
-        .ok_or_else(|| {
-            integrity(
-                "chainlink_reference_gap_range_overflow",
-                "Chainlink gap range exceeded timestamp capacity",
-            )
-        })?;
-    Ok(distinct_source_seconds == expected)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1073,50 +970,6 @@ fn scaled_decimal(name: &str, unscaled: &str) -> Result<Decimal, StrategyError> 
     Ok(Decimal::from_i128_with_scale(value, 18))
 }
 
-fn find_gaps(
-    observations: &[ReferencePriceObservation],
-    checkpoint_seconds: Option<i64>,
-) -> Vec<SourceGap> {
-    let timestamps = observations
-        .iter()
-        .map(|observation| observation.source_timestamp.timestamp())
-        .collect::<BTreeSet<_>>();
-    let mut gaps = BTreeSet::new();
-    if let Some(checkpoint) = checkpoint_seconds {
-        if let Some(first_new) = timestamps
-            .iter()
-            .copied()
-            .find(|timestamp| *timestamp > checkpoint)
-        {
-            let expected = checkpoint.saturating_add(1);
-            if first_new > expected {
-                if let (Ok(start), Ok(end)) = (
-                    timestamp_seconds(expected, "gap start"),
-                    timestamp_seconds(first_new.saturating_sub(1), "gap end"),
-                ) {
-                    gaps.insert(SourceGap { start, end });
-                }
-            }
-        }
-    }
-    let mut previous: Option<i64> = None;
-    for timestamp in timestamps {
-        if let Some(previous_timestamp) = previous {
-            let expected = previous_timestamp.saturating_add(1);
-            if timestamp > expected {
-                if let (Ok(start), Ok(end)) = (
-                    timestamp_seconds(expected, "gap start"),
-                    timestamp_seconds(timestamp.saturating_sub(1), "gap end"),
-                ) {
-                    gaps.insert(SourceGap { start, end });
-                }
-            }
-        }
-        previous = Some(timestamp);
-    }
-    gaps.into_iter().collect()
-}
-
 fn sign_request(
     credentials: &ChainlinkCredentials,
     method: &str,
@@ -1381,7 +1234,6 @@ fn owned_drain_failure(original: StrategyError, drain: StrategyError) -> Strateg
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
-    use chrono::Duration as ChronoDuration;
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -1519,37 +1371,6 @@ mod tests {
     fn chainlink_http_client_uses_no_redirect_policy() {
         assert_eq!(format!("{:?}", chainlink_redirect_policy()), "Policy(None)");
         build_chainlink_http_client(1).expect("no-redirect client builds");
-    }
-
-    #[test]
-    fn gap_repairs_are_bounded_and_partial_coverage_never_completes() {
-        assert_eq!(
-            bounded_gap_repair_range(100, 110, 11).expect("valid bounded gap"),
-            Some(SourceSecondRange {
-                start: 100,
-                end: 110,
-            })
-        );
-        assert_eq!(
-            bounded_gap_repair_range(100, 110, 10).expect("valid oversized gap"),
-            None
-        );
-        assert!(!gap_second_count_is_complete(
-            SourceSecondRange {
-                start: 100,
-                end: 110,
-            },
-            4,
-        )
-        .expect("valid full-gap count"));
-        assert!(gap_second_count_is_complete(
-            SourceSecondRange {
-                start: 100,
-                end: 110,
-            },
-            11,
-        )
-        .expect("complete full-gap count"));
     }
 
     #[test]
@@ -1759,17 +1580,16 @@ mod tests {
     }
 
     #[test]
-    fn same_second_reports_do_not_hide_a_precisely_bounded_gap() {
+    fn irregular_source_timestamps_are_accepted_without_gap_inference() {
         let received_at = Utc::now();
         let reports = decode_reports_page(fixture(), BTCUSD_FEED_ID, received_at)
             .expect("fixture should decode");
-        let start = reports[0].source_timestamp;
         assert_eq!(
-            find_gaps(&reports, None),
-            vec![SourceGap {
-                start: start + ChronoDuration::seconds(1),
-                end: start + ChronoDuration::seconds(1),
-            }]
+            reports
+                .iter()
+                .map(|report| report.source_timestamp.timestamp())
+                .collect::<Vec<_>>(),
+            vec![1_735_689_600, 1_735_689_600, 1_735_689_602]
         );
     }
 
@@ -2193,305 +2013,5 @@ impl ChainlinkBtcusdReferencePriceStrategy {
         transaction.commit().await.map_err(database_error(
             "chainlink_reference_commit_owned_lease_check",
         ))
-    }
-}
-
-impl ChainlinkBtcusdReferencePriceStrategy {
-    async fn reconcile_gaps(
-        &self,
-        checkpoint: &ReferencePriceCheckpoint,
-    ) -> Result<(), StrategyError> {
-        let repair_budget_seconds =
-            safe_pagination_second_budget(self.config.page_limit, self.config.max_pages_per_poll)
-                .ok_or_else(|| {
-                integrity(
-                    "chainlink_reference_pagination_budget_invalid",
-                    "pagination cannot safely repair an inclusive source-time range",
-                )
-            })?;
-        let unresolved = self
-            .gaps
-            .list_unresolved_limited(STRATEGY_KEY, GAP_REPAIRS_PER_POLL)
-            .await
-            .map_err(database_error("chainlink_reference_list_gaps"))?;
-        for gap in unresolved {
-            let (Some(start), Some(end)) = (gap.source_time_start, gap.source_time_end) else {
-                continue;
-            };
-            let Some(repair_range) = bounded_gap_repair_range(
-                start.timestamp(),
-                end.timestamp(),
-                repair_budget_seconds,
-            )?
-            else {
-                self.terminalize_oversized_gap(gap.gap_id).await?;
-                continue;
-            };
-            let mut complete = self.gap_range_is_complete(repair_range).await?;
-            let mut repair_artifact_id = None;
-            if !complete {
-                if !self.begin_gap_repair(gap.gap_id).await? {
-                    continue;
-                }
-                let observations = self
-                    .fetch_range(repair_range.start, repair_range.end)
-                    .await?;
-                if !observations.is_empty() {
-                    repair_artifact_id = Some(
-                        self.persist_repair_observations(checkpoint, &observations)
-                            .await?,
-                    );
-                }
-                complete = self.gap_range_is_complete(repair_range).await?;
-            } else if gap.repair_attempts == 0 && !self.begin_gap_repair(gap.gap_id).await? {
-                continue;
-            }
-            if !complete {
-                continue;
-            }
-
-            let artifact = match self
-                .artifacts
-                .get_open(STRATEGY_KEY)
-                .await
-                .map_err(database_error("chainlink_reference_load_repair_artifact"))?
-            {
-                Some(artifact) => artifact,
-                None => self.ensure_artifact(Utc::now(), checkpoint).await?,
-            };
-            if artifact.profile_generation != self.profile_generation {
-                return Err(lease_lost("completing a Chainlink gap repair artifact"));
-            }
-            if repair_artifact_id.is_some_and(|expected| expected != artifact.artifact_id) {
-                return Err(integrity(
-                    "chainlink_reference_repair_artifact_changed",
-                    "open Chainlink capture artifact changed during gap repair",
-                ));
-            }
-            self.seal_and_complete_gap(gap.gap_id, &artifact, repair_range)
-                .await?;
-        }
-        Ok(())
-    }
-
-    async fn begin_gap_repair(&self, gap_id: Uuid) -> Result<bool, StrategyError> {
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(database_error("chainlink_reference_begin_gap_transaction"))?;
-        self.lock_current_lease(&mut transaction, "beginning a Chainlink gap repair")
-            .await?;
-        let repairing = self
-            .gaps
-            .begin_repair_in(&mut transaction, gap_id)
-            .await
-            .map_err(database_error("chainlink_reference_begin_gap_repair"))?
-            .is_some();
-        transaction
-            .commit()
-            .await
-            .map_err(database_error("chainlink_reference_commit_gap_begin"))?;
-        Ok(repairing)
-    }
-
-    async fn terminalize_oversized_gap(&self, gap_id: Uuid) -> Result<(), StrategyError> {
-        let mut transaction = self.pool.begin().await.map_err(database_error(
-            "chainlink_reference_begin_oversized_gap_resolution",
-        ))?;
-        self.lock_current_lease(
-            &mut transaction,
-            "terminalizing an oversized legacy Chainlink gap",
-        )
-        .await?;
-        self.gaps
-            .mark_unrecoverable_in(
-                &mut transaction,
-                gap_id,
-                "repair_range_exceeds_safe_pagination_budget",
-                Some("immutable legacy gap exceeds the bounded Chainlink pagination repair window"),
-            )
-            .await
-            .map_err(database_error(
-                "chainlink_reference_terminalize_oversized_gap",
-            ))?
-            .ok_or_else(|| {
-                integrity(
-                    "chainlink_reference_oversized_gap_resolution_race",
-                    "oversized Chainlink gap could not be terminalized",
-                )
-            })?;
-        transaction.commit().await.map_err(database_error(
-            "chainlink_reference_commit_oversized_gap_resolution",
-        ))?;
-        Ok(())
-    }
-
-    async fn persist_repair_observations(
-        &self,
-        checkpoint: &ReferencePriceCheckpoint,
-        observations: &[ReferencePriceObservation],
-    ) -> Result<Uuid, StrategyError> {
-        let received_at = observations
-            .iter()
-            .map(|observation| observation.received_at)
-            .max()
-            .expect("nonempty repair batch has a receipt timestamp");
-        let artifact = self.ensure_artifact(received_at, checkpoint).await?;
-        let mut transaction = self.pool.begin().await.map_err(database_error(
-            "chainlink_reference_repair_begin_transaction",
-        ))?;
-        let persisted = self
-            .persist_observations(&mut transaction, artifact.artifact_id, observations)
-            .await?;
-        self.record_artifact_batch(&mut transaction, artifact.artifact_id, &persisted)
-            .await?;
-        let maximum_source_timestamp = observations
-            .iter()
-            .map(|observation| observation.source_timestamp)
-            .max();
-        let advanced = self
-            .profiles
-            .record_progress_in(
-                &mut transaction,
-                STRATEGY_KEY,
-                &self.lease_owner,
-                self.lease_token,
-                self.profile_generation,
-                &StrategyProgress {
-                    verified_record_count: persisted.verified,
-                    checkpoint_schema_version: CHECKPOINT_SCHEMA_VERSION,
-                    checkpoint: serde_json::to_value(checkpoint).map_err(integrity_error(
-                        "chainlink_reference_encode_repair_checkpoint",
-                    ))?,
-                    last_source_event_at: maximum_source_timestamp,
-                    last_provider_available_at: None,
-                    source_watermark: maximum_source_timestamp,
-                    availability_watermark: None,
-                },
-            )
-            .await
-            .map_err(database_error("chainlink_reference_record_repair_progress"))?;
-        if !advanced {
-            return Err(lease_lost("committing Chainlink gap-repair progress"));
-        }
-        transaction
-            .commit()
-            .await
-            .map_err(database_error("chainlink_reference_commit_repair"))?;
-        Ok(artifact.artifact_id)
-    }
-
-    async fn seal_and_complete_gap(
-        &self,
-        gap_id: Uuid,
-        artifact: &CaptureArtifact,
-        repair_range: SourceSecondRange,
-    ) -> Result<(), StrategyError> {
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(database_error("chainlink_reference_begin_gap_completion"))?;
-        self.lock_current_lease(&mut transaction, "completing a Chainlink gap repair")
-            .await?;
-        if !self
-            .gap_range_is_complete_in(&mut transaction, repair_range)
-            .await?
-        {
-            return Err(integrity(
-                "chainlink_reference_gap_range_incomplete",
-                "Chainlink gap range was incomplete at its transactional completion fence",
-            ));
-        }
-        let content_sha256 = self
-            .artifact_content_sha256(&mut transaction, artifact)
-            .await?;
-        self.artifacts
-            .complete_in(
-                &mut transaction,
-                artifact.artifact_id,
-                &content_sha256,
-                artifact.end_cursor.as_deref(),
-            )
-            .await
-            .map_err(database_error(
-                "chainlink_reference_complete_repair_artifact",
-            ))?
-            .ok_or_else(|| {
-                integrity(
-                    "chainlink_reference_repair_artifact_not_open",
-                    "Chainlink repair artifact could not be completed",
-                )
-            })?;
-        self.gaps
-            .mark_repaired_in(
-                &mut transaction,
-                gap_id,
-                artifact.artifact_id,
-                "provider_interval_recovered",
-                Some("all one-second Chainlink source timestamps are now durably present"),
-            )
-            .await
-            .map_err(database_error("chainlink_reference_complete_gap_repair"))?
-            .ok_or_else(|| {
-                integrity(
-                    "chainlink_reference_gap_repair_race",
-                    "Chainlink gap could not be marked repaired",
-                )
-            })?;
-        transaction
-            .commit()
-            .await
-            .map_err(database_error("chainlink_reference_commit_gap_completion"))?;
-        Ok(())
-    }
-
-    async fn gap_range_is_complete(&self, range: SourceSecondRange) -> Result<bool, StrategyError> {
-        let start = timestamp_seconds(range.start, "gap repair start")?;
-        let end = timestamp_seconds(range.end, "gap repair end")?;
-        let distinct_source_seconds = sqlx::query_scalar::<_, i64>(
-            r#"
-            SELECT count(DISTINCT source_timestamp)::bigint
-            FROM market_data.chainlink_btcusd_reference_prices
-            WHERE feed_id = $1
-              AND source_timestamp >= $2
-              AND source_timestamp <= $3
-            "#,
-        )
-        .bind(&self.config.feed_id)
-        .bind(start)
-        .bind(end)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(database_error("chainlink_reference_verify_gap_range"))?;
-        gap_second_count_is_complete(range, distinct_source_seconds)
-    }
-
-    async fn gap_range_is_complete_in(
-        &self,
-        transaction: &mut Transaction<'_, Postgres>,
-        range: SourceSecondRange,
-    ) -> Result<bool, StrategyError> {
-        let start = timestamp_seconds(range.start, "gap repair start")?;
-        let end = timestamp_seconds(range.end, "gap repair end")?;
-        let distinct_source_seconds = sqlx::query_scalar::<_, i64>(
-            r#"
-            SELECT count(DISTINCT source_timestamp)::bigint
-            FROM market_data.chainlink_btcusd_reference_prices
-            WHERE feed_id = $1
-              AND source_timestamp >= $2
-              AND source_timestamp <= $3
-            "#,
-        )
-        .bind(&self.config.feed_id)
-        .bind(start)
-        .bind(end)
-        .fetch_one(&mut **transaction)
-        .await
-        .map_err(database_error(
-            "chainlink_reference_verify_gap_range_transactional",
-        ))?;
-        gap_second_count_is_complete(range, distinct_source_seconds)
     }
 }
