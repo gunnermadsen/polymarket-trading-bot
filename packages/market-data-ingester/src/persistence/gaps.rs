@@ -117,6 +117,31 @@ impl GapRepository {
         list_unresolved_on(&mut connection, strategy_key).await
     }
 
+    pub async fn list_unresolved_limited(
+        &self,
+        strategy_key: IngesterStrategyKey,
+        limit: i64,
+    ) -> Result<Vec<DataGap>, GapPersistenceError> {
+        if !(1..=1_000).contains(&limit) {
+            return Err(GapPersistenceError::InvalidInput(
+                "unresolved gap limit must be between 1 and 1000".to_owned(),
+            ));
+        }
+        let query = format!(
+            "SELECT {GAP_COLUMNS} FROM ingester.data_gaps \
+             WHERE strategy_key = $1 AND status IN ('open', 'repairing') \
+             ORDER BY repair_attempts, detected_at, gap_id LIMIT $2"
+        );
+        sqlx::query_as::<_, GapRow>(&query)
+            .bind(strategy_key.as_str())
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
+    }
+
     pub async fn list_unresolved_in(
         &self,
         transaction: &mut Transaction<'_, Postgres>,

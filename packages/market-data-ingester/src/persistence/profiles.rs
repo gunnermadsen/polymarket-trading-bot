@@ -79,6 +79,74 @@ impl ProfileRepository {
         &self.pool
     }
 
+    /// Locks and verifies the active profile lease for a short control-plane
+    /// transaction that cannot use `record_progress_in` as its fence.
+    pub async fn lock_current_lease_in(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        key: IngesterStrategyKey,
+        owner: &str,
+        token: Uuid,
+        generation: i64,
+    ) -> Result<bool> {
+        let locked = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT strategy_key
+            FROM ingester.profiles
+            WHERE strategy_key = $1
+              AND lease_owner = $2
+              AND lease_token = $3
+              AND lease_expires_at > now()
+              AND desired_state = 'running'
+              AND desired_generation = $4
+              AND applied_generation = $4
+            FOR UPDATE
+            "#,
+        )
+        .bind(key.as_str())
+        .bind(owner)
+        .bind(token)
+        .bind(generation)
+        .fetch_optional(&mut **transaction)
+        .await
+        .context("failed to lock current ingester profile lease")?;
+        Ok(locked.is_some())
+    }
+
+    /// Locks a still-owned lease while a superseded generation drains after a
+    /// requested stop or restart. This intentionally ignores desired state and
+    /// desired generation, but never ignores owner, token, expiry, or the
+    /// generation that was actually applied to the running strategy.
+    pub async fn lock_owned_lease_in(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        key: IngesterStrategyKey,
+        owner: &str,
+        token: Uuid,
+        applied_generation: i64,
+    ) -> Result<bool> {
+        let locked = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT strategy_key
+            FROM ingester.profiles
+            WHERE strategy_key = $1
+              AND lease_owner = $2
+              AND lease_token = $3
+              AND lease_expires_at > now()
+              AND applied_generation = $4
+            FOR UPDATE
+            "#,
+        )
+        .bind(key.as_str())
+        .bind(owner)
+        .bind(token)
+        .bind(applied_generation)
+        .fetch_optional(&mut **transaction)
+        .await
+        .context("failed to lock owned ingester profile lease")?;
+        Ok(locked.is_some())
+    }
+
     pub async fn list(&self) -> Result<Vec<IngesterProfile>> {
         let query =
             format!("SELECT {PROFILE_COLUMNS} FROM ingester.profiles ORDER BY strategy_key");
