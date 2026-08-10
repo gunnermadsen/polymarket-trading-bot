@@ -55,8 +55,8 @@ const MAX_AUTHORIZATION_BODY_BYTES: usize = 65_536;
 const MAX_HISTORY_BODY_BYTES: usize = 2_097_152;
 const GAP_REPAIRS_PER_POLL: i64 = 8;
 const AUTHORIZATION_REFRESH_MARGIN_SECONDS: i64 = 30;
-// Chainlink publishes a closed candle after one additional full minute.
-const PROVIDER_PUBLICATION_DELAY_SECONDS: i64 = MINUTE_SECONDS * 2;
+// A candle must be closed for two full minutes before Chainlink history is queried.
+const PROVIDER_SAFE_CANDLE_AGE_SECONDS: i64 = MINUTE_SECONDS * 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -1782,7 +1782,7 @@ fn latest_safely_published_open(now: DateTime<Utc>) -> Result<DateTime<Utc>, Str
         .div_euclid(MINUTE_SECONDS)
         .saturating_mul(MINUTE_SECONDS);
     Utc.timestamp_opt(
-        current_minute.saturating_sub(PROVIDER_PUBLICATION_DELAY_SECONDS),
+        current_minute.saturating_sub(PROVIDER_SAFE_CANDLE_AGE_SECONDS),
         0,
     )
     .single()
@@ -2180,14 +2180,14 @@ mod tests {
     }
 
     #[test]
-    fn publication_cutoff_excludes_the_current_and_trailing_closed_minute() {
+    fn publication_cutoff_excludes_current_and_two_trailing_closed_minutes() {
         let now = Utc
             .timestamp_opt(1_722_470_539, 999_999_999)
             .single()
             .expect("timestamp");
         assert_eq!(
             latest_safely_published_open(now).expect("safe provider minute"),
-            minute(1_722_470_400)
+            minute(1_722_470_340)
         );
     }
 
@@ -2200,11 +2200,11 @@ mod tests {
         let at_boundary = minute(1_722_470_580);
         assert_eq!(
             latest_safely_published_open(before_boundary).expect("safe provider minute"),
-            minute(1_722_470_400)
+            minute(1_722_470_340)
         );
         assert_eq!(
             latest_safely_published_open(at_boundary).expect("safe provider minute"),
-            minute(1_722_470_460)
+            minute(1_722_470_400)
         );
     }
 
@@ -2212,7 +2212,7 @@ mod tests {
     fn provider_publication_tail_is_never_classified_as_a_gap() {
         let start = minute(1_722_470_400);
         let now = Utc
-            .timestamp_opt(1_722_470_699, 999_999_999)
+            .timestamp_opt(1_722_470_759, 999_999_999)
             .single()
             .expect("timestamp");
         let safe_end = latest_safely_published_open(now).expect("safe provider minute");
