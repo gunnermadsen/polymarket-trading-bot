@@ -162,6 +162,8 @@ def test_four_dynamic_arms_use_shared_comparisons_and_one_se_rank() -> None:
     assert set(result["simultaneous_comparison_to_static"]["challengers"]) == set(dynamics)
     assert "target_cell_bias_yes_45_56" in _gates(_record(result, "D2"))
     assert "target_cell_bias_yes_45_60" not in _gates(_record(result, "D2"))
+    assert _gates(_record(result, "D2"))["brier_point_no_worse_than_static"]["passed"]
+    assert _gates(_record(result, "D2"))["log_loss_point_no_worse_than_static"]["passed"]
     assert result["economics_used"] is False
     json.dumps(result, allow_nan=False)
     for forbidden in PROBABILITY_SELECTION_FORBIDDEN_COLUMNS:
@@ -252,6 +254,8 @@ def test_static_attribution_gate_blocks_dynamic_that_only_beats_incumbent() -> N
     gates = _gates(record)
 
     assert gates["proper_score_improvement_over_incumbent"]["passed"] is True
+    assert gates["brier_point_no_worse_than_static"]["passed"] is False
+    assert gates["log_loss_point_no_worse_than_static"]["passed"] is False
     assert gates["proper_score_improvement_over_static"]["passed"] is False
     assert record["passed"] is False
     assert "proper_score_improvement_over_static" in result["failure_trace"][0]["failed_gates"]

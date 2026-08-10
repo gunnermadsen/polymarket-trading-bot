@@ -236,6 +236,18 @@ def select_asymmetric_book_admission_challenger(
                 "==",
             ),
             _gate(
+                "brier_point_no_worse_than_static",
+                versus_static["brier_delta"]["point"],
+                0.0,
+                "<=",
+            ),
+            _gate(
+                "log_loss_point_no_worse_than_static",
+                versus_static["log_loss_delta"]["point"],
+                0.0,
+                "<=",
+            ),
+            _gate(
                 "brier_simultaneous_noninferior_to_static",
                 versus_static["brier_delta"]["simultaneous_upper_95"],
                 thresholds.noninferiority_margin,
