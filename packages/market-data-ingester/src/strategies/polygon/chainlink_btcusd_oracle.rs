@@ -634,9 +634,7 @@ impl PolygonChainlinkBtcusdOracleStrategy {
             }
         }
 
-        let feed = self
-            .load_feed_metadata(state.feed.as_ref(), finalized_head)
-            .await?;
+        let feed = self.load_feed_metadata(state.feed.as_ref()).await?;
         state.feed = Some(feed.clone());
         self.reconcile_round_gaps(state, &feed, finalized_head)
             .await?;
@@ -1359,32 +1357,67 @@ impl PolygonChainlinkBtcusdOracleStrategy {
     async fn load_feed_metadata(
         &self,
         cached: Option<&FeedMetadata>,
-        block_number: u64,
     ) -> Result<FeedMetadata, StrategyError> {
-        let decimals_value = self
-            .eth_call_at(&abi_calldata("decimals()", &[]), block_number)
-            .await?;
-        let decimals = u32::try_from(parse_abi_u64(&decimals_value)?).map_err(|_| {
-            integrity_error("polygon_oracle_decimals_overflow", "decimals overflow")
-        })?;
-        if decimals > MAX_SUPPORTED_DECIMALS {
-            return Err(integrity_error(
-                "polygon_oracle_decimals_unsupported",
-                format!("feed decimals {decimals} exceed supported precision"),
-            ));
-        }
+        // Chainlink phase mappings are append-only. Reading the current mapping is
+        // therefore a safe superset for the already-finalized log range, while
+        // avoiding providers' optional historical-state retention. The repeated
+        // phase/decimals reads fence an upgrade that becomes visible mid-snapshot.
+        let phase_count = decode_phase_count(
+            &self
+                .eth_call_latest(&abi_calldata("phaseId()", &[]))
+                .await?,
+        )?;
+        let decimals = decode_feed_decimals(
+            &self
+                .eth_call_latest(&abi_calldata("decimals()", &[]))
+                .await?,
+        )?;
 
-        let phase_value = self
-            .eth_call_at(&abi_calldata("phaseId()", &[]), block_number)
-            .await?;
-        let phase_count = u16::try_from(parse_abi_u64(&phase_value)?)
-            .map_err(|_| integrity_error("polygon_oracle_phase_overflow", "phase ID overflow"))?;
-        if phase_count == 0 || phase_count > MAX_AGGREGATOR_PHASES {
-            return Err(integrity_error(
-                "polygon_oracle_phase_count_invalid",
-                format!("feed phase count {phase_count} is outside 1..={MAX_AGGREGATOR_PHASES}"),
-            ));
+        let mut aggregators = cached
+            .map(|metadata| metadata.aggregators.clone())
+            .unwrap_or_default();
+        let first_phase = cached
+            .map(|metadata| metadata.phase_count.saturating_add(1))
+            .unwrap_or(1);
+        for phase_id in first_phase..=phase_count {
+            let value = self
+                .eth_call_latest(&abi_calldata(
+                    "phaseAggregators(uint16)",
+                    &[encode_u16_word(phase_id)],
+                ))
+                .await?;
+            let address = parse_abi_address(&value)?;
+            if address == "0x0000000000000000000000000000000000000000" {
+                return Err(source_error_value(
+                    "polygon_oracle_phase_mapping_incomplete",
+                    format!("latest proxy metadata omitted aggregator phase {phase_id}"),
+                ));
+            }
+            if let Some(existing) = aggregators.insert(address.clone(), phase_id) {
+                return Err(integrity_error(
+                    "polygon_oracle_aggregator_phase_ambiguous",
+                    format!(
+                        "aggregator {address} was assigned to both phases {existing} and {phase_id}"
+                    ),
+                ));
+            }
         }
+        let confirmed_decimals = decode_feed_decimals(
+            &self
+                .eth_call_latest(&abi_calldata("decimals()", &[]))
+                .await?,
+        )?;
+        let confirmed_phase_count = decode_phase_count(
+            &self
+                .eth_call_latest(&abi_calldata("phaseId()", &[]))
+                .await?,
+        )?;
+        validate_latest_metadata_snapshot(
+            decimals,
+            phase_count,
+            confirmed_decimals,
+            confirmed_phase_count,
+        )?;
 
         if let Some(cached) = cached {
             if cached.decimals != decimals {
@@ -1405,43 +1438,8 @@ impl PolygonChainlinkBtcusdOracleStrategy {
                     ),
                 ));
             }
-            if phase_count == cached.phase_count {
-                return Ok(cached.clone());
-            }
         }
-
-        let mut aggregators = cached
-            .map(|metadata| metadata.aggregators.clone())
-            .unwrap_or_default();
-        let first_phase = cached
-            .map(|metadata| metadata.phase_count.saturating_add(1))
-            .unwrap_or(1);
-        for phase_id in first_phase..=phase_count {
-            let value = self
-                .eth_call_at(
-                    &abi_calldata("phaseAggregators(uint16)", &[encode_u16_word(phase_id)]),
-                    block_number,
-                )
-                .await?;
-            let address = parse_abi_address(&value)?;
-            if address == "0x0000000000000000000000000000000000000000" {
-                continue;
-            }
-            if let Some(existing) = aggregators.insert(address.clone(), phase_id) {
-                return Err(integrity_error(
-                    "polygon_oracle_aggregator_phase_ambiguous",
-                    format!(
-                        "aggregator {address} was assigned to both phases {existing} and {phase_id}"
-                    ),
-                ));
-            }
-        }
-        if aggregators.is_empty() {
-            return Err(integrity_error(
-                "polygon_oracle_aggregators_missing",
-                "feed returned no usable phase aggregators",
-            ));
-        }
+        validate_phase_mapping(phase_count, &aggregators)?;
         Ok(FeedMetadata {
             decimals,
             phase_count,
@@ -1492,7 +1490,7 @@ impl PolygonChainlinkBtcusdOracleStrategy {
         ))
     }
 
-    async fn eth_call_at(&self, data: &str, block_number: u64) -> Result<String, StrategyError> {
+    async fn eth_call_latest(&self, data: &str) -> Result<String, StrategyError> {
         let result = self
             .rpc(
                 "eth_call",
@@ -1501,7 +1499,7 @@ impl PolygonChainlinkBtcusdOracleStrategy {
                         "to": self.config.feed_proxy_address,
                         "data": data,
                     },
-                    format_quantity(block_number)
+                    "latest"
                 ]),
             )
             .await?;
@@ -3185,6 +3183,62 @@ fn encode_u16_word(value: u16) -> String {
     format!("{value:064x}")
 }
 
+fn decode_feed_decimals(value: &str) -> Result<u32, StrategyError> {
+    let decimals = u32::try_from(parse_abi_u64(value)?)
+        .map_err(|_| integrity_error("polygon_oracle_decimals_overflow", "decimals overflow"))?;
+    if decimals > MAX_SUPPORTED_DECIMALS {
+        return Err(integrity_error(
+            "polygon_oracle_decimals_unsupported",
+            format!("feed decimals {decimals} exceed supported precision"),
+        ));
+    }
+    Ok(decimals)
+}
+
+fn decode_phase_count(value: &str) -> Result<u16, StrategyError> {
+    let phase_count = u16::try_from(parse_abi_u64(value)?)
+        .map_err(|_| integrity_error("polygon_oracle_phase_overflow", "phase ID overflow"))?;
+    if phase_count == 0 || phase_count > MAX_AGGREGATOR_PHASES {
+        return Err(integrity_error(
+            "polygon_oracle_phase_count_invalid",
+            format!("feed phase count {phase_count} is outside 1..={MAX_AGGREGATOR_PHASES}"),
+        ));
+    }
+    Ok(phase_count)
+}
+
+fn validate_latest_metadata_snapshot(
+    decimals: u32,
+    phase_count: u16,
+    confirmed_decimals: u32,
+    confirmed_phase_count: u16,
+) -> Result<(), StrategyError> {
+    if decimals != confirmed_decimals || phase_count != confirmed_phase_count {
+        return Err(source_error_value(
+            "polygon_oracle_metadata_snapshot_changed",
+            format!(
+                "latest proxy metadata changed while reading it (decimals {decimals}->{confirmed_decimals}, phase {phase_count}->{confirmed_phase_count})"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_phase_mapping(
+    phase_count: u16,
+    aggregators: &BTreeMap<String, u16>,
+) -> Result<(), StrategyError> {
+    let mapped_phases = aggregators.values().copied().collect::<BTreeSet<_>>();
+    let expected_phases = (1..=phase_count).collect::<BTreeSet<_>>();
+    if mapped_phases != expected_phases || aggregators.len() != usize::from(phase_count) {
+        return Err(integrity_error(
+            "polygon_oracle_phase_mapping_incomplete",
+            "latest proxy metadata did not map every declared phase exactly once",
+        ));
+    }
+    Ok(())
+}
+
 fn parse_abi_address(value: &str) -> Result<String, StrategyError> {
     let word = normalized_word(value)?;
     if !word[..24].bytes().all(|byte| byte == b'0') {
@@ -3811,6 +3865,44 @@ mod tests {
             event_topic("AnswerUpdated(int256,uint256,uint256)"),
             "0x0559884fd3a460db3073b7fc896cc77986f16e378210ded43186175bf646fc5f"
         );
+    }
+
+    #[test]
+    fn latest_metadata_snapshot_is_strict_and_upgrade_races_fail_closed() {
+        let word = |value: u64| format!("0x{value:064x}");
+        assert_eq!(decode_feed_decimals(&word(8)).unwrap(), 8);
+        assert_eq!(decode_phase_count(&word(3)).unwrap(), 3);
+        assert!(decode_feed_decimals(&word(19)).is_err());
+        assert!(decode_phase_count(&word(0)).is_err());
+        assert!(decode_phase_count(&word(129)).is_err());
+        validate_latest_metadata_snapshot(8, 3, 8, 3).unwrap();
+
+        let phase_race = validate_latest_metadata_snapshot(8, 3, 8, 4).unwrap_err();
+        assert_eq!(phase_race.code, "polygon_oracle_metadata_snapshot_changed");
+        assert_eq!(phase_race.kind, StrategyErrorKind::TransientSource);
+        let decimals_race = validate_latest_metadata_snapshot(8, 3, 18, 3).unwrap_err();
+        assert_eq!(
+            decimals_race.code,
+            "polygon_oracle_metadata_snapshot_changed"
+        );
+    }
+
+    #[test]
+    fn latest_phase_mapping_is_an_append_only_superset_for_finalized_logs() {
+        let aggregators = BTreeMap::from([
+            ("0x1111111111111111111111111111111111111111".to_owned(), 1),
+            ("0x2222222222222222222222222222222222222222".to_owned(), 2),
+            ("0x3333333333333333333333333333333333333333".to_owned(), 3),
+        ]);
+        validate_phase_mapping(3, &aggregators).unwrap();
+        assert!(aggregators.values().any(|phase_id| *phase_id == 2));
+
+        let missing_finalized_phase = BTreeMap::from([
+            ("0x1111111111111111111111111111111111111111".to_owned(), 1),
+            ("0x3333333333333333333333333333333333333333".to_owned(), 3),
+        ]);
+        let error = validate_phase_mapping(3, &missing_finalized_phase).unwrap_err();
+        assert_eq!(error.code, "polygon_oracle_phase_mapping_incomplete");
     }
 
     #[test]
