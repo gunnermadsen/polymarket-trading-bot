@@ -24,7 +24,9 @@ pub struct Application {
 
 impl Application {
     pub async fn from_environment() -> Result<Self> {
-        Self::from_environment_with_registry(StrategyRegistry::default()).await
+        let registry = crate::strategies::registry()
+            .context("failed to register market-data ingestion strategies")?;
+        Self::from_environment_with_registry(registry).await
     }
 
     pub async fn from_environment_with_registry(registry: StrategyRegistry) -> Result<Self> {

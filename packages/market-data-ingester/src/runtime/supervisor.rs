@@ -229,9 +229,6 @@ where
     }
 
     async fn reconcile_once(&mut self) -> Result<()> {
-        self.collect_finished().await?;
-        self.abort_expired_stops().await?;
-
         let profiles = self
             .profiles
             .list()
@@ -242,6 +239,9 @@ where
             .map(|profile| (profile.strategy_key, profile))
             .collect();
 
+        // Apply requested state and generation changes before classifying task
+        // exits. A strict in-flight write can observe the new desired state and
+        // exit before this reconciliation tick reaches the task.
         self.reconcile_active(&profiles).await?;
         self.collect_finished().await?;
         self.abort_expired_stops().await?;
@@ -701,9 +701,10 @@ mod tests {
     use chrono::Utc;
     use serde_json::{json, Value};
     use sqlx::postgres::PgPoolOptions;
+    use tokio::sync::Notify;
 
     use crate::{
-        domain::{HealthStatus, IngesterStrategy, ObservedState, StrategyError},
+        domain::{HealthStatus, IngesterStrategy, ObservedState, StrategyError, StrategyErrorKind},
         runtime::{StrategyFactory, StrategyFactoryError},
     };
 
@@ -916,6 +917,64 @@ mod tests {
         }
     }
 
+    struct LeaseLossFactory {
+        started: Arc<Notify>,
+        exit: Arc<Notify>,
+    }
+
+    impl StrategyFactory for LeaseLossFactory {
+        fn key(&self) -> IngesterStrategyKey {
+            KEY
+        }
+
+        fn config_schema_version(&self) -> i32 {
+            1
+        }
+
+        fn validate_config(&self, config: &Value) -> Result<(), StrategyFactoryError> {
+            if config.get("valid") == Some(&Value::Bool(true)) {
+                Ok(())
+            } else {
+                Err(StrategyFactoryError::InvalidConfiguration(
+                    "valid must be true".to_owned(),
+                ))
+            }
+        }
+
+        fn build(
+            &self,
+            _profile: &IngesterProfile,
+            _pool: PgPool,
+        ) -> Result<Box<dyn IngesterStrategy>, StrategyFactoryError> {
+            Ok(Box::new(LeaseLossStrategy {
+                started: Arc::clone(&self.started),
+                exit: Arc::clone(&self.exit),
+            }))
+        }
+    }
+
+    struct LeaseLossStrategy {
+        started: Arc<Notify>,
+        exit: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl IngesterStrategy for LeaseLossStrategy {
+        fn key(&self) -> IngesterStrategyKey {
+            KEY
+        }
+
+        async fn run(&self, _shutdown: CancellationToken) -> Result<(), StrategyError> {
+            self.started.notify_one();
+            self.exit.notified().await;
+            Err(StrategyError::new(
+                StrategyErrorKind::LeaseLost,
+                "simulated_strict_write_lease_lost",
+                "strict write observed a newer desired profile generation",
+            ))
+        }
+    }
+
     fn profile() -> IngesterProfile {
         let now = Utc::now();
         IngesterProfile {
@@ -1031,6 +1090,71 @@ mod tests {
         assert_eq!(starts.load(Ordering::SeqCst), 3);
 
         supervisor.shutdown_active().await;
+    }
+
+    #[tokio::test]
+    async fn desired_stop_wins_when_task_exits_before_reconciliation() {
+        let store = MemoryStore::new(profile());
+        let started = Arc::new(Notify::new());
+        let exit = Arc::new(Notify::new());
+        let registry = StrategyRegistry::from_factories([Arc::new(LeaseLossFactory {
+            started: Arc::clone(&started),
+            exit: Arc::clone(&exit),
+        }) as Arc<dyn StrategyFactory>])
+        .expect("registry");
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@localhost/unused")
+            .expect("lazy pool");
+        let mut supervisor = StrategySupervisor::new(
+            store.clone(),
+            registry,
+            pool,
+            "test-instance",
+            SupervisorSettings {
+                reconcile_interval: Duration::from_millis(10),
+                lease_duration: Duration::from_millis(50),
+                strategy_shutdown_timeout: Duration::from_millis(25),
+            },
+        )
+        .expect("supervisor");
+
+        let started_wait = started.notified();
+        supervisor.reconcile_once().await.expect("start profile");
+        tokio::time::timeout(Duration::from_secs(1), started_wait)
+            .await
+            .expect("strategy started");
+
+        store.update(|profile| {
+            profile.desired_state = DesiredState::Stopped;
+            profile.desired_generation = 2;
+        });
+        exit.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if supervisor
+                    .active
+                    .get(&KEY)
+                    .is_some_and(|active| active.task.is_finished())
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("strategy exited before reconciliation");
+
+        supervisor
+            .reconcile_once()
+            .await
+            .expect("classify requested stop");
+
+        let stopped = store.snapshot();
+        assert_eq!(stopped.observed_state, ObservedState::Stopped);
+        assert_eq!(stopped.health_status, HealthStatus::Unknown);
+        assert_eq!(stopped.consecutive_failures, 0);
+        assert_eq!(stopped.last_error_code, None);
+        assert!(supervisor.active.is_empty());
     }
 
     #[tokio::test]

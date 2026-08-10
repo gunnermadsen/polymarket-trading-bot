@@ -29,7 +29,7 @@ services:
       MARKET_DATA_INGESTER_API_BIND: "0.0.0.0:8098"
       MARKET_DATA_INGESTER_DB_POOL_CONNECTIONS: "4"
     ports:
-      - "127.0.0.1:8098:8098"
+      - "127.0.0.1:8099:8098"
     depends_on:
       db-migrate:
         condition: service_completed_successfully
