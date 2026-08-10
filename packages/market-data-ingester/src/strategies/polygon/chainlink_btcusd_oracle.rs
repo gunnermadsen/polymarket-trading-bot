@@ -51,6 +51,8 @@ const MAX_GAP_REPAIR_ATTEMPTS: i32 = 3;
 const MAX_GAP_REPAIR_ROUNDS: u64 = 4_096;
 const MAX_GAP_REPAIR_BLOCKS: u64 = 1_000_000;
 const MAX_GAP_REPAIR_RPC_REQUESTS: u64 = 64;
+const STARTUP_ANCHOR_WINDOW_BLOCKS: u64 = 2_048;
+const MAX_STARTUP_ANCHOR_WINDOWS: usize = 64;
 
 const APPROVED_RPC_URLS: [&str; 2] = [DEFAULT_RPC_URL, DEFAULT_ARCHIVE_LOG_RPC_URL];
 
@@ -101,6 +103,11 @@ impl PolygonChainlinkBtcusdOracleConfig {
     fn validate(&self) -> Result<(), StrategyFactoryError> {
         validate_public_rpc_url("rpc_url", &self.rpc_url)?;
         validate_public_rpc_url("archive_log_rpc_url", &self.archive_log_rpc_url)?;
+        if self.rpc_url.trim_end_matches('/') == self.archive_log_rpc_url.trim_end_matches('/') {
+            return Err(invalid_config(
+                "rpc_url and archive_log_rpc_url must identify independent providers",
+            ));
+        }
         if self.feed_proxy_address != DEFAULT_FEED_PROXY_ADDRESS {
             return Err(invalid_config(
                 "feed_proxy_address must be the Polygon Chainlink BTC/USD proxy",
@@ -643,20 +650,14 @@ impl PolygonChainlinkBtcusdOracleStrategy {
             self.config.overlap_blocks,
             self.config.startup_lookback_blocks,
         );
-        let (mut startup_boundary, mut startup_proof_received_at) = if empty_scan_may_advance(
-            &state.checkpoint,
-        ) {
-            (None, None)
-        } else {
-            let anchor_block = from_block.checked_sub(1).ok_or_else(|| {
-                    source_error_value(
-                        "polygon_oracle_startup_anchor_unavailable",
-                        "startup scan begins at genesis and has no historical round anchor; retrying without checkpoint advancement",
-                    )
-                })?;
-            let (boundary, received_at) = self.startup_round_boundary(&feed, anchor_block).await?;
-            (Some(boundary), Some(received_at))
-        };
+        let (mut startup_boundary, mut startup_proof_received_at) =
+            if empty_scan_may_advance(&state.checkpoint) {
+                (None, None)
+            } else {
+                let (boundary, received_at) =
+                    self.startup_round_boundary(&feed, from_block).await?;
+                (Some(boundary), Some(received_at))
+            };
 
         while from_block <= finalized_head {
             let to_block = from_block
@@ -995,8 +996,14 @@ impl PolygonChainlinkBtcusdOracleStrategy {
             }
             from_received_at
         } else {
+            let proof_scan_start = repair.from_block.checked_add(1).ok_or_else(|| {
+                integrity_error(
+                    "polygon_oracle_repair_anchor_block_overflow",
+                    "startup proof block cannot be advanced for reconstruction",
+                )
+            })?;
             let (proof, proof_received_at) =
-                self.startup_round_boundary(feed, repair.from_block).await?;
+                self.startup_round_boundary(feed, proof_scan_start).await?;
             if proof.phase_id != repair.phase_id
                 || proof.aggregator_round_id != previous_round
                 || u64::try_from(proof.block_number).ok() != Some(repair.from_block)
@@ -1486,20 +1493,8 @@ impl PolygonChainlinkBtcusdOracleStrategy {
     }
 
     async fn eth_call_at(&self, data: &str, block_number: u64) -> Result<String, StrategyError> {
-        self.eth_call_at_with_receipt(&self.config.rpc_url, data, block_number)
-            .await
-            .map(|(value, _)| value)
-    }
-
-    async fn eth_call_at_with_receipt(
-        &self,
-        rpc_url: &str,
-        data: &str,
-        block_number: u64,
-    ) -> Result<(String, DateTime<Utc>), StrategyError> {
         let result = self
-            .rpc_at(
-                rpc_url,
+            .rpc(
                 "eth_call",
                 json!([
                     {
@@ -1510,77 +1505,109 @@ impl PolygonChainlinkBtcusdOracleStrategy {
                 ]),
             )
             .await?;
-        let value = result
-            .value
-            .as_str()
-            .map(ToOwned::to_owned)
-            .ok_or_else(|| {
-                integrity_error(
-                    "polygon_oracle_eth_call_invalid",
-                    "eth_call returned a non-string result",
-                )
-            })?;
-        Ok((value, result.received_at))
+        result.value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+            integrity_error(
+                "polygon_oracle_eth_call_invalid",
+                "eth_call returned a non-string result",
+            )
+        })
     }
 
     async fn startup_round_boundary(
         &self,
         feed: &FeedMetadata,
-        block_number: u64,
+        scan_start: u64,
     ) -> Result<(RoundBoundary, DateTime<Utc>), StrategyError> {
-        // This historical proxy state is a completeness proof only. Durable facts
-        // remain exclusively sourced from canonical AnswerUpdated aggregator logs.
-        let (archive_header_before, archive_header_before_received_at) = self
-            .block_by_number_at_with_receipt(&self.config.archive_log_rpc_url, block_number)
-            .await?;
-        let (value, call_received_at) = self
-            .eth_call_at_with_receipt(
-                &self.config.archive_log_rpc_url,
-                &abi_calldata("latestRoundData()", &[]),
-                block_number,
-            )
-            .await?;
-        let (archive_header_after, archive_header_after_received_at) = self
-            .block_by_number_at_with_receipt(&self.config.archive_log_rpc_url, block_number)
-            .await?;
-        let (header, header_received_at) = self.block_by_number_with_receipt(block_number).await?;
-        if archive_header_before.hash != header.hash
-            || archive_header_after.hash != header.hash
-            || archive_header_before.timestamp != header.timestamp
-            || archive_header_after.timestamp != header.timestamp
-        {
-            return Err(integrity_error(
-                "polygon_oracle_startup_anchor_fork_mismatch",
-                format!(
-                    "archive and canonical RPCs disagreed on startup anchor block {block_number}"
-                ),
-            ));
+        let addresses = feed.aggregators.keys().cloned().collect::<Vec<_>>();
+        let mut next_block_exclusive = scan_start;
+        let mut proof_received_at = None;
+        for _ in 0..MAX_STARTUP_ANCHOR_WINDOWS {
+            let Some((from_block, to_block)) =
+                prior_anchor_range(next_block_exclusive, self.config.maximum_block_range)
+            else {
+                break;
+            };
+            let batch = self
+                .cross_checked_startup_logs(feed, &addresses, from_block, to_block)
+                .await?;
+            proof_received_at = Some(
+                proof_received_at
+                    .map(|received_at: DateTime<Utc>| received_at.max(batch.received_at))
+                    .unwrap_or(batch.received_at),
+            );
+            if let Some(round) = batch.rounds.last() {
+                return Ok((
+                    RoundBoundary {
+                        phase_id: round.phase_id,
+                        aggregator_round_id: round.aggregator_round_id,
+                        source_timestamp: round.source_timestamp,
+                        block_number: round.block_number,
+                    },
+                    proof_received_at.expect("cross-checked anchor range has a receipt"),
+                ));
+            }
+            if from_block == 0 {
+                break;
+            }
+            next_block_exclusive = from_block;
         }
-        let boundary = decode_latest_round_boundary(&value, &header)?;
-        if !feed
-            .aggregators
-            .values()
-            .any(|phase_id| i32::from(*phase_id) == boundary.phase_id)
-        {
-            return Err(integrity_error(
-                "polygon_oracle_startup_anchor_phase_missing",
-                format!(
-                    "historical startup anchor used unknown Chainlink phase {}",
-                    boundary.phase_id
-                ),
-            ));
-        }
-        Ok((
-            boundary,
-            maximum_receipt(
-                call_received_at,
-                [
-                    archive_header_before_received_at,
-                    archive_header_after_received_at,
-                    header_received_at,
-                ],
+        Err(source_error_value(
+            "polygon_oracle_startup_anchor_unavailable",
+            format!(
+                "no cross-provider canonical AnswerUpdated anchor was found in {} bounded windows before block {scan_start}; retrying without checkpoint advancement",
+                MAX_STARTUP_ANCHOR_WINDOWS
             ),
         ))
+    }
+
+    async fn cross_checked_startup_logs(
+        &self,
+        feed: &FeedMetadata,
+        addresses: &[String],
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<DecodedLogBatch, StrategyError> {
+        let (archive, canonical) = tokio::try_join!(
+            self.fetch_logs_for_addresses_at(
+                &self.config.archive_log_rpc_url,
+                addresses,
+                from_block,
+                to_block,
+            ),
+            self.fetch_logs_for_addresses_at(
+                &self.config.rpc_url,
+                addresses,
+                from_block,
+                to_block,
+            )
+        )?;
+        let ((archive_end, archive_end_received_at), (canonical_end, canonical_end_received_at)) =
+            tokio::try_join!(
+                self.block_by_number_at_with_receipt(&self.config.archive_log_rpc_url, to_block,),
+                self.block_by_number_with_receipt(to_block),
+            )?;
+        if archive_end.hash != canonical_end.hash
+            || archive_end.timestamp != canonical_end.timestamp
+        {
+            return Err(source_error_value(
+                "polygon_oracle_startup_anchor_fork_mismatch",
+                format!(
+                    "archive and canonical RPCs disagreed on startup proof endpoint block {to_block}"
+                ),
+            ));
+        }
+        let archive = self
+            .decode_log_batch(archive, feed, from_block, to_block)
+            .await?;
+        let canonical = self
+            .decode_log_batch(canonical, feed, from_block, to_block)
+            .await?;
+        cross_checked_startup_batch(
+            archive,
+            canonical,
+            archive_end_received_at,
+            canonical_end_received_at,
+        )
     }
 
     async fn fetch_logs(
@@ -1600,6 +1627,22 @@ impl PolygonChainlinkBtcusdOracleStrategy {
         from_block: u64,
         to_block: u64,
     ) -> Result<LogBatch, StrategyError> {
+        self.fetch_logs_for_addresses_at(
+            &self.config.archive_log_rpc_url,
+            addresses,
+            from_block,
+            to_block,
+        )
+        .await
+    }
+
+    async fn fetch_logs_for_addresses_at(
+        &self,
+        rpc_url: &str,
+        addresses: &[String],
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<LogBatch, StrategyError> {
         if addresses.is_empty() || addresses.len() > usize::from(MAX_AGGREGATOR_PHASES) {
             return Err(integrity_error(
                 "polygon_oracle_log_address_bound_invalid",
@@ -1608,7 +1651,7 @@ impl PolygonChainlinkBtcusdOracleStrategy {
         }
         let result = self
             .rpc_at(
-                &self.config.archive_log_rpc_url,
+                rpc_url,
                 "eth_getLogs",
                 json!([{
                     "address": addresses,
@@ -3125,93 +3168,6 @@ fn decode_block_header(
     })
 }
 
-fn decode_latest_round_boundary(
-    value: &str,
-    block: &BlockHeader,
-) -> Result<RoundBoundary, StrategyError> {
-    let encoded = value.strip_prefix("0x").ok_or_else(|| {
-        integrity_error(
-            "polygon_oracle_startup_anchor_invalid",
-            "historical latestRoundData result lacked its 0x prefix",
-        )
-    })?;
-    if encoded.len() != 5 * 64 || !encoded.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(integrity_error(
-            "polygon_oracle_startup_anchor_invalid",
-            "historical latestRoundData result was not exactly five ABI words",
-        ));
-    }
-    let word = |index: usize| &encoded[index * 64..(index + 1) * 64];
-    let composite_round_id = parse_abi_u128(word(0))?;
-    let _answer = parse_positive_i128_word(word(1))?;
-    let started_at = parse_abi_u64(word(2))?;
-    let updated_at = parse_abi_u64(word(3))?;
-    let answered_in_round = parse_abi_u128(word(4))?;
-    if composite_round_id == 0
-        || composite_round_id >> 80 != 0
-        || answered_in_round < composite_round_id
-        || answered_in_round >> 80 != 0
-        || updated_at == 0
-        || started_at > updated_at
-    {
-        return Err(integrity_error(
-            "polygon_oracle_startup_anchor_invalid",
-            "historical latestRoundData result did not describe a completed Chainlink round",
-        ));
-    }
-    let phase_id = i32::from(u16::try_from(composite_round_id >> 64).map_err(|_| {
-        integrity_error(
-            "polygon_oracle_startup_anchor_invalid",
-            "historical latestRoundData phase overflowed",
-        )
-    })?);
-    let aggregator_round_id =
-        i64::try_from(composite_round_id & u128::from(u64::MAX)).map_err(|_| {
-            integrity_error(
-                "polygon_oracle_startup_anchor_invalid",
-                "historical latestRoundData aggregator round overflowed PostgreSQL bigint",
-            )
-        })?;
-    if phase_id <= 0 || aggregator_round_id <= 0 {
-        return Err(integrity_error(
-            "polygon_oracle_startup_anchor_invalid",
-            "historical latestRoundData phase and aggregator round must be positive",
-        ));
-    }
-    let source_seconds = i64::try_from(updated_at).map_err(|_| {
-        integrity_error(
-            "polygon_oracle_startup_anchor_invalid",
-            "historical latestRoundData timestamp overflowed signed seconds",
-        )
-    })?;
-    let source_timestamp = Utc
-        .timestamp_opt(source_seconds, 0)
-        .single()
-        .ok_or_else(|| {
-            integrity_error(
-                "polygon_oracle_startup_anchor_invalid",
-                "historical latestRoundData timestamp was not representable",
-            )
-        })?;
-    if source_timestamp > block.timestamp {
-        return Err(integrity_error(
-            "polygon_oracle_startup_anchor_after_block",
-            "historical latestRoundData timestamp followed its canonical block timestamp",
-        ));
-    }
-    Ok(RoundBoundary {
-        phase_id,
-        aggregator_round_id,
-        source_timestamp,
-        block_number: i64::try_from(block.number).map_err(|_| {
-            integrity_error(
-                "polygon_oracle_startup_anchor_invalid",
-                "historical startup anchor block overflowed PostgreSQL bigint",
-            )
-        })?,
-    })
-}
-
 fn abi_calldata(signature: &str, arguments: &[String]) -> String {
     let digest = Keccak256::digest(signature.as_bytes());
     let mut encoded = format!("0x{}", hex::encode(&digest[..4]));
@@ -3261,18 +3217,6 @@ fn parse_abi_u64(value: &str) -> Result<u64, StrategyError> {
     }
     u64::from_str_radix(&word[48..], 16)
         .map_err(|error| integrity_error("polygon_oracle_abi_u64_invalid", error.to_string()))
-}
-
-fn parse_abi_u128(value: &str) -> Result<u128, StrategyError> {
-    let word = normalized_word(value)?;
-    if !word[..32].bytes().all(|byte| byte == b'0') {
-        return Err(integrity_error(
-            "polygon_oracle_abi_u128_overflow",
-            "ABI unsigned integer exceeded 128 bits",
-        ));
-    }
-    u128::from_str_radix(&word[32..], 16)
-        .map_err(|error| integrity_error("polygon_oracle_abi_u128_invalid", error.to_string()))
 }
 
 fn parse_positive_i128_word(value: &str) -> Result<i128, StrategyError> {
@@ -3676,6 +3620,49 @@ fn maximum_receipt(
         .fold(initial, |maximum, receipt| maximum.max(receipt))
 }
 
+fn prior_anchor_range(next_block_exclusive: u64, maximum_block_range: u64) -> Option<(u64, u64)> {
+    let to_block = next_block_exclusive.checked_sub(1)?;
+    let block_count = maximum_block_range.clamp(1, STARTUP_ANCHOR_WINDOW_BLOCKS);
+    Some((
+        to_block.saturating_sub(block_count.saturating_sub(1)),
+        to_block,
+    ))
+}
+
+fn cross_checked_startup_batch(
+    mut archive: DecodedLogBatch,
+    mut canonical: DecodedLogBatch,
+    archive_header_received_at: DateTime<Utc>,
+    canonical_header_received_at: DateTime<Utc>,
+) -> Result<DecodedLogBatch, StrategyError> {
+    let received_at = maximum_receipt(
+        archive.received_at,
+        [
+            canonical.received_at,
+            archive_header_received_at,
+            canonical_header_received_at,
+        ],
+    );
+    for round in &mut archive.rounds {
+        round.received_at = received_at;
+    }
+    for round in &mut canonical.rounds {
+        round.received_at = received_at;
+    }
+    if archive.rounds != canonical.rounds {
+        return Err(source_error_value(
+            "polygon_oracle_startup_anchor_provider_mismatch",
+            format!(
+                "archive and canonical RPCs returned different AnswerUpdated facts ({} versus {})",
+                archive.rounds.len(),
+                canonical.rounds.len()
+            ),
+        ));
+    }
+    canonical.received_at = received_at;
+    Ok(canonical)
+}
+
 fn classify_round_gap_outcome(complete: bool, repair_attempts: i32) -> RoundGapOutcome {
     if complete {
         RoundGapOutcome::Repaired
@@ -3778,6 +3765,11 @@ mod tests {
         assert!(config.validate().is_err());
         config.rpc_url = "https://example.com".to_owned();
         assert!(config.validate().is_err());
+        let same_provider = PolygonChainlinkBtcusdOracleConfig {
+            archive_log_rpc_url: DEFAULT_RPC_URL.to_owned(),
+            ..PolygonChainlinkBtcusdOracleConfig::default()
+        };
+        assert!(same_provider.validate().is_err());
     }
 
     #[test]
@@ -3815,7 +3807,6 @@ mod tests {
     fn computes_canonical_chainlink_selectors_and_topic() {
         assert_eq!(abi_calldata("decimals()", &[]), "0x313ce567");
         assert_eq!(abi_calldata("phaseId()", &[]), "0x58303b10");
-        assert_eq!(abi_calldata("latestRoundData()", &[]), "0xfeaf968c");
         assert_eq!(
             event_topic("AnswerUpdated(int256,uint256,uint256)"),
             "0x0559884fd3a460db3073b7fc896cc77986f16e378210ded43186175bf646fc5f"
@@ -3860,24 +3851,58 @@ mod tests {
     }
 
     #[test]
-    fn historical_startup_anchor_detects_a_truncated_leading_round() {
-        let composite_round = (3_u128 << 64) | 40;
-        let updated_at = 1_774_094_398_u64;
-        let encoded = format!(
-            "0x{composite_round:064x}{:064x}{:064x}{updated_at:064x}{composite_round:064x}",
-            8_400_000_000_000_u128,
-            updated_at - 1,
-        );
-        let block = BlockHeader {
-            number: 98,
-            hash: format!("0x{}", "9".repeat(64)),
-            timestamp: Utc.timestamp_opt(1_774_094_399, 0).unwrap(),
-        };
-        let boundary = decode_latest_round_boundary(&encoded, &block).unwrap();
-        assert_eq!(boundary.phase_id, 3);
-        assert_eq!(boundary.aggregator_round_id, 40);
-        assert_eq!(boundary.block_number, 98);
+    fn cross_checked_log_anchor_detects_a_truncated_leading_round() {
+        assert_eq!(prior_anchor_range(10_000, 30_000), Some((7_952, 9_999)));
+        assert_eq!(prior_anchor_range(100, 1), Some((99, 99)));
+        assert_eq!(prior_anchor_range(0, 30_000), None);
 
+        let first_receipt = Utc.with_ymd_and_hms(2026, 3, 21, 12, 0, 1).unwrap();
+        let second_receipt = Utc.with_ymd_and_hms(2026, 3, 21, 12, 0, 2).unwrap();
+        let archive_header_receipt = Utc.with_ymd_and_hms(2026, 3, 21, 12, 0, 3).unwrap();
+        let canonical_header_receipt = Utc.with_ymd_and_hms(2026, 3, 21, 12, 0, 4).unwrap();
+        let anchor_round = fixture_round();
+        let verified = cross_checked_startup_batch(
+            DecodedLogBatch {
+                rounds: vec![anchor_round.clone()],
+                received_at: first_receipt,
+            },
+            DecodedLogBatch {
+                rounds: vec![anchor_round],
+                received_at: second_receipt,
+            },
+            archive_header_receipt,
+            canonical_header_receipt,
+        )
+        .unwrap();
+        assert_eq!(verified.received_at, canonical_header_receipt);
+        assert_eq!(verified.rounds[0].received_at, canonical_header_receipt);
+
+        let mut mismatch = fixture_round();
+        mismatch.aggregator_round_id += 1;
+        let error = cross_checked_startup_batch(
+            DecodedLogBatch {
+                rounds: vec![fixture_round()],
+                received_at: first_receipt,
+            },
+            DecodedLogBatch {
+                rounds: vec![mismatch],
+                received_at: second_receipt,
+            },
+            archive_header_receipt,
+            canonical_header_receipt,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.code,
+            "polygon_oracle_startup_anchor_provider_mismatch"
+        );
+
+        let boundary = RoundBoundary {
+            phase_id: 3,
+            aggregator_round_id: 40,
+            source_timestamp: Utc.with_ymd_and_hms(2026, 3, 21, 11, 59, 58).unwrap(),
+            block_number: 98,
+        };
         let mut first_returned = fixture_round();
         first_returned.aggregator_round_id = 42;
         let gaps = detect_round_gaps_from_boundaries(
