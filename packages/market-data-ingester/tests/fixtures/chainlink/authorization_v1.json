@@ -1,6 +1,7 @@
 {
   "s": "ok",
   "d": {
-    "access_token": "sanitized-fixture-access-token"
+    "access_token": "sanitized-fixture-access-token",
+    "expiration": 2000000000
   }
 }

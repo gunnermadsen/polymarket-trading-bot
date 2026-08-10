@@ -2,7 +2,9 @@
 //!
 //! Chainlink authenticates archive requests with HMAC. Decoding a v3 report
 //! validates its envelope identity and timestamps, but does not verify the
-//! report's DON signature quorum.
+//! report's DON signature quorum. Factual report identity hashes the decoded
+//! v3 report blob, so provider re-signing of its outer callback container does
+//! not create a new market-data fact.
 
 use std::{
     collections::{BTreeSet, HashSet},
@@ -1011,7 +1013,10 @@ fn decode_report(
         ));
     }
 
-    let report_sha256 = hex_digest(Sha256::digest(&bytes));
+    // The outer callback contains provider signing material that can change
+    // when the same factual report is served again. It is decoded above as an
+    // integrity envelope, while the stable v3 report blob defines identity.
+    let report_sha256 = hex_digest(Sha256::digest(&report_blob));
     let payload_sha256 = canonical_payload_sha256(
         &feed_id,
         report.observations_timestamp,
@@ -1693,6 +1698,52 @@ mod tests {
         assert!(reports
             .iter()
             .all(|report| report.report_sha256.len() == 64));
+    }
+
+    #[test]
+    fn outer_callback_variants_share_the_stable_report_blob_identity() {
+        let mut page = serde_json::from_value::<ReportsPage>(fixture()).expect("fixture page");
+        let original = page.reports.remove(0);
+        let mut outer_bytes = hex::decode(
+            original
+                .full_report
+                .strip_prefix("0x")
+                .unwrap_or(&original.full_report),
+        )
+        .expect("fixture outer callback hex");
+        let original_outer_sha256 = hex_digest(Sha256::digest(&outer_bytes));
+        let (_, original_blob) = decode_full_report(&outer_bytes).expect("fixture report blob");
+
+        // Provider signing/context bytes live outside reportBlob. Varying one
+        // such byte models a fresh outer callback around the same v3 fact.
+        outer_bytes[0] ^= 0x01;
+        let variant_outer_sha256 = hex_digest(Sha256::digest(&outer_bytes));
+        let (_, variant_blob) = decode_full_report(&outer_bytes).expect("variant report blob");
+        assert_ne!(original_outer_sha256, variant_outer_sha256);
+        assert_eq!(original_blob, variant_blob);
+
+        let mut variant = original.clone();
+        variant.full_report = format!("0x{}", hex::encode(outer_bytes));
+        let received_at = Utc
+            .with_ymd_and_hms(2025, 1, 1, 0, 0, 5)
+            .single()
+            .expect("valid receipt time");
+        let original_observation =
+            decode_report(&original, BTCUSD_FEED_ID, received_at).expect("original report");
+        let variant_observation =
+            decode_report(&variant, BTCUSD_FEED_ID, received_at).expect("variant report");
+        assert_eq!(
+            original_observation.report_sha256,
+            hex_digest(Sha256::digest(&original_blob))
+        );
+        assert_eq!(
+            original_observation.report_sha256,
+            variant_observation.report_sha256
+        );
+        assert_eq!(
+            original_observation.payload_sha256,
+            variant_observation.payload_sha256
+        );
     }
 
     #[test]

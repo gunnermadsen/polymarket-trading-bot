@@ -54,6 +54,7 @@ const CHAINLINK_PRICE_SCALE: i128 = 1_000_000_000_000_000_000;
 const MAX_AUTHORIZATION_BODY_BYTES: usize = 65_536;
 const MAX_HISTORY_BODY_BYTES: usize = 2_097_152;
 const GAP_REPAIRS_PER_POLL: i64 = 8;
+const AUTHORIZATION_REFRESH_MARGIN_SECONDS: i64 = 30;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -301,7 +302,22 @@ pub struct ChainlinkBtcusdOneMinuteOhlcStrategy {
 struct CandleRunState {
     last_open: Option<DateTime<Utc>>,
     artifact: Option<CaptureArtifact>,
-    access_token: Option<Arc<str>>,
+    access_token: Option<CachedAccessToken>,
+}
+
+#[derive(Clone)]
+struct CachedAccessToken {
+    value: Arc<str>,
+    expires_at: DateTime<Utc>,
+}
+
+impl CachedAccessToken {
+    fn is_usable_at(&self, now: DateTime<Utc>) -> bool {
+        self.expires_at.timestamp()
+            > now
+                .timestamp()
+                .saturating_add(AUTHORIZATION_REFRESH_MARGIN_SECONDS)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -454,6 +470,7 @@ struct AuthorizationResponse {
 #[serde(deny_unknown_fields)]
 struct AuthorizationData {
     access_token: String,
+    expiration: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -677,7 +694,11 @@ impl ChainlinkBtcusdOneMinuteOhlcStrategy {
         }
 
         for attempt in 0..2 {
-            if state.access_token.is_none() {
+            if state
+                .access_token
+                .as_ref()
+                .is_none_or(|token| !token.is_usable_at(Utc::now()))
+            {
                 state.access_token = Some(self.authorize(shutdown).await?);
             }
             let token = state
@@ -697,7 +718,7 @@ impl ChainlinkBtcusdOneMinuteOhlcStrategy {
             let request = self
                 .client
                 .get(endpoint)
-                .bearer_auth(token.as_ref())
+                .bearer_auth(token.value.as_ref())
                 .query(&[
                     ("symbol", self.config.symbol.as_str()),
                     ("resolution", self.config.resolution.as_str()),
@@ -757,7 +778,10 @@ impl ChainlinkBtcusdOneMinuteOhlcStrategy {
         unreachable!("authorization retry loop returns on its second attempt")
     }
 
-    async fn authorize(&self, shutdown: &CancellationToken) -> Result<Arc<str>, StrategyError> {
+    async fn authorize(
+        &self,
+        shutdown: &CancellationToken,
+    ) -> Result<CachedAccessToken, StrategyError> {
         let endpoint = format!(
             "{}/api/v1/authorize",
             self.config.base_url.trim_end_matches('/')
@@ -797,7 +821,7 @@ impl ChainlinkBtcusdOneMinuteOhlcStrategy {
             "Chainlink Candlestick authorization",
         )
         .await?;
-        decode_authorization_body(&body)
+        decode_authorization_body(&body, Utc::now())
     }
 
     async fn persist_capture(
@@ -1467,7 +1491,10 @@ impl ChainlinkBtcusdOneMinuteOhlcStrategy {
     }
 }
 
-fn decode_authorization_body(body: &[u8]) -> Result<Arc<str>, StrategyError> {
+fn decode_authorization_body(
+    body: &[u8],
+    received_at: DateTime<Utc>,
+) -> Result<CachedAccessToken, StrategyError> {
     let authorization = serde_json::from_slice::<AuthorizationResponse>(body).map_err(|error| {
         source_error(
             "chainlink_candle_authorization_invalid_body",
@@ -1483,7 +1510,26 @@ fn decode_authorization_body(body: &[u8]) -> Result<Arc<str>, StrategyError> {
             "Chainlink Candlestick authorization did not contain a bounded nonempty access token",
         ));
     }
-    Ok(Arc::<str>::from(authorization.d.access_token))
+    let expires_at = Utc
+        .timestamp_opt(authorization.d.expiration, 0)
+        .single()
+        .ok_or_else(|| {
+            source_error(
+                "chainlink_candle_authorization_invalid_body",
+                "Chainlink Candlestick authorization expiration is outside the supported range",
+            )
+        })?;
+    let token = CachedAccessToken {
+        value: Arc::<str>::from(authorization.d.access_token),
+        expires_at,
+    };
+    if !token.is_usable_at(received_at) {
+        return Err(source_error(
+            "chainlink_candle_authorization_invalid_body",
+            "Chainlink Candlestick authorization token expires within the refresh margin",
+        ));
+    }
+    Ok(token)
 }
 
 fn decode_history_body(
@@ -1966,8 +2012,36 @@ mod tests {
 
     #[test]
     fn authorization_fixture_decodes_a_sanitized_token() {
-        let token = decode_authorization_body(AUTHORIZATION_FIXTURE).expect("valid authorization");
-        assert_eq!(token.as_ref(), "sanitized-fixture-access-token");
+        let token = decode_authorization_body(AUTHORIZATION_FIXTURE, minute(1_722_470_400))
+            .expect("valid authorization");
+        assert_eq!(token.value.as_ref(), "sanitized-fixture-access-token");
+        assert_eq!(token.expires_at, minute(2_000_000_000));
+        assert!(token.is_usable_at(minute(1_999_999_969)));
+        assert!(!token.is_usable_at(minute(1_999_999_970)));
+    }
+
+    #[test]
+    fn stale_authorization_expiration_is_rejected() {
+        let mut payload: Value =
+            serde_json::from_slice(AUTHORIZATION_FIXTURE).expect("fixture is JSON");
+        payload["d"]["expiration"] = json!(1_722_470_430);
+        let body = serde_json::to_vec(&payload).expect("encode mutated fixture");
+        let error = decode_authorization_body(&body, minute(1_722_470_400))
+            .err()
+            .expect("token expiring at the refresh margin must fail");
+        assert_eq!(error.code, "chainlink_candle_authorization_invalid_body");
+    }
+
+    #[test]
+    fn invalid_authorization_expiration_is_rejected() {
+        let mut payload: Value =
+            serde_json::from_slice(AUTHORIZATION_FIXTURE).expect("fixture is JSON");
+        payload["d"]["expiration"] = json!("not-an-epoch-second");
+        let body = serde_json::to_vec(&payload).expect("encode mutated fixture");
+        let error = decode_authorization_body(&body, minute(1_722_470_400))
+            .err()
+            .expect("noninteger expiration must fail");
+        assert_eq!(error.code, "chainlink_candle_authorization_invalid_body");
     }
 
     #[test]
