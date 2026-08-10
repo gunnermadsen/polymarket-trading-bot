@@ -17,7 +17,8 @@ RUN mkdir src \
     && rm -rf src
 
 COPY src ./src
-RUN cargo build --locked --release \
+RUN find src -type f -exec touch {} + \
+    && cargo build --locked --release \
     && cp target/release/market-data-ingester /usr/local/bin/market-data-ingester
 
 FROM debian:bookworm-slim
