@@ -16,9 +16,15 @@ services:
     pids_limit: 128
     env_file:
       - .env.postgres
+      - path: .env.market-data-ingester
+        required: false
     environment:
       RUST_LOG: "info"
-      DATABASE_URL: "postgres://postgres:${POSTGRES_PASSWORD}@timescaledb-0:5432/polymarket"
+      POSTGRES_HOST: "timescaledb-0"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "polymarket"
+      POSTGRES_SSL_MODE: "disable"
       MARKET_DATA_INGESTER_INSTANCE: "market-data-ingester-1"
       MARKET_DATA_INGESTER_API_BIND: "0.0.0.0:8098"
       MARKET_DATA_INGESTER_DB_POOL_CONNECTIONS: "4"
