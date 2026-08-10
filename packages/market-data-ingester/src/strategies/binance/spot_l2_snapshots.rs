@@ -974,10 +974,9 @@ impl CaptureWriter {
     }
 
     async fn seal_current(&mut self, fence: ArtifactSealFence) -> Result<(), StrategyError> {
-        let Some(current) = self.current.take() else {
+        if self.current.is_none() {
             return Ok(());
-        };
-        let content_sha256 = encode_digest(current.content_hasher.finalize());
+        }
         let mut transaction = self.pool.begin().await.map_err(|error| {
             database_error(
                 "binance_l2_artifact_complete_transaction_failed",
@@ -994,6 +993,11 @@ impl CaptureWriter {
                     .await?;
             }
         }
+        let current = self
+            .current
+            .take()
+            .expect("open artifact was checked before awaiting its lease fence");
+        let content_sha256 = encode_digest(current.content_hasher.finalize());
         let completed = self
             .artifacts
             .complete_in(
@@ -1026,6 +1030,31 @@ impl CaptureWriter {
             record_count = current.inserted_records,
             "completed Binance spot L2 capture artifact"
         );
+        Ok(())
+    }
+
+    async fn seal_owned_drain(&mut self) -> Result<(), StrategyError> {
+        if self.current.is_some() {
+            return self.seal_current(ArtifactSealFence::OwnedDrain).await;
+        }
+
+        // A strict write can lose the current desired-generation fence before
+        // any artifact exists. Still prove ownership of the applied generation
+        // before treating that exit as a requested drain.
+        let mut transaction = self.pool.begin().await.map_err(|error| {
+            database_error(
+                "binance_l2_owned_drain_transaction_failed",
+                format!("failed to begin Binance L2 owned-drain transaction: {error}"),
+            )
+        })?;
+        self.lock_owned_lease(&mut transaction, "confirming an empty owned drain")
+            .await?;
+        transaction.commit().await.map_err(|error| {
+            database_error(
+                "binance_l2_owned_drain_commit_failed",
+                format!("failed to commit Binance L2 owned-drain fence: {error}"),
+            )
+        })?;
         Ok(())
     }
 
@@ -1486,7 +1515,7 @@ impl IngesterStrategy for BinanceSpotL2SnapshotStrategy {
 
         loop {
             if shutdown.is_cancelled() {
-                writer.seal_current(ArtifactSealFence::OwnedDrain).await?;
+                writer.seal_owned_drain().await?;
                 return Ok(());
             }
             let connection_epoch = Uuid::new_v4();
@@ -1502,8 +1531,29 @@ impl IngesterStrategy for BinanceSpotL2SnapshotStrategy {
                 .await;
             match result {
                 Ok(()) => {
-                    writer.seal_current(ArtifactSealFence::OwnedDrain).await?;
+                    writer.seal_owned_drain().await?;
                     return Ok(());
+                }
+                Err(error) if is_current_profile_lease_loss(&error) => {
+                    match writer.seal_owned_drain().await {
+                        Ok(()) => {
+                            info!(
+                                error_code = error.code,
+                                "Binance spot L2 strict write observed a requested profile drain"
+                            );
+                            shutdown.cancelled().await;
+                            return Ok(());
+                        }
+                        Err(drain_error) if drain_error.kind == StrategyErrorKind::LeaseLost => {
+                            warn!(
+                                error = %error,
+                                drain_error = %drain_error,
+                                "Binance spot L2 no longer owns the applied generation during drain"
+                            );
+                            return Err(error);
+                        }
+                        Err(drain_error) => return Err(drain_error),
+                    }
                 }
                 Err(error) if error.kind == StrategyErrorKind::TransientSource => {
                     if !gap_was_recorded(error.code) {
@@ -1532,7 +1582,7 @@ impl IngesterStrategy for BinanceSpotL2SnapshotStrategy {
                     }
                     tokio::select! {
                         _ = shutdown.cancelled() => {
-                            writer.seal_current(ArtifactSealFence::OwnedDrain).await?;
+                            writer.seal_owned_drain().await?;
                             return Ok(());
                         }
                         _ = tokio::time::sleep(reconnect_delay) => {}
@@ -1993,6 +2043,10 @@ fn gap_was_recorded(code: &str) -> bool {
     )
 }
 
+fn is_current_profile_lease_loss(error: &StrategyError) -> bool {
+    error.kind == StrategyErrorKind::LeaseLost && error.code == "binance_l2_lease_lost"
+}
+
 fn source_error(code: &'static str, message: impl Into<String>) -> StrategyError {
     StrategyError::new(StrategyErrorKind::TransientSource, code, message)
 }
@@ -2246,6 +2300,25 @@ mod tests {
             encode_digest(first.finalize()),
             encode_digest(second.finalize())
         );
+    }
+
+    #[test]
+    fn only_current_profile_fence_loss_can_enter_owned_drain() {
+        let requested_drain = lease_error(
+            "binance_l2_lease_lost",
+            "strict write observed a desired-generation change",
+        );
+        assert!(is_current_profile_lease_loss(&requested_drain));
+
+        let newer_artifact = lease_error(
+            "binance_l2_newer_artifact_generation",
+            "a newer strategy owns the open artifact",
+        );
+        assert!(!is_current_profile_lease_loss(&newer_artifact));
+        assert!(!is_current_profile_lease_loss(&source_error(
+            "binance_l2_websocket_eof",
+            "source disconnected",
+        )));
     }
 
     #[test]

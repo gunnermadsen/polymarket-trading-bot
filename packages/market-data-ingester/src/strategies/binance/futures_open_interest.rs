@@ -243,7 +243,17 @@ impl IngesterStrategy for BinanceFuturesOpenInterestStrategy {
                     return Ok(());
                 }
                 _ = ticker.tick() => {
-                    self.capture(&mut checkpoint).await?;
+                    match self.capture(&mut checkpoint).await {
+                        Ok(()) => {}
+                        Err(error) if error.kind == StrategyErrorKind::LeaseLost => {
+                            if let Err(drain_error) = self.seal_open_artifact().await {
+                                return Err(owned_drain_failure(error, drain_error));
+                            }
+                            shutdown.cancelled().await;
+                            return Ok(());
+                        }
+                        Err(error) => return Err(error),
+                    }
                 }
             }
         }
@@ -682,9 +692,12 @@ impl BinanceFuturesOpenInterestStrategy {
             .await
             .map_err(database_error("open_interest_load_artifact_for_seal"))?
         {
-            if open.profile_generation == self.profile_generation {
-                self.seal_artifact(&open, true).await?;
+            if open.profile_generation > self.profile_generation {
+                return Err(lease_lost("draining a newer capture artifact"));
             }
+            self.seal_artifact(&open, true).await?;
+        } else {
+            self.verify_owned_lease().await?;
         }
         Ok(())
     }
@@ -797,6 +810,20 @@ impl BinanceFuturesOpenInterestStrategy {
             return Err(lease_lost(action));
         }
         Ok(())
+    }
+
+    async fn verify_owned_lease(&self) -> Result<(), StrategyError> {
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(database_error("open_interest_begin_owned_lease_check"))?;
+        self.lock_owned_lease(&mut transaction, "draining a superseded generation")
+            .await?;
+        transaction
+            .commit()
+            .await
+            .map_err(database_error("open_interest_commit_owned_lease_check"))
     }
 
     async fn reconcile_gaps(
@@ -1396,6 +1423,14 @@ fn lease_lost(action: &str) -> StrategyError {
     )
 }
 
+fn owned_drain_failure(original: StrategyError, drain: StrategyError) -> StrategyError {
+    if drain.kind == StrategyErrorKind::LeaseLost {
+        original
+    } else {
+        drain
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Duration as ChronoDuration;
@@ -1537,5 +1572,27 @@ mod tests {
             .expect("zero is a factual nonnegative value");
         assert_eq!(rows[0].sum_open_interest, Decimal::ZERO);
         assert_eq!(rows[0].sum_open_interest_value, Decimal::ZERO);
+    }
+
+    #[test]
+    fn owned_drain_preserves_true_lease_loss_and_surfaces_operational_failure() {
+        let original = lease_lost("committing strict progress");
+        let lost_during_drain = lease_lost("draining an artifact");
+        let preserved = owned_drain_failure(original, lost_during_drain);
+        assert_eq!(preserved.kind, StrategyErrorKind::LeaseLost);
+        assert_eq!(
+            preserved.message,
+            "profile lease was lost while committing strict progress"
+        );
+
+        let original = lease_lost("committing strict progress");
+        let database = StrategyError::new(
+            StrategyErrorKind::TransientDatabase,
+            "owned_drain_database_failure",
+            "database unavailable while verifying owned drain",
+        );
+        let surfaced = owned_drain_failure(original, database);
+        assert_eq!(surfaced.kind, StrategyErrorKind::TransientDatabase);
+        assert_eq!(surfaced.code, "owned_drain_database_failure");
     }
 }

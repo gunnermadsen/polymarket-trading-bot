@@ -647,11 +647,7 @@ impl IngesterStrategy for BinanceSpotOneSecondOhlcvStrategy {
                             database_error("binance_ohlcv_degraded_state_failed", database)
                         })?;
                     if !marked {
-                        if shutdown.is_cancelled() {
-                            self.seal_artifact(&mut state, true).await?;
-                            return Ok(());
-                        }
-                        return Err(lease_lost_error());
+                        return self.finish_owned_drain(&mut state).await;
                     }
                     warn!(
                         strategy = %STRATEGY_KEY,
@@ -670,6 +666,9 @@ impl IngesterStrategy for BinanceSpotOneSecondOhlcvStrategy {
                     reconnect_delay = reconnect_delay
                         .saturating_mul(2)
                         .min(self.config.reconnect_max_delay_ms);
+                }
+                Err(error) if should_attempt_owned_drain(error.kind) => {
+                    return self.finish_owned_drain(&mut state).await;
                 }
                 Err(error) => {
                     if let Err(seal_error) = self.seal_artifact(&mut state, false).await {
@@ -856,6 +855,16 @@ impl BinanceSpotOneSecondOhlcvStrategy {
             verify_artifact_generation(artifact.profile_generation, self.profile_generation)?;
         }
         let Some(artifact) = state.artifact.as_ref().cloned() else {
+            if allow_draining_generation {
+                let mut transaction = self.pool.begin().await.map_err(|error| {
+                    database_error("binance_ohlcv_drain_transaction_failed", error)
+                })?;
+                self.assert_lease_in(&mut transaction, true).await?;
+                transaction
+                    .commit()
+                    .await
+                    .map_err(|error| database_error("binance_ohlcv_drain_commit_failed", error))?;
+            }
             return Ok(());
         };
         let seal = self.artifact_seal(&artifact).await?;
@@ -896,6 +905,16 @@ impl BinanceSpotOneSecondOhlcvStrategy {
             record_count = artifact.record_count,
             content_sha256 = %seal.content_sha256,
             "sealed one-second OHLCV capture artifact"
+        );
+        Ok(())
+    }
+
+    async fn finish_owned_drain(&self, state: &mut OhlcvRunState) -> Result<(), StrategyError> {
+        self.seal_artifact(state, true).await?;
+        info!(
+            strategy = %STRATEGY_KEY,
+            generation = self.profile_generation,
+            "one-second OHLCV strategy drained after a desired-state lease race"
         );
         Ok(())
     }
@@ -1962,6 +1981,10 @@ fn verify_artifact_generation(
     Ok(())
 }
 
+fn should_attempt_owned_drain(kind: StrategyErrorKind) -> bool {
+    kind == StrategyErrorKind::LeaseLost
+}
+
 fn shutdown_error() -> StrategyError {
     StrategyError::new(
         StrategyErrorKind::Shutdown,
@@ -2089,5 +2112,14 @@ mod tests {
         assert!(verify_artifact_generation(8, 7).is_err());
         assert!(verify_artifact_generation(7, 7).is_ok());
         assert!(verify_artifact_generation(6, 7).is_ok());
+    }
+
+    #[test]
+    fn only_strict_lease_loss_routes_to_owned_drain() {
+        assert!(should_attempt_owned_drain(StrategyErrorKind::LeaseLost));
+        assert!(!should_attempt_owned_drain(
+            StrategyErrorKind::TransientDatabase
+        ));
+        assert!(!should_attempt_owned_drain(StrategyErrorKind::Integrity));
     }
 }
