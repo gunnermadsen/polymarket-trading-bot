@@ -75,7 +75,7 @@ impl Default for ChainlinkBtcusdReferencePriceConfig {
             poll_interval_ms: 1_000,
             recent_window_seconds: 300,
             overlap_seconds: 5,
-            page_limit: 1_000,
+            page_limit: 100,
             max_pages_per_poll: 8,
             artifact_window_seconds: 3_600,
             request_timeout_seconds: 10,
@@ -119,8 +119,8 @@ impl ChainlinkBtcusdReferencePriceConfig {
                 "overlap_seconds must be positive and no greater than recent_window_seconds",
             ));
         }
-        if !(1..=1_000).contains(&self.page_limit) {
-            return Err(invalid_config("page_limit must be between 1 and 1000"));
+        if !(1..=100).contains(&self.page_limit) {
+            return Err(invalid_config("page_limit must be between 1 and 100"));
         }
         if !(1..=64).contains(&self.max_pages_per_poll) {
             return Err(invalid_config(
@@ -1409,6 +1409,7 @@ mod tests {
         config.validate().expect("default config should be valid");
         let encoded = serde_json::to_value(config).expect("config serializes");
         assert_eq!(encoded["feed_id"], BTCUSD_FEED_ID);
+        assert_eq!(encoded["page_limit"], 100);
         assert!(encoded
             .as_object()
             .expect("config is an object")
@@ -1443,6 +1444,15 @@ mod tests {
             ..ChainlinkBtcusdReferencePriceConfig::default()
         };
         assert!(cannot_advance_after_overlap.validate().is_err());
+    }
+
+    #[test]
+    fn provider_page_limit_is_enforced() {
+        let config = ChainlinkBtcusdReferencePriceConfig {
+            page_limit: 101,
+            ..ChainlinkBtcusdReferencePriceConfig::default()
+        };
+        assert!(config.validate().is_err());
     }
 
     #[test]

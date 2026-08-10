@@ -25,7 +25,7 @@ export class AddChainlinkBtcusdReferencePrices1786381500000
           "poll_interval_ms": 1000,
           "recent_window_seconds": 300,
           "overlap_seconds": 5,
-          "page_limit": 1000,
+          "page_limit": 100,
           "max_pages_per_poll": 8,
           "artifact_window_seconds": 3600,
           "request_timeout_seconds": 10,
