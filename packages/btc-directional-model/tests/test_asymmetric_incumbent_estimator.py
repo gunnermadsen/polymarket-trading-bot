@@ -10,6 +10,9 @@ import polars as pl
 import pytest
 
 import btc_directional_model.asymmetric_incumbent_estimator as estimator_fallback
+from btc_directional_model.asymmetric_incumbent_calibration import (
+    load_incumbent_calibration_config,
+)
 from btc_directional_model.asymmetric_incumbent_estimator import (
     BOUNDARY_WEIGHT_POLICY,
     E1_HYBRID50_H3,
@@ -29,6 +32,7 @@ from btc_directional_model.asymmetric_incumbent_estimator import (
     score_core_oracle_estimator_fallback,
 )
 from btc_directional_model.asymmetric_value_config import load_asymmetric_value_config
+from btc_directional_model.asymmetric_value_training import AsymmetricValueModel
 from btc_directional_model.core_config import load_core_config
 from btc_directional_model.core_training import ProbabilityCalibrator
 from btc_directional_model.early_value_training import TimeBandCalibrator
@@ -76,6 +80,13 @@ def _estimator_contract():
         forbidden_triggers=(),
         histogram=histogram,
         candidates=candidates,
+    )
+
+
+def _incumbent_config():
+    return load_incumbent_calibration_config(
+        Path(__file__).parents[1]
+        / "configs/btc-5m-asymmetric-core-oracle-gen2-calibration-20260716-20260802.toml"
     )
 
 
@@ -394,6 +405,150 @@ def test_selected_final_refit_uses_final_calibration_window_without_new_candidat
     assert observed["calibration_window"] is final_window
     assert observed["candidate_ids"] == (E2_HYBRID50_H3_BOUNDARY,)
     assert observed["asymmetric_config"].random_seed == 20260809
+
+
+def test_selected_final_refit_reuses_exact_estimator_and_only_changes_calibration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asymmetric_config = _asymmetric_config()
+    incumbent_config = _incumbent_config()
+    core_config = load_core_config(asymmetric_config.core_config)
+    rows = 640
+    training_frame = pl.DataFrame(
+        {
+            "market_id": [f"fit-{index // 2}" for index in range(rows)],
+            "label_up": np.arange(rows) % 2,
+            "feature": np.sin(np.arange(rows) / 13),
+        }
+    )
+    candidate = _estimator_contract().candidates[0]
+    model = _fit_histogram_estimator(
+        training_frame,
+        ("feature",),
+        np.ones(rows),
+        candidate=candidate,
+        estimator_contract=_estimator_contract(),
+        random_seed=20260809,
+        threads=core_config.compute.threads_per_fit,
+    )
+    source_frame = _calibration_frame().with_columns(
+        pl.col("raw_logit").alias("feature"),
+        (pl.col("yes_ask_vwap_5") + 0.01).alias("yes_cost_per_share"),
+        (pl.col("no_ask_vwap_5") + 0.01).alias("no_cost_per_share"),
+    )
+    development_bundle = AsymmetricValueModel(
+        name=E1_HYBRID50_H3,
+        model=model,
+        time_calibrators=(),
+        cells=(),
+        parent_calibration_source="alltime",
+        identity_l2_strength=1.0,
+    )
+    development_semantic = _bundle_semantic_sha256(development_bundle)
+    selected_fit = FittedEstimatorFallback(
+        candidate_id=E1_HYBRID50_H3,
+        bundle=development_bundle,
+        evidence={"semantic_sha256": development_semantic},
+        semantic_sha256=development_semantic,
+    )
+    refit_calibrators = _identity_time_calibrators(source_frame)
+    refit_cells, refit_evidence = fit_target_side_price_time_calibrators(
+        _SyntheticLogitModel(),  # type: ignore[arg-type]
+        refit_calibrators,
+        source_frame,
+        asymmetric_config,
+        target_price_band=EXPECTED_TARGET_PRICE_BAND,
+        target_time_bands=EXPECTED_TARGET_TIME_BANDS,
+        target_sides=EXPECTED_TARGET_SIDES,
+        minimum_markets_per_cell=50,
+        minimum_days_per_cell=7,
+        identity_l2=1.0,
+        slope_bounds=(0.05, 3.0),
+        intercept_bounds=(-2.0, 2.0),
+    )
+    estimator_object = model.estimator
+    raw_logit_before = model.raw_logit(source_frame)
+    monkeypatch.setattr(
+        estimator_fallback,
+        "_validate_selected_development_fit",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        estimator_fallback,
+        "_core_oracle_feature_contract",
+        lambda: ("feature",),
+    )
+    monkeypatch.setattr(
+        estimator_fallback,
+        "fit_asymmetric_time_band_calibrators",
+        lambda *args, **kwargs: refit_calibrators,
+    )
+    monkeypatch.setattr(
+        estimator_fallback,
+        "fit_target_side_price_time_calibrators",
+        lambda *args, **kwargs: (refit_cells, refit_evidence),
+    )
+
+    result = refit_selected_core_oracle_estimator_fallback(
+        source_frame,
+        incumbent_config,
+        asymmetric_config,
+        core_config,
+        candidate_id=E1_HYBRID50_H3,
+        incumbent_probabilities=np.asarray([], dtype=np.float64),
+        selected_fit=selected_fit,
+    )
+
+    assert result.bundle.model is model
+    assert result.bundle.model.estimator is estimator_object
+    np.testing.assert_array_equal(result.bundle.model.raw_logit(source_frame), raw_logit_before)
+    assert result.bundle.time_calibrators
+    assert len([cell for cell in result.bundle.cells if cell.fitted]) == 8
+    assert result.semantic_sha256 != development_semantic
+    assert selected_fit.semantic_sha256 == development_semantic
+    assert selected_fit.evidence == {"semantic_sha256": development_semantic}
+    reuse = result.evidence["selected_estimator_reuse"]
+    assert reuse["estimator_refit_performed"] is False
+    assert reuse["training_weights_recomputed"] is False
+    assert reuse["estimator_object_identity_preserved"] is True
+    assert reuse["estimator_semantic_sha256_before"] == reuse[
+        "estimator_semantic_sha256_after"
+    ]
+    assert reuse["estimator_bytes_sha256_before"] == reuse[
+        "estimator_bytes_sha256_after"
+    ]
+    assert reuse["raw_logit_sha256_before"] == reuse["raw_logit_sha256_after"]
+    assert reuse["only_calibration_window_expanded"] is True
+    assert result.evidence["fit_window"] == {
+        "start": asymmetric_config.fit.start.isoformat(),
+        "end_exclusive": asymmetric_config.fit.end.isoformat(),
+    }
+    assert result.evidence["calibration_window"] == {
+        "start": incumbent_config.final_refit.start.isoformat(),
+        "end_exclusive": incumbent_config.final_refit.end.isoformat(),
+    }
+
+
+def test_selected_final_refit_rejects_candidate_mismatch() -> None:
+    asymmetric_config = _asymmetric_config()
+    incumbent_config = _incumbent_config()
+    selected_fit = FittedEstimatorFallback(
+        candidate_id=E2_HYBRID50_H3_BOUNDARY,
+        bundle=_ProbabilityBundle(),  # type: ignore[arg-type]
+        evidence={},
+        semantic_sha256="b" * 64,
+    )
+
+    with pytest.raises(ValueError, match="candidate mismatch"):
+        refit_selected_core_oracle_estimator_fallback(
+            pl.DataFrame(),
+            incumbent_config,
+            asymmetric_config,
+            load_core_config(asymmetric_config.core_config),
+            candidate_id=E1_HYBRID50_H3,
+            incumbent_probabilities=np.asarray([], dtype=np.float64),
+            selected_fit=selected_fit,
+        )
 
 
 def test_bundle_semantic_hash_changes_with_estimator_candidate_contract() -> None:

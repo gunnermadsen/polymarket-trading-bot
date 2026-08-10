@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import pickle
+from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -165,16 +167,29 @@ def refit_selected_core_oracle_estimator_fallback(
     *,
     candidate_id: str,
     incumbent_probabilities: np.ndarray,
+    selected_fit: FittedEstimatorFallback | None = None,
 ) -> FittedEstimatorFallback:
-    """Refit one already-selected arm with the sealed final calibration evidence.
+    """Apply final calibration to one already-selected estimator fallback.
 
-    This does not select or compare a new candidate.  The estimator fit window
-    remains frozen; only the selected candidate's calibration window expands to
-    ``final_refit`` after development selection.
+    When ``selected_fit`` is supplied, its exact fitted Core+Oracle HGB is reused:
+    neither estimator fitting nor weighting runs again.  Only parent/time and the
+    eight target side/price/time calibration cells are fitted over ``final_refit``.
+    The legacy no-``selected_fit`` path remains available for callers that have
+    not retained the development fit, but it refits the estimator and is not the
+    sealed runner path.
     """
 
     contract = incumbent_config.conditional_estimator
     _validate_configured_contract(incumbent_config, asymmetric_config, contract)
+    if selected_fit is not None:
+        return _refit_selected_estimator_calibration_only(
+            frame,
+            incumbent_config,
+            asymmetric_config,
+            core_config,
+            candidate_id=candidate_id,
+            selected_fit=selected_fit,
+        )
     fitted = fit_core_oracle_estimator_fallbacks(
         frame,
         asymmetric_config=replace(
@@ -197,6 +212,156 @@ def refit_selected_core_oracle_estimator_fallback(
         candidate_ids=(candidate_id,),
     )
     return fitted[candidate_id]
+
+
+def _refit_selected_estimator_calibration_only(
+    frame: pl.DataFrame,
+    incumbent_config: _WindowedEstimatorConfig,
+    asymmetric_config: AsymmetricValueConfig,
+    core_config: CoreTrainingConfig,
+    *,
+    candidate_id: str,
+    selected_fit: FittedEstimatorFallback,
+) -> FittedEstimatorFallback:
+    """Reuse the sealed development estimator and expand calibration evidence only."""
+
+    candidate = _selected_candidate_contract(
+        incumbent_config.conditional_estimator,
+        candidate_id=candidate_id,
+        selected_fit=selected_fit,
+    )
+    _validate_selected_development_fit(
+        selected_fit,
+        candidate=candidate,
+        incumbent_config=incumbent_config,
+        asymmetric_config=asymmetric_config,
+    )
+    calibration_frame = _window(frame, incumbent_config.final_refit).sort(
+        "window_start", "market_id", "seconds_elapsed", "observed_at"
+    )
+    if calibration_frame.is_empty():
+        raise RuntimeError("selected estimator final calibration window is empty")
+    _validate_unique_grid(calibration_frame, cohort="selected estimator final calibration")
+
+    source_model = selected_fit.bundle.model
+    source_estimator = source_model.estimator
+    estimator_semantic_before = _fitted_core_model_semantic_sha256(source_model)
+    estimator_bytes_before = _fitted_core_model_bytes_sha256(source_model)
+    raw_logit_before = source_model.raw_logit(calibration_frame)
+    raw_logit_before_sha256 = _float_vector_sha256(raw_logit_before)
+
+    calibrators = fit_asymmetric_time_band_calibrators(
+        source_model,
+        calibration_frame,
+        asymmetric_config,
+        core_config=core_config,
+        parent_source=selected_fit.bundle.parent_calibration_source,
+    )
+    cells, calibration_evidence = fit_target_side_price_time_calibrators(
+        source_model,
+        calibrators,
+        calibration_frame,
+        asymmetric_config,
+        target_price_band=incumbent_config.target_price_band,
+        target_time_bands=incumbent_config.target_time_bands,
+        target_sides=incumbent_config.sides,
+        minimum_markets_per_cell=incumbent_config.minimum_markets_per_cell,
+        minimum_days_per_cell=incumbent_config.minimum_days_per_cell,
+        identity_l2=incumbent_config.identity_l2,
+        slope_bounds=incumbent_config.slope_bounds,
+        intercept_bounds=incumbent_config.intercept_bounds,
+    )
+    bundle = AsymmetricValueModel(
+        name=candidate_id,
+        model=source_model,
+        time_calibrators=calibrators,
+        cells=cells,
+        parent_calibration_source=selected_fit.bundle.parent_calibration_source,
+        identity_l2_strength=incumbent_config.identity_l2,
+    )
+    raw_logit_after = bundle.model.raw_logit(calibration_frame)
+    raw_logit_after_sha256 = _float_vector_sha256(raw_logit_after)
+    estimator_semantic_after = _fitted_core_model_semantic_sha256(bundle.model)
+    estimator_bytes_after = _fitted_core_model_bytes_sha256(bundle.model)
+    estimator_identity_preserved = (
+        bundle.model is source_model and bundle.model.estimator is source_estimator
+    )
+    if (
+        not estimator_identity_preserved
+        or estimator_semantic_before != estimator_semantic_after
+        or estimator_bytes_before != estimator_bytes_after
+        or raw_logit_before_sha256 != raw_logit_after_sha256
+        or not np.array_equal(raw_logit_before, raw_logit_after)
+    ):
+        raise RuntimeError("selected development estimator changed during final calibration")
+
+    final_semantic_sha256 = _bundle_semantic_sha256(bundle)
+    final_window = _window_evidence(incumbent_config.final_refit)
+    development_window = _window_evidence(incumbent_config.calibration_fit)
+    fit_window = _window_evidence(asymmetric_config.fit)
+    evidence = deepcopy(selected_fit.evidence)
+    evidence.update(
+        {
+            "fit_window": fit_window,
+            "calibration_window": final_window,
+            "calibration_rows": calibration_frame.height,
+            "calibration_markets": calibration_frame["market_id"].n_unique(),
+            "calibration_key_sha256": _grid_key_sha256(calibration_frame),
+            "calibration_content_sha256": _frame_content_sha256(
+                calibration_frame,
+                features=_core_oracle_feature_contract(),
+                incumbent_probabilities=None,
+            ),
+            "parent_time_calibrators": [
+                {
+                    "start_second": band.start_second,
+                    "end_second_exclusive": band.end_second_exclusive,
+                    "rows": band.rows,
+                    "markets": band.markets,
+                    **asdict(band.calibrator),
+                }
+                for band in calibrators
+            ],
+            "side_price_time_calibration": calibration_evidence,
+            "semantic_sha256": final_semantic_sha256,
+            "selected_estimator_reuse": {
+                "mode": "sealed_development_estimator_calibration_only",
+                "candidate_id": candidate_id,
+                "development_bundle_semantic_sha256": selected_fit.semantic_sha256,
+                "estimator_refit_performed": False,
+                "training_weights_recomputed": False,
+                "estimator_object_identity_preserved": estimator_identity_preserved,
+                "estimator_semantic_sha256_before": estimator_semantic_before,
+                "estimator_semantic_sha256_after": estimator_semantic_after,
+                "estimator_bytes_sha256_before": estimator_bytes_before,
+                "estimator_bytes_sha256_after": estimator_bytes_after,
+                "raw_logit_sha256_before": raw_logit_before_sha256,
+                "raw_logit_sha256_after": raw_logit_after_sha256,
+                "estimator_identity_unchanged": True,
+                "fit_window": fit_window,
+                "development_calibration_window": development_window,
+                "final_calibration_window": final_window,
+                "only_calibration_window_expanded": True,
+                "refitted_components": [
+                    "parent_time_calibrators",
+                    "eight_target_side_price_time_cells",
+                ],
+                "preserved_components": [
+                    "fitted_core_model",
+                    "histogram_estimator",
+                    "feature_contract",
+                    "imputation_medians",
+                    "training_weights",
+                ],
+            },
+        }
+    )
+    return FittedEstimatorFallback(
+        candidate_id=candidate_id,
+        bundle=bundle,
+        evidence=evidence,
+        semantic_sha256=final_semantic_sha256,
+    )
 
 
 def fit_core_oracle_estimator_fallbacks(
@@ -863,6 +1028,106 @@ def _validate_configured_contract(
     _validate_estimator_contract(estimator_contract)
 
 
+def _selected_candidate_contract(
+    estimator_contract: Any,
+    *,
+    candidate_id: str,
+    selected_fit: FittedEstimatorFallback,
+) -> Any:
+    if candidate_id not in ESTIMATOR_FALLBACK_CANDIDATES:
+        raise ValueError(f"unknown selected estimator fallback: {candidate_id}")
+    if selected_fit.candidate_id != candidate_id:
+        raise ValueError(
+            "selected estimator fallback candidate mismatch: "
+            f"requested {candidate_id}, received {selected_fit.candidate_id}"
+        )
+    candidates = [
+        candidate for candidate in estimator_contract.candidates if str(candidate.name) == candidate_id
+    ]
+    if len(candidates) != 1:
+        raise RuntimeError("selected estimator fallback is absent from the sealed contract")
+    return candidates[0]
+
+
+def _validate_selected_development_fit(
+    selected_fit: FittedEstimatorFallback,
+    *,
+    candidate: Any,
+    incumbent_config: _WindowedEstimatorConfig,
+    asymmetric_config: AsymmetricValueConfig,
+) -> None:
+    """Fail closed unless the retained object is the sealed development fit."""
+
+    candidate_id = str(candidate.name)
+    bundle = selected_fit.bundle
+    model = bundle.model
+    if bundle.name != candidate_id or model.candidate_name != candidate_id:
+        raise RuntimeError("selected estimator fallback model identity changed")
+    if model.family != "histogram" or not isinstance(
+        model.estimator, HistGradientBoostingClassifier
+    ):
+        raise RuntimeError("selected estimator fallback is not the sealed HGB family")
+    features = _core_oracle_feature_contract()
+    if tuple(model.feature_names) != features:
+        raise RuntimeError("selected estimator fallback feature contract changed")
+    parameters = model.estimator.get_params()
+    if any(
+        not math.isclose(float(parameters[name]), float(expected))
+        for name, expected in EXPECTED_HISTOGRAM_PARAMETERS.items()
+    ):
+        raise RuntimeError("selected estimator fallback H3 parameters changed")
+    expected_row_weight_policy = (
+        BOUNDARY_WEIGHT_POLICY
+        if bool(candidate.boundary_weighted)
+        else HYBRID_MARKET_EQUAL_ROW_WEIGHT_POLICY
+    )
+    if (
+        model.row_weight_policy != expected_row_weight_policy
+        or not math.isclose(
+            float(model.hyperparameters.get("target_weight", float("nan"))),
+            EXPECTED_TARGET_WEIGHT,
+        )
+        or bool(model.hyperparameters.get("boundary_weighted"))
+        != bool(candidate.boundary_weighted)
+    ):
+        raise RuntimeError("selected estimator fallback objective contract changed")
+    if bundle.parent_calibration_source != "alltime":
+        raise RuntimeError("selected estimator fallback parent calibration source changed")
+    if not math.isclose(bundle.identity_l2_strength, incumbent_config.identity_l2):
+        raise RuntimeError("selected estimator fallback calibration regularization changed")
+
+    evidence = selected_fit.evidence
+    expected_fit_window = _window_evidence(asymmetric_config.fit)
+    expected_development_calibration = _window_evidence(incumbent_config.calibration_fit)
+    if (
+        evidence.get("schema_version") != ESTIMATOR_FALLBACK_SCHEMA_VERSION
+        or evidence.get("candidate_id") != candidate_id
+        or evidence.get("candidate_contract") != _candidate_evidence(candidate)
+        or evidence.get("fit_window") != expected_fit_window
+        or evidence.get("calibration_window") != expected_development_calibration
+        or evidence.get("feature_contract") != CORE_ORACLE_PRICE
+        or evidence.get("feature_count") != EXPECTED_CORE_ORACLE_PRICE_FEATURES
+        or evidence.get("features_sha256") != _canonical_sha256(list(features))
+        or evidence.get("semantic_sha256") != selected_fit.semantic_sha256
+        or evidence.get("runtime_exportable") is not True
+    ):
+        raise RuntimeError("selected estimator fallback evidence is not the sealed development fit")
+    observed_semantic_sha256 = _bundle_semantic_sha256(bundle)
+    if observed_semantic_sha256 != selected_fit.semantic_sha256:
+        raise RuntimeError("selected estimator fallback semantic digest changed")
+
+    development_window = incumbent_config.calibration_fit
+    final_window = incumbent_config.final_refit
+    if (
+        final_window.start != development_window.start
+        or final_window.end <= development_window.end
+        or asymmetric_config.fit.end != development_window.start
+        or incumbent_config.matched_comparison.start != development_window.end
+        or incumbent_config.matched_comparison.end != final_window.end
+    ):
+        raise RuntimeError("selected estimator final refit must only expand calibration evidence")
+
+
 def _validate_estimator_contract(contract: Any) -> None:
     if tuple(str(item.name) for item in contract.candidates) != ESTIMATOR_FALLBACK_CANDIDATES:
         raise RuntimeError("conditional estimator candidate matrix changed")
@@ -1269,6 +1534,76 @@ def _float_vector_sha256(values: np.ndarray) -> str:
     digest = hashlib.sha256(b"btc-asymmetric-estimator-float-vector-v1\n")
     digest.update(array.shape[0].to_bytes(8, "big"))
     digest.update(array.tobytes())
+    return digest.hexdigest()
+
+
+def _fitted_core_model_bytes_sha256(model: FittedCoreModel) -> str:
+    """Hash the exact serialized fitted-model bytes before and after calibration."""
+
+    digest = hashlib.sha256(b"btc-asymmetric-estimator-core-model-bytes-v1\n")
+    digest.update(pickle.dumps(model, protocol=pickle.HIGHEST_PROTOCOL))
+    return digest.hexdigest()
+
+
+def _fitted_core_model_semantic_sha256(model: FittedCoreModel) -> str:
+    """Hash estimator semantics independently from every calibration layer."""
+
+    digest = hashlib.sha256(b"btc-asymmetric-estimator-core-model-semantic-v1\n")
+    digest.update(
+        _canonical_bytes(
+            {
+                "candidate_name": model.candidate_name,
+                "family": model.family,
+                "feature_names": list(model.feature_names),
+                "hyperparameters": model.hyperparameters,
+                "row_weight_policy": model.row_weight_policy,
+                "recency_half_life_days": model.recency_half_life_days,
+            }
+        )
+    )
+    for name, values in (
+        ("imputation_medians", model.imputation_medians),
+        ("standardization_means", model.standardization_means),
+        ("standardization_scales", model.standardization_scales),
+    ):
+        digest.update(name.encode())
+        if values is None:
+            digest.update(b"none")
+        else:
+            array = np.ascontiguousarray(values)
+            digest.update(str(array.dtype).encode())
+            digest.update(array.tobytes())
+    estimator = model.estimator
+    digest.update(
+        _canonical_bytes(
+            {
+                key: estimator.get_params()[key]
+                for key in (
+                    "learning_rate",
+                    "max_iter",
+                    "max_leaf_nodes",
+                    "min_samples_leaf",
+                    "l2_regularization",
+                    "early_stopping",
+                    "random_state",
+                )
+            }
+        )
+    )
+    digest.update(np.asarray(estimator._baseline_prediction, dtype="<f8").tobytes())
+    digest.update(np.asarray(estimator.classes_, dtype="<i8").tobytes())
+    for iteration in estimator._predictors:
+        predictor = iteration[0]
+        for field in predictor.nodes.dtype.names or ():
+            digest.update(field.encode())
+            values = np.ascontiguousarray(predictor.nodes[field])
+            digest.update(str(values.dtype).encode())
+            digest.update(values.tobytes())
+        for attribute in ("binned_left_cat_bitsets", "raw_left_cat_bitsets"):
+            values = np.ascontiguousarray(getattr(predictor, attribute))
+            digest.update(attribute.encode())
+            digest.update(str(values.dtype).encode())
+            digest.update(values.tobytes())
     return digest.hexdigest()
 
 
