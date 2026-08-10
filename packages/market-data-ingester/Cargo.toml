@@ -11,11 +11,15 @@ anyhow = "1.0"
 async-trait = "0.1"
 axum = "0.7"
 chrono = { version = "0.4", features = ["serde"] }
+chainlink-data-streams-report = "1.2.2"
 futures-util = "0.3"
+hex = "0.4"
+hmac = "0.12"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
+sha3 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "json", "uuid", "rust_decimal", "macros"] }
 subtle = "2.6"
 thiserror = "2.0"
