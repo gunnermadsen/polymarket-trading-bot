@@ -9,6 +9,9 @@ from pathlib import Path
 
 from .admission_benchmark import run_admission_benchmark
 from .admission_config import load_admission_benchmark_config
+from .asymmetric_book_admission_benchmark import (
+    load_and_run_book_admission_benchmark,
+)
 from .asymmetric_incumbent_benchmark import (
     load_and_run_incumbent_calibration_benchmark,
 )
@@ -147,6 +150,11 @@ def main() -> None:
     )
     incumbent_calibration_run.add_argument("--config", type=Path, required=True)
     incumbent_calibration_run.add_argument("--force", action="store_true")
+    book_admission_run = subparsers.add_parser(
+        "asymmetric-book-admission-run"
+    )
+    book_admission_run.add_argument("--config", type=Path, required=True)
+    book_admission_run.add_argument("--force", action="store_true")
     asymmetric_readiness = subparsers.add_parser(
         "asymmetric-training-readiness"
     )
@@ -394,6 +402,23 @@ def main() -> None:
         )
         print(f"paper artifact: {result.get('paper_artifact') or 'none'}")
         print("source process changed: false; live capital: not authorized")
+        return
+    if args.command == "asymmetric-book-admission-run":
+        run_dir, result = load_and_run_book_admission_benchmark(
+            args.config,
+            force=args.force,
+        )
+        print(f"report: {run_dir / 'benchmark-report.md'}")
+        print(f"status: {result['status']}")
+        print(
+            "selected challenger: "
+            f"{result.get('selected_candidate_id') or 'incumbent retained'}"
+        )
+        print(
+            "batch-forward artifact: "
+            f"{result.get('batch_forward_artifact') or 'none'}"
+        )
+        print("runtime deployable: false; source process changed: false")
         return
     if args.command == "asymmetric-training-readiness":
         config = load_asymmetric_value_config(args.config)
