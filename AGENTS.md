@@ -24,6 +24,7 @@ Think of Capitonic as a vision to generate income through systems with automatio
 
 # System
 - Trading process parameters that affect trades, go in the trading playbook config stored in 'trading_processes'. parameters that affect global systems go in environment variables.
+- All plaintext env vars that are non sensitive, go in docker-compose files in the 'environment' section. do not put plantext env vars in .env file. 
 - Refactoring should not render trading processes as no longer compatible. 
 - Refactoring a system, introducing a new system, or removing a system and causing a lack of compatibility is an anti pattern in the trading bot.
 
