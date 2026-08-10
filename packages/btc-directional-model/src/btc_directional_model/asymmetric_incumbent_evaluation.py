@@ -319,10 +319,9 @@ def simultaneous_paired_probability_bootstrap(
     resamples: int,
     seed: int,
 ) -> dict[str, Any]:
-    """Compare three challengers with a shared UTC-day max-t bootstrap."""
+    """Compare two or three challengers with a shared UTC-day max-t bootstrap."""
 
-    if len(challengers) != 3:
-        raise ValueError("simultaneous probability comparison requires exactly three challengers")
+    _validate_probability_challenger_count(challengers)
     if resamples <= 0 or seed < 0:
         raise ValueError("simultaneous probability bootstrap settings are invalid")
     _validate_matched_probability_frame(incumbent, "incumbent")
@@ -446,6 +445,7 @@ def select_incumbent_calibration_challenger(
 ) -> dict[str, Any]:
     """Apply frozen probability gates and select one deterministic challenger."""
 
+    _validate_probability_challenger_count(challengers)
     for value, name in (
         (incumbent_selected_bias, "incumbent selected bias"),
         (noninferiority_margin, "noninferiority margin"),
@@ -972,6 +972,13 @@ def _validate_policy_bounds(**values: float) -> None:
         raise ValueError("probability-only quantity and depth participation must be positive")
     if not 0.0 < values["maximum_admission_cost_per_share"] <= 1.0:
         raise ValueError("probability-only maximum admission cost is invalid")
+
+
+def _validate_probability_challenger_count(
+    challengers: Mapping[str, pl.DataFrame],
+) -> None:
+    if len(challengers) not in (2, 3):
+        raise ValueError("simultaneous probability comparison requires two or three challengers")
 
 
 def _single_identity_columns(frame: pl.DataFrame) -> list[str]:
