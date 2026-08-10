@@ -3,6 +3,7 @@
 !.env.example
 !.env.grafana.example
 !.env.postgres.example
+!.env.market-data-ingester.example
 target/
 node_modules/
 dist/

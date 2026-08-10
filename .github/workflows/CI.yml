@@ -43,3 +43,92 @@ jobs:
 
       - name: Run Rust tests
         run: cargo +"$RUST_TOOLCHAIN" test --locked --manifest-path packages/polymarket-bot/Cargo.toml --all-targets
+
+  market-data-ingester-tests:
+    name: Market data ingester tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        run: >-
+          rustup toolchain install "$RUST_TOOLCHAIN"
+          --profile minimal
+          --component rustfmt
+          --component clippy
+
+      - name: Cache Cargo registry and ingester build output
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/market-data-ingester/target
+          key: market-data-ingester-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('packages/market-data-ingester/Cargo.lock') }}
+          restore-keys: |
+            market-data-ingester-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-
+
+      - name: Check Rust formatting
+        run: >-
+          cargo +"$RUST_TOOLCHAIN" fmt
+          --manifest-path packages/market-data-ingester/Cargo.toml
+          --all
+          --
+          --check
+
+      - name: Run Clippy
+        run: >-
+          cargo +"$RUST_TOOLCHAIN" clippy
+          --locked
+          --manifest-path packages/market-data-ingester/Cargo.toml
+          --all-targets
+          --all-features
+          --
+          -D warnings
+
+      - name: Run market data ingester tests
+        run: >-
+          cargo +"$RUST_TOOLCHAIN" test
+          --locked
+          --manifest-path packages/market-data-ingester/Cargo.toml
+          --all-targets
+          --all-features
+
+      - name: Build market data ingester documentation
+        run: >-
+          cargo +"$RUST_TOOLCHAIN" doc
+          --locked
+          --manifest-path packages/market-data-ingester/Cargo.toml
+          --no-deps
+          --all-features
+
+      - name: Build image with source provenance
+        run: |
+          image="capitonic/market-data-ingester:ci"
+          source_revision="$(git rev-parse --verify 'HEAD^{commit}')"
+          if [ "$source_revision" != "$GITHUB_SHA" ]; then
+            echo "Checked-out revision $source_revision does not match GITHUB_SHA $GITHUB_SHA" >&2
+            exit 1
+          fi
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            echo "Refusing to build an image from a dirty CI checkout" >&2
+            exit 1
+          fi
+
+          docker build \
+            --build-arg "MARKET_DATA_INGESTER_GIT_REVISION=$source_revision" \
+            --tag "$image" \
+            packages/market-data-ingester
+
+          image_revision="$(
+            docker image inspect \
+              --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+              "$image"
+          )"
+          if [ "$image_revision" != "$source_revision" ]; then
+            echo "Built image revision mismatch: expected $source_revision, found $image_revision" >&2
+            exit 1
+          fi
