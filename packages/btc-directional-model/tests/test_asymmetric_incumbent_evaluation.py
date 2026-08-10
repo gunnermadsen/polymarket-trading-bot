@@ -227,8 +227,7 @@ def test_probability_comparison_rejects_challenger_counts_outside_two_or_three(
     incumbent, calibration_challengers = _matched_probability_frames()
     source = tuple(calibration_challengers.values())
     challengers = {
-        f"candidate-{index}": source[index % len(source)]
-        for index in range(challenger_count)
+        f"candidate-{index}": source[index % len(source)] for index in range(challenger_count)
     }
 
     with pytest.raises(ValueError, match="requires two or three challengers"):
@@ -380,15 +379,49 @@ def test_selection_uses_probability_only_gates_and_deterministic_rank() -> None:
         assert f"'{forbidden}'" not in rendered
 
 
+def test_cell_bias_gate_uses_all_target_rows_not_only_first_entries() -> None:
+    incumbent, challengers = _selection_frames()
+
+    def append_late_rows(frame: pl.DataFrame, *, overconfident: bool) -> pl.DataFrame:
+        rows = []
+        for row in frame.filter(pl.col("seconds_elapsed") == 5).iter_rows(named=True):
+            row["seconds_elapsed"] = 6
+            row["observed_at"] = row["window_start"] + timedelta(seconds=6)
+            if overconfident:
+                row["probability_yes"] = 0.99 if row["yes_ask_vwap_5"] < 0.30 else 0.01
+            rows.append(row)
+        return pl.concat([frame, pl.DataFrame(rows)], how="vertical_relaxed")
+
+    incumbent = append_late_rows(incumbent, overconfident=False)
+    challengers = {
+        candidate_id: append_late_rows(
+            frame,
+            overconfident=candidate_id == "C1",
+        )
+        for candidate_id, frame in challengers.items()
+    }
+    support = {candidate_id: _complete_calibration_support() for candidate_id in challengers}
+
+    selection = select_incumbent_calibration_challenger(
+        incumbent,
+        challengers,
+        support,
+        resamples=200,
+        seed=41,
+    )
+
+    c1 = next(record for record in selection["candidate_records"] if record["candidate_id"] == "C1")
+    gates = {gate["name"]: gate for gate in c1["gates"]}
+    assert abs(c1["selected_opportunity_metrics"]["time_cells"]["YES_1_15"]["bias"]) <= 0.05
+    assert abs(c1["metrics"]["time_cells"]["YES_1_15"]["bias"]) > 0.05
+    assert gates["target_cell_bias_yes_1_15"]["passed"] is False
+
+
 def test_selection_supports_only_two_predeclared_estimator_arms_deterministically() -> None:
     incumbent, calibration_challengers = _selection_frames()
     challengers = {
-        "E1": calibration_challengers["C1"].with_columns(
-            pl.lit("E1").alias("candidate_id")
-        ),
-        "E2": calibration_challengers["C2"].with_columns(
-            pl.lit("E2").alias("candidate_id")
-        ),
+        "E1": calibration_challengers["C1"].with_columns(pl.lit("E1").alias("candidate_id")),
+        "E2": calibration_challengers["C2"].with_columns(pl.lit("E2").alias("candidate_id")),
     }
     support = {candidate_id: _complete_calibration_support() for candidate_id in challengers}
 
@@ -422,8 +455,7 @@ def test_selection_rejects_challenger_counts_outside_two_or_three(
     incumbent, calibration_challengers = _selection_frames()
     source = tuple(calibration_challengers.values())
     challengers = {
-        f"candidate-{index}": source[index % len(source)]
-        for index in range(challenger_count)
+        f"candidate-{index}": source[index % len(source)] for index in range(challenger_count)
     }
     support = {candidate_id: _complete_calibration_support() for candidate_id in challengers}
 

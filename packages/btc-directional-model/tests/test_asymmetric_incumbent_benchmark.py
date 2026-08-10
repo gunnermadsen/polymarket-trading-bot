@@ -652,3 +652,60 @@ def test_estimator_economics_opens_only_after_selected_model_seal(
     assert result["economics_opened"] is True
     assert result["economics_qualified"] is False
     assert result["forward_requirements"]["status"] == ("not_started_no_qualified_paper_artifact")
+
+
+def test_estimator_export_rejects_model_changed_after_probability_seal(
+    tmp_path: Path,
+) -> None:
+    config = load_incumbent_calibration_config(DEFAULT_INCUMBENT_CALIBRATION_CONFIG)
+    candidate_id = ESTIMATOR_FALLBACK_CANDIDATES[0]
+    final_model_path = tmp_path / "selected-estimator-refit.joblib"
+    final_model_path.write_bytes(b"sealed-model")
+    final_model_sha256 = benchmark_module.file_sha256(final_model_path)
+    selection_seal_path = tmp_path / "estimator-fallback-probability-selection-seal.json"
+    selection_seal_path.write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    benchmark_module.INCUMBENT_ESTIMATOR_SELECTION_SEAL_SCHEMA_VERSION
+                ),
+                "economics_opened": False,
+                "selected_candidate_id": candidate_id,
+                "selected_final_model_sha256": final_model_sha256,
+            }
+        )
+    )
+    economics_path = tmp_path / "estimator-fallback-economics-evidence.json"
+    economics_path.write_text(
+        json.dumps(
+            {
+                "status": "qualified",
+                "selected_candidate_id": candidate_id,
+                "selection_seal_sha256": benchmark_module.file_sha256(selection_seal_path),
+                "final_model_sha256": final_model_sha256,
+            }
+        )
+    )
+
+    authorization_path = benchmark_module._write_estimator_export_authorization(
+        tmp_path,
+        run_id="test-run",
+        config=config,
+        selected_candidate=candidate_id,
+        selection_seal_path=selection_seal_path,
+        economics_path=economics_path,
+        final_model_path=final_model_path,
+    )
+    assert authorization_path.is_file()
+
+    final_model_path.write_bytes(b"changed-model")
+    with np.testing.assert_raises_regex(RuntimeError, "probability seal"):
+        benchmark_module._write_estimator_export_authorization(
+            tmp_path,
+            run_id="test-run",
+            config=config,
+            selected_candidate=candidate_id,
+            selection_seal_path=selection_seal_path,
+            economics_path=economics_path,
+            final_model_path=final_model_path,
+        )
