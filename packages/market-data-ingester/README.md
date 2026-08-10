@@ -41,6 +41,13 @@ set a random administrative token of at least 32 bytes. Database credentials
 continue to come from `.env.postgres`. The example files contain names only;
 never commit populated secret files.
 
+Chainlink strategies additionally require the provider credentials named in
+`.env.market-data-ingester.example`. Credentials remain process-level secrets:
+they are never accepted through profile JSON, persisted in artifacts, or
+returned by the control API. Profiles are seeded stopped, so providers without
+configured credentials do not prevent the service from running its other
+strategies.
+
 From the repository root, build and start the opt-in development service with:
 
 ```bash
