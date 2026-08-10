@@ -348,14 +348,33 @@ def simultaneous_paired_probability_bootstrap(
     resamples: int,
     seed: int,
 ) -> dict[str, Any]:
-    """Compare two or three challengers with a shared UTC-day max-t bootstrap."""
+    """Compare two to four challengers with a shared UTC-day max-t bootstrap."""
 
     _validate_probability_challenger_count(challengers)
-    if resamples <= 0 or seed < 0:
+    return _shared_reference_probability_bootstrap(
+        incumbent,
+        challengers,
+        resamples=resamples,
+        seed=seed,
+    )
+
+
+def _shared_reference_probability_bootstrap(
+    reference_frame: pl.DataFrame,
+    challengers: Mapping[str, pl.DataFrame],
+    *,
+    resamples: int,
+    seed: int,
+) -> dict[str, Any]:
+    """Run one shared-day max-stat comparison against an explicit reference."""
+
+    if not challengers:
+        raise ValueError("shared probability bootstrap requires at least one challenger")
+    if resamples < 2 or seed < 0:
         raise ValueError("simultaneous probability bootstrap settings are invalid")
-    _validate_matched_probability_frame(incumbent, "incumbent")
+    _validate_matched_probability_frame(reference_frame, "reference")
     candidate_ids = sorted(challengers)
-    reference = incumbent.sort(*PROBABILITY_KEY_COLUMNS)
+    reference = reference_frame.sort(*PROBABILITY_KEY_COLUMNS)
     labels = reference["label_up"].to_numpy().astype(np.float64)
     incumbent_probability = reference["probability_yes"].to_numpy().astype(np.float64)
     dates = reference["window_start"].dt.date().to_list()
@@ -451,7 +470,7 @@ def simultaneous_paired_probability_bootstrap(
         "block_unit": "utc_day",
         "utc_days": len(utc_days),
         "markets": len(unique_market_keys),
-        "rows": incumbent.height,
+        "rows": reference_frame.height,
         "challengers": candidate_ids,
         "resamples": resamples,
         "seed": seed,
@@ -1006,8 +1025,8 @@ def _validate_policy_bounds(**values: float) -> None:
 def _validate_probability_challenger_count(
     challengers: Mapping[str, pl.DataFrame],
 ) -> None:
-    if len(challengers) not in (2, 3):
-        raise ValueError("simultaneous probability comparison requires two or three challengers")
+    if not 2 <= len(challengers) <= 4:
+        raise ValueError("simultaneous probability comparison requires two to four challengers")
 
 
 def _single_identity_columns(frame: pl.DataFrame) -> list[str]:

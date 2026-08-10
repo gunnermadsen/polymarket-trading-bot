@@ -226,8 +226,8 @@ def test_simultaneous_bootstrap_supports_two_predeclared_estimator_arms() -> Non
     assert first["comparisons"]["E2"]["brier_delta"]["point"] > 0.0
 
 
-@pytest.mark.parametrize("challenger_count", [0, 1, 4])
-def test_probability_comparison_rejects_challenger_counts_outside_two_or_three(
+@pytest.mark.parametrize("challenger_count", [0, 1, 5])
+def test_probability_comparison_rejects_challenger_counts_outside_two_to_four(
     challenger_count: int,
 ) -> None:
     incumbent, calibration_challengers = _matched_probability_frames()
@@ -236,7 +236,7 @@ def test_probability_comparison_rejects_challenger_counts_outside_two_or_three(
         f"candidate-{index}": source[index % len(source)] for index in range(challenger_count)
     }
 
-    with pytest.raises(ValueError, match="requires two or three challengers"):
+    with pytest.raises(ValueError, match="requires two to four challengers"):
         simultaneous_paired_probability_bootstrap(
             incumbent,
             challengers,
@@ -454,8 +454,8 @@ def test_selection_supports_only_two_predeclared_estimator_arms_deterministicall
     assert "D0" not in repr(first)
 
 
-@pytest.mark.parametrize("challenger_count", [1, 4])
-def test_selection_rejects_challenger_counts_outside_two_or_three(
+@pytest.mark.parametrize("challenger_count", [1, 5])
+def test_selection_rejects_challenger_counts_outside_two_to_four(
     challenger_count: int,
 ) -> None:
     incumbent, calibration_challengers = _selection_frames()
@@ -465,7 +465,7 @@ def test_selection_rejects_challenger_counts_outside_two_or_three(
     }
     support = {candidate_id: _complete_calibration_support() for candidate_id in challengers}
 
-    with pytest.raises(ValueError, match="requires two or three challengers"):
+    with pytest.raises(ValueError, match="requires two to four challengers"):
         select_incumbent_calibration_challenger(
             incumbent,
             challengers,
