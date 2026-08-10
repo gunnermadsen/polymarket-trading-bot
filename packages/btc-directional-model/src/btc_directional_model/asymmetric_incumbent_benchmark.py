@@ -1458,6 +1458,12 @@ def _run_conditional_estimator_if_eligible(
             economics_path=economics_path,
             final_model_path=final_model_path,
         )
+        _verify_estimator_export_inputs(
+            selected_candidate=selected_candidate,
+            selection_seal_path=selection_seal_path,
+            economics_path=economics_path,
+            final_model_path=final_model_path,
+        )
         exported_model = export_asymmetric_value_runtime_model(
             model_path=final_model_path,
             output_root=config.package_root / "runtime-models",
@@ -1676,6 +1682,12 @@ def _write_estimator_export_authorization(
     economics_path: Path,
     final_model_path: Path,
 ) -> Path:
+    final_model_sha256 = _verify_estimator_export_inputs(
+        selected_candidate=selected_candidate,
+        selection_seal_path=selection_seal_path,
+        economics_path=economics_path,
+        final_model_path=final_model_path,
+    )
     payload = {
         "schema_version": INCUMBENT_ESTIMATOR_EXPORT_AUTHORIZATION_SCHEMA_VERSION,
         "created_at": datetime.now(UTC).isoformat(),
@@ -1683,7 +1695,7 @@ def _write_estimator_export_authorization(
         "source_process_id": config.process_id,
         "source_model_key": config.model_key,
         "selected_candidate_id": selected_candidate,
-        "selected_final_model_sha256": file_sha256(final_model_path),
+        "selected_final_model_sha256": final_model_sha256,
         "selection_seal_sha256": file_sha256(selection_seal_path),
         "economics_evidence_sha256": file_sha256(economics_path),
         "probability_qualified": True,
@@ -1696,6 +1708,34 @@ def _write_estimator_export_authorization(
     path = run_dir / "estimator-fallback-export-authorization.json"
     write_json_atomic(path, payload)
     return path
+
+
+def _verify_estimator_export_inputs(
+    *,
+    selected_candidate: str,
+    selection_seal_path: Path,
+    economics_path: Path,
+    final_model_path: Path,
+) -> str:
+    selection_seal_sha256 = file_sha256(selection_seal_path)
+    final_model_sha256 = file_sha256(final_model_path)
+    selection_seal = json.loads(selection_seal_path.read_text())
+    economics = json.loads(economics_path.read_text())
+    if (
+        selection_seal.get("schema_version") != INCUMBENT_ESTIMATOR_SELECTION_SEAL_SCHEMA_VERSION
+        or selection_seal.get("economics_opened") is not False
+        or selection_seal.get("selected_candidate_id") != selected_candidate
+        or selection_seal.get("selected_final_model_sha256") != final_model_sha256
+    ):
+        raise RuntimeError("estimator export no longer matches its probability seal")
+    if (
+        economics.get("status") != "qualified"
+        or economics.get("selected_candidate_id") != selected_candidate
+        or economics.get("selection_seal_sha256") != selection_seal_sha256
+        or economics.get("final_model_sha256") != final_model_sha256
+    ):
+        raise RuntimeError("estimator export no longer matches qualified economics")
+    return final_model_sha256
 
 
 def _estimator_fallback_status(

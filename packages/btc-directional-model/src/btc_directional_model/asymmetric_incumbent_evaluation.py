@@ -292,21 +292,35 @@ def target_opportunity_probability_cohort(
     if maximum_seconds_elapsed < 1:
         raise ValueError("target opportunity maximum second must be positive")
     _validate_matched_probability_frame(frame, "target opportunity")
-    target = frame.filter(
-        pl.col("seconds_elapsed").is_between(1, maximum_seconds_elapsed, closed="both")
-        & (
-            pl.col("yes_ask_vwap_5").is_between(
-                minimum_share_price,
-                maximum_share_price,
-                closed="left",
-            )
-            | pl.col("no_ask_vwap_5").is_between(
-                minimum_share_price,
-                maximum_share_price,
-                closed="left",
-            )
+    within_time = pl.col("seconds_elapsed").is_between(
+        1,
+        maximum_seconds_elapsed,
+        closed="both",
+    )
+    yes_target_eligible = (
+        within_time
+        & pl.col("yes_ask_vwap_5").is_between(
+            minimum_share_price,
+            maximum_share_price,
+            closed="left",
         )
-    ).sort(*PROBABILITY_KEY_COLUMNS)
+    ).fill_null(False)
+    no_target_eligible = (
+        within_time
+        & pl.col("no_ask_vwap_5").is_between(
+            minimum_share_price,
+            maximum_share_price,
+            closed="left",
+        )
+    ).fill_null(False)
+    target = (
+        frame.with_columns(
+            yes_target_eligible.alias("yes_target_eligible"),
+            no_target_eligible.alias("no_target_eligible"),
+        )
+        .filter(pl.col("yes_target_eligible") | pl.col("no_target_eligible"))
+        .sort(*PROBABILITY_KEY_COLUMNS)
+    )
     if target.is_empty():
         raise RuntimeError("target opportunity probability cohort is empty")
     return target
@@ -503,11 +517,11 @@ def select_incumbent_calibration_challenger(
         cell_bias_checks = []
         for cell_name in REQUIRED_CALIBRATION_CELLS:
             evaluation_cell_name = cell_name.replace("_45_60", "_45_56")
-            cell = (selected_metrics or {}).get("time_cells", {}).get(evaluation_cell_name)
+            cell = metrics["time_cells"].get(evaluation_cell_name)
             observed = abs(float(cell["bias"])) if cell and cell["bias"] is not None else None
             cell_bias_checks.append(
                 _gate(
-                    f"selected_cell_bias_{evaluation_cell_name.lower()}",
+                    f"target_cell_bias_{evaluation_cell_name.lower()}",
                     observed,
                     maximum_cell_bias,
                     "<=",
