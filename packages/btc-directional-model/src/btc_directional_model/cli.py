@@ -12,6 +12,9 @@ from .admission_config import load_admission_benchmark_config
 from .asymmetric_book_admission_benchmark import (
     load_and_run_book_admission_benchmark,
 )
+from .asymmetric_d4_side_benchmark import (
+    load_and_run_d4_side_calibration_benchmark,
+)
 from .asymmetric_incumbent_benchmark import (
     load_and_run_incumbent_calibration_benchmark,
 )
@@ -155,6 +158,11 @@ def main() -> None:
     )
     book_admission_run.add_argument("--config", type=Path, required=True)
     book_admission_run.add_argument("--force", action="store_true")
+    d4_side_calibration_run = subparsers.add_parser(
+        "asymmetric-d4-side-calibration-run"
+    )
+    d4_side_calibration_run.add_argument("--config", type=Path, required=True)
+    d4_side_calibration_run.add_argument("--force", action="store_true")
     asymmetric_readiness = subparsers.add_parser(
         "asymmetric-training-readiness"
     )
@@ -419,6 +427,20 @@ def main() -> None:
             f"{result.get('batch_forward_artifact') or 'none'}"
         )
         print("runtime deployable: false; source process changed: false")
+        return
+    if args.command == "asymmetric-d4-side-calibration-run":
+        run_dir, result = load_and_run_d4_side_calibration_benchmark(
+            args.config,
+            force=args.force,
+        )
+        print(f"report: {run_dir / 'benchmark-report.md'}")
+        print(f"projected PnL: {run_dir / 'projected-pnl.md'}")
+        print(f"status: {result['status']}")
+        print(
+            "probability-selected challenger: "
+            f"{result.get('probability_selected_candidate_id') or 'none'}"
+        )
+        print("qualification eligible: false; source process changed: false")
         return
     if args.command == "asymmetric-training-readiness":
         config = load_asymmetric_value_config(args.config)
