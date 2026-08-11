@@ -15,7 +15,11 @@ from btc_directional_model.asymmetric_d4_calibration_evaluation import (
     TIME_LOCAL_NO_CALIBRATION_ID,
     D4SideCalibrationSelectionThresholds,
     build_d4_projected_pnl_report,
+    d4_frozen_side_probability_only_first_crossings,
     select_d4_side_calibration_challenger,
+)
+from btc_directional_model.asymmetric_incumbent_evaluation import (
+    probability_only_first_crossings,
 )
 
 
@@ -39,6 +43,7 @@ def _probability_frame(
                             "observed_at": window_start + timedelta(seconds=second),
                             "seconds_elapsed": second,
                             "label_up": selected_label if side == "YES" else 1 - selected_label,
+                            "selected_side": side,
                             "incumbent_probability_yes": (
                                 selected_probability
                                 if side == "YES"
@@ -193,6 +198,71 @@ def test_probability_selector_rejects_economics_and_mismatched_candidates() -> N
             _support(),
             D4SideCalibrationSelectionThresholds(),
             resamples=10,
+            seed=1,
+            evidence_scope=CONSUMED_EVIDENCE_SCOPE,
+            qualification_eligible=False,
+        )
+
+
+def test_frozen_side_selection_suppresses_then_retains_d4_side_without_switching() -> None:
+    window_start = datetime(2026, 7, 21, tzinfo=UTC)
+    frame = pl.DataFrame(
+        {
+            "candidate_id": [TIME_LOCAL_NO_CALIBRATION_ID] * 2,
+            "market_id": ["frozen-side-market"] * 2,
+            "window_start": [window_start] * 2,
+            "observed_at": [
+                window_start + timedelta(seconds=5),
+                window_start + timedelta(seconds=10),
+            ],
+            "seconds_elapsed": [5, 10],
+            "label_up": [0, 0],
+            "selected_side": ["NO", "NO"],
+            "probability_yes": [0.90, 0.65],
+            "yes_ask_vwap_5": [0.25, 0.25],
+            "no_ask_vwap_5": [0.25, 0.25],
+            "yes_ask_depth": [100.0, 100.0],
+            "no_ask_depth": [100.0, 100.0],
+            "yes_cost_per_share": [0.26, 0.26],
+            "no_cost_per_share": [0.26, 0.26],
+        }
+    )
+
+    recursive = probability_only_first_crossings(frame)
+    frozen = d4_frozen_side_probability_only_first_crossings(frame)
+
+    assert recursive.height == 1
+    assert recursive["seconds_elapsed"].item() == 5
+    assert recursive["selected_yes"].item() is True
+    assert frozen.height == 1
+    assert frozen["seconds_elapsed"].item() == 10
+    assert frozen["selected_yes"].item() is False
+    assert frozen["selected_probability"].item() == pytest.approx(0.35)
+
+
+def test_side_calibration_selector_rejects_candidate_orientation_changes() -> None:
+    n1 = _probability_frame(POOLED_NO_CALIBRATION_ID, 0.75, 0.76)
+    first_market = n1["market_id"][0]
+    switched = n1.with_columns(
+        pl.when(pl.col("market_id") == first_market)
+        .then(pl.lit("NO"))
+        .otherwise(pl.col("selected_side"))
+        .alias("selected_side")
+    )
+
+    with pytest.raises(ValueError, match="does not match frozen D4-base"):
+        select_d4_side_calibration_challenger(
+            _probability_frame(INCUMBENT_ID, 0.70, 0.70),
+            _probability_frame(D4_BASE_ID, 0.75, 0.82),
+            {
+                POOLED_NO_CALIBRATION_ID: switched,
+                TIME_LOCAL_NO_CALIBRATION_ID: _probability_frame(
+                    TIME_LOCAL_NO_CALIBRATION_ID, 0.75, 0.75
+                ),
+            },
+            _support(),
+            D4SideCalibrationSelectionThresholds(),
+            resamples=20,
             seed=1,
             evidence_scope=CONSUMED_EVIDENCE_SCOPE,
             qualification_eligible=False,

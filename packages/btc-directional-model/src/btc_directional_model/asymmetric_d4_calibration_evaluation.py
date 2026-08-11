@@ -134,6 +134,8 @@ def select_d4_side_calibration_challenger(
     }
     for candidate_id in D4_MODEL_IDS[1:]:
         _require_matched_keys_and_labels(target[INCUMBENT_ID], target[candidate_id], candidate_id)
+    for candidate_id in (POOLED_NO_CALIBRATION_ID, TIME_LOCAL_NO_CALIBRATION_ID):
+        _require_frozen_d4_sides(target[D4_BASE_ID], target[candidate_id], candidate_id)
 
     candidate_frames = {
         candidate_id: target[candidate_id]
@@ -165,7 +167,7 @@ def select_d4_side_calibration_challenger(
         candidate_id: incumbent_probability_metrics(frame) for candidate_id, frame in target.items()
     }
     selected = {
-        candidate_id: probability_only_first_crossings(frame)
+        candidate_id: d4_frozen_side_probability_only_first_crossings(frame)
         for candidate_id, frame in target.items()
     }
     selected_metrics = {
@@ -392,6 +394,82 @@ def select_d4_side_calibration_challenger(
     }
 
 
+def d4_frozen_side_probability_only_first_crossings(
+    scored: pl.DataFrame,
+    *,
+    minimum_share_price: float = 0.20,
+    maximum_share_price: float = 0.30,
+    minimum_edge_per_share: float = 0.03,
+    maximum_seconds_elapsed: int = 55,
+    quantity: float = 5.0,
+    maximum_depth_participation: float = 0.25,
+    maximum_admission_cost_per_share: float = 0.35,
+) -> pl.DataFrame:
+    """Select the first crossing without reorienting a sealed D4 side.
+
+    Calibration may make the opposite side look more attractive or make the
+    sealed side ineligible.  The former must never switch the D4 decision; the
+    latter suppresses the opportunity until the same frozen side next qualifies.
+    The output is identical to ``probability_only_first_crossings``.
+    """
+
+    if "selected_side" not in scored.columns:
+        raise ValueError("D4 frozen-side probability selection requires selected_side")
+    sides = scored["selected_side"].cast(pl.String).to_numpy()
+    if not np.isin(sides, ("YES", "NO")).all():
+        raise ValueError("D4 frozen-side selection requires only YES or NO sides")
+    selected_yes = pl.col("selected_side") == "YES"
+    masked = scored.with_columns(
+        pl.when(selected_yes)
+        .then(pl.col("yes_ask_vwap_5"))
+        .otherwise(pl.lit(1.0))
+        .alias("yes_ask_vwap_5"),
+        pl.when(selected_yes)
+        .then(pl.col("yes_ask_depth"))
+        .otherwise(pl.lit(0.0))
+        .alias("yes_ask_depth"),
+        pl.when(selected_yes)
+        .then(pl.col("yes_cost_per_share"))
+        .otherwise(pl.lit(1.0))
+        .alias("yes_cost_per_share"),
+        pl.when(~selected_yes)
+        .then(pl.col("no_ask_vwap_5"))
+        .otherwise(pl.lit(1.0))
+        .alias("no_ask_vwap_5"),
+        pl.when(~selected_yes)
+        .then(pl.col("no_ask_depth"))
+        .otherwise(pl.lit(0.0))
+        .alias("no_ask_depth"),
+        pl.when(~selected_yes)
+        .then(pl.col("no_cost_per_share"))
+        .otherwise(pl.lit(1.0))
+        .alias("no_cost_per_share"),
+    )
+    selected = probability_only_first_crossings(
+        masked,
+        minimum_share_price=minimum_share_price,
+        maximum_share_price=maximum_share_price,
+        minimum_edge_per_share=minimum_edge_per_share,
+        maximum_seconds_elapsed=maximum_seconds_elapsed,
+        quantity=quantity,
+        maximum_depth_participation=maximum_depth_participation,
+        maximum_admission_cost_per_share=maximum_admission_cost_per_share,
+    )
+    if selected.is_empty():
+        return selected
+    orientation = scored.select(*PROBABILITY_KEY_COLUMNS, "selected_side")
+    checked = selected.join(
+        orientation,
+        on=list(PROBABILITY_KEY_COLUMNS),
+        how="left",
+        validate="1:1",
+    )
+    mismatch = checked.filter(pl.col("selected_yes") != (pl.col("selected_side") == "YES"))
+    if mismatch.height:
+        raise RuntimeError("D4 frozen-side probability selection changed orientation")
+    return selected
+
+
 def build_d4_projected_pnl_report(
     ledgers: Mapping[str, pl.DataFrame],
     eligible_markets: pl.DataFrame,
@@ -518,6 +596,19 @@ def _require_matched_keys_and_labels(
         raise ValueError(f"{candidate_id} keys do not match I0")
     if not candidate["label_up"].equals(reference["label_up"]):
         raise ValueError(f"{candidate_id} labels do not match I0")
+
+
+def _require_frozen_d4_sides(
+    d4_base: pl.DataFrame,
+    candidate: pl.DataFrame,
+    candidate_id: str,
+) -> None:
+    if "selected_side" not in d4_base.columns or "selected_side" not in candidate.columns:
+        raise ValueError("D4 side-calibration frames require sealed selected_side")
+    d4_base = d4_base.sort(*PROBABILITY_KEY_COLUMNS)
+    candidate = candidate.sort(*PROBABILITY_KEY_COLUMNS)
+    if not candidate["selected_side"].equals(d4_base["selected_side"]):
+        raise ValueError(f"{candidate_id} selected_side does not match frozen D4-base")
 
 
 def _target_side_frame(frame: pl.DataFrame, side: str) -> pl.DataFrame:
