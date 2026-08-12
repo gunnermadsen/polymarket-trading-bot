@@ -13,14 +13,61 @@ Think of Capitonic as a vision to generate income through systems with automatio
 - put non-sensitive runtime configuration in docker-compose files
 - .env example files are templates, do not put plaintext env vars in the example env files.
 
-# Source Control
-- Commit changes, grouped by feature domain.
-- When building a new image, tag the commit for which the image was built:
--- using this pattern for container images: image/<image_name>/sha256-<docker-sha256-hash>
--- using this patter for a container image using a new model: model/<model-name-with-metadata>
-- New features must be committed to a new branch, based from the latest commit on development branch.
-- For one feature change, do not merge changes into development.
-- For multiple features in a task, group feature by branch, and merge into development with --no-ff, only when the feature is stable by performance, latency and optimization standards.
+# Source Control and Worktrees
+
+## Branching
+
+- Commit changes in coherent groups organized by feature domain.
+- Every new, independent feature domain must use a dedicated feature branch.
+- An independent feature branch starts from the latest `development` commit.
+- Follow-up work that must inherit an existing feature or training lineage starts from that lineage’s designated base or integration branch, not from `development`.
+- Keep unrelated feature domains on separate branches.
+- Do not merge a single feature branch into `development` unless the user explicitly requests integration.
+- When a task contains multiple completed feature branches that must be integrated, merge each stable branch into the designated integration branch using `--no-ff`. Merge the integration branch into `development` only when explicitly requested.
+- Never discard, rewrite, or bypass an existing feature lineage merely to satisfy the “latest development” rule.
+
+## When to Create a Worktree
+
+- Create a new worktree only for a new, independent, overarching feature domain that requires isolation from the current checkout.
+- Use one worktree for the entire feature domain, including its implementation, tests, fixes, review corrections, model variations, and follow-up iterations.
+- Do not create additional worktrees for:
+  - small fixes within the active feature;
+  - test failures or review corrections;
+  - configuration adjustments;
+  - documentation changes;
+  - model candidates or training variations belonging to the same training objective;
+  - additional commits or temporary branches within the same feature;
+  - read-only investigation or diagnostics.
+- Reuse the existing feature worktree whenever the requested change belongs to that worktree’s overarching feature domain.
+- A tiny unrelated change may be committed on its own branch without creating a worktree when isolation is unnecessary.
+- Do not create multiple worktrees for the same feature domain.
+- Do not create a new worktree while another agent-created feature worktree is active unless:
+  - the existing worktree belongs to a materially different feature domain; and
+  - parallel worktrees were explicitly requested or are strictly necessary.
+
+## Worktree Location and Ownership
+
+- Store all persistent project worktrees under `target/worktrees/<feature-domain>`.
+- Do not create persistent worktrees under `/tmp`, `/private/tmp`, or arbitrary external directories.
+- Each worktree owns one overarching feature domain and one designated feature or integration branch.
+- Related temporary change branches may be created and checked out inside that same worktree; they do not receive separate worktrees.
+- Keep all implementation, tests, generated evidence, and related fixes for the feature inside its assigned worktree.
+- Before creating a worktree, run `git worktree list` and confirm that no existing worktree already covers the feature domain.
+
+## Worktree Lifecycle
+
+- Keep a feature worktree until its changes are:
+  - committed;
+  - proportionately verified;
+  - merged into its designated base or integration branch when integration is authorized; and
+  - no longer needed for generated artifacts or cached evidence.
+- Before removing a worktree, verify:
+  - `git status --porcelain` is empty;
+  - its commits are preserved on a branch or contained in the designated base;
+  - it contains no unique untracked or ignored artifacts that must be retained.
+- Remove completed worktrees promptly after those checks pass.
+- Removing a worktree must not automatically delete its branch.
+- Never force-remove a dirty worktree unless the user explicitly authorizes discarding its remaining contents.
 
 # System
 - Trading process parameters that affect trades, go in the trading playbook config stored in 'trading_processes'. parameters that affect global systems go in environment variables.
