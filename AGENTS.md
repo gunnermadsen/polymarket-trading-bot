@@ -18,6 +18,9 @@ Think of Capitonic as a vision to generate income through systems with automatio
 ## Branching
 
 - Commit changes in coherent groups organized by feature domain.
+- When building a new image, tag the commit for which the image was built:
+-- using this pattern for container images: image/<image_name>/sha256-<docker-sha256-hash>
+-- using this pattern for a container image using a new model: model/<model-name-with-metadata>
 - Every new, independent feature domain must use a dedicated feature branch.
 - An independent feature branch starts from the latest `development` commit.
 - Follow-up work that must inherit an existing feature or training lineage starts from that lineage’s designated base or integration branch, not from `development`.
