@@ -32,6 +32,7 @@ from btc_directional_model.runtime_export import (
     TIME_BANDED_GOLDEN_VECTORS_SCHEMA_VERSION,
     TIME_BANDED_RUNTIME_MODEL_SCHEMA_VERSION,
     export_runtime_model,
+    promote_runtime_model_for_live_pilot,
     score_runtime_model,
     validate_bundle_against_freeze,
 )
@@ -730,6 +731,62 @@ def test_runtime_export_rejects_incoherent_paper_deployment_metadata(
             golden_features=feature_path,
             output_root=tmp_path / "runtime-models",
             model_key=MODEL_KEY,
+        )
+
+
+def test_runtime_model_live_pilot_promotion_changes_only_identity_and_authorization(
+    tmp_path: Path,
+) -> None:
+    freeze_dir, feature_path, _ = make_frozen_candidate(tmp_path)
+    output_root = tmp_path / "runtime-models"
+    paper_dir = export_runtime_model(
+        freeze_dir=freeze_dir,
+        golden_features=feature_path,
+        output_root=output_root,
+        model_key=MODEL_KEY,
+    )
+    live_key = "btc-test-histogram-development-live-pilot-v1"
+    live_dir = promote_runtime_model_for_live_pilot(
+        source_runtime=paper_dir,
+        output_root=output_root,
+        model_key=live_key,
+    )
+
+    paper_model = json.loads((paper_dir / MODEL_FILENAME).read_text())
+    live_model = json.loads((live_dir / MODEL_FILENAME).read_text())
+    paper_golden = json.loads((paper_dir / GOLDEN_VECTORS_FILENAME).read_text())
+    live_golden = json.loads((live_dir / GOLDEN_VECTORS_FILENAME).read_text())
+    live_manifest = json.loads((live_dir / MANIFEST_FILENAME).read_text())
+
+    assert paper_model.pop("model_key") == MODEL_KEY
+    assert live_model.pop("model_key") == live_key
+    assert paper_model.pop("deployment") == {
+        "scope": "paper_only",
+        "production_qualified": False,
+        "live_capital_allowed": False,
+    }
+    assert live_model.pop("deployment") == {
+        "scope": "development_live_pilot",
+        "production_qualified": False,
+        "live_capital_allowed": True,
+    }
+    assert live_model == paper_model
+    assert paper_golden["vectors"] == live_golden["vectors"]
+    assert live_manifest["model_key"] == live_key
+    assert live_manifest["model_sha256"] == file_sha256(live_dir / MODEL_FILENAME)
+    assert live_manifest["golden_vectors_sha256"] == file_sha256(
+        live_dir / GOLDEN_VECTORS_FILENAME
+    )
+    assert live_manifest["deployment_scope"] == "development_live_pilot"
+    assert live_manifest["production_qualified"] is False
+    assert live_manifest["live_capital_allowed"] is True
+
+    (live_dir / MODEL_FILENAME).write_text("different")
+    with pytest.raises(RuntimeError, match="immutable model key"):
+        promote_runtime_model_for_live_pilot(
+            source_runtime=paper_dir,
+            output_root=output_root,
+            model_key=live_key,
         )
 
 

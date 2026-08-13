@@ -213,22 +213,21 @@ pub async fn reconcile_account_positions(
         }
     }
 
-    let process_accounting_proof = if process_id.is_some() {
-        ProcessAccountingProof {
-            status: "unproven".to_string(),
-            position_ownership: "unproven".to_string(),
-            realized_pnl: "unproven".to_string(),
-            reason: "account_positions_are_wallet_aggregate".to_string(),
-        }
+    let (process_accounting_proof, mismatches) = if let Some(process_id) = process_id {
+        let process_positions = store.live_process_position_sizes(process_id).await?;
+        process_accounting_proof(&process_positions, &snapshots, unmatched_trades)?
     } else {
-        ProcessAccountingProof {
-            status: "legacy_unscoped".to_string(),
-            position_ownership: "not_applicable".to_string(),
-            realized_pnl: "not_applicable".to_string(),
-            reason: "legacy_account_wide_admin_reconciliation".to_string(),
-        }
+        (
+            ProcessAccountingProof {
+                status: "legacy_unscoped".to_string(),
+                position_ownership: "not_applicable".to_string(),
+                realized_pnl: "not_applicable".to_string(),
+                reason: "legacy_account_wide_admin_reconciliation".to_string(),
+            },
+            Vec::new(),
+        )
     };
-    let process_accounting_proven = false;
+    let process_accounting_proven = process_accounting_proof.status == "proven";
     let process_accounting_status = process_accounting_proof.status.clone();
     let report = AccountReconcileReport {
         process_id,
@@ -253,11 +252,97 @@ pub async fn reconcile_account_positions(
         position_adjustments_detected: 0,
         position_adjustments_applied: 0,
         position_adjustment_size_applied: Decimal::ZERO,
-        mismatches: Vec::new(),
+        mismatches,
         unmatched_trades,
     };
     store.insert_account_reconciliation_run(&report).await?;
     Ok(report)
+}
+
+fn process_accounting_proof(
+    process_positions: &HashMap<String, Decimal>,
+    account_positions: &[AccountPositionSnapshot],
+    unmatched_trades: u64,
+) -> Result<(ProcessAccountingProof, Vec<AccountPositionMismatch>)> {
+    let mut account_sizes = HashMap::with_capacity(account_positions.len());
+    for position in account_positions {
+        if position.size <= Decimal::ZERO {
+            continue;
+        }
+        if account_sizes
+            .insert(position.token_id.clone(), position.size)
+            .is_some()
+        {
+            bail!(
+                "account position reconciliation contains duplicate token identity {}",
+                position.token_id
+            );
+        }
+    }
+
+    let mut token_ids = process_positions
+        .keys()
+        .chain(account_sizes.keys())
+        .cloned()
+        .collect::<Vec<_>>();
+    token_ids.sort_unstable();
+    token_ids.dedup();
+    let mut mismatches = Vec::new();
+    for token_id in token_ids {
+        let process_size = process_positions
+            .get(&token_id)
+            .copied()
+            .unwrap_or(Decimal::ZERO);
+        let account_size = account_sizes
+            .get(&token_id)
+            .copied()
+            .unwrap_or(Decimal::ZERO);
+        if process_size == account_size {
+            continue;
+        }
+        let mismatch_type = if process_size == Decimal::ZERO {
+            "foreign_account_position"
+        } else if account_size == Decimal::ZERO {
+            "missing_account_position"
+        } else {
+            "position_size_mismatch"
+        };
+        mismatches.push(AccountPositionMismatch {
+            token_id,
+            db_open_size: process_size,
+            account_size,
+            delta_size: account_size - process_size,
+            mismatch_type: mismatch_type.to_string(),
+        });
+    }
+
+    let proof = if unmatched_trades > 0 {
+        ProcessAccountingProof {
+            status: "unproven".to_string(),
+            position_ownership: "unproven".to_string(),
+            realized_pnl: "unproven".to_string(),
+            reason: "unmatched_account_trades".to_string(),
+        }
+    } else if !mismatches.is_empty() {
+        ProcessAccountingProof {
+            status: "unproven".to_string(),
+            position_ownership: "mismatch".to_string(),
+            realized_pnl: "unproven".to_string(),
+            reason: "account_positions_do_not_match_process_live_fills".to_string(),
+        }
+    } else {
+        ProcessAccountingProof {
+            status: "proven".to_string(),
+            position_ownership: "process_live_fill_ledger_match".to_string(),
+            realized_pnl: "process_owned_settlement_ledger".to_string(),
+            reason: if process_positions.is_empty() {
+                "clean_account_baseline".to_string()
+            } else {
+                "account_positions_match_process_live_fills".to_string()
+            },
+        }
+    };
+    Ok((proof, mismatches))
 }
 
 async fn fetch_bounded_activity(
@@ -772,6 +857,72 @@ mod tests {
         assert!(normalize_account_ref(Some(&"x".repeat(129))).is_err());
         assert!(is_sha256_hex(&"a".repeat(64)));
         assert!(!is_sha256_hex(&"z".repeat(64)));
+    }
+
+    fn account_position(token_id: &str, size: Decimal) -> AccountPositionSnapshot {
+        AccountPositionSnapshot {
+            snapshot_id: Uuid::new_v4(),
+            account_address: "0xabc".to_string(),
+            token_id: token_id.to_string(),
+            market_id: Some("market-1".to_string()),
+            size,
+            avg_price: None,
+            current_price: None,
+            current_value: None,
+            cash_pnl: None,
+            percent_pnl: None,
+            snapshot_at: Utc::now(),
+            source: "poll".to_string(),
+            raw_payload: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn clean_account_baseline_proves_process_accounting() {
+        let (proof, mismatches) = process_accounting_proof(&HashMap::new(), &[], 0).unwrap();
+
+        assert_eq!(proof.status, "proven");
+        assert_eq!(proof.reason, "clean_account_baseline");
+        assert!(mismatches.is_empty());
+    }
+
+    #[test]
+    fn exact_process_fill_position_proves_process_accounting() {
+        let process_positions = HashMap::from([("token-1".to_string(), dec!(2.5))]);
+        let positions = vec![account_position("token-1", dec!(2.5))];
+
+        let (proof, mismatches) =
+            process_accounting_proof(&process_positions, &positions, 0).unwrap();
+
+        assert_eq!(proof.status, "proven");
+        assert_eq!(proof.reason, "account_positions_match_process_live_fills");
+        assert!(mismatches.is_empty());
+    }
+
+    #[test]
+    fn foreign_position_or_unmatched_trade_fails_process_accounting_closed() {
+        let foreign = vec![account_position("foreign-token", dec!(1))];
+        let (foreign_proof, mismatches) =
+            process_accounting_proof(&HashMap::new(), &foreign, 0).unwrap();
+        assert_eq!(foreign_proof.status, "unproven");
+        assert_eq!(mismatches[0].mismatch_type, "foreign_account_position");
+
+        let (trade_proof, _) = process_accounting_proof(&HashMap::new(), &[], 1).unwrap();
+        assert_eq!(trade_proof.status, "unproven");
+        assert_eq!(trade_proof.reason, "unmatched_account_trades");
+    }
+
+    #[test]
+    fn process_position_size_mismatch_fails_closed() {
+        let process_positions = HashMap::from([("token-1".to_string(), dec!(2.5))]);
+        let positions = vec![account_position("token-1", dec!(2))];
+
+        let (proof, mismatches) =
+            process_accounting_proof(&process_positions, &positions, 0).unwrap();
+
+        assert_eq!(proof.status, "unproven");
+        assert_eq!(mismatches[0].mismatch_type, "position_size_mismatch");
+        assert_eq!(mismatches[0].delta_size, dec!(-0.5));
     }
 
     #[test]

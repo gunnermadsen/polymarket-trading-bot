@@ -2632,19 +2632,6 @@ impl ExecutionVenue for LiveVenue {
                 .backfill_fills_from_live_events()
                 .await
                 .context("failed to backfill live user websocket fills")?;
-            let account_reconcile = self
-                .run_account_reconcile(AccountReconcileRequest {
-                    account_address: None,
-                    lookback_hours: Some(1),
-                    process_id: self.bound_process_id,
-                    account_ref: self.bound_account_ref.clone(),
-                    credential_account_fingerprint_sha256: None,
-                    dry_run: false,
-                    token_id: None,
-                    source: Some("poll".to_string()),
-                })
-                .await
-                .context("live account reconciliation polling backup failed")?;
             let open_orders = self.get_open_orders().await?;
             let mut local_nonterminal = match self.bound_process_id {
                 Some(process_id) => self.bounded_nonterminal_orders(process_id).await?,
@@ -2722,6 +2709,21 @@ impl ExecutionVenue for LiveVenue {
                 // durable and cumulative fill progress has terminalized fully filled orders.
                 local_nonterminal = self.bounded_nonterminal_orders(process_id).await?;
             }
+            // Position ownership is reconstructed from persisted live fills, so reconcile the
+            // wallet only after authenticated REST evidence has been backfilled durably.
+            let account_reconcile = self
+                .run_account_reconcile(AccountReconcileRequest {
+                    account_address: None,
+                    lookback_hours: Some(1),
+                    process_id: self.bound_process_id,
+                    account_ref: self.bound_account_ref.clone(),
+                    credential_account_fingerprint_sha256: None,
+                    dry_run: false,
+                    token_id: None,
+                    source: Some("poll".to_string()),
+                })
+                .await
+                .context("live account reconciliation polling backup failed")?;
             let owned_venue_order_ids = owned_orders
                 .keys()
                 .map(String::as_str)

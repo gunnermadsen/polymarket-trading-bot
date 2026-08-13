@@ -85,7 +85,10 @@ from .price_aware_config import load_price_aware_benchmark_config
 from .report import generate_report
 from .residual_admission_benchmark import run_residual_admission_benchmark
 from .residual_admission_config import load_residual_admission_config
-from .runtime_export import export_runtime_model
+from .runtime_export import (
+    export_runtime_model,
+    promote_runtime_model_for_live_pilot,
+)
 from .spot_l2_chainlink_benchmark import run_spot_l2_chainlink_benchmark
 from .spot_l2_chainlink_config import load_spot_l2_chainlink_config
 from .train import train_models
@@ -125,6 +128,10 @@ def main() -> None:
     core_export.add_argument("--golden-features", type=Path, required=True)
     core_export.add_argument("--output-root", type=Path, required=True)
     core_export.add_argument("--model-key", required=True)
+    live_pilot_export = subparsers.add_parser("core-promote-runtime-live-pilot")
+    live_pilot_export.add_argument("--source-runtime", type=Path, required=True)
+    live_pilot_export.add_argument("--output-root", type=Path, required=True)
+    live_pilot_export.add_argument("--model-key", required=True)
     core_run = subparsers.add_parser("core-run")
     core_run.add_argument("--config", type=Path, required=True)
     core_run.add_argument("--force", action="store_true")
@@ -358,6 +365,14 @@ def main() -> None:
         destination = export_runtime_model(
             freeze_dir=args.freeze,
             golden_features=args.golden_features,
+            output_root=args.output_root,
+            model_key=args.model_key,
+        )
+        print(f"runtime model: {destination}")
+        return
+    if args.command == "core-promote-runtime-live-pilot":
+        destination = promote_runtime_model_for_live_pilot(
+            source_runtime=args.source_runtime,
             output_root=args.output_root,
             model_key=args.model_key,
         )

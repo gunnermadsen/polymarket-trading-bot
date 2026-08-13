@@ -8,8 +8,8 @@
   "config": {
     "execution": {
       "mode": "live",
-      "execute_signals": false,
-      "live_capital": false,
+      "execute_signals": true,
+      "live_capital": true,
       "account_ref": "polymarket-primary",
       "taker_fee_rate": null,
       "max_order_notional_usd": "2",
@@ -22,12 +22,12 @@
       "btc_realtime_paper": {
         "schema_version": "btc_realtime_paper_process_v3",
         "next_experiment_key": "btc-5m-directional-model-boundary-alignment-live-pilot-v1",
-        "preregistration_sha256": "830c15427659e53fb06d0a62efbc795c8839ba27e9f0e5c6dd15fa733f90c891",
+        "preregistration_sha256": "537e8513881e14903fe13ea27ab63084d83b99fdad325d9310856234568d186b",
         "strategy": {
           "decision_strategy": {
             "type": "btc_directional_model",
-            "model_key": "btc-5m-directional-boundary-alignment-20260421-20260720-paper-v1",
-            "artifact_sha256": "c0778189865ca97a748a9f76cbe72d13268fd6e76db683ea727ad142b0576bc4",
+            "model_key": "btc-5m-directional-boundary-alignment-20260421-20260720-development-live-pilot-v1",
+            "artifact_sha256": "aea5d8842d6dd8cdcf6eabe90cb704b5ea763775429e90a2640c0070f675564f",
             "feature_schema_sha256": "d2cadbff9ae97e20d2cbeb562310e27af80279f9ecbdbec85221af82ef4b9eea"
           },
           "target_size": "5",
@@ -88,19 +88,19 @@
   },
   "metadata": {
     "strategy_family": "btc_5m_directional_model",
-    "model_key": "btc-5m-directional-boundary-alignment-20260421-20260720-paper-v1",
-    "model_artifact_sha256": "c0778189865ca97a748a9f76cbe72d13268fd6e76db683ea727ad142b0576bc4",
+    "model_key": "btc-5m-directional-boundary-alignment-20260421-20260720-development-live-pilot-v1",
+    "model_artifact_sha256": "aea5d8842d6dd8cdcf6eabe90cb704b5ea763775429e90a2640c0070f675564f",
     "model_feature_schema_version": "btc-5m-directional-boundary-features-v1",
     "model_feature_schema_sha256": "d2cadbff9ae97e20d2cbeb562310e27af80279f9ecbdbec85221af82ef4b9eea",
-    "deployment_scope": "paper_only",
+    "deployment_scope": "development_live_pilot",
     "production_qualified": false,
     "directional_model_entry_policy": "execute_directional_prediction",
     "source_process_id": "78f614b9-97c9-4202-a9b1-cc8f01af455b",
     "source_process_key": "btc-5m-directional-model-paper-boundary-alignment",
     "account_ref": "polymarket-primary",
-    "live_capital_allowed": false,
-    "credential_validation_only": true,
-    "live_execution_authorized": false,
-    "preregistration": "2026-07-31|btc-5m-directional-boundary-alignment-20260421-20260720-paper-v1|shared-runner-live-credential-validation-only|source-process-78f614b9-97c9-4202-a9b1-cc8f01af455b|account-ref-polymarket-primary|execution-disabled|live-capital-disabled"
+    "live_capital_allowed": true,
+    "credential_validation_only": false,
+    "live_execution_authorized": true,
+    "preregistration": "2026-08-13|btc-5m-directional-boundary-alignment-20260421-20260720-development-live-pilot-v1|shared-runner-live-pilot|source-process-78f614b9-97c9-4202-a9b1-cc8f01af455b|account-ref-polymarket-primary|execution-enabled|live-capital-authorized"
   }
 }

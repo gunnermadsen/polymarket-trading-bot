@@ -1226,6 +1226,96 @@ impl Store {
             .collect())
     }
 
+    /// Reconstructs current outcome-token ownership from exact live fills owned by one process.
+    /// The query does not infer ownership from a token or market match: both the fill and its
+    /// persisted order must carry the requested process identity.
+    pub async fn live_process_position_sizes(
+        &self,
+        process_id: Uuid,
+    ) -> Result<HashMap<String, Decimal>> {
+        const MAX_PROCESS_POSITION_TOKENS: usize = 4_000;
+        if process_id.is_nil() {
+            bail!("live process position evidence requires a non-nil process_id");
+        }
+
+        #[derive(FromRow)]
+        struct PositionSizeRow {
+            token_id: String,
+            size: Decimal,
+        }
+
+        let cross_owned = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT EXISTS (
+              SELECT 1
+              FROM polymarket.fills fill
+              JOIN polymarket.orders orders ON orders.order_id = fill.order_id
+              WHERE fill.process_id = $1
+                AND fill.source = 'live'
+                AND (
+                  orders.process_id IS DISTINCT FROM $1
+                  OR orders.token_id IS DISTINCT FROM fill.token_id
+                )
+              LIMIT 1
+            )
+            "#,
+        )
+        .bind(process_id)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to inspect live process position ownership")?;
+        if cross_owned {
+            bail!("live process position evidence contains cross-owned fill data");
+        }
+
+        let rows = sqlx::query_as::<_, PositionSizeRow>(
+            r#"
+            SELECT fill.token_id,
+              SUM(
+                CASE orders.side
+                  WHEN 'buy' THEN fill.size
+                  WHEN 'sell' THEN -fill.size
+                END
+              )::numeric AS size
+            FROM polymarket.fills fill
+            JOIN polymarket.orders orders ON orders.order_id = fill.order_id
+            WHERE fill.process_id = $1
+              AND orders.process_id = $1
+              AND fill.source = 'live'
+            GROUP BY fill.token_id
+            HAVING SUM(
+              CASE orders.side
+                WHEN 'buy' THEN fill.size
+                WHEN 'sell' THEN -fill.size
+              END
+            ) <> 0
+            ORDER BY fill.token_id
+            LIMIT 4001
+            "#,
+        )
+        .bind(process_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to reconstruct live process position sizes")?;
+        if rows.len() > MAX_PROCESS_POSITION_TOKENS {
+            bail!(
+                "live process position evidence exceeds the bounded {}-token window",
+                MAX_PROCESS_POSITION_TOKENS
+            );
+        }
+
+        let mut positions = HashMap::with_capacity(rows.len());
+        for row in rows {
+            if row.token_id.trim().is_empty() || row.size <= Decimal::ZERO {
+                bail!("live process position evidence contains an invalid net position");
+            }
+            if positions.insert(row.token_id, row.size).is_some() {
+                bail!("live process position evidence contains a duplicate token identity");
+            }
+        }
+        Ok(positions)
+    }
+
     pub async fn mark_order_submitted(
         &self,
         client_order_id: Uuid,
