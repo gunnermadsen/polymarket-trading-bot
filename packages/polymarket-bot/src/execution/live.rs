@@ -3177,6 +3177,18 @@ impl ExecutionVenue for LiveVenue {
             Err(error) => diagnostics.api_keys_error = Some(error.to_string()),
         }
 
+        if let Err(error) = client
+            .update_balance_allowance(
+                UpdateBalanceAllowanceRequest::builder()
+                    .asset_type(AssetType::Collateral)
+                    .signature_type(signature_type)
+                    .build(),
+            )
+            .await
+        {
+            diagnostics.balance_allowance_error = Some(error.to_string());
+        }
+
         match client
             .balance_allowance(
                 BalanceAllowanceRequest::builder()
