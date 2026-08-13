@@ -62,6 +62,8 @@ type AuthenticatedClient = SdkClient<Authenticated<Normal>>;
 const DEFAULT_POLYGON_RPC_URL: &str = "https://polygon-bor-rpc.publicnode.com";
 const DEFAULT_RELAYER_BASE_URL: &str = "https://relayer-v2.polymarket.com";
 const PUSD_ADDRESS: &str = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
+const CTF_EXCHANGE_V2_ADDRESS: &str = "0xE111180000d2663C0091e4f400237545B87B996B";
+const NEG_RISK_CTF_EXCHANGE_V2_ADDRESS: &str = "0xe2222d279d744050d28e00520010520000310F59";
 const USDC_E_ADDRESS: &str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
 const NATIVE_USDC_ADDRESS: &str = "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359";
 const MAX_PROCESS_NONTERMINAL_ORDERS: usize = 256;
@@ -2229,13 +2231,17 @@ fn decimal_string_positive(value: Option<&str>) -> bool {
 }
 
 fn collateral_allowances_positive(allowances: &HashMap<Address, String>) -> bool {
-    !allowances.is_empty()
-        && allowances.values().all(|allowance| {
-            allowance
-                .trim()
-                .parse::<U256>()
-                .ok()
-                .is_some_and(|allowance| allowance > U256::ZERO)
+    [CTF_EXCHANGE_V2_ADDRESS, NEG_RISK_CTF_EXCHANGE_V2_ADDRESS]
+        .into_iter()
+        .all(|required_exchange| {
+            allowances.iter().any(|(exchange, allowance)| {
+                exchange.to_string().eq_ignore_ascii_case(required_exchange)
+                    && allowance
+                        .trim()
+                        .parse::<U256>()
+                        .ok()
+                        .is_some_and(|allowance| allowance > U256::ZERO)
+            })
         })
 }
 
@@ -3975,9 +3981,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn collateral_allowances_require_every_reported_exchange_to_be_positive() {
-        let exchange = Address::ZERO;
-        let neg_risk_exchange = Address::repeat_byte(1);
+    fn collateral_allowances_require_both_current_v2_exchanges_to_be_positive() {
+        let exchange = CTF_EXCHANGE_V2_ADDRESS.parse::<Address>().unwrap();
+        let neg_risk_exchange = NEG_RISK_CTF_EXCHANGE_V2_ADDRESS.parse::<Address>().unwrap();
 
         assert!(!collateral_allowances_positive(&HashMap::new()));
         assert!(!collateral_allowances_positive(&HashMap::from([(
@@ -3995,6 +4001,7 @@ mod tests {
         assert!(collateral_allowances_positive(&HashMap::from([
             (exchange, U256::MAX.to_string()),
             (neg_risk_exchange, "1".to_string()),
+            (Address::ZERO, "0".to_string()),
         ])));
     }
 
