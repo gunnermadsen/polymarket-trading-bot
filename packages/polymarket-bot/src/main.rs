@@ -1576,6 +1576,12 @@ impl BtcProcessManager {
             && identity.account_identity_fingerprint_sha256.is_some()
             && identity.api_keys_readable
             && identity.balance_allowance_readable
+            && identity.balance_allowance_error.is_none()
+            && identity
+                .collateral_balance
+                .as_deref()
+                .and_then(|balance| balance.parse::<Decimal>().ok())
+                .is_some_and(|balance| balance > Decimal::ZERO)
             && identity.open_orders_readable
             && identity.signer_address.is_some()
             && identity.configured_funder_address.is_some()

@@ -2228,6 +2228,17 @@ fn decimal_string_positive(value: Option<&str>) -> bool {
         .is_some_and(|value| value > Decimal::ZERO)
 }
 
+fn collateral_allowances_positive(allowances: &HashMap<Address, String>) -> bool {
+    !allowances.is_empty()
+        && allowances.values().all(|allowance| {
+            allowance
+                .trim()
+                .parse::<U256>()
+                .ok()
+                .is_some_and(|allowance| allowance > U256::ZERO)
+        })
+}
+
 fn is_address_like(value: &str) -> bool {
     let trimmed = value.trim();
     let Some(hex) = trimmed.strip_prefix("0x") else {
@@ -3178,6 +3189,11 @@ impl ExecutionVenue for LiveVenue {
             Ok(balance) => {
                 diagnostics.balance_allowance_readable = true;
                 diagnostics.collateral_balance = Some(local_decimal(balance.balance)?.to_string());
+                if !collateral_allowances_positive(&balance.allowances) {
+                    diagnostics.balance_allowance_error = Some(
+                        "CLOB collateral allowances are missing, zero, or invalid".to_string(),
+                    );
+                }
             }
             Err(error) => diagnostics.balance_allowance_error = Some(error.to_string()),
         }
@@ -3945,6 +3961,30 @@ mod tests {
     use crate::config::LiveExecutionConfig;
 
     use super::*;
+
+    #[test]
+    fn collateral_allowances_require_every_reported_exchange_to_be_positive() {
+        let exchange = Address::ZERO;
+        let neg_risk_exchange = Address::repeat_byte(1);
+
+        assert!(!collateral_allowances_positive(&HashMap::new()));
+        assert!(!collateral_allowances_positive(&HashMap::from([(
+            exchange,
+            "0".to_string(),
+        )])));
+        assert!(!collateral_allowances_positive(&HashMap::from([(
+            exchange,
+            "invalid".to_string(),
+        )])));
+        assert!(!collateral_allowances_positive(&HashMap::from([
+            (exchange, U256::MAX.to_string()),
+            (neg_risk_exchange, "0".to_string()),
+        ])));
+        assert!(collateral_allowances_positive(&HashMap::from([
+            (exchange, U256::MAX.to_string()),
+            (neg_risk_exchange, "1".to_string()),
+        ])));
+    }
 
     struct AlwaysReadyPrePostGuard;
 
