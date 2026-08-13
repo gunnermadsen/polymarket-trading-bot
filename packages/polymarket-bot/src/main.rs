@@ -56,6 +56,7 @@ use polymarket_bot::{
     },
     store::Store,
 };
+use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -629,19 +630,15 @@ struct PreparedBtcStartDefinition {
     paper_venue: PaperVenueConfig,
     paper_stress_previews: Vec<PaperPreviewConfig>,
     execution_mode: BtcExecutionMode,
-    account_ref: Option<String>,
+    execution: EffectiveProcessExecutionConfig,
     frozen_process_config: TradingProcessConfig,
     config_hash: String,
 }
 
 const BTC_LIVE_EXECUTION_FRESHNESS_LIMIT_MS: i64 = 2_000;
 
-fn validate_btc_start_eligibility(
-    process: &TradingProcess,
-    realtime_enabled: bool,
-    paper_enabled: bool,
-) -> Result<(), HttpError> {
-    validate_btc_process_capability(process, realtime_enabled, paper_enabled)?;
+fn validate_btc_start_eligibility(process: &TradingProcess) -> Result<(), HttpError> {
+    validate_btc_process_capability(process)?;
     validate_btc_execution_activation(process)?;
     if process.enabled || matches!(process.status.as_str(), "starting" | "running" | "stopping") {
         return Err(HttpError::conflict(
@@ -660,29 +657,16 @@ fn validate_btc_start_eligibility(
     Ok(())
 }
 
-fn validate_btc_process_capability(
-    process: &TradingProcess,
-    realtime_enabled: bool,
-    paper_enabled: bool,
-) -> Result<(), HttpError> {
+fn validate_btc_process_capability(process: &TradingProcess) -> Result<(), HttpError> {
     if !BtcProcessManager::is_managed_process(process) {
         return Err(HttpError::bad_request(
             "process is not a managed BTC realtime execution process",
         ));
     }
-    if !realtime_enabled {
-        return Err(HttpError::bad_request(
-            "BTC realtime capability is disabled for this deployment",
-        ));
-    }
     let execution = process.effective_execution();
+    validate_optional_execution_controls(&execution)?;
     match execution.mode.as_str() {
         "paper" => {
-            if !paper_enabled {
-                return Err(HttpError::bad_request(
-                    "BTC paper execution capability is disabled for this deployment",
-                ));
-            }
             if execution.live_capital {
                 return Err(HttpError::bad_request(
                     "BTC paper execution cannot enable live capital",
@@ -726,6 +710,39 @@ fn validate_btc_process_capability(
                 "BTC execution.mode must be paper or live",
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_optional_execution_controls(
+    execution: &EffectiveProcessExecutionConfig,
+) -> Result<(), HttpError> {
+    for (name, value, maximum) in [
+        (
+            "max_order_notional_usd",
+            execution.max_order_notional_usd,
+            dec!(2),
+        ),
+        (
+            "max_open_notional_usd",
+            execution.max_open_notional_usd,
+            dec!(30),
+        ),
+        ("max_daily_loss_usd", execution.max_daily_loss_usd, dec!(10)),
+    ] {
+        if value.is_some_and(|value| value <= Decimal::ZERO || value > maximum) {
+            return Err(HttpError::bad_request(format!(
+                "BTC execution.{name} must be greater than zero and at most {maximum}"
+            )));
+        }
+    }
+    if execution
+        .max_open_positions
+        .is_some_and(|value| value == 0 || value > 6)
+    {
+        return Err(HttpError::bad_request(
+            "BTC execution.max_open_positions must be between 1 and 6",
+        ));
     }
     Ok(())
 }
@@ -798,6 +815,11 @@ fn prepare_btc_start_definition(
             live_capital: false,
             account_ref: None,
             taker_fee_rate: dec!(0.03),
+            max_order_notional_usd: None,
+            max_open_notional_usd: None,
+            max_open_positions: None,
+            max_daily_loss_usd: None,
+            require_exit_book: None,
         },
     )
 }
@@ -905,6 +927,11 @@ fn prepare_btc_start_definition_for_execution(
             live_capital: execution.live_capital,
             account_ref: execution.account_ref.clone(),
             taker_fee_rate: None,
+            max_order_notional_usd: execution.max_order_notional_usd,
+            max_open_notional_usd: execution.max_open_notional_usd,
+            max_open_positions: execution.max_open_positions,
+            max_daily_loss_usd: execution.max_daily_loss_usd,
+            require_exit_book: execution.require_exit_book,
         }),
         raw: frozen_raw,
         ..TradingProcessConfig::default()
@@ -921,7 +948,7 @@ fn prepare_btc_start_definition_for_execution(
         paper_venue,
         paper_stress_previews,
         execution_mode,
-        account_ref: execution.account_ref.clone(),
+        execution: execution.clone(),
         frozen_process_config,
         config_hash,
     })
@@ -1044,7 +1071,7 @@ impl BtcProcessManager {
     fn execution_components(
         &self,
         execution_mode: BtcExecutionMode,
-        account_ref: Option<&str>,
+        execution: &EffectiveProcessExecutionConfig,
         process_id: uuid::Uuid,
         books: Arc<tokio::sync::RwLock<BookRegistry>>,
         paper_venue_config: PaperVenueConfig,
@@ -1055,14 +1082,17 @@ impl BtcProcessManager {
             .map(chrono::Duration::milliseconds);
         match execution_mode {
             BtcExecutionMode::Paper => {
-                let paper_venue = Arc::new(BtcPaperVenue::new_with_reference_execution_guard(
-                    books,
-                    paper_venue_config,
-                    strategy.max_depth_participation,
-                    process_id,
-                    chrono::Duration::milliseconds(strategy.max_reference_age_ms),
-                    max_directional_feature_age,
-                )?);
+                let paper_venue = Arc::new(
+                    BtcPaperVenue::new_with_reference_execution_guard_and_controls(
+                        books,
+                        paper_venue_config,
+                        strategy.max_depth_participation,
+                        execution.clone(),
+                        process_id,
+                        chrono::Duration::milliseconds(strategy.max_reference_age_ms),
+                        max_directional_feature_age,
+                    )?,
+                );
                 let venue: Arc<dyn ExecutionVenue> = paper_venue.clone();
                 let lifecycle: Arc<dyn BtcExecutionLifecycle> =
                     Arc::new(PaperExecutionLifecycle::new(paper_venue));
@@ -1073,14 +1103,16 @@ impl BtcProcessManager {
                 })
             }
             BtcExecutionMode::Live => {
-                let account_ref =
-                    account_ref.context("live BTC execution is missing account_ref")?;
+                execution
+                    .account_ref
+                    .as_deref()
+                    .context("live BTC execution is missing account_ref")?;
                 let global = self
                     .config
                     .live_venue
                     .as_ref()
                     .context("live BTC execution credentials are not configured")?;
-                let live_venue = Arc::new(global.bind_process(process_id, account_ref)?);
+                let live_venue = Arc::new(global.bind_process(process_id, execution)?);
                 let delegate: Arc<dyn ExecutionVenue> = live_venue.clone();
                 let venue: Arc<dyn ExecutionVenue> = Arc::new(BtcLiveExecutionAdapter::new(
                     delegate,
@@ -1090,6 +1122,7 @@ impl BtcProcessManager {
                     max_directional_feature_age,
                     chrono::Duration::milliseconds(strategy.max_book_age_ms),
                     strategy.max_depth_participation,
+                    execution.require_exit_book.unwrap_or(false),
                 )?);
                 let lifecycle: Arc<dyn BtcExecutionLifecycle> =
                     Arc::new(LiveExecutionLifecycle::new(
@@ -1265,24 +1298,12 @@ impl BtcProcessManager {
         definition_use: BtcDefinitionUse,
     ) -> Result<ResolvedBtcProcessDefinition, HttpError> {
         match definition_use {
-            BtcDefinitionUse::ExplicitStart => validate_btc_start_eligibility(
-                process,
-                self.config.btc.realtime_enabled,
-                self.config.btc.paper_enabled,
-            )?,
+            BtcDefinitionUse::ExplicitStart => validate_btc_start_eligibility(process)?,
             BtcDefinitionUse::DurableResume => {
-                validate_btc_process_capability(
-                    process,
-                    self.config.btc.realtime_enabled,
-                    self.config.btc.paper_enabled,
-                )?;
+                validate_btc_process_capability(process)?;
                 validate_btc_execution_activation(process)?;
             }
-            BtcDefinitionUse::InactiveDefinition => validate_btc_process_capability(
-                process,
-                self.config.btc.realtime_enabled,
-                self.config.btc.paper_enabled,
-            )?,
+            BtcDefinitionUse::InactiveDefinition => validate_btc_process_capability(process)?,
         }
         if process
             .config
@@ -1530,7 +1551,7 @@ impl BtcProcessManager {
         })?;
         let venue = Arc::new(
             global
-                .bind_process(process_id, &account_ref)
+                .bind_process(process_id, &execution)
                 .map_err(|error| HttpError::bad_request(error.to_string()))?,
         );
         let identity = venue
@@ -1980,7 +2001,7 @@ impl BtcProcessManager {
             paper_venue: paper_venue_config,
             paper_stress_previews,
             execution_mode,
-            account_ref,
+            execution,
             frozen_process_config: _,
             config_hash: current_config_hash,
         } = prepared;
@@ -2007,7 +2028,7 @@ impl BtcProcessManager {
                 .map_err(|error| anyhow::anyhow!("{error:?}"))?;
             let components = self.execution_components(
                 execution_mode,
-                account_ref.as_deref(),
+                &execution,
                 process_id,
                 books.clone(),
                 paper_venue_config,
@@ -2112,7 +2133,7 @@ impl BtcProcessManager {
             paper_venue: paper_venue_config,
             paper_stress_previews,
             execution_mode,
-            account_ref,
+            execution,
             frozen_process_config,
             config_hash,
         } = self.prepare_start_definition(&process)?;
@@ -2176,7 +2197,7 @@ impl BtcProcessManager {
                 .map_err(|error| anyhow::anyhow!("{error:?}"))?;
             let components = self.execution_components(
                 execution_mode,
-                account_ref.as_deref(),
+                &execution,
                 process_id,
                 books.clone(),
                 paper_venue_config,
@@ -2866,13 +2887,13 @@ impl BtcProcessManager {
             )
             .unwrap_or_else(|_| serde_json::json!({"running": false})),
             None => serde_json::json!({
-                "enabled": self.config.btc.realtime_enabled,
+                "enabled": true,
                 "running": false,
                 "readiness": {"ready": false, "reasons": ["shared_market_data_inactive"]}
             }),
         };
         serde_json::json!({
-            "capability_enabled": self.config.btc.realtime_enabled,
+            "capability_enabled": true,
             "active": !processes.is_empty(),
             "active_process_count": processes.len(),
             "shared_market_data": shared_market_data,
@@ -2914,7 +2935,7 @@ impl BtcProcessManager {
             let (state, metrics, config, running) = inputs;
             let runtime = runtime_status_from_inputs(state, metrics, config, running).await;
             let mut status = serde_json::json!({
-                "capability_enabled": self.config.btc.realtime_enabled,
+                "capability_enabled": true,
                 "active": true,
                 "process_id": process_id,
                 "run_id": run_id,
@@ -2953,7 +2974,7 @@ impl BtcProcessManager {
         let pending = self.terminal_pending.lock().await.get(&process_id).cloned();
         if let Some(pending) = pending {
             return serde_json::json!({
-                "capability_enabled": self.config.btc.realtime_enabled,
+                "capability_enabled": true,
                 "active": false,
                 "running": false,
                 "lifecycle_state": "terminal_pending",
@@ -2968,7 +2989,7 @@ impl BtcProcessManager {
             });
         }
         serde_json::json!({
-            "capability_enabled": self.config.btc.realtime_enabled,
+            "capability_enabled": true,
             "active": false,
             "running": false,
             "process_id": process_id,
@@ -3714,12 +3735,13 @@ async fn main() -> Result<()> {
     init_tracing();
 
     let config = AppConfig::from_env()?;
+    let live_user_ws_enabled = config.live.user_ws_auth_available();
     info!(
         service = "polymarket-bot",
-        live_order_submit_enabled = config.live.order_submit_enabled,
-        live_user_ws_enabled = config.live.user_ws_enabled,
-        btc_realtime_enabled = config.btc.realtime_enabled,
-        btc_paper_enabled = config.btc.paper_enabled,
+        live_order_submit_enabled = false,
+        live_user_ws_enabled,
+        btc_realtime_enabled = true,
+        btc_paper_enabled = true,
         btc_clob_heartbeat_interval_secs = config.btc.data_source_heartbeat.clob_interval.as_secs(),
         btc_clob_pong_timeout_secs = config.btc.data_source_heartbeat.clob_pong_timeout.as_secs(),
         btc_rtds_heartbeat_interval_secs = config.btc.data_source_heartbeat.rtds_interval.as_secs(),
@@ -3742,10 +3764,10 @@ async fn main() -> Result<()> {
             "service_started",
             serde_json::json!({
                 "execution_control": "trade_processes",
-                "live_order_submit_enabled": config.live.order_submit_enabled,
-                "live_user_ws_enabled": config.live.user_ws_enabled,
-                "btc_realtime_enabled": config.btc.realtime_enabled,
-                "btc_paper_enabled": config.btc.paper_enabled,
+                "live_order_submit_enabled": false,
+                "live_user_ws_enabled": live_user_ws_enabled,
+                "btc_realtime_enabled": true,
+                "btc_paper_enabled": true,
                 "btc_clob_heartbeat_interval_secs": config.btc.data_source_heartbeat.clob_interval.as_secs(),
                 "btc_clob_pong_timeout_secs": config.btc.data_source_heartbeat.clob_pong_timeout.as_secs(),
                 "btc_rtds_heartbeat_interval_secs": config.btc.data_source_heartbeat.rtds_interval.as_secs(),
@@ -3768,7 +3790,7 @@ async fn main() -> Result<()> {
     } else {
         None
     };
-    let btc_manager = if config.btc.realtime_enabled {
+    let btc_manager = {
         let repository = BtcRepository::from_pool(pool.clone());
         Some(BtcProcessManager::new(
             store.clone(),
@@ -3783,8 +3805,6 @@ async fn main() -> Result<()> {
                 live_reconcile_interval: config.live.reconcile_interval,
             },
         ))
-    } else {
-        None
     };
     if let Some(manager) = &btc_manager {
         if let Err(error) = manager.resume_durable_processes().await {
@@ -3945,8 +3965,6 @@ mod lifecycle_tests {
             BtcRepository::from_pool(pool),
             BtcProcessManagerConfig {
                 btc: BtcConfig {
-                    realtime_enabled: true,
-                    paper_enabled: true,
                     rtds_ws_url: String::new(),
                     binance_ws_url: String::new(),
                     binance_spot_l2_enabled: false,
@@ -3999,6 +4017,7 @@ mod lifecycle_tests {
                     live_capital: false,
                     account_ref: None,
                     taker_fee_rate: None,
+                    ..ProcessExecutionConfig::default()
                 }),
                 ..TradingProcessConfig::default()
             },
@@ -4282,11 +4301,38 @@ mod lifecycle_tests {
 
         let mut live_capital = eligible_btc_process();
         live_capital.config.execution.as_mut().unwrap().live_capital = true;
-        assert!(validate_btc_process_capability(&live_capital, true, true).is_err());
+        assert!(validate_btc_process_capability(&live_capital).is_err());
 
         let mut live_mode = eligible_btc_process();
         live_mode.config.execution.as_mut().unwrap().mode = Some("live".to_string());
-        assert!(validate_btc_process_capability(&live_mode, true, true).is_err());
+        assert!(validate_btc_process_capability(&live_mode).is_err());
+    }
+
+    #[test]
+    fn optional_execution_controls_are_mode_independent_and_validated_when_present() {
+        let mut process = eligible_btc_process();
+        let execution = process.config.execution.as_mut().unwrap();
+        execution.max_order_notional_usd = Some(dec!(2));
+        execution.max_open_notional_usd = Some(dec!(20));
+        execution.max_open_positions = Some(6);
+        execution.max_daily_loss_usd = Some(dec!(10));
+        execution.require_exit_book = Some(true);
+        validate_btc_process_capability(&process).unwrap();
+
+        let execution = process.config.execution.as_mut().unwrap();
+        execution.mode = Some("live".to_string());
+        execution.execute_signals = true;
+        execution.live_capital = true;
+        execution.account_ref = Some("polymarket-primary".to_string());
+        validate_btc_process_capability(&process).unwrap();
+
+        process
+            .config
+            .execution
+            .as_mut()
+            .unwrap()
+            .max_order_notional_usd = Some(dec!(2.01));
+        assert!(validate_btc_process_capability(&process).is_err());
     }
 
     #[test]
@@ -4824,18 +4870,18 @@ mod lifecycle_tests {
     fn btc_start_eligibility_rejects_generic_active_and_invalid_definitions() {
         let mut generic = eligible_btc_process();
         generic.process_type = "copy_trade".to_string();
-        assert!(validate_btc_start_eligibility(&generic, true, true).is_err());
+        assert!(validate_btc_start_eligibility(&generic).is_err());
 
         let mut active = eligible_btc_process();
         active.status = "running".to_string();
         active.enabled = true;
-        assert!(validate_btc_start_eligibility(&active, true, true).is_err());
+        assert!(validate_btc_start_eligibility(&active).is_err());
 
         let mut invalid = eligible_btc_process();
         invalid.config.execution.as_mut().unwrap().mode = Some("live".to_string());
-        assert!(validate_btc_start_eligibility(&invalid, true, true).is_err());
+        assert!(validate_btc_start_eligibility(&invalid).is_err());
 
-        assert!(validate_btc_start_eligibility(&eligible_btc_process(), true, true).is_ok());
+        assert!(validate_btc_start_eligibility(&eligible_btc_process()).is_ok());
     }
 
     #[test]
@@ -4847,15 +4893,16 @@ mod lifecycle_tests {
             live_capital: false,
             account_ref: Some("polymarket-primary".to_string()),
             taker_fee_rate: None,
+            ..ProcessExecutionConfig::default()
         });
 
-        validate_btc_process_capability(&process, true, true).unwrap();
-        assert!(validate_btc_start_eligibility(&process, true, true).is_err());
+        validate_btc_process_capability(&process).unwrap();
+        assert!(validate_btc_start_eligibility(&process).is_err());
 
         let execution = process.config.execution.as_mut().unwrap();
         execution.execute_signals = true;
         execution.live_capital = true;
-        validate_btc_start_eligibility(&process, true, true).unwrap();
+        validate_btc_start_eligibility(&process).unwrap();
     }
 
     #[test]
@@ -4883,11 +4930,15 @@ mod lifecycle_tests {
             live_capital: true,
             account_ref: Some("polymarket-primary".to_string()),
             taker_fee_rate: dec!(0.03),
+            ..EffectiveProcessExecutionConfig::default()
         };
 
         let prepared = prepare_btc_start_definition_for_execution(resolved, &execution).unwrap();
         assert_eq!(prepared.execution_mode, BtcExecutionMode::Live);
-        assert_eq!(prepared.account_ref.as_deref(), Some("polymarket-primary"));
+        assert_eq!(
+            prepared.execution.account_ref.as_deref(),
+            Some("polymarket-primary")
+        );
         assert_eq!(
             prepared.run_id,
             uuid::Uuid::new_v5(
@@ -4926,6 +4977,7 @@ mod lifecycle_tests {
             live_capital: true,
             account_ref: Some("polymarket-primary".to_string()),
             taker_fee_rate: dec!(0.03),
+            ..EffectiveProcessExecutionConfig::default()
         };
         let resolved = |strategy: BtcStrategyConfig| ResolvedBtcProcessDefinition {
             control: BtcRealtimePaperControlConfig {
@@ -5471,7 +5523,7 @@ mod lifecycle_tests {
             stopped_at: None,
             last_error: None,
         };
-        validate_btc_start_eligibility(&process, true, true).unwrap();
+        validate_btc_start_eligibility(&process).unwrap();
     }
 
     #[test]
@@ -5530,6 +5582,6 @@ mod lifecycle_tests {
             stopped_at: None,
             last_error: None,
         };
-        validate_btc_start_eligibility(&process, true, true).unwrap();
+        validate_btc_start_eligibility(&process).unwrap();
     }
 }

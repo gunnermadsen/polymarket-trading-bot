@@ -664,6 +664,11 @@ impl ControlApi for FakeControlApi {
                     live_capital: false,
                     account_ref: None,
                     taker_fee_rate: None,
+                    max_order_notional_usd: None,
+                    max_open_notional_usd: None,
+                    max_open_positions: None,
+                    max_daily_loss_usd: None,
+                    require_exit_book: None,
                 }),
                 raw: serde_json::json!({
                     "pipeline_version": "btc_realtime_paper_pipeline_v11",

@@ -11,7 +11,12 @@
       "execute_signals": false,
       "live_capital": false,
       "account_ref": "polymarket-primary",
-      "taker_fee_rate": null
+      "taker_fee_rate": null,
+      "max_order_notional_usd": "2",
+      "max_open_notional_usd": "20",
+      "max_open_positions": 6,
+      "max_daily_loss_usd": "10",
+      "require_exit_book": true
     },
     "raw": {
       "btc_realtime_paper": {

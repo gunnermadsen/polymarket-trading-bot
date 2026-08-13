@@ -1,10 +1,7 @@
 use std::{env, fmt, time::Duration};
 
-use anyhow::{bail, Result};
-use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
-
 use crate::btc::{BtcHeartbeatConfig, DirectionalExternalRuntimeConfig};
+use anyhow::{bail, Result};
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -52,8 +49,6 @@ impl fmt::Debug for GrafanaLiveConfig {
 
 #[derive(Debug, Clone)]
 pub struct BtcConfig {
-    pub realtime_enabled: bool,
-    pub paper_enabled: bool,
     pub rtds_ws_url: String,
     pub binance_ws_url: String,
     pub binance_spot_l2_enabled: bool,
@@ -76,17 +71,7 @@ pub struct PostgresConfig {
 
 #[derive(Debug, Clone)]
 pub struct LiveExecutionConfig {
-    pub account_ref: String,
-    pub order_submit_enabled: bool,
-    pub max_order_notional_usd: Decimal,
-    pub max_open_notional_usd: Decimal,
-    pub max_daily_loss_usd: Decimal,
-    pub max_open_positions: usize,
-    pub require_exit_book: bool,
-    pub require_idempotency_clean: bool,
-    pub user_ws_enabled: bool,
     pub user_ws_url: String,
-    pub user_ws_markets: Vec<String>,
     pub clob_api_base_url: String,
     pub user_ws_stale: Duration,
     pub reconcile_interval: Duration,
@@ -108,33 +93,13 @@ pub struct HttpConfig {
 
 impl AppConfig {
     pub fn from_env() -> Result<Self> {
+        let clob_base_url = env_or("POLYMARKET_CLOB_BASE_URL", "https://clob.polymarket.com");
         let live = LiveExecutionConfig {
-            account_ref: env_or("POLYMARKET_LIVE_ACCOUNT_REF", "polymarket-primary")
-                .trim()
-                .to_string(),
-            order_submit_enabled: parse_bool("POLYMARKET_LIVE_ORDER_SUBMIT_ENABLED", false),
-            max_order_notional_usd: parse_decimal(
-                "POLYMARKET_LIVE_MAX_ORDER_NOTIONAL_USD",
-                dec!(2),
-            ),
-            max_open_notional_usd: parse_decimal("POLYMARKET_LIVE_MAX_OPEN_NOTIONAL_USD", dec!(20)),
-            max_daily_loss_usd: parse_decimal("POLYMARKET_LIVE_MAX_DAILY_LOSS_USD", dec!(10)),
-            max_open_positions: parse_usize("POLYMARKET_LIVE_MAX_OPEN_POSITIONS", 6),
-            require_exit_book: parse_bool("POLYMARKET_LIVE_REQUIRE_EXIT_BOOK", true),
-            require_idempotency_clean: parse_bool(
-                "POLYMARKET_LIVE_REQUIRE_IDEMPOTENCY_CLEAN",
-                true,
-            ),
-            user_ws_enabled: parse_bool("POLYMARKET_LIVE_USER_WS_ENABLED", false),
             user_ws_url: env_or(
                 "POLYMARKET_LIVE_USER_WS_URL",
                 "wss://ws-subscriptions-clob.polymarket.com/ws/user",
             ),
-            user_ws_markets: parse_csv("POLYMARKET_LIVE_USER_WS_MARKETS"),
-            clob_api_base_url: env_or(
-                "POLYMARKET_LIVE_CLOB_BASE_URL",
-                "https://clob.polymarket.com",
-            ),
+            clob_api_base_url: clob_base_url.clone(),
             user_ws_stale: Duration::from_secs(parse_u64("POLYMARKET_LIVE_USER_WS_STALE_SECS", 20)),
             reconcile_interval: Duration::from_secs(parse_u64(
                 "POLYMARKET_LIVE_RECONCILE_INTERVAL_SECS",
@@ -151,14 +116,12 @@ impl AppConfig {
             funder_address: first_non_empty_env(&["POLYMARKET_FUNDER_ADDRESS"]),
             signature_type: first_non_empty_env(&["POLYMARKET_SIGNATURE_TYPE"]),
         };
-        if live.order_submit_enabled || live.live_auth_available() {
+        if live.live_auth_available() {
             live.validate_for_live()?;
         }
 
         let heartbeat_defaults = BtcHeartbeatConfig::default();
         let btc = BtcConfig {
-            realtime_enabled: parse_bool("POLYMARKET_BTC_REALTIME_ENABLED", false),
-            paper_enabled: parse_bool("POLYMARKET_BTC_PAPER_ENABLED", false),
             rtds_ws_url: env_or(
                 "POLYMARKET_BTC_RTDS_WS_URL",
                 "wss://ws-live-data.polymarket.com",
@@ -196,10 +159,6 @@ impl AppConfig {
             },
             directional_external: DirectionalExternalRuntimeConfig::from_env()?,
         };
-        if btc.paper_enabled && !btc.realtime_enabled {
-            bail!("POLYMARKET_BTC_PAPER_ENABLED requires POLYMARKET_BTC_REALTIME_ENABLED");
-        }
-
         let grafana_live = GrafanaLiveConfig {
             enabled: parse_bool("POLYMARKET_GRAFANA_LIVE_ENABLED", false),
             push_url: env_or(
@@ -221,9 +180,6 @@ impl AppConfig {
             ]),
         };
         if grafana_live.enabled {
-            if !btc.realtime_enabled {
-                bail!("POLYMARKET_GRAFANA_LIVE_ENABLED requires POLYMARKET_BTC_REALTIME_ENABLED");
-            }
             if !grafana_live.push_url.starts_with("http://")
                 && !grafana_live.push_url.starts_with("https://")
             {
@@ -248,7 +204,7 @@ impl AppConfig {
                 "POLYMARKET_GAMMA_BASE_URL",
                 "https://gamma-api.polymarket.com",
             ),
-            clob_base_url: env_or("POLYMARKET_CLOB_BASE_URL", "https://clob.polymarket.com"),
+            clob_base_url,
             clob_ws_url: env_or(
                 "POLYMARKET_CLOB_WS_URL",
                 "wss://ws-subscriptions-clob.polymarket.com/ws/market",
@@ -280,65 +236,24 @@ impl AppConfig {
 
 impl LiveExecutionConfig {
     pub fn validate_for_live(&self) -> Result<()> {
-        if self.account_ref.is_empty()
-            || self.account_ref.len() > 128
-            || !self.account_ref.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':')
-            })
-        {
-            bail!("POLYMARKET_LIVE_ACCOUNT_REF must be a bounded account identity slug");
-        }
-        if self.max_order_notional_usd <= Decimal::ZERO {
-            bail!("POLYMARKET_LIVE_MAX_ORDER_NOTIONAL_USD must be positive");
-        }
-        if self.max_order_notional_usd > dec!(2) {
-            bail!("POLYMARKET_LIVE_MAX_ORDER_NOTIONAL_USD must be <= 2 for production canary");
-        }
-        if self.max_open_notional_usd <= Decimal::ZERO {
-            bail!("POLYMARKET_LIVE_MAX_OPEN_NOTIONAL_USD must be positive");
-        }
-        if self.max_open_notional_usd > dec!(30) {
-            bail!("POLYMARKET_LIVE_MAX_OPEN_NOTIONAL_USD must be <= 30 for production canary");
-        }
-        if self.max_open_positions == 0 || self.max_open_positions > 6 {
-            bail!("POLYMARKET_LIVE_MAX_OPEN_POSITIONS must be between 1 and 6");
-        }
-        if self.max_daily_loss_usd <= Decimal::ZERO || self.max_daily_loss_usd > dec!(10) {
-            bail!("POLYMARKET_LIVE_MAX_DAILY_LOSS_USD must be > 0 and <= 10");
-        }
-        if self.user_ws_enabled && self.user_ws_url.trim().is_empty() {
-            bail!("POLYMARKET_LIVE_USER_WS_URL is required when user websocket is enabled");
+        if self.user_ws_url.trim().is_empty() {
+            bail!("POLYMARKET_LIVE_USER_WS_URL is required for live execution");
         }
         if self.clob_api_base_url.trim().is_empty() {
-            bail!("POLYMARKET_LIVE_CLOB_BASE_URL is required");
+            bail!("POLYMARKET_CLOB_BASE_URL is required for live execution");
         }
         let mut missing = Vec::new();
-        if self.user_ws_enabled {
-            for (key, value) in [
-                ("POLYMARKET_CLOB_API_KEY", &self.clob_api_key),
-                ("POLYMARKET_CLOB_SECRET", &self.clob_secret),
-                ("POLYMARKET_CLOB_PASSPHRASE", &self.clob_passphrase),
-            ] {
-                if value.is_none() {
-                    missing.push(key);
-                }
+        for (key, value) in [
+            ("POLYMARKET_CLOB_API_KEY", &self.clob_api_key),
+            ("POLYMARKET_CLOB_SECRET", &self.clob_secret),
+            ("POLYMARKET_CLOB_PASSPHRASE", &self.clob_passphrase),
+        ] {
+            if value.is_none() {
+                missing.push(key);
             }
         }
-        if self.order_submit_enabled {
-            if !self.user_ws_enabled {
-                bail!(
-                    "POLYMARKET_LIVE_USER_WS_ENABLED must be true when live order submission is enabled"
-                );
-            }
-            if !self.require_idempotency_clean {
-                bail!(
-                    "POLYMARKET_LIVE_REQUIRE_IDEMPOTENCY_CLEAN must be true when live order submission is enabled"
-                );
-            }
+        if self.submit_auth_available() {
             for (key, value) in [
-                ("POLYMARKET_CLOB_API_KEY", &self.clob_api_key),
-                ("POLYMARKET_CLOB_SECRET", &self.clob_secret),
-                ("POLYMARKET_CLOB_PASSPHRASE", &self.clob_passphrase),
                 ("POLYMARKET_PRIVATE_KEY", &self.private_key),
                 ("POLYMARKET_FUNDER_ADDRESS", &self.funder_address),
                 ("POLYMARKET_SIGNATURE_TYPE", &self.signature_type),
@@ -414,20 +329,6 @@ fn first_non_empty_env(keys: &[&str]) -> Option<String> {
         .find_map(|key| env::var(key).ok().filter(|value| !value.trim().is_empty()))
 }
 
-fn parse_csv(key: &str) -> Vec<String> {
-    env::var(key)
-        .ok()
-        .map(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 fn parse_bool(key: &str, default: bool) -> bool {
     env::var(key)
         .ok()
@@ -489,20 +390,6 @@ fn bounded_positive_duration_secs(
         bail!("{key} must be an integer between 1 and {maximum} seconds");
     }
     Ok(Duration::from_secs(seconds))
-}
-
-fn parse_usize(key: &str, default: usize) -> usize {
-    env::var(key)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
-}
-
-fn parse_decimal(key: &str, default: Decimal) -> Decimal {
-    env::var(key)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
 }
 
 #[cfg(test)]

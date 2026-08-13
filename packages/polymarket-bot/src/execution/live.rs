@@ -52,7 +52,7 @@ use crate::{
         LiveWalletTokenBalances, ReconciliationReport,
     },
     idempotency::event_hash,
-    models::{FillRecord, OrderRecord, OrderRequest},
+    models::{EffectiveProcessExecutionConfig, FillRecord, OrderRecord, OrderRequest},
     models::{FillSource, OrderSide, OrderState, OrderType},
     store::Store,
 };
@@ -88,6 +88,7 @@ pub struct LiveVenue {
     data_api: Option<DataApiClient>,
     bound_process_id: Option<Uuid>,
     bound_account_ref: Option<String>,
+    bound_execution: Option<EffectiveProcessExecutionConfig>,
     transport_state: Arc<Mutex<LiveTransportState>>,
     readiness_state: Arc<Mutex<LiveVenueState>>,
     global_entry_gate: Arc<Mutex<GlobalLiveEntryGate>>,
@@ -215,6 +216,7 @@ impl LiveVenue {
             data_api: Some(data_api),
             bound_process_id: None,
             bound_account_ref: None,
+            bound_execution: None,
             transport_state: Arc::new(Mutex::new(LiveTransportState::initial())),
             readiness_state: Arc::new(Mutex::new(LiveVenueState::fail_closed())),
             global_entry_gate: Arc::new(Mutex::new(GlobalLiveEntryGate::fail_closed())),
@@ -234,6 +236,7 @@ impl LiveVenue {
             data_api: None,
             bound_process_id: None,
             bound_account_ref: None,
+            bound_execution: None,
             transport_state: Arc::new(Mutex::new(LiveTransportState::initial())),
             readiness_state: Arc::new(Mutex::new(LiveVenueState::fail_closed())),
             global_entry_gate: Arc::new(Mutex::new(GlobalLiveEntryGate::fail_closed())),
@@ -244,22 +247,23 @@ impl LiveVenue {
     /// Produces the process-owned execution adapter used by a managed trading process. Transport
     /// health and the authenticated account connection are shared, while readiness, reconciliation
     /// and the manual entry gate remain isolated to the process.
-    pub fn bind_process(&self, process_id: Uuid, account_ref: &str) -> Result<Self> {
+    pub fn bind_process(
+        &self,
+        process_id: Uuid,
+        execution: &EffectiveProcessExecutionConfig,
+    ) -> Result<Self> {
         if process_id.is_nil() {
             bail!("live execution process_id must not be nil");
         }
-        let account_ref = account_ref.trim();
+        if execution.mode != "live" {
+            bail!("live execution venue requires execution.mode=live");
+        }
+        let account_ref = execution.account_ref.as_deref().unwrap_or("").trim();
         if account_ref.is_empty() {
             bail!("live execution account_ref must not be blank");
         }
         if account_ref.len() > 128 {
             bail!("live execution account_ref must not exceed 128 bytes");
-        }
-        if account_ref != self.config.account_ref {
-            bail!(
-                "live execution account_ref must match configured credential account_ref {}",
-                self.config.account_ref
-            );
         }
         Ok(Self {
             config: self.config.clone(),
@@ -268,6 +272,7 @@ impl LiveVenue {
             data_api: self.data_api.clone(),
             bound_process_id: Some(process_id),
             bound_account_ref: Some(account_ref.to_string()),
+            bound_execution: Some(execution.clone()),
             transport_state: self.transport_state.clone(),
             readiness_state: Arc::new(Mutex::new(LiveVenueState::fail_closed())),
             global_entry_gate: self.global_entry_gate.clone(),
@@ -281,6 +286,18 @@ impl LiveVenue {
 
     pub fn bound_account_ref(&self) -> Option<&str> {
         self.bound_account_ref.as_deref()
+    }
+
+    fn bound_execution(&self) -> Result<&EffectiveProcessExecutionConfig> {
+        self.bound_execution
+            .as_ref()
+            .context("live execution venue is not bound to a trading process")
+    }
+
+    fn order_submission_enabled(&self) -> bool {
+        self.bound_execution.as_ref().is_some_and(|execution| {
+            execution.mode == "live" && execution.execute_signals && execution.live_capital
+        })
     }
 
     pub fn parse_user_event(raw_payload: serde_json::Value) -> LiveVenueEvent {
@@ -395,7 +412,7 @@ impl LiveVenue {
     }
 
     fn spawn_user_ws_task_if_enabled(&self) {
-        if !self.config.user_ws_enabled || !self.config.user_ws_auth_available() {
+        if !self.config.user_ws_auth_available() {
             return;
         }
         let config = self.config.clone();
@@ -664,7 +681,11 @@ impl LiveVenue {
     }
 
     async fn canonical_live_account_identity(&self) -> Result<CanonicalLiveAccountIdentity> {
-        let identity = canonical_configured_account_identity(&self.config)?;
+        let identity = canonical_configured_account_identity(
+            &self.config,
+            self.bound_account_ref()
+                .context("live account identity requires a process account_ref")?,
+        )?;
         let authenticated_address = self
             .authenticated_client()
             .await?
@@ -1055,7 +1076,11 @@ impl LiveVenue {
         request: &OrderRequest,
         ignored_client_order_id: Option<Uuid>,
     ) -> Result<Option<LiveExecutionGateReason>> {
-        let identity = canonical_configured_account_identity(&self.config)?;
+        let identity = canonical_configured_account_identity(
+            &self.config,
+            self.bound_account_ref()
+                .context("live risk checks require a process account_ref")?,
+        )?;
         let (process_accounting_proven, reconciled_fingerprint) = {
             let state = self.readiness_state.lock().await;
             (
@@ -1084,24 +1109,26 @@ impl LiveVenue {
             .context("live requested capital exposure overflow")?;
         if let Some(reason) = live_capital_exposure_gate(
             resulting_exposure,
-            self.config.max_daily_loss_usd,
-            self.config.max_open_notional_usd,
+            self.bound_execution()?.max_daily_loss_usd,
+            self.bound_execution()?.max_open_notional_usd,
         ) {
             return Ok(Some(reason));
         }
 
-        let now = Utc::now();
-        let day_start = now
-            .date_naive()
-            .and_hms_opt(0, 0, 0)
-            .expect("midnight is a valid UTC time")
-            .and_utc();
-        let day_end = day_start + chrono::Duration::days(1);
-        let recognized_net_pnl = store
-            .recognized_live_process_net_pnl_for_utc_day(process_id, day_start, day_end, now)
-            .await?;
-        if recognized_net_pnl <= -self.config.max_daily_loss_usd {
-            return Ok(Some(LiveExecutionGateReason::DailyLossLimit));
+        if let Some(max_daily_loss_usd) = self.bound_execution()?.max_daily_loss_usd {
+            let now = Utc::now();
+            let day_start = now
+                .date_naive()
+                .and_hms_opt(0, 0, 0)
+                .expect("midnight is a valid UTC time")
+                .and_utc();
+            let day_end = day_start + chrono::Duration::days(1);
+            let recognized_net_pnl = store
+                .recognized_live_process_net_pnl_for_utc_day(process_id, day_start, day_end, now)
+                .await?;
+            if recognized_net_pnl <= -max_daily_loss_usd {
+                return Ok(Some(LiveExecutionGateReason::DailyLossLimit));
+            }
         }
 
         let mut markets = exposure
@@ -1109,14 +1136,18 @@ impl LiveVenue {
             .into_iter()
             .collect::<HashSet<_>>();
         markets.insert(request.market_id.clone());
-        if markets.len() > self.config.max_open_positions {
+        if self
+            .bound_execution()?
+            .max_open_positions
+            .is_some_and(|maximum| markets.len() > maximum)
+        {
             return Ok(Some(LiveExecutionGateReason::OpenPositionLimit));
         }
         Ok(None)
     }
 
     async fn current_entry_gate_reason(&self) -> Result<Option<LiveExecutionGateReason>> {
-        if !self.config.order_submit_enabled {
+        if !self.order_submission_enabled() {
             return Ok(Some(LiveExecutionGateReason::OrderSubmissionDisabled));
         }
         if !self.config.submit_auth_available() {
@@ -1213,7 +1244,7 @@ async fn run_user_ws_once(
                 match message.context("failed to read Polymarket user websocket")? {
                     Message::Text(text) => {
                         let text = text.to_string();
-                        let payload = match classify_user_ws_text(&text, &config.user_ws_markets)? {
+                        let payload = match classify_user_ws_text(&text, &[])? {
                             UserWsText::HeartbeatPong => {
                                 awaiting_pong_since = None;
                                 let mut state = state.lock().await;
@@ -1315,29 +1346,14 @@ enum UserWsText {
 }
 
 fn user_ws_subscription_payload(config: &LiveExecutionConfig) -> Result<Value> {
-    if config.user_ws_markets.len() > 256
-        || config
-            .user_ws_markets
-            .iter()
-            .any(|market| market.trim().is_empty() || market.len() > 128)
-    {
-        bail!("Polymarket user websocket market subscription is invalid or unbounded");
-    }
-    let mut subscription = json!({
+    Ok(json!({
         "auth": {
             "apiKey": config.clob_api_key.as_deref().unwrap_or(""),
             "secret": config.clob_secret.as_deref().unwrap_or(""),
             "passphrase": config.clob_passphrase.as_deref().unwrap_or("")
         },
         "type": "user"
-    });
-    if !config.user_ws_markets.is_empty() {
-        subscription
-            .as_object_mut()
-            .expect("user websocket subscription is an object")
-            .insert("markets".to_string(), json!(&config.user_ws_markets));
-    }
-    Ok(subscription)
+    }))
 }
 
 fn classify_user_ws_text(text: &str, subscribed_markets: &[String]) -> Result<UserWsText> {
@@ -1425,12 +1441,13 @@ fn configured_account_address(config: &LiveExecutionConfig) -> Result<Option<Str
         return Ok(None);
     }
     Ok(Some(
-        canonical_configured_account_identity(config)?.account_address,
+        canonical_configured_account_identity(config, "")?.account_address,
     ))
 }
 
 fn canonical_configured_account_identity(
     config: &LiveExecutionConfig,
+    account_ref: &str,
 ) -> Result<CanonicalLiveAccountIdentity> {
     let signature_type = parse_signature_type(config.signature_type.as_deref())?;
     let private_key = config
@@ -1495,7 +1512,7 @@ fn canonical_configured_account_identity(
     let fingerprint_sha256 = event_hash(&json!({
         "identity_version": "polymarket_live_account_v2",
         "chain_id": POLYGON,
-        "account_ref": &config.account_ref,
+        "account_ref": account_ref,
         "signature_type": signature_type as u8,
         "signer_address": &signer_address,
         "account_address": &account_address,
@@ -2306,13 +2323,17 @@ impl ExecutionVenue for LiveVenue {
             return Ok(existing);
         }
         let notional = request.price * request.size;
-        if notional > self.config.max_order_notional_usd {
+        if self
+            .bound_execution()?
+            .max_order_notional_usd
+            .is_some_and(|maximum| notional > maximum)
+        {
             return live_execution_gate_closed_order(
                 request,
                 LiveExecutionGateReason::PerOrderNotionalLimit,
             );
         }
-        if !self.config.order_submit_enabled {
+        if !self.order_submission_enabled() {
             return live_execution_gate_closed_order(
                 request,
                 LiveExecutionGateReason::OrderSubmissionDisabled,
@@ -2933,11 +2954,10 @@ impl ExecutionVenue for LiveVenue {
         let last_user_ws_pong_age_secs = stateful_age_seconds(transport.last_user_ws_pong_at, now);
         let last_geoblock_check_age_secs = stateful_age_seconds(transport.geoblock_checked_at, now);
         let last_rest_reconcile_age_secs = stateful_age_seconds(state.last_rest_reconcile_at, now);
-        let user_ws_fresh = !self.config.user_ws_enabled
-            || (transport.user_ws_connected
-                && last_user_ws_pong_age_secs
-                    .map(|age| age <= self.config.user_ws_stale.as_secs() as i64)
-                    .unwrap_or(false));
+        let user_ws_fresh = transport.user_ws_connected
+            && last_user_ws_pong_age_secs
+                .map(|age| age <= self.config.user_ws_stale.as_secs() as i64)
+                .unwrap_or(false);
         let rest_fresh = last_rest_reconcile_age_secs
             .map(|age| age <= self.config.stale_reconcile.as_secs() as i64)
             .unwrap_or(false);
@@ -2946,20 +2966,20 @@ impl ExecutionVenue for LiveVenue {
             && last_geoblock_check_age_secs
                 .is_some_and(|age| age <= self.config.stale_reconcile.as_secs() as i64);
         let live_confirmed = transport.live_confirmed && geoblock_fresh;
+        let order_submit_enabled = self.order_submission_enabled();
         let entries_enabled = live_confirmed
-            && self.config.order_submit_enabled
+            && order_submit_enabled
             && self.config.submit_auth_available()
             && !global.halted
             && state.manual_entries_enabled
             && state.process_accounting_proven
             && user_ws_fresh
             && rest_fresh
-            && self.config.require_idempotency_clean
             && state.idempotency_clean
             && state.unresolved_live_order_count == 0;
         let reason = if entries_enabled {
             None
-        } else if !self.config.order_submit_enabled {
+        } else if !order_submit_enabled {
             Some("live_order_submit_disabled".to_string())
         } else if !self.config.submit_auth_available() {
             Some("live_submit_auth_missing".to_string())
@@ -2985,7 +3005,7 @@ impl ExecutionVenue for LiveVenue {
             Some("live_user_ws_stale_or_disconnected".to_string())
         } else if !rest_fresh {
             Some("live_rest_reconcile_stale".to_string())
-        } else if !self.config.require_idempotency_clean || !state.idempotency_clean {
+        } else if !state.idempotency_clean {
             Some("live_idempotency_not_clean".to_string())
         } else if state.unresolved_live_order_count > 0 {
             Some("live_unresolved_orders_present".to_string())
@@ -3000,8 +3020,8 @@ impl ExecutionVenue for LiveVenue {
             geoblock_country: transport.geoblock_country.clone(),
             geoblock_region: transport.geoblock_region.clone(),
             last_geoblock_check_age_secs,
-            order_submit_enabled: self.config.order_submit_enabled,
-            user_ws_enabled: self.config.user_ws_enabled,
+            order_submit_enabled,
+            user_ws_enabled: self.config.user_ws_auth_available(),
             user_ws_connected: transport.user_ws_connected,
             last_user_ws_pong_age_secs,
             last_rest_reconcile_age_secs,
@@ -3009,8 +3029,16 @@ impl ExecutionVenue for LiveVenue {
             unresolved_live_order_count: state.unresolved_live_order_count,
             process_accounting_proven: state.process_accounting_proven,
             process_accounting_status: state.process_accounting_status.clone(),
-            max_order_notional_usd: self.config.max_order_notional_usd,
-            max_open_notional_usd: self.config.max_open_notional_usd,
+            max_order_notional_usd: self
+                .bound_execution
+                .as_ref()
+                .and_then(|execution| execution.max_order_notional_usd)
+                .unwrap_or(Decimal::ZERO),
+            max_open_notional_usd: self
+                .bound_execution
+                .as_ref()
+                .and_then(|execution| execution.max_open_notional_usd)
+                .unwrap_or(Decimal::ZERO),
             entries_enabled,
             reason,
         })
@@ -3094,7 +3122,14 @@ impl ExecutionVenue for LiveVenue {
         };
         let authenticated_client_address = client.address().to_checksum(None);
         diagnostics.authenticated_client_address = Some(authenticated_client_address.clone());
-        match canonical_configured_account_identity(&self.config) {
+        match self.bound_account_ref().map_or_else(
+            || {
+                Err(anyhow::anyhow!(
+                    "live identity diagnostics require a process account_ref"
+                ))
+            },
+            |account_ref| canonical_configured_account_identity(&self.config, account_ref),
+        ) {
             Ok(identity)
                 if identity.signature_type == signature_type
                     && authenticated_client_address
@@ -3486,27 +3521,29 @@ impl ExecutionVenue for LiveVenue {
         let transport = self.transport_state.lock().await;
         let mut state = self.readiness_state.lock().await;
         let mut global = self.global_entry_gate.lock().await;
-        let user_ws_fresh = !self.config.user_ws_enabled
-            || (transport.user_ws_connected
-                && stateful_age_seconds(transport.last_user_ws_pong_at, now)
-                    .is_some_and(|age| age <= self.config.user_ws_stale.as_secs() as i64));
+        let user_ws_fresh = transport.user_ws_connected
+            && stateful_age_seconds(transport.last_user_ws_pong_at, now)
+                .is_some_and(|age| age <= self.config.user_ws_stale.as_secs() as i64);
         let rest_fresh = stateful_age_seconds(state.last_rest_reconcile_at, now)
             .is_some_and(|age| age <= self.config.stale_reconcile.as_secs() as i64);
         let geoblock_fresh = transport.geoblock_readable
             && transport.geoblock_blocked == Some(false)
             && stateful_age_seconds(transport.geoblock_checked_at, now)
                 .is_some_and(|age| age <= self.config.stale_reconcile.as_secs() as i64);
-        let configured_identity = canonical_configured_account_identity(&self.config)?;
+        let configured_identity = canonical_configured_account_identity(
+            &self.config,
+            self.bound_account_ref()
+                .context("checked live enable requires a process account_ref")?,
+        )?;
         let identity_matches = state.credential_account_fingerprint_sha256.as_deref()
             == Some(configured_identity.fingerprint_sha256.as_str());
-        if !self.config.order_submit_enabled
+        if !self.order_submission_enabled()
             || !self.config.submit_auth_available()
             || !geoblock_fresh
             || !user_ws_fresh
             || !rest_fresh
             || !state.process_accounting_proven
             || !identity_matches
-            || !self.config.require_idempotency_clean
             || !state.idempotency_clean
             || state.unresolved_live_order_count != 0
             || !global.halted
@@ -3663,12 +3700,12 @@ fn user_ws_heartbeat_ack_timed_out(
 
 fn live_capital_exposure_gate(
     resulting_exposure: Decimal,
-    max_daily_loss_usd: Decimal,
-    max_open_notional_usd: Decimal,
+    max_daily_loss_usd: Option<Decimal>,
+    max_open_notional_usd: Option<Decimal>,
 ) -> Option<LiveExecutionGateReason> {
-    if resulting_exposure > max_daily_loss_usd {
+    if max_daily_loss_usd.is_some_and(|maximum| resulting_exposure > maximum) {
         Some(LiveExecutionGateReason::DailyLossLimit)
-    } else if resulting_exposure > max_open_notional_usd {
+    } else if max_open_notional_usd.is_some_and(|maximum| resulting_exposure > maximum) {
         Some(LiveExecutionGateReason::OpenNotionalLimit)
     } else {
         None
@@ -3932,17 +3969,7 @@ mod tests {
 
     fn live_config() -> LiveExecutionConfig {
         LiveExecutionConfig {
-            account_ref: "polymarket-test".to_string(),
-            order_submit_enabled: false,
-            max_order_notional_usd: dec!(2),
-            max_open_notional_usd: dec!(30),
-            max_daily_loss_usd: dec!(10),
-            max_open_positions: 6,
-            require_exit_book: true,
-            require_idempotency_clean: true,
-            user_ws_enabled: true,
             user_ws_url: "wss://ws-subscriptions-clob.polymarket.com/ws/user".to_string(),
-            user_ws_markets: Vec::new(),
             clob_api_base_url: "https://clob-v2.polymarket.com".to_string(),
             user_ws_stale: std::time::Duration::from_secs(20),
             reconcile_interval: std::time::Duration::from_secs(30),
@@ -3953,6 +3980,21 @@ mod tests {
             private_key: Some(format!("0x{:064x}", 1)),
             funder_address: Some("0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf".to_string()),
             signature_type: Some("0".to_string()),
+        }
+    }
+
+    fn live_execution() -> EffectiveProcessExecutionConfig {
+        EffectiveProcessExecutionConfig {
+            mode: "live".to_string(),
+            execute_signals: true,
+            live_capital: true,
+            account_ref: Some("polymarket-test".to_string()),
+            taker_fee_rate: dec!(0.03),
+            max_order_notional_usd: Some(dec!(2)),
+            max_open_notional_usd: Some(dec!(30)),
+            max_open_positions: Some(6),
+            max_daily_loss_usd: Some(dec!(10)),
+            require_exit_book: Some(true),
         }
     }
 
@@ -4154,11 +4196,9 @@ mod tests {
 
     #[tokio::test]
     async fn future_live_health_timestamps_are_not_treated_as_fresh() {
-        let mut config = live_config();
-        config.order_submit_enabled = true;
-        let venue = LiveVenue::new_for_test(config)
+        let venue = LiveVenue::new_for_test(live_config())
             .unwrap()
-            .bind_process(Uuid::new_v4(), "polymarket-test")
+            .bind_process(Uuid::new_v4(), &live_execution())
             .unwrap();
         seed_fresh_unblocked_geoblock(&venue).await;
         {
@@ -4203,7 +4243,7 @@ mod tests {
     async fn unsafe_geoblock_refresh_revokes_the_shared_live_generation() {
         let root = LiveVenue::new_for_test(live_config()).unwrap();
         let venue = root
-            .bind_process(Uuid::new_v4(), "polymarket-test")
+            .bind_process(Uuid::new_v4(), &live_execution())
             .unwrap();
         {
             let mut global = venue.global_entry_gate.lock().await;
@@ -4387,15 +4427,15 @@ mod tests {
     #[test]
     fn cumulative_capital_exposure_enforces_the_daily_hard_cap() {
         assert_eq!(
-            live_capital_exposure_gate(dec!(10), dec!(10), dec!(30)),
+            live_capital_exposure_gate(dec!(10), Some(dec!(10)), Some(dec!(30))),
             None
         );
         assert_eq!(
-            live_capital_exposure_gate(dec!(10.01), dec!(10), dec!(30)),
+            live_capital_exposure_gate(dec!(10.01), Some(dec!(10)), Some(dec!(30))),
             Some(LiveExecutionGateReason::DailyLossLimit)
         );
         assert_eq!(
-            live_capital_exposure_gate(dec!(5.01), dec!(10), dec!(5)),
+            live_capital_exposure_gate(dec!(5.01), Some(dec!(10)), Some(dec!(5))),
             Some(LiveExecutionGateReason::OpenNotionalLimit)
         );
     }
@@ -4454,12 +4494,10 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_entries_block_entry_and_metadata_labeled_exit_intents() {
-        let mut config = live_config();
-        config.order_submit_enabled = true;
         let process_id = uuid::Uuid::new_v4();
-        let venue = LiveVenue::new_for_test(config)
+        let venue = LiveVenue::new_for_test(live_config())
             .unwrap()
-            .bind_process(process_id, "polymarket-test")
+            .bind_process(process_id, &live_execution())
             .unwrap();
         venue.global_entry_gate.lock().await.halted = false;
         let base = OrderRequest {
@@ -4485,12 +4523,10 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_entries_block_non_exit_intents() {
-        let mut config = live_config();
-        config.order_submit_enabled = true;
         let process_id = uuid::Uuid::new_v4();
-        let venue = LiveVenue::new_for_test(config)
+        let venue = LiveVenue::new_for_test(live_config())
             .unwrap()
-            .bind_process(process_id, "polymarket-test")
+            .bind_process(process_id, &live_execution())
             .unwrap();
         venue.global_entry_gate.lock().await.halted = false;
         let mut request = OrderRequest {
@@ -4517,12 +4553,10 @@ mod tests {
 
     #[tokio::test]
     async fn per_order_risk_denial_is_a_zero_post_nonfatal_record() {
-        let mut config = live_config();
-        config.order_submit_enabled = true;
         let process_id = Uuid::new_v4();
-        let venue = LiveVenue::new_for_test(config)
+        let venue = LiveVenue::new_for_test(live_config())
             .unwrap()
-            .bind_process(process_id, "polymarket-test")
+            .bind_process(process_id, &live_execution())
             .unwrap();
         let request = OrderRequest {
             client_order_id: Uuid::new_v4(),
@@ -4542,13 +4576,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_bound_venue_rejects_missing_or_mismatched_process_identity() {
-        let mut config = live_config();
-        config.order_submit_enabled = true;
-        let process_id = uuid::Uuid::new_v4();
-        let venue = LiveVenue::new_for_test(config)
+    async fn omitted_per_order_limit_does_not_create_a_risk_gate() {
+        let process_id = Uuid::new_v4();
+        let mut execution = live_execution();
+        execution.max_order_notional_usd = None;
+        let venue = LiveVenue::new_for_test(live_config())
             .unwrap()
-            .bind_process(process_id, "polymarket-test")
+            .bind_process(process_id, &execution)
+            .unwrap();
+        let request = OrderRequest {
+            client_order_id: Uuid::new_v4(),
+            process_id: Some(process_id),
+            market_id: "market".to_string(),
+            token_id: "1".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            price: dec!(0.75),
+            size: dec!(3),
+            metadata: json!({"execution_intent": "entry"}),
+        };
+
+        let order = submit_with_test_guard(&venue, request).await.unwrap();
+
+        assert_live_gate_rejection(&order, LiveExecutionGateReason::GlobalHalt);
+    }
+
+    #[tokio::test]
+    async fn process_bound_venue_rejects_missing_or_mismatched_process_identity() {
+        let process_id = uuid::Uuid::new_v4();
+        let venue = LiveVenue::new_for_test(live_config())
+            .unwrap()
+            .bind_process(process_id, &live_execution())
             .unwrap();
         let request = OrderRequest {
             client_order_id: uuid::Uuid::new_v4(),
@@ -4567,11 +4625,9 @@ mod tests {
 
     #[tokio::test]
     async fn manual_enable_remains_fail_closed_before_first_successful_reconcile() {
-        let mut config = live_config();
-        config.order_submit_enabled = true;
-        let venue = LiveVenue::new_for_test(config)
+        let venue = LiveVenue::new_for_test(live_config())
             .unwrap()
-            .bind_process(uuid::Uuid::new_v4(), "polymarket-test")
+            .bind_process(uuid::Uuid::new_v4(), &live_execution())
             .unwrap();
         seed_fresh_unblocked_geoblock(&venue).await;
 
@@ -4593,12 +4649,11 @@ mod tests {
 
     #[tokio::test]
     async fn wallet_wide_halt_closes_every_bound_submit_path() {
-        let mut config = live_config();
-        config.order_submit_enabled = true;
-        let root = LiveVenue::new_for_test(config).unwrap();
+        let root = LiveVenue::new_for_test(live_config()).unwrap();
         let process_id = Uuid::new_v4();
-        let bound = root.bind_process(process_id, "polymarket-test").unwrap();
-        let identity = canonical_configured_account_identity(&bound.config).unwrap();
+        let bound = root.bind_process(process_id, &live_execution()).unwrap();
+        let identity =
+            canonical_configured_account_identity(&bound.config, "polymarket-test").unwrap();
         seed_fresh_unblocked_geoblock(&bound).await;
         {
             let mut transport = bound.transport_state.lock().await;
@@ -4651,12 +4706,10 @@ mod tests {
 
     #[tokio::test]
     async fn process_bound_live_submit_cannot_bypass_adjacent_guard() {
-        let mut config = live_config();
-        config.order_submit_enabled = true;
         let process_id = Uuid::new_v4();
-        let venue = LiveVenue::new_for_test(config)
+        let venue = LiveVenue::new_for_test(live_config())
             .unwrap()
-            .bind_process(process_id, "polymarket-test")
+            .bind_process(process_id, &live_execution())
             .unwrap();
         let request = OrderRequest {
             client_order_id: Uuid::new_v4(),
@@ -4677,12 +4730,10 @@ mod tests {
 
     #[tokio::test]
     async fn process_bound_live_submit_rejects_an_explicitly_missing_guard_before_io() {
-        let mut config = live_config();
-        config.order_submit_enabled = true;
         let process_id = Uuid::new_v4();
-        let venue = LiveVenue::new_for_test(config)
+        let venue = LiveVenue::new_for_test(live_config())
             .unwrap()
-            .bind_process(process_id, "polymarket-test")
+            .bind_process(process_id, &live_execution())
             .unwrap();
         let request = OrderRequest {
             client_order_id: Uuid::new_v4(),
@@ -4707,12 +4758,10 @@ mod tests {
 
     #[tokio::test]
     async fn repeated_metadata_labeled_exit_attempts_remain_zero_post_while_halted() {
-        let mut config = live_config();
-        config.order_submit_enabled = true;
         let process_id = Uuid::new_v4();
-        let venue = LiveVenue::new_for_test(config)
+        let venue = LiveVenue::new_for_test(live_config())
             .unwrap()
-            .bind_process(process_id, "polymarket-test")
+            .bind_process(process_id, &live_execution())
             .unwrap();
         let request = OrderRequest {
             client_order_id: Uuid::new_v4(),
@@ -4736,14 +4785,14 @@ mod tests {
 
     #[test]
     fn canonical_identity_is_signature_aware_and_fingerprint_is_bounded() {
-        let eoa = canonical_configured_account_identity(&live_config()).unwrap();
+        let eoa = canonical_configured_account_identity(&live_config(), "polymarket-test").unwrap();
         assert_eq!(eoa.account_address, eoa.signer_address);
         assert_eq!(eoa.fingerprint_sha256.len(), 64);
 
         let mut poly1271 = live_config();
         poly1271.signature_type = Some("3".to_string());
         poly1271.funder_address = Some("0x0000000000000000000000000000000000000002".to_string());
-        let poly1271 = canonical_configured_account_identity(&poly1271).unwrap();
+        let poly1271 = canonical_configured_account_identity(&poly1271, "polymarket-test").unwrap();
         assert_ne!(poly1271.account_address, poly1271.signer_address);
         assert_eq!(
             poly1271.account_address,
@@ -4755,7 +4804,7 @@ mod tests {
     #[test]
     fn canonical_identity_fingerprint_survives_api_key_rotation_but_not_account_rotation() {
         let config = live_config();
-        let baseline = canonical_configured_account_identity(&config)
+        let baseline = canonical_configured_account_identity(&config, "polymarket-test")
             .unwrap()
             .fingerprint_sha256;
 
@@ -4764,16 +4813,14 @@ mod tests {
         rotated_api.clob_secret = Some("rotated-secret".to_string());
         rotated_api.clob_passphrase = Some("rotated-passphrase".to_string());
         assert_eq!(
-            canonical_configured_account_identity(&rotated_api)
+            canonical_configured_account_identity(&rotated_api, "polymarket-test")
                 .unwrap()
                 .fingerprint_sha256,
             baseline
         );
 
-        let mut rotated_account = config;
-        rotated_account.account_ref = "polymarket-other".to_string();
         assert_ne!(
-            canonical_configured_account_identity(&rotated_account)
+            canonical_configured_account_identity(&config, "polymarket-other")
                 .unwrap()
                 .fingerprint_sha256,
             baseline
@@ -4807,34 +4854,27 @@ mod tests {
     #[test]
     fn process_binding_rejects_nil_identity() {
         let venue = LiveVenue::new_for_test(live_config()).unwrap();
-        assert!(venue.bind_process(Uuid::nil(), "polymarket-test").is_err());
-        assert!(venue.bind_process(Uuid::new_v4(), "   ").is_err());
+        assert!(venue.bind_process(Uuid::nil(), &live_execution()).is_err());
+        let mut blank_account = live_execution();
+        blank_account.account_ref = Some("   ".to_string());
+        assert!(venue.bind_process(Uuid::new_v4(), &blank_account).is_err());
 
         let process_id = Uuid::new_v4();
-        assert!(venue
-            .bind_process(process_id, "polymarket-primary")
-            .is_err());
-        let bound = venue
-            .bind_process(process_id, "  polymarket-test  ")
-            .unwrap();
+        let mut padded_account = live_execution();
+        padded_account.account_ref = Some("  polymarket-test  ".to_string());
+        let bound = venue.bind_process(process_id, &padded_account).unwrap();
         assert_eq!(bound.bound_process_id(), Some(process_id));
         assert_eq!(bound.bound_account_ref(), Some("polymarket-test"));
     }
 
     #[test]
-    fn live_config_rejects_unsafe_caps() {
+    fn live_config_requires_transport_endpoints() {
         let mut config = live_config();
-        config.max_order_notional_usd = dec!(2.01);
+        config.user_ws_url.clear();
         assert!(config.validate_for_live().is_err());
 
         let mut config = live_config();
-        config.order_submit_enabled = true;
-        config.require_idempotency_clean = false;
-        assert!(config.validate_for_live().is_err());
-
-        let mut config = live_config();
-        config.order_submit_enabled = true;
-        config.user_ws_enabled = false;
+        config.clob_api_base_url.clear();
         assert!(config.validate_for_live().is_err());
     }
 }

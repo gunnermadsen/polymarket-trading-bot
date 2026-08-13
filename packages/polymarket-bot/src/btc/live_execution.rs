@@ -38,6 +38,7 @@ pub struct BtcLiveExecutionAdapter {
     max_directional_feature_age: Option<Duration>,
     max_book_age: Duration,
     max_depth_participation: Decimal,
+    require_exit_book: bool,
     submit_guard: Arc<Mutex<()>>,
 }
 
@@ -65,6 +66,7 @@ impl BtcLiveExecutionAdapter {
         max_directional_feature_age: Option<Duration>,
         max_book_age: Duration,
         max_depth_participation: Decimal,
+        require_exit_book: bool,
     ) -> Result<Self> {
         if expected_process_id.is_nil() {
             bail!("BTC live execution expected_process_id must not be nil");
@@ -89,6 +91,7 @@ impl BtcLiveExecutionAdapter {
             max_directional_feature_age,
             max_book_age,
             max_depth_participation,
+            require_exit_book,
             submit_guard: Arc::new(Mutex::new(())),
         })
     }
@@ -153,15 +156,17 @@ impl BtcLiveExecutionAdapter {
         if source_age > self.max_book_age || receive_age > self.max_book_age {
             return Ok(Some(LiveExecutionGateReason::OrderbookFreshness));
         }
-        if let Some(reason) = validate_market_pair_snapshot(
-            request,
-            connection_id,
-            &market_books,
-            &checkpoint,
-            checked_at,
-            self.max_book_age,
-        )? {
-            return Ok(Some(reason));
+        if self.require_exit_book {
+            if let Some(reason) = validate_market_pair_snapshot(
+                request,
+                connection_id,
+                &market_books,
+                &checkpoint,
+                checked_at,
+                self.max_book_age,
+            )? {
+                return Ok(Some(reason));
+            }
         }
         validate_marketable_depth(&checkpoint, request, self.max_depth_participation)
     }
@@ -775,6 +780,7 @@ mod tests {
             None,
             Duration::seconds(2),
             dec!(0.50),
+            true,
         )
         .unwrap()
     }
