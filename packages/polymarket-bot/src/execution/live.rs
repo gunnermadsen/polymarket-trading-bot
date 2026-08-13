@@ -2441,9 +2441,9 @@ impl ExecutionVenue for LiveVenue {
         if let Some(reason) = guard_reason {
             return persist_pre_submit_gate_rejection(&store, pending_order, reason).await;
         }
-        // Commit the one-shot grant after every awaited check and immediately before the venue
-        // POST. A websocket event/error or another halt changes the generation and converts this
-        // pending order into a durable zero-POST rejection.
+        // Revalidate the checked process authorization after every awaited check and immediately
+        // before the venue POST. A websocket event/error or another halt changes the generation
+        // and converts this pending order into a durable zero-POST rejection.
         let commit_reason = {
             let mut state = self.readiness_state.lock().await;
             let mut global = self.global_entry_gate.lock().await;
@@ -3721,10 +3721,7 @@ fn commit_live_post_attempt(
     {
         return Some(LiveExecutionGateReason::GlobalHalt);
     }
-    let consumed_generation = record_global_entry_halt(gate, "single_post_attempt_consumed");
-    state.manual_entries_enabled = false;
-    state.manual_entries_reason = Some("single_post_attempt_consumed".to_string());
-    (consumed_generation == u64::MAX).then_some(LiveExecutionGateReason::GlobalHalt)
+    None
 }
 
 fn user_ws_heartbeat_ack_timed_out(
@@ -4480,9 +4477,12 @@ mod tests {
             commit_live_post_attempt(&mut gate, &mut state, admitted_generation),
             None
         );
-        assert!(gate.halted);
-        assert!(!state.manual_entries_enabled);
-        assert_eq!(gate.reason, "single_post_attempt_consumed");
+        assert!(!gate.halted);
+        assert!(state.manual_entries_enabled);
+        assert_eq!(
+            state.reconciled_safety_generation,
+            Some(admitted_generation)
+        );
     }
 
     #[test]
