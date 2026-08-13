@@ -721,7 +721,7 @@ fn validate_optional_execution_controls(
         (
             "max_order_notional_usd",
             execution.max_order_notional_usd,
-            dec!(2),
+            dec!(5),
         ),
         (
             "max_open_notional_usd",
@@ -4318,7 +4318,7 @@ mod lifecycle_tests {
     fn optional_execution_controls_are_mode_independent_and_validated_when_present() {
         let mut process = eligible_btc_process();
         let execution = process.config.execution.as_mut().unwrap();
-        execution.max_order_notional_usd = Some(dec!(2));
+        execution.max_order_notional_usd = Some(dec!(5));
         execution.max_open_notional_usd = Some(dec!(20));
         execution.max_open_positions = Some(6);
         execution.max_daily_loss_usd = Some(dec!(10));
@@ -4337,7 +4337,7 @@ mod lifecycle_tests {
             .execution
             .as_mut()
             .unwrap()
-            .max_order_notional_usd = Some(dec!(2.01));
+            .max_order_notional_usd = Some(dec!(5.01));
         assert!(validate_btc_process_capability(&process).is_err());
     }
 
