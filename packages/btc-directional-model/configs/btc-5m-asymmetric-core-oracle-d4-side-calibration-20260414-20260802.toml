@@ -1,0 +1,170 @@
+[benchmark]
+profile = "btc_asymmetric_core_oracle_d4_side_calibration"
+paper_only = true
+live_capital_allowed = false
+runtime_deployable = false
+batch_forward_eligible = false
+qualification_eligible = false
+support_qualification_allowed = false
+projected_pnl_diagnostic = true
+process_change_allowed = false
+evidence_scope = "consumed_architecture_feedback"
+
+[incumbent]
+process_id = "81f82de7-002b-4ac7-814b-236c6742d81c"
+model_key = "btc-5m-asymmetric-core-oracle-paper-20260805-v1"
+model_sha256 = "2c91e894356f6fee7fe9514e24c39da6e11602ffcb7f961f64848bde72418db9"
+feature_schema_sha256 = "fe2a5aaee3df1ef899d2553712555091aa29b7481b3fed7805ba140dc8aa5014"
+feature_count = 75
+
+[parent_d4]
+candidate_name = "D4"
+feature_set = "dynamic"
+estimator = "histogram_gradient_boosting"
+weighting = "market_equal"
+l2_regularization = 20.0
+learning_rate = 0.03
+max_iter = 120
+max_leaf_nodes = 5
+min_samples_leaf = 250
+residual_logit_cap = 0.50
+gamma_minimum = 0.0
+gamma_maximum = 1.0
+preprocessing = "fit_window_median_iqr"
+random_seed = 20260809
+
+[parent_run]
+run_id = "20260810T200017635552Z"
+root_training_contract_sha256 = "82879fee81ff3ae91291088f5a9d20c06f171be3bafd3ed466d36b0479bbcf01"
+fold_model_manifest_sha256 = "87c9633464b6e387056b814e24125f6a70c1f76b8aa483d036be1ad8ca5e7b0a"
+prediction_manifest_sha256 = "7248ea84cd4ec1a91f32ff400deb24f432df2de46638499ca013d2c85c6f4802"
+probability_selection_sha256 = "5b1bbedbce4dc51818b96723267a1a700eaadf9de2276356763e78aac36be9ae"
+probability_selection_seal_sha256 = "32a43c883d5d7dae0a01d4f1f084cb81d57ef0f378411b21599c9030c04fc1c3"
+benchmark_bundle_seal_sha256 = "0b98ab3bd4ca3d04982a89104a04ce4fea15ece2a5920d0acd2284ee348e238d"
+d4_oof_predictions_sha256 = "0faea82a211b968d5b182da56ab07a9fcfe0d0d909079d1f409946d7b7d0e6d3"
+
+[chronology]
+development_start = "2026-04-14T00:00:00Z"
+development_end = "2026-08-02T00:00:00Z"
+calibration_days = 14
+excluded_utc_days = ["2026-07-26", "2026-07-27"]
+oof_utc_days = [
+  "2026-07-21",
+  "2026-07-22",
+  "2026-07-23",
+  "2026-07-24",
+  "2026-07-25",
+  "2026-07-28",
+  "2026-07-29",
+  "2026-07-30",
+  "2026-07-31",
+  "2026-08-01",
+]
+consumed_validation_role = "diagnostic_only_not_forward_proof"
+
+[policy]
+name = "raw20_30_by55_edge_3c"
+quantity = 5.0
+vwap_quantity = 5.0
+maximum_depth_participation = 0.25
+book_freshness_seconds = 2.0
+execution_reserve_per_share = 0.01
+minimum_edge_per_share = 0.03
+minimum_share_price = 0.20
+maximum_share_price = 0.30
+maximum_cost_per_share = 0.35
+minimum_entry_second = 1
+maximum_entry_second = 55
+price_interval_closed = "left"
+
+[calibration]
+probability_clip = 0.000001
+fixed_slope = 1.0
+identity_l2 = 1.0
+minimum_no_logit_offset = -0.5
+maximum_no_logit_offset = 0.0
+weighting = "market_equal"
+optimizer_max_iterations = 500
+optimizer_absolute_tolerance = 0.000000000001
+
+[[calibration.time_bands]]
+name = "NO_1_15"
+start_second = 1
+end_second_exclusive = 15
+
+[[calibration.time_bands]]
+name = "NO_15_30"
+start_second = 15
+end_second_exclusive = 30
+
+[[calibration.time_bands]]
+name = "NO_30_45"
+start_second = 30
+end_second_exclusive = 45
+
+[[calibration.time_bands]]
+name = "NO_45_56"
+start_second = 45
+end_second_exclusive = 56
+
+[[calibration.arms]]
+name = "D4-base"
+strategy = "identity"
+selection_eligible = false
+
+[[calibration.arms]]
+name = "N1"
+strategy = "pooled_no_intercept"
+selection_eligible = true
+
+[[calibration.arms]]
+name = "N2"
+strategy = "time_local_no_intercepts"
+selection_eligible = true
+
+[support_gates]
+minimum_calibration_no_markets = 100
+minimum_calibration_utc_days = 14
+minimum_no_winning_markets = 25
+minimum_no_losing_markets = 25
+require_both_outcomes_per_time_cell_for_local = true
+minimum_validation_strict_markets = 2000
+minimum_validation_no_opportunities = 200
+minimum_validation_days_with_no_opportunities = 8
+required_validation_days = 10
+require_exact_candidate_control_keys = true
+require_no_duplicate_keys = true
+require_no_future_data = true
+
+[probability_gates]
+maximum_paired_degradation_upper_95 = 0.005
+maximum_selected_opportunity_bias = 0.03
+maximum_no_selected_bias = 0.05
+maximum_yes_selected_bias = 0.03
+minimum_no_selected_bias_reduction = 0.01
+minimum_noninferior_days = 8
+required_comparison_days = 10
+require_brier_noninferiority_to_d4 = true
+require_log_loss_noninferiority_to_d4 = true
+require_brier_noninferiority_to_incumbent = true
+require_log_loss_noninferiority_to_incumbent = true
+require_preserved_yes_quality = true
+require_no_harmful_cell_overconfidence = true
+selection_uses_economics = false
+
+[economic_gates]
+minimum_stressed_expectancy_per_trade = 0.0
+minimum_profit_factor = 1.05
+minimum_yes_stressed_pnl = 0.0
+minimum_no_stressed_pnl = 0.0
+minimum_no_stressed_pnl_improvement = 0.0
+maximum_yes_stressed_pnl_regression_fraction = 0.10
+maximum_drawdown_regression_fraction = 0.10
+require_accuracy_noninferior_to_d4 = true
+require_positive_paired_net_profit_per_eligible_market = true
+report_projected_pnl_for_every_arm = true
+
+[paths]
+parent_book_admission_config = "configs/btc-5m-asymmetric-core-oracle-book-admission-20260414-20260802.toml"
+parent_run = "runs/btc-asymmetric-core-oracle-book-admission-20260414-20260802/20260810T200017635552Z"
+runs = "runs/btc-asymmetric-core-oracle-d4-side-calibration-20260414-20260802"

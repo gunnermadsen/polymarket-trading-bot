@@ -1,0 +1,248 @@
+[benchmark]
+profile = "btc_asymmetric_core_oracle_book_admission"
+paper_only = true
+live_capital_allowed = false
+runtime_deployable = false
+batch_forward_eligible = true
+evidence_scope = "consumed_cross_day_development"
+process_change_allowed = false
+
+[incumbent]
+process_id = "81f82de7-002b-4ac7-814b-236c6742d81c"
+model_key = "btc-5m-asymmetric-core-oracle-paper-20260805-v1"
+model_sha256 = "2c91e894356f6fee7fe9514e24c39da6e11602ffcb7f961f64848bde72418db9"
+feature_schema_sha256 = "fe2a5aaee3df1ef899d2553712555091aa29b7481b3fed7805ba140dc8aa5014"
+feature_count = 75
+
+[chronology]
+development_start = "2026-04-14T00:00:00Z"
+development_end = "2026-08-02T00:00:00Z"
+calibration_days = 14
+excluded_utc_days = ["2026-07-26", "2026-07-27"]
+oof_utc_days = [
+  "2026-07-21",
+  "2026-07-22",
+  "2026-07-23",
+  "2026-07-24",
+  "2026-07-25",
+  "2026-07-28",
+  "2026-07-29",
+  "2026-07-30",
+  "2026-07-31",
+  "2026-08-01",
+]
+
+[[chronology.folds]]
+name = "2026-07-21"
+fit_start = "2026-04-14T00:00:00Z"
+fit_end = "2026-07-07T00:00:00Z"
+calibration_start = "2026-07-07T00:00:00Z"
+calibration_end = "2026-07-21T00:00:00Z"
+validation_start = "2026-07-21T00:00:00Z"
+validation_end = "2026-07-22T00:00:00Z"
+
+[[chronology.folds]]
+name = "2026-07-22"
+fit_start = "2026-04-14T00:00:00Z"
+fit_end = "2026-07-08T00:00:00Z"
+calibration_start = "2026-07-08T00:00:00Z"
+calibration_end = "2026-07-22T00:00:00Z"
+validation_start = "2026-07-22T00:00:00Z"
+validation_end = "2026-07-23T00:00:00Z"
+
+[[chronology.folds]]
+name = "2026-07-23"
+fit_start = "2026-04-14T00:00:00Z"
+fit_end = "2026-07-09T00:00:00Z"
+calibration_start = "2026-07-09T00:00:00Z"
+calibration_end = "2026-07-23T00:00:00Z"
+validation_start = "2026-07-23T00:00:00Z"
+validation_end = "2026-07-24T00:00:00Z"
+
+[[chronology.folds]]
+name = "2026-07-24"
+fit_start = "2026-04-14T00:00:00Z"
+fit_end = "2026-07-10T00:00:00Z"
+calibration_start = "2026-07-10T00:00:00Z"
+calibration_end = "2026-07-24T00:00:00Z"
+validation_start = "2026-07-24T00:00:00Z"
+validation_end = "2026-07-25T00:00:00Z"
+
+[[chronology.folds]]
+name = "2026-07-25"
+fit_start = "2026-04-14T00:00:00Z"
+fit_end = "2026-07-11T00:00:00Z"
+calibration_start = "2026-07-11T00:00:00Z"
+calibration_end = "2026-07-25T00:00:00Z"
+validation_start = "2026-07-25T00:00:00Z"
+validation_end = "2026-07-26T00:00:00Z"
+
+[[chronology.folds]]
+name = "2026-07-28"
+fit_start = "2026-04-14T00:00:00Z"
+fit_end = "2026-07-14T00:00:00Z"
+calibration_start = "2026-07-14T00:00:00Z"
+calibration_end = "2026-07-28T00:00:00Z"
+validation_start = "2026-07-28T00:00:00Z"
+validation_end = "2026-07-29T00:00:00Z"
+
+[[chronology.folds]]
+name = "2026-07-29"
+fit_start = "2026-04-14T00:00:00Z"
+fit_end = "2026-07-15T00:00:00Z"
+calibration_start = "2026-07-15T00:00:00Z"
+calibration_end = "2026-07-29T00:00:00Z"
+validation_start = "2026-07-29T00:00:00Z"
+validation_end = "2026-07-30T00:00:00Z"
+
+[[chronology.folds]]
+name = "2026-07-30"
+fit_start = "2026-04-14T00:00:00Z"
+fit_end = "2026-07-16T00:00:00Z"
+calibration_start = "2026-07-16T00:00:00Z"
+calibration_end = "2026-07-30T00:00:00Z"
+validation_start = "2026-07-30T00:00:00Z"
+validation_end = "2026-07-31T00:00:00Z"
+
+[[chronology.folds]]
+name = "2026-07-31"
+fit_start = "2026-04-14T00:00:00Z"
+fit_end = "2026-07-17T00:00:00Z"
+calibration_start = "2026-07-17T00:00:00Z"
+calibration_end = "2026-07-31T00:00:00Z"
+validation_start = "2026-07-31T00:00:00Z"
+validation_end = "2026-08-01T00:00:00Z"
+
+[[chronology.folds]]
+name = "2026-08-01"
+fit_start = "2026-04-14T00:00:00Z"
+fit_end = "2026-07-18T00:00:00Z"
+calibration_start = "2026-07-18T00:00:00Z"
+calibration_end = "2026-08-01T00:00:00Z"
+validation_start = "2026-08-01T00:00:00Z"
+validation_end = "2026-08-02T00:00:00Z"
+
+[chronology.final]
+fit_start = "2026-04-14T00:00:00Z"
+fit_end = "2026-07-16T00:00:00Z"
+calibration_start = "2026-07-16T00:00:00Z"
+calibration_end = "2026-08-02T00:00:00Z"
+
+[policy]
+name = "raw20_30_by55_edge_3c"
+quantity = 5.0
+vwap_quantity = 5.0
+maximum_depth_participation = 0.25
+book_freshness_seconds = 2.0
+execution_reserve_per_share = 0.01
+minimum_edge_per_share = 0.03
+minimum_share_price = 0.20
+maximum_share_price = 0.30
+maximum_cost_per_share = 0.35
+minimum_entry_second = 1
+maximum_entry_second = 55
+price_interval_closed = "left"
+
+[model]
+residual_logit_cap = 0.50
+probability_clip = 0.000001
+gamma_minimum = 0.0
+gamma_maximum = 1.0
+preprocessing = "fit_window_median_iqr"
+random_seed = 20260809
+optimizer_max_iterations = 500
+optimizer_ftol = 1e-9
+
+[[model.candidates]]
+name = "S0"
+feature_set = "static"
+estimator = "linear"
+selection_eligible = false
+weighting = "market_equal"
+l2_regularization = 30.0
+
+[[model.candidates]]
+name = "D1"
+feature_set = "dynamic"
+estimator = "linear"
+selection_eligible = true
+weighting = "market_equal"
+l2_regularization = 30.0
+
+[[model.candidates]]
+name = "D2"
+feature_set = "dynamic"
+estimator = "linear"
+selection_eligible = true
+weighting = "market_equal"
+l2_regularization = 10.0
+
+[[model.candidates]]
+name = "D3"
+feature_set = "dynamic"
+estimator = "linear"
+selection_eligible = true
+weighting = "day_market_row_equal"
+l2_regularization = 30.0
+
+[[model.candidates]]
+name = "D4"
+feature_set = "dynamic"
+estimator = "histogram_gradient_boosting"
+selection_eligible = true
+weighting = "market_equal"
+l2_regularization = 20.0
+learning_rate = 0.03
+max_iter = 120
+max_leaf_nodes = 5
+min_samples_leaf = 250
+
+[probability_gates]
+maximum_paired_degradation_upper_95 = 0.005
+maximum_selected_opportunity_bias = 0.03
+maximum_cell_bias = 0.05
+minimum_noninferior_days = 8
+required_comparison_days = 10
+require_brier_noninferiority = true
+require_log_loss_noninferiority = true
+require_one_proper_score_improvement = true
+require_dynamic_noninferiority_to_static = true
+
+[correction_gates]
+minimum_net_corrected_decisions = 3
+minimum_improvement_days = 3
+minimum_candidate_accuracy = 0.315
+minimum_accuracy_delta = 0.02
+minimum_correctness_margin = 0.05
+require_positive_candidate_only_stressed_expectancy = true
+
+[economic_gates]
+minimum_incumbent_frequency_fraction = 0.80
+minimum_yes_entries = 20
+minimum_no_entries = 20
+minimum_stressed_expectancy_per_trade = 0.0
+minimum_profit_factor = 1.05
+minimum_profit_factor_fraction_of_incumbent = 0.90
+maximum_mean_share_price = 0.2466
+maximum_loss_recovery_burden = 0.40
+maximum_average_loss = 1.390
+maximum_single_loss = 1.674
+maximum_drawdown = 19.18
+maximum_primary_metric_regression_fraction = 0.10
+require_positive_both_sides = true
+development_lower_95_is_report_only = true
+
+[readiness_gates]
+minimum_dynamic_coverage = 0.90
+minimum_strict_markets = 2000
+minimum_target_markets = 750
+maximum_book_age_seconds = 2.0
+require_complete_exact_keys = true
+require_no_duplicate_keys = true
+require_no_future_data = true
+
+[paths]
+source_asymmetric_value_config = "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
+incumbent_runtime_dir = "runtime-models/btc-5m-asymmetric-core-oracle-paper-20260805-v1"
+incumbent_model = "runtime-models/btc-5m-asymmetric-core-oracle-paper-20260805-v1/model.json"
+runs = "runs/btc-asymmetric-core-oracle-book-admission-20260414-20260802"

@@ -1,0 +1,21 @@
+[readiness]
+contract = "early-no-cross-day-source-readiness-v2"
+frozen_at = "2026-08-09T03:41:08Z"
+quarantine_start = "2026-08-02T00:00:00Z"
+quarantine_end = "2026-08-10T00:00:00Z"
+validation_start = "2026-08-10T00:00:00Z"
+validation_end = "2026-08-20T00:00:00Z"
+expected_daily_markets = 288
+minimum_opening_boundary_coverage = 0.95
+minimum_source_grid_coverage = 0.90
+minimum_l2_second_coverage = 0.95
+minimum_primary_l2_provider_fraction = 0.95
+minimum_candidate_grid_coverage = 0.70
+
+[external_archive]
+mount_root = "/Volumes/docker-data"
+pmxt_cache_root = "/Volumes/docker-data/polymarket-bot/backfill-cache"
+spot_l2_archive_root = "/Volumes/docker-data/polymarket-bot/binance-l2"
+spot_l2_sentinel = ".cryptohft-l2-storage"
+spot_l2_sentinel_content = "cryptohft-btcusdt-l2-archive-v1\n"
+coinapi_archive_root = "/Volumes/docker-data/polymarket-bot/binance-l2"

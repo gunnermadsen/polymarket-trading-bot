@@ -114,6 +114,20 @@ L2_AUDIT_COLUMNS = (
     "source_update_id",
 )
 
+L2_MAXIMUM_CAUSAL_AGE_SECONDS = 2
+L2_CAUSAL_TIMESTAMP_COLUMNS = (
+    "spot_l2_source_event_timestamp",
+    "spot_l2_available_at",
+)
+L2_CAUSAL_AGE_COLUMNS = (
+    "spot_l2_availability_age_seconds",
+    "spot_l2_state_age_seconds",
+)
+L2_CAUSAL_AUDIT_COLUMNS = (
+    *L2_CAUSAL_TIMESTAMP_COLUMNS,
+    *L2_CAUSAL_AGE_COLUMNS,
+)
+
 _SOURCE_TO_MODEL = {
     "spread_bps": "spot_l2_spread_bps",
     "imbalance_5": "spot_l2_imbalance_5",
@@ -175,18 +189,24 @@ def join_qualified_l2(
     core: pl.DataFrame,
     source: pl.DataFrame,
     *,
-    maximum_age_seconds: int = 2,
+    maximum_age_seconds: int = L2_MAXIMUM_CAUSAL_AGE_SECONDS,
 ) -> pl.DataFrame:
     """Attach the latest strictly prior qualified state without filling gaps."""
 
-    if maximum_age_seconds != 2:
+    if maximum_age_seconds != L2_MAXIMUM_CAUSAL_AGE_SECONDS:
         raise ValueError("spot-L2 maximum age is fixed at two seconds")
     _require_columns(core, ("observed_at", "btc_close"), "core frame")
     _validate_l2_source(source)
     original_columns = tuple(core.columns)
-    conflicts = sorted(set(L2_FEATURES) & set(original_columns))
+    conflicts = sorted(
+        (set(L2_FEATURES) | set(L2_CAUSAL_AUDIT_COLUMNS))
+        & set(original_columns)
+    )
     if conflicts:
-        raise RuntimeError("core frame already contains spot-L2 features: " + ", ".join(conflicts))
+        raise RuntimeError(
+            "core frame already contains spot-L2 features or causal audit columns: "
+            + ", ".join(conflicts)
+        )
 
     joined = (
         core.with_row_index("_benchmark_row")
@@ -248,9 +268,30 @@ def join_qualified_l2(
         pl.col(source_name).alias(model_name)
         for source_name, model_name in _SOURCE_TO_MODEL.items()
     )
-    result = joined.with_columns(*expressions).sort("_benchmark_row")
-    result = result.select(*original_columns, *L2_FEATURES)
+    result = joined.with_columns(
+        *expressions,
+        pl.col("source_event_timestamp").alias(
+            "spot_l2_source_event_timestamp"
+        ),
+        pl.col("available_at").alias("spot_l2_available_at"),
+        (
+            availability_age_microseconds.cast(pl.Float64) / 1_000_000.0
+        ).alias("spot_l2_availability_age_seconds"),
+        (state_age_microseconds.cast(pl.Float64) / 1_000_000.0).alias(
+            "spot_l2_state_age_seconds"
+        ),
+    ).sort("_benchmark_row")
+    result = result.select(
+        *original_columns,
+        *L2_FEATURES,
+        *L2_CAUSAL_AUDIT_COLUMNS,
+    )
     _require_finite(result, L2_FEATURES, "qualified spot-L2 join")
+    _require_finite(
+        result,
+        L2_CAUSAL_AGE_COLUMNS,
+        "qualified spot-L2 causal ages",
+    )
     return result
 
 

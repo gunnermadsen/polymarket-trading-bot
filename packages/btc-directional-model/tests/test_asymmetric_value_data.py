@@ -11,6 +11,7 @@ from btc_directional_model.asymmetric_value_config import load_asymmetric_value_
 from btc_directional_model.asymmetric_value_data import (
     EARLY_CAUSAL_ORACLE_FEATURES,
     POLYMARKET_VALUE_FEATURES,
+    _complete_early_oracle_features,
     _execution_evidence_configs,
     _load_retained_side_execution_rows,
     attach_asymmetric_value_features,
@@ -24,6 +25,13 @@ def _config():
     return load_asymmetric_value_config(
         Path(__file__).parents[1]
         / "configs/btc-5m-directional-asymmetric-value-one-second-20260414-20260802.toml"
+    )
+
+
+def _target_calibrated_config():
+    return load_asymmetric_value_config(
+        Path(__file__).parents[1]
+        / "configs/btc-5m-directional-asymmetric-value-calibrated-20260414-20260802.toml"
     )
 
 
@@ -148,6 +156,19 @@ def test_execution_evidence_uses_isolated_exact_cadences() -> None:
     assert early.range_end == config.evaluation.start
     assert "development" in early.output_dir.parts
     assert early.snapshot_schema_versions == ("btc5m-book-250ms-v1",)
+
+
+def test_target_calibrated_execution_uses_the_complete_development_range() -> None:
+    config = _target_calibrated_config()
+
+    early, later = _execution_evidence_configs(config, scope="development")
+
+    assert early.range_start == config.fit.start
+    assert early.range_end == config.policy.end
+    assert later.range_start == config.fit.start
+    assert later.range_end == config.policy.end
+    with pytest.raises(ValueError, match="no historical evaluation"):
+        _execution_evidence_configs(config, scope="evaluation")
 
 
 def test_execution_query_is_bounded_to_canonical_pmxt_artifacts() -> None:
@@ -312,6 +333,22 @@ def test_early_oracle_features_are_derived_on_raw_one_second_rows(
     ].min() >= 2
     assert result["oracle_age_seconds"].max() <= 11
     assert at_five["oracle_block_timestamp"].item() == start
+
+
+def test_early_oracle_eligibility_requires_every_model_feature() -> None:
+    values = {
+        feature: [float(index + 1)]
+        for index, feature in enumerate(EARLY_CAUSAL_ORACLE_FEATURES)
+    }
+    complete = pl.DataFrame(values)
+    partial = complete.with_columns(
+        pl.lit(None, dtype=pl.Float64).alias(
+            "oracle_return_from_window_open_bps"
+        )
+    )
+
+    assert complete.select(_complete_early_oracle_features()).item() is True
+    assert partial.select(_complete_early_oracle_features()).item() is False
 
 
 def test_early_oracle_features_reject_any_gapped_market(tmp_path: Path) -> None:
