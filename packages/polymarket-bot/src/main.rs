@@ -2726,20 +2726,18 @@ impl BtcProcessManager {
             .cloned()
             .collect::<Vec<_>>();
         for pending in pending {
-            if let Err(stop_error) = self
-                .stop_process_for_generation(
-                    pending.process_id,
-                    Some(pending.run_id),
-                    &pending.terminal_reason,
-                    pending.terminal_status == "failed",
-                    if pending.terminal_status == "completed" {
-                        "completed"
-                    } else {
-                        "stopped"
-                    },
-                )
+            let _transition_guard = self.transition.lock().await;
+            let current = self
+                .terminal_pending
+                .lock()
                 .await
-            {
+                .get(&pending.process_id)
+                .filter(|current| current.run_id == pending.run_id)
+                .cloned();
+            let Some(current) = current else {
+                continue;
+            };
+            if let Err(stop_error) = self.finalize_pending_locked(current).await {
                 error!(
                     error = ?stop_error,
                     process_id = %pending.process_id,
