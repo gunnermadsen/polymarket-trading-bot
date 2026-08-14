@@ -3448,6 +3448,7 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "axum",
+ "base64",
  "chainlink-data-streams-report",
  "chrono",
  "csv",
