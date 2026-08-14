@@ -1893,6 +1893,89 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgres"
       },
+      "description": "Current live-entry enablement derived from the latest durable manual-entry or runtime lifecycle event. Selected process displays Trading Enabled or Trading Disabled. All processes displays the enabled-process count as a fraction of all non-completed BTC five-minute realtime processes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "noValue": "Trading Disabled",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 5,
+        "x": 0,
+        "y": 11
+      },
+      "id": 25,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH eligible_processes AS MATERIALIZED (\n  SELECT p.process_id,p.enabled,p.status\n  FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m'\n    AND p.process_scope='realtime_paper'\n    AND p.status<>'completed'\n), entry_state AS MATERIALIZED (\n  SELECT p.process_id,\n         p.enabled\n         AND p.status='running'\n         AND latest.event_type='btc_live_entries_enabled'\n         AND COALESCE((latest.metadata->>'entries_enabled')::boolean,false) AS entries_enabled\n  FROM eligible_processes p\n  LEFT JOIN LATERAL (\n    SELECT e.event_type,e.metadata\n    FROM polymarket.trading_process_events e\n    WHERE e.process_id=p.process_id\n      AND e.event_type IN (\n        'btc_live_entries_enabled','btc_live_entries_disabled',\n        'btc_runtime_starting','btc_runtime_started',\n        'btc_runtime_resuming','btc_runtime_resumed',\n        'btc_runtime_suspended','btc_runtime_stopping',\n        'btc_runtime_stopped','btc_runtime_stop_failed'\n      )\n    ORDER BY e.timestamp_utc DESC,e.created_at DESC\n    LIMIT 1\n  ) latest ON true\n), summary AS (\n  SELECT COUNT(*) FILTER (WHERE entries_enabled)::bigint AS enabled_count,\n         COUNT(*)::bigint AS total_count,\n         COALESCE(bool_or(entries_enabled),false) AS selected_enabled\n  FROM entry_state\n)\nSELECT CASE\n  WHEN ${pnl_scope:sqlstring}='All processes'\n    THEN enabled_count::text||' / '||total_count::text||' Trading Enabled'\n  WHEN selected_enabled THEN 'Trading Enabled'\n  ELSE 'Trading Disabled'\nEND AS \"Trading Entry Status\"\nFROM summary;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Trading Entry Status",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "description": "Aggregate fresh unrealized PnL for the current PnL scope, using only current scheduled-market entries. All processes sums across processes. When entries exist but no bid is fresh within two seconds, PnL displays No fresh mark instead of $0.",
       "fieldConfig": {
         "defaults": {
@@ -1940,7 +2023,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 11
+        "y": 16
       },
       "id": 4,
       "options": {
@@ -2062,7 +2145,7 @@
         "h": 13,
         "w": 19,
         "x": 5,
-        "y": 14
+        "y": 19
       },
       "id": 1,
       "options": {
@@ -2148,7 +2231,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 16
+        "y": 21
       },
       "id": 5,
       "options": {
@@ -2262,7 +2345,7 @@
         "h": 4,
         "w": 5,
         "x": 0,
-        "y": 21
+        "y": 26
       },
       "id": 21,
       "options": {
@@ -2354,7 +2437,7 @@
         "h": 4,
         "w": 5,
         "x": 0,
-        "y": 25
+        "y": 30
       },
       "id": 22,
       "options": {
@@ -2446,7 +2529,7 @@
         "h": 4,
         "w": 5,
         "x": 0,
-        "y": 29
+        "y": 34
       },
       "id": 23,
       "options": {
@@ -2719,7 +2802,7 @@
         "h": 8,
         "w": 19,
         "x": 5,
-        "y": 27
+        "y": 32
       },
       "id": 2,
       "options": {
@@ -2821,7 +2904,7 @@
         "h": 13,
         "w": 24,
         "x": 0,
-        "y": 35
+        "y": 40
       },
       "id": 24,
       "options": {
@@ -2936,7 +3019,7 @@
         "h": 15,
         "w": 24,
         "x": 0,
-        "y": 48
+        "y": 53
       },
       "id": 20,
       "options": {
@@ -3060,6 +3143,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 126,
+  "version": 127,
   "weekStart": ""
 }
