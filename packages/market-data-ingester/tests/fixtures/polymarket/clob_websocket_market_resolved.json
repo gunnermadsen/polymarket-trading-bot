@@ -1,0 +1,7 @@
+{
+  "event_type": "market_resolved",
+  "market": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "winning_asset_id": "100000000000000000000000000000000000000000000000000000000000000001",
+  "winning_outcome": "Up",
+  "timestamp": "1783902965000"
+}

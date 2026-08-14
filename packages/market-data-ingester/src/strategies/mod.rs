@@ -7,6 +7,7 @@ use crate::runtime::{StrategyFactory, StrategyFactoryError, StrategyRegistry};
 pub mod binance;
 pub mod chainlink;
 pub mod polygon;
+pub mod polymarket;
 
 pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
     let factories: Vec<Arc<dyn StrategyFactory>> = vec![
@@ -17,6 +18,9 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
         Arc::new(chainlink::ChainlinkBtcusdReferencePriceFactory),
         Arc::new(chainlink::ChainlinkBtcusdOneMinuteOhlcFactory),
         Arc::new(polygon::PolygonChainlinkBtcusdOracleFactory),
+        Arc::new(polymarket::PolymarketBtcFiveMinuteMarketContractsFactory),
+        Arc::new(polymarket::PolymarketBtcFiveMinuteOrderbooksFactory),
+        Arc::new(polymarket::PolymarketBtcFiveMinuteResolutionsFactory),
     ];
     StrategyRegistry::from_factories(factories)
 }
