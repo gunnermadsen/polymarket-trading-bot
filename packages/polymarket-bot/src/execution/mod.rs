@@ -343,7 +343,24 @@ pub async fn execute_order_plan<V: ExecutionVenue + ?Sized>(
         orders.push(order);
     }
 
-    let reconciliation = venue.reconcile().await?;
+    let reconciliation = match venue.reconcile().await {
+        Ok(reconciliation) => reconciliation,
+        Err(error) if venue.preserve_liveness_on_post_order_reconcile_error() => {
+            warn!(
+                error = %error,
+                order_count = orders.len(),
+                "post-order reconciliation deferred; preserving live trading process liveness"
+            );
+            ReconciliationReport {
+                open_orders: 0,
+                balances_checked: false,
+                mismatches_found: 0,
+                unresolved_count: 1,
+                checked_at: Utc::now(),
+            }
+        }
+        Err(error) => return Err(error),
+    };
     Ok(OrderPlanReport {
         plan_id: plan.plan_id,
         orders,
@@ -354,6 +371,10 @@ pub async fn execute_order_plan<V: ExecutionVenue + ?Sized>(
 
 #[async_trait]
 pub trait ExecutionVenue: Send + Sync {
+    fn preserve_liveness_on_post_order_reconcile_error(&self) -> bool {
+        false
+    }
+
     async fn find_existing_order(&self, _request: &OrderRequest) -> Result<Option<OrderRecord>> {
         Ok(None)
     }

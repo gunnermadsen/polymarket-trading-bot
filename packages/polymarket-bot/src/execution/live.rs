@@ -7,8 +7,10 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
+use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};
+use hmac::{Hmac, Mac as _};
 use polymarket_client_sdk_v2::{
     auth::{state::Authenticated, Credentials, LocalSigner, Normal, Signer as _},
     clob::{
@@ -17,7 +19,7 @@ use polymarket_client_sdk_v2::{
                 BalanceAllowanceRequest, OrdersRequest, TradesRequest,
                 UpdateBalanceAllowanceRequest,
             },
-            response::{OpenOrderResponse, PostOrderResponse, TradeResponse},
+            response::{OpenOrderResponse, Page, PostOrderResponse, TradeResponse},
             AssetType, OrderStatusType, OrderType as SdkOrderType, Side as SdkSide, SignatureType,
             TradeStatusType,
         },
@@ -31,6 +33,7 @@ use polymarket_client_sdk_v2::{
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::Sha256;
 use tokio::sync::Mutex;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, warn};
@@ -88,6 +91,7 @@ struct RpcResponse {
 pub struct LiveVenue {
     config: LiveExecutionConfig,
     clob_base_url: String,
+    http_client: reqwest::Client,
     store: Option<Store>,
     data_api: Option<DataApiClient>,
     bound_process_id: Option<Uuid>,
@@ -216,6 +220,7 @@ impl LiveVenue {
         let venue = Self {
             config,
             clob_base_url,
+            http_client: reqwest::Client::new(),
             store: Some(store),
             data_api: Some(data_api),
             bound_process_id: None,
@@ -236,6 +241,7 @@ impl LiveVenue {
         Ok(Self {
             config,
             clob_base_url: "https://clob-v2.polymarket.com".to_string(),
+            http_client: reqwest::Client::new(),
             store: None,
             data_api: None,
             bound_process_id: None,
@@ -272,6 +278,7 @@ impl LiveVenue {
         Ok(Self {
             config: self.config.clone(),
             clob_base_url: self.clob_base_url.clone(),
+            http_client: self.http_client.clone(),
             store: self.store.clone(),
             data_api: self.data_api.clone(),
             bound_process_id: Some(process_id),
@@ -519,6 +526,92 @@ impl LiveVenue {
         Ok(client)
     }
 
+    fn authenticated_read_headers(
+        &self,
+        request: &reqwest::Request,
+    ) -> Result<reqwest::header::HeaderMap> {
+        let api_key = self
+            .config
+            .clob_api_key
+            .as_deref()
+            .context("missing CLOB API key")?;
+        let secret = self
+            .config
+            .clob_secret
+            .as_deref()
+            .context("missing CLOB secret")?;
+        let passphrase = self
+            .config
+            .clob_passphrase
+            .as_deref()
+            .context("missing CLOB passphrase")?;
+        let private_key = self
+            .config
+            .private_key
+            .as_deref()
+            .context("missing private key")?;
+        let signer =
+            LocalSigner::from_str(private_key).context("failed to parse POLYMARKET_PRIVATE_KEY")?;
+        let timestamp = Utc::now().timestamp();
+        let message = format!("{}{}{}", timestamp, request.method(), request.url().path());
+        let signature = clob_l2_signature(secret, &message)?;
+        let mut headers = reqwest::header::HeaderMap::new();
+        for (name, value) in [
+            ("poly_address", signer.address().to_checksum(None)),
+            ("poly_api_key", api_key.to_string()),
+            ("poly_passphrase", passphrase.to_string()),
+            ("poly_signature", signature),
+            ("poly_timestamp", timestamp.to_string()),
+        ] {
+            headers.insert(
+                reqwest::header::HeaderName::from_static(name),
+                reqwest::header::HeaderValue::from_str(&value)
+                    .with_context(|| format!("invalid {name} header"))?,
+            );
+        }
+        Ok(headers)
+    }
+
+    async fn tolerant_trade_page(
+        &self,
+        request: &TradesRequest,
+        cursor: Option<&str>,
+    ) -> Result<Page<TradeResponse>> {
+        let endpoint = format!("{}/data/trades", self.clob_base_url.trim_end_matches('/'));
+        let mut builder = self.http_client.get(endpoint).query(request);
+        if let Some(cursor) = cursor {
+            builder = builder.query(&[("next_cursor", cursor)]);
+        }
+        let mut request = builder
+            .build()
+            .context("failed to build Polymarket CLOB trades request")?;
+        *request.headers_mut() = self.authenticated_read_headers(&request)?;
+        let response = self
+            .http_client
+            .execute(request)
+            .await
+            .context("Polymarket CLOB trades fetch failed")?;
+        if !response.status().is_success() {
+            bail!(
+                "Polymarket CLOB trades fetch failed with HTTP {}",
+                response.status()
+            );
+        }
+        let mut payload = response
+            .json::<Value>()
+            .await
+            .context("Polymarket CLOB trades response was not valid JSON")?;
+        let normalized_fee_count = normalize_blank_taker_counterparty_fees(&mut payload);
+        if normalized_fee_count > 0 {
+            debug!(
+                normalized_fee_count,
+                "normalized blank counterparty fee fields in authenticated taker trades"
+            );
+        }
+        serde_json::from_value(payload)
+            .context("Polymarket CLOB trades response failed strict decoding")
+    }
+
     async fn refresh_geoblock(&self) -> Result<()> {
         #[cfg(test)]
         {
@@ -625,19 +718,12 @@ impl LiveVenue {
         )
     }
 
-    async fn all_trade_responses(
-        &self,
-        client: &AuthenticatedClient,
-        request: &TradesRequest,
-    ) -> Result<Vec<TradeResponse>> {
+    async fn all_trade_responses(&self, request: &TradesRequest) -> Result<Vec<TradeResponse>> {
         let mut cursor = None;
         let mut seen_cursors = HashSet::new();
         let mut trades = Vec::new();
         for _ in 0..MAX_CLOB_RECONCILIATION_PAGES {
-            let page = client
-                .trades(request, cursor.clone())
-                .await
-                .context("Polymarket CLOB trades fetch failed")?;
+            let page = self.tolerant_trade_page(request, cursor.as_deref()).await?;
             validate_clob_page_metadata("trades", page.data.len(), page.count, page.limit)?;
             checked_clob_row_count(trades.len(), page.data.len(), "trades")?;
             trades.extend(page.data);
@@ -2310,6 +2396,10 @@ async fn persist_pre_submit_hard_failure(
 
 #[async_trait]
 impl ExecutionVenue for LiveVenue {
+    fn preserve_liveness_on_post_order_reconcile_error(&self) -> bool {
+        true
+    }
+
     async fn find_existing_order(&self, request: &OrderRequest) -> Result<Option<OrderRecord>> {
         self.validate_request_process(request)?;
         let Some(store) = self.store.as_ref() else {
@@ -2666,12 +2756,11 @@ impl ExecutionVenue for LiveVenue {
             let trades = if self.bound_process_id.is_some() {
                 let trade_window_start =
                     reconciliation_trade_window_start(&local_nonterminal, checked_at)?;
-                let client = self.authenticated_client().await?;
                 let trades_request = TradesRequest::builder()
                     .after(trade_window_start.timestamp())
                     .before(checked_at.timestamp())
                     .build();
-                self.all_trade_responses(&client, &trades_request).await?
+                self.all_trade_responses(&trades_request).await?
             } else {
                 Vec::new()
             };
@@ -2916,7 +3005,6 @@ impl ExecutionVenue for LiveVenue {
 
     async fn fills_for_order(&self, order_id: &str) -> Result<Vec<FillRecord>> {
         let store = self.store()?;
-        let client = self.authenticated_client().await?;
         let persisted_order = store
             .find_order_by_venue_order_id(order_id)
             .await?
@@ -2943,7 +3031,7 @@ impl ExecutionVenue for LiveVenue {
             .after((persisted_order.created_at - FOK_FILL_RECONCILIATION_SKEW).timestamp())
             .before((persisted_order.created_at + FOK_FILL_RECONCILIATION_SKEW).timestamp())
             .build();
-        let trades = self.all_trade_responses(&client, &trades_request).await?;
+        let trades = self.all_trade_responses(&trades_request).await?;
         let owned_orders =
             HashMap::from([(order_id.to_string(), persisted_order.order_id.clone())]);
         persist_rest_fill_backfill(
@@ -3622,6 +3710,59 @@ fn next_clob_reconciliation_cursor(
         bail!("Polymarket CLOB {resource} returned an invalid pagination cursor");
     }
     Ok(Some(next_cursor.to_string()))
+}
+
+fn normalize_blank_taker_counterparty_fees(payload: &mut Value) -> usize {
+    let Some(trades) = payload.get_mut("data").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    let mut normalized = 0;
+    for trade in trades {
+        let authenticated_user_is_taker = trade
+            .get("trader_side")
+            .or_else(|| trade.get("traderSide"))
+            .and_then(Value::as_str)
+            .is_some_and(|side| side.eq_ignore_ascii_case("taker"));
+        if !authenticated_user_is_taker {
+            continue;
+        }
+        let maker_orders_key = if trade.get("maker_orders").is_some() {
+            "maker_orders"
+        } else {
+            "makerOrders"
+        };
+        let Some(maker_orders) = trade
+            .get_mut(maker_orders_key)
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        for maker_order in maker_orders {
+            let fee_rate_key = if maker_order.get("fee_rate_bps").is_some() {
+                "fee_rate_bps"
+            } else {
+                "feeRateBps"
+            };
+            let Some(fee_rate_bps) = maker_order.get_mut(fee_rate_key) else {
+                continue;
+            };
+            if fee_rate_bps.as_str() == Some("") {
+                *fee_rate_bps = Value::String("0".to_string());
+                normalized += 1;
+            }
+        }
+    }
+    normalized
+}
+
+fn clob_l2_signature(secret: &str, message: &str) -> Result<String> {
+    let decoded_secret = URL_SAFE
+        .decode(secret)
+        .context("failed to decode CLOB API secret")?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(&decoded_secret)
+        .context("failed to initialize CLOB API signature")?;
+    mac.update(message.as_bytes());
+    Ok(URL_SAFE.encode(mac.finalize().into_bytes()))
 }
 
 fn validate_clob_page_metadata(
@@ -4938,6 +5079,66 @@ mod tests {
         assert!(!is_definitive_live_submit_error(&anyhow::anyhow!(
             "connection reset after write"
         )));
+    }
+
+    #[test]
+    fn blank_counterparty_fee_is_tolerated_only_for_authenticated_taker_trades() {
+        let trade = |trader_side: &str| {
+            serde_json::json!({
+                "id": "32f00293-931f-4ffe-826c-f46d2124a82a",
+                "taker_order_id": "0xe4fc3623f06ec47301f3feb30fb894137850d3d6bd9161c545d842cf6e610f91",
+                "market": "0x21582805dbfc8aea9dc1cbbe7171f6a60c477726681588c98a97410d4f194fec",
+                "asset_id": "64891112840096581114786599417318199598343837807127888883355968643722878718210",
+                "side": "BUY",
+                "size": "5",
+                "fee_rate_bps": "0",
+                "price": "0.94",
+                "status": "MATCHED",
+                "match_time": "1786677391",
+                "last_update": "1786677391",
+                "outcome": "Up",
+                "bucket_index": 0,
+                "owner": "25188274-5ec9-6ed4-3f3d-44965847a9f5",
+                "maker_address": "0x74D0dA822ba46c7325bB78E74C915976e76159af",
+                "maker_orders": [{
+                    "order_id": "0xa6a02b11ed2d49b8d64a844782983d6fb786651ee29ef75be6e8b036e9f1776a",
+                    "owner": "0356ef53-9f23-82e0-6e8c-3d9aa95d8b9e",
+                    "maker_address": "0x6A9CEA200E4bBFd93d9Fa9b01563e0936Ff10F59",
+                    "matched_amount": "5",
+                    "price": "0.06",
+                    "fee_rate_bps": "",
+                    "asset_id": "113949045949963031393883453961344691338965896091858872621221708954515291442606",
+                    "outcome": "Down",
+                    "side": "BUY"
+                }],
+                "transaction_hash": "0x6daa5009f990979e5d369d40d1f245c4d7219d805965e0dddcd9876f9764ce6f",
+                "trader_side": trader_side,
+                "error_msg": null
+            })
+        };
+        let mut taker_page = serde_json::json!({
+            "data": [trade("TAKER")],
+            "next_cursor": CLOB_TERMINAL_CURSOR,
+            "limit": 500,
+            "count": 1
+        });
+        assert_eq!(normalize_blank_taker_counterparty_fees(&mut taker_page), 1);
+        let decoded: Page<TradeResponse> = serde_json::from_value(taker_page).unwrap();
+        assert_eq!(
+            decoded.data[0].maker_orders[0].fee_rate_bps,
+            SdkDecimal::ZERO
+        );
+
+        let mut maker_page = serde_json::json!({"data": [trade("MAKER")]});
+        assert_eq!(normalize_blank_taker_counterparty_fees(&mut maker_page), 0);
+        assert_eq!(maker_page["data"][0]["maker_orders"][0]["fee_rate_bps"], "");
+    }
+
+    #[test]
+    fn authenticated_trade_read_signature_matches_the_sdk_contract() {
+        let signature =
+            clob_l2_signature("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "1GET/").unwrap();
+        assert_eq!(signature, "eHaylCwqRSOa2LFD77Nt_SaTpbsxzN8eTEI3LryhEj4=");
     }
 
     #[test]
