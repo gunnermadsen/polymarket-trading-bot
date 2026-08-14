@@ -1899,30 +1899,22 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [
-            {
-              "options": {
-                "Disabled": {
-                  "color": "red",
-                  "index": 1,
-                  "text": "Disabled"
-                },
-                "Enabled": {
-                  "color": "green",
-                  "index": 0,
-                  "text": "Enabled"
-                }
-              },
-              "type": "value"
-            }
-          ],
+          "mappings": [],
           "noValue": "Disabled",
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "text",
+                "color": "red",
                 "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.5
+              },
+              {
+                "color": "green",
+                "value": 1
               }
             ]
           }
@@ -1943,13 +1935,14 @@
         "orientation": "horizontal",
         "percentChangeColorMode": "standard",
         "reduceOptions": {
-          "calcs": [],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
-          "limit": 1,
-          "values": true
+          "values": false
         },
         "showPercentChange": false,
-        "textMode": "value",
+        "textMode": "name",
         "wideLayout": true
       },
       "pluginVersion": "12.4.2",
@@ -1962,7 +1955,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH eligible_processes AS MATERIALIZED (\n  SELECT p.process_id,p.enabled,p.status,p.config#>>'{execution,mode}' AS execution_mode,\n         COALESCE((p.config#>>'{execution,execute_signals}')::boolean,false) AS execute_signals\n  FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m'\n    AND p.process_scope='realtime_paper'\n    AND p.status<>'completed'\n), entry_state AS MATERIALIZED (\n  SELECT p.process_id,\n         p.enabled\n         AND p.status='running'\n         AND p.execute_signals\n         AND (\n           p.execution_mode='paper'\n           OR (\n             p.execution_mode='live'\n             AND latest.event_type='btc_live_entries_enabled'\n             AND COALESCE((latest.metadata->>'entries_enabled')::boolean,false)\n           )\n         ) AS entries_enabled\n  FROM eligible_processes p\n  LEFT JOIN LATERAL (\n    SELECT e.event_type,e.metadata\n    FROM polymarket.trading_process_events e\n    WHERE e.process_id=p.process_id\n      AND e.event_type IN (\n        'btc_live_entries_enabled','btc_live_entries_disabled',\n        'btc_runtime_starting','btc_runtime_started',\n        'btc_runtime_resuming','btc_runtime_resumed',\n        'btc_runtime_suspended','btc_runtime_stopping',\n        'btc_runtime_stopped','btc_runtime_stop_failed'\n      )\n    ORDER BY e.timestamp_utc DESC,e.created_at DESC\n    LIMIT 1\n  ) latest ON true\n), summary AS (\n  SELECT COUNT(*) FILTER (WHERE entries_enabled)::bigint AS enabled_count,\n         COUNT(*)::bigint AS total_count,\n         COALESCE(bool_or(entries_enabled),false) AS selected_enabled\n  FROM entry_state\n)\nSELECT CASE\n  WHEN ${pnl_scope:sqlstring}='All processes'\n    THEN enabled_count::text||'/'||total_count::text\n  WHEN selected_enabled THEN 'Enabled'\n  ELSE 'Disabled'\nEND AS \"Trading Entry Status\"\nFROM summary;",
+          "rawSql": "WITH eligible_processes AS MATERIALIZED (\n  SELECT p.process_id,p.enabled,p.status,p.config#>>'{execution,mode}' AS execution_mode,\n         COALESCE((p.config#>>'{execution,execute_signals}')::boolean,false) AS execute_signals\n  FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m'\n    AND p.process_scope='realtime_paper'\n    AND p.status<>'completed'\n), entry_state AS MATERIALIZED (\n  SELECT p.process_id,\n         p.enabled\n         AND p.status='running'\n         AND p.execute_signals\n         AND (\n           p.execution_mode='paper'\n           OR (\n             p.execution_mode='live'\n             AND latest.event_type='btc_live_entries_enabled'\n             AND COALESCE((latest.metadata->>'entries_enabled')::boolean,false)\n           )\n         ) AS entries_enabled\n  FROM eligible_processes p\n  LEFT JOIN LATERAL (\n    SELECT e.event_type,e.metadata\n    FROM polymarket.trading_process_events e\n    WHERE e.process_id=p.process_id\n      AND e.event_type IN (\n        'btc_live_entries_enabled','btc_live_entries_disabled',\n        'btc_runtime_starting','btc_runtime_started',\n        'btc_runtime_resuming','btc_runtime_resumed',\n        'btc_runtime_suspended','btc_runtime_stopping',\n        'btc_runtime_stopped','btc_runtime_stop_failed'\n      )\n    ORDER BY e.timestamp_utc DESC,e.created_at DESC\n    LIMIT 1\n  ) latest ON true\n), summary AS (\n  SELECT COUNT(*) FILTER (WHERE entries_enabled)::bigint AS enabled_count,\n         COUNT(*)::bigint AS total_count,\n         COALESCE(bool_or(entries_enabled),false) AS selected_enabled\n  FROM entry_state\n)\nSELECT CASE\n  WHEN ${pnl_scope:sqlstring}='All processes'\n    THEN enabled_count::text||'/'||total_count::text\n  WHEN selected_enabled THEN 'Enabled'\n  ELSE 'Disabled'\nEND AS \"Name\",\nCASE\n  WHEN ${pnl_scope:sqlstring}='All processes' AND total_count>0\n    THEN enabled_count::double precision/total_count::double precision\n  WHEN selected_enabled THEN 1::double precision\n  ELSE 0::double precision\nEND AS \"Value\"\nFROM summary;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -1980,6 +1973,23 @@
               }
             ],
             "limit": 50
+          }
+        }
+      ],
+      "transformations": [
+        {
+          "id": "rowsToFields",
+          "options": {
+            "mappings": [
+              {
+                "fieldName": "Name",
+                "handlerKey": "field.name"
+              },
+              {
+                "fieldName": "Value",
+                "handlerKey": "field.value"
+              }
+            ]
           }
         }
       ],
@@ -3158,6 +3168,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 129,
+  "version": 131,
   "weekStart": ""
 }
