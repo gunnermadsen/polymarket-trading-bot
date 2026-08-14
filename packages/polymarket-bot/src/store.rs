@@ -839,7 +839,8 @@ impl Store {
             .context("conflicting order disappeared during identity verification")?;
         if !order_request_result_matches(&existing.request, &order.request)
             || existing.order_id != order.order_id
-            || existing.state != order.state
+            || (existing.state != order.state
+                && !durable_fill_state_supersedes_report(existing.state, order.state))
         {
             bail!(
                 "client_order_id {} collides with immutable order identity, result, or reference execution evidence",
@@ -2799,6 +2800,19 @@ fn order_request_result_matches(existing: &OrderRequest, incoming: &OrderRequest
         && existing.metadata == incoming.metadata
 }
 
+fn durable_fill_state_supersedes_report(existing: OrderState, reported: OrderState) -> bool {
+    matches!(
+        (existing, reported),
+        (
+            OrderState::PartiallyFilled,
+            OrderState::Submitted | OrderState::Acknowledged
+        ) | (
+            OrderState::Filled,
+            OrderState::Submitted | OrderState::Acknowledged | OrderState::PartiallyFilled
+        )
+    )
+}
+
 fn fill_record_matches(existing: &FillRecord, incoming: &FillRecord) -> bool {
     existing.fill_id == incoming.fill_id
         && existing.process_id == incoming.process_id
@@ -2916,6 +2930,69 @@ fn validate_live_daily_settlement(
         .credit_evidence
         .as_object()
         .context("credited live settlement evidence must be an object")?;
+    if evidence
+        .get("proof_type")
+        .and_then(serde_json::Value::as_str)
+        == Some("btc_official_zero_payout_loss")
+    {
+        if settlement.payout != Decimal::ZERO
+            || settlement.token_id == settlement.official_winning_token_id
+        {
+            bail!("official zero-payout proof requires a losing live settlement");
+        }
+        require_live_evidence_string(
+            evidence,
+            "evidence_version",
+            "btc_live_zero_payout_settlement_v1",
+        )?;
+        require_live_evidence_string(evidence, "recognition_kind", "official_resolution")?;
+        require_live_evidence_string(evidence, "execution_mode", "live")?;
+        if evidence
+            .get("exchange_cash_credit_applied")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+        {
+            bail!("official zero-payout proof must not claim an exchange cash credit");
+        }
+        require_live_evidence_uuid(evidence, "settlement_id", settlement.settlement_id)?;
+        require_live_evidence_uuid(evidence, "process_id", settlement.process_id)?;
+        require_live_evidence_uuid(evidence, "run_id", settlement.run_id)?;
+        require_live_evidence_string(evidence, "order_id", &settlement.order_id)?;
+        require_live_evidence_string(evidence, "market_id", &settlement.market_id)?;
+        require_live_evidence_string(evidence, "token_id", &settlement.token_id)?;
+        if evidence.get("fill_ids") != Some(&settlement.fill_ids) {
+            bail!("official zero-payout proof fill lineage does not match");
+        }
+        require_live_evidence_string(evidence, "official_outcome", &settlement.official_outcome)?;
+        require_live_evidence_string(
+            evidence,
+            "official_winning_token_id",
+            &settlement.official_winning_token_id,
+        )?;
+        require_live_evidence_string(
+            evidence,
+            "official_resolution_source",
+            &settlement.official_resolution_source,
+        )?;
+        require_live_evidence_datetime(
+            evidence,
+            "official_resolution_received_at",
+            settlement.official_resolution_received_at,
+        )?;
+        require_live_evidence_decimal(evidence, "filled_size", settlement.filled_size)?;
+        require_live_evidence_decimal(evidence, "entry_notional", settlement.entry_notional)?;
+        require_live_evidence_decimal(evidence, "entry_fees", settlement.entry_fees)?;
+        require_live_evidence_decimal(evidence, "payout", settlement.payout)?;
+        require_live_evidence_decimal(evidence, "net_pnl", settlement.net_pnl)?;
+        if !evidence
+            .get("recognized_by_config_hash")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(is_sha256_hex)
+        {
+            bail!("official zero-payout proof is missing its configuration fingerprint");
+        }
+        return Ok(());
+    }
     if evidence
         .get("proof_type")
         .and_then(serde_json::Value::as_str)
@@ -3113,7 +3190,7 @@ fn is_prefixed_sha256_hex(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
     use uuid::Uuid;
@@ -3123,11 +3200,12 @@ mod tests {
             FillRecord, FillSource, OrderRecord, OrderRequest, OrderSide, OrderState, OrderType,
         },
         store::{
-            build_live_process_exposure_snapshot, canonical_fill_for_storage, fill_record_matches,
-            live_requested_exposure, order_request_identity_matches, order_request_result_matches,
-            required_fill_process_id, LiveExposureFillRow, LiveExposureOrderRow,
-            HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL, INSERT_FILL_IDENTITY_SQL, INSERT_FILL_SQL,
-            INSERT_ORDER_SQL, RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL,
+            build_live_process_exposure_snapshot, canonical_fill_for_storage,
+            durable_fill_state_supersedes_report, fill_record_matches, live_requested_exposure,
+            order_request_identity_matches, order_request_result_matches, required_fill_process_id,
+            validate_live_daily_settlement, LiveDailySettlementRow, LiveExposureFillRow,
+            LiveExposureOrderRow, HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL, INSERT_FILL_IDENTITY_SQL,
+            INSERT_FILL_SQL, INSERT_ORDER_SQL, RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL,
             SELECT_CREDITED_LIVE_PROCESS_SETTLEMENTS_SQL, SELECT_FILL_IDENTITY_SQL,
             SELECT_FILL_SQL, SELECT_LIVE_PROCESS_CROSS_OWNED_FILL_EXISTS_SQL,
             SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL, SELECT_LIVE_PROCESS_EXPOSURE_ORDERS_SQL,
@@ -3161,6 +3239,101 @@ mod tests {
         );
         assert!(!INSERT_ORDER_SQL.contains("DO UPDATE"));
         assert!(!INSERT_ORDER_SQL.contains("EXCLUDED."));
+    }
+
+    #[test]
+    fn durable_fill_progress_supersedes_a_stale_execution_report() {
+        assert!(durable_fill_state_supersedes_report(
+            OrderState::PartiallyFilled,
+            OrderState::Acknowledged
+        ));
+        assert!(durable_fill_state_supersedes_report(
+            OrderState::Filled,
+            OrderState::Acknowledged
+        ));
+        assert!(durable_fill_state_supersedes_report(
+            OrderState::Filled,
+            OrderState::PartiallyFilled
+        ));
+
+        assert!(!durable_fill_state_supersedes_report(
+            OrderState::Acknowledged,
+            OrderState::Filled
+        ));
+        assert!(!durable_fill_state_supersedes_report(
+            OrderState::Filled,
+            OrderState::Rejected
+        ));
+        assert!(!durable_fill_state_supersedes_report(
+            OrderState::Cancelled,
+            OrderState::Acknowledged
+        ));
+    }
+
+    #[test]
+    fn official_zero_payout_loss_is_valid_daily_live_pnl_evidence() {
+        let credited_at = Utc::now();
+        let settlement_id = Uuid::from_u128(31);
+        let process_id = Uuid::from_u128(32);
+        let run_id = Uuid::from_u128(33);
+        let fill_id = Uuid::from_u128(34);
+        let resolution_at = credited_at - Duration::seconds(5);
+        let fill_ids = serde_json::json!([fill_id]);
+        let evidence = serde_json::json!({
+            "proof_type": "btc_official_zero_payout_loss",
+            "evidence_version": "btc_live_zero_payout_settlement_v1",
+            "recognition_kind": "official_resolution",
+            "execution_mode": "live",
+            "exchange_cash_credit_applied": false,
+            "settlement_id": settlement_id,
+            "process_id": process_id,
+            "run_id": run_id,
+            "order_id": "order",
+            "market_id": "market",
+            "token_id": "down-token",
+            "fill_ids": fill_ids,
+            "official_outcome": "up",
+            "official_winning_token_id": "up-token",
+            "official_resolution_received_at": resolution_at,
+            "official_resolution_source": "clob_websocket",
+            "filled_size": "5",
+            "entry_notional": "4.2",
+            "entry_fees": "0",
+            "payout": "0",
+            "net_pnl": "-4.2",
+            "recognized_by_config_hash": "a".repeat(64),
+        });
+        let settlement = LiveDailySettlementRow {
+            settlement_id,
+            run_id,
+            process_id,
+            order_id: "order".to_string(),
+            market_id: "market".to_string(),
+            token_id: "down-token".to_string(),
+            fill_ids,
+            official_outcome: "up".to_string(),
+            official_winning_token_id: "up-token".to_string(),
+            official_resolution_received_at: resolution_at,
+            official_resolution_source: "clob_websocket".to_string(),
+            filled_size: dec!(5),
+            entry_notional: dec!(4.2),
+            entry_fees: Decimal::ZERO,
+            payout: Decimal::ZERO,
+            net_pnl: dec!(-4.2),
+            credited_at: Some(credited_at),
+            credit_attempts: 1,
+            credit_evidence: evidence,
+            created_at: resolution_at,
+            updated_at: credited_at,
+        };
+
+        validate_live_daily_settlement(
+            &settlement,
+            credited_at - Duration::hours(1),
+            credited_at + Duration::hours(1),
+            credited_at,
+        )
+        .unwrap();
     }
 
     #[test]

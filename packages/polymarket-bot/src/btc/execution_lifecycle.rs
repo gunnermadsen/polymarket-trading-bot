@@ -2,8 +2,9 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::{
@@ -219,7 +220,7 @@ impl BtcExecutionLifecycle for LiveExecutionLifecycle {
         repository: &BtcRepository,
         process_id: Uuid,
         run_id: Uuid,
-        _config_hash: &str,
+        config_hash: &str,
     ) -> Result<()> {
         let reconciliation = match self.venue.reconcile().await {
             Ok(reconciliation) => reconciliation,
@@ -236,7 +237,34 @@ impl BtcExecutionLifecycle for LiveExecutionLifecycle {
         let pending = repository
             .discover_pending_settlements(process_id, run_id, BtcExecutionMode::Live)
             .await?;
-        if let Some(reason) = live_reconciliation_gate_reason(&reconciliation, pending.len()) {
+        let mut pending_redemption_count = 0usize;
+        for settlement in &pending {
+            if settlement.payout == Decimal::ZERO {
+                let recognized = repository
+                    .recognize_live_zero_payout_settlement(
+                        process_id,
+                        run_id,
+                        settlement,
+                        config_hash,
+                    )
+                    .await?;
+                if recognized {
+                    info!(
+                        process_id = %process_id,
+                        run_id = %run_id,
+                        settlement_id = %settlement.settlement_id,
+                        order_id = %settlement.order_id,
+                        net_pnl = %settlement.net_pnl,
+                        "BTC live zero-payout settlement recognized from official resolution"
+                    );
+                }
+            } else {
+                pending_redemption_count = pending_redemption_count.saturating_add(1);
+            }
+        }
+        if let Some(reason) =
+            live_reconciliation_gate_reason(&reconciliation, pending_redemption_count)
+        {
             if reason == LIVE_PENDING_REDEMPTION_GATE_REASON {
                 let status = self
                     .venue
@@ -248,7 +276,7 @@ impl BtcExecutionLifecycle for LiveExecutionLifecycle {
                 warn!(
                     process_id = %process_id,
                     run_id = %run_id,
-                    pending_settlement_count = pending.len(),
+                    pending_settlement_count = pending_redemption_count,
                     reason,
                     "BTC live settlement redemption remains unproven; entries remain manually closed"
                 );
@@ -257,7 +285,7 @@ impl BtcExecutionLifecycle for LiveExecutionLifecycle {
             warn!(
                 process_id = %process_id,
                 run_id = %run_id,
-                pending_settlement_count = pending.len(),
+                pending_settlement_count = pending_redemption_count,
                 balances_checked = reconciliation.balances_checked,
                 reconciliation_mismatches = reconciliation.mismatches_found,
                 reconciliation_unresolved = reconciliation.unresolved_count,
