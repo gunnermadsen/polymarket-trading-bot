@@ -2460,8 +2460,8 @@ impl ExecutionVenue for LiveVenue {
             return persist_pre_submit_gate_rejection(&store, pending_order, reason).await;
         }
         // Revalidate the checked process authorization after every awaited check and immediately
-        // before the venue POST. A websocket event/error or another halt changes the generation
-        // and converts this pending order into a durable zero-POST rejection.
+        // before the venue POST. A safety halt changes the generation and converts this pending
+        // order into a durable zero-POST rejection.
         let commit_reason = {
             let mut state = self.readiness_state.lock().await;
             let mut global = self.global_entry_gate.lock().await;
