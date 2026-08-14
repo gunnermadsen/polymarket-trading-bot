@@ -1943,11 +1943,10 @@
         "orientation": "horizontal",
         "percentChangeColorMode": "standard",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": [],
           "fields": "",
-          "values": false
+          "limit": 1,
+          "values": true
         },
         "showPercentChange": false,
         "textMode": "value",
@@ -3159,6 +3158,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 128,
+  "version": 129,
   "weekStart": ""
 }
