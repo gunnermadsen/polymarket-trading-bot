@@ -765,22 +765,35 @@ fn validate_btc_execution_activation(process: &TradingProcess) -> Result<(), Htt
 }
 
 fn validate_btc_live_model_authorization(strategy: &BtcStrategyConfig) -> Result<(), HttpError> {
-    let Some(BtcDecisionStrategyConfig::BtcDirectionalModel {
-        model_key,
-        artifact_sha256,
-        feature_schema_sha256,
-    }) = strategy.decision_strategy.as_ref()
-    else {
-        return Err(HttpError::bad_request(
-            "BTC live execution currently requires an immutable directional-model artifact",
-        ));
-    };
+    let (model_key, artifact_sha256, feature_schema_sha256, require_asymmetric_value) =
+        match strategy.decision_strategy.as_ref() {
+            Some(BtcDecisionStrategyConfig::BtcDirectionalModel {
+                model_key,
+                artifact_sha256,
+                feature_schema_sha256,
+            }) => (model_key, artifact_sha256, feature_schema_sha256, false),
+            Some(BtcDecisionStrategyConfig::BtcAsymmetricValueModel {
+                model_key,
+                artifact_sha256,
+                feature_schema_sha256,
+            }) => (model_key, artifact_sha256, feature_schema_sha256, true),
+            _ => {
+                return Err(HttpError::bad_request(
+                    "BTC live execution currently requires an immutable model artifact",
+                ));
+            }
+        };
     let model = runtime_model(&RuntimeModelSelection {
         model_key: model_key.clone(),
         artifact_sha256: artifact_sha256.clone(),
         feature_schema_sha256: feature_schema_sha256.clone(),
     })
     .map_err(|error| HttpError::bad_request(format!("invalid live model artifact: {error}")))?;
+    if require_asymmetric_value && !model.is_asymmetric_value() {
+        return Err(HttpError::bad_request(
+            "BTC asymmetric-value live execution requires an asymmetric-value artifact",
+        ));
+    }
     if !model.live_capital_allowed() {
         return Err(HttpError::conflict(format!(
             "model {} is not authorized for live capital (deployment_scope={}, production_qualified={})",
@@ -4198,7 +4211,7 @@ mod lifecycle_tests {
 
     #[test]
     fn selectable_v3_resolves_asymmetric_value_model_without_directional_entry_policy() {
-        let control = BtcRealtimePaperControlConfig {
+        let mut control = BtcRealtimePaperControlConfig {
             schema_version: SELECTABLE_BTC_PROCESS_SCHEMA_VERSION.to_string(),
             strategy: serde_json::json!({
                 "decision_strategy": {
@@ -4238,6 +4251,47 @@ mod lifecycle_tests {
             Some(BtcDecisionStrategyConfig::BtcAsymmetricValueModel { .. })
         ));
         assert_eq!(strategy.required_model_feeds.len(), 2);
+
+        control.strategy["decision_strategy"] = serde_json::json!({
+            "type": "btc_asymmetric_value_model",
+            "model_key": "btc-5m-asymmetric-core-oracle-live-pilot-20260814",
+            "artifact_sha256":
+                "c87dd4ca07903000f5ccff2c3691b9541aee38f389cceee7c9432383ec0e0a0b",
+            "feature_schema_sha256":
+                "fe2a5aaee3df1ef899d2553712555091aa29b7481b3fed7805ba140dc8aa5014"
+        });
+        control.strategy["required_model_feeds"] = serde_json::json!([
+            {"feed": "binance_btcusdt_one_second_v1", "maximum_age_ms": 1000},
+            {"feed": "polymarket_btc5m_clob_execution_v1", "maximum_age_ms": 2000},
+            {"feed": "chainlink_btcusd_oracle_v1", "maximum_age_ms": 300000}
+        ]);
+        let live_strategy = resolve_btc_strategy(&control).unwrap();
+        validate_btc_live_model_authorization(&live_strategy).unwrap();
+    }
+
+    #[test]
+    fn live_model_authorization_accepts_only_the_promoted_asymmetric_artifact() {
+        let strategy = |model_key: &str, artifact_sha256: &str| BtcStrategyConfig {
+            decision_strategy: Some(BtcDecisionStrategyConfig::BtcAsymmetricValueModel {
+                model_key: model_key.to_string(),
+                artifact_sha256: artifact_sha256.to_string(),
+                feature_schema_sha256:
+                    "fe2a5aaee3df1ef899d2553712555091aa29b7481b3fed7805ba140dc8aa5014".to_string(),
+            }),
+            ..BtcStrategyConfig::default()
+        };
+
+        validate_btc_live_model_authorization(&strategy(
+            "btc-5m-asymmetric-core-oracle-live-pilot-20260814",
+            "c87dd4ca07903000f5ccff2c3691b9541aee38f389cceee7c9432383ec0e0a0b",
+        ))
+        .unwrap();
+
+        assert!(validate_btc_live_model_authorization(&strategy(
+            "btc-5m-asymmetric-core-oracle-paper-20260805-v1",
+            "2c91e894356f6fee7fe9514e24c39da6e11602ffcb7f961f64848bde72418db9",
+        ))
+        .is_err());
     }
 
     #[test]

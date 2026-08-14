@@ -816,3 +816,41 @@ def test_checked_in_runtime_model_is_self_consistent() -> None:
     }
     for vector in golden["vectors"]:
         assert score_runtime_model(model, vector["feature_values"]) == vector["expected"]
+
+
+def test_checked_in_asymmetric_oracle_live_pilot_preserves_paper_model_behavior() -> None:
+    package_root = Path(__file__).parent.parent
+    paper_dir = (
+        package_root
+        / "runtime-models"
+        / "btc-5m-asymmetric-core-oracle-paper-20260805-v1"
+    )
+    live_dir = (
+        package_root
+        / "runtime-models"
+        / "btc-5m-asymmetric-core-oracle-live-pilot-20260814"
+    )
+    paper_model = json.loads((paper_dir / MODEL_FILENAME).read_text())
+    live_model = json.loads((live_dir / MODEL_FILENAME).read_text())
+    paper_golden = json.loads((paper_dir / GOLDEN_VECTORS_FILENAME).read_text())
+    live_golden = json.loads((live_dir / GOLDEN_VECTORS_FILENAME).read_text())
+    live_manifest = json.loads((live_dir / MANIFEST_FILENAME).read_text())
+
+    assert paper_model.pop("model_key") == "btc-5m-asymmetric-core-oracle-paper-20260805-v1"
+    assert live_model.pop("model_key") == "btc-5m-asymmetric-core-oracle-live-pilot-20260814"
+    assert paper_model.pop("deployment") == {
+        "scope": "paper_only",
+        "production_qualified": False,
+        "live_capital_allowed": False,
+    }
+    assert live_model.pop("deployment") == {
+        "scope": "development_live_pilot",
+        "production_qualified": False,
+        "live_capital_allowed": True,
+    }
+    assert live_model == paper_model
+    assert paper_golden["vectors"] == live_golden["vectors"]
+    assert live_manifest["model_sha256"] == file_sha256(live_dir / MODEL_FILENAME)
+    assert live_manifest["golden_vectors_sha256"] == file_sha256(
+        live_dir / GOLDEN_VECTORS_FILENAME
+    )

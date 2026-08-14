@@ -1,0 +1,15 @@
+{
+  "deployment_scope": "development_live_pilot",
+  "feature_schema_sha256": "fe2a5aaee3df1ef899d2553712555091aa29b7481b3fed7805ba140dc8aa5014",
+  "feature_schema_version": "btc-5m-asymmetric-core-oracle-paper-20260805-v1-features-v1",
+  "golden_vectors_file": "golden-vectors.json",
+  "golden_vectors_sha256": "bfcb06417f452ebdd6c8faafc04cf78dcf7e2b3118de5c1a733d222ae42ad9ef",
+  "live_capital_allowed": true,
+  "model_file": "model.json",
+  "model_key": "btc-5m-asymmetric-core-oracle-live-pilot-20260814",
+  "model_sha256": "c87dd4ca07903000f5ccff2c3691b9541aee38f389cceee7c9432383ec0e0a0b",
+  "production_qualified": false,
+  "schema_version": "capitonic-btc-directional-runtime-manifest-v1",
+  "source_freeze_manifest_sha256": "37a47df0eb7e764b69fdbc539bf658f27e31126d78dff73cbf7908229dffaba6",
+  "source_training_model_sha256": "f17dfca17a69c229a19ad35ba593f7a58904ba65530f750760eb4ea8c26e6b46"
+}
