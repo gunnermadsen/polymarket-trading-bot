@@ -425,45 +425,48 @@ impl BinanceFuturesOpenInterestStrategy {
         requested_start: i64,
         requested_end: i64,
     ) -> Result<Vec<OpenInterestObservation>, StrategyError> {
-        let mut page_start = requested_start;
+        let mut page_end = requested_end;
         let mut observations = Vec::new();
 
-        while page_start <= requested_end {
-            let page = self.fetch_page(page_start, requested_end).await?;
+        while requested_start <= page_end {
+            let page = self.fetch_page(requested_start, page_end).await?;
             if page.is_empty() {
                 break;
             }
             let page_len = page.len();
+            let first_timestamp = page
+                .first()
+                .expect("nonempty provider page has a first timestamp")
+                .source_timestamp
+                .timestamp_millis();
             let final_timestamp = page
                 .last()
                 .expect("nonempty provider page has a final timestamp")
                 .source_timestamp
                 .timestamp_millis();
-            if page[0].source_timestamp.timestamp_millis() < page_start
-                || final_timestamp > requested_end
-            {
+            if first_timestamp < requested_start || final_timestamp > page_end {
                 return Err(integrity(
                     "open_interest_page_outside_range",
                     "provider page escaped the requested timestamp range",
                 ));
             }
-            if observations
-                .last()
-                .is_some_and(|previous: &OpenInterestObservation| {
-                    previous.source_timestamp >= page[0].source_timestamp
-                })
-            {
-                return Err(integrity(
-                    "open_interest_page_overlap",
-                    "provider pages overlapped or regressed",
-                ));
-            }
             observations.extend(page);
-            if page_len < usize::from(self.config.request_limit) || final_timestamp >= requested_end
+            if page_len < usize::from(self.config.request_limit)
+                || first_timestamp <= requested_start
             {
                 break;
             }
-            page_start = final_timestamp.saturating_add(PERIOD_SECONDS * 1_000);
+            page_end = first_timestamp.saturating_sub(PERIOD_SECONDS * 1_000);
+        }
+        observations.sort_by_key(|observation| observation.source_timestamp);
+        if observations
+            .windows(2)
+            .any(|pair| pair[0].source_timestamp >= pair[1].source_timestamp)
+        {
+            return Err(integrity(
+                "open_interest_page_overlap",
+                "provider pages overlapped or regressed",
+            ));
         }
         Ok(observations)
     }
