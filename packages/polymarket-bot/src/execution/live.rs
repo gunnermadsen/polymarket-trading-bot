@@ -2068,16 +2068,6 @@ fn is_cancelled_order_status(status: Option<&str>) -> bool {
     )
 }
 
-fn is_nonfatal_live_order_rejection(order_type: OrderType, error_chain: &str) -> bool {
-    let normalized = error_chain.to_ascii_lowercase();
-    let fok_unfilled = order_type == OrderType::Fok
-        && normalized.contains("order couldn't be fully filled")
-        && normalized.contains("fok orders are fully filled or killed");
-    let insufficient_balance = normalized.contains("not enough balance / allowance")
-        || normalized.contains("the balance is not enough");
-    fok_unfilled || insufficient_balance
-}
-
 fn is_definitive_live_submit_error(error: &anyhow::Error) -> bool {
     for cause in error.chain() {
         if let Some(status) = cause.downcast_ref::<SdkStatus>() {
@@ -2491,14 +2481,12 @@ impl ExecutionVenue for LiveVenue {
                 let error_msg = response
                     .error_msg
                     .unwrap_or_else(|| "unknown rejection".to_string());
-                if is_nonfatal_live_order_rejection(request.order_type, &error_msg) {
-                    return Ok(failed_order);
-                }
-                bail!(
-                    "Polymarket CLOB rejected order {}: {}",
-                    request.client_order_id,
-                    error_msg
-                )
+                warn!(
+                    client_order_id = %request.client_order_id,
+                    error = %error_msg,
+                    "Polymarket CLOB definitively rejected order; preserving trading process liveness"
+                );
+                Ok(failed_order)
             }
             Err(error) => {
                 let error_chain = format!("{error:#}");
@@ -2513,9 +2501,12 @@ impl ExecutionVenue for LiveVenue {
                             }),
                         )
                         .await?;
-                    if is_nonfatal_live_order_rejection(request.order_type, &error_chain) {
-                        return Ok(failed_order);
-                    }
+                    warn!(
+                        client_order_id = %request.client_order_id,
+                        error = %error_chain,
+                        "Polymarket CLOB definitively rejected order; preserving trading process liveness"
+                    );
+                    return Ok(failed_order);
                 } else {
                     store
                         .mark_order_submit_unknown(
@@ -4926,14 +4917,14 @@ mod tests {
     }
 
     #[test]
-    fn only_definitive_client_rejections_are_safe_to_mark_rejected() {
+    fn definitive_client_rejections_are_safe_nonfatal_order_outcomes() {
         use polymarket_client_sdk_v2::error::{Error as SdkError, Method, StatusCode};
 
         let rejected = anyhow::Error::new(SdkError::status(
             StatusCode::BAD_REQUEST,
             Method::POST,
             "/order".to_string(),
-            "invalid order",
+            "maker address not allowed, please use the deposit wallet flow",
         ));
         assert!(is_definitive_live_submit_error(&rejected));
 
