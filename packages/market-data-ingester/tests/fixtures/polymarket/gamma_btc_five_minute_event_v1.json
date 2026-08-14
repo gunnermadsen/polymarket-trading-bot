@@ -1,0 +1,24 @@
+{
+  "id": "event-sanitized-1",
+  "slug": "btc-updown-5m-1783902600",
+  "seriesSlug": "btc-up-or-down-5m",
+  "eventStartTime": "2026-07-13T00:30:00Z",
+  "endDate": "2026-07-13T00:35:00Z",
+  "active": true,
+  "closed": false,
+  "resolutionSource": "https://data.chain.link/streams/btc-usd",
+  "markets": [
+    {
+      "id": "market-sanitized-1",
+      "conditionId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "active": true,
+      "closed": false,
+      "acceptingOrders": true,
+      "endDate": "2026-07-13T00:35:00Z",
+      "resolutionSource": "https://data.chain.link/streams/btc-usd",
+      "outcomes": "[\"Down\",\"Up\"]",
+      "clobTokenIds": "[\"222222222222222222222222222222222222222222222222222222222222222222\",\"111111111111111111111111111111111111111111111111111111111111111111\"]",
+      "orderPriceMinTickSize": "0.01"
+    }
+  ]
+}
