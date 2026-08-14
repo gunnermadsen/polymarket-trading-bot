@@ -1985,12 +1985,10 @@ fn resolution_window_plan(
                 "durable resolution cursor is not an aligned five-minute window",
             ));
         }
-        if last > latest_matured {
+        if last > current {
             return Err(integrity_error(
                 "polymarket_resolution_cursor_in_future",
-                format!(
-                    "durable resolution cursor {last} is newer than latest mature window {latest_matured}"
-                ),
+                format!("durable resolution cursor {last} is newer than current window {current}"),
             ));
         }
         last.checked_add_signed(chrono::Duration::seconds(INTERVAL_SECONDS))
@@ -3914,6 +3912,24 @@ mod tests {
         assert!(plan
             .windows
             .contains(&(current + chrono::Duration::minutes(5))));
+    }
+
+    #[test]
+    fn planner_accepts_durable_cursor_newer_than_a_reconfigured_maturity_cutoff() {
+        let now = Utc.timestamp_opt(1_783_903_377, 0).single().unwrap();
+        let current = aligned_window_start(now);
+        let durable_cursor = current - chrono::Duration::minutes(5);
+        let plan = resolution_window_plan(now, Some(durable_cursor), 288, 1, 900).unwrap();
+
+        assert!(plan.scan_windows.is_empty());
+        assert!(plan.windows.contains(&durable_cursor));
+        assert!(plan.windows.contains(&current));
+        assert!(plan
+            .windows
+            .contains(&(current + chrono::Duration::minutes(5))));
+
+        let future = current + chrono::Duration::minutes(5);
+        assert!(resolution_window_plan(now, Some(future), 288, 1, 900).is_err());
     }
 
     #[test]
