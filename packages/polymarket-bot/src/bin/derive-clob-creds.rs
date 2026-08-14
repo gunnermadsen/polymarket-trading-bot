@@ -13,8 +13,7 @@ async fn main() -> Result<()> {
     load_env_file(".env")?;
 
     let private_key = required_env("POLYMARKET_PRIVATE_KEY")?;
-    let host = env::var("POLYMARKET_LIVE_CLOB_BASE_URL")
-        .or_else(|_| env::var("POLYMARKET_CLOB_BASE_URL"))
+    let host = env::var("POLYMARKET_CLOB_BASE_URL")
         .unwrap_or_else(|_| "https://clob-v2.polymarket.com".to_string());
 
     let signer = LocalSigner::from_str(&private_key)

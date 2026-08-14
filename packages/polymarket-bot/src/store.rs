@@ -9,8 +9,10 @@ use uuid::Uuid;
 
 use crate::{
     events::ServiceEvent,
-    execution::live::LiveVenueEvent,
-    execution::OrderPlanReport,
+    execution::{
+        live::LiveVenueEvent, OrderPlanReport, LIVE_EXTERNAL_EVENT_CLOCK_SKEW,
+        LIVE_FILL_RECONCILIATION_SKEW,
+    },
     models::{
         FillRecord, OrderRecord, OrderRequest, OrderState, TradingProcess, TradingProcessConfig,
     },
@@ -126,6 +128,14 @@ LEFT JOIN polymarket.fill_identities i
 LEFT JOIN polymarket.orders o
   ON o.order_id = f.order_id
 WHERE f.process_id = $1
+  AND NOT EXISTS (
+    SELECT 1
+    FROM polymarket.btc_paper_settlement_ledger settlement
+    WHERE settlement.process_id = $1
+      AND settlement.order_id = f.order_id
+      AND settlement.execution_mode = 'live'
+      AND settlement.credit_status = 'credited'
+  )
 ORDER BY f.timestamp_utc, f.fill_id
 LIMIT $2
 "#;
@@ -304,9 +314,8 @@ struct LiveExposureFillRow {
 
 /// Conservative, process-owned capital exposure used by the live submission gate.
 ///
-/// Filled BUY exposure is intentionally cumulative. Neither a SELL, market resolution, nor an
-/// internal settlement fact releases it; a future exact redemption proof is required before any
-/// release mechanism can be introduced.
+/// Filled BUY exposure is intentionally cumulative until an exact, credited live redemption is
+/// persisted. A SELL or market resolution alone does not release it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LiveProcessExposureSnapshot {
     pub process_id: Uuid,
@@ -332,6 +341,42 @@ pub struct LiveRequestedExposure {
     pub requested_notional_usd: Decimal,
     pub requested_fees_usd: Decimal,
     pub total_exposure_usd: Decimal,
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveRedemptionEvidence {
+    pub account_address: String,
+    pub condition_id: String,
+    pub token_id: String,
+    pub redeemed_size: Decimal,
+    pub payout_usd: Decimal,
+    pub redeemed_at: DateTime<Utc>,
+    pub transaction_hash: String,
+    pub raw_payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveRedemptionRecognition {
+    pub matched: bool,
+    pub applied: bool,
+    pub redeemed_size: Decimal,
+}
+
+#[derive(Debug, FromRow)]
+struct LiveRedemptionRecognitionRow {
+    owner_count: i64,
+    candidate_count: i64,
+    transaction_count: i64,
+    transaction_consistent: bool,
+    settlement_id: Option<Uuid>,
+    settlement_process_id: Option<Uuid>,
+    settlement_order_id: Option<String>,
+    settlement_token_id: Option<String>,
+    settlement_filled_size: Option<Decimal>,
+    settlement_payout: Option<Decimal>,
+    credit_status: Option<String>,
+    credit_evidence: Option<serde_json::Value>,
+    applied: bool,
 }
 
 #[derive(Debug, FromRow)]
@@ -796,7 +841,8 @@ impl Store {
             .context("conflicting order disappeared during identity verification")?;
         if !order_request_result_matches(&existing.request, &order.request)
             || existing.order_id != order.order_id
-            || existing.state != order.state
+            || (existing.state != order.state
+                && !durable_fill_state_supersedes_report(existing.state, order.state))
         {
             bail!(
                 "client_order_id {} collides with immutable order identity, result, or reference execution evidence",
@@ -890,9 +936,9 @@ impl Store {
     /// Replays all bounded local evidence that can consume live capital for exactly one process.
     ///
     /// Pending/unknown/nonterminal orders reserve their full requested notional and deterministic
-    /// dynamic fee. Every historical live BUY fill retains its actual notional and fee forever.
-    /// This intentionally does not net SELLs or internally resolved settlements: exposure can only
-    /// be released after a future implementation supplies exact exchange redemption proof.
+    /// dynamic fee. Every historical live BUY fill retains its actual notional and fee until the
+    /// existing settlement ledger contains exact credited exchange-redemption evidence. This does
+    /// not infer release from a SELL or market resolution alone.
     pub async fn conservative_live_process_exposure(
         &self,
         process_id: Uuid,
@@ -901,7 +947,6 @@ impl Store {
         if process_id.is_nil() {
             bail!("live exposure evidence requires a non-nil process_id");
         }
-        let as_of = Utc::now();
         let order_limit = (MAX_LIVE_PROCESS_EXPOSURE_ORDERS + 1) as i64;
         let fill_limit = (MAX_LIVE_PROCESS_EXPOSURE_FILLS + 1) as i64;
 
@@ -940,6 +985,10 @@ impl Store {
                 .fetch_one(&self.pool)
                 .await
                 .context("failed to inspect pending live process redemption evidence")?;
+        let as_of = sqlx::query_scalar::<_, DateTime<Utc>>("SELECT clock_timestamp()")
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to read database clock for live process exposure")?;
 
         if orders.len() > MAX_LIVE_PROCESS_EXPOSURE_ORDERS {
             bail!(
@@ -1036,6 +1085,10 @@ impl Store {
         .fetch_all(&self.pool)
         .await
         .context("failed to load credited live process settlements for UTC day")?;
+        let validation_as_of = sqlx::query_scalar::<_, DateTime<Utc>>("SELECT clock_timestamp()")
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to read database clock for live daily loss evidence")?;
         if settlements.len() > MAX_LIVE_DAILY_SETTLEMENTS as usize {
             bail!(
                 "live process {} exceeds the bounded {}-settlement daily loss window",
@@ -1068,7 +1121,7 @@ impl Store {
             }
             all_fill_ids.extend(fill_ids.iter().copied());
             settlement_fill_ids.insert(settlement.settlement_id, fill_ids);
-            validate_live_daily_settlement(settlement, day_start, day_end, as_of)?;
+            validate_live_daily_settlement(settlement, day_start, day_end, validation_as_of)?;
         }
 
         let unique_fill_ids = all_fill_ids.iter().copied().collect::<HashSet<_>>();
@@ -1224,6 +1277,435 @@ impl Store {
             .into_iter()
             .map(|row| (row.venue_order_id, row.order_id))
             .collect())
+    }
+
+    pub async fn oldest_unrecognized_live_fill_at(
+        &self,
+        process_id: Uuid,
+    ) -> Result<Option<DateTime<Utc>>> {
+        if process_id.is_nil() {
+            bail!("live redemption discovery requires a non-nil process_id");
+        }
+        sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+            r#"
+            SELECT MIN(fill.timestamp_utc)
+            FROM polymarket.fills fill
+            JOIN polymarket.orders orders ON orders.order_id = fill.order_id
+            WHERE fill.process_id = $1
+              AND orders.process_id = $1
+              AND fill.source = 'live'
+              AND orders.side = 'buy'
+              AND NOT EXISTS (
+                SELECT 1
+                FROM polymarket.btc_paper_settlement_ledger settlement
+                WHERE settlement.process_id = $1
+                  AND settlement.order_id = fill.order_id
+                  AND settlement.execution_mode = 'live'
+                  AND settlement.credit_status = 'credited'
+              )
+            "#,
+        )
+        .bind(process_id)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to load oldest unrecognized live fill")
+    }
+
+    pub async fn recognize_process_live_redemption(
+        &self,
+        process_id: Uuid,
+        evidence: &LiveRedemptionEvidence,
+        apply: bool,
+    ) -> Result<LiveRedemptionRecognition> {
+        if process_id.is_nil() {
+            bail!("live redemption recognition requires a non-nil process_id");
+        }
+        if evidence.account_address.trim().is_empty()
+            || evidence.condition_id.trim().is_empty()
+            || evidence.token_id.trim().is_empty()
+            || evidence.transaction_hash.trim().is_empty()
+            || evidence.redeemed_size <= Decimal::ZERO
+            || evidence.payout_usd != evidence.redeemed_size
+            || !evidence.raw_payload.is_object()
+        {
+            bail!("live redemption recognition requires complete exact payout evidence");
+        }
+        let credit_evidence = serde_json::json!({
+            "proof_type": "polymarket_data_api_redeem",
+            "account_address": evidence.account_address,
+            "condition_id": evidence.condition_id,
+            "token_id": evidence.token_id,
+            "redeemed_size": evidence.redeemed_size,
+            "payout_usd": evidence.payout_usd,
+            "redeemed_at": evidence.redeemed_at,
+            "redemption_transaction_hash": evidence.transaction_hash,
+            "activity": evidence.raw_payload,
+        });
+        let row = sqlx::query_as::<_, LiveRedemptionRecognitionRow>(
+            r#"
+            WITH lock AS (
+              SELECT pg_advisory_xact_lock(
+                hashtextextended('live-redemption:' || $8, 0)
+              )
+            ), owners AS (
+              SELECT COUNT(DISTINCT orders.process_id)::bigint AS owner_count
+              FROM polymarket.fills fill
+              JOIN polymarket.orders orders ON orders.order_id = fill.order_id
+              CROSS JOIN lock
+              WHERE fill.source = 'live'
+                AND orders.side = 'buy'
+                AND fill.token_id = $3
+                AND (
+                  orders.process_id = $1
+                  OR NOT EXISTS (
+                    SELECT 1
+                    FROM polymarket.btc_paper_settlement_ledger settled
+                    WHERE settled.process_id = orders.process_id
+                      AND settled.order_id = orders.order_id
+                      AND settled.execution_mode = 'live'
+                      AND settled.credit_status = 'credited'
+                  )
+                )
+            ), candidate AS (
+              SELECT
+                orders.process_id,
+                COALESCE(
+                  NULLIF(orders.raw_payload #>> '{request,metadata,run_id}', ''),
+                  NULLIF(orders.raw_payload #>> '{request,metadata,experiment_id}', '')
+                )::uuid AS run_id,
+                orders.order_id,
+                orders.market_id,
+                orders.token_id,
+                jsonb_agg(to_jsonb(fill.fill_id) ORDER BY fill.timestamp_utc, fill.fill_id)
+                  AS fill_ids,
+                round(SUM(fill.size), 10)::numeric(30,10) AS filled_size,
+                round(SUM(fill.price * fill.size), 10)::numeric(30,10) AS entry_notional,
+                round(SUM(fill.fee), 10)::numeric(30,10) AS entry_fees,
+                market.official_outcome,
+                market.official_winning_token_id,
+                market.official_resolution_received_at,
+                market.official_resolution_source
+              FROM polymarket.orders orders
+              JOIN polymarket.fills fill
+                ON fill.order_id = orders.order_id
+               AND fill.process_id = orders.process_id
+               AND fill.source = 'live'
+              JOIN polymarket.btc_interval_markets market
+                ON market.market_id = orders.market_id
+              JOIN polymarket.btc_official_resolution_watches watch
+                ON watch.market_id = market.market_id
+               AND watch.status IN ('resolved', 'resolved_late')
+               AND watch.resolution_received_at = market.official_resolution_received_at
+               AND watch.resolution_source = market.official_resolution_source
+              WHERE orders.process_id = $1
+                AND orders.side = 'buy'
+                AND orders.token_id = $3
+                AND market.condition_id = $2
+                AND market.official_winning_token_id = $3
+                AND market.official_outcome IN ('up', 'down')
+                AND market.resolution_source_timestamp <= $5
+              GROUP BY
+                orders.process_id, orders.order_id, orders.market_id, orders.token_id,
+                market.official_outcome, market.official_winning_token_id,
+                market.official_resolution_received_at, market.official_resolution_source
+              HAVING round(SUM(fill.size), 10)::numeric(30,10) = $4
+                AND MAX(fill.timestamp_utc) <= $5
+            ), candidate_state AS (
+              SELECT COUNT(*)::bigint AS candidate_count FROM candidate
+            ), transaction_state AS (
+              SELECT
+                COUNT(*)::bigint AS transaction_count,
+                COALESCE(
+                  BOOL_AND(
+                    settlement.process_id = $1
+                    AND settlement.token_id = $3
+                    AND settlement.filled_size = $4
+                    AND settlement.payout = $4
+                  ),
+                  true
+                ) AS transaction_consistent
+              FROM polymarket.btc_paper_settlement_ledger settlement
+              WHERE settlement.execution_mode = 'live'
+                AND settlement.credit_status = 'credited'
+                AND settlement.credit_evidence ->> 'redemption_transaction_hash' = $8
+            ), updated AS (
+              UPDATE polymarket.btc_paper_settlement_ledger settlement
+              SET credit_status = 'credited',
+                  credited_at = now(),
+                  credit_attempts = credit_attempts + 1,
+                  credit_evidence = $6,
+                  updated_at = now()
+              FROM candidate
+              CROSS JOIN owners
+              CROSS JOIN candidate_state
+              CROSS JOIN transaction_state
+              WHERE $7
+                AND owners.owner_count = 1
+                AND candidate_state.candidate_count = 1
+                AND transaction_state.transaction_count <= 1
+                AND transaction_state.transaction_consistent
+                AND settlement.process_id = candidate.process_id
+                AND settlement.run_id = candidate.run_id
+                AND settlement.order_id = candidate.order_id
+                AND settlement.execution_mode = 'live'
+                AND settlement.credit_status = 'pending'
+              RETURNING
+                settlement.settlement_id, settlement.process_id, settlement.order_id,
+                settlement.token_id, settlement.filled_size, settlement.payout,
+                settlement.credit_status, settlement.credit_evidence
+            ), inserted AS (
+              INSERT INTO polymarket.btc_paper_settlement_ledger (
+                process_id, run_id, execution_mode, order_id, market_id, token_id, fill_ids,
+                official_outcome, official_winning_token_id,
+                official_resolution_received_at, official_resolution_source,
+                filled_size, entry_notional, entry_fees, payout, net_pnl,
+                credit_status, credited_at, credit_attempts, credit_evidence
+              )
+              SELECT
+                candidate.process_id, candidate.run_id, 'live', candidate.order_id,
+                candidate.market_id, candidate.token_id, candidate.fill_ids,
+                candidate.official_outcome, candidate.official_winning_token_id,
+                candidate.official_resolution_received_at,
+                candidate.official_resolution_source,
+                candidate.filled_size, candidate.entry_notional, candidate.entry_fees,
+                candidate.filled_size,
+                (candidate.filled_size - candidate.entry_notional - candidate.entry_fees)::numeric(30,10),
+                'credited', now(), 1, $6
+              FROM candidate
+              CROSS JOIN owners
+              CROSS JOIN candidate_state
+              CROSS JOIN transaction_state
+              WHERE $7
+                AND owners.owner_count = 1
+                AND candidate_state.candidate_count = 1
+                AND transaction_state.transaction_count <= 1
+                AND transaction_state.transaction_consistent
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM polymarket.btc_paper_settlement_ledger existing
+                  WHERE existing.run_id = candidate.run_id
+                    AND existing.order_id = candidate.order_id
+                )
+              ON CONFLICT (run_id, order_id) DO NOTHING
+              RETURNING
+                settlement_id, process_id, order_id, token_id, filled_size, payout,
+                credit_status, credit_evidence
+            ), selected AS (
+              SELECT
+                updated.settlement_id, updated.process_id, updated.order_id,
+                updated.token_id, updated.filled_size, updated.payout,
+                updated.credit_status, updated.credit_evidence, true AS applied
+              FROM updated
+              UNION ALL
+              SELECT
+                inserted.settlement_id, inserted.process_id, inserted.order_id,
+                inserted.token_id, inserted.filled_size, inserted.payout,
+                inserted.credit_status, inserted.credit_evidence, true AS applied
+              FROM inserted
+              UNION ALL
+              SELECT
+                settlement.settlement_id, settlement.process_id, settlement.order_id,
+                settlement.token_id, settlement.filled_size, settlement.payout,
+                settlement.credit_status, settlement.credit_evidence, false AS applied
+              FROM polymarket.btc_paper_settlement_ledger settlement
+              JOIN candidate
+                ON candidate.process_id = settlement.process_id
+               AND candidate.run_id = settlement.run_id
+               AND candidate.order_id = settlement.order_id
+              CROSS JOIN candidate_state
+              WHERE candidate_state.candidate_count = 1
+                AND settlement.execution_mode = 'live'
+                AND NOT EXISTS (SELECT 1 FROM updated)
+                AND NOT EXISTS (SELECT 1 FROM inserted)
+              LIMIT 1
+            )
+            SELECT
+              owners.owner_count,
+              candidate_state.candidate_count,
+              transaction_state.transaction_count,
+              transaction_state.transaction_consistent,
+              selected.settlement_id,
+              selected.process_id AS settlement_process_id,
+              selected.order_id AS settlement_order_id,
+              selected.token_id AS settlement_token_id,
+              selected.filled_size AS settlement_filled_size,
+              selected.payout AS settlement_payout,
+              selected.credit_status,
+              selected.credit_evidence,
+              COALESCE(selected.applied, false) AS applied
+            FROM owners
+            CROSS JOIN candidate_state
+            CROSS JOIN transaction_state
+            LEFT JOIN selected ON true
+            "#,
+        )
+        .bind(process_id)
+        .bind(&evidence.condition_id)
+        .bind(&evidence.token_id)
+        .bind(evidence.redeemed_size)
+        .bind(evidence.redeemed_at)
+        .bind(&credit_evidence)
+        .bind(apply)
+        .bind(&evidence.transaction_hash)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to reconcile process-owned live redemption")?;
+
+        if row.owner_count > 1 {
+            bail!("live redemption token has ambiguous process ownership");
+        }
+        if row.candidate_count > 1 {
+            bail!("live redemption matches more than one process-owned order");
+        }
+        if row.transaction_count > 1 || !row.transaction_consistent {
+            bail!("live redemption transaction conflicts with credited settlement evidence");
+        }
+        if row.owner_count == 0 || row.candidate_count == 0 {
+            return Ok(LiveRedemptionRecognition {
+                matched: false,
+                applied: false,
+                redeemed_size: Decimal::ZERO,
+            });
+        }
+        if !apply {
+            return Ok(LiveRedemptionRecognition {
+                matched: true,
+                applied: false,
+                redeemed_size: evidence.redeemed_size,
+            });
+        }
+        let settlement_id = row
+            .settlement_id
+            .context("matched live redemption is missing its settlement identity")?;
+        if row.settlement_process_id != Some(process_id)
+            || row.settlement_token_id.as_deref() != Some(evidence.token_id.as_str())
+            || row.settlement_filled_size != Some(evidence.redeemed_size)
+            || row.settlement_payout != Some(evidence.payout_usd)
+            || row.credit_status.as_deref() != Some("credited")
+            || row.settlement_order_id.as_deref().is_none_or(str::is_empty)
+        {
+            bail!("credited live redemption conflicts with exact settlement lineage");
+        }
+        let persisted_transaction_hash = row
+            .credit_evidence
+            .as_ref()
+            .and_then(|value| value.get("redemption_transaction_hash"))
+            .and_then(serde_json::Value::as_str);
+        if persisted_transaction_hash != Some(evidence.transaction_hash.as_str()) {
+            bail!(
+                "credited live redemption {} has conflicting transaction evidence",
+                settlement_id
+            );
+        }
+        Ok(LiveRedemptionRecognition {
+            matched: true,
+            applied: row.applied,
+            redeemed_size: evidence.redeemed_size,
+        })
+    }
+
+    /// Reconstructs current outcome-token ownership from exact live fills owned by one process.
+    /// The query does not infer ownership from a token or market match: both the fill and its
+    /// persisted order must carry the requested process identity.
+    pub async fn live_process_position_sizes(
+        &self,
+        process_id: Uuid,
+    ) -> Result<HashMap<String, Decimal>> {
+        const MAX_PROCESS_POSITION_TOKENS: usize = 4_000;
+        if process_id.is_nil() {
+            bail!("live process position evidence requires a non-nil process_id");
+        }
+
+        #[derive(FromRow)]
+        struct PositionSizeRow {
+            token_id: String,
+            size: Decimal,
+        }
+
+        let cross_owned = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT EXISTS (
+              SELECT 1
+              FROM polymarket.fills fill
+              JOIN polymarket.orders orders ON orders.order_id = fill.order_id
+              WHERE fill.process_id = $1
+                AND fill.source = 'live'
+                AND (
+                  orders.process_id IS DISTINCT FROM $1
+                  OR orders.token_id IS DISTINCT FROM fill.token_id
+                )
+              LIMIT 1
+            )
+            "#,
+        )
+        .bind(process_id)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to inspect live process position ownership")?;
+        if cross_owned {
+            bail!("live process position evidence contains cross-owned fill data");
+        }
+
+        let rows = sqlx::query_as::<_, PositionSizeRow>(
+            r#"
+            WITH filled AS (
+              SELECT fill.token_id,
+                SUM(
+                  CASE orders.side
+                    WHEN 'buy' THEN fill.size
+                    WHEN 'sell' THEN -fill.size
+                  END
+                )::numeric AS size
+              FROM polymarket.fills fill
+              JOIN polymarket.orders orders ON orders.order_id = fill.order_id
+              WHERE fill.process_id = $1
+                AND orders.process_id = $1
+                AND fill.source = 'live'
+              GROUP BY fill.token_id
+            ), redeemed AS (
+              SELECT settlement.token_id,
+                SUM(settlement.filled_size)::numeric AS size
+              FROM polymarket.btc_paper_settlement_ledger settlement
+              WHERE settlement.process_id = $1
+                AND settlement.execution_mode = 'live'
+                AND settlement.credit_status = 'credited'
+              GROUP BY settlement.token_id
+            ), tokens AS (
+              SELECT token_id FROM filled
+              UNION
+              SELECT token_id FROM redeemed
+            )
+            SELECT tokens.token_id,
+              (COALESCE(filled.size, 0) - COALESCE(redeemed.size, 0))::numeric AS size
+            FROM tokens
+            LEFT JOIN filled USING (token_id)
+            LEFT JOIN redeemed USING (token_id)
+            WHERE COALESCE(filled.size, 0) - COALESCE(redeemed.size, 0) <> 0
+            ORDER BY tokens.token_id
+            LIMIT 4001
+            "#,
+        )
+        .bind(process_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to reconstruct live process position sizes")?;
+        if rows.len() > MAX_PROCESS_POSITION_TOKENS {
+            bail!(
+                "live process position evidence exceeds the bounded {}-token window",
+                MAX_PROCESS_POSITION_TOKENS
+            );
+        }
+
+        let mut positions = HashMap::with_capacity(rows.len());
+        for row in rows {
+            if row.token_id.trim().is_empty() || row.size <= Decimal::ZERO {
+                bail!("live process position evidence contains an invalid net position");
+            }
+            if positions.insert(row.token_id, row.size).is_some() {
+                bail!("live process position evidence contains a duplicate token identity");
+            }
+        }
+        Ok(positions)
     }
 
     pub async fn mark_order_submitted(
@@ -2139,8 +2621,7 @@ fn validate_live_exposure_fill(
     }
     validate_live_exposure_identity(&row.fill_order_id, "fill order_id")?;
     validate_live_exposure_identity(&row.fill_token_id, "fill token_id")?;
-    if row.filled_at > as_of
-        || row.fill_price <= Decimal::ZERO
+    if row.fill_price <= Decimal::ZERO
         || row.fill_price > Decimal::ONE
         || row.fill_size <= Decimal::ZERO
         || row.fill_fee < Decimal::ZERO
@@ -2192,13 +2673,43 @@ fn validate_live_exposure_fill(
         .context("live fill exposure has no persisted order update time")?;
     validate_live_exposure_identity(order_market_id, "fill order market_id")?;
     validate_live_exposure_identity(order_token_id, "fill order token_id")?;
+    let earliest_fill_at = order_created_at
+        .checked_sub_signed(LIVE_FILL_RECONCILIATION_SKEW)
+        .context("live fill exposure order window underflow")?;
+    let latest_fill_at = order_created_at
+        .checked_add_signed(LIVE_FILL_RECONCILIATION_SKEW)
+        .context("live fill exposure order window overflow")?;
+    let earliest_order_update_at = order_created_at
+        .checked_sub_signed(LIVE_EXTERNAL_EVENT_CLOCK_SKEW)
+        .context("live fill exposure order update window underflow")?;
+    let latest_order_update_at = as_of
+        .checked_add_signed(LIVE_EXTERNAL_EVENT_CLOCK_SKEW)
+        .context("live fill exposure database observation window overflow")?;
     if order_raw_payload_bytes <= 0
         || order_raw_payload_bytes > MAX_LIVE_EXPOSURE_ORDER_PAYLOAD_BYTES
-        || order_created_at > order_updated_at
-        || order_updated_at > as_of
-        || row.filled_at < order_created_at
+        || order_updated_at < earliest_order_update_at
+        || order_updated_at > latest_order_update_at
+        || row.filled_at < earliest_fill_at
+        || row.filled_at > latest_fill_at
     {
-        bail!("live fill exposure has inconsistent bounded order evidence");
+        bail!(
+            "live fill exposure has inconsistent bounded order evidence: fill_id={}, order_id={}, fill_at={}, order_created_at={}, order_updated_at={}, database_as_of={}, fill_order_delta_ms={}, allowed_fill_order_skew_ms={}, order_update_creation_delta_ms={}, order_update_observation_delta_ms={}, allowed_external_clock_skew_ms={}",
+            row.fill_id,
+            row.fill_order_id,
+            row.filled_at,
+            order_created_at,
+            order_updated_at,
+            as_of,
+            row.filled_at
+                .signed_duration_since(order_created_at)
+                .num_milliseconds(),
+            LIVE_FILL_RECONCILIATION_SKEW.num_milliseconds(),
+            order_updated_at
+                .signed_duration_since(order_created_at)
+                .num_milliseconds(),
+            order_updated_at.signed_duration_since(as_of).num_milliseconds(),
+            LIVE_EXTERNAL_EVENT_CLOCK_SKEW.num_milliseconds(),
+        );
     }
     if row.fill_token_id != order_token_id {
         bail!("live fill exposure token does not match its persisted order");
@@ -2327,6 +2838,19 @@ fn order_request_result_matches(existing: &OrderRequest, incoming: &OrderRequest
         && existing.metadata == incoming.metadata
 }
 
+fn durable_fill_state_supersedes_report(existing: OrderState, reported: OrderState) -> bool {
+    matches!(
+        (existing, reported),
+        (
+            OrderState::PartiallyFilled,
+            OrderState::Submitted | OrderState::Acknowledged
+        ) | (
+            OrderState::Filled,
+            OrderState::Submitted | OrderState::Acknowledged | OrderState::PartiallyFilled
+        )
+    )
+}
+
 fn fill_record_matches(existing: &FillRecord, incoming: &FillRecord) -> bool {
     existing.fill_id == incoming.fill_id
         && existing.process_id == incoming.process_id
@@ -2405,13 +2929,30 @@ fn validate_live_daily_settlement(
     if credited_at < day_start || credited_at >= day_end || credited_at > as_of {
         bail!("credited live settlement is outside the proven UTC-day observation window");
     }
-    if settlement.official_resolution_received_at > credited_at
+    let latest_resolution_receipt = credited_at
+        .checked_add_signed(LIVE_EXTERNAL_EVENT_CLOCK_SKEW)
+        .context("credited live settlement resolution clock window overflow")?;
+    if settlement.official_resolution_received_at > latest_resolution_receipt
         || settlement.created_at > credited_at
         || settlement.updated_at < settlement.created_at
         || settlement.updated_at > as_of
         || settlement.credit_attempts < 1
     {
-        bail!("credited live settlement has inconsistent accounting timestamps or attempts");
+        bail!(
+            "credited live settlement has inconsistent accounting timestamps or attempts: settlement_id={}, resolution_received_at={}, created_at={}, updated_at={}, credited_at={}, database_as_of={}, resolution_credit_delta_ms={}, allowed_external_clock_skew_ms={}, credit_attempts={}",
+            settlement.settlement_id,
+            settlement.official_resolution_received_at,
+            settlement.created_at,
+            settlement.updated_at,
+            credited_at,
+            as_of,
+            settlement
+                .official_resolution_received_at
+                .signed_duration_since(credited_at)
+                .num_milliseconds(),
+            LIVE_EXTERNAL_EVENT_CLOCK_SKEW.num_milliseconds(),
+            settlement.credit_attempts,
+        );
     }
     if settlement.order_id.trim().is_empty()
         || settlement.market_id.trim().is_empty()
@@ -2444,6 +2985,121 @@ fn validate_live_daily_settlement(
         .credit_evidence
         .as_object()
         .context("credited live settlement evidence must be an object")?;
+    if evidence
+        .get("proof_type")
+        .and_then(serde_json::Value::as_str)
+        == Some("btc_official_zero_payout_loss")
+    {
+        if settlement.payout != Decimal::ZERO
+            || settlement.token_id == settlement.official_winning_token_id
+        {
+            bail!("official zero-payout proof requires a losing live settlement");
+        }
+        require_live_evidence_string(
+            evidence,
+            "evidence_version",
+            "btc_live_zero_payout_settlement_v1",
+        )?;
+        require_live_evidence_string(evidence, "recognition_kind", "official_resolution")?;
+        require_live_evidence_string(evidence, "execution_mode", "live")?;
+        if evidence
+            .get("exchange_cash_credit_applied")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+        {
+            bail!("official zero-payout proof must not claim an exchange cash credit");
+        }
+        require_live_evidence_uuid(evidence, "settlement_id", settlement.settlement_id)?;
+        require_live_evidence_uuid(evidence, "process_id", settlement.process_id)?;
+        require_live_evidence_uuid(evidence, "run_id", settlement.run_id)?;
+        require_live_evidence_string(evidence, "order_id", &settlement.order_id)?;
+        require_live_evidence_string(evidence, "market_id", &settlement.market_id)?;
+        require_live_evidence_string(evidence, "token_id", &settlement.token_id)?;
+        if evidence.get("fill_ids") != Some(&settlement.fill_ids) {
+            bail!("official zero-payout proof fill lineage does not match");
+        }
+        require_live_evidence_string(evidence, "official_outcome", &settlement.official_outcome)?;
+        require_live_evidence_string(
+            evidence,
+            "official_winning_token_id",
+            &settlement.official_winning_token_id,
+        )?;
+        require_live_evidence_string(
+            evidence,
+            "official_resolution_source",
+            &settlement.official_resolution_source,
+        )?;
+        require_live_evidence_datetime(
+            evidence,
+            "official_resolution_received_at",
+            settlement.official_resolution_received_at,
+        )?;
+        require_live_evidence_decimal(evidence, "filled_size", settlement.filled_size)?;
+        require_live_evidence_decimal(evidence, "entry_notional", settlement.entry_notional)?;
+        require_live_evidence_decimal(evidence, "entry_fees", settlement.entry_fees)?;
+        require_live_evidence_decimal(evidence, "payout", settlement.payout)?;
+        require_live_evidence_decimal(evidence, "net_pnl", settlement.net_pnl)?;
+        if !evidence
+            .get("recognized_by_config_hash")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(is_sha256_hex)
+        {
+            bail!("official zero-payout proof is missing its configuration fingerprint");
+        }
+        return Ok(());
+    }
+    if evidence
+        .get("proof_type")
+        .and_then(serde_json::Value::as_str)
+        == Some("polymarket_data_api_redeem")
+    {
+        require_live_evidence_string(evidence, "token_id", &settlement.token_id)?;
+        require_live_evidence_decimal(evidence, "redeemed_size", settlement.filled_size)?;
+        require_live_evidence_decimal(evidence, "payout_usd", settlement.payout)?;
+        let account_address = evidence
+            .get("account_address")
+            .and_then(serde_json::Value::as_str)
+            .context("credited live redemption is missing its account address")?;
+        if account_address.len() != 42
+            || !account_address.starts_with("0x")
+            || !account_address[2..]
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            bail!("credited live redemption has an invalid account address");
+        }
+        let condition_id = evidence
+            .get("condition_id")
+            .and_then(serde_json::Value::as_str)
+            .context("credited live redemption is missing its condition identity")?;
+        let transaction_hash = evidence
+            .get("redemption_transaction_hash")
+            .and_then(serde_json::Value::as_str)
+            .context("credited live redemption is missing its transaction identity")?;
+        if !is_prefixed_sha256_hex(condition_id) || !is_prefixed_sha256_hex(transaction_hash) {
+            bail!("credited live redemption has invalid exchange identity evidence");
+        }
+        let redeemed_at = evidence
+            .get("redeemed_at")
+            .and_then(serde_json::Value::as_str)
+            .context("credited live redemption is missing its exchange timestamp")?
+            .parse::<DateTime<Utc>>()
+            .context("credited live redemption exchange timestamp is invalid")?;
+        if redeemed_at
+            > credited_at
+                .checked_add_signed(LIVE_EXTERNAL_EVENT_CLOCK_SKEW)
+                .context("credited live redemption clock window overflow")?
+        {
+            bail!("credited live redemption was recorded before its exchange evidence");
+        }
+        if !evidence
+            .get("activity")
+            .is_some_and(serde_json::Value::is_object)
+        {
+            bail!("credited live redemption is missing its raw exchange activity");
+        }
+        return Ok(());
+    }
     require_live_evidence_string(
         evidence,
         "evidence_version",
@@ -2585,9 +3241,15 @@ fn is_sha256_hex(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn is_prefixed_sha256_hex(value: &str) -> bool {
+    value.len() == 66
+        && value.starts_with("0x")
+        && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
     use uuid::Uuid;
@@ -2597,11 +3259,13 @@ mod tests {
             FillRecord, FillSource, OrderRecord, OrderRequest, OrderSide, OrderState, OrderType,
         },
         store::{
-            build_live_process_exposure_snapshot, canonical_fill_for_storage, fill_record_matches,
-            live_requested_exposure, order_request_identity_matches, order_request_result_matches,
-            required_fill_process_id, LiveExposureFillRow, LiveExposureOrderRow,
-            HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL, INSERT_FILL_IDENTITY_SQL, INSERT_FILL_SQL,
-            INSERT_ORDER_SQL, RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL,
+            build_live_process_exposure_snapshot, canonical_fill_for_storage,
+            durable_fill_state_supersedes_report, fill_record_matches, live_requested_exposure,
+            order_request_identity_matches, order_request_result_matches, required_fill_process_id,
+            validate_live_daily_settlement, validate_live_exposure_fill, LiveDailySettlementRow,
+            LiveExposureFillRow, LiveExposureOrderRow, HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL,
+            INSERT_FILL_IDENTITY_SQL, INSERT_FILL_SQL, INSERT_ORDER_SQL,
+            RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL,
             SELECT_CREDITED_LIVE_PROCESS_SETTLEMENTS_SQL, SELECT_FILL_IDENTITY_SQL,
             SELECT_FILL_SQL, SELECT_LIVE_PROCESS_CROSS_OWNED_FILL_EXISTS_SQL,
             SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL, SELECT_LIVE_PROCESS_EXPOSURE_ORDERS_SQL,
@@ -2635,6 +3299,124 @@ mod tests {
         );
         assert!(!INSERT_ORDER_SQL.contains("DO UPDATE"));
         assert!(!INSERT_ORDER_SQL.contains("EXCLUDED."));
+    }
+
+    #[test]
+    fn durable_fill_progress_supersedes_a_stale_execution_report() {
+        assert!(durable_fill_state_supersedes_report(
+            OrderState::PartiallyFilled,
+            OrderState::Acknowledged
+        ));
+        assert!(durable_fill_state_supersedes_report(
+            OrderState::Filled,
+            OrderState::Acknowledged
+        ));
+        assert!(durable_fill_state_supersedes_report(
+            OrderState::Filled,
+            OrderState::PartiallyFilled
+        ));
+
+        assert!(!durable_fill_state_supersedes_report(
+            OrderState::Acknowledged,
+            OrderState::Filled
+        ));
+        assert!(!durable_fill_state_supersedes_report(
+            OrderState::Filled,
+            OrderState::Rejected
+        ));
+        assert!(!durable_fill_state_supersedes_report(
+            OrderState::Cancelled,
+            OrderState::Acknowledged
+        ));
+    }
+
+    #[test]
+    fn official_zero_payout_loss_is_valid_daily_live_pnl_evidence() {
+        let credited_at = Utc::now();
+        let settlement_id = Uuid::from_u128(31);
+        let process_id = Uuid::from_u128(32);
+        let run_id = Uuid::from_u128(33);
+        let fill_id = Uuid::from_u128(34);
+        let resolution_at = credited_at - Duration::seconds(5);
+        let fill_ids = serde_json::json!([fill_id]);
+        let evidence = serde_json::json!({
+            "proof_type": "btc_official_zero_payout_loss",
+            "evidence_version": "btc_live_zero_payout_settlement_v1",
+            "recognition_kind": "official_resolution",
+            "execution_mode": "live",
+            "exchange_cash_credit_applied": false,
+            "settlement_id": settlement_id,
+            "process_id": process_id,
+            "run_id": run_id,
+            "order_id": "order",
+            "market_id": "market",
+            "token_id": "down-token",
+            "fill_ids": fill_ids,
+            "official_outcome": "up",
+            "official_winning_token_id": "up-token",
+            "official_resolution_received_at": resolution_at,
+            "official_resolution_source": "clob_websocket",
+            "filled_size": "5",
+            "entry_notional": "4.2",
+            "entry_fees": "0",
+            "payout": "0",
+            "net_pnl": "-4.2",
+            "recognized_by_config_hash": "a".repeat(64),
+        });
+        let mut settlement = LiveDailySettlementRow {
+            settlement_id,
+            run_id,
+            process_id,
+            order_id: "order".to_string(),
+            market_id: "market".to_string(),
+            token_id: "down-token".to_string(),
+            fill_ids,
+            official_outcome: "up".to_string(),
+            official_winning_token_id: "up-token".to_string(),
+            official_resolution_received_at: resolution_at,
+            official_resolution_source: "clob_websocket".to_string(),
+            filled_size: dec!(5),
+            entry_notional: dec!(4.2),
+            entry_fees: Decimal::ZERO,
+            payout: Decimal::ZERO,
+            net_pnl: dec!(-4.2),
+            credited_at: Some(credited_at),
+            credit_attempts: 1,
+            credit_evidence: evidence,
+            created_at: resolution_at,
+            updated_at: credited_at,
+        };
+
+        validate_live_daily_settlement(
+            &settlement,
+            credited_at - Duration::hours(1),
+            credited_at + Duration::hours(1),
+            credited_at,
+        )
+        .unwrap();
+
+        settlement.official_resolution_received_at =
+            credited_at + crate::execution::LIVE_EXTERNAL_EVENT_CLOCK_SKEW;
+        settlement.credit_evidence["official_resolution_received_at"] =
+            serde_json::json!(settlement.official_resolution_received_at);
+        validate_live_daily_settlement(
+            &settlement,
+            credited_at - Duration::hours(1),
+            credited_at + Duration::hours(1),
+            credited_at + Duration::seconds(1),
+        )
+        .unwrap();
+
+        settlement.official_resolution_received_at += Duration::microseconds(1);
+        settlement.credit_evidence["official_resolution_received_at"] =
+            serde_json::json!(settlement.official_resolution_received_at);
+        assert!(validate_live_daily_settlement(
+            &settlement,
+            credited_at - Duration::hours(1),
+            credited_at + Duration::hours(1),
+            credited_at + Duration::seconds(1),
+        )
+        .is_err());
     }
 
     #[test]
@@ -2823,7 +3605,7 @@ mod tests {
     }
 
     #[test]
-    fn live_exposure_queries_are_process_scoped_bounded_and_never_release_resolution() {
+    fn live_exposure_queries_are_process_scoped_bounded_and_release_only_credited_redemption() {
         assert!(SELECT_LIVE_PROCESS_EXPOSURE_ORDERS_SQL.contains("process_id = $1"));
         assert!(SELECT_LIVE_PROCESS_EXPOSURE_ORDERS_SQL.contains("LIMIT $2"));
         assert!(SELECT_LIVE_PROCESS_EXPOSURE_ORDERS_SQL
@@ -2836,7 +3618,11 @@ mod tests {
             .contains("f.process_id IS DISTINCT FROM $1"));
         assert!(SELECT_LIVE_PROCESS_UNPROVEN_FILLED_ORDER_EXISTS_SQL
             .contains("o.state IN ('filled', 'partially_filled')"));
-        assert!(!SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL.contains("settlement"));
+        assert!(
+            SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL.contains("settlement.execution_mode = 'live'")
+        );
+        assert!(SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL
+            .contains("settlement.credit_status = 'credited'"));
         assert!(!SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL.contains("resolution"));
         assert!(!SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL.contains("sell"));
     }
@@ -2878,6 +3664,64 @@ mod tests {
         assert_eq!(snapshot.filled_buy_fees_usd, dec!(0.01));
         assert_eq!(snapshot.total_exposure_usd, dec!(1.33));
         assert_eq!(snapshot.exposed_market_ids, vec!["market".to_string()]);
+    }
+
+    #[test]
+    fn live_fill_exposure_accepts_exchange_second_precision_before_local_order_creation() {
+        let process_id = Uuid::from_u128(201);
+        let fill_at = "2026-08-14T14:03:16Z"
+            .parse::<chrono::DateTime<Utc>>()
+            .unwrap();
+        let order_created_at = fill_at + Duration::microseconds(406_916);
+        let mut order = live_exposure_order_row(
+            process_id,
+            OrderState::Filled,
+            order_created_at + Duration::seconds(1),
+        );
+        order.created_at = order_created_at;
+        order.updated_at = fill_at;
+        let fill = live_exposure_fill_row(&order, process_id, fill_at, dec!(2), Decimal::ZERO);
+
+        validate_live_exposure_fill(&fill, process_id, order_created_at + Duration::seconds(1))
+            .unwrap();
+    }
+
+    #[test]
+    fn live_fill_exposure_rejects_order_update_outside_external_clock_bound() {
+        let process_id = Uuid::from_u128(203);
+        let at = Utc::now();
+        let mut order = live_exposure_order_row(process_id, OrderState::Filled, at);
+        order.updated_at = order.created_at
+            - crate::execution::LIVE_EXTERNAL_EVENT_CLOCK_SKEW
+            - Duration::microseconds(1);
+        let fill =
+            live_exposure_fill_row(&order, process_id, order.created_at, dec!(2), Decimal::ZERO);
+
+        let error = validate_live_exposure_fill(&fill, process_id, at).unwrap_err();
+        assert!(error.to_string().contains("order_update_creation_delta_ms"));
+        assert!(error.to_string().contains("allowed_external_clock_skew_ms"));
+    }
+
+    #[test]
+    fn live_fill_exposure_rejects_timestamp_outside_existing_reconciliation_window() {
+        let process_id = Uuid::from_u128(202);
+        let at = Utc::now();
+        let order = live_exposure_order_row(process_id, OrderState::Filled, at);
+        let fill = live_exposure_fill_row(
+            &order,
+            process_id,
+            order.created_at
+                - crate::execution::LIVE_FILL_RECONCILIATION_SKEW
+                - Duration::microseconds(1),
+            dec!(2),
+            Decimal::ZERO,
+        );
+
+        let error =
+            validate_live_exposure_fill(&fill, process_id, order.updated_at + Duration::seconds(1))
+                .unwrap_err();
+        assert!(error.to_string().contains("fill_order_delta_ms"));
+        assert!(error.to_string().contains("allowed_fill_order_skew_ms"));
     }
 
     #[test]

@@ -771,6 +771,33 @@ WHERE process_id = $1
   AND credit_status = 'pending'
 "#;
 
+const RECOGNIZE_LIVE_ZERO_PAYOUT_SETTLEMENT_SQL: &str = r#"
+UPDATE polymarket.btc_paper_settlement_ledger settlement
+SET credit_status = 'credited',
+    credited_at = now(),
+    credit_attempts = credit_attempts + 1,
+    credit_evidence = $4,
+    updated_at = now()
+FROM polymarket.btc_interval_markets market
+JOIN polymarket.btc_official_resolution_watches watch
+  ON watch.market_id = market.market_id
+ AND watch.status IN ('resolved', 'resolved_late')
+ AND watch.resolution_received_at = market.official_resolution_received_at
+ AND watch.resolution_source = market.official_resolution_source
+WHERE settlement.process_id = $1
+  AND settlement.run_id = $2
+  AND settlement.settlement_id = $3
+  AND settlement.execution_mode = 'live'
+  AND settlement.credit_status = 'pending'
+  AND settlement.payout = 0
+  AND settlement.token_id <> settlement.official_winning_token_id
+  AND market.market_id = settlement.market_id
+  AND market.official_outcome = settlement.official_outcome
+  AND market.official_winning_token_id = settlement.official_winning_token_id
+  AND market.official_resolution_received_at = settlement.official_resolution_received_at
+  AND market.official_resolution_source = settlement.official_resolution_source
+"#;
+
 const INSERT_ORDERBOOK_CHECKPOINT_PAIR_SQL: &str = r#"
 INSERT INTO polymarket.orderbook_checkpoints (
   checkpoint_id, source_timestamp, received_at, connection_id, ingest_sequence,
@@ -3301,6 +3328,58 @@ impl BtcRepository {
             .await
     }
 
+    pub async fn recognize_live_zero_payout_settlement(
+        &self,
+        process_id: Uuid,
+        run_id: Uuid,
+        settlement: &BtcSettlementRecord,
+        config_hash: &str,
+    ) -> Result<bool> {
+        if settlement.process_id != process_id || settlement.run_id != run_id {
+            bail!("live zero-payout settlement ownership does not match its process run");
+        }
+        let evidence = live_zero_payout_settlement_evidence(settlement, config_hash)?;
+        let result = sqlx::query(RECOGNIZE_LIVE_ZERO_PAYOUT_SETTLEMENT_SQL)
+            .bind(process_id)
+            .bind(run_id)
+            .bind(settlement.settlement_id)
+            .bind(&evidence)
+            .execute(&self.pool)
+            .await
+            .context("failed to recognize exact live zero-payout settlement")?;
+        if result.rows_affected() == 1 {
+            return Ok(true);
+        }
+
+        let existing = sqlx::query_as::<_, (String, serde_json::Value)>(
+            r#"
+            SELECT credit_status, credit_evidence
+            FROM polymarket.btc_paper_settlement_ledger
+            WHERE process_id = $1
+              AND run_id = $2
+              AND settlement_id = $3
+              AND execution_mode = 'live'
+            "#,
+        )
+        .bind(process_id)
+        .bind(run_id)
+        .bind(settlement.settlement_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to verify idempotent live zero-payout settlement recognition")?;
+        match existing {
+            Some((status, existing_evidence))
+                if status == "credited" && existing_evidence == evidence =>
+            {
+                Ok(false)
+            }
+            Some(_) => {
+                bail!("live zero-payout settlement recognition conflicts with durable state")
+            }
+            None => bail!("live zero-payout settlement disappeared during recognition"),
+        }
+    }
+
     pub async fn mark_settlement_recognized(
         &self,
         process_id: Uuid,
@@ -3439,6 +3518,43 @@ fn validate_settlement_record(
         bail!("BTC settlement net PnL conflicts with its payout and entry costs");
     }
     Ok(())
+}
+
+fn live_zero_payout_settlement_evidence(
+    record: &BtcSettlementRecord,
+    config_hash: &str,
+) -> Result<serde_json::Value> {
+    validate_settlement_record(record, BtcExecutionMode::Live)?;
+    if record.payout != Decimal::ZERO || record.token_id == record.official_winning_token_id {
+        bail!("live zero-payout recognition requires an officially losing settlement");
+    }
+    if config_hash.len() != 64 || !config_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("live zero-payout recognition requires a SHA-256 config hash");
+    }
+    Ok(serde_json::json!({
+        "proof_type": "btc_official_zero_payout_loss",
+        "evidence_version": "btc_live_zero_payout_settlement_v1",
+        "recognition_kind": "official_resolution",
+        "execution_mode": "live",
+        "exchange_cash_credit_applied": false,
+        "settlement_id": record.settlement_id,
+        "process_id": record.process_id,
+        "run_id": record.run_id,
+        "order_id": record.order_id,
+        "market_id": record.market_id,
+        "token_id": record.token_id,
+        "fill_ids": record.fill_ids,
+        "official_outcome": record.official_outcome,
+        "official_winning_token_id": record.official_winning_token_id,
+        "official_resolution_received_at": record.official_resolution_received_at,
+        "official_resolution_source": record.official_resolution_source,
+        "filled_size": record.filled_size,
+        "entry_notional": record.entry_notional,
+        "entry_fees": record.entry_fees,
+        "payout": record.payout,
+        "net_pnl": record.net_pnl,
+        "recognized_by_config_hash": config_hash,
+    }))
 }
 
 fn is_supported_official_resolution_source(source: &str) -> bool {
@@ -6262,6 +6378,40 @@ mod tests {
         wrong_mode.execution_mode = "live".to_string();
         assert!(validate_settlement_record(&wrong_mode, BtcExecutionMode::Paper).is_err());
         validate_settlement_record(&wrong_mode, BtcExecutionMode::Live).unwrap();
+    }
+
+    #[test]
+    fn live_zero_payout_evidence_requires_an_exact_official_loss() {
+        let mut loser = settlement_record();
+        loser.execution_mode = "live".to_string();
+        loser.token_id = "down-token".to_string();
+        loser.payout = Decimal::ZERO;
+        loser.net_pnl = dec!(-2.1);
+        let config_hash = "a".repeat(64);
+
+        let evidence = live_zero_payout_settlement_evidence(&loser, &config_hash).unwrap();
+        assert_eq!(evidence["proof_type"], "btc_official_zero_payout_loss");
+        assert_eq!(evidence["exchange_cash_credit_applied"], false);
+        assert_eq!(evidence["payout"], "0");
+        assert_eq!(evidence["net_pnl"], "-2.1");
+
+        let mut winner = loser.clone();
+        winner.token_id = winner.official_winning_token_id.clone();
+        winner.payout = winner.filled_size;
+        winner.net_pnl = winner.payout - winner.entry_notional - winner.entry_fees;
+        assert!(live_zero_payout_settlement_evidence(&winner, &config_hash).is_err());
+        assert!(live_zero_payout_settlement_evidence(&loser, "not-a-hash").is_err());
+    }
+
+    #[test]
+    fn live_zero_payout_recognition_is_loser_only_and_resolution_scoped() {
+        let sql = RECOGNIZE_LIVE_ZERO_PAYOUT_SETTLEMENT_SQL.to_ascii_lowercase();
+        assert!(sql.contains("settlement.execution_mode = 'live'"));
+        assert!(sql.contains("settlement.credit_status = 'pending'"));
+        assert!(sql.contains("settlement.payout = 0"));
+        assert!(sql.contains("settlement.token_id <> settlement.official_winning_token_id"));
+        assert!(sql.contains("btc_official_resolution_watches"));
+        assert!(sql.contains("watch.status in ('resolved', 'resolved_late')"));
     }
 
     #[test]

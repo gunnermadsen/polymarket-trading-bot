@@ -112,10 +112,10 @@ lives in the existing process lifecycle records. Lifecycle and record ownership
 remain canonical to the selected `process_id`; the stable process key can be
 reused. Trading mode is selected by
 `trading_processes.config.execution.mode`; live definitions also require a
-bounded `execution.account_ref` which must exactly match the deployment's
-non-secret `POLYMARKET_LIVE_ACCOUNT_REF`. Host configuration is limited to
-credentials, the canonical account reference, venue URLs, transport toggles,
-and hard risk caps.
+bounded `execution.account_ref`. Optional execution limits and the exit-book
+requirement are flat process-owned properties accepted identically by paper and
+live venues. When omitted, their checks are not configured. Host configuration
+is limited to credentials, venue URLs, and transport timing.
 
 The disabled live pilot is installed by migration with process ID
 `effa3e5e-2f5a-4f18-98ba-06e4c0da74ef` and process key
@@ -132,8 +132,23 @@ credential-validation-only mode:
 }
 ```
 
-With `POLYMARKET_LIVE_ORDER_SUBMIT_ENABLED=false` and
-`POLYMARKET_LIVE_USER_WS_ENABLED=false`, run the non-trading connectivity and
+When configured, execution controls remain flat and use the same names in both
+venues:
+
+```json
+{
+  "max_order_notional_usd": "2",
+  "max_open_notional_usd": "20",
+  "max_open_positions": 6,
+  "max_daily_loss_usd": "10",
+  "require_exit_book": true
+}
+```
+
+Each property is independent and optional. An omitted property does not create
+an execution check or receive an environment-derived default.
+
+With both process execution flags false, run the non-trading connectivity and
 reconciliation check through:
 
 ```text
@@ -142,8 +157,8 @@ POST /admin/trading-processes/effa3e5e-2f5a-4f18-98ba-06e4c0da74ef/live-prefligh
 
 The preflight reads authenticated API-key, collateral/allowance, open-order,
 geoblock, and account-reconciliation state. It never signs or submits an order.
-It reports credential connectivity independently from activation readiness, and
-requires both process and host trading switches to remain disabled.
+It reports credential connectivity independently from activation readiness and
+requires the process trading flags to remain disabled.
 
 Verify the private key and configured signing identity separately with the
 signing-only diagnostic:
@@ -176,10 +191,10 @@ and the entry gate cannot open.
 
 Future live activation requires a distinct immutable directional-model
 artifact whose manifest explicitly permits live capital, both live process
-flags enabled together, live order submission and user websocket transport
-enabled in deployment configuration, a durable process-owned accounting
-baseline, exchange redemption proof, a successful process start/reconcile,
-and the process-scoped live-entry endpoint. Live activation also enforces the
+flags enabled together, authenticated user websocket evidence, a durable
+process-owned accounting baseline, exchange redemption proof, a successful
+process start/reconcile, and the process-scoped live-entry endpoint. Live
+activation also enforces the
 two-second reference/book freshness ceiling. A checked enable grants exactly
 one POST attempt; any user-websocket account event, websocket failure,
 reconciliation change, or manual halt consumes or invalidates that grant.

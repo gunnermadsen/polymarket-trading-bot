@@ -300,6 +300,11 @@ impl TradingProcessConfig {
             if let Some(taker_fee_rate) = config.taker_fee_rate {
                 effective.taker_fee_rate = taker_fee_rate;
             }
+            effective.max_order_notional_usd = config.max_order_notional_usd;
+            effective.max_open_notional_usd = config.max_open_notional_usd;
+            effective.max_open_positions = config.max_open_positions;
+            effective.max_daily_loss_usd = config.max_daily_loss_usd;
+            effective.require_exit_book = config.require_exit_book;
         }
         effective
     }
@@ -311,6 +316,11 @@ pub struct EffectiveProcessExecutionConfig {
     pub live_capital: bool,
     pub account_ref: Option<String>,
     pub taker_fee_rate: Decimal,
+    pub max_order_notional_usd: Option<Decimal>,
+    pub max_open_notional_usd: Option<Decimal>,
+    pub max_open_positions: Option<usize>,
+    pub max_daily_loss_usd: Option<Decimal>,
+    pub require_exit_book: Option<bool>,
 }
 
 impl Default for EffectiveProcessExecutionConfig {
@@ -321,11 +331,17 @@ impl Default for EffectiveProcessExecutionConfig {
             live_capital: false,
             account_ref: None,
             taker_fee_rate: dec!(0.03),
+            max_order_notional_usd: None,
+            max_open_notional_usd: None,
+            max_open_positions: None,
+            max_daily_loss_usd: None,
+            require_exit_book: None,
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ProcessExecutionConfig {
     #[serde(default)]
     pub mode: Option<String>,
@@ -337,11 +353,22 @@ pub struct ProcessExecutionConfig {
     pub account_ref: Option<String>,
     #[serde(default)]
     pub taker_fee_rate: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_order_notional_usd: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_open_notional_usd: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_open_positions: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_daily_loss_usd: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_exit_book: Option<bool>,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::FillSource;
+    use super::{FillSource, ProcessExecutionConfig};
+    use rust_decimal_macros::dec;
 
     #[test]
     fn retired_sim_fill_source_is_not_part_of_the_application_contract() {
@@ -353,6 +380,58 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<FillSource>(r#""live""#).unwrap(),
             FillSource::Live
+        );
+    }
+
+    #[test]
+    fn execution_contract_accepts_only_flat_optional_controls() {
+        let execution = serde_json::from_value::<ProcessExecutionConfig>(serde_json::json!({
+            "mode": "paper",
+            "execute_signals": true,
+            "live_capital": false,
+            "max_order_notional_usd": "2",
+            "max_open_notional_usd": "20",
+            "max_open_positions": 6,
+            "max_daily_loss_usd": "10",
+            "require_exit_book": true
+        }))
+        .unwrap();
+        assert_eq!(execution.max_order_notional_usd, Some(dec!(2)));
+        assert_eq!(execution.max_open_notional_usd, Some(dec!(20)));
+        assert_eq!(execution.max_open_positions, Some(6));
+        assert_eq!(execution.max_daily_loss_usd, Some(dec!(10)));
+        assert_eq!(execution.require_exit_book, Some(true));
+
+        let omitted = serde_json::from_value::<ProcessExecutionConfig>(serde_json::json!({
+            "mode": "live",
+            "execute_signals": true,
+            "live_capital": true,
+            "account_ref": "polymarket-primary"
+        }))
+        .unwrap();
+        assert_eq!(omitted.max_order_notional_usd, None);
+        assert_eq!(omitted.require_exit_book, None);
+
+        assert!(
+            serde_json::from_value::<ProcessExecutionConfig>(serde_json::json!({
+                "mode": "paper",
+                "risk": {"max_order_notional_usd": "2"}
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ProcessExecutionConfig>(serde_json::json!({
+                "mode": "paper",
+                "entry_policy": {"require_exit_book": true}
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ProcessExecutionConfig>(serde_json::json!({
+                "mode": "paper",
+                "max_open_positions": [6]
+            }))
+            .is_err()
         );
     }
 }

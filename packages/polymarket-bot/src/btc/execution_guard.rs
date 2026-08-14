@@ -420,7 +420,9 @@ impl BtcReferenceExecutionGuard {
             max_directional_feature_age_ms,
             evidence_sha256: String::new(),
         };
-        guard.validate_causality().map_err(anyhow::Error::new)?;
+        guard
+            .validate_causality(Duration::milliseconds(max_reference_age_ms))
+            .map_err(anyhow::Error::new)?;
         guard.evidence_sha256 = guard.calculate_evidence_sha256()?;
         Ok(guard)
     }
@@ -535,7 +537,15 @@ impl BtcReferenceExecutionGuard {
             return Err(BtcReferenceExecutionRejectReason::InvalidGuard);
         }
         self.validate_version_contract(request)?;
-        self.validate_causality()?;
+        let max_reference_age = Duration::try_milliseconds(self.max_reference_age_ms)
+            .filter(|duration| *duration > Duration::zero())
+            .ok_or(BtcReferenceExecutionRejectReason::InvalidFreshnessBound)?;
+        if expected_max_reference_age <= Duration::zero()
+            || max_reference_age != expected_max_reference_age
+        {
+            return Err(BtcReferenceExecutionRejectReason::InvalidFreshnessBound);
+        }
+        self.validate_causality(max_reference_age)?;
         if self.feature_as_of > checked_at || self.decision_at > checked_at {
             return Err(BtcReferenceExecutionRejectReason::FutureEvidence);
         }
@@ -544,14 +554,6 @@ impl BtcReferenceExecutionGuard {
             .map_err(|_| BtcReferenceExecutionRejectReason::InvalidGuard)?;
         if self.evidence_sha256.len() != 64 || calculated != self.evidence_sha256 {
             return Err(BtcReferenceExecutionRejectReason::EvidenceHashMismatch);
-        }
-        let max_reference_age = Duration::try_milliseconds(self.max_reference_age_ms)
-            .filter(|duration| *duration > Duration::zero())
-            .ok_or(BtcReferenceExecutionRejectReason::InvalidFreshnessBound)?;
-        if expected_max_reference_age <= Duration::zero()
-            || max_reference_age != expected_max_reference_age
-        {
-            return Err(BtcReferenceExecutionRejectReason::InvalidFreshnessBound);
         }
         let (binance_source_age, binance_receive_age) =
             evidence_ages(&self.binance, checked_at, max_reference_age)?;
@@ -586,7 +588,7 @@ impl BtcReferenceExecutionGuard {
                     max_age
                 };
             Some(
-                bounded_timestamp_age(
+                bounded_local_timestamp_age(
                     model.feature_as_of,
                     checked_at,
                     max_directional_feature_age,
@@ -601,19 +603,20 @@ impl BtcReferenceExecutionGuard {
             }
             None
         };
-        let (selected_book_source_age_ms, selected_book_receive_age_ms) =
-            if let Some(book) = self.selected_book.as_ref() {
-                let source_age =
-                    bounded_timestamp_age(book.source_timestamp, checked_at, max_reference_age)?;
-                let receive_age =
-                    bounded_timestamp_age(book.received_at, checked_at, max_reference_age)?;
-                (
-                    Some(source_age.num_milliseconds()),
-                    Some(receive_age.num_milliseconds()),
-                )
-            } else {
-                (None, None)
-            };
+        let (selected_book_source_age_ms, selected_book_receive_age_ms) = if let Some(book) =
+            self.selected_book.as_ref()
+        {
+            let source_age =
+                bounded_source_timestamp_age(book.source_timestamp, checked_at, max_reference_age)?;
+            let receive_age =
+                bounded_local_timestamp_age(book.received_at, checked_at, max_reference_age)?;
+            (
+                Some(source_age.num_milliseconds()),
+                Some(receive_age.num_milliseconds()),
+            )
+        } else {
+            (None, None)
+        };
         Ok(BtcReferenceExecutionAssessment {
             guard_version: self.guard_version.clone(),
             evidence_sha256: self.evidence_sha256.clone(),
@@ -747,12 +750,19 @@ impl BtcReferenceExecutionGuard {
         Ok(())
     }
 
-    fn validate_causality(&self) -> std::result::Result<(), BtcReferenceExecutionRejectReason> {
-        if self.decision_at < self.feature_as_of
-            || self.binance.source_timestamp > self.feature_as_of
-            || self.binance.received_at > self.feature_as_of
-        {
+    fn validate_causality(
+        &self,
+        max_source_clock_lead: Duration,
+    ) -> std::result::Result<(), BtcReferenceExecutionRejectReason> {
+        if self.decision_at < self.feature_as_of || self.binance.received_at > self.feature_as_of {
             return Err(BtcReferenceExecutionRejectReason::NoncausalEvidence);
+        }
+        if !source_timestamp_within_boundary(
+            self.binance.source_timestamp,
+            self.feature_as_of,
+            max_source_clock_lead,
+        ) {
+            return Err(BtcReferenceExecutionRejectReason::FutureEvidence);
         }
         match self.guard_version.as_str() {
             BTC_REFERENCE_EXECUTION_GUARD_VERSION => {
@@ -764,11 +774,20 @@ impl BtcReferenceExecutionGuard {
                     .chainlink
                     .as_ref()
                     .ok_or(BtcReferenceExecutionRejectReason::InvalidGuard)?;
-                if [chainlink_open, chainlink].into_iter().any(|tick| {
-                    tick.source_timestamp > self.feature_as_of
-                        || tick.received_at > self.feature_as_of
-                }) {
+                if [chainlink_open, chainlink]
+                    .into_iter()
+                    .any(|tick| tick.received_at > self.feature_as_of)
+                {
                     return Err(BtcReferenceExecutionRejectReason::NoncausalEvidence);
+                }
+                if [chainlink_open, chainlink].into_iter().any(|tick| {
+                    !source_timestamp_within_boundary(
+                        tick.source_timestamp,
+                        self.feature_as_of,
+                        max_source_clock_lead,
+                    )
+                }) {
+                    return Err(BtcReferenceExecutionRejectReason::FutureEvidence);
                 }
             }
             LEGACY_BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION
@@ -782,11 +801,16 @@ impl BtcReferenceExecutionGuard {
                     .selected_book
                     .as_ref()
                     .ok_or(BtcReferenceExecutionRejectReason::InvalidGuard)?;
-                if model.feature_as_of > self.feature_as_of
-                    || book.source_timestamp > self.feature_as_of
-                    || book.received_at > self.feature_as_of
+                if model.feature_as_of > self.feature_as_of || book.received_at > self.feature_as_of
                 {
                     return Err(BtcReferenceExecutionRejectReason::NoncausalEvidence);
+                }
+                if !source_timestamp_within_boundary(
+                    book.source_timestamp,
+                    self.feature_as_of,
+                    max_source_clock_lead,
+                ) {
+                    return Err(BtcReferenceExecutionRejectReason::FutureEvidence);
                 }
             }
             _ => return Err(BtcReferenceExecutionRejectReason::UnsupportedVersion),
@@ -1038,7 +1062,7 @@ fn evidence_ages(
     checked_at: DateTime<Utc>,
     max_age: Duration,
 ) -> std::result::Result<(Duration, Duration), BtcReferenceExecutionRejectReason> {
-    if evidence.source_timestamp > checked_at || evidence.received_at > checked_at {
+    if evidence.received_at > checked_at || evidence.source_timestamp - checked_at > max_age {
         return Err(BtcReferenceExecutionRejectReason::FutureEvidence);
     }
     let source_age = checked_at - evidence.source_timestamp;
@@ -1049,12 +1073,12 @@ fn evidence_ages(
     Ok((source_age, receive_age))
 }
 
-fn bounded_timestamp_age(
+fn bounded_source_timestamp_age(
     timestamp: DateTime<Utc>,
     checked_at: DateTime<Utc>,
     max_age: Duration,
 ) -> std::result::Result<Duration, BtcReferenceExecutionRejectReason> {
-    if timestamp > checked_at {
+    if timestamp - checked_at > max_age {
         return Err(BtcReferenceExecutionRejectReason::FutureEvidence);
     }
     let age = checked_at - timestamp;
@@ -1062,6 +1086,25 @@ fn bounded_timestamp_age(
         return Err(BtcReferenceExecutionRejectReason::StaleEvidence);
     }
     Ok(age)
+}
+
+fn bounded_local_timestamp_age(
+    timestamp: DateTime<Utc>,
+    checked_at: DateTime<Utc>,
+    max_age: Duration,
+) -> std::result::Result<Duration, BtcReferenceExecutionRejectReason> {
+    if timestamp > checked_at {
+        return Err(BtcReferenceExecutionRejectReason::FutureEvidence);
+    }
+    bounded_source_timestamp_age(timestamp, checked_at, max_age)
+}
+
+fn source_timestamp_within_boundary(
+    source_timestamp: DateTime<Utc>,
+    boundary: DateTime<Utc>,
+    max_clock_lead: Duration,
+) -> bool {
+    source_timestamp - boundary <= max_clock_lead
 }
 
 #[cfg(test)]
@@ -1675,6 +1718,51 @@ mod tests {
         guard.decision_at = guard.feature_as_of;
         guard.evidence_sha256 = guard.calculate_evidence_sha256().unwrap();
         let guarded_request = request(&guard);
+        assert_eq!(
+            guard
+                .validate_for_request(
+                    &guarded_request,
+                    checked_at,
+                    guard.process_id,
+                    Duration::seconds(2),
+                    None,
+                )
+                .unwrap_err(),
+            BtcReferenceExecutionRejectReason::FutureEvidence
+        );
+    }
+
+    #[test]
+    fn guard_allows_bounded_exchange_clock_lead_with_causal_local_receipt() {
+        let checked_at = Utc.with_ymd_and_hms(2026, 7, 21, 12, 0, 0).unwrap();
+        let mut guard = sealed_guard(checked_at);
+        guard.binance.source_timestamp = checked_at + Duration::milliseconds(50);
+        guard.binance.received_at = checked_at - Duration::milliseconds(1);
+        guard.evidence_sha256 = guard.calculate_evidence_sha256().unwrap();
+        let guarded_request = request(&guard);
+
+        let assessment = guard
+            .validate_for_request(
+                &guarded_request,
+                checked_at,
+                guard.process_id,
+                Duration::seconds(2),
+                None,
+            )
+            .unwrap();
+        assert_eq!(assessment.binance_source_age_ms, -50);
+        assert_eq!(assessment.binance_receive_age_ms, 1);
+    }
+
+    #[test]
+    fn guard_rejects_excessive_exchange_clock_lead_as_future_evidence() {
+        let checked_at = Utc.with_ymd_and_hms(2026, 7, 21, 12, 0, 0).unwrap();
+        let mut guard = sealed_guard(checked_at);
+        guard.binance.source_timestamp = checked_at + Duration::milliseconds(2_001);
+        guard.binance.received_at = checked_at - Duration::milliseconds(1);
+        guard.evidence_sha256 = guard.calculate_evidence_sha256().unwrap();
+        let guarded_request = request(&guard);
+
         assert_eq!(
             guard
                 .validate_for_request(

@@ -16,6 +16,7 @@ import numpy as np
 import polars as pl
 from sklearn.ensemble import HistGradientBoostingClassifier
 
+from .asymmetric_value_training import AsymmetricValueModel
 from .core_extract import file_sha256
 from .core_training import (
     CORE_FREEZE_SCHEMA_VERSION,
@@ -23,7 +24,6 @@ from .core_training import (
     FrozenTimeBandedTrainingBundle,
     FrozenTrainingBundle,
 )
-from .asymmetric_value_training import AsymmetricValueModel
 
 RUNTIME_MODEL_SCHEMA_VERSION = "capitonic-btc-directional-runtime-model-v1"
 TIME_BANDED_RUNTIME_MODEL_SCHEMA_VERSION = (
@@ -54,6 +54,7 @@ PREDICTION_POLICY_FIELDS = {
     "maximum_seconds_after_open",
     "cadence_seconds",
 }
+DEVELOPMENT_LIVE_PILOT_SCOPE = "development_live_pilot"
 
 
 def export_runtime_model(
@@ -109,6 +110,90 @@ def export_runtime_model(
         MODEL_FILENAME: model_bytes,
         MANIFEST_FILENAME: canonical_json_bytes(manifest),
         GOLDEN_VECTORS_FILENAME: golden_bytes,
+    }
+    destination = output_root / model_key
+    write_immutable_directory(destination, files)
+    return destination
+
+
+def promote_runtime_model_for_live_pilot(
+    *,
+    source_runtime: Path,
+    output_root: Path,
+    model_key: str,
+) -> Path:
+    """Create an immutable live-pilot identity without changing model behavior."""
+    if MODEL_KEY_PATTERN.fullmatch(model_key) is None:
+        raise ValueError(
+            "model key must contain only lowercase letters, digits, and hyphens"
+        )
+    source_runtime = source_runtime.resolve()
+    source_files = {
+        path.name for path in source_runtime.iterdir() if path.is_file()
+    }
+    expected_files = {MODEL_FILENAME, MANIFEST_FILENAME, GOLDEN_VECTORS_FILENAME}
+    if source_files != expected_files:
+        raise RuntimeError("source runtime model must contain exactly its three immutable files")
+
+    model_bytes = (source_runtime / MODEL_FILENAME).read_bytes()
+    manifest = read_json_object(source_runtime / MANIFEST_FILENAME)
+    golden_bytes = (source_runtime / GOLDEN_VECTORS_FILENAME).read_bytes()
+    model = json.loads(model_bytes)
+    golden = json.loads(golden_bytes)
+    if not isinstance(model, dict) or not isinstance(golden, dict):
+        raise TypeError("source runtime model and golden vectors must be JSON objects")
+    source_model_key = manifest.get("model_key")
+    if (
+        source_model_key != model.get("model_key")
+        or source_model_key != golden.get("model_key")
+        or source_model_key != source_runtime.name
+    ):
+        raise RuntimeError("source runtime model identity is inconsistent")
+    if manifest.get("model_sha256") != sha256_bytes(model_bytes):
+        raise RuntimeError("source runtime model SHA-256 is invalid")
+    if manifest.get("golden_vectors_sha256") != sha256_bytes(golden_bytes):
+        raise RuntimeError("source runtime golden vectors SHA-256 is invalid")
+    if (
+        manifest.get("feature_schema_sha256")
+        != model.get("features", {}).get("schema_sha256")
+        or manifest.get("feature_schema_sha256")
+        != golden.get("feature_schema_sha256")
+    ):
+        raise RuntimeError("source runtime feature schema identity is inconsistent")
+    expected_paper_authorization = {
+        "scope": "paper_only",
+        "production_qualified": False,
+        "live_capital_allowed": False,
+    }
+    if model.get("deployment") != expected_paper_authorization or any(
+        manifest.get(name) != value
+        for name, value in {
+            "deployment_scope": "paper_only",
+            "production_qualified": False,
+            "live_capital_allowed": False,
+        }.items()
+    ):
+        raise RuntimeError("only an immutable paper-only runtime model may be promoted")
+
+    model["model_key"] = model_key
+    model["deployment"] = {
+        "scope": DEVELOPMENT_LIVE_PILOT_SCOPE,
+        "production_qualified": False,
+        "live_capital_allowed": True,
+    }
+    golden["model_key"] = model_key
+    promoted_model_bytes = canonical_json_bytes(model)
+    promoted_golden_bytes = canonical_json_bytes(golden)
+    manifest["model_key"] = model_key
+    manifest["model_sha256"] = sha256_bytes(promoted_model_bytes)
+    manifest["golden_vectors_sha256"] = sha256_bytes(promoted_golden_bytes)
+    manifest["deployment_scope"] = DEVELOPMENT_LIVE_PILOT_SCOPE
+    manifest["production_qualified"] = False
+    manifest["live_capital_allowed"] = True
+    files = {
+        MODEL_FILENAME: promoted_model_bytes,
+        MANIFEST_FILENAME: canonical_json_bytes(manifest),
+        GOLDEN_VECTORS_FILENAME: promoted_golden_bytes,
     }
     destination = output_root / model_key
     write_immutable_directory(destination, files)
@@ -691,9 +776,20 @@ def validate_deployment_metadata(
             "paper-only frozen models cannot be production-qualified "
             "or allow live capital"
         )
-    if live_capital_allowed and not production_qualified:
+    if (
+        live_capital_allowed
+        and not production_qualified
+        and scope != DEVELOPMENT_LIVE_PILOT_SCOPE
+    ):
         raise RuntimeError(
             "live-capital permission requires production qualification"
+        )
+    if scope == DEVELOPMENT_LIVE_PILOT_SCOPE and (
+        production_qualified or not live_capital_allowed
+    ):
+        raise RuntimeError(
+            "development live-pilot models must allow live capital without "
+            "claiming production qualification"
         )
     return {
         "scope": scope,

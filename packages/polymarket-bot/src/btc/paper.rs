@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -31,7 +31,10 @@ use crate::{
         LiveVenueStatus, LiveWalletAddressDiagnostics, LiveWalletCandidateAddressDiagnostics,
         ReconciliationReport,
     },
-    models::{FillRecord, FillSource, OrderRecord, OrderRequest, OrderSide, OrderState, OrderType},
+    models::{
+        EffectiveProcessExecutionConfig, FillRecord, FillSource, OrderRecord, OrderRequest,
+        OrderSide, OrderState, OrderType,
+    },
 };
 
 pub const PAPER_DYNAMIC_FEE_RATE_METADATA_KEY: &str = "dynamic_fee_rate";
@@ -134,6 +137,7 @@ pub struct PaperVenue {
     config: PaperVenueConfig,
     /// Process-owned strategy cap applied to raw displayed ask depth at arrival.
     max_depth_participation: Decimal,
+    execution: EffectiveProcessExecutionConfig,
     reference_execution_policy: Option<ReferenceExecutionPolicy>,
     state: Arc<Mutex<PaperState>>,
     /// Serializes arrival simulation so concurrent retries cannot both fill the same client id.
@@ -186,13 +190,39 @@ impl PaperVenue {
         config: PaperVenueConfig,
         max_depth_participation: Decimal,
     ) -> Result<Self> {
-        Self::new_inner(registry, config, max_depth_participation, None)
+        Self::new_inner(
+            registry,
+            config,
+            max_depth_participation,
+            EffectiveProcessExecutionConfig::default(),
+            None,
+        )
     }
 
     pub fn new_with_reference_execution_guard(
         registry: Arc<RwLock<BookRegistry>>,
         config: PaperVenueConfig,
         max_depth_participation: Decimal,
+        expected_process_id: Uuid,
+        max_reference_age: chrono::Duration,
+        max_directional_feature_age: Option<chrono::Duration>,
+    ) -> Result<Self> {
+        Self::new_with_reference_execution_guard_and_controls(
+            registry,
+            config,
+            max_depth_participation,
+            EffectiveProcessExecutionConfig::default(),
+            expected_process_id,
+            max_reference_age,
+            max_directional_feature_age,
+        )
+    }
+
+    pub fn new_with_reference_execution_guard_and_controls(
+        registry: Arc<RwLock<BookRegistry>>,
+        config: PaperVenueConfig,
+        max_depth_participation: Decimal,
+        execution: EffectiveProcessExecutionConfig,
         expected_process_id: Uuid,
         max_reference_age: chrono::Duration,
         max_directional_feature_age: Option<chrono::Duration>,
@@ -210,6 +240,7 @@ impl PaperVenue {
             registry,
             config,
             max_depth_participation,
+            execution,
             Some(ReferenceExecutionPolicy {
                 expected_process_id,
                 max_reference_age,
@@ -222,6 +253,7 @@ impl PaperVenue {
         registry: Arc<RwLock<BookRegistry>>,
         config: PaperVenueConfig,
         max_depth_participation: Decimal,
+        execution: EffectiveProcessExecutionConfig,
         reference_execution_policy: Option<ReferenceExecutionPolicy>,
     ) -> Result<Self> {
         config.validate()?;
@@ -233,6 +265,7 @@ impl PaperVenue {
             registry,
             config,
             max_depth_participation,
+            execution,
             reference_execution_policy,
             state: Arc::new(Mutex::new(PaperState {
                 collateral_usd: starting_collateral_usd,
@@ -501,10 +534,30 @@ impl PaperVenue {
             None => return paper_reject(base, "missing_dynamic_fee_rate"),
         };
 
-        let checkpoint = {
+        let (checkpoint, exit_book_ready) = {
             let registry = self.registry.read().await;
-            registry.checkpoint(&request.token_id)
+            let exit_book_ready = !self.execution.require_exit_book.unwrap_or(false)
+                || registry
+                    .book_readiness()
+                    .into_iter()
+                    .filter(|book| {
+                        book.market_id == request.market_id && book.token_id != request.token_id
+                    })
+                    .any(|book| {
+                        book.bootstrapped
+                            && book.integrity_status == FeedIntegrityStatus::Ok
+                            && book.source_timestamp.is_some_and(|timestamp| {
+                                timestamp <= arrival_at && arrival_at - timestamp <= max_book_age
+                            })
+                            && book.received_at.is_some_and(|timestamp| {
+                                timestamp <= arrival_at && arrival_at - timestamp <= max_book_age
+                            })
+                    });
+            (registry.checkpoint(&request.token_id), exit_book_ready)
         };
+        if !exit_book_ready {
+            return paper_reject(base, "missing_or_unready_exit_orderbook");
+        }
         let Some(mut checkpoint) = checkpoint else {
             return paper_reject(base, "missing_arrival_orderbook");
         };
@@ -695,6 +748,41 @@ impl ExecutionVenue for PaperVenue {
                 "paper client_order_id {} collides with different immutable execution identity",
                 request.client_order_id
             );
+        }
+
+        let requested_notional = request
+            .price
+            .checked_mul(request.size)
+            .context("paper requested order notional overflow")?;
+        if self
+            .execution
+            .max_order_notional_usd
+            .is_some_and(|maximum| requested_notional > maximum)
+        {
+            let submitted_at = Utc::now();
+            let execution = paper_reject(
+                serde_json::json!({
+                    "paper_execution": {
+                        "requested_notional_usd": requested_notional,
+                        "max_order_notional_usd": self.execution.max_order_notional_usd,
+                    }
+                }),
+                "max_order_notional_exceeded",
+            );
+            request.metadata = merge_json(request.metadata, execution.metadata);
+            let order = OrderRecord {
+                order_id: order_id.clone(),
+                request,
+                state: execution.state,
+                created_at: submitted_at,
+                updated_at: submitted_at,
+            };
+            self.state
+                .lock()
+                .await
+                .orders
+                .insert(order_id, order.clone());
+            return Ok(order);
         }
 
         let submitted_at = Utc::now();

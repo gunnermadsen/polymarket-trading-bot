@@ -244,13 +244,13 @@ impl RuntimeDirectionalModel {
     }
 
     /// Returns the immutable artifact authorization for live capital. Missing legacy metadata,
-    /// paper-only artifacts, and artifacts without production qualification all fail closed.
+    /// paper-only artifacts, and unrecognized qualification combinations all fail closed.
     pub fn live_capital_allowed(&self) -> bool {
-        self.deployment_scope
-            .as_deref()
-            .is_some_and(|scope| scope != "paper_only")
-            && self.production_qualified
-            && self.live_capital_allowed
+        self.live_capital_allowed
+            && self.deployment_scope.as_deref().is_some_and(|scope| {
+                (scope == "development_live_pilot" && !self.production_qualified)
+                    || (scope != "paper_only" && self.production_qualified)
+            })
     }
 
     pub fn feature_names(&self) -> &[String] {
@@ -1053,9 +1053,14 @@ fn valid_deployment_metadata(
     production_qualified: bool,
     live_capital_allowed: bool,
 ) -> bool {
-    !scope.trim().is_empty()
-        && (!live_capital_allowed || production_qualified)
-        && (!production_qualified || scope != "paper_only")
+    if scope.trim().is_empty() {
+        return false;
+    }
+    match scope {
+        "paper_only" => !production_qualified && !live_capital_allowed,
+        "development_live_pilot" => !production_qualified && live_capital_allowed,
+        _ => !live_capital_allowed || production_qualified,
+    }
 }
 
 fn compile_runtime_model(
@@ -1906,6 +1911,16 @@ mod tests {
         assert!(!valid_deployment_metadata("paper_only", false, true));
         assert!(!valid_deployment_metadata("production", false, true));
         assert!(valid_deployment_metadata("production", true, true));
+        assert!(valid_deployment_metadata(
+            "development_live_pilot",
+            false,
+            true
+        ));
+        assert!(!valid_deployment_metadata(
+            "development_live_pilot",
+            true,
+            true
+        ));
         assert!(!valid_deployment_metadata(" ", false, false));
     }
 
@@ -1926,6 +1941,10 @@ mod tests {
         assert!(!model.live_capital_allowed());
 
         model.production_qualified = true;
+        assert!(model.live_capital_allowed());
+
+        model.deployment_scope = Some("development_live_pilot".to_string());
+        model.production_qualified = false;
         assert!(model.live_capital_allowed());
     }
 
@@ -2149,12 +2168,12 @@ mod tests {
                 model.production_qualified(),
                 manifest.production_qualified.unwrap_or(false)
             );
-            let expected_live_capital_allowed = manifest
-                .deployment_scope
-                .as_deref()
-                .is_some_and(|scope| scope != "paper_only")
-                && manifest.production_qualified.unwrap_or(false)
-                && manifest.live_capital_allowed.unwrap_or(false);
+            let expected_live_capital_allowed =
+                manifest.deployment_scope.as_deref().is_some_and(|scope| {
+                    (scope == "development_live_pilot"
+                        && !manifest.production_qualified.unwrap_or(false))
+                        || (scope != "paper_only" && manifest.production_qualified.unwrap_or(false))
+                }) && manifest.live_capital_allowed.unwrap_or(false);
             assert_eq!(model.live_capital_allowed(), expected_live_capital_allowed);
             let vectors: GoldenVectorsFile = serde_json::from_slice(
                 &fs::read(directory.join(&manifest.golden_vectors_file)).unwrap(),

@@ -1,0 +1,15 @@
+{
+  "deployment_scope": "development_live_pilot",
+  "feature_schema_sha256": "d2cadbff9ae97e20d2cbeb562310e27af80279f9ecbdbec85221af82ef4b9eea",
+  "feature_schema_version": "btc-5m-directional-boundary-features-v1",
+  "golden_vectors_file": "golden-vectors.json",
+  "golden_vectors_sha256": "d1eccc705472338edd889741f1fe413989964d75fda4216bd0fd0fe667374a98",
+  "live_capital_allowed": true,
+  "model_file": "model.json",
+  "model_key": "btc-5m-directional-boundary-alignment-20260421-20260720-development-live-pilot-v1",
+  "model_sha256": "aea5d8842d6dd8cdcf6eabe90cb704b5ea763775429e90a2640c0070f675564f",
+  "production_qualified": false,
+  "schema_version": "capitonic-btc-directional-runtime-manifest-v1",
+  "source_freeze_manifest_sha256": "f9837806644adc845a16fde589cc5116fc13c083071c89fe6eee5f766ca629fb",
+  "source_training_model_sha256": "ae4328bb7e39f5427791b1b363e103c3cf31f05b63fa3f52ffc90139f1c0c8af"
+}

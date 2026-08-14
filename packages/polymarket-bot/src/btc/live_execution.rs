@@ -38,6 +38,7 @@ pub struct BtcLiveExecutionAdapter {
     max_directional_feature_age: Option<Duration>,
     max_book_age: Duration,
     max_depth_participation: Decimal,
+    require_exit_book: bool,
     submit_guard: Arc<Mutex<()>>,
 }
 
@@ -65,6 +66,7 @@ impl BtcLiveExecutionAdapter {
         max_directional_feature_age: Option<Duration>,
         max_book_age: Duration,
         max_depth_participation: Decimal,
+        require_exit_book: bool,
     ) -> Result<Self> {
         if expected_process_id.is_nil() {
             bail!("BTC live execution expected_process_id must not be nil");
@@ -89,6 +91,7 @@ impl BtcLiveExecutionAdapter {
             max_directional_feature_age,
             max_book_age,
             max_depth_participation,
+            require_exit_book,
             submit_guard: Arc::new(Mutex::new(())),
         })
     }
@@ -145,23 +148,25 @@ impl BtcLiveExecutionAdapter {
                 checkpoint.integrity_status
             );
         }
-        if checkpoint.source_timestamp > checked_at || checkpoint.received_at > checked_at {
-            return Ok(Some(LiveExecutionGateReason::OrderbookFreshness));
-        }
-        let source_age = checked_at.signed_duration_since(checkpoint.source_timestamp);
-        let receive_age = checked_at.signed_duration_since(checkpoint.received_at);
-        if source_age > self.max_book_age || receive_age > self.max_book_age {
-            return Ok(Some(LiveExecutionGateReason::OrderbookFreshness));
-        }
-        if let Some(reason) = validate_market_pair_snapshot(
-            request,
-            connection_id,
-            &market_books,
-            &checkpoint,
+        if !book_timestamps_are_fresh(
+            checkpoint.source_timestamp,
+            checkpoint.received_at,
             checked_at,
             self.max_book_age,
-        )? {
-            return Ok(Some(reason));
+        ) {
+            return Ok(Some(LiveExecutionGateReason::OrderbookFreshness));
+        }
+        if self.require_exit_book {
+            if let Some(reason) = validate_market_pair_snapshot(
+                request,
+                connection_id,
+                &market_books,
+                &checkpoint,
+                checked_at,
+                self.max_book_age,
+            )? {
+                return Ok(Some(reason));
+            }
         }
         validate_marketable_depth(&checkpoint, request, self.max_depth_participation)
     }
@@ -185,6 +190,19 @@ fn transient_book_unavailability(status: FeedIntegrityStatus) -> bool {
         status,
         FeedIntegrityStatus::PreSnapshot | FeedIntegrityStatus::Stale
     )
+}
+
+fn book_timestamps_are_fresh(
+    source_timestamp: chrono::DateTime<Utc>,
+    received_at: chrono::DateTime<Utc>,
+    checked_at: chrono::DateTime<Utc>,
+    max_book_age: Duration,
+) -> bool {
+    if received_at > checked_at || source_timestamp - checked_at > max_book_age {
+        return false;
+    }
+    checked_at.signed_duration_since(source_timestamp) <= max_book_age
+        && checked_at.signed_duration_since(received_at) <= max_book_age
 }
 
 fn validate_market_pair_snapshot(
@@ -239,12 +257,7 @@ fn validate_market_pair_snapshot(
         if best_bid >= best_ask {
             bail!("BTC live execution rejected: current market orderbook pair is crossed");
         }
-        if source_timestamp > checked_at || received_at > checked_at {
-            return Ok(Some(LiveExecutionGateReason::OrderbookFreshness));
-        }
-        let source_age = checked_at.signed_duration_since(source_timestamp);
-        let receive_age = checked_at.signed_duration_since(received_at);
-        if source_age > max_book_age || receive_age > max_book_age {
+        if !book_timestamps_are_fresh(source_timestamp, received_at, checked_at, max_book_age) {
             return Ok(Some(LiveExecutionGateReason::OrderbookFreshness));
         }
     }
@@ -775,6 +788,7 @@ mod tests {
             None,
             Duration::seconds(2),
             dec!(0.50),
+            true,
         )
         .unwrap()
     }
@@ -818,6 +832,105 @@ mod tests {
             .unwrap();
 
         assert_gate_rejection(&order, LiveExecutionGateReason::OrderbookReadiness);
+        assert_eq!(fake.submit_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn locally_received_market_pair_allows_bounded_exchange_clock_lead() {
+        let checked_at = Utc::now();
+        let process_id = Uuid::new_v4();
+        let fake = Arc::new(FakeVenue::default());
+        let venue = adapter(
+            &fake,
+            seeded_registry(
+                "market",
+                "up",
+                checked_at + Duration::seconds(1),
+                checked_at - Duration::milliseconds(10),
+                dec!(10),
+            ),
+            process_id,
+        );
+
+        let order = venue
+            .submit_order(guarded_request(
+                checked_at,
+                process_id,
+                "market",
+                "up",
+                dec!(2),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(order.state, OrderState::Submitted);
+        assert_eq!(fake.delegate_calls(), 1);
+        assert_eq!(fake.submit_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn excessive_exchange_clock_lead_is_rejected_before_delegate_submission() {
+        let checked_at = Utc::now();
+        let process_id = Uuid::new_v4();
+        let fake = Arc::new(FakeVenue::default());
+        let venue = adapter(
+            &fake,
+            seeded_registry(
+                "market",
+                "up",
+                checked_at + Duration::seconds(3),
+                checked_at - Duration::milliseconds(10),
+                dec!(10),
+            ),
+            process_id,
+        );
+
+        let order = venue
+            .submit_order(guarded_request(
+                checked_at,
+                process_id,
+                "market",
+                "up",
+                dec!(2),
+            ))
+            .await
+            .unwrap();
+
+        assert_gate_rejection(&order, LiveExecutionGateReason::OrderbookFreshness);
+        assert_eq!(fake.delegate_calls(), 0);
+        assert_eq!(fake.submit_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn locally_future_book_receipt_is_rejected_before_delegate_submission() {
+        let checked_at = Utc::now();
+        let process_id = Uuid::new_v4();
+        let fake = Arc::new(FakeVenue::default());
+        let venue = adapter(
+            &fake,
+            seeded_registry(
+                "market",
+                "up",
+                checked_at - Duration::milliseconds(10),
+                checked_at + Duration::seconds(3),
+                dec!(10),
+            ),
+            process_id,
+        );
+
+        let order = venue
+            .submit_order(guarded_request(
+                checked_at,
+                process_id,
+                "market",
+                "up",
+                dec!(2),
+            ))
+            .await
+            .unwrap();
+
+        assert_gate_rejection(&order, LiveExecutionGateReason::OrderbookFreshness);
+        assert_eq!(fake.delegate_calls(), 0);
         assert_eq!(fake.submit_calls(), 0);
     }
 

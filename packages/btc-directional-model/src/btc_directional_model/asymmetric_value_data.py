@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -30,6 +31,7 @@ EARLY_CAUSAL_ORACLE_FEATURES = (
 )
 ORACLE_MINIMUM_PROPAGATION_SECONDS = 2
 ORACLE_MAXIMUM_AGE_SECONDS = 300
+PRICE_MANIFEST_IDENTITY_EXCLUDES = ("created_at",)
 
 PRICE_COLUMNS = (
     "market_id",
@@ -42,13 +44,16 @@ PRICE_COLUMNS = (
     "yes_received_at",
     "yes_best_ask",
     "yes_ask_vwap_5",
+    "yes_ask_vwap_10",
     "yes_ask_depth",
     "no_received_at",
     "no_best_ask",
     "no_ask_vwap_5",
+    "no_ask_vwap_10",
     "no_ask_depth",
     "source_artifact_id",
     "source_schema_version",
+    "strict_both_side_eligible_10",
     "quality_flags",
     "source_book_regime",
 )
@@ -68,6 +73,18 @@ POLYMARKET_VALUE_FEATURES = (
     "pm_yes_book_age_seconds",
     "pm_no_book_age_seconds",
 )
+
+
+def price_manifest_identity_sha256(manifest: dict[str, Any]) -> str:
+    """Hash stable price-evidence content without its refresh timestamp."""
+
+    stable = {
+        key: value
+        for key, value in manifest.items()
+        if key not in PRICE_MANIFEST_IDENTITY_EXCLUDES
+    }
+    canonical = json.dumps(stable, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def select_asymmetric_prediction_grid(
@@ -474,6 +491,7 @@ def attach_early_causal_oracle_features(
                     maximum_age_seconds,
                     closed="both",
                 )
+                & _complete_early_oracle_features()
             )
             .fill_null(False)
             .alias("early_oracle_eligible")
@@ -519,11 +537,22 @@ def attach_early_causal_oracle_features(
             | (pl.col("oracle_block_timestamp") > pl.col("observed_at"))
             | (pl.col("oracle_age_seconds") < minimum_propagation_seconds)
             | (pl.col("oracle_age_seconds") > maximum_age_seconds)
+            | ~_complete_early_oracle_features()
         )
     )
     if violations.height:
         raise RuntimeError("early oracle feature cache contains causal violations")
     return enriched
+
+
+def _complete_early_oracle_features() -> pl.Expr:
+    return pl.all_horizontal(
+        [
+            pl.col(feature).is_not_null()
+            & pl.col(feature).cast(pl.Float64).is_finite()
+            for feature in EARLY_CAUSAL_ORACLE_FEATURES
+        ]
+    )
 
 
 def exact_price_by_second(prices: pl.DataFrame) -> list[dict[str, Any]]:
@@ -665,13 +694,16 @@ def _load_strict_execution_rows(source: Path) -> pl.DataFrame:
             pl.col("up_provider_received_at").alias("yes_received_at"),
             pl.col("up_best_ask").alias("yes_best_ask"),
             pl.col("up_ask_vwap_5").alias("yes_ask_vwap_5"),
+            pl.col("up_ask_vwap_10").alias("yes_ask_vwap_10"),
             pl.col("up_ask_depth").alias("yes_ask_depth"),
             pl.col("down_provider_received_at").alias("no_received_at"),
             pl.col("down_best_ask").alias("no_best_ask"),
             pl.col("down_ask_vwap_5").alias("no_ask_vwap_5"),
+            pl.col("down_ask_vwap_10").alias("no_ask_vwap_10"),
             pl.col("down_ask_depth").alias("no_ask_depth"),
             pl.col("artifact_id").alias("source_artifact_id"),
             pl.col("schema_version").alias("source_schema_version"),
+            "strict_both_side_eligible_10",
             "quality_flags",
         )
         .collect()
@@ -813,7 +845,18 @@ def _scope_window(
     scope: Literal["development", "evaluation"],
 ) -> tuple[datetime, datetime]:
     if scope == "development":
-        return config.fit.start, config.evaluation.start
+        return (
+            config.fit.start,
+            (
+                config.evaluation.start
+                if config.evaluation is not None
+                else config.policy.end
+            ),
+        )
+    if config.evaluation is None:
+        raise ValueError(
+            "target-calibrated training has no historical evaluation window"
+        )
     return config.evaluation.start, config.evaluation.end
 
 

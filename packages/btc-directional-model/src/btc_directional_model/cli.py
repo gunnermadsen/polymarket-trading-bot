@@ -9,6 +9,20 @@ from pathlib import Path
 
 from .admission_benchmark import run_admission_benchmark
 from .admission_config import load_admission_benchmark_config
+from .asymmetric_book_admission_benchmark import (
+    load_and_run_book_admission_benchmark,
+)
+from .asymmetric_d4_side_benchmark import (
+    load_and_run_d4_side_calibration_benchmark,
+)
+from .asymmetric_incumbent_benchmark import (
+    load_and_run_incumbent_calibration_benchmark,
+)
+from .asymmetric_training_readiness import (
+    load_new_day_readiness_contract,
+    prepare_asymmetric_training_readiness,
+    prepare_new_day_training_readiness,
+)
 from .asymmetric_value_benchmark import run_asymmetric_value_benchmark
 from .asymmetric_value_config import load_asymmetric_value_config
 from .benchmark_config import load_entry_benchmark_config
@@ -71,7 +85,10 @@ from .price_aware_config import load_price_aware_benchmark_config
 from .report import generate_report
 from .residual_admission_benchmark import run_residual_admission_benchmark
 from .residual_admission_config import load_residual_admission_config
-from .runtime_export import export_runtime_model
+from .runtime_export import (
+    export_runtime_model,
+    promote_runtime_model_for_live_pilot,
+)
 from .spot_l2_chainlink_benchmark import run_spot_l2_chainlink_benchmark
 from .spot_l2_chainlink_config import load_spot_l2_chainlink_config
 from .train import train_models
@@ -111,6 +128,10 @@ def main() -> None:
     core_export.add_argument("--golden-features", type=Path, required=True)
     core_export.add_argument("--output-root", type=Path, required=True)
     core_export.add_argument("--model-key", required=True)
+    live_pilot_export = subparsers.add_parser("core-promote-runtime-live-pilot")
+    live_pilot_export.add_argument("--source-runtime", type=Path, required=True)
+    live_pilot_export.add_argument("--output-root", type=Path, required=True)
+    live_pilot_export.add_argument("--model-key", required=True)
     core_run = subparsers.add_parser("core-run")
     core_run.add_argument("--config", type=Path, required=True)
     core_run.add_argument("--force", action="store_true")
@@ -134,6 +155,39 @@ def main() -> None:
     )
     asymmetric_value_run.add_argument("--config", type=Path, required=True)
     asymmetric_value_run.add_argument("--force", action="store_true")
+    incumbent_calibration_run = subparsers.add_parser(
+        "asymmetric-incumbent-calibration-run"
+    )
+    incumbent_calibration_run.add_argument("--config", type=Path, required=True)
+    incumbent_calibration_run.add_argument("--force", action="store_true")
+    book_admission_run = subparsers.add_parser(
+        "asymmetric-book-admission-run"
+    )
+    book_admission_run.add_argument("--config", type=Path, required=True)
+    book_admission_run.add_argument("--force", action="store_true")
+    d4_side_calibration_run = subparsers.add_parser(
+        "asymmetric-d4-side-calibration-run"
+    )
+    d4_side_calibration_run.add_argument("--config", type=Path, required=True)
+    d4_side_calibration_run.add_argument("--force", action="store_true")
+    asymmetric_readiness = subparsers.add_parser(
+        "asymmetric-training-readiness"
+    )
+    asymmetric_readiness.add_argument("--config", type=Path, required=True)
+    asymmetric_readiness.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+    )
+    new_day_readiness = subparsers.add_parser(
+        "asymmetric-new-day-readiness"
+    )
+    new_day_readiness.add_argument("--config", type=Path, required=True)
+    new_day_readiness.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+    )
     oracle_book_run = subparsers.add_parser("oracle-book-benchmark-run")
     oracle_book_run.add_argument("--config", type=Path, required=True)
     price_aware_run = subparsers.add_parser("price-aware-benchmark-run")
@@ -316,6 +370,14 @@ def main() -> None:
         )
         print(f"runtime model: {destination}")
         return
+    if args.command == "core-promote-runtime-live-pilot":
+        destination = promote_runtime_model_for_live_pilot(
+            source_runtime=args.source_runtime,
+            output_root=args.output_root,
+            model_key=args.model_key,
+        )
+        print(f"runtime model: {destination}")
+        return
     if args.command == "entry-benchmark-run":
         config = load_entry_benchmark_config(args.config)
         run_dir, benchmark = run_entry_benchmark(
@@ -349,6 +411,76 @@ def main() -> None:
         print(f"selected value hunter: {result['selection']['selected_key']}")
         print(f"evaluation status: {result['evaluation']['status']}")
         print("runtime/trading pipeline changes: none")
+        return
+    if args.command == "asymmetric-incumbent-calibration-run":
+        run_dir, result = load_and_run_incumbent_calibration_benchmark(
+            args.config,
+            force=args.force,
+        )
+        print(f"report: {run_dir / 'benchmark-report.md'}")
+        print(f"status: {result['status']}")
+        print(
+            "selected challenger: "
+            f"{result.get('selected_candidate_id') or 'incumbent retained'}"
+        )
+        print(f"paper artifact: {result.get('paper_artifact') or 'none'}")
+        print("source process changed: false; live capital: not authorized")
+        return
+    if args.command == "asymmetric-book-admission-run":
+        run_dir, result = load_and_run_book_admission_benchmark(
+            args.config,
+            force=args.force,
+        )
+        print(f"report: {run_dir / 'benchmark-report.md'}")
+        print(f"status: {result['status']}")
+        print(
+            "selected challenger: "
+            f"{result.get('selected_candidate_id') or 'incumbent retained'}"
+        )
+        print(
+            "batch-forward artifact: "
+            f"{result.get('batch_forward_artifact') or 'none'}"
+        )
+        print("runtime deployable: false; source process changed: false")
+        return
+    if args.command == "asymmetric-d4-side-calibration-run":
+        run_dir, result = load_and_run_d4_side_calibration_benchmark(
+            args.config,
+            force=args.force,
+        )
+        print(f"report: {run_dir / 'benchmark-report.md'}")
+        print(f"projected PnL: {run_dir / 'projected-pnl.md'}")
+        print(f"status: {result['status']}")
+        print(
+            "probability-selected challenger: "
+            f"{result.get('probability_selected_candidate_id') or 'none'}"
+        )
+        print("qualification eligible: false; source process changed: false")
+        return
+    if args.command == "asymmetric-training-readiness":
+        config = load_asymmetric_value_config(args.config)
+        destination, payload = prepare_asymmetric_training_readiness(
+            config,
+            output_dir=args.output_dir,
+        )
+        print(f"readiness manifest: {destination}")
+        print(f"ready: {str(payload['ready']).lower()}")
+        print("external SSD required: false")
+        return
+    if args.command == "asymmetric-new-day-readiness":
+        contract = load_new_day_readiness_contract(args.config)
+        destination, payload = prepare_new_day_training_readiness(
+            contract,
+            package_root=Path(__file__).resolve().parents[2],
+            output_dir=args.output_dir,
+        )
+        print(f"readiness manifest: {destination}")
+        print(f"status: {payload['status']}")
+        print(f"ready: {str(payload['ready']).lower()}")
+        print(
+            "external archive status: "
+            f"{payload['external_archive']['status']}"
+        )
         return
     if args.command == "oracle-book-benchmark-run":
         config = load_oracle_book_benchmark_config(args.config)

@@ -8167,10 +8167,15 @@ async fn run_strategy_loop(
                     .on_observation(StrategyObservation { state: snapshot, readiness })
                     .await
                 {
+                    let error_chain = format!("{error:#}");
+                    tracing::error!(
+                        error = %error_chain,
+                        "BTC strategy callback failed; terminating the trading process"
+                    );
                     let mut runtime_metrics = metrics.write().await;
                     runtime_metrics.strategy_errors =
                         runtime_metrics.strategy_errors.saturating_add(1);
-                    runtime_metrics.last_error = Some(error.to_string());
+                    runtime_metrics.last_error = Some(error_chain);
                     // The deterministic strategy and shared paper execution path
                     // are primary immutable run data. A callback failure
                     // invalidates the run, so let the task exit and fail the runtime.

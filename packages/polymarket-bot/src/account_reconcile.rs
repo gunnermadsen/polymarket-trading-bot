@@ -8,10 +8,10 @@ use uuid::Uuid;
 
 use crate::{
     data_api::{ActivityQuery, DataApiClient, PositionsQuery},
-    execution::live::LiveVenueEvent,
+    execution::{live::LiveVenueEvent, LIVE_EXTERNAL_EVENT_CLOCK_SKEW},
     idempotency::event_hash,
     models::{DataApiActivity, DataApiPosition},
-    store::{AccountPositionSnapshot, AccountTrade, Store},
+    store::{AccountPositionSnapshot, AccountTrade, LiveRedemptionEvidence, Store},
 };
 
 const DATA_API_RECONCILIATION_PAGE_SIZE: usize = 500;
@@ -141,7 +141,34 @@ pub async fn reconcile_account_positions(
     activity_query.end = Some(activity_window_end.timestamp());
     activity_query.sort_by = Some("timestamp".to_string());
     activity_query.sort_direction = Some("desc".to_string());
+    activity_query.activity_types = vec!["TRADE".to_string()];
     let activities = fetch_bounded_activity(data_api, activity_query).await?;
+    let redemption_activities = if let Some(process_id) = process_id {
+        let oldest_unrecognized_fill = store.oldest_unrecognized_live_fill_at(process_id).await?;
+        if let Some(oldest_unrecognized_fill) = oldest_unrecognized_fill {
+            let maximum_backfill_start = activity_window_end - chrono::Duration::days(30);
+            if oldest_unrecognized_fill < maximum_backfill_start {
+                bail!(
+                    "live redemption discovery exceeds the bounded 30-day process evidence window"
+                );
+            }
+            let redemption_start = (oldest_unrecognized_fill - chrono::Duration::minutes(5))
+                .max(maximum_backfill_start)
+                .timestamp();
+            let mut redemption_query = ActivityQuery::for_user(account_address.clone());
+            redemption_query.limit = Some(DATA_API_RECONCILIATION_PAGE_SIZE);
+            redemption_query.start = Some(redemption_start);
+            redemption_query.end = Some(activity_window_end.timestamp());
+            redemption_query.sort_by = Some("timestamp".to_string());
+            redemption_query.sort_direction = Some("desc".to_string());
+            redemption_query.activity_types = vec!["REDEEM".to_string()];
+            fetch_bounded_activity(data_api, redemption_query).await?
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
     let external_trade_activities = activities
         .iter()
         .filter(|activity| is_trade_activity(activity))
@@ -198,6 +225,13 @@ pub async fn reconcile_account_positions(
                 .unwrap_or(true)
         })
         .collect::<Vec<_>>();
+    let redemption_evidence = redemption_activities
+        .iter()
+        .map(|activity| live_redemption_from_activity(&account_address, activity, trade_source))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     let mut inserted_trades = 0;
     let mut inserted_snapshots = 0;
     if !request.dry_run {
@@ -213,22 +247,53 @@ pub async fn reconcile_account_positions(
         }
     }
 
-    let process_accounting_proof = if process_id.is_some() {
-        ProcessAccountingProof {
-            status: "unproven".to_string(),
-            position_ownership: "unproven".to_string(),
-            realized_pnl: "unproven".to_string(),
-            reason: "account_positions_are_wallet_aggregate".to_string(),
+    let mut exits_detected = 0u64;
+    let mut exits_applied = 0u64;
+    let mut exit_size_applied = Decimal::ZERO;
+    if let Some(process_id) = process_id {
+        let account_position_tokens = snapshots
+            .iter()
+            .filter(|snapshot| snapshot.size > Decimal::ZERO)
+            .map(|snapshot| snapshot.token_id.as_str())
+            .collect::<HashSet<_>>();
+        for redemption in &redemption_evidence {
+            if account_position_tokens.contains(redemption.token_id.as_str()) {
+                continue;
+            }
+            let recognition = store
+                .recognize_process_live_redemption(process_id, redemption, !request.dry_run)
+                .await?;
+            if recognition.matched {
+                exits_detected = exits_detected
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("live redemption count overflow"))?;
+            }
+            if recognition.applied {
+                exits_applied = exits_applied
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("applied live redemption count overflow"))?;
+                exit_size_applied = exit_size_applied
+                    .checked_add(recognition.redeemed_size)
+                    .ok_or_else(|| anyhow::anyhow!("applied live redemption size overflow"))?;
+            }
         }
+    }
+
+    let (process_accounting_proof, mismatches) = if let Some(process_id) = process_id {
+        let process_positions = store.live_process_position_sizes(process_id).await?;
+        process_accounting_proof(&process_positions, &snapshots, unmatched_trades)?
     } else {
-        ProcessAccountingProof {
-            status: "legacy_unscoped".to_string(),
-            position_ownership: "not_applicable".to_string(),
-            realized_pnl: "not_applicable".to_string(),
-            reason: "legacy_account_wide_admin_reconciliation".to_string(),
-        }
+        (
+            ProcessAccountingProof {
+                status: "legacy_unscoped".to_string(),
+                position_ownership: "not_applicable".to_string(),
+                realized_pnl: "not_applicable".to_string(),
+                reason: "legacy_account_wide_admin_reconciliation".to_string(),
+            },
+            Vec::new(),
+        )
     };
-    let process_accounting_proven = false;
+    let process_accounting_proven = process_accounting_proof.status == "proven";
     let process_accounting_status = process_accounting_proof.status.clone();
     let report = AccountReconcileReport {
         process_id,
@@ -242,22 +307,108 @@ pub async fn reconcile_account_positions(
         dry_run: request.dry_run,
         token_id: request.token_id,
         lookback_hours,
-        activities_fetched: activities.len(),
+        activities_fetched: activities.len().saturating_add(redemption_activities.len()),
         account_trades_detected: trades.len(),
         account_trades_inserted: inserted_trades,
         position_snapshots_detected: snapshots.len(),
         position_snapshots_inserted: inserted_snapshots,
-        exits_detected: 0,
-        exits_applied: 0,
-        exit_size_applied: Decimal::ZERO,
+        exits_detected,
+        exits_applied,
+        exit_size_applied,
         position_adjustments_detected: 0,
         position_adjustments_applied: 0,
         position_adjustment_size_applied: Decimal::ZERO,
-        mismatches: Vec::new(),
+        mismatches,
         unmatched_trades,
     };
     store.insert_account_reconciliation_run(&report).await?;
     Ok(report)
+}
+
+fn process_accounting_proof(
+    process_positions: &HashMap<String, Decimal>,
+    account_positions: &[AccountPositionSnapshot],
+    unmatched_trades: u64,
+) -> Result<(ProcessAccountingProof, Vec<AccountPositionMismatch>)> {
+    let mut account_sizes = HashMap::with_capacity(account_positions.len());
+    for position in account_positions {
+        if position.size <= Decimal::ZERO {
+            continue;
+        }
+        if account_sizes
+            .insert(position.token_id.clone(), position.size)
+            .is_some()
+        {
+            bail!(
+                "account position reconciliation contains duplicate token identity {}",
+                position.token_id
+            );
+        }
+    }
+
+    let mut token_ids = process_positions
+        .keys()
+        .chain(account_sizes.keys())
+        .cloned()
+        .collect::<Vec<_>>();
+    token_ids.sort_unstable();
+    token_ids.dedup();
+    let mut mismatches = Vec::new();
+    for token_id in token_ids {
+        let process_size = process_positions
+            .get(&token_id)
+            .copied()
+            .unwrap_or(Decimal::ZERO);
+        let account_size = account_sizes
+            .get(&token_id)
+            .copied()
+            .unwrap_or(Decimal::ZERO);
+        if process_size == account_size {
+            continue;
+        }
+        let mismatch_type = if process_size == Decimal::ZERO {
+            "foreign_account_position"
+        } else if account_size == Decimal::ZERO {
+            "missing_account_position"
+        } else {
+            "position_size_mismatch"
+        };
+        mismatches.push(AccountPositionMismatch {
+            token_id,
+            db_open_size: process_size,
+            account_size,
+            delta_size: account_size - process_size,
+            mismatch_type: mismatch_type.to_string(),
+        });
+    }
+
+    let proof = if unmatched_trades > 0 {
+        ProcessAccountingProof {
+            status: "unproven".to_string(),
+            position_ownership: "unproven".to_string(),
+            realized_pnl: "unproven".to_string(),
+            reason: "unmatched_account_trades".to_string(),
+        }
+    } else if !mismatches.is_empty() {
+        ProcessAccountingProof {
+            status: "unproven".to_string(),
+            position_ownership: "mismatch".to_string(),
+            realized_pnl: "unproven".to_string(),
+            reason: "account_positions_do_not_match_process_live_fills".to_string(),
+        }
+    } else {
+        ProcessAccountingProof {
+            status: "proven".to_string(),
+            position_ownership: "process_live_fill_ledger_match".to_string(),
+            realized_pnl: "process_owned_settlement_ledger".to_string(),
+            reason: if process_positions.is_empty() {
+                "clean_account_baseline".to_string()
+            } else {
+                "account_positions_match_process_live_fills".to_string()
+            },
+        }
+    };
+    Ok((proof, mismatches))
 }
 
 async fn fetch_bounded_activity(
@@ -448,6 +599,86 @@ fn normalize_account_ref(account_ref: Option<&str>) -> Result<Option<String>> {
 
 fn is_sha256_hex(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn live_redemption_from_activity(
+    account_address: &str,
+    activity: &DataApiActivity,
+    source: &str,
+) -> Result<Option<LiveRedemptionEvidence>> {
+    if !activity
+        .activity_type
+        .as_deref()
+        .is_some_and(|activity_type| activity_type.eq_ignore_ascii_case("redeem"))
+    {
+        return Ok(None);
+    }
+    let Some(redeemed_size) = activity.size.filter(|size| *size > Decimal::ZERO) else {
+        return Ok(None);
+    };
+    let proxy_wallet = activity
+        .proxy_wallet
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("positive REDEEM activity is missing proxyWallet"))?;
+    if !proxy_wallet.eq_ignore_ascii_case(account_address) {
+        bail!("REDEEM activity wallet does not match the reconciled account");
+    }
+    let condition_id = activity
+        .condition_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| is_prefixed_hex(value, 32))
+        .ok_or_else(|| anyhow::anyhow!("positive REDEEM activity has an invalid conditionId"))?
+        .to_ascii_lowercase();
+    let token_id = activity
+        .asset
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .ok_or_else(|| anyhow::anyhow!("positive REDEEM activity has an invalid asset"))?
+        .to_string();
+    let payout_usd = activity
+        .usdc_size
+        .filter(|payout| *payout == redeemed_size)
+        .ok_or_else(|| {
+            anyhow::anyhow!("positive REDEEM activity payout does not match its size")
+        })?;
+    let redeemed_at = activity
+        .timestamp
+        .and_then(timestamp_from_raw)
+        .ok_or_else(|| anyhow::anyhow!("positive REDEEM activity has an invalid timestamp"))?;
+    if redeemed_at > Utc::now() + LIVE_EXTERNAL_EVENT_CLOCK_SKEW {
+        bail!("positive REDEEM activity timestamp is in the future");
+    }
+    let transaction_hash = activity
+        .transaction_hash
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| is_prefixed_hex(value, 32))
+        .ok_or_else(|| anyhow::anyhow!("positive REDEEM activity has an invalid transactionHash"))?
+        .to_ascii_lowercase();
+    let mut raw_payload = serde_json::to_value(activity)?;
+    if let serde_json::Value::Object(object) = &mut raw_payload {
+        object.insert("normalizer_source".to_string(), serde_json::json!(source));
+    }
+    Ok(Some(LiveRedemptionEvidence {
+        account_address: account_address.to_ascii_lowercase(),
+        condition_id,
+        token_id,
+        redeemed_size,
+        payout_usd,
+        redeemed_at,
+        transaction_hash,
+        raw_payload,
+    }))
+}
+
+fn is_prefixed_hex(value: &str, bytes: usize) -> bool {
+    value.len() == bytes.saturating_mul(2).saturating_add(2)
+        && value.starts_with("0x")
+        && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn is_trade_activity(activity: &DataApiActivity) -> bool {
@@ -684,6 +915,71 @@ mod tests {
     }
 
     #[test]
+    fn positive_redeem_activity_normalizes_to_exact_live_redemption_evidence() {
+        let activity: DataApiActivity = serde_json::from_value(serde_json::json!({
+            "proxyWallet": "0x74d0da822ba46c7325bb78e74c915976e76159af",
+            "type": "REDEEM",
+            "size": "5",
+            "usdcSize": "5",
+            "timestamp": 1786677774,
+            "transactionHash": "0x072aa67fafa8381f5bd25c3092f2146b3e6e1c6717ce71599bee3352a93e3da4",
+            "asset": "64891112840096581114786599417318199598343837807127888883355968643722878718210",
+            "conditionId": "0x21582805dbfc8aea9dc1cbbe7171f6a60c477726681588c98a97410d4f194fec"
+        }))
+        .unwrap();
+
+        let evidence = live_redemption_from_activity(
+            "0x74D0dA822ba46c7325bB78E74C915976e76159af",
+            &activity,
+            "poll",
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(evidence.redeemed_size, dec!(5));
+        assert_eq!(evidence.payout_usd, dec!(5));
+        assert_eq!(
+            evidence.transaction_hash,
+            "0x072aa67fafa8381f5bd25c3092f2146b3e6e1c6717ce71599bee3352a93e3da4"
+        );
+        assert_eq!(evidence.raw_payload["normalizer_source"], "poll");
+    }
+
+    #[test]
+    fn zero_redeem_is_ignored_and_positive_redeem_requires_exact_wallet_and_payout() {
+        let zero: DataApiActivity = serde_json::from_value(serde_json::json!({
+            "proxyWallet": "0xabc",
+            "type": "REDEEM",
+            "size": 0,
+            "usdcSize": 0,
+            "timestamp": 1786677975,
+            "transactionHash": "0x05d2c9eda77f7e4aa2f395b7577c6745d705af9f374951a74f0b699692e3ac2d"
+        }))
+        .unwrap();
+        assert!(live_redemption_from_activity("0xabc", &zero, "poll")
+            .unwrap()
+            .is_none());
+
+        let mismatched: DataApiActivity = serde_json::from_value(serde_json::json!({
+            "proxyWallet": "0x0000000000000000000000000000000000000000",
+            "type": "REDEEM",
+            "size": "5",
+            "usdcSize": "4.99",
+            "timestamp": 1786677774,
+            "transactionHash": "0x072aa67fafa8381f5bd25c3092f2146b3e6e1c6717ce71599bee3352a93e3da4",
+            "asset": "1",
+            "conditionId": "0x21582805dbfc8aea9dc1cbbe7171f6a60c477726681588c98a97410d4f194fec"
+        }))
+        .unwrap();
+        assert!(live_redemption_from_activity(
+            "0x74d0da822ba46c7325bb78e74c915976e76159af",
+            &mismatched,
+            "poll"
+        )
+        .is_err());
+    }
+
+    #[test]
     fn legacy_account_reconcile_request_deserializes_without_scope() {
         let request: AccountReconcileRequest = serde_json::from_value(serde_json::json!({
             "account_address": "0xabc",
@@ -772,6 +1068,72 @@ mod tests {
         assert!(normalize_account_ref(Some(&"x".repeat(129))).is_err());
         assert!(is_sha256_hex(&"a".repeat(64)));
         assert!(!is_sha256_hex(&"z".repeat(64)));
+    }
+
+    fn account_position(token_id: &str, size: Decimal) -> AccountPositionSnapshot {
+        AccountPositionSnapshot {
+            snapshot_id: Uuid::new_v4(),
+            account_address: "0xabc".to_string(),
+            token_id: token_id.to_string(),
+            market_id: Some("market-1".to_string()),
+            size,
+            avg_price: None,
+            current_price: None,
+            current_value: None,
+            cash_pnl: None,
+            percent_pnl: None,
+            snapshot_at: Utc::now(),
+            source: "poll".to_string(),
+            raw_payload: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn clean_account_baseline_proves_process_accounting() {
+        let (proof, mismatches) = process_accounting_proof(&HashMap::new(), &[], 0).unwrap();
+
+        assert_eq!(proof.status, "proven");
+        assert_eq!(proof.reason, "clean_account_baseline");
+        assert!(mismatches.is_empty());
+    }
+
+    #[test]
+    fn exact_process_fill_position_proves_process_accounting() {
+        let process_positions = HashMap::from([("token-1".to_string(), dec!(2.5))]);
+        let positions = vec![account_position("token-1", dec!(2.5))];
+
+        let (proof, mismatches) =
+            process_accounting_proof(&process_positions, &positions, 0).unwrap();
+
+        assert_eq!(proof.status, "proven");
+        assert_eq!(proof.reason, "account_positions_match_process_live_fills");
+        assert!(mismatches.is_empty());
+    }
+
+    #[test]
+    fn foreign_position_or_unmatched_trade_fails_process_accounting_closed() {
+        let foreign = vec![account_position("foreign-token", dec!(1))];
+        let (foreign_proof, mismatches) =
+            process_accounting_proof(&HashMap::new(), &foreign, 0).unwrap();
+        assert_eq!(foreign_proof.status, "unproven");
+        assert_eq!(mismatches[0].mismatch_type, "foreign_account_position");
+
+        let (trade_proof, _) = process_accounting_proof(&HashMap::new(), &[], 1).unwrap();
+        assert_eq!(trade_proof.status, "unproven");
+        assert_eq!(trade_proof.reason, "unmatched_account_trades");
+    }
+
+    #[test]
+    fn process_position_size_mismatch_fails_closed() {
+        let process_positions = HashMap::from([("token-1".to_string(), dec!(2.5))]);
+        let positions = vec![account_position("token-1", dec!(2))];
+
+        let (proof, mismatches) =
+            process_accounting_proof(&process_positions, &positions, 0).unwrap();
+
+        assert_eq!(proof.status, "unproven");
+        assert_eq!(mismatches[0].mismatch_type, "position_size_mismatch");
+        assert_eq!(mismatches[0].delta_size, dec!(-0.5));
     }
 
     #[test]

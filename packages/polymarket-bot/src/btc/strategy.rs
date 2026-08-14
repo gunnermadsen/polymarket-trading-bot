@@ -2093,8 +2093,6 @@ fn validate_config(config: &BtcStrategyConfig) -> Result<(), BtcRejectReason> {
                         max_age > 0 && max_age <= minimum_cadence_seconds * 1_000
                     })
                     && config.max_reference_age_ms == config.max_book_age_ms
-                    && model.deployment_scope() == Some("paper_only")
-                    && !model.live_capital_allowed()
             })
         }
         Err(_) => false,

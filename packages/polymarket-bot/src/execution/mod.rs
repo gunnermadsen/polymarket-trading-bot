@@ -11,6 +11,8 @@ use crate::account_reconcile::{AccountReconcileReport, AccountReconcileRequest};
 use crate::models::{FillRecord, OrderRecord, OrderRequest, OrderSide, OrderState, OrderType};
 
 pub const LIVE_EXECUTION_GATE_CLOSED_REASON: &str = "live_execution_gate_closed";
+pub(crate) const LIVE_EXTERNAL_EVENT_CLOCK_SKEW: chrono::Duration = chrono::Duration::minutes(5);
+pub(crate) const LIVE_FILL_RECONCILIATION_SKEW: chrono::Duration = chrono::Duration::hours(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveExecutionGateReason {
@@ -343,7 +345,24 @@ pub async fn execute_order_plan<V: ExecutionVenue + ?Sized>(
         orders.push(order);
     }
 
-    let reconciliation = venue.reconcile().await?;
+    let reconciliation = match venue.reconcile().await {
+        Ok(reconciliation) => reconciliation,
+        Err(error) if venue.preserve_liveness_on_post_order_reconcile_error() => {
+            warn!(
+                error = %error,
+                order_count = orders.len(),
+                "post-order reconciliation deferred; preserving live trading process liveness"
+            );
+            ReconciliationReport {
+                open_orders: 0,
+                balances_checked: false,
+                mismatches_found: 0,
+                unresolved_count: 1,
+                checked_at: Utc::now(),
+            }
+        }
+        Err(error) => return Err(error),
+    };
     Ok(OrderPlanReport {
         plan_id: plan.plan_id,
         orders,
@@ -354,6 +373,10 @@ pub async fn execute_order_plan<V: ExecutionVenue + ?Sized>(
 
 #[async_trait]
 pub trait ExecutionVenue: Send + Sync {
+    fn preserve_liveness_on_post_order_reconcile_error(&self) -> bool {
+        false
+    }
+
     async fn find_existing_order(&self, _request: &OrderRequest) -> Result<Option<OrderRecord>> {
         Ok(None)
     }
