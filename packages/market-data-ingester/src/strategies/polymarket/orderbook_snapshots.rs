@@ -1689,7 +1689,10 @@ impl BookRegistry {
                 if book.is_stale(source_timestamp) {
                     return Ok(ApplyOutcome::NonMutating);
                 }
-                book.verify_advertised_top(best_bid, best_ask)?;
+                // The venue does not sequence best_bid_ask relative to book and
+                // price_change frames. Validate its values, but do not compare
+                // the advisory event with a book that may already be newer.
+                validate_advertised_top(best_bid, best_ask)?;
                 Ok(ApplyOutcome::NonMutating)
             }
             ClobMessage::TickSizeChange {
@@ -4044,6 +4047,20 @@ mod tests {
         assert_eq!(after_stale.bids, before.bids);
         assert_eq!(after_stale.asks, before.asks);
         assert_eq!(after_stale.ingest_sequence, before.ingest_sequence);
+
+        let advisory = ClobMessage::BestBidAsk {
+            market_id: market.condition_id.clone(),
+            token_id: market.up_token_id.clone(),
+            best_bid: Some(Decimal::new(1, 1)),
+            best_ask: Some(Decimal::new(9, 1)),
+            source_timestamp: at(1_783_902_601_400),
+        };
+        assert_eq!(
+            registry
+                .apply(advisory, at(1_783_902_601_410), 100)
+                .expect("unsequenced advertised top is advisory"),
+            ApplyOutcome::NonMutating
+        );
 
         let crossed = ClobMessage::Book {
             market_id: market.condition_id.clone(),
