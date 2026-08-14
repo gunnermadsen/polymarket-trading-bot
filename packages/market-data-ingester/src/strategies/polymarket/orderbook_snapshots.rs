@@ -65,6 +65,7 @@ const MAX_CHANGES_PER_MESSAGE: usize = 20_000;
 const MAX_IDENTIFIER_BYTES: usize = 512;
 const MAX_SOURCE_HASH_BYTES: usize = 256;
 const MAX_NUMERIC_BYTES: usize = 64;
+const MAX_PROVIDER_CLOCK_LEAD_MILLISECONDS: i64 = 1_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -161,8 +162,11 @@ impl OrderbookCheckpoint {
                         .payload_sha256
                         .bytes()
                         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-                    || book.source_timestamp
-                        > checkpoint.sampled_at.unwrap_or(book.source_timestamp)
+                    || checkpoint.sampled_at.is_some_and(|sampled_at| {
+                        book.source_timestamp
+                            > sampled_at
+                                + TimeDelta::milliseconds(MAX_PROVIDER_CLOCK_LEAD_MILLISECONDS)
+                    })
             })
         {
             return Err(StrategyFactoryError::Construction(
@@ -3847,6 +3851,29 @@ mod tests {
             "lookahead_windows": 2
         }))
         .is_err());
+    }
+
+    #[test]
+    fn checkpoint_accepts_bounded_provider_clock_lead() {
+        let checkpoint = json!({
+            "schema_version": 1,
+            "sampled_at": "2026-08-14T18:56:47.001653Z",
+            "connection_epoch": "345fa8d8-cb74-4eb7-8652-044cb739b460",
+            "artifact_id": "dae5ca03-6ad0-4df8-876c-eeb75a285b66",
+            "sampling_policy_sha256": "39fe975dcac9bbf57325ecbde85afd2c5c657522922ccbae59e540e188757b31",
+            "books": [{
+                "market_id": "3570296",
+                "token_id": "44987391382362863711352841441358623233109873787688796593932323111847410280248",
+                "source_timestamp": "2026-08-14T18:56:47.059Z",
+                "ingest_sequence": 893,
+                "payload_sha256": "9d95136ba6113b22ad11488272353f507326bac3e178b14c6cfec12f5fc1020f"
+            }]
+        });
+        assert!(OrderbookCheckpoint::from_value(&checkpoint).is_ok());
+
+        let mut excessive_lead = checkpoint;
+        excessive_lead["books"][0]["source_timestamp"] = json!("2026-08-14T18:56:49.059Z");
+        assert!(OrderbookCheckpoint::from_value(&excessive_lead).is_err());
     }
 
     #[test]
