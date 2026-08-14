@@ -19,7 +19,6 @@ use super::{
 const PAPER_RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 const LIVE_PENDING_REDEMPTION_GATE_REASON: &str = "live_settlement_redemption_unproven";
 const LIVE_UNCLEAN_RECONCILIATION_GATE_REASON: &str = "live_reconciliation_unclean";
-const LIVE_RECONCILIATION_ERROR_GATE_REASON: &str = "live_reconciliation_error";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -225,21 +224,11 @@ impl BtcExecutionLifecycle for LiveExecutionLifecycle {
         let reconciliation = match self.venue.reconcile().await {
             Ok(reconciliation) => reconciliation,
             Err(error) => {
-                let status = self
-                    .venue
-                    .set_live_entries_enabled(
-                        false,
-                        Some(LIVE_RECONCILIATION_ERROR_GATE_REASON.to_string()),
-                    )
-                    .await?;
-                if status.entries_enabled {
-                    bail!("BTC live reconciliation error did not close execution entries");
-                }
                 warn!(
                     process_id = %process_id,
                     run_id = %run_id,
                     error = %error,
-                    "BTC live reconciliation failed; entries remain closed until a later clean retry"
+                    "BTC live HTTP reconciliation backup failed; preserving process authorization and retrying"
                 );
                 return Ok(());
             }
@@ -248,12 +237,22 @@ impl BtcExecutionLifecycle for LiveExecutionLifecycle {
             .discover_pending_settlements(process_id, run_id, BtcExecutionMode::Live)
             .await?;
         if let Some(reason) = live_reconciliation_gate_reason(&reconciliation, pending.len()) {
-            let status = self
-                .venue
-                .set_live_entries_enabled(false, Some(reason.to_string()))
-                .await?;
-            if status.entries_enabled {
-                bail!("BTC live reconciliation gate did not close execution entries");
+            if reason == LIVE_PENDING_REDEMPTION_GATE_REASON {
+                let status = self
+                    .venue
+                    .set_live_entries_enabled(false, Some(reason.to_string()))
+                    .await?;
+                if status.entries_enabled {
+                    bail!("BTC pending redemption did not close execution entries");
+                }
+                warn!(
+                    process_id = %process_id,
+                    run_id = %run_id,
+                    pending_settlement_count = pending.len(),
+                    reason,
+                    "BTC live settlement redemption remains unproven; entries remain manually closed"
+                );
+                return Ok(());
             }
             warn!(
                 process_id = %process_id,
@@ -263,12 +262,8 @@ impl BtcExecutionLifecycle for LiveExecutionLifecycle {
                 reconciliation_mismatches = reconciliation.mismatches_found,
                 reconciliation_unresolved = reconciliation.unresolved_count,
                 reason,
-                "BTC live reconciliation kept execution entries fail-closed"
+                "BTC live HTTP reconciliation backup reported an unsafe state; clean reconciliation restores readiness automatically"
             );
-            // Both a successfully detected mismatch and an internally resolved-but-unredeemed
-            // position are clean, nonfatal operational states. Transport/reconciliation remains
-            // alive while manual entries stay closed. Only an actual reconcile/read/persistence
-            // error propagates out of this lifecycle hook.
             return Ok(());
         }
         Ok(())
@@ -299,7 +294,7 @@ mod tests {
 
     use super::{
         live_reconciliation_gate_reason, BtcExecutionMode, LIVE_PENDING_REDEMPTION_GATE_REASON,
-        LIVE_RECONCILIATION_ERROR_GATE_REASON, LIVE_UNCLEAN_RECONCILIATION_GATE_REASON,
+        LIVE_UNCLEAN_RECONCILIATION_GATE_REASON,
     };
 
     #[test]
@@ -353,6 +348,5 @@ mod tests {
             "live_settlement_redemption_unproven"
         );
         assert!(LIVE_PENDING_REDEMPTION_GATE_REASON.len() <= 128);
-        assert!(LIVE_RECONCILIATION_ERROR_GATE_REASON.len() <= 128);
     }
 }

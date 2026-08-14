@@ -75,6 +75,8 @@ const MAX_CLOB_CURSOR_BYTES: usize = 256;
 const CLOB_ORDER_ID_QUERY_CHUNK: usize = 500;
 const FOK_FILL_RECONCILIATION_SKEW: chrono::Duration = chrono::Duration::hours(1);
 const USER_WS_MAX_TRANSPORT_OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
+const USER_WS_RECONNECT_INITIAL_DELAY: Duration = Duration::from_secs(1);
+const USER_WS_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Deserialize)]
 struct RpcResponse {
@@ -423,27 +425,41 @@ impl LiveVenue {
         };
         let data_api = self.data_api.clone();
         let transport_state = self.transport_state.clone();
-        let global_entry_gate = self.global_entry_gate.clone();
+        let submit_guard = self.submit_guard.clone();
         tokio::spawn(async move {
+            let mut reconnect_delay = USER_WS_RECONNECT_INITIAL_DELAY;
             loop {
                 let result = run_user_ws_once(
                     &config,
                     &store,
                     data_api.as_ref(),
                     &transport_state,
-                    &global_entry_gate,
+                    &submit_guard,
                 )
                 .await;
-                {
+                let was_healthy = {
                     let mut state = transport_state.lock().await;
+                    let was_healthy = state.last_user_ws_pong_at.is_some();
                     state.user_ws_connected = false;
                     state.last_user_ws_pong_at = None;
-                }
-                halt_shared_global_gate(&global_entry_gate, "user_ws_transport_error").await;
+                    was_healthy
+                };
+                let retry_delay = if was_healthy {
+                    reconnect_delay = USER_WS_RECONNECT_INITIAL_DELAY;
+                    USER_WS_RECONNECT_INITIAL_DELAY
+                } else {
+                    let retry_delay = reconnect_delay;
+                    reconnect_delay = next_user_ws_reconnect_delay(reconnect_delay);
+                    retry_delay
+                };
                 if let Err(error) = result {
-                    warn!(error = %error, "Polymarket live user websocket disconnected");
+                    warn!(
+                        error = %error,
+                        retry_delay_ms = retry_delay.as_millis(),
+                        "Polymarket live user websocket disconnected; reconnecting independently of trading process state"
+                    );
                 }
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                tokio::time::sleep(retry_delay).await;
             }
         });
     }
@@ -1196,7 +1212,7 @@ async fn run_user_ws_once(
     store: &Store,
     data_api: Option<&DataApiClient>,
     state: &Arc<Mutex<LiveTransportState>>,
-    global_entry_gate: &Arc<Mutex<GlobalLiveEntryGate>>,
+    submit_guard: &Arc<Mutex<()>>,
 ) -> Result<()> {
     let subscription = user_ws_subscription_payload(config)?;
     {
@@ -1266,7 +1282,9 @@ async fn run_user_ws_once(
                             }
                             UserWsText::UserEvent(payload) => payload,
                         };
-                        halt_shared_global_gate(global_entry_gate, "user_ws_account_event").await;
+                        // Apply the websocket event atomically with respect to live submission.
+                        // Connectivity and event delivery never mutate process authorization.
+                        let _event_guard = submit_guard.lock().await;
                         let event = LiveVenue::parse_user_event(payload);
                         let inserted = store.insert_live_venue_event(&event).await?;
                         let bot_fill_persisted = match LiveVenue::persist_fill_from_live_event(&store, &event).await {
@@ -2811,12 +2829,6 @@ impl ExecutionVenue for LiveVenue {
         ) = match reconcile_result {
             Ok(result) => result,
             Err(error) => {
-                self.mark_idempotency_dirty().await;
-                self.readiness_state
-                    .lock()
-                    .await
-                    .reconciled_safety_generation = None;
-                self.halt_global_entries("live_reconciliation_failed").await;
                 if let Err(record_error) = store
                     .insert_live_reconciliation_run(
                         self.bound_process_id,
@@ -2854,10 +2866,6 @@ impl ExecutionVenue for LiveVenue {
             checked_at,
         };
         let idempotency_clean = report.unresolved_count == 0 && report.mismatches_found == 0;
-        if !idempotency_clean {
-            self.halt_global_entries("live_reconciliation_unclean")
-                .await;
-        }
         if let Err(error) = store
             .insert_live_reconciliation_run(
                 self.bound_process_id,
@@ -2883,13 +2891,6 @@ impl ExecutionVenue for LiveVenue {
             )
             .await
         {
-            self.mark_idempotency_dirty().await;
-            self.readiness_state
-                .lock()
-                .await
-                .reconciled_safety_generation = None;
-            self.halt_global_entries("live_reconciliation_persistence_failed")
-                .await;
             return Err(error);
         }
         {
@@ -2973,10 +2974,6 @@ impl ExecutionVenue for LiveVenue {
         let last_user_ws_pong_age_secs = stateful_age_seconds(transport.last_user_ws_pong_at, now);
         let last_geoblock_check_age_secs = stateful_age_seconds(transport.geoblock_checked_at, now);
         let last_rest_reconcile_age_secs = stateful_age_seconds(state.last_rest_reconcile_at, now);
-        let user_ws_fresh = transport.user_ws_connected
-            && last_user_ws_pong_age_secs
-                .map(|age| age <= self.config.user_ws_stale.as_secs() as i64)
-                .unwrap_or(false);
         let rest_fresh = last_rest_reconcile_age_secs
             .map(|age| age <= self.config.stale_reconcile.as_secs() as i64)
             .unwrap_or(false);
@@ -2992,7 +2989,6 @@ impl ExecutionVenue for LiveVenue {
             && !global.halted
             && state.manual_entries_enabled
             && state.process_accounting_proven
-            && user_ws_fresh
             && rest_fresh
             && state.idempotency_clean
             && state.unresolved_live_order_count == 0;
@@ -3020,8 +3016,6 @@ impl ExecutionVenue for LiveVenue {
                 "live_process_accounting_not_proven:{}",
                 state.process_accounting_status
             ))
-        } else if !user_ws_fresh {
-            Some("live_user_ws_stale_or_disconnected".to_string())
         } else if !rest_fresh {
             Some("live_rest_reconcile_stale".to_string())
         } else if !state.idempotency_clean {
@@ -3557,9 +3551,6 @@ impl ExecutionVenue for LiveVenue {
         let transport = self.transport_state.lock().await;
         let mut state = self.readiness_state.lock().await;
         let mut global = self.global_entry_gate.lock().await;
-        let user_ws_fresh = transport.user_ws_connected
-            && stateful_age_seconds(transport.last_user_ws_pong_at, now)
-                .is_some_and(|age| age <= self.config.user_ws_stale.as_secs() as i64);
         let rest_fresh = stateful_age_seconds(state.last_rest_reconcile_at, now)
             .is_some_and(|age| age <= self.config.stale_reconcile.as_secs() as i64);
         let geoblock_fresh = transport.geoblock_readable
@@ -3576,7 +3567,6 @@ impl ExecutionVenue for LiveVenue {
         if !self.order_submission_enabled()
             || !self.config.submit_auth_available()
             || !geoblock_fresh
-            || !user_ws_fresh
             || !rest_fresh
             || !state.process_accounting_proven
             || !identity_matches
@@ -3587,7 +3577,7 @@ impl ExecutionVenue for LiveVenue {
             || state.reconciled_safety_generation != Some(expected_safety_generation)
         {
             bail!(
-                "checked process-bound live enable requires an unblocked egress, fresh transport/reconciliation, proven accounting, matching identity, and clean idempotency"
+                "checked process-bound live enable requires an unblocked egress, fresh reconciliation, proven accounting, matching identity, and clean idempotency"
             );
         }
         if !commit_checked_live_enable(&mut global, &mut state, expected_safety_generation) {
@@ -3673,9 +3663,11 @@ fn checked_clob_row_count(current: usize, page_len: usize, resource: &str) -> Re
     Ok(total)
 }
 
-async fn halt_shared_global_gate(gate: &Arc<Mutex<GlobalLiveEntryGate>>, reason: &str) {
-    let mut gate = gate.lock().await;
-    record_global_entry_halt(&mut gate, reason);
+fn next_user_ws_reconnect_delay(current: Duration) -> Duration {
+    current
+        .checked_mul(2)
+        .unwrap_or(USER_WS_RECONNECT_MAX_DELAY)
+        .min(USER_WS_RECONNECT_MAX_DELAY)
 }
 
 fn record_global_entry_halt(gate: &mut GlobalLiveEntryGate, reason: &str) -> u64 {
@@ -4253,7 +4245,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn future_live_health_timestamps_are_not_treated_as_fresh() {
+    async fn user_ws_health_is_diagnostic_and_rest_freshness_controls_backup_readiness() {
         let venue = LiveVenue::new_for_test(live_config())
             .unwrap()
             .bind_process(Uuid::new_v4(), &live_execution())
@@ -4281,20 +4273,65 @@ mod tests {
         }
 
         let status = venue.live_status().await.unwrap();
-        assert!(!status.entries_enabled);
+        assert!(status.entries_enabled);
         assert_eq!(status.last_user_ws_pong_age_secs, None);
-        assert_eq!(
-            status.reason.as_deref(),
-            Some("live_user_ws_stale_or_disconnected")
-        );
+        assert_eq!(status.reason, None);
 
-        venue.transport_state.lock().await.last_user_ws_pong_at = Some(Utc::now());
+        {
+            let mut transport = venue.transport_state.lock().await;
+            transport.user_ws_connected = false;
+            transport.last_user_ws_pong_at = None;
+        }
+        let status = venue.live_status().await.unwrap();
+        assert!(status.entries_enabled);
+        assert!(!status.user_ws_connected);
+
         venue.readiness_state.lock().await.last_rest_reconcile_at =
             Some(Utc::now() + chrono::Duration::minutes(1));
         let status = venue.live_status().await.unwrap();
         assert!(!status.entries_enabled);
         assert_eq!(status.last_rest_reconcile_age_secs, None);
         assert_eq!(status.reason.as_deref(), Some("live_rest_reconcile_stale"));
+    }
+
+    #[tokio::test]
+    async fn clean_reconciliation_restores_readiness_without_manual_reenable() {
+        let venue = LiveVenue::new_for_test(live_config())
+            .unwrap()
+            .bind_process(Uuid::new_v4(), &live_execution())
+            .unwrap();
+        seed_fresh_unblocked_geoblock(&venue).await;
+        {
+            let mut state = venue.readiness_state.lock().await;
+            state.last_rest_reconcile_at = Some(Utc::now());
+            state.idempotency_clean = false;
+            state.unresolved_live_order_count = 1;
+            state.manual_entries_enabled = true;
+            state.manual_entries_reason = None;
+            state.process_accounting_proven = true;
+            state.process_accounting_status = "proven".to_string();
+        }
+        {
+            let mut global = venue.global_entry_gate.lock().await;
+            global.halted = false;
+            global.reason = "process_checked_enable".to_string();
+        }
+
+        let status = venue.live_status().await.unwrap();
+        assert!(!status.entries_enabled);
+        assert_eq!(status.reason.as_deref(), Some("live_idempotency_not_clean"));
+
+        {
+            let mut state = venue.readiness_state.lock().await;
+            state.last_rest_reconcile_at = Some(Utc::now());
+            state.idempotency_clean = true;
+            state.unresolved_live_order_count = 0;
+        }
+        let status = venue.live_status().await.unwrap();
+        assert!(status.entries_enabled);
+        assert_eq!(status.reason, None);
+        assert!(venue.readiness_state.lock().await.manual_entries_enabled);
+        assert!(!venue.global_entry_gate.lock().await.halted);
     }
 
     #[tokio::test]
@@ -4393,20 +4430,20 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn user_ws_halt_invalidates_the_shared_generation() {
-        let gate = Arc::new(Mutex::new(GlobalLiveEntryGate {
-            halted: false,
-            reason: "process_checked_enable".to_string(),
-            safety_generation: 7,
-        }));
-
-        halt_shared_global_gate(&gate, "user_ws_account_event").await;
-
-        let gate = gate.lock().await;
-        assert!(gate.halted);
-        assert_eq!(gate.reason, "user_ws_account_event");
-        assert_eq!(gate.safety_generation, 8);
+    #[test]
+    fn user_ws_reconnect_backoff_is_bounded() {
+        assert_eq!(
+            next_user_ws_reconnect_delay(USER_WS_RECONNECT_INITIAL_DELAY),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            next_user_ws_reconnect_delay(Duration::from_secs(16)),
+            USER_WS_RECONNECT_MAX_DELAY
+        );
+        assert_eq!(
+            next_user_ws_reconnect_delay(USER_WS_RECONNECT_MAX_DELAY),
+            USER_WS_RECONNECT_MAX_DELAY
+        );
     }
 
     #[test]
@@ -4452,7 +4489,7 @@ mod tests {
         };
         let mut state = LiveVenueState::fail_closed();
         state.reconciled_safety_generation = Some(11);
-        record_global_entry_halt(&mut gate, "user_ws_account_event");
+        record_global_entry_halt(&mut gate, "live_geoblock_unreadable");
         assert!(!commit_checked_live_enable(&mut gate, &mut state, 11));
         assert!(gate.halted);
         assert!(!state.manual_entries_enabled);
@@ -4462,7 +4499,7 @@ mod tests {
         state.manual_entries_enabled = true;
         state.reconciled_safety_generation = Some(gate.safety_generation);
         let admitted_generation = gate.safety_generation;
-        record_global_entry_halt(&mut gate, "user_ws_transport_error");
+        record_global_entry_halt(&mut gate, "live_geoblock_blocked");
         assert_eq!(
             commit_live_post_attempt(&mut gate, &mut state, admitted_generation),
             Some(LiveExecutionGateReason::GlobalHalt)
