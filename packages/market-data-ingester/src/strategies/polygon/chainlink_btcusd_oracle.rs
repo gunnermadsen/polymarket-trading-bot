@@ -43,7 +43,8 @@ const MAX_SUPPORTED_DECIMALS: u32 = 18;
 const MAX_AGGREGATOR_PHASES: u16 = 128;
 const MAX_RPC_RESPONSE_BYTES: usize = 8 * 1_024 * 1_024;
 const MAX_RPC_LOGS_PER_RESPONSE: usize = 20_000;
-const BLOCK_HEADER_BATCH_SIZE: usize = 20;
+const BLOCK_HEADER_BATCH_SIZE: usize = 10;
+const BLOCK_HEADER_BATCH_PAUSE_MILLISECONDS: u64 = 500;
 const MAX_INSERT_ROWS: usize = 500;
 const MAX_DATABASE_RANGE_ROWS: i64 = 20_001;
 const GAP_REPAIRS_PER_POLL: i64 = 4;
@@ -1816,6 +1817,7 @@ impl PolygonChainlinkBtcusdOracleStrategy {
         let mut headers = BTreeMap::new();
         let mut maximum_received_at = None;
         for numbers in block_numbers.chunks(BLOCK_HEADER_BATCH_SIZE) {
+            tokio::time::sleep(Duration::from_millis(BLOCK_HEADER_BATCH_PAUSE_MILLISECONDS)).await;
             let request = numbers
                 .iter()
                 .enumerate()
