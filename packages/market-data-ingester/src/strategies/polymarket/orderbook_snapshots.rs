@@ -1448,14 +1448,8 @@ impl BookState {
         Ok(())
     }
 
-    fn verify_timestamp(&self, timestamp: DateTime<Utc>) -> Result<(), StrategyError> {
-        if self.source_timestamp.is_some_and(|last| timestamp < last) {
-            return Err(source_error(
-                "polymarket_clob_timestamp_regression",
-                "CLOB source timestamp regressed within one connection epoch",
-            ));
-        }
-        Ok(())
+    fn is_stale(&self, timestamp: DateTime<Utc>) -> bool {
+        self.source_timestamp.is_some_and(|last| timestamp < last)
     }
 
     fn reconcile_advertised_top(
@@ -1642,7 +1636,9 @@ impl BookRegistry {
                         "CLOB full book market did not match its registered token",
                     ));
                 }
-                current.verify_timestamp(source_timestamp)?;
+                if current.is_stale(source_timestamp) {
+                    return Ok(ApplyOutcome::NonMutating);
+                }
                 let sequence = self.take_sequence()?;
                 let current = self
                     .books
@@ -1690,7 +1686,9 @@ impl BookRegistry {
                 if !book.bootstrapped {
                     return Ok(ApplyOutcome::AwaitingSnapshot);
                 }
-                book.verify_timestamp(source_timestamp)?;
+                if book.is_stale(source_timestamp) {
+                    return Ok(ApplyOutcome::NonMutating);
+                }
                 book.verify_advertised_top(best_bid, best_ask)?;
                 Ok(ApplyOutcome::NonMutating)
             }
@@ -1713,7 +1711,9 @@ impl BookRegistry {
                 if !book.bootstrapped {
                     return Ok(ApplyOutcome::AwaitingSnapshot);
                 }
-                book.verify_timestamp(source_timestamp)?;
+                if book.is_stale(source_timestamp) {
+                    return Ok(ApplyOutcome::NonMutating);
+                }
                 if old_tick_size != book.tick_size
                     || new_tick_size <= Decimal::ZERO
                     || new_tick_size >= Decimal::ONE
@@ -1755,7 +1755,9 @@ impl BookRegistry {
                             "CLOB auxiliary event market did not match its registered token",
                         ));
                     }
-                    book.verify_timestamp(source_timestamp)?;
+                    if book.is_stale(source_timestamp) {
+                        return Ok(ApplyOutcome::NonMutating);
+                    }
                 }
                 Ok(ApplyOutcome::NonMutating)
             }
@@ -1804,7 +1806,9 @@ impl BookRegistry {
                 // subscribed token group has an initial full snapshot.
                 return Ok(ApplyOutcome::AwaitingSnapshot);
             }
-            book.verify_timestamp(source_timestamp)?;
+            if book.is_stale(source_timestamp) {
+                return Ok(ApplyOutcome::NonMutating);
+            }
             let mut candidate = book.clone();
             for change in &token_changes {
                 let side = match change.side {
@@ -4013,7 +4017,7 @@ mod tests {
     }
 
     #[test]
-    fn timestamp_cross_and_advertised_top_fail_closed_without_mutation() {
+    fn stale_timestamp_is_ignored_and_invalid_books_fail_closed_without_mutation() {
         let mut registry = bootstrapped_registry();
         let market = fixture_market();
         let before = registry
@@ -4030,10 +4034,16 @@ mod tests {
             source_timestamp: at(1_783_902_600_000),
             source_hash: None,
         };
-        let error = registry
-            .apply(regressed, at(1_783_902_601_000), 100)
-            .expect_err("regression");
-        assert_eq!(error.code, "polymarket_clob_timestamp_regression");
+        assert_eq!(
+            registry
+                .apply(regressed, at(1_783_902_601_000), 100)
+                .expect("stale provider frame is ignored"),
+            ApplyOutcome::NonMutating
+        );
+        let after_stale = registry.books.get(&market.up_token_id).expect("Up book");
+        assert_eq!(after_stale.bids, before.bids);
+        assert_eq!(after_stale.asks, before.asks);
+        assert_eq!(after_stale.ingest_sequence, before.ingest_sequence);
 
         let crossed = ClobMessage::Book {
             market_id: market.condition_id.clone(),
