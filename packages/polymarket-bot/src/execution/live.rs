@@ -2172,6 +2172,74 @@ fn is_definitive_live_submit_error(error: &anyhow::Error) -> bool {
     false
 }
 
+fn is_retryable_live_pre_submit_error(error: &anyhow::Error) -> bool {
+    for cause in error.chain() {
+        if let Some(status) = cause.downcast_ref::<SdkStatus>() {
+            return status.status_code.is_server_error()
+                || matches!(status.status_code.as_u16(), 408 | 409 | 425 | 429);
+        }
+        if let Some(error) = cause.downcast_ref::<reqwest::Error>() {
+            return error.is_timeout()
+                || error.is_connect()
+                || error.status().is_some_and(|status| {
+                    status.is_server_error() || matches!(status.as_u16(), 408 | 409 | 425 | 429)
+                });
+        }
+        if let Some(error) = cause.downcast_ref::<std::io::Error>() {
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::TimedOut
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::NotConnected
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::WouldBlock
+                    | std::io::ErrorKind::Interrupted
+            ) {
+                return true;
+            }
+        }
+        if let Some(error) = cause.downcast_ref::<polymarket_client_sdk_v2::error::Error>() {
+            if matches!(error.kind(), SdkErrorKind::Synchronization) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn live_pre_submit_transient_gate_order(
+    request: OrderRequest,
+    stage: &'static str,
+    error: &anyhow::Error,
+) -> Result<OrderRecord> {
+    let error_chain = format!("{error:#}");
+    warn!(
+        client_order_id = %request.client_order_id,
+        process_id = ?request.process_id,
+        stage,
+        error = %error_chain,
+        "transient live pre-submit failure skipped without a venue POST; preserving trading process liveness"
+    );
+    let mut order =
+        live_execution_gate_closed_order(request, LiveExecutionGateReason::VenueReadiness)?;
+    let metadata = order
+        .request
+        .metadata
+        .as_object_mut()
+        .context("live pre-submit transient failure requires object order metadata")?;
+    metadata.insert(
+        "live_pre_submit_error".to_string(),
+        json!({
+            "stage": stage,
+            "error_chain": error_chain,
+            "post_attempted": false,
+            "retryable": true,
+        }),
+    );
+    Ok(order)
+}
+
 fn live_event_order_id_candidates(payload: &Value) -> Vec<String> {
     let mut candidates = Vec::new();
     if let Some(order_id) = json_str(payload, "taker_order_id") {
@@ -2483,10 +2551,24 @@ impl ExecutionVenue for LiveVenue {
         let signer = LocalSigner::from_str(private_key)
             .context("failed to parse POLYMARKET_PRIVATE_KEY")?
             .with_chain_id(Some(POLYGON));
-        let client = self.authenticated_client().await?;
+        let client = match self
+            .authenticated_client()
+            .await
+            .context("failed to prepare authenticated Polymarket CLOB client")
+        {
+            Ok(client) => client,
+            Err(error) if is_retryable_live_pre_submit_error(&error) => {
+                return live_pre_submit_transient_gate_order(
+                    request,
+                    "authenticated_client",
+                    &error,
+                );
+            }
+            Err(error) => return Err(error),
+        };
         let token_id =
             U256::from_str(&request.token_id).context("failed to parse CLOB token_id")?;
-        let signable = client
+        let signable = match client
             .limit_order()
             .token_id(token_id)
             .side(sdk_side(request.side))
@@ -2495,7 +2577,14 @@ impl ExecutionVenue for LiveVenue {
             .order_type(sdk_order_type(request.order_type)?)
             .build()
             .await
-            .context("failed to build Polymarket CLOB order")?;
+            .context("failed to build Polymarket CLOB order")
+        {
+            Ok(signable) => signable,
+            Err(error) if is_retryable_live_pre_submit_error(&error) => {
+                return live_pre_submit_transient_gate_order(request, "order_build", &error);
+            }
+            Err(error) => return Err(error),
+        };
         let signed = client
             .sign(&signer, signable)
             .await
@@ -5079,6 +5168,68 @@ mod tests {
         assert!(!is_definitive_live_submit_error(&anyhow::anyhow!(
             "connection reset after write"
         )));
+    }
+
+    #[test]
+    fn only_retryable_pre_submit_transport_failures_preserve_liveness() {
+        use polymarket_client_sdk_v2::error::{Error as SdkError, Method, StatusCode};
+
+        let unavailable = anyhow::Error::new(SdkError::status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            Method::GET,
+            "/tick-size".to_string(),
+            "temporarily unavailable",
+        ));
+        assert!(is_retryable_live_pre_submit_error(&unavailable));
+
+        let rate_limited = anyhow::Error::new(SdkError::status(
+            StatusCode::TOO_MANY_REQUESTS,
+            Method::GET,
+            "/tick-size".to_string(),
+            "rate limited",
+        ));
+        assert!(is_retryable_live_pre_submit_error(&rate_limited));
+
+        let unauthorized = anyhow::Error::new(SdkError::status(
+            StatusCode::UNAUTHORIZED,
+            Method::GET,
+            "/auth/api-key".to_string(),
+            "unauthorized",
+        ));
+        assert!(!is_retryable_live_pre_submit_error(&unauthorized));
+        assert!(is_retryable_live_pre_submit_error(&anyhow::Error::new(
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "request timed out")
+        )));
+    }
+
+    #[test]
+    fn transient_pre_submit_failure_is_a_durable_zero_post_gate_outcome() {
+        let process_id = Uuid::new_v4();
+        let request = OrderRequest {
+            client_order_id: Uuid::new_v4(),
+            process_id: Some(process_id),
+            market_id: "market".to_string(),
+            token_id: "1".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            price: dec!(0.50),
+            size: dec!(1),
+            metadata: json!({"purpose": "entry"}),
+        };
+        let error = anyhow::anyhow!("tick-size request timed out");
+
+        let order = live_pre_submit_transient_gate_order(request, "order_build", &error).unwrap();
+
+        assert_live_gate_rejection(&order, LiveExecutionGateReason::VenueReadiness);
+        assert_eq!(
+            order.request.metadata["live_pre_submit_error"],
+            json!({
+                "stage": "order_build",
+                "error_chain": "tick-size request timed out",
+                "post_attempted": false,
+                "retryable": true,
+            })
+        );
     }
 
     #[test]
