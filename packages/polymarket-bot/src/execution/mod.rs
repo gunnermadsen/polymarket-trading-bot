@@ -11,6 +11,8 @@ use crate::account_reconcile::{AccountReconcileReport, AccountReconcileRequest};
 use crate::models::{FillRecord, OrderRecord, OrderRequest, OrderSide, OrderState, OrderType};
 
 pub const LIVE_EXECUTION_GATE_CLOSED_REASON: &str = "live_execution_gate_closed";
+pub(crate) const LIVE_EXTERNAL_EVENT_CLOCK_SKEW: chrono::Duration = chrono::Duration::minutes(5);
+pub(crate) const LIVE_FILL_RECONCILIATION_SKEW: chrono::Duration = chrono::Duration::hours(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveExecutionGateReason {

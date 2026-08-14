@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::{
     data_api::{ActivityQuery, DataApiClient, PositionsQuery},
-    execution::live::LiveVenueEvent,
+    execution::{live::LiveVenueEvent, LIVE_EXTERNAL_EVENT_CLOCK_SKEW},
     idempotency::event_hash,
     models::{DataApiActivity, DataApiPosition},
     store::{AccountPositionSnapshot, AccountTrade, LiveRedemptionEvidence, Store},
@@ -649,7 +649,7 @@ fn live_redemption_from_activity(
         .timestamp
         .and_then(timestamp_from_raw)
         .ok_or_else(|| anyhow::anyhow!("positive REDEEM activity has an invalid timestamp"))?;
-    if redeemed_at > Utc::now() + chrono::Duration::minutes(5) {
+    if redeemed_at > Utc::now() + LIVE_EXTERNAL_EVENT_CLOCK_SKEW {
         bail!("positive REDEEM activity timestamp is in the future");
     }
     let transaction_hash = activity

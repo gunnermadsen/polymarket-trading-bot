@@ -9,8 +9,10 @@ use uuid::Uuid;
 
 use crate::{
     events::ServiceEvent,
-    execution::live::LiveVenueEvent,
-    execution::OrderPlanReport,
+    execution::{
+        live::LiveVenueEvent, OrderPlanReport, LIVE_EXTERNAL_EVENT_CLOCK_SKEW,
+        LIVE_FILL_RECONCILIATION_SKEW,
+    },
     models::{
         FillRecord, OrderRecord, OrderRequest, OrderState, TradingProcess, TradingProcessConfig,
     },
@@ -945,7 +947,6 @@ impl Store {
         if process_id.is_nil() {
             bail!("live exposure evidence requires a non-nil process_id");
         }
-        let as_of = Utc::now();
         let order_limit = (MAX_LIVE_PROCESS_EXPOSURE_ORDERS + 1) as i64;
         let fill_limit = (MAX_LIVE_PROCESS_EXPOSURE_FILLS + 1) as i64;
 
@@ -984,6 +985,10 @@ impl Store {
                 .fetch_one(&self.pool)
                 .await
                 .context("failed to inspect pending live process redemption evidence")?;
+        let as_of = sqlx::query_scalar::<_, DateTime<Utc>>("SELECT clock_timestamp()")
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to read database clock for live process exposure")?;
 
         if orders.len() > MAX_LIVE_PROCESS_EXPOSURE_ORDERS {
             bail!(
@@ -1080,6 +1085,10 @@ impl Store {
         .fetch_all(&self.pool)
         .await
         .context("failed to load credited live process settlements for UTC day")?;
+        let validation_as_of = sqlx::query_scalar::<_, DateTime<Utc>>("SELECT clock_timestamp()")
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to read database clock for live daily loss evidence")?;
         if settlements.len() > MAX_LIVE_DAILY_SETTLEMENTS as usize {
             bail!(
                 "live process {} exceeds the bounded {}-settlement daily loss window",
@@ -1112,7 +1121,7 @@ impl Store {
             }
             all_fill_ids.extend(fill_ids.iter().copied());
             settlement_fill_ids.insert(settlement.settlement_id, fill_ids);
-            validate_live_daily_settlement(settlement, day_start, day_end, as_of)?;
+            validate_live_daily_settlement(settlement, day_start, day_end, validation_as_of)?;
         }
 
         let unique_fill_ids = all_fill_ids.iter().copied().collect::<HashSet<_>>();
@@ -2612,8 +2621,7 @@ fn validate_live_exposure_fill(
     }
     validate_live_exposure_identity(&row.fill_order_id, "fill order_id")?;
     validate_live_exposure_identity(&row.fill_token_id, "fill token_id")?;
-    if row.filled_at > as_of
-        || row.fill_price <= Decimal::ZERO
+    if row.fill_price <= Decimal::ZERO
         || row.fill_price > Decimal::ONE
         || row.fill_size <= Decimal::ZERO
         || row.fill_fee < Decimal::ZERO
@@ -2665,13 +2673,43 @@ fn validate_live_exposure_fill(
         .context("live fill exposure has no persisted order update time")?;
     validate_live_exposure_identity(order_market_id, "fill order market_id")?;
     validate_live_exposure_identity(order_token_id, "fill order token_id")?;
+    let earliest_fill_at = order_created_at
+        .checked_sub_signed(LIVE_FILL_RECONCILIATION_SKEW)
+        .context("live fill exposure order window underflow")?;
+    let latest_fill_at = order_created_at
+        .checked_add_signed(LIVE_FILL_RECONCILIATION_SKEW)
+        .context("live fill exposure order window overflow")?;
+    let earliest_order_update_at = order_created_at
+        .checked_sub_signed(LIVE_EXTERNAL_EVENT_CLOCK_SKEW)
+        .context("live fill exposure order update window underflow")?;
+    let latest_order_update_at = as_of
+        .checked_add_signed(LIVE_EXTERNAL_EVENT_CLOCK_SKEW)
+        .context("live fill exposure database observation window overflow")?;
     if order_raw_payload_bytes <= 0
         || order_raw_payload_bytes > MAX_LIVE_EXPOSURE_ORDER_PAYLOAD_BYTES
-        || order_created_at > order_updated_at
-        || order_updated_at > as_of
-        || row.filled_at < order_created_at
+        || order_updated_at < earliest_order_update_at
+        || order_updated_at > latest_order_update_at
+        || row.filled_at < earliest_fill_at
+        || row.filled_at > latest_fill_at
     {
-        bail!("live fill exposure has inconsistent bounded order evidence");
+        bail!(
+            "live fill exposure has inconsistent bounded order evidence: fill_id={}, order_id={}, fill_at={}, order_created_at={}, order_updated_at={}, database_as_of={}, fill_order_delta_ms={}, allowed_fill_order_skew_ms={}, order_update_creation_delta_ms={}, order_update_observation_delta_ms={}, allowed_external_clock_skew_ms={}",
+            row.fill_id,
+            row.fill_order_id,
+            row.filled_at,
+            order_created_at,
+            order_updated_at,
+            as_of,
+            row.filled_at
+                .signed_duration_since(order_created_at)
+                .num_milliseconds(),
+            LIVE_FILL_RECONCILIATION_SKEW.num_milliseconds(),
+            order_updated_at
+                .signed_duration_since(order_created_at)
+                .num_milliseconds(),
+            order_updated_at.signed_duration_since(as_of).num_milliseconds(),
+            LIVE_EXTERNAL_EVENT_CLOCK_SKEW.num_milliseconds(),
+        );
     }
     if row.fill_token_id != order_token_id {
         bail!("live fill exposure token does not match its persisted order");
@@ -2891,13 +2929,30 @@ fn validate_live_daily_settlement(
     if credited_at < day_start || credited_at >= day_end || credited_at > as_of {
         bail!("credited live settlement is outside the proven UTC-day observation window");
     }
-    if settlement.official_resolution_received_at > credited_at
+    let latest_resolution_receipt = credited_at
+        .checked_add_signed(LIVE_EXTERNAL_EVENT_CLOCK_SKEW)
+        .context("credited live settlement resolution clock window overflow")?;
+    if settlement.official_resolution_received_at > latest_resolution_receipt
         || settlement.created_at > credited_at
         || settlement.updated_at < settlement.created_at
         || settlement.updated_at > as_of
         || settlement.credit_attempts < 1
     {
-        bail!("credited live settlement has inconsistent accounting timestamps or attempts");
+        bail!(
+            "credited live settlement has inconsistent accounting timestamps or attempts: settlement_id={}, resolution_received_at={}, created_at={}, updated_at={}, credited_at={}, database_as_of={}, resolution_credit_delta_ms={}, allowed_external_clock_skew_ms={}, credit_attempts={}",
+            settlement.settlement_id,
+            settlement.official_resolution_received_at,
+            settlement.created_at,
+            settlement.updated_at,
+            credited_at,
+            as_of,
+            settlement
+                .official_resolution_received_at
+                .signed_duration_since(credited_at)
+                .num_milliseconds(),
+            LIVE_EXTERNAL_EVENT_CLOCK_SKEW.num_milliseconds(),
+            settlement.credit_attempts,
+        );
     }
     if settlement.order_id.trim().is_empty()
         || settlement.market_id.trim().is_empty()
@@ -3030,7 +3085,11 @@ fn validate_live_daily_settlement(
             .context("credited live redemption is missing its exchange timestamp")?
             .parse::<DateTime<Utc>>()
             .context("credited live redemption exchange timestamp is invalid")?;
-        if redeemed_at > credited_at {
+        if redeemed_at
+            > credited_at
+                .checked_add_signed(LIVE_EXTERNAL_EVENT_CLOCK_SKEW)
+                .context("credited live redemption clock window overflow")?
+        {
             bail!("credited live redemption was recorded before its exchange evidence");
         }
         if !evidence
@@ -3203,9 +3262,10 @@ mod tests {
             build_live_process_exposure_snapshot, canonical_fill_for_storage,
             durable_fill_state_supersedes_report, fill_record_matches, live_requested_exposure,
             order_request_identity_matches, order_request_result_matches, required_fill_process_id,
-            validate_live_daily_settlement, LiveDailySettlementRow, LiveExposureFillRow,
-            LiveExposureOrderRow, HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL, INSERT_FILL_IDENTITY_SQL,
-            INSERT_FILL_SQL, INSERT_ORDER_SQL, RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL,
+            validate_live_daily_settlement, validate_live_exposure_fill, LiveDailySettlementRow,
+            LiveExposureFillRow, LiveExposureOrderRow, HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL,
+            INSERT_FILL_IDENTITY_SQL, INSERT_FILL_SQL, INSERT_ORDER_SQL,
+            RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL,
             SELECT_CREDITED_LIVE_PROCESS_SETTLEMENTS_SQL, SELECT_FILL_IDENTITY_SQL,
             SELECT_FILL_SQL, SELECT_LIVE_PROCESS_CROSS_OWNED_FILL_EXISTS_SQL,
             SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL, SELECT_LIVE_PROCESS_EXPOSURE_ORDERS_SQL,
@@ -3303,7 +3363,7 @@ mod tests {
             "net_pnl": "-4.2",
             "recognized_by_config_hash": "a".repeat(64),
         });
-        let settlement = LiveDailySettlementRow {
+        let mut settlement = LiveDailySettlementRow {
             settlement_id,
             run_id,
             process_id,
@@ -3334,6 +3394,29 @@ mod tests {
             credited_at,
         )
         .unwrap();
+
+        settlement.official_resolution_received_at =
+            credited_at + crate::execution::LIVE_EXTERNAL_EVENT_CLOCK_SKEW;
+        settlement.credit_evidence["official_resolution_received_at"] =
+            serde_json::json!(settlement.official_resolution_received_at);
+        validate_live_daily_settlement(
+            &settlement,
+            credited_at - Duration::hours(1),
+            credited_at + Duration::hours(1),
+            credited_at + Duration::seconds(1),
+        )
+        .unwrap();
+
+        settlement.official_resolution_received_at += Duration::microseconds(1);
+        settlement.credit_evidence["official_resolution_received_at"] =
+            serde_json::json!(settlement.official_resolution_received_at);
+        assert!(validate_live_daily_settlement(
+            &settlement,
+            credited_at - Duration::hours(1),
+            credited_at + Duration::hours(1),
+            credited_at + Duration::seconds(1),
+        )
+        .is_err());
     }
 
     #[test]
@@ -3581,6 +3664,64 @@ mod tests {
         assert_eq!(snapshot.filled_buy_fees_usd, dec!(0.01));
         assert_eq!(snapshot.total_exposure_usd, dec!(1.33));
         assert_eq!(snapshot.exposed_market_ids, vec!["market".to_string()]);
+    }
+
+    #[test]
+    fn live_fill_exposure_accepts_exchange_second_precision_before_local_order_creation() {
+        let process_id = Uuid::from_u128(201);
+        let fill_at = "2026-08-14T14:03:16Z"
+            .parse::<chrono::DateTime<Utc>>()
+            .unwrap();
+        let order_created_at = fill_at + Duration::microseconds(406_916);
+        let mut order = live_exposure_order_row(
+            process_id,
+            OrderState::Filled,
+            order_created_at + Duration::seconds(1),
+        );
+        order.created_at = order_created_at;
+        order.updated_at = fill_at;
+        let fill = live_exposure_fill_row(&order, process_id, fill_at, dec!(2), Decimal::ZERO);
+
+        validate_live_exposure_fill(&fill, process_id, order_created_at + Duration::seconds(1))
+            .unwrap();
+    }
+
+    #[test]
+    fn live_fill_exposure_rejects_order_update_outside_external_clock_bound() {
+        let process_id = Uuid::from_u128(203);
+        let at = Utc::now();
+        let mut order = live_exposure_order_row(process_id, OrderState::Filled, at);
+        order.updated_at = order.created_at
+            - crate::execution::LIVE_EXTERNAL_EVENT_CLOCK_SKEW
+            - Duration::microseconds(1);
+        let fill =
+            live_exposure_fill_row(&order, process_id, order.created_at, dec!(2), Decimal::ZERO);
+
+        let error = validate_live_exposure_fill(&fill, process_id, at).unwrap_err();
+        assert!(error.to_string().contains("order_update_creation_delta_ms"));
+        assert!(error.to_string().contains("allowed_external_clock_skew_ms"));
+    }
+
+    #[test]
+    fn live_fill_exposure_rejects_timestamp_outside_existing_reconciliation_window() {
+        let process_id = Uuid::from_u128(202);
+        let at = Utc::now();
+        let order = live_exposure_order_row(process_id, OrderState::Filled, at);
+        let fill = live_exposure_fill_row(
+            &order,
+            process_id,
+            order.created_at
+                - crate::execution::LIVE_FILL_RECONCILIATION_SKEW
+                - Duration::microseconds(1),
+            dec!(2),
+            Decimal::ZERO,
+        );
+
+        let error =
+            validate_live_exposure_fill(&fill, process_id, order.updated_at + Duration::seconds(1))
+                .unwrap_err();
+        assert!(error.to_string().contains("fill_order_delta_ms"));
+        assert!(error.to_string().contains("allowed_fill_order_skew_ms"));
     }
 
     #[test]

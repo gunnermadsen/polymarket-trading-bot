@@ -52,7 +52,7 @@ use crate::{
         LivePoly1271FunderProbeCandidate, LivePoly1271FunderProbeRequest,
         LivePoly1271FunderProbeResponse, LivePrePostGuard, LiveVenueStatus,
         LiveWalletAddressDiagnostics, LiveWalletCandidateAddressDiagnostics,
-        LiveWalletTokenBalances, ReconciliationReport,
+        LiveWalletTokenBalances, ReconciliationReport, LIVE_FILL_RECONCILIATION_SKEW,
     },
     idempotency::event_hash,
     models::{EffectiveProcessExecutionConfig, FillRecord, OrderRecord, OrderRequest},
@@ -76,7 +76,6 @@ const MAX_CLOB_RECONCILIATION_ROWS: usize = 4_096;
 const MAX_CLOB_RECONCILIATION_ORDER_IDS: usize = 8_192;
 const MAX_CLOB_CURSOR_BYTES: usize = 256;
 const CLOB_ORDER_ID_QUERY_CHUNK: usize = 500;
-const FOK_FILL_RECONCILIATION_SKEW: chrono::Duration = chrono::Duration::hours(1);
 const USER_WS_MAX_TRANSPORT_OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
 const USER_WS_RECONNECT_INITIAL_DELAY: Duration = Duration::from_secs(1);
 const USER_WS_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
@@ -1867,13 +1866,16 @@ fn fill_record_from_trade_for_order(
     }
     let earliest_match_time = order
         .created_at
-        .checked_sub_signed(FOK_FILL_RECONCILIATION_SKEW)
+        .checked_sub_signed(LIVE_FILL_RECONCILIATION_SKEW)
         .context("live REST fill order window underflow")?;
     let latest_match_time = order
         .created_at
-        .checked_add_signed(FOK_FILL_RECONCILIATION_SKEW)
+        .checked_add_signed(LIVE_FILL_RECONCILIATION_SKEW)
         .context("live REST fill order window overflow")?;
-    if trade.match_time > checked_at
+    let latest_observed_match_time = checked_at
+        .checked_add_signed(LIVE_FILL_RECONCILIATION_SKEW)
+        .context("live REST fill observation window overflow")?;
+    if trade.match_time > latest_observed_match_time
         || trade.match_time < earliest_match_time
         || trade.match_time > latest_match_time
     {
@@ -2006,7 +2008,7 @@ fn reconciliation_trade_window_start(
         bail!("live reconciliation found a future-dated local order");
     }
     oldest_local_created_at
-        .checked_sub_signed(FOK_FILL_RECONCILIATION_SKEW)
+        .checked_sub_signed(LIVE_FILL_RECONCILIATION_SKEW)
         .context("live reconciliation trade window underflow")
 }
 
@@ -3117,8 +3119,8 @@ impl ExecutionVenue for LiveVenue {
                 U256::from_str(&persisted_order.request.token_id)
                     .context("failed to parse persisted CLOB token_id")?,
             )
-            .after((persisted_order.created_at - FOK_FILL_RECONCILIATION_SKEW).timestamp())
-            .before((persisted_order.created_at + FOK_FILL_RECONCILIATION_SKEW).timestamp())
+            .after((persisted_order.created_at - LIVE_FILL_RECONCILIATION_SKEW).timestamp())
+            .before((persisted_order.created_at + LIVE_FILL_RECONCILIATION_SKEW).timestamp())
             .build();
         let trades = self.all_trade_responses(&trades_request).await?;
         let owned_orders =
@@ -4378,7 +4380,7 @@ mod tests {
 
         let window_start =
             reconciliation_trade_window_start(std::slice::from_ref(&order), checked_at).unwrap();
-        assert_eq!(window_start, created_at - FOK_FILL_RECONCILIATION_SKEW);
+        assert_eq!(window_start, created_at - LIVE_FILL_RECONCILIATION_SKEW);
         assert!(window_start < checked_at - chrono::Duration::hours(1));
 
         let fills = rest_fill_backfill_plan(
