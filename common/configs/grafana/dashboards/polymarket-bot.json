@@ -3199,7 +3199,7 @@
         "type": "grafana",
         "uid": "grafana"
       },
-      "description": "Global Binance BTC/USDT one-second price path for only the active five-minute Polymarket window, with the official Chainlink opening reference shown as Price to Beat. The bounded current-market path is resent every second so a refreshed browser reconstructs the elapsed window and the completed market is replaced at rollover. This panel is independent of trading-process and PnL filters.",
+      "description": "Global Chainlink BTC/USD settlement-price path for only the active five-minute Polymarket window, with the immutable opening Chainlink reference shown as Price to Beat. The bounded current-market path is resent every second so a refreshed browser reconstructs the elapsed window and the completed market is replaced at rollover. This panel is independent of trading-process and PnL filters.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3254,12 +3254,12 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "btc_price"
+              "options": "chainlink_price"
             },
             "properties": [
               {
                 "id": "displayName",
-                "value": "BTC Price"
+                "value": "Chainlink BTC/USD"
               },
               {
                 "id": "color",
@@ -3339,7 +3339,7 @@
           "filter": {
             "fields": [
               "time",
-              "btc_price",
+              "chainlink_price",
               "price_to_beat"
             ]
           },
@@ -3416,6 +3416,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 133,
+  "version": 134,
   "weekStart": ""
 }

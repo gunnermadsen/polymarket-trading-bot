@@ -38,7 +38,7 @@ use polymarket_bot::{
         LiveOrderDryRunRequest, LivePoly1271FunderProbeRequest, LivePoly1271FunderProbeResponse,
         LiveVenueStatus, LiveWalletAddressDiagnostics,
     },
-    grafana_live::{CountdownSnapshot, GrafanaLivePublisher, MarketPathSnapshot},
+    grafana_live::{CountdownSnapshot, GrafanaLivePublisher, MarketPathPoint, MarketPathSnapshot},
     http as control_http,
     http::{
         ControlApi, HealthResponse, HealthStatus, HttpError, IngestionBackfillCancelResponse,
@@ -1064,6 +1064,7 @@ struct PendingBtcTerminal {
 #[derive(Debug, Clone)]
 struct CachedGrafanaMarketTarget {
     market_id: String,
+    source_timestamp: chrono::DateTime<Utc>,
     price: Decimal,
 }
 
@@ -2791,20 +2792,20 @@ impl BtcProcessManager {
             self.grafana_market_target.lock().await.take();
             return Ok(None);
         };
-        let (market, candles) = {
+        let (market, chainlink_history) = {
             let state = state.read().await;
             let Some(market) = state.current_market.clone() else {
                 drop(state);
                 self.grafana_market_target.lock().await.take();
                 return Ok(None);
             };
-            let candles = state
-                .binance_one_second_window
-                .completed()
+            let chainlink_history = state
+                .directional_external
+                .chainlink_mid
                 .iter()
                 .cloned()
                 .collect::<Vec<_>>();
-            (market, candles)
+            (market, chainlink_history)
         };
         if !market.is_trade_window(observed_at) {
             self.grafana_market_target.lock().await.take();
@@ -2817,9 +2818,12 @@ impl BtcProcessManager {
             .await
             .as_ref()
             .filter(|cached| cached.market_id == market.market_id)
-            .map(|cached| cached.price);
-        let price_to_beat = match cached_target {
-            Some(price) => Some(price),
+            .map(|cached| MarketPathPoint {
+                observed_at: cached.source_timestamp,
+                price: cached.price,
+            });
+        let opening_reference = match cached_target {
+            Some(reference) => Some(reference),
             None => {
                 let reference = self
                     .repository
@@ -2829,12 +2833,16 @@ impl BtcProcessManager {
                         chrono::Duration::seconds(5),
                     )
                     .await?;
-                let price = reference.map(|reference| reference.price);
+                let opening_reference = reference.map(|reference| MarketPathPoint {
+                    observed_at: reference.source_timestamp,
+                    price: reference.price,
+                });
                 let mut cached = self.grafana_market_target.lock().await;
-                if let Some(price) = price {
+                if let Some(reference) = opening_reference.as_ref() {
                     *cached = Some(CachedGrafanaMarketTarget {
                         market_id: market.market_id.clone(),
-                        price,
+                        source_timestamp: reference.observed_at,
+                        price: reference.price,
                     });
                 } else if cached
                     .as_ref()
@@ -2842,15 +2850,15 @@ impl BtcProcessManager {
                 {
                     cached.take();
                 }
-                price
+                opening_reference
             }
         };
 
         Ok(Some(MarketPathSnapshot::resolve(
             observed_at,
             &market,
-            price_to_beat,
-            candles,
+            opening_reference,
+            chainlink_history,
         )))
     }
 

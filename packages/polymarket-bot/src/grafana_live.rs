@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 
 use crate::{
-    btc::{BinanceOneSecondKline, BtcIntervalMarket, BTC_INTERVAL_SECONDS},
+    btc::{BtcIntervalMarket, ChainlinkMidPoint},
     config::GrafanaLiveConfig,
 };
 
@@ -156,22 +156,35 @@ impl MarketPathSnapshot {
     pub fn resolve(
         observed_at: DateTime<Utc>,
         market: &BtcIntervalMarket,
-        price_to_beat: Option<Decimal>,
-        candles: impl IntoIterator<Item = BinanceOneSecondKline>,
+        opening_reference: Option<MarketPathPoint>,
+        chainlink_history: impl IntoIterator<Item = ChainlinkMidPoint>,
     ) -> Self {
-        let points = candles
-            .into_iter()
-            .filter(|candle| {
-                candle.open_timestamp >= market.window_start
-                    && candle.close_timestamp <= market.window_end
-                    && candle.close_timestamp <= observed_at
-            })
-            .take(BTC_INTERVAL_SECONDS as usize)
-            .map(|candle| MarketPathPoint {
-                observed_at: candle.close_timestamp,
-                price: candle.close_price,
-            })
-            .collect();
+        let opening_reference = opening_reference.filter(|point| {
+            point.observed_at >= market.window_start
+                && point.observed_at <= market.window_end
+                && point.observed_at <= observed_at
+        });
+        let price_to_beat = opening_reference.as_ref().map(|point| point.price);
+        let mut points = Vec::new();
+        if let Some(opening_reference) = opening_reference {
+            points.push(opening_reference);
+        }
+        points.extend(
+            chainlink_history
+                .into_iter()
+                .filter(|point| {
+                    point.source_timestamp >= market.window_start
+                        && point.source_timestamp <= market.window_end
+                        && point.source_timestamp <= observed_at
+                        && point.available_at <= observed_at
+                })
+                .map(|point| MarketPathPoint {
+                    observed_at: point.source_timestamp,
+                    price: point.price,
+                }),
+        );
+        points.sort_by_key(|point| point.observed_at);
+        points.dedup_by(|right, left| right.observed_at == left.observed_at);
         Self {
             observed_at,
             market_id: market.market_id.clone(),
@@ -208,12 +221,12 @@ impl MarketPathSnapshot {
             match self.price_to_beat {
                 Some(price_to_beat) => writeln!(
                     body,
-                    "{MARKET_PATH_MEASUREMENT} btc_price={},price_to_beat={price_to_beat},{snapshot_field}=1i {point_epoch_nanos}",
+                    "{MARKET_PATH_MEASUREMENT} chainlink_price={},price_to_beat={price_to_beat},{snapshot_field}=1i {point_epoch_nanos}",
                     point.price,
                 ),
                 None => writeln!(
                     body,
-                    "{MARKET_PATH_MEASUREMENT} btc_price={},{}=1i {point_epoch_nanos}",
+                    "{MARKET_PATH_MEASUREMENT} chainlink_price={},{}=1i {point_epoch_nanos}",
                     point.price, snapshot_field,
                 ),
             }
@@ -317,26 +330,11 @@ mod tests {
         }
     }
 
-    fn candle(open_timestamp: DateTime<Utc>, close_price: Decimal) -> BinanceOneSecondKline {
-        BinanceOneSecondKline {
-            open_timestamp,
-            close_timestamp: open_timestamp + ChronoDuration::seconds(1),
-            open_price: close_price,
-            high_price: close_price,
-            low_price: close_price,
-            close_price,
-            base_volume: dec!(1),
-            quote_volume: close_price,
-            trade_count: 1,
-            taker_buy_base_volume: dec!(1),
-            taker_buy_quote_volume: close_price,
-            first_aggregate_trade_id: 1,
-            last_aggregate_trade_id: 1,
-            first_source_timestamp: open_timestamp,
-            last_source_timestamp: open_timestamp,
-            max_received_at: open_timestamp,
-            source_complete: true,
-            synthetic: false,
+    fn chainlink_point(source_timestamp: DateTime<Utc>, price: Decimal) -> ChainlinkMidPoint {
+        ChainlinkMidPoint {
+            source_timestamp,
+            available_at: source_timestamp,
+            price,
         }
     }
 
@@ -392,35 +390,48 @@ mod tests {
     fn market_path_contains_only_the_current_bounded_market_window() {
         let now = Utc.timestamp_opt(1_800_000_100, 0).unwrap();
         let market = market("one", now);
-        let before = candle(market.window_start - ChronoDuration::seconds(1), dec!(99));
-        let current = candle(market.window_start, dec!(100));
-        let future = candle(now, dec!(101));
+        let before = chainlink_point(market.window_start - ChronoDuration::seconds(1), dec!(99));
+        let current = chainlink_point(market.window_start + ChronoDuration::seconds(1), dec!(100));
+        let future = chainlink_point(now + ChronoDuration::seconds(1), dec!(101));
+        let opening = MarketPathPoint {
+            observed_at: market.window_start,
+            price: dec!(100.5),
+        };
 
         let snapshot = MarketPathSnapshot::resolve(
             now,
             &market,
-            Some(dec!(100.5)),
+            Some(opening),
             [before, current.clone(), future],
         );
 
-        assert_eq!(snapshot.points.len(), 1);
-        assert_eq!(snapshot.points[0].observed_at, current.close_timestamp);
-        assert_eq!(snapshot.points[0].price, dec!(100));
+        assert_eq!(snapshot.points.len(), 2);
+        assert_eq!(snapshot.points[0].observed_at, market.window_start);
+        assert_eq!(snapshot.points[0].price, dec!(100.5));
+        assert_eq!(snapshot.points[1].observed_at, current.source_timestamp);
+        assert_eq!(snapshot.points[1].price, dec!(100));
     }
 
     #[test]
     fn market_path_renders_price_target_and_snapshot_replacement_marker() {
         let now = Utc.timestamp_opt(1_800_000_100, 0).unwrap();
         let market = market("one", now);
+        let opening = MarketPathPoint {
+            observed_at: market.window_start,
+            price: dec!(100.5),
+        };
         let snapshot = MarketPathSnapshot::resolve(
             now,
             &market,
-            Some(dec!(100.5)),
-            [candle(market.window_start, dec!(100))],
+            Some(opening),
+            [chainlink_point(
+                market.window_start + ChronoDuration::seconds(1),
+                dec!(100),
+            )],
         );
         let body = snapshot.influx_body();
 
-        assert!(body.starts_with("btc_market_path btc_price=100,price_to_beat=100.5"));
+        assert!(body.starts_with("btc_market_path chainlink_price=100.5,price_to_beat=100.5"));
         assert!(body.contains("snapshot_1800000100000000000=1i"));
         assert_ne!(
             body,
