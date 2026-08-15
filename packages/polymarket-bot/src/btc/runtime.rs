@@ -431,6 +431,8 @@ pub struct BtcRuntimeMetrics {
     pub clob_active_edge_server: Option<String>,
     pub clob_active_handshake_date: Option<String>,
     pub clob_active_last_data_or_heartbeat_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub clob_active_last_inbound_frame_age_milliseconds: Option<u64>,
     pub clob_active_heartbeat_probes: u64,
     pub clob_active_heartbeat_acknowledgements: u64,
     pub clob_active_last_heartbeat_sent_at: Option<DateTime<Utc>>,
@@ -476,6 +478,19 @@ pub struct BtcRuntimeStatus {
     pub running: bool,
     pub readiness: Readiness,
     pub metrics: BtcRuntimeMetrics,
+}
+
+fn runtime_metrics_snapshot(
+    mut metrics: BtcRuntimeMetrics,
+    checked_at: DateTime<Utc>,
+) -> BtcRuntimeMetrics {
+    metrics.clob_active_last_inbound_frame_age_milliseconds = metrics
+        .clob_active_last_data_or_heartbeat_at
+        .filter(|received_at| *received_at <= checked_at)
+        .map(|received_at| {
+            u64::try_from((checked_at - received_at).num_milliseconds()).unwrap_or(u64::MAX)
+        });
+    metrics
 }
 
 #[derive(Debug)]
@@ -570,6 +585,7 @@ struct ClobFeedWatchdog {
     bootstrap_deadline: Option<Instant>,
     read_idle_deadline: Instant,
     pong_deadline: Option<Instant>,
+    pending_pong_probe_sent_at: Option<Instant>,
 }
 
 impl ClobFeedWatchdog {
@@ -584,6 +600,7 @@ impl ClobFeedWatchdog {
             bootstrap_deadline: None,
             read_idle_deadline: now + CLOB_READ_IDLE_TIMEOUT,
             pong_deadline: None,
+            pending_pong_probe_sent_at: None,
         };
         watchdog.refresh_bootstrap(now, registry, markets, checked_at);
         watchdog
@@ -602,15 +619,19 @@ impl ClobFeedWatchdog {
         // Preserve the deadline of the oldest unacknowledged probe. Continuing the
         // documented PING cadence must not turn one missing PONG into an unbounded wait.
         self.pong_deadline.get_or_insert(now + pong_timeout);
+        // Correlation is telemetry and remains pending when ordinary inbound traffic
+        // independently proves transport liveness.
+        self.pending_pong_probe_sent_at = Some(now);
     }
 
-    fn acknowledge_text_pong(&mut self, text: &str) -> bool {
-        if self.pong_deadline.is_some() && is_clob_text_pong(text) {
-            self.pong_deadline = None;
-            true
-        } else {
-            false
+    fn acknowledge_text_pong(&mut self, text: &str, now: Instant) -> Option<StdDuration> {
+        if !is_clob_text_pong(text) {
+            return None;
         }
+        self.pong_deadline = None;
+        self.pending_pong_probe_sent_at
+            .take()
+            .map(|sent_at| now.saturating_duration_since(sent_at))
     }
 
     fn refresh_bootstrap(
@@ -776,18 +797,16 @@ impl ClobSocketTelemetry {
         &mut self,
         acknowledged_at: DateTime<Utc>,
         acknowledged_instant: Instant,
+        round_trip: StdDuration,
     ) -> ClobHeartbeatAcknowledgementSample {
         self.heartbeat_acknowledgements = self.heartbeat_acknowledgements.saturating_add(1);
         self.last_heartbeat_acknowledged_at = Some(acknowledged_at);
         self.last_heartbeat_acknowledged_instant = Some(acknowledged_instant);
         self.last_data_or_heartbeat_at = Some(acknowledged_at);
-        let round_trip = self
-            .last_heartbeat_sent_instant
-            .map(|sent_at| acknowledged_instant.saturating_duration_since(sent_at));
-        self.last_pong_round_trip = round_trip;
+        self.last_pong_round_trip = Some(round_trip);
         ClobHeartbeatAcknowledgementSample {
             acknowledged_at,
-            round_trip,
+            round_trip: Some(round_trip),
         }
     }
 
@@ -1750,8 +1769,9 @@ impl BtcRuntimeHandle {
 
     pub async fn status(&self) -> BtcRuntimeStatus {
         let state = self.state.read().await.clone();
+        let checked_at = Utc::now();
         let readiness = state.readiness(
-            Utc::now(),
+            checked_at,
             chrono_duration(self.config.max_book_age),
             chrono_duration(self.config.max_reference_age),
         );
@@ -1759,7 +1779,7 @@ impl BtcRuntimeHandle {
             enabled: self.enabled,
             running: self.running.load(Ordering::Relaxed),
             readiness,
-            metrics: self.metrics.read().await.clone(),
+            metrics: runtime_metrics_snapshot(self.metrics.read().await.clone(), checked_at),
         }
     }
 
@@ -1895,8 +1915,9 @@ pub async fn runtime_status_from_inputs(
     running: Arc<AtomicBool>,
 ) -> BtcRuntimeStatus {
     let state = state.read().await.clone();
+    let checked_at = Utc::now();
     let readiness = state.readiness(
-        Utc::now(),
+        checked_at,
         chrono_duration(config.max_book_age),
         chrono_duration(config.max_reference_age),
     );
@@ -1904,7 +1925,7 @@ pub async fn runtime_status_from_inputs(
         enabled: config.enabled,
         running: running.load(Ordering::Relaxed),
         readiness,
-        metrics: metrics.read().await.clone(),
+        metrics: runtime_metrics_snapshot(metrics.read().await.clone(), checked_at),
     }
 }
 
@@ -2941,9 +2962,11 @@ async fn apply_active_clob_frame(
 ) -> Result<ClobFrameAction> {
     let received_instant = Instant::now();
     let received_at = Utc::now();
-    let acknowledged_pong = match &message {
-        Message::Text(text) => epoch.watchdog.acknowledge_text_pong(text.as_str()),
-        _ => false,
+    let pong_round_trip = match &message {
+        Message::Text(text) => epoch
+            .watchdog
+            .acknowledge_text_pong(text.as_str(), received_instant),
+        _ => None,
     };
     epoch.watchdog.on_frame(received_instant);
     epoch.telemetry.record_frame(received_at, received_instant);
@@ -2951,10 +2974,12 @@ async fn apply_active_clob_frame(
         Message::Text(text) => {
             let pong_like = is_clob_text_pong(text.as_str());
             if pong_like {
-                if acknowledged_pong {
-                    let sample = epoch
-                        .telemetry
-                        .record_heartbeat_acknowledgement(received_at, received_instant);
+                if let Some(round_trip) = pong_round_trip {
+                    let sample = epoch.telemetry.record_heartbeat_acknowledgement(
+                        received_at,
+                        received_instant,
+                        round_trip,
+                    );
                     record_active_clob_heartbeat_acknowledgement_metrics(metrics, sample).await;
                 }
                 return Ok(ClobFrameAction::Continue);
@@ -3065,9 +3090,11 @@ async fn apply_active_clob_frame(
 fn apply_private_clob_frame(epoch: &mut ClobEpoch, message: Message) -> ClobFrameAction {
     let received_instant = Instant::now();
     let received_at = Utc::now();
-    let acknowledged_pong = match &message {
-        Message::Text(text) => epoch.watchdog.acknowledge_text_pong(text.as_str()),
-        _ => false,
+    let pong_round_trip = match &message {
+        Message::Text(text) => epoch
+            .watchdog
+            .acknowledge_text_pong(text.as_str(), received_instant),
+        _ => None,
     };
     epoch.watchdog.on_frame(received_instant);
     epoch.telemetry.record_frame(received_at, received_instant);
@@ -3075,10 +3102,12 @@ fn apply_private_clob_frame(epoch: &mut ClobEpoch, message: Message) -> ClobFram
         Message::Text(text) => {
             let pong_like = is_clob_text_pong(text.as_str());
             if pong_like {
-                if acknowledged_pong {
-                    epoch
-                        .telemetry
-                        .record_heartbeat_acknowledgement(received_at, received_instant);
+                if let Some(round_trip) = pong_round_trip {
+                    epoch.telemetry.record_heartbeat_acknowledgement(
+                        received_at,
+                        received_instant,
+                        round_trip,
+                    );
                 }
                 return ClobFrameAction::Continue;
             }
@@ -3134,9 +3163,13 @@ fn apply_private_clob_frame(epoch: &mut ClobEpoch, message: Message) -> ClobFram
                             if !same_clob_resolution_outcome(&entry.get().message, &message) {
                                 epoch.session.integrity_gaps =
                                     epoch.session.integrity_gaps.saturating_add(1);
-                                epoch.session.disconnect_reason =
-                                    Some("successor_resolution_conflict".to_string());
-                                return ClobFrameAction::Disconnect;
+                                tracing::warn!(
+                                    feed = "polymarket_clob_market",
+                                    connection_id = %epoch.connection_id,
+                                    connection_epoch = epoch.connection_epoch,
+                                    market_id = %entry.key(),
+                                    "private CLOB successor resolution conflict quarantined without retiring transport"
+                                );
                             }
                         }
                     }
@@ -3173,9 +3206,6 @@ fn apply_private_clob_frame(epoch: &mut ClobEpoch, message: Message) -> ClobFram
                             );
                             epoch.session.integrity_gaps =
                                 epoch.session.integrity_gaps.saturating_add(1);
-                            epoch.session.disconnect_reason =
-                                Some("successor_integrity_gap".to_string());
-                            return ClobFrameAction::Disconnect;
                         }
                     }
                 }
@@ -3184,15 +3214,13 @@ fn apply_private_clob_frame(epoch: &mut ClobEpoch, message: Message) -> ClobFram
         Err(error) => {
             epoch.registry.quarantine(FeedIntegrityStatus::DecodeError);
             epoch.session.decode_errors = epoch.session.decode_errors.saturating_add(1);
-            epoch.session.disconnect_reason = Some("successor_decode_error".to_string());
             tracing::warn!(
                 feed = "polymarket_clob_market",
                 connection_id = %epoch.connection_id,
                 connection_epoch = epoch.connection_epoch,
                 reason = %error,
-                "private CLOB successor frame failed to decode"
+                "private CLOB successor frame failed to decode; transport retained"
             );
-            return ClobFrameAction::Disconnect;
         }
     }
     ClobFrameAction::Continue
@@ -3878,11 +3906,23 @@ async fn run_clob_supervisor(
                 shutdown_requested = true;
             }
             _ = &mut active_bootstrap_sleep, if active_bootstrap_deadline.is_some() => {
-                active_failure = Some((
-                    "bootstrap_book_timeout".to_string(),
-                    ClobDisconnectCause::BootstrapFailure,
-                    None,
-                ));
+                if let Some(epoch) = active.as_mut() {
+                    epoch.watchdog.bootstrap_deadline = None;
+                    let mut runtime_metrics = metrics.write().await;
+                    runtime_metrics.clob_bootstrap_failures = runtime_metrics
+                        .clob_bootstrap_failures
+                        .saturating_add(1);
+                    runtime_metrics.last_error = Some(
+                        "active CLOB books did not bootstrap before the readiness deadline; transport retained"
+                            .to_string(),
+                    );
+                    tracing::warn!(
+                        feed = "polymarket_clob_market",
+                        connection_id = %epoch.connection_id,
+                        connection_epoch = epoch.connection_epoch,
+                        "active CLOB bootstrap deadline elapsed; transport retained"
+                    );
+                }
             }
             _ = &mut active_pong_sleep, if active_pong_deadline.is_some() => {
                 active_failure = Some((
@@ -3899,10 +3939,23 @@ async fn run_clob_supervisor(
                 ));
             }
             _ = &mut successor_bootstrap_sleep, if successor_bootstrap_deadline.is_some() => {
-                successor_failure = Some((
-                    "bootstrap_book_timeout".to_string(),
-                    ClobDisconnectCause::BootstrapFailure,
-                ));
+                if let Some(epoch) = successor.as_mut() {
+                    epoch.watchdog.bootstrap_deadline = None;
+                    let mut runtime_metrics = metrics.write().await;
+                    runtime_metrics.clob_bootstrap_failures = runtime_metrics
+                        .clob_bootstrap_failures
+                        .saturating_add(1);
+                    runtime_metrics.last_error = Some(
+                        "successor CLOB books did not bootstrap before the readiness deadline; transport retained"
+                            .to_string(),
+                    );
+                    tracing::warn!(
+                        feed = "polymarket_clob_market",
+                        connection_id = %epoch.connection_id,
+                        connection_epoch = epoch.connection_epoch,
+                        "successor CLOB bootstrap deadline elapsed; transport retained"
+                    );
+                }
             }
             _ = &mut successor_pong_sleep, if successor_pong_deadline.is_some() => {
                 successor_failure = Some((
@@ -4095,33 +4148,6 @@ async fn run_clob_supervisor(
                                     &mut recovery_window,
                                 )
                                 .await;
-                                if !epoch.books_usable {
-                                    let active_structurally_ready =
-                                        clob_epoch_structurally_ready(
-                                            &epoch.registry,
-                                            &epoch.markets,
-                                            checked_at,
-                                        );
-                                    let successor_execution_ready =
-                                        successor.as_ref().is_some_and(|candidate| {
-                                            clob_successor_ready(
-                                                candidate,
-                                                &markets.borrow(),
-                                                checked_at,
-                                                max_book_age,
-                                            )
-                                        });
-                                    if should_replace_active_clob_epoch(
-                                        active_structurally_ready,
-                                        successor_execution_ready,
-                                    ) {
-                                        active_failure = Some((
-                                            "active_book_structurally_unavailable".to_string(),
-                                            ClobDisconnectCause::ReadinessRefresh,
-                                            None,
-                                        ));
-                                    }
-                                }
                             }
                             Err(error) => {
                                 active_failure = Some((
@@ -4192,23 +4218,6 @@ async fn run_clob_supervisor(
                                 successor_failures = 0;
                                 successor_retry_at = Instant::now();
                                 successor_rapid_retry_allowed = true;
-                                let active_structurally_ready =
-                                    clob_active_epoch_structurally_ready(
-                                        active.as_ref(),
-                                        checked_at,
-                                    );
-                                if active.is_some()
-                                    && should_replace_active_clob_epoch(
-                                        active_structurally_ready,
-                                        true,
-                                    )
-                                {
-                                    active_failure = Some((
-                                        "active_book_structurally_unavailable".to_string(),
-                                        ClobDisconnectCause::ReadinessRefresh,
-                                        None,
-                                    ));
-                                }
                             }
                         }
                     }
@@ -4431,32 +4440,6 @@ async fn run_clob_supervisor(
                         &mut recovery_window,
                     )
                     .await;
-                    if !epoch.books_usable {
-                        let active_structurally_ready = clob_epoch_structurally_ready(
-                            &epoch.registry,
-                            &epoch.markets,
-                            checked_at,
-                        );
-                        let successor_execution_ready =
-                            successor.as_ref().is_some_and(|candidate| {
-                                clob_successor_ready(
-                                    candidate,
-                                    &markets.borrow(),
-                                    checked_at,
-                                    max_book_age,
-                                )
-                            });
-                        if should_replace_active_clob_epoch(
-                            active_structurally_ready,
-                            successor_execution_ready,
-                        ) {
-                            active_failure = Some((
-                                "active_book_structurally_unavailable".to_string(),
-                                ClobDisconnectCause::ReadinessRefresh,
-                                None,
-                            ));
-                        }
-                    }
                     if active_failure.is_none() {
                         for market in &epoch.markets {
                             if !market.is_trade_window(checked_at) {
@@ -5053,13 +5036,6 @@ fn clob_epoch_structurally_ready(
 
 fn clob_active_epoch_structurally_ready(active: Option<&ClobEpoch>, now: DateTime<Utc>) -> bool {
     active.is_some_and(|epoch| clob_epoch_structurally_ready(&epoch.registry, &epoch.markets, now))
-}
-
-fn should_replace_active_clob_epoch(
-    active_structurally_ready: bool,
-    successor_execution_ready: bool,
-) -> bool {
-    !active_structurally_ready && successor_execution_ready
 }
 
 fn should_start_clob_successor(
@@ -10144,15 +10120,6 @@ mod tests {
         let stale_at = ready_at + max_book_age + Duration::milliseconds(1);
         assert!(clob_epoch_ready(&registry, markets, stale_at, max_book_age,));
         assert!(clob_epoch_structurally_ready(&registry, markets, stale_at));
-        assert!(!should_replace_active_clob_epoch(true, true));
-    }
-
-    #[test]
-    fn ready_successor_replaces_only_structurally_unavailable_active_epoch() {
-        assert!(should_replace_active_clob_epoch(false, true));
-        assert!(!should_replace_active_clob_epoch(false, false));
-        assert!(!should_replace_active_clob_epoch(true, false));
-        assert!(!should_replace_active_clob_epoch(true, true));
     }
 
     #[test]
@@ -10296,7 +10263,7 @@ mod tests {
                 &mut candidate,
                 Message::Text("{malformed".to_string().into()),
             ),
-            ClobFrameAction::Disconnect
+            ClobFrameAction::Continue
         );
         assert!(public_registry.checkpoint(&current.up_token_id).is_none());
         assert_eq!(public_metrics.decode_errors, 0);
@@ -10388,13 +10355,10 @@ mod tests {
         });
         assert_eq!(
             apply_private_clob_frame(&mut candidate, Message::Text(ambiguous.to_string().into()),),
-            ClobFrameAction::Disconnect
+            ClobFrameAction::Continue
         );
         assert_eq!(candidate.session.integrity_gaps, 1);
-        assert_eq!(
-            candidate.session.disconnect_reason.as_deref(),
-            Some("successor_integrity_gap")
-        );
+        assert!(candidate.session.disconnect_reason.is_none());
     }
 
     #[test]
@@ -10620,7 +10584,7 @@ mod tests {
                 &mut mismatch_candidate,
                 Message::Text(mismatched_book.to_string().into()),
             ),
-            ClobFrameAction::Disconnect
+            ClobFrameAction::Continue
         );
         assert_eq!(mismatch_candidate.session.integrity_gaps, 1);
     }
@@ -10650,7 +10614,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn conflicting_private_resolution_retires_without_overwriting_first_fact() {
+    async fn conflicting_private_resolution_is_quarantined_without_overwriting_first_fact() {
         let current = market();
         let checked_at = current.window_start + Duration::minutes(1);
         let mut registry = BookRegistry::new(Uuid::new_v4());
@@ -10688,12 +10652,9 @@ mod tests {
                 &mut candidate,
                 Message::Text(conflicting.to_string().into()),
             ),
-            ClobFrameAction::Disconnect
+            ClobFrameAction::Continue
         );
-        assert_eq!(
-            candidate.session.disconnect_reason.as_deref(),
-            Some("successor_resolution_conflict")
-        );
+        assert!(candidate.session.disconnect_reason.is_none());
         let preserved = candidate
             .pending_resolutions
             .get(&current.market_id)
@@ -10826,14 +10787,18 @@ mod tests {
             frame_at + CLOB_READ_IDLE_TIMEOUT
         );
         assert_eq!(watchdog.pong_deadline, None);
-        // Inbound market data proves transport liveness. A later probe starts a
-        // fresh acknowledgement window if no further traffic arrives.
+        assert_eq!(watchdog.pending_pong_probe_sent_at, Some(ping_at));
+        let pong_at = frame_at + StdDuration::from_millis(7);
+        assert_eq!(
+            watchdog.acknowledge_text_pong(" pong \n", pong_at),
+            Some(pong_at.saturating_duration_since(ping_at))
+        );
+        assert_eq!(watchdog.pending_pong_probe_sent_at, None);
+
+        // A later probe starts a fresh liveness and correlation window.
         let later_ping_at = ping_at + StdDuration::from_secs(10);
         watchdog.record_text_ping(later_ping_at, pong_timeout);
         assert_eq!(watchdog.pong_deadline, Some(later_ping_at + pong_timeout));
-
-        assert!(watchdog.acknowledge_text_pong(" pong \n"));
-        assert_eq!(watchdog.pong_deadline, None);
         assert_eq!(
             watchdog.read_idle_deadline,
             frame_at + CLOB_READ_IDLE_TIMEOUT
@@ -10855,6 +10820,7 @@ mod tests {
         let acknowledgement = telemetry.record_heartbeat_acknowledgement(
             wall_clock + Duration::milliseconds(37),
             acknowledged_instant,
+            StdDuration::from_millis(37),
         );
         telemetry.record_frame(
             wall_clock + Duration::milliseconds(37),
@@ -10884,6 +10850,22 @@ mod tests {
 
         telemetry.mark_active();
         assert_eq!(telemetry.role, ClobConnectionRole::Active);
+    }
+
+    #[test]
+    fn runtime_metrics_snapshot_reports_current_clob_inbound_age() {
+        let checked_at = Utc.timestamp_opt(1_784_736_010, 0).unwrap();
+        let metrics = BtcRuntimeMetrics {
+            clob_active_last_data_or_heartbeat_at: Some(checked_at - Duration::milliseconds(1250)),
+            ..BtcRuntimeMetrics::default()
+        };
+
+        let snapshot = runtime_metrics_snapshot(metrics, checked_at);
+
+        assert_eq!(
+            snapshot.clob_active_last_inbound_frame_age_milliseconds,
+            Some(1250)
+        );
     }
 
     #[test]
