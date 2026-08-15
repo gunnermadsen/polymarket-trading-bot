@@ -592,6 +592,11 @@ impl ClobFeedWatchdog {
 
     fn on_frame(&mut self, now: Instant) {
         self.read_idle_deadline = now + CLOB_READ_IDLE_TIMEOUT;
+        // Any inbound frame proves that the transport is alive. Some CLOB edge
+        // connections continue delivering market data without echoing every
+        // application-level PING, so a missed text PONG alone must not retire
+        // an otherwise active connection.
+        self.pong_deadline = None;
     }
 
     fn record_text_ping(&mut self, now: Instant, pong_timeout: StdDuration) {
@@ -1342,6 +1347,10 @@ impl ReferenceFeedWatchdog {
 
     fn on_frame(&mut self, now: Instant) {
         self.read_idle_deadline = now + REFERENCE_READ_IDLE_TIMEOUT;
+        // Inbound traffic is authoritative transport-liveness evidence even
+        // when an intermediary does not return the matching control PONG.
+        self.pong_deadline = None;
+        self.expected_pong = None;
     }
 
     fn on_required_tick(&mut self, now: Instant) {
@@ -2933,13 +2942,17 @@ async fn apply_active_clob_frame(
 ) -> Result<ClobFrameAction> {
     let received_instant = Instant::now();
     let received_at = Utc::now();
+    let acknowledged_pong = match &message {
+        Message::Text(text) => epoch.watchdog.acknowledge_text_pong(text.as_str()),
+        _ => false,
+    };
     epoch.watchdog.on_frame(received_instant);
     epoch.telemetry.record_frame(received_at, received_instant);
     let parsed = match message {
         Message::Text(text) => {
             let pong_like = is_clob_text_pong(text.as_str());
             if pong_like {
-                if epoch.watchdog.acknowledge_text_pong(text.as_str()) {
+                if acknowledged_pong {
                     let sample = epoch
                         .telemetry
                         .record_heartbeat_acknowledgement(received_at, received_instant);
@@ -3053,13 +3066,17 @@ async fn apply_active_clob_frame(
 fn apply_private_clob_frame(epoch: &mut ClobEpoch, message: Message) -> ClobFrameAction {
     let received_instant = Instant::now();
     let received_at = Utc::now();
+    let acknowledged_pong = match &message {
+        Message::Text(text) => epoch.watchdog.acknowledge_text_pong(text.as_str()),
+        _ => false,
+    };
     epoch.watchdog.on_frame(received_instant);
     epoch.telemetry.record_frame(received_at, received_instant);
     let parsed = match message {
         Message::Text(text) => {
             let pong_like = is_clob_text_pong(text.as_str());
             if pong_like {
-                if epoch.watchdog.acknowledge_text_pong(text.as_str()) {
+                if acknowledged_pong {
                     epoch
                         .telemetry
                         .record_heartbeat_acknowledgement(received_at, received_instant);
@@ -8009,6 +8026,12 @@ async fn run_binance_supervisor(
                         Ok(message) => {
                             let received_at = Utc::now();
                             let received_instant = Instant::now();
+                            let acknowledged_pong = match &message {
+                                Message::Pong(payload) => {
+                                    watchdog.acknowledge_binary_pong(payload.as_ref())
+                                }
+                                _ => false,
+                            };
                             watchdog.on_frame(received_instant);
                             stats.last_frame_at = Some(received_at);
                             match message {
@@ -8186,8 +8209,8 @@ async fn run_binance_supervisor(
                                         }
                                     }
                                 }
-                                Message::Pong(payload) => {
-                                    if watchdog.acknowledge_binary_pong(payload.as_ref()) {
+                                Message::Pong(_) => {
+                                    if acknowledged_pong {
                                         stats.heartbeat_acknowledgements = stats
                                             .heartbeat_acknowledgements
                                             .saturating_add(1);
@@ -10802,11 +10825,12 @@ mod tests {
             watchdog.read_idle_deadline,
             frame_at + CLOB_READ_IDLE_TIMEOUT
         );
-        assert_eq!(watchdog.pong_deadline, Some(pong_deadline));
-        // A later probe preserves the oldest outstanding PONG deadline, preventing
-        // repeated PINGs from masking a genuine missing acknowledgement.
-        watchdog.record_text_ping(ping_at + StdDuration::from_secs(10), pong_timeout);
-        assert_eq!(watchdog.pong_deadline, Some(pong_deadline));
+        assert_eq!(watchdog.pong_deadline, None);
+        // Inbound market data proves transport liveness. A later probe starts a
+        // fresh acknowledgement window if no further traffic arrives.
+        let later_ping_at = ping_at + StdDuration::from_secs(10);
+        watchdog.record_text_ping(later_ping_at, pong_timeout);
+        assert_eq!(watchdog.pong_deadline, Some(later_ping_at + pong_timeout));
 
         assert!(watchdog.acknowledge_text_pong(" pong \n"));
         assert_eq!(watchdog.pong_deadline, None);
@@ -13167,6 +13191,11 @@ mod tests {
         assert!(!watchdog.acknowledge_binary_pong(&[1, 2, 3, 4, 5, 6, 7, 9]));
         assert!(watchdog.awaiting_pong());
         assert!(watchdog.acknowledge_binary_pong(&expected));
+        assert!(!watchdog.awaiting_pong());
+        assert!(watchdog.pong_deadline.is_none());
+
+        watchdog.arm_binary_pong(probe_at + StdDuration::from_secs(1), expected);
+        watchdog.on_frame(probe_at + StdDuration::from_secs(2));
         assert!(!watchdog.awaiting_pong());
         assert!(watchdog.pong_deadline.is_none());
 
