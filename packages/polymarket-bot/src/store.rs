@@ -365,8 +365,8 @@ pub struct LiveRedemptionRecognition {
 #[derive(Debug, FromRow)]
 struct LiveRedemptionRecognitionRow {
     owner_count: i64,
+    owner_filled_size: Decimal,
     candidate_count: i64,
-    transaction_count: i64,
     transaction_consistent: bool,
     settlement_id: Option<Uuid>,
     settlement_process_id: Option<Uuid>,
@@ -933,6 +933,43 @@ impl Store {
         rows.into_iter().map(order_from_db_row).collect()
     }
 
+    /// Returns unresolved orders for every live trading-process sleeve configured for one account.
+    /// Process status is deliberately not part of ownership: stopped sleeves retain their orders,
+    /// fills and positions until their financial state is terminal.
+    pub async fn live_account_nonterminal_orders(
+        &self,
+        account_ref: &str,
+        limit: i64,
+    ) -> Result<Vec<OrderRecord>> {
+        let account_ref = account_ref.trim();
+        if account_ref.is_empty() || account_ref.len() > 128 {
+            bail!("live account order lookup requires a bounded account_ref");
+        }
+        let rows = sqlx::query_as::<_, OrderDbRow>(
+            r#"
+            SELECT orders.order_id, orders.state, orders.raw_payload,
+                   orders.created_at, orders.updated_at
+            FROM polymarket.orders orders
+            JOIN polymarket.trading_processes process
+              ON process.process_id = orders.process_id
+            WHERE process.config #>> '{execution,mode}' = 'live'
+              AND lower(btrim(process.config #>> '{execution,account_ref}')) = lower($1)
+              AND orders.state IN (
+                'created', 'submitted', 'acknowledged', 'partially_filled',
+                'cancel_requested', 'unknown'
+              )
+            ORDER BY orders.created_at, orders.order_id
+            LIMIT $2
+            "#,
+        )
+        .bind(account_ref)
+        .bind(limit.clamp(1, 4_097))
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to load bounded live account nonterminal orders")?;
+        rows.into_iter().map(order_from_db_row).collect()
+    }
+
     /// Replays all bounded local evidence that can consume live capital for exactly one process.
     ///
     /// Pending/unknown/nonterminal orders reserve their full requested notional and deterministic
@@ -1229,6 +1266,24 @@ impl Store {
         row.map(order_from_db_row).transpose()
     }
 
+    pub async fn find_fill_order_id(&self, fill_id: Uuid) -> Result<Option<String>> {
+        sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT fill.order_id
+            FROM polymarket.fills fill
+            JOIN polymarket.fill_identities identity
+              ON identity.fill_id = fill.fill_id
+             AND identity.timestamp_utc = fill.timestamp_utc
+            WHERE fill.fill_id = $1
+            LIMIT 1
+            "#,
+        )
+        .bind(fill_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to resolve canonical fill order identity")
+    }
+
     /// Resolves explicit venue order identities to orders owned by one trading process. The input
     /// is intentionally bounded to the maximum account reconciliation page, and the lookup uses
     /// the unique partial venue-order index instead of token or market inference.
@@ -1279,6 +1334,57 @@ impl Store {
             .collect())
     }
 
+    /// Resolves exact venue identities across all process sleeves assigned to one live account.
+    pub async fn account_order_ids_by_venue_order_ids(
+        &self,
+        account_ref: &str,
+        venue_order_ids: &[String],
+    ) -> Result<HashMap<String, String>> {
+        const MAX_RECONCILIATION_ORDER_IDS: usize = 500;
+        let account_ref = account_ref.trim();
+        if account_ref.is_empty() || account_ref.len() > 128 {
+            bail!("account order ownership lookup requires a bounded account_ref");
+        }
+        if venue_order_ids.len() > MAX_RECONCILIATION_ORDER_IDS {
+            bail!(
+                "account order ownership lookup exceeds the bounded {}-identity window",
+                MAX_RECONCILIATION_ORDER_IDS
+            );
+        }
+        if venue_order_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        #[derive(FromRow)]
+        struct OwnedOrderRow {
+            venue_order_id: String,
+            order_id: String,
+        }
+
+        let rows = sqlx::query_as::<_, OwnedOrderRow>(
+            r#"
+            SELECT orders.venue_order_id, orders.order_id
+            FROM polymarket.orders orders
+            JOIN polymarket.trading_processes process
+              ON process.process_id = orders.process_id
+            WHERE process.config #>> '{execution,mode}' = 'live'
+              AND lower(btrim(process.config #>> '{execution,account_ref}')) = lower($1)
+              AND orders.venue_order_id = ANY($2::text[])
+            LIMIT 500
+            "#,
+        )
+        .bind(account_ref)
+        .bind(venue_order_ids)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to resolve account-owned venue order identities")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.venue_order_id, row.order_id))
+            .collect())
+    }
+
     pub async fn oldest_unrecognized_live_fill_at(
         &self,
         process_id: Uuid,
@@ -1314,11 +1420,16 @@ impl Store {
     pub async fn recognize_process_live_redemption(
         &self,
         process_id: Uuid,
+        account_ref: &str,
         evidence: &LiveRedemptionEvidence,
         apply: bool,
     ) -> Result<LiveRedemptionRecognition> {
         if process_id.is_nil() {
             bail!("live redemption recognition requires a non-nil process_id");
+        }
+        let account_ref = account_ref.trim();
+        if account_ref.is_empty() || account_ref.len() > 128 {
+            bail!("live redemption recognition requires a bounded account_ref");
         }
         if evidence.account_address.trim().is_empty()
             || evidence.condition_id.trim().is_empty()
@@ -1348,24 +1459,22 @@ impl Store {
                 hashtextextended('live-redemption:' || $8, 0)
               )
             ), owners AS (
-              SELECT COUNT(DISTINCT orders.process_id)::bigint AS owner_count
+              SELECT
+                COUNT(DISTINCT orders.process_id)::bigint AS owner_count,
+                COALESCE(round(SUM(fill.size), 10), 0)::numeric(30,10) AS owner_filled_size
               FROM polymarket.fills fill
               JOIN polymarket.orders orders ON orders.order_id = fill.order_id
+              JOIN polymarket.trading_processes process
+                ON process.process_id = orders.process_id
+              JOIN polymarket.btc_interval_markets market
+                ON market.market_id = orders.market_id
               CROSS JOIN lock
               WHERE fill.source = 'live'
                 AND orders.side = 'buy'
                 AND fill.token_id = $3
-                AND (
-                  orders.process_id = $1
-                  OR NOT EXISTS (
-                    SELECT 1
-                    FROM polymarket.btc_paper_settlement_ledger settled
-                    WHERE settled.process_id = orders.process_id
-                      AND settled.order_id = orders.order_id
-                      AND settled.execution_mode = 'live'
-                      AND settled.credit_status = 'credited'
-                  )
-                )
+                AND market.condition_id = $2
+                AND process.config #>> '{execution,mode}' = 'live'
+                AND lower(btrim(process.config #>> '{execution,account_ref}')) = lower($9)
             ), candidate AS (
               SELECT
                 orders.process_id,
@@ -1386,6 +1495,8 @@ impl Store {
                 market.official_resolution_received_at,
                 market.official_resolution_source
               FROM polymarket.orders orders
+              JOIN polymarket.trading_processes process
+                ON process.process_id = orders.process_id
               JOIN polymarket.fills fill
                 ON fill.order_id = orders.order_id
                AND fill.process_id = orders.process_id
@@ -1398,6 +1509,8 @@ impl Store {
                AND watch.resolution_received_at = market.official_resolution_received_at
                AND watch.resolution_source = market.official_resolution_source
               WHERE orders.process_id = $1
+                AND process.config #>> '{execution,mode}' = 'live'
+                AND lower(btrim(process.config #>> '{execution,account_ref}')) = lower($9)
                 AND orders.side = 'buy'
                 AND orders.token_id = $3
                 AND market.condition_id = $2
@@ -1408,8 +1521,7 @@ impl Store {
                 orders.process_id, orders.order_id, orders.market_id, orders.token_id,
                 market.official_outcome, market.official_winning_token_id,
                 market.official_resolution_received_at, market.official_resolution_source
-              HAVING round(SUM(fill.size), 10)::numeric(30,10) = $4
-                AND MAX(fill.timestamp_utc) <= $5
+              HAVING MAX(fill.timestamp_utc) <= $5
             ), candidate_state AS (
               SELECT COUNT(*)::bigint AS candidate_count FROM candidate
             ), transaction_state AS (
@@ -1417,13 +1529,12 @@ impl Store {
                 COUNT(*)::bigint AS transaction_count,
                 COALESCE(
                   BOOL_AND(
-                    settlement.process_id = $1
-                    AND settlement.token_id = $3
-                    AND settlement.filled_size = $4
-                    AND settlement.payout = $4
+                    settlement.token_id = $3
+                    AND settlement.filled_size = settlement.payout
                   ),
                   true
-                ) AS transaction_consistent
+                )
+                AND COALESCE(SUM(settlement.payout), 0) <= $4 AS transaction_consistent
               FROM polymarket.btc_paper_settlement_ledger settlement
               WHERE settlement.execution_mode = 'live'
                 AND settlement.credit_status = 'credited'
@@ -1440,9 +1551,9 @@ impl Store {
               CROSS JOIN candidate_state
               CROSS JOIN transaction_state
               WHERE $7
-                AND owners.owner_count = 1
+                AND owners.owner_count >= 1
+                AND owners.owner_filled_size = $4
                 AND candidate_state.candidate_count = 1
-                AND transaction_state.transaction_count <= 1
                 AND transaction_state.transaction_consistent
                 AND settlement.process_id = candidate.process_id
                 AND settlement.run_id = candidate.run_id
@@ -1476,9 +1587,9 @@ impl Store {
               CROSS JOIN candidate_state
               CROSS JOIN transaction_state
               WHERE $7
-                AND owners.owner_count = 1
+                AND owners.owner_count >= 1
+                AND owners.owner_filled_size = $4
                 AND candidate_state.candidate_count = 1
-                AND transaction_state.transaction_count <= 1
                 AND transaction_state.transaction_consistent
                 AND NOT EXISTS (
                   SELECT 1
@@ -1521,6 +1632,7 @@ impl Store {
             )
             SELECT
               owners.owner_count,
+              owners.owner_filled_size,
               candidate_state.candidate_count,
               transaction_state.transaction_count,
               transaction_state.transaction_consistent,
@@ -1547,18 +1659,19 @@ impl Store {
         .bind(&credit_evidence)
         .bind(apply)
         .bind(&evidence.transaction_hash)
+        .bind(account_ref)
         .fetch_one(&self.pool)
         .await
         .context("failed to reconcile process-owned live redemption")?;
 
-        if row.owner_count > 1 {
-            bail!("live redemption token has ambiguous process ownership");
-        }
         if row.candidate_count > 1 {
             bail!("live redemption matches more than one process-owned order");
         }
-        if row.transaction_count > 1 || !row.transaction_consistent {
+        if !row.transaction_consistent {
             bail!("live redemption transaction conflicts with credited settlement evidence");
+        }
+        if row.owner_count > 0 && row.owner_filled_size != evidence.redeemed_size {
+            bail!("live redemption size does not match aggregate sleeve ownership");
         }
         if row.owner_count == 0 || row.candidate_count == 0 {
             return Ok(LiveRedemptionRecognition {
@@ -1579,8 +1692,7 @@ impl Store {
             .context("matched live redemption is missing its settlement identity")?;
         if row.settlement_process_id != Some(process_id)
             || row.settlement_token_id.as_deref() != Some(evidence.token_id.as_str())
-            || row.settlement_filled_size != Some(evidence.redeemed_size)
-            || row.settlement_payout != Some(evidence.payout_usd)
+            || row.settlement_filled_size != row.settlement_payout
             || row.credit_status.as_deref() != Some("credited")
             || row.settlement_order_id.as_deref().is_none_or(str::is_empty)
         {
@@ -1600,7 +1712,9 @@ impl Store {
         Ok(LiveRedemptionRecognition {
             matched: true,
             applied: row.applied,
-            redeemed_size: evidence.redeemed_size,
+            redeemed_size: row
+                .settlement_filled_size
+                .context("credited live redemption is missing sleeve size")?,
         })
     }
 
@@ -1703,6 +1817,95 @@ impl Store {
             }
             if positions.insert(row.token_id, row.size).is_some() {
                 bail!("live process position evidence contains a duplicate token identity");
+            }
+        }
+        Ok(positions)
+    }
+
+    /// Reconstructs the wallet position expected from every process sleeve assigned to one live
+    /// account. The aggregation uses immutable order/fill process ownership and includes stopped
+    /// processes with unresolved financial state.
+    pub async fn live_account_position_sizes(
+        &self,
+        account_ref: &str,
+    ) -> Result<HashMap<String, Decimal>> {
+        const MAX_ACCOUNT_POSITION_TOKENS: usize = 4_000;
+        let account_ref = account_ref.trim();
+        if account_ref.is_empty() || account_ref.len() > 128 {
+            bail!("live account position evidence requires a bounded account_ref");
+        }
+
+        #[derive(FromRow)]
+        struct PositionSizeRow {
+            token_id: String,
+            size: Decimal,
+        }
+
+        let rows = sqlx::query_as::<_, PositionSizeRow>(
+            r#"
+            WITH account_processes AS (
+              SELECT process_id
+              FROM polymarket.trading_processes
+              WHERE config #>> '{execution,mode}' = 'live'
+                AND lower(btrim(config #>> '{execution,account_ref}')) = lower($1)
+            ), filled AS (
+              SELECT fill.token_id,
+                SUM(
+                  CASE orders.side
+                    WHEN 'buy' THEN fill.size
+                    WHEN 'sell' THEN -fill.size
+                  END
+                )::numeric AS size
+              FROM polymarket.fills fill
+              JOIN polymarket.orders orders
+                ON orders.order_id = fill.order_id
+               AND orders.process_id = fill.process_id
+              JOIN account_processes process
+                ON process.process_id = fill.process_id
+              WHERE fill.source = 'live'
+              GROUP BY fill.token_id
+            ), redeemed AS (
+              SELECT settlement.token_id,
+                SUM(settlement.filled_size)::numeric AS size
+              FROM polymarket.btc_paper_settlement_ledger settlement
+              JOIN account_processes process
+                ON process.process_id = settlement.process_id
+              WHERE settlement.execution_mode = 'live'
+                AND settlement.credit_status = 'credited'
+              GROUP BY settlement.token_id
+            ), tokens AS (
+              SELECT token_id FROM filled
+              UNION
+              SELECT token_id FROM redeemed
+            )
+            SELECT tokens.token_id,
+              (COALESCE(filled.size, 0) - COALESCE(redeemed.size, 0))::numeric AS size
+            FROM tokens
+            LEFT JOIN filled USING (token_id)
+            LEFT JOIN redeemed USING (token_id)
+            WHERE COALESCE(filled.size, 0) - COALESCE(redeemed.size, 0) <> 0
+            ORDER BY tokens.token_id
+            LIMIT 4001
+            "#,
+        )
+        .bind(account_ref)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to reconstruct live account position sizes")?;
+        if rows.len() > MAX_ACCOUNT_POSITION_TOKENS {
+            bail!(
+                "live account position evidence exceeds the bounded {}-token window",
+                MAX_ACCOUNT_POSITION_TOKENS
+            );
+        }
+
+        let mut positions = HashMap::with_capacity(rows.len());
+        for row in rows {
+            if row.token_id.trim().is_empty() || row.size <= Decimal::ZERO {
+                bail!("live account position evidence contains an invalid net position");
+            }
+            if positions.insert(row.token_id, row.size).is_some() {
+                bail!("live account position evidence contains a duplicate token identity");
             }
         }
         Ok(positions)

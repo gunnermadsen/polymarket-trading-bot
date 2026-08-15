@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{TimeZone, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -189,15 +189,21 @@ pub async fn reconcile_account_positions(
         .collect::<Vec<_>>();
     trades.sort_by_key(|trade| trade.timestamp_utc);
 
-    let unmatched_trades = if let Some(process_id) = process_id {
+    let unmatched_trades = if process_id.is_some() {
         let mut venue_order_ids = trades
             .iter()
             .filter_map(|trade| trade.venue_order_id.clone())
             .collect::<Vec<_>>();
         venue_order_ids.sort_unstable();
         venue_order_ids.dedup();
-        let owned_orders =
-            process_owned_orders_for_reconciliation(store, process_id, &venue_order_ids).await?;
+        let owned_orders = account_owned_orders_for_reconciliation(
+            store,
+            account_ref
+                .as_deref()
+                .context("process-scoped reconciliation is missing account_ref")?,
+            &venue_order_ids,
+        )
+        .await?;
         let unlinked_normalized = link_process_owned_trades(&mut trades, &owned_orders);
         let unmatched = unlinked_normalized
             .saturating_add(external_trade_activities.saturating_sub(trades.len()));
@@ -261,7 +267,14 @@ pub async fn reconcile_account_positions(
                 continue;
             }
             let recognition = store
-                .recognize_process_live_redemption(process_id, redemption, !request.dry_run)
+                .recognize_process_live_redemption(
+                    process_id,
+                    account_ref
+                        .as_deref()
+                        .context("process-scoped reconciliation is missing account_ref")?,
+                    redemption,
+                    !request.dry_run,
+                )
                 .await?;
             if recognition.matched {
                 exits_detected = exits_detected
@@ -280,8 +293,17 @@ pub async fn reconcile_account_positions(
     }
 
     let (process_accounting_proof, mismatches) = if let Some(process_id) = process_id {
-        let process_positions = store.live_process_position_sizes(process_id).await?;
-        process_accounting_proof(&process_positions, &snapshots, unmatched_trades)?
+        // Validate the bound sleeve's own immutable order/fill lineage independently, then prove
+        // custody against the aggregate of every sleeve assigned to the account.
+        let _process_positions = store.live_process_position_sizes(process_id).await?;
+        let account_positions = store
+            .live_account_position_sizes(
+                account_ref
+                    .as_deref()
+                    .context("process-scoped reconciliation is missing account_ref")?,
+            )
+            .await?;
+        process_accounting_proof(&account_positions, &snapshots, unmatched_trades)?
     } else {
         (
             ProcessAccountingProof {
@@ -326,7 +348,7 @@ pub async fn reconcile_account_positions(
 }
 
 fn process_accounting_proof(
-    process_positions: &HashMap<String, Decimal>,
+    expected_account_positions: &HashMap<String, Decimal>,
     account_positions: &[AccountPositionSnapshot],
     unmatched_trades: u64,
 ) -> Result<(ProcessAccountingProof, Vec<AccountPositionMismatch>)> {
@@ -346,7 +368,7 @@ fn process_accounting_proof(
         }
     }
 
-    let mut token_ids = process_positions
+    let mut token_ids = expected_account_positions
         .keys()
         .chain(account_sizes.keys())
         .cloned()
@@ -355,7 +377,7 @@ fn process_accounting_proof(
     token_ids.dedup();
     let mut mismatches = Vec::new();
     for token_id in token_ids {
-        let process_size = process_positions
+        let process_size = expected_account_positions
             .get(&token_id)
             .copied()
             .unwrap_or(Decimal::ZERO);
@@ -394,17 +416,17 @@ fn process_accounting_proof(
             status: "unproven".to_string(),
             position_ownership: "mismatch".to_string(),
             realized_pnl: "unproven".to_string(),
-            reason: "account_positions_do_not_match_process_live_fills".to_string(),
+            reason: "account_positions_do_not_match_aggregate_sleeve_live_fills".to_string(),
         }
     } else {
         ProcessAccountingProof {
             status: "proven".to_string(),
-            position_ownership: "process_live_fill_ledger_match".to_string(),
+            position_ownership: "account_sleeve_fill_ledger_match".to_string(),
             realized_pnl: "process_owned_settlement_ledger".to_string(),
-            reason: if process_positions.is_empty() {
+            reason: if expected_account_positions.is_empty() {
                 "clean_account_baseline".to_string()
             } else {
-                "account_positions_match_process_live_fills".to_string()
+                "account_positions_match_aggregate_sleeve_live_fills".to_string()
             },
         }
     };
@@ -728,9 +750,9 @@ fn link_process_owned_trades(
     unmatched
 }
 
-async fn process_owned_orders_for_reconciliation(
+async fn account_owned_orders_for_reconciliation(
     store: &Store,
-    process_id: Uuid,
+    account_ref: &str,
     venue_order_ids: &[String],
 ) -> Result<HashMap<String, String>> {
     if venue_order_ids.len() > MAX_DATA_API_RECONCILIATION_ROWS {
@@ -742,7 +764,7 @@ async fn process_owned_orders_for_reconciliation(
     let mut owned_orders = HashMap::new();
     for chunk in venue_order_ids.chunks(DATA_API_RECONCILIATION_PAGE_SIZE) {
         let chunk_owned = store
-            .process_order_ids_by_venue_order_ids(process_id, chunk)
+            .account_order_ids_by_venue_order_ids(account_ref, chunk)
             .await?;
         merge_owned_order_evidence(&mut owned_orders, chunk_owned)?;
     }
@@ -1106,7 +1128,10 @@ mod tests {
             process_accounting_proof(&process_positions, &positions, 0).unwrap();
 
         assert_eq!(proof.status, "proven");
-        assert_eq!(proof.reason, "account_positions_match_process_live_fills");
+        assert_eq!(
+            proof.reason,
+            "account_positions_match_aggregate_sleeve_live_fills"
+        );
         assert!(mismatches.is_empty());
     }
 

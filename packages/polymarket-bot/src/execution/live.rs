@@ -100,6 +100,7 @@ pub struct LiveVenue {
     readiness_state: Arc<Mutex<LiveVenueState>>,
     global_entry_gate: Arc<Mutex<GlobalLiveEntryGate>>,
     submit_guard: Arc<Mutex<()>>,
+    reconcile_guard: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -229,6 +230,7 @@ impl LiveVenue {
             readiness_state: Arc::new(Mutex::new(LiveVenueState::fail_closed())),
             global_entry_gate: Arc::new(Mutex::new(GlobalLiveEntryGate::fail_closed())),
             submit_guard: Arc::new(Mutex::new(())),
+            reconcile_guard: Arc::new(Mutex::new(())),
         };
         venue.spawn_user_ws_task_if_enabled();
         Ok(venue)
@@ -250,6 +252,7 @@ impl LiveVenue {
             readiness_state: Arc::new(Mutex::new(LiveVenueState::fail_closed())),
             global_entry_gate: Arc::new(Mutex::new(GlobalLiveEntryGate::fail_closed())),
             submit_guard: Arc::new(Mutex::new(())),
+            reconcile_guard: Arc::new(Mutex::new(())),
         })
     }
 
@@ -287,6 +290,7 @@ impl LiveVenue {
             readiness_state: Arc::new(Mutex::new(LiveVenueState::fail_closed())),
             global_entry_gate: self.global_entry_gate.clone(),
             submit_guard: self.submit_guard.clone(),
+            reconcile_guard: self.reconcile_guard.clone(),
         })
     }
 
@@ -348,28 +352,27 @@ impl LiveVenue {
         }
     }
 
-    async fn persist_fill_from_live_event(store: &Store, event: &LiveVenueEvent) -> Result<bool> {
-        let Some((order, fill)) = live_fill_record_from_event(store, event).await? else {
-            return Ok(false);
-        };
-
-        store.insert_fill(&fill).await?;
-        let cumulative_filled_size = store.order_filled_size(&order.order_id).await?;
-        store
-            .mark_order_fill_progress(
-                &order.order_id,
-                cumulative_filled_size,
-                json!({
-                    "source": "user_ws",
-                    "event_type": event.event_type,
-                    "venue_event_id": event.venue_event_id,
-                    "venue_trade_id": event.venue_trade_id,
-                    "cumulative_filled_size": cumulative_filled_size,
-                    "raw_payload": event.raw_payload,
-                }),
-            )
-            .await?;
-        Ok(true)
+    async fn persist_fill_from_live_event(store: &Store, event: &LiveVenueEvent) -> Result<usize> {
+        let fills = live_fill_records_from_event(store, event).await?;
+        for (order, fill) in &fills {
+            store.insert_fill(fill).await?;
+            let cumulative_filled_size = store.order_filled_size(&order.order_id).await?;
+            store
+                .mark_order_fill_progress(
+                    &order.order_id,
+                    cumulative_filled_size,
+                    json!({
+                        "source": "user_ws",
+                        "event_type": event.event_type,
+                        "venue_event_id": event.venue_event_id,
+                        "venue_trade_id": event.venue_trade_id,
+                        "cumulative_filled_size": cumulative_filled_size,
+                        "raw_payload": event.raw_payload,
+                    }),
+                )
+                .await?;
+        }
+        Ok(fills.len())
     }
 
     async fn persist_order_update_from_live_event(
@@ -406,8 +409,9 @@ impl LiveVenue {
         let store = self.store()?;
         let mut processed = 0usize;
         for event in store.recent_live_trade_events(500).await? {
-            if LiveVenue::persist_fill_from_live_event(&store, &event).await? {
-                processed += 1;
+            let persisted = LiveVenue::persist_fill_from_live_event(&store, &event).await?;
+            if persisted > 0 {
+                processed = processed.saturating_add(persisted);
             } else if let Some(account_address) = configured_account_address(&self.config)? {
                 if let Some(account_trade) = account_trade_from_live_event(&account_address, &event)
                 {
@@ -739,10 +743,10 @@ impl LiveVenue {
         )
     }
 
-    async fn bound_process_venue_order_ids<'a>(
+    async fn bound_account_venue_order_ids<'a>(
         &self,
         store: &Store,
-        process_id: Uuid,
+        account_ref: &str,
         venue_order_ids: impl IntoIterator<Item = &'a str>,
     ) -> Result<HashMap<String, String>> {
         let mut unique_ids = Vec::new();
@@ -766,7 +770,7 @@ impl LiveVenue {
         let mut owned_orders = HashMap::new();
         for chunk in unique_ids.chunks(CLOB_ORDER_ID_QUERY_CHUNK) {
             for (venue_order_id, local_order_id) in store
-                .process_order_ids_by_venue_order_ids(process_id, chunk)
+                .account_order_ids_by_venue_order_ids(account_ref, chunk)
                 .await?
             {
                 if owned_orders
@@ -1246,6 +1250,52 @@ impl LiveVenue {
         {
             return Ok(Some(LiveExecutionGateReason::OpenPositionLimit));
         }
+
+        if request.side == OrderSide::Buy {
+            let account_ref = self
+                .bound_account_ref()
+                .context("live account capital admission requires account_ref")?;
+            let account_orders = self
+                .store()?
+                .live_account_nonterminal_orders(
+                    account_ref,
+                    (MAX_CLOB_RECONCILIATION_ROWS + 1) as i64,
+                )
+                .await?;
+            if account_orders.len() > MAX_CLOB_RECONCILIATION_ROWS {
+                bail!(
+                    "live account exceeds the bounded {}-order capital admission window",
+                    MAX_CLOB_RECONCILIATION_ROWS
+                );
+            }
+            let mut reserved = Decimal::ZERO;
+            for order in account_orders {
+                if order.request.side != OrderSide::Buy
+                    || Some(order.request.client_order_id) == ignored_client_order_id
+                {
+                    continue;
+                }
+                reserved = reserved
+                    .checked_add(
+                        Store::conservative_live_request_exposure(&order.request)?
+                            .total_exposure_usd,
+                    )
+                    .context("live account buy reservation overflow")?;
+            }
+            let available_collateral = self
+                .get_balances()
+                .await?
+                .into_iter()
+                .find_map(|(asset, balance)| (asset == "USDC").then_some(balance))
+                .context("live account collateral balance is unavailable")?;
+            if reserved
+                .checked_add(requested_exposure.total_exposure_usd)
+                .context("live account requested reservation overflow")?
+                > available_collateral
+            {
+                return Ok(Some(LiveExecutionGateReason::OpenNotionalLimit));
+            }
+        }
         Ok(None)
     }
 
@@ -1373,7 +1423,7 @@ async fn run_user_ws_once(
                         let event = LiveVenue::parse_user_event(payload);
                         let inserted = store.insert_live_venue_event(&event).await?;
                         let bot_fill_persisted = match LiveVenue::persist_fill_from_live_event(&store, &event).await {
-                            Ok(persisted) => persisted,
+                            Ok(persisted) => persisted > 0,
                             Err(error) => {
                                 warn!(error = %error, "failed to persist Polymarket live user websocket fill event");
                                 false
@@ -1895,7 +1945,7 @@ fn fill_record_from_trade_for_order(
     Ok(FillRecord {
         fill_id: Uuid::new_v5(
             &Uuid::NAMESPACE_URL,
-            format!("polymarket:trade:{}", trade.id).as_bytes(),
+            format!("polymarket:trade-order:{}:{venue_order_id}", trade.id).as_bytes(),
         ),
         process_id: Some(process_id),
         order_id: order.order_id.clone(),
@@ -1970,24 +2020,22 @@ fn rest_fill_backfill_plan(
                 }
             }
         }
-        if candidates.len() > 1 {
-            bail!(
-                "live REST fill trade {} maps to multiple nonterminal process orders",
-                trade.id
-            );
-        }
-        let Some((venue_order_id, local_order_id)) = candidates.first().copied() else {
+        candidates.sort_unstable();
+        candidates.dedup();
+        if candidates.is_empty() {
             continue;
-        };
-        let order = local_orders
-            .get(local_order_id)
-            .context("live REST fill ownership points to missing local order")?;
-        fills.push(fill_record_from_trade_for_order(
-            order,
-            venue_order_id,
-            trade,
-            checked_at,
-        )?);
+        }
+        for (venue_order_id, local_order_id) in candidates {
+            let order = local_orders
+                .get(local_order_id)
+                .context("live REST fill ownership points to missing local order")?;
+            fills.push(fill_record_from_trade_for_order(
+                order,
+                venue_order_id,
+                trade,
+                checked_at,
+            )?);
+        }
     }
     Ok(fills)
 }
@@ -2080,12 +2128,12 @@ async fn persist_rest_fill_backfill(
     Ok(fills)
 }
 
-async fn live_fill_record_from_event(
+async fn live_fill_records_from_event(
     store: &Store,
     event: &LiveVenueEvent,
-) -> Result<Option<(OrderRecord, FillRecord)>> {
+) -> Result<Vec<(OrderRecord, FillRecord)>> {
     if event.event_type != "trade" || !is_fill_trade_status(event.event_status.as_deref()) {
-        return Ok(None);
+        return Ok(Vec::new());
     }
 
     let Some(trade_id) = event
@@ -2093,13 +2141,23 @@ async fn live_fill_record_from_event(
         .as_deref()
         .or_else(|| json_str(&event.raw_payload, "id"))
     else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
 
+    let legacy_fill_id = Uuid::new_v5(
+        &Uuid::NAMESPACE_URL,
+        format!("polymarket:trade:{trade_id}").as_bytes(),
+    );
+    let legacy_order_id = store.find_fill_order_id(legacy_fill_id).await?;
+    let mut resolved_order_ids = HashSet::new();
+    let mut resolved = Vec::new();
     for candidate in live_event_order_id_candidates(&event.raw_payload) {
         let Some(order) = store.find_order_by_venue_order_id(&candidate).await? else {
             continue;
         };
+        if !resolved_order_ids.insert(order.order_id.clone()) {
+            continue;
+        }
         let details = live_event_fill_details_for_order(&event.raw_payload, &candidate)?;
         let price = details
             .price
@@ -2122,11 +2180,16 @@ async fn live_fill_record_from_event(
         let filled_at = json_timestamp(&event.raw_payload, "match_time")
             .or_else(|| json_timestamp(&event.raw_payload, "timestamp"))
             .unwrap_or_else(Utc::now);
+        let composite_fill_id = Uuid::new_v5(
+            &Uuid::NAMESPACE_URL,
+            format!("polymarket:trade-order:{trade_id}:{candidate}").as_bytes(),
+        );
         let fill = FillRecord {
-            fill_id: Uuid::new_v5(
-                &Uuid::NAMESPACE_URL,
-                format!("polymarket:trade:{trade_id}").as_bytes(),
-            ),
+            fill_id: if legacy_order_id.as_deref() == Some(order.order_id.as_str()) {
+                legacy_fill_id
+            } else {
+                composite_fill_id
+            },
             process_id: order.request.process_id,
             order_id: order.order_id.clone(),
             token_id,
@@ -2136,10 +2199,10 @@ async fn live_fill_record_from_event(
             source: FillSource::Live,
             filled_at,
         };
-        return Ok(Some((order, fill)));
+        resolved.push((order, fill));
     }
 
-    Ok(None)
+    Ok(resolved)
 }
 
 fn is_fill_trade_status(status: Option<&str>) -> bool {
@@ -2820,6 +2883,7 @@ impl ExecutionVenue for LiveVenue {
     }
 
     async fn reconcile(&self) -> Result<ReconciliationReport> {
+        let _reconcile_guard = self.reconcile_guard.lock().await;
         let checked_at = Utc::now();
         let reconciliation_safety_generation = {
             let global = self.global_entry_gate.lock().await;
@@ -2859,7 +2923,7 @@ impl ExecutionVenue for LiveVenue {
             if balances.is_empty() {
                 bail!("Polymarket CLOB balance reconciliation returned no assets");
             }
-            let owned_orders = if let Some(process_id) = self.bound_process_id {
+            let owned_orders = if self.bound_process_id.is_some() {
                 let mut venue_order_ids = open_orders
                     .iter()
                     .map(|order| order.order_id.clone())
@@ -2888,9 +2952,10 @@ impl ExecutionVenue for LiveVenue {
                             .map(|maker_order| maker_order.order_id.clone()),
                     );
                 }
-                self.bound_process_venue_order_ids(
+                self.bound_account_venue_order_ids(
                     &store,
-                    process_id,
+                    self.bound_account_ref()
+                        .context("live reconciliation requires account_ref")?,
                     venue_order_ids.iter().map(String::as_str),
                 )
                 .await?
@@ -2960,7 +3025,7 @@ impl ExecutionVenue for LiveVenue {
                 .filter(|order| !owned_local_order_ids.contains(order.order_id.as_str()))
                 .count();
             let unresolved = if self.bound_process_id.is_some() {
-                local_nonterminal.len().max(open_orders.len())
+                local_nonterminal.len()
             } else {
                 open_orders.len()
             };
@@ -3703,11 +3768,10 @@ impl ExecutionVenue for LiveVenue {
             state.manual_entries_reason = Some("checked_enable_revalidation".to_string());
             state.reconciled_safety_generation = None;
         }
-        // Revoke the old grant before waiting for an in-flight submit, then hold the shared submit
-        // barrier across the authoritative reconciliation and final compare-and-open commit.
-        let expected_safety_generation = self
-            .halt_global_entries("checked_enable_revalidation")
-            .await;
+        // Revalidate this sleeve behind the shared submission barrier without revoking entry
+        // grants held by other healthy sleeves. Account failures still advance the shared safety
+        // generation and invalidate this commit.
+        let expected_safety_generation = self.global_entry_gate.lock().await.safety_generation;
         if expected_safety_generation == u64::MAX {
             bail!("live safety generation is exhausted; checked enable remains fail-closed");
         }
@@ -3742,7 +3806,6 @@ impl ExecutionVenue for LiveVenue {
             || !identity_matches
             || !state.idempotency_clean
             || state.unresolved_live_order_count != 0
-            || !global.halted
             || global.safety_generation != expected_safety_generation
             || state.reconciled_safety_generation != Some(expected_safety_generation)
         {
@@ -3910,7 +3973,6 @@ fn commit_checked_live_enable(
     expected_safety_generation: u64,
 ) -> bool {
     if expected_safety_generation == u64::MAX
-        || !gate.halted
         || gate.safety_generation != expected_safety_generation
         || state.reconciled_safety_generation != Some(expected_safety_generation)
     {
@@ -3918,8 +3980,10 @@ fn commit_checked_live_enable(
     }
     state.manual_entries_enabled = true;
     state.manual_entries_reason = None;
-    gate.halted = false;
-    gate.reason = "process_checked_enable".to_string();
+    if gate.halted {
+        gate.halted = false;
+        gate.reason = "account_checked_enable".to_string();
+    }
     true
 }
 
@@ -4400,7 +4464,10 @@ mod tests {
         assert_eq!(fills[0].fee, dec!(0.00245));
         assert_eq!(
             fills[0].fill_id,
-            Uuid::new_v5(&Uuid::NAMESPACE_URL, b"polymarket:trade:trade-1")
+            Uuid::new_v5(
+                &Uuid::NAMESPACE_URL,
+                b"polymarket:trade-order:trade-1:venue-order-1"
+            )
         );
     }
 
@@ -4964,7 +5031,7 @@ mod tests {
         assert_eq!(status.last_rest_reconcile_age_secs, None);
         assert_eq!(
             status.reason.as_deref(),
-            Some("live_global_halt:checked_enable_revalidation")
+            Some("live_global_halt:global_enable_required")
         );
     }
 
