@@ -148,7 +148,7 @@ impl BtcLiveExecutionAdapter {
                 checkpoint.integrity_status
             );
         }
-        if !book_timestamps_are_fresh(
+        if !book_timestamps_are_causal(
             checkpoint.source_timestamp,
             checkpoint.received_at,
             checked_at,
@@ -192,17 +192,13 @@ fn transient_book_unavailability(status: FeedIntegrityStatus) -> bool {
     )
 }
 
-fn book_timestamps_are_fresh(
+fn book_timestamps_are_causal(
     source_timestamp: chrono::DateTime<Utc>,
     received_at: chrono::DateTime<Utc>,
     checked_at: chrono::DateTime<Utc>,
     max_book_age: Duration,
 ) -> bool {
-    if received_at > checked_at || source_timestamp - checked_at > max_book_age {
-        return false;
-    }
-    checked_at.signed_duration_since(source_timestamp) <= max_book_age
-        && checked_at.signed_duration_since(received_at) <= max_book_age
+    received_at <= checked_at && source_timestamp - checked_at <= max_book_age
 }
 
 fn validate_market_pair_snapshot(
@@ -257,7 +253,7 @@ fn validate_market_pair_snapshot(
         if best_bid >= best_ask {
             bail!("BTC live execution rejected: current market orderbook pair is crossed");
         }
-        if !book_timestamps_are_fresh(source_timestamp, received_at, checked_at, max_book_age) {
+        if !book_timestamps_are_causal(source_timestamp, received_at, checked_at, max_book_age) {
             return Ok(Some(LiveExecutionGateReason::OrderbookFreshness));
         }
     }
@@ -935,7 +931,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_book_is_rejected_before_delegate_submission() {
+    async fn unchanged_book_on_active_connection_is_delegated() {
         let checked_at = Utc::now();
         let process_id = Uuid::new_v4();
         let fake = Arc::new(FakeVenue::default());
@@ -957,8 +953,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_gate_rejection(&order, LiveExecutionGateReason::OrderbookFreshness);
-        assert_eq!(fake.submit_calls(), 0);
+        assert_eq!(order.state, OrderState::Submitted);
+        assert_eq!(fake.submit_calls(), 1);
     }
 
     #[tokio::test]
@@ -996,7 +992,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_opposite_book_source_is_rejected_before_delegate_submission() {
+    async fn unchanged_opposite_book_source_remains_usable() {
         let checked_at = Utc::now();
         let process_id = Uuid::new_v4();
         let fake = Arc::new(FakeVenue::default());
@@ -1034,12 +1030,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert_gate_rejection(&order, LiveExecutionGateReason::OrderbookFreshness);
-        assert_eq!(fake.submit_calls(), 0);
+        assert_eq!(order.state, OrderState::Submitted);
+        assert_eq!(fake.submit_calls(), 1);
     }
 
     #[tokio::test]
-    async fn stale_opposite_book_receipt_is_rejected_before_delegate_submission() {
+    async fn unchanged_opposite_book_receipt_remains_usable() {
         let checked_at = Utc::now();
         let process_id = Uuid::new_v4();
         let fake = Arc::new(FakeVenue::default());
@@ -1077,8 +1073,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_gate_rejection(&order, LiveExecutionGateReason::OrderbookFreshness);
-        assert_eq!(fake.submit_calls(), 0);
+        assert_eq!(order.state, OrderState::Submitted);
+        assert_eq!(fake.submit_calls(), 1);
     }
 
     #[tokio::test]

@@ -487,6 +487,7 @@ impl FeedBook {
             token_id: self.token_id.clone(),
             source_timestamp: self.source_timestamp?,
             received_at: self.received_at?,
+            observed_at: Utc::now(),
             connection_id,
             ingest_sequence: self.ingest_sequence,
             source_hash: self.source_hash.clone(),
@@ -1072,12 +1073,10 @@ impl BookRegistry {
                     && book.integrity_status == FeedIntegrityStatus::Ok
                     && book.best_bid().is_some()
                     && book.best_ask().is_some()
-                    && book.source_timestamp.is_some_and(|timestamp| {
-                        timestamp - now <= max_age && now - timestamp <= max_age
-                    })
-                    && book.received_at.is_some_and(|timestamp| {
-                        timestamp - now <= max_age && now - timestamp <= max_age
-                    })
+                    && book
+                        .source_timestamp
+                        .is_some_and(|timestamp| timestamp - now <= max_age)
+                    && book.received_at.is_some_and(|timestamp| timestamp <= now)
             })
         })
     }
@@ -1244,19 +1243,8 @@ impl RealtimeState {
                 {
                     reasons.push(format!("future_book_timestamp:{token_id}"))
                 }
-                Some(book)
-                    if book
-                        .source_timestamp
-                        .is_some_and(|timestamp| now - timestamp > max_book_age) =>
-                {
-                    reasons.push(format!("stale_book:{token_id}"))
-                }
-                Some(book)
-                    if book
-                        .received_at
-                        .map_or(true, |timestamp| now - timestamp > max_book_age) =>
-                {
-                    reasons.push(format!("stale_book:{token_id}"))
+                Some(book) if book.received_at.is_none_or(|timestamp| timestamp > now) => {
+                    reasons.push(format!("future_book_timestamp:{token_id}"))
                 }
                 Some(_) => {}
             }
@@ -2190,7 +2178,7 @@ mod tests {
     }
 
     #[test]
-    fn market_book_health_requires_complete_fresh_integrity_valid_pair() {
+    fn market_book_health_requires_complete_causal_integrity_valid_pair() {
         let market = market();
         let mut registry = BookRegistry::new(Uuid::new_v4());
         registry.register_market(&market);
@@ -2206,7 +2194,7 @@ mod tests {
         seed_book(&mut registry, &market.down_token_id, source_millis);
         assert!(registry.market_books_structurally_ready(&market));
         assert!(registry.market_books_ready(&market, ready_at, max_age));
-        assert!(!registry.market_books_ready(&market, ts(source_millis + 21), max_age,));
+        assert!(registry.market_books_ready(&market, ts(source_millis + 21), max_age,));
         assert!(!registry.market_books_ready(&market, ts(source_millis - 21), max_age,));
         assert!(registry.market_books_structurally_ready(&market));
 
@@ -2726,12 +2714,8 @@ mod tests {
         let up_book = state.books.get_mut("up").unwrap();
         up_book.source_timestamp = Some(now - Duration::milliseconds(2_500));
         up_book.received_at = Some(now - Duration::milliseconds(1));
-        let stale_source = state.readiness(now, Duration::seconds(2), Duration::seconds(2));
-        assert!(!stale_source.ready);
-        assert!(stale_source
-            .reasons
-            .iter()
-            .any(|reason| reason == "stale_book:up"));
+        let unchanged_book = state.readiness(now, Duration::seconds(2), Duration::seconds(2));
+        assert!(unchanged_book.ready);
     }
 
     #[test]

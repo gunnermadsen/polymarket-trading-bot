@@ -1060,6 +1060,7 @@ struct CheckpointRow {
     checkpoint_id: Uuid,
     source_timestamp: DateTime<Utc>,
     received_at: DateTime<Utc>,
+    observed_at: DateTime<Utc>,
     connection_id: Uuid,
     ingest_sequence: i64,
     market_id: String,
@@ -2659,18 +2660,20 @@ impl BtcRepository {
     ) -> Result<Option<OrderbookCheckpoint>> {
         sqlx::query_as::<_, CheckpointRow>(
             r#"
-            SELECT checkpoint_id, source_timestamp, received_at, connection_id,
+            SELECT checkpoint_id, source_timestamp, received_at, persisted_at AS observed_at,
+              connection_id,
               ingest_sequence, market_id, token_id, best_bid, best_ask, tick_size,
               book, source_hash, integrity_status
             FROM polymarket.orderbook_checkpoints
             WHERE token_id = $1
-              AND source_timestamp >= $2
+              AND source_timestamp >= $3 - INTERVAL '1 hour'
               AND source_timestamp <= $3
-              AND received_at >= $2
               AND received_at <= $3
+              AND persisted_at >= $2
+              AND persisted_at <= $3
               AND connection_id = $4
               AND integrity_status = 'ok'
-            ORDER BY source_timestamp DESC, received_at DESC, ingest_sequence DESC,
+            ORDER BY persisted_at DESC, source_timestamp DESC, received_at DESC, ingest_sequence DESC,
               checkpoint_id DESC
             LIMIT 1
             "#,
@@ -3847,6 +3850,7 @@ fn checkpoint_from_row(row: CheckpointRow) -> Result<OrderbookCheckpoint> {
         token_id: row.token_id,
         source_timestamp: row.source_timestamp,
         received_at: row.received_at,
+        observed_at: row.observed_at,
         connection_id: row.connection_id,
         ingest_sequence: u64::try_from(row.ingest_sequence).unwrap_or_default(),
         source_hash: row.source_hash,
@@ -4912,6 +4916,7 @@ mod tests {
             token_id: token_id.to_string(),
             source_timestamp: at,
             received_at: at + Duration::milliseconds(10),
+            observed_at: at + Duration::milliseconds(10),
             connection_id,
             ingest_sequence: id as u64,
             source_hash: Some(format!("hash-{id}")),

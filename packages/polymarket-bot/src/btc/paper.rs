@@ -546,12 +546,12 @@ impl PaperVenue {
                     .any(|book| {
                         book.bootstrapped
                             && book.integrity_status == FeedIntegrityStatus::Ok
-                            && book.source_timestamp.is_some_and(|timestamp| {
-                                timestamp <= arrival_at && arrival_at - timestamp <= max_book_age
-                            })
-                            && book.received_at.is_some_and(|timestamp| {
-                                timestamp <= arrival_at && arrival_at - timestamp <= max_book_age
-                            })
+                            && book
+                                .source_timestamp
+                                .is_some_and(|timestamp| timestamp - arrival_at <= max_book_age)
+                            && book
+                                .received_at
+                                .is_some_and(|timestamp| timestamp <= arrival_at)
                     });
             (registry.checkpoint(&request.token_id), exit_book_ready)
         };
@@ -581,10 +581,6 @@ impl PaperVenue {
         }
         let source_age = arrival_at - checkpoint.source_timestamp;
         let receive_age = arrival_at - checkpoint.received_at;
-        if source_age > max_book_age || receive_age > max_book_age {
-            return paper_reject_with_checkpoint(base, "stale_arrival_orderbook", &checkpoint);
-        }
-
         let Some(depth) =
             available_ask_depth(&checkpoint.asks, request.price, visible_depth_haircut)
         else {
@@ -2147,7 +2143,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_arrival_book_fails_closed() {
+    async fn unchanged_arrival_book_on_active_connection_remains_usable() {
         let registry = registry_with_book(
             Utc::now() - ChronoDuration::seconds(5),
             vec![OrderbookLevel {
@@ -2170,15 +2166,11 @@ mod tests {
             .submit_order(request(dec!(3), dec!(0.40)))
             .await
             .unwrap();
-        assert_eq!(order.state, OrderState::Rejected);
-        assert_eq!(
-            order.request.metadata["reject_reason"],
-            serde_json::json!("stale_arrival_orderbook")
-        );
+        assert_eq!(order.state, OrderState::Filled);
     }
 
     #[tokio::test]
-    async fn stale_source_with_fresh_receipt_fails_closed_without_accounting_mutation() {
+    async fn unchanged_source_with_fresh_runtime_state_can_fill() {
         let now = Utc::now();
         let registry = registry_with_book_times(
             now - ChronoDuration::seconds(5),
@@ -2207,17 +2199,10 @@ mod tests {
             .unwrap();
         let after = venue.status().await;
 
-        assert_eq!(order.state, OrderState::Rejected);
-        assert_eq!(
-            order.request.metadata["reject_reason"],
-            serde_json::json!("stale_arrival_orderbook")
-        );
-        assert_eq!(after.fill_count, before.fill_count);
-        assert_eq!(
-            after.available_collateral_usd,
-            before.available_collateral_usd
-        );
-        assert_eq!(after.entry_debits_usd, before.entry_debits_usd);
+        assert_eq!(order.state, OrderState::Filled);
+        assert_eq!(after.fill_count, before.fill_count + 1);
+        assert!(after.available_collateral_usd < before.available_collateral_usd);
+        assert!(after.entry_debits_usd > before.entry_debits_usd);
     }
 
     #[tokio::test]

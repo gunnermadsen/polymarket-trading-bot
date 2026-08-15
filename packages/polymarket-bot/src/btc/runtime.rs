@@ -10131,7 +10131,7 @@ mod tests {
     }
 
     #[test]
-    fn book_age_revokes_execution_without_replacing_structural_connection() {
+    fn unchanged_book_remains_ready_on_structural_connection() {
         let current = market();
         let ready_at = current.window_start + Duration::minutes(1);
         let max_book_age = Duration::seconds(2);
@@ -10142,12 +10142,7 @@ mod tests {
         assert!(clob_epoch_structurally_ready(&registry, markets, ready_at));
 
         let stale_at = ready_at + max_book_age + Duration::milliseconds(1);
-        assert!(!clob_epoch_ready(
-            &registry,
-            markets,
-            stale_at,
-            max_book_age,
-        ));
+        assert!(clob_epoch_ready(&registry, markets, stale_at, max_book_age,));
         assert!(clob_epoch_structurally_ready(&registry, markets, stale_at));
         assert!(!should_replace_active_clob_epoch(true, true));
     }
@@ -10772,7 +10767,7 @@ mod tests {
             max_book_age,
         )
         .unwrap()
-        .is_none());
+        .is_some());
 
         let mut incomplete = BookRegistry::new(Uuid::new_v4());
         incomplete.register_market(&current);
@@ -10924,7 +10919,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn freshness_expiry_does_not_rearm_structural_bootstrap() {
+    async fn unchanged_book_does_not_rearm_structural_bootstrap() {
         let current = market();
         let ready_at = current.window_start + Duration::minutes(1);
         let ready_instant = Instant::now();
@@ -10967,7 +10962,7 @@ mod tests {
 
         epoch.refresh_private_health(stale_at, stale_instant, max_book_age);
 
-        assert!(!epoch.books_usable);
+        assert!(epoch.books_usable);
         assert!(epoch.healthy_epoch);
         assert_eq!(epoch.watchdog.bootstrap_deadline, None);
 
@@ -11162,7 +11157,7 @@ mod tests {
         );
         assert_eq!(watchdog.bootstrap_deadline, None);
         assert!(registry.market_books_structurally_ready(&active_markets[1]));
-        assert!(!clob_epoch_ready(
+        assert!(clob_epoch_ready(
             &registry,
             &active_markets,
             checked_at,
@@ -12239,7 +12234,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clock_aging_revokes_active_clob_usability_without_new_frames() {
+    async fn clock_aging_preserves_active_clob_usability_without_new_frames() {
         let market = market();
         let ready_at = market.window_start + Duration::minutes(2);
         let mut registry = ready_book_registry(&market, ready_at - Duration::milliseconds(10));
@@ -12286,15 +12281,15 @@ mod tests {
         )
         .await;
 
-        assert!(!books_usable);
+        assert!(books_usable);
         assert!(clob_epoch_structurally_ready(
             &registry,
             std::slice::from_ref(&market),
             stale_at,
         ));
         let status = metrics.read().await;
-        assert!(status.clob_active_connection_epoch.is_none());
-        assert_eq!(status.clob_recovery_unavailable_since, Some(stale_at));
+        assert_eq!(status.clob_active_connection_epoch, Some(8));
+        assert!(status.clob_recovery_unavailable_since.is_none());
         drop(status);
 
         let refreshed_at = stale_at + Duration::milliseconds(1);

@@ -617,6 +617,10 @@ pub struct OrderbookCheckpoint {
     pub token_id: String,
     pub source_timestamp: DateTime<Utc>,
     pub received_at: DateTime<Utc>,
+    /// Local time at which the connected runtime observed this unchanged book state.
+    /// This is internal qualification metadata and is not part of the serialized contract.
+    #[serde(skip, default = "Utc::now")]
+    pub observed_at: DateTime<Utc>,
     pub connection_id: Uuid,
     pub ingest_sequence: u64,
     pub source_hash: Option<String>,

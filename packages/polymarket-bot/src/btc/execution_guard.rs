@@ -603,20 +603,22 @@ impl BtcReferenceExecutionGuard {
             }
             None
         };
-        let (selected_book_source_age_ms, selected_book_receive_age_ms) = if let Some(book) =
-            self.selected_book.as_ref()
-        {
-            let source_age =
-                bounded_source_timestamp_age(book.source_timestamp, checked_at, max_reference_age)?;
-            let receive_age =
-                bounded_local_timestamp_age(book.received_at, checked_at, max_reference_age)?;
-            (
-                Some(source_age.num_milliseconds()),
-                Some(receive_age.num_milliseconds()),
-            )
-        } else {
-            (None, None)
-        };
+        let (selected_book_source_age_ms, selected_book_receive_age_ms) =
+            if let Some(book) = self.selected_book.as_ref() {
+                if book.received_at > checked_at
+                    || book.source_timestamp - checked_at > max_reference_age
+                {
+                    return Err(BtcReferenceExecutionRejectReason::FutureEvidence);
+                }
+                let source_age = checked_at - book.source_timestamp;
+                let receive_age = checked_at - book.received_at;
+                (
+                    Some(source_age.num_milliseconds()),
+                    Some(receive_age.num_milliseconds()),
+                )
+            } else {
+                (None, None)
+            };
         Ok(BtcReferenceExecutionAssessment {
             guard_version: self.guard_version.clone(),
             evidence_sha256: self.evidence_sha256.clone(),
@@ -1527,23 +1529,21 @@ mod tests {
             BtcReferenceExecutionRejectReason::StaleEvidence
         );
 
-        let mut stale_book = sealed_directional_model_guard(checked_at);
-        stale_book.selected_book.as_mut().unwrap().received_at =
+        let mut unchanged_book = sealed_directional_model_guard(checked_at);
+        unchanged_book.selected_book.as_mut().unwrap().received_at =
             checked_at - Duration::milliseconds(2_001);
-        stale_book.reseal_for_test();
-        let stale_book_request = directional_model_request(&stale_book);
-        assert_eq!(
-            stale_book
-                .validate_for_request(
-                    &stale_book_request,
-                    checked_at,
-                    stale_book.process_id,
-                    Duration::seconds(2),
-                    Some(Duration::seconds(5)),
-                )
-                .unwrap_err(),
-            BtcReferenceExecutionRejectReason::StaleEvidence
-        );
+        unchanged_book.reseal_for_test();
+        let unchanged_book_request = directional_model_request(&unchanged_book);
+        let assessment = unchanged_book
+            .validate_for_request(
+                &unchanged_book_request,
+                checked_at,
+                unchanged_book.process_id,
+                Duration::seconds(2),
+                Some(Duration::seconds(5)),
+            )
+            .unwrap();
+        assert_eq!(assessment.selected_book_receive_age_ms, Some(2_001));
     }
 
     #[test]
