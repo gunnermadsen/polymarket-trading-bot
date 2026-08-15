@@ -115,7 +115,7 @@ struct DirectionalModelProcessRuntime {
     last_candidate_at: Option<DateTime<Utc>>,
     pending_candidate_at: Option<DateTime<Utc>>,
     in_flight_candidate_at: Option<DateTime<Utc>>,
-    confidence_crossed: bool,
+    opportunity_sealed: bool,
     rehydrated: bool,
 }
 
@@ -130,10 +130,10 @@ impl DirectionalModelProcessRuntime {
             self.last_candidate_at = None;
             self.pending_candidate_at = None;
             self.in_flight_candidate_at = None;
-            self.confidence_crossed = false;
+            self.opportunity_sealed = false;
             self.rehydrated = false;
         }
-        if self.confidence_crossed
+        if self.opportunity_sealed
             || self
                 .last_candidate_at
                 .is_some_and(|last_candidate_at| last_candidate_at >= latest_feature_as_of)
@@ -161,7 +161,7 @@ impl DirectionalModelProcessRuntime {
         &mut self,
         market_id: &str,
         feature_as_of: DateTime<Utc>,
-        confidence_crossed: bool,
+        seal_opportunity: bool,
     ) -> bool {
         if self.market_id.as_deref() != Some(market_id)
             || self.in_flight_candidate_at != Some(feature_as_of)
@@ -172,8 +172,8 @@ impl DirectionalModelProcessRuntime {
         self.pending_candidate_at = None;
         self.in_flight_candidate_at = None;
         self.rehydrated = true;
-        if confidence_crossed {
-            self.confidence_crossed = true;
+        if seal_opportunity {
+            self.opportunity_sealed = true;
         }
         true
     }
@@ -213,13 +213,13 @@ impl DirectionalModelCandidateLease<'_> {
         Ok(())
     }
 
-    fn complete(mut self, confidence_crossed: bool) -> Result<()> {
+    fn complete(mut self, seal_opportunity: bool) -> Result<()> {
         let completed = {
             let mut runtime = self
                 .runtime
                 .lock()
                 .map_err(|_| anyhow::anyhow!("BTC directional model process lock was poisoned"))?;
-            runtime.complete(&self.market_id, self.feature_as_of, confidence_crossed)
+            runtime.complete(&self.market_id, self.feature_as_of, seal_opportunity)
         };
         anyhow::ensure!(
             completed,
@@ -555,15 +555,12 @@ fn external_snapshot_error(source: &'static str, reason: &'static str) -> Direct
 
 fn complete_directional_model_candidate(
     candidate: &mut Option<DirectionalModelCandidateLease<'_>>,
-    decision: &BtcDecision,
+    seal_opportunity: bool,
 ) -> Result<()> {
     let Some(candidate) = candidate.take() else {
         return Ok(());
     };
-    candidate.complete(matches!(
-        decision.prediction,
-        Some(BtcStrategyPrediction::DirectionalPrediction { .. })
-    ))
+    candidate.complete(seal_opportunity)
 }
 
 struct ShadowPredictiveRegimeAdmissionRuntime {
@@ -1800,17 +1797,12 @@ impl BtcProcessRunner {
                     return Ok(());
                 }
                 if candidate.requires_rehydration() {
-                    let has_prediction = self
+                    let has_entry = self
                         .repository
-                        .process_has_directional_prediction(
-                            self.config.process_id,
-                            self.config.run_id,
-                            &market.market_id,
-                            &self.config.strategy.strategy_version,
-                        )
+                        .process_has_entry(self.config.process_id, &market.market_id)
                         .await?;
                     candidate.mark_rehydrated()?;
-                    if has_prediction {
+                    if has_entry {
                         candidate.complete(true)?;
                         return Ok(());
                     }
@@ -1952,12 +1944,14 @@ impl BtcProcessRunner {
             decision.approved_intent = None;
             decision.prediction = None;
         }
-        if decision.approved_intent.is_some()
-            && self
-                .repository
+        let existing_process_entry = if decision.approved_intent.is_some() {
+            self.repository
                 .process_has_entry(self.config.process_id, &snapshot.market_id)
                 .await?
-        {
+        } else {
+            false
+        };
+        if existing_process_entry {
             decision.action = BtcDecisionAction::NoTrade;
             decision.reject_reason = Some(BtcRejectReason::ExistingProcessEntry);
             decision.approved_intent = None;
@@ -1999,7 +1993,10 @@ impl BtcProcessRunner {
                 "rejected",
             )
             .await?;
-            complete_directional_model_candidate(&mut directional_candidate, &decision)?;
+            complete_directional_model_candidate(
+                &mut directional_candidate,
+                existing_process_entry,
+            )?;
             return Ok(());
         };
 
@@ -2012,7 +2009,7 @@ impl BtcProcessRunner {
                 "shadow_only",
             )
             .await?;
-            complete_directional_model_candidate(&mut directional_candidate, &decision)?;
+            complete_directional_model_candidate(&mut directional_candidate, true)?;
             return Ok(());
         }
 
@@ -2038,7 +2035,7 @@ impl BtcProcessRunner {
                 "admission_blocked",
             )
             .await?;
-            complete_directional_model_candidate(&mut directional_candidate, &decision)?;
+            complete_directional_model_candidate(&mut directional_candidate, false)?;
             return Ok(());
         }
 
@@ -2117,7 +2114,7 @@ impl BtcProcessRunner {
                 decision.evaluated_at,
             )
             .await?;
-        complete_directional_model_candidate(&mut directional_candidate, &decision)?;
+        complete_directional_model_candidate(&mut directional_candidate, true)?;
         let (report, preview_results) = tokio::join!(
             execute_order_plan(
                 self.execution_venue.as_ref(),
@@ -3751,7 +3748,7 @@ mod tests {
     }
 
     #[test]
-    fn directional_model_process_runtime_deduplicates_and_latches_crossing() {
+    fn directional_model_process_runtime_advances_candidates_until_opportunity_is_sealed() {
         let first = Utc.with_ymd_and_hms(2026, 7, 27, 12, 1, 0).unwrap();
         let mut runtime = DirectionalModelProcessRuntime::default();
 
@@ -3769,6 +3766,7 @@ mod tests {
             Some((first, false))
         );
         assert!(runtime.complete("market-a", first, false));
+        assert_eq!(runtime.claim("market-a", first), None);
         assert_eq!(
             runtime.claim("market-a", first + chrono::Duration::seconds(10)),
             Some((first + chrono::Duration::seconds(10), false))
@@ -3779,6 +3777,30 @@ mod tests {
             None
         );
         assert_eq!(runtime.claim("market-b", first), Some((first, true)));
+    }
+
+    #[test]
+    fn directional_model_rehydration_seals_only_an_existing_entry() {
+        let first = Utc.with_ymd_and_hms(2026, 8, 15, 12, 1, 0).unwrap();
+        let next = first + chrono::Duration::seconds(5);
+
+        let mut rejected_prediction = DirectionalModelProcessRuntime::default();
+        assert_eq!(
+            rejected_prediction.claim("market-a", first),
+            Some((first, true))
+        );
+        rejected_prediction.mark_rehydrated("market-a", first);
+        assert!(rejected_prediction.complete("market-a", first, false));
+        assert_eq!(
+            rejected_prediction.claim("market-a", next),
+            Some((next, false))
+        );
+
+        let mut existing_entry = DirectionalModelProcessRuntime::default();
+        assert_eq!(existing_entry.claim("market-a", first), Some((first, true)));
+        existing_entry.mark_rehydrated("market-a", first);
+        assert!(existing_entry.complete("market-a", first, true));
+        assert_eq!(existing_entry.claim("market-a", next), None);
     }
 
     #[test]
