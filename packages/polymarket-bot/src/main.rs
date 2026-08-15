@@ -1796,26 +1796,6 @@ impl BtcProcessManager {
         Ok(())
     }
 
-    async fn ensure_execution_account_available(
-        &self,
-        process_id: uuid::Uuid,
-        execution_mode: BtcExecutionMode,
-    ) -> Result<(), HttpError> {
-        if execution_mode != BtcExecutionMode::Live {
-            return Ok(());
-        }
-        let active = self.active_playbooks.lock().await;
-        if let Some(owner) = active.values().find(|active| {
-            active.process_id != process_id && active.execution_mode == BtcExecutionMode::Live
-        }) {
-            return Err(HttpError::conflict(format!(
-                "live credential account is already owned by active process {}",
-                owner.process_id
-            )));
-        }
-        Ok(())
-    }
-
     async fn quiesce_live_venue(venue: Option<&Arc<LiveVenue>>, reason: &str) -> Option<String> {
         let Some(venue) = venue else {
             return None;
@@ -1987,8 +1967,6 @@ impl BtcProcessManager {
             .map_err(|error| HttpError::internal(error.to_string()))?
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
         let prepared = self.prepare_resume_definition(&process)?;
-        self.ensure_execution_account_available(process_id, prepared.execution_mode)
-            .await?;
         let manifest = self
             .repository
             .load_run_manifest(process_id, prepared.run_id, &prepared.run_key)
@@ -2156,8 +2134,6 @@ impl BtcProcessManager {
             frozen_process_config,
             config_hash,
         } = self.prepare_start_definition(&process)?;
-        self.ensure_execution_account_available(process_id, execution_mode)
-            .await?;
         preflight_btc_run_identity(&self.repository, &run_key, run_id)
             .await
             .map_err(|error| HttpError::conflict(error.to_string()))?;
