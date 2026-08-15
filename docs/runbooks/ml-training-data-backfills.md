@@ -13,7 +13,7 @@ execution; backfill jobs are durable operational jobs that prepare training inpu
 | `btc_five_minute_resolutions` | five minutes | official CLOB outcomes on the existing market identities |
 | `binance_btcusdt_agg_trades` | UTC day | checksummed BTCUSDT aggregate trades |
 | `binance_btcusdt_one_second_klines` | UTC day | checksummed BTCUSDT one-second candles |
-| `polymarket_btc_five_minute_execution_snapshots` | UTC hour | causal five-second executable-book snapshots from 90 through 140 seconds for validated BTC five-minute markets |
+| `polymarket_btc_five_minute_execution_snapshots` | UTC hour | causal executable-book capacity snapshots from seconds 1 through 240 for validated BTC five-minute markets |
 | `chainlink_btcusd_reference_ticks` | UTC day | optional decoded, signed Chainlink BTC/USD Data Streams v3 reports |
 | `polygon_chainlink_btcusd_oracle_rounds` | UTC day | every on-chain Polygon Chainlink BTC/USD `AnswerUpdated` round |
 
@@ -82,13 +82,13 @@ only the columns required to reconstruct the compact book, rejects schema drift,
 events for validated BTC five-minute condition and outcome-token IDs through the bounded batch
 channel.
 
-The compact ingester reconstructs each token book using only events whose provider receipt time is
-at or before the sample. It persists one row per market every five seconds from 90 through 140
-seconds after open with both outcomes: best bid/ask and sizes, total depth, executable ask VWAP
-for 1, 5, and 10 shares, imbalance, source timestamps, and explicit missing, stale, crossed-book,
-and insufficient-depth flags. It does not fabricate a book. Each five-minute market therefore has
-exactly 11 rows and a full UTC day has 3,168 rows. The preceding UTC hour is read for full-book
-seeds. When a completed raw
+The capacity ingester reconstructs each token book using only events whose provider receipt time is
+at or before the sample. It persists one row per market every second from seconds 1 through 59 and
+every five seconds from seconds 60 through 240 with both outcomes: best bid/ask and sizes, total
+depth, executable ask VWAP for 1, 5, 10, 15, and 20 shares, imbalance, source timestamps, and
+separate missing, stale, crossed-book, and quantity-depth flags. It does not fabricate a book.
+Each five-minute market therefore has exactly 96 rows and a full UTC day has 27,648 rows. The
+preceding UTC hour is read for full-book seeds. When a completed raw
 materialization exists, it is reprocessed without downloading the source again; otherwise the
 worker streams the PMXT files directly to compact rows and removes the hourly cache as it advances.
 Raw database chunks may be pruned only after exact market coverage, cadence, causality, completed
