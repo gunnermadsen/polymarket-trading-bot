@@ -101,7 +101,8 @@ pub use predictive_regime_v2::{
     ShadowPredictiveRegimeV2State, SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_V2_SCHEMA_VERSION,
 };
 pub use process_runner::{
-    BtcPaperProcessConfig, BtcPaperProcessRunner, BtcProcessConfig, BtcProcessRunner,
+    process_runtime_readiness, BtcPaperProcessConfig, BtcPaperProcessRunner, BtcProcessConfig,
+    BtcProcessRunner,
 };
 pub use repository::{
     BtcMarketLabel, BtcOfficialResolutionWatch, BtcPaperSettlementRecord, BtcRepository,

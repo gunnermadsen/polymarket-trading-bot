@@ -83,9 +83,6 @@ const CLOB_PROVENANCE_VALUE_MAX_BYTES: usize = 128;
 const CLOB_ERROR_REASON_MAX_BYTES: usize = 256;
 const REFERENCE_CONNECT_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const REFERENCE_SEND_TIMEOUT: StdDuration = StdDuration::from_secs(5);
-// Chainlink updates can have legitimate multi-second gaps; this bound avoids
-// reconnect churn while still detecting an unavailable required source quickly.
-const RTDS_REQUIRED_DATA_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 const BINANCE_MODEL_RECOVERY_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 const BINANCE_MODEL_RECOVERY_RETRY_INTERVAL: StdDuration = StdDuration::from_secs(5);
 const BINANCE_MODEL_RECOVERY_PAGE_LIMIT: usize = 1_000;
@@ -93,7 +90,6 @@ const BINANCE_MODEL_RECOVERY_BUFFER_CAPACITY: usize = 50_000;
 const BINANCE_SPOT_L2_SNAPSHOT_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 const BINANCE_SPOT_L2_SNAPSHOT_LIMIT: usize = 5_000;
 const BINANCE_SPOT_L2_SNAPSHOT_MAX_BYTES: usize = 8 * 1024 * 1024;
-const BINANCE_SPOT_L2_SNAPSHOT_ATTEMPTS_PER_CONNECTION: u32 = 4;
 const BINANCE_SPOT_L2_BOOTSTRAP_EVENT_CAPACITY: usize = 4_096;
 const BINANCE_SPOT_L2_BOOTSTRAP_LEVEL_CAPACITY: usize = 250_000;
 const BINANCE_SPOT_L2_FEATURE_TICK: StdDuration = StdDuration::from_millis(100);
@@ -1251,17 +1247,6 @@ impl ReferenceFeedKind {
         }
     }
 
-    /// A required-data timeout is a transport watchdog only for feeds whose
-    /// protocol does not provide an independent liveness signal. Binance
-    /// freshness is instead enforced at the trading/readiness boundary, while
-    /// EOF, PONG, and frame-idle failures continue to reconnect its socket.
-    fn required_data_disconnect_timeout(self) -> Option<StdDuration> {
-        match self {
-            Self::Rtds => Some(RTDS_REQUIRED_DATA_TIMEOUT),
-            Self::Binance => None,
-        }
-    }
-
     fn retry_salt(self) -> u64 {
         match self {
             Self::Rtds => 0x5254_4453,
@@ -1337,7 +1322,6 @@ enum ReferencePongExpectation {
 
 #[derive(Debug)]
 struct ReferenceFeedWatchdog {
-    required_data_deadline: Option<Instant>,
     read_idle_deadline: Instant,
     pong_deadline: Option<Instant>,
     stable_deadline: Option<Instant>,
@@ -1346,11 +1330,8 @@ struct ReferenceFeedWatchdog {
 }
 
 impl ReferenceFeedWatchdog {
-    fn new(now: Instant, kind: ReferenceFeedKind) -> Self {
+    fn new(now: Instant) -> Self {
         Self {
-            required_data_deadline: kind
-                .required_data_disconnect_timeout()
-                .map(|timeout| now + timeout),
             read_idle_deadline: now + REFERENCE_READ_IDLE_TIMEOUT,
             pong_deadline: None,
             stable_deadline: None,
@@ -1363,10 +1344,7 @@ impl ReferenceFeedWatchdog {
         self.read_idle_deadline = now + REFERENCE_READ_IDLE_TIMEOUT;
     }
 
-    fn on_required_tick(&mut self, now: Instant, kind: ReferenceFeedKind) {
-        if let Some(timeout) = kind.required_data_disconnect_timeout() {
-            self.required_data_deadline = Some(now + timeout);
-        }
+    fn on_required_tick(&mut self, now: Instant) {
         if self.stable_deadline.is_none() && !self.stable {
             self.stable_deadline = Some(now + REFERENCE_STABLE_RESET_AFTER);
         }
@@ -6016,22 +5994,14 @@ async fn run_rtds_supervisor(
             }
             Some(Ok(Ok(()))) => {
                 let watchdog_started = Instant::now();
-                let mut watchdog = ReferenceFeedWatchdog::new(watchdog_started, kind);
+                let mut watchdog = ReferenceFeedWatchdog::new(watchdog_started);
                 let mut heartbeat =
                     interval_at(watchdog_started + heartbeat_interval, heartbeat_interval);
                 heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
-                let required_data_timeout = kind
-                    .required_data_disconnect_timeout()
-                    .expect("RTDS required-data watchdog must be enabled");
-                let required_data_sleep = sleep(required_data_timeout);
                 let read_idle_sleep = sleep(REFERENCE_READ_IDLE_TIMEOUT);
                 let stable_sleep = sleep(REFERENCE_STABLE_RESET_AFTER);
-                tokio::pin!(required_data_sleep, read_idle_sleep, stable_sleep);
+                tokio::pin!(read_idle_sleep, stable_sleep);
                 'connection: loop {
-                    let required_data_deadline = watchdog
-                        .required_data_deadline
-                        .expect("RTDS required-data watchdog deadline must be armed");
-                    required_data_sleep.as_mut().reset(required_data_deadline);
                     read_idle_sleep.as_mut().reset(watchdog.read_idle_deadline);
                     if let Some(deadline) = watchdog.stable_deadline {
                         stable_sleep.as_mut().reset(deadline);
@@ -6040,10 +6010,6 @@ async fn run_rtds_supervisor(
                         biased;
                         _ = shutdown.changed() => {
                             disconnect_reason = ReferenceDisconnectReason::Shutdown;
-                            break;
-                        }
-                        _ = &mut required_data_sleep => {
-                            disconnect_reason = ReferenceDisconnectReason::RequiredDataIdleTimeout;
                             break;
                         }
                         _ = &mut read_idle_sleep => {
@@ -6209,7 +6175,7 @@ async fn run_rtds_supervisor(
                                                         }
                                                     }
                                                     if health_progress {
-                                                        watchdog.on_required_tick(received_instant, kind);
+                                                        watchdog.on_required_tick(received_instant);
                                                         stats.required_ticks = stats.required_ticks.saturating_add(1);
                                                         stats.last_required_tick_at = Some(received_at);
                                                         if first_healthy_transition {
@@ -6596,12 +6562,6 @@ enum BinanceSpotL2DisconnectReason {
     Shutdown,
     ConnectTimeout,
     ConnectFailed,
-    SnapshotFailed,
-    SnapshotBehindBuffer,
-    BootstrapBufferOverflow,
-    DecodeFailed,
-    SequenceGap,
-    SourceInvalid,
     ReadIdleTimeout,
     PongSendTimeout,
     PongSendFailed,
@@ -6617,12 +6577,6 @@ impl BinanceSpotL2DisconnectReason {
             Self::Shutdown => "shutdown",
             Self::ConnectTimeout => "connect_timeout",
             Self::ConnectFailed => "connect_failed",
-            Self::SnapshotFailed => "snapshot_failed",
-            Self::SnapshotBehindBuffer => "snapshot_behind_buffer",
-            Self::BootstrapBufferOverflow => "bootstrap_buffer_overflow",
-            Self::DecodeFailed => "decode_failed",
-            Self::SequenceGap => "sequence_gap",
-            Self::SourceInvalid => "source_invalid",
             Self::ReadIdleTimeout => "read_idle_timeout",
             Self::PongSendTimeout => "pong_send_timeout",
             Self::PongSendFailed => "pong_send_failed",
@@ -6690,8 +6644,12 @@ type BinanceSpotL2SnapshotFuture =
 fn binance_spot_l2_snapshot_future(
     client: reqwest::Client,
     rest_base_url: String,
+    retry_delay: StdDuration,
 ) -> BinanceSpotL2SnapshotFuture {
     Box::pin(async move {
+        if !retry_delay.is_zero() {
+            tokio::time::sleep(retry_delay).await;
+        }
         let request_started = Instant::now();
         let endpoint = format!("{}/api/v3/depth", rest_base_url.trim_end_matches('/'));
         let query = [
@@ -6766,6 +6724,7 @@ async fn quarantine_binance_spot_l2_inference_state(
     metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
     connection_id: Uuid,
     last_update_id: Option<u64>,
+    reason: &str,
 ) {
     state
         .write()
@@ -6777,8 +6736,7 @@ async fn quarantine_binance_spot_l2_inference_state(
     runtime_metrics.binance_spot_l2.synchronized = false;
     runtime_metrics.binance_spot_l2.active_connection_id = Some(connection_id);
     runtime_metrics.binance_spot_l2.active_last_update_id = last_update_id;
-    runtime_metrics.binance_spot_l2.last_error =
-        Some("Binance spot L2 update exceeded the source-age qualification bound".to_string());
+    runtime_metrics.binance_spot_l2.last_error = Some(reason.to_string());
     runtime_metrics
         .binance_spot_l2
         .recovery_unavailable_since
@@ -6846,21 +6804,19 @@ async fn schedule_binance_spot_l2_snapshot_retry(
     client: &reqwest::Client,
     config: &BtcRuntimeConfig,
     metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
-) -> bool {
-    if *snapshot_attempts >= BINANCE_SPOT_L2_SNAPSHOT_ATTEMPTS_PER_CONNECTION {
-        return false;
-    }
+) {
     *snapshot_attempts = snapshot_attempts.saturating_add(1);
+    let retry_delay = reconnect_backoff(config, *snapshot_attempts);
     *snapshot_request = Some(binance_spot_l2_snapshot_future(
         client.clone(),
         config.binance_rest_base_url.clone(),
+        retry_delay,
     ));
     let mut runtime_metrics = metrics.write().await;
     runtime_metrics.binance_spot_l2.snapshot_requests = runtime_metrics
         .binance_spot_l2
         .snapshot_requests
         .saturating_add(1);
-    true
 }
 
 async fn run_binance_spot_l2_supervisor(
@@ -7022,10 +6978,11 @@ async fn run_binance_spot_l2_connection(
 ) -> BinanceSpotL2ConnectionExit {
     let mut engine = BinanceSpotL2Engine::default();
     let mut bootstrap = BinanceSpotL2BootstrapBuffer::default();
-    let mut snapshot_attempts = 1u32;
+    let mut snapshot_attempts = 0u32;
     let mut snapshot_request = Some(binance_spot_l2_snapshot_future(
         client.clone(),
         config.binance_rest_base_url.clone(),
+        StdDuration::ZERO,
     ));
     let mut snapshot_installed = false;
     let mut reached_synchronization = false;
@@ -7084,20 +7041,19 @@ async fn run_binance_spot_l2_connection(
                         }
                         engine.invalidate();
                         snapshot_installed = false;
-                        if schedule_binance_spot_l2_snapshot_retry(
+                        schedule_binance_spot_l2_snapshot_retry(
                             &mut snapshot_attempts,
                             &mut snapshot_request,
                             client,
                             config,
                             metrics,
-                        ).await {
-                            continue;
-                        }
-                        break 'connection BinanceSpotL2ConnectionExit::new(
-                            BinanceSpotL2DisconnectReason::SnapshotFailed,
-                            Some(detail),
-                            reached_synchronization,
+                        ).await;
+                        tracing::warn!(
+                            %connection_id,
+                            error = %detail,
+                            "Binance spot L2 snapshot failed; retrying without closing websocket"
                         );
+                        continue;
                     }
                 };
                 let snapshot = match serde_json::from_str::<serde_json::Value>(&body)
@@ -7123,20 +7079,19 @@ async fn run_binance_spot_l2_connection(
                         }
                         engine.invalidate();
                         snapshot_installed = false;
-                        if schedule_binance_spot_l2_snapshot_retry(
+                        schedule_binance_spot_l2_snapshot_retry(
                             &mut snapshot_attempts,
                             &mut snapshot_request,
                             client,
                             config,
                             metrics,
-                        ).await {
-                            continue;
-                        }
-                        break 'connection BinanceSpotL2ConnectionExit::new(
-                            BinanceSpotL2DisconnectReason::DecodeFailed,
-                            Some(detail),
-                            reached_synchronization,
+                        ).await;
+                        tracing::warn!(
+                            %connection_id,
+                            error = %detail,
+                            "Binance spot L2 snapshot decode failed; retrying without closing websocket"
                         );
+                        continue;
                     }
                 };
                 if let Err(error) = engine.install_snapshot(snapshot, snapshot_received_at) {
@@ -7149,20 +7104,19 @@ async fn run_binance_spot_l2_connection(
                             .saturating_add(1);
                     }
                     snapshot_installed = false;
-                    if schedule_binance_spot_l2_snapshot_retry(
+                    schedule_binance_spot_l2_snapshot_retry(
                         &mut snapshot_attempts,
                         &mut snapshot_request,
                         client,
                         config,
                         metrics,
-                    ).await {
-                        continue;
-                    }
-                    break 'connection BinanceSpotL2ConnectionExit::new(
-                        BinanceSpotL2DisconnectReason::SourceInvalid,
-                        Some(detail),
-                        reached_synchronization,
+                    ).await;
+                    tracing::warn!(
+                        %connection_id,
+                        error = %detail,
+                        "Binance spot L2 snapshot was unusable; retrying without closing websocket"
                     );
+                    continue;
                 }
                 snapshot_installed = true;
 
@@ -7197,12 +7151,8 @@ async fn run_binance_spot_l2_connection(
                             break;
                         }
                         Err(error) => {
-                            let detail = bounded_reference_detail(error);
-                            break 'connection BinanceSpotL2ConnectionExit::new(
-                                BinanceSpotL2DisconnectReason::SourceInvalid,
-                                Some(detail),
-                                reached_synchronization,
-                            );
+                            replay_gap = Some(bounded_reference_detail(error));
+                            break;
                         }
                     }
                 }
@@ -7220,21 +7170,21 @@ async fn run_binance_spot_l2_connection(
                     }
                     engine.invalidate();
                     snapshot_installed = false;
-                    if !schedule_binance_spot_l2_snapshot_retry(
+                    schedule_binance_spot_l2_snapshot_retry(
                         &mut snapshot_attempts,
                         &mut snapshot_request,
                         client,
                         config,
                         metrics,
-                    ).await {
-                        break 'connection BinanceSpotL2ConnectionExit::new(
-                            BinanceSpotL2DisconnectReason::SnapshotBehindBuffer,
-                            Some(detail),
-                            reached_synchronization,
-                        );
-                    }
+                    ).await;
+                    tracing::warn!(
+                        %connection_id,
+                        error = %detail,
+                        "Binance spot L2 snapshot lagged buffered updates; retrying without closing websocket"
+                    );
                     continue;
                 }
+                snapshot_attempts = 0;
                 {
                     let mut runtime_metrics = metrics.write().await;
                     runtime_metrics.binance_spot_l2.snapshot_successes = runtime_metrics
@@ -7259,11 +7209,17 @@ async fn run_binance_spot_l2_connection(
                             state,
                             metrics,
                         ).await {
-                            break 'connection BinanceSpotL2ConnectionExit::new(
-                                BinanceSpotL2DisconnectReason::SourceInvalid,
-                                Some(bounded_reference_detail(error)),
-                                reached_synchronization,
-                            );
+                            let detail = bounded_reference_detail(error);
+                            engine.quarantine_qualification();
+                            quarantine_binance_spot_l2_inference_state(
+                                state,
+                                metrics,
+                                connection_id,
+                                engine.update_id(),
+                                &detail,
+                            ).await;
+                            bootstrap.clear();
+                            continue;
                         }
                         reached_synchronization = true;
                     }
@@ -7277,11 +7233,17 @@ async fn run_binance_spot_l2_connection(
                         update_id,
                         tentative_features,
                     ).await {
-                        break 'connection BinanceSpotL2ConnectionExit::new(
-                            BinanceSpotL2DisconnectReason::SourceInvalid,
-                            Some(bounded_reference_detail(error)),
-                            reached_synchronization,
-                        );
+                        let detail = bounded_reference_detail(error);
+                        engine.quarantine_qualification();
+                        quarantine_binance_spot_l2_inference_state(
+                            state,
+                            metrics,
+                            connection_id,
+                            engine.update_id(),
+                            &detail,
+                        ).await;
+                        bootstrap.clear();
+                        continue;
                     }
                     bootstrap.clear();
                 }
@@ -7294,11 +7256,15 @@ async fn run_binance_spot_l2_connection(
                 if last_depth_update_instant
                     .is_none_or(|last_update| last_update.elapsed() > stale_after)
                 {
-                    break 'connection BinanceSpotL2ConnectionExit::new(
-                        BinanceSpotL2DisconnectReason::SourceInvalid,
-                        Some("Binance spot L2 source became stale".to_string()),
-                        reached_synchronization,
-                    );
+                    engine.quarantine_qualification();
+                    quarantine_binance_spot_l2_inference_state(
+                        state,
+                        metrics,
+                        connection_id,
+                        engine.update_id(),
+                        "Binance spot L2 source became stale",
+                    ).await;
+                    continue;
                 }
                 match engine.advance_time(Utc::now()) {
                     Ok(features) => {
@@ -7312,26 +7278,37 @@ async fn run_binance_spot_l2_connection(
                             update_id,
                             features,
                         ).await {
-                            break 'connection BinanceSpotL2ConnectionExit::new(
-                                BinanceSpotL2DisconnectReason::SourceInvalid,
-                                Some(bounded_reference_detail(error)),
-                                reached_synchronization,
-                            );
+                            let detail = bounded_reference_detail(error);
+                            engine.quarantine_qualification();
+                            quarantine_binance_spot_l2_inference_state(
+                                state,
+                                metrics,
+                                connection_id,
+                                engine.update_id(),
+                                &detail,
+                            ).await;
+                            continue;
                         }
                         if !engine.synchronized() {
-                            break 'connection BinanceSpotL2ConnectionExit::new(
-                                BinanceSpotL2DisconnectReason::SourceInvalid,
-                                Some("Binance spot L2 source became stale".to_string()),
-                                reached_synchronization,
-                            );
+                            quarantine_binance_spot_l2_inference_state(
+                                state,
+                                metrics,
+                                connection_id,
+                                engine.update_id(),
+                                "Binance spot L2 feature state became unqualified",
+                            ).await;
                         }
                     }
                     Err(error) => {
-                        break 'connection BinanceSpotL2ConnectionExit::new(
-                            BinanceSpotL2DisconnectReason::SourceInvalid,
-                            Some(bounded_reference_detail(error)),
-                            reached_synchronization,
-                        );
+                        let detail = bounded_reference_detail(error);
+                        engine.quarantine_qualification();
+                        quarantine_binance_spot_l2_inference_state(
+                            state,
+                            metrics,
+                            connection_id,
+                            engine.update_id(),
+                            &detail,
+                        ).await;
                     }
                 }
             }
@@ -7368,16 +7345,31 @@ async fn run_binance_spot_l2_connection(
                             Ok(update) => update,
                             Err(error) => {
                                 let detail = bounded_reference_detail(error);
-                                let mut runtime_metrics = metrics.write().await;
-                                runtime_metrics.binance_spot_l2.decode_errors = runtime_metrics
-                                    .binance_spot_l2
-                                    .decode_errors
-                                    .saturating_add(1);
-                                break 'connection BinanceSpotL2ConnectionExit::new(
-                                    BinanceSpotL2DisconnectReason::DecodeFailed,
-                                    Some(detail),
-                                    reached_synchronization,
-                                );
+                                {
+                                    let mut runtime_metrics = metrics.write().await;
+                                    runtime_metrics.binance_spot_l2.decode_errors = runtime_metrics
+                                        .binance_spot_l2
+                                        .decode_errors
+                                        .saturating_add(1);
+                                }
+                                engine.invalidate();
+                                bootstrap.clear();
+                                snapshot_installed = false;
+                                schedule_binance_spot_l2_snapshot_retry(
+                                    &mut snapshot_attempts,
+                                    &mut snapshot_request,
+                                    client,
+                                    config,
+                                    metrics,
+                                ).await;
+                                quarantine_binance_spot_l2_inference_state(
+                                    state,
+                                    metrics,
+                                    connection_id,
+                                    None,
+                                    &detail,
+                                ).await;
+                                continue 'connection;
                             }
                         };
                         {
@@ -7392,27 +7384,45 @@ async fn run_binance_spot_l2_connection(
                         if !engine.synchronized() {
                             if let Err(error) = bootstrap.push(update.clone(), received_at) {
                                 let detail = bounded_reference_detail(error);
-                                let mut runtime_metrics = metrics.write().await;
-                                runtime_metrics.binance_spot_l2.bootstrap_buffer_overflows =
-                                    runtime_metrics
-                                        .binance_spot_l2
-                                        .bootstrap_buffer_overflows
-                                        .saturating_add(1);
-                                break 'connection BinanceSpotL2ConnectionExit::new(
-                                    BinanceSpotL2DisconnectReason::BootstrapBufferOverflow,
-                                    Some(detail),
-                                    reached_synchronization,
-                                );
+                                {
+                                    let mut runtime_metrics = metrics.write().await;
+                                    runtime_metrics.binance_spot_l2.bootstrap_buffer_overflows =
+                                        runtime_metrics
+                                            .binance_spot_l2
+                                            .bootstrap_buffer_overflows
+                                            .saturating_add(1);
+                                }
+                                engine.invalidate();
+                                bootstrap.clear();
+                                snapshot_installed = false;
+                                schedule_binance_spot_l2_snapshot_retry(
+                                    &mut snapshot_attempts,
+                                    &mut snapshot_request,
+                                    client,
+                                    config,
+                                    metrics,
+                                ).await;
+                                quarantine_binance_spot_l2_inference_state(
+                                    state,
+                                    metrics,
+                                    connection_id,
+                                    None,
+                                    &detail,
+                                ).await;
+                                continue;
                             }
                             if snapshot_request.is_some() {
                                 continue;
                             }
                             if !snapshot_installed {
-                                break 'connection BinanceSpotL2ConnectionExit::new(
-                                    BinanceSpotL2DisconnectReason::SourceInvalid,
-                                    Some("Binance spot L2 update arrived without an installed snapshot".to_string()),
-                                    reached_synchronization,
-                                );
+                                schedule_binance_spot_l2_snapshot_retry(
+                                    &mut snapshot_attempts,
+                                    &mut snapshot_request,
+                                    client,
+                                    config,
+                                    metrics,
+                                ).await;
+                                continue;
                             }
                         }
                         let was_synchronized = engine.synchronized();
@@ -7435,11 +7445,16 @@ async fn run_binance_spot_l2_connection(
                                         state,
                                         metrics,
                                     ).await {
-                                        break 'connection BinanceSpotL2ConnectionExit::new(
-                                            BinanceSpotL2DisconnectReason::SourceInvalid,
-                                            Some(bounded_reference_detail(error)),
-                                            reached_synchronization,
-                                        );
+                                        let detail = bounded_reference_detail(error);
+                                        engine.quarantine_qualification();
+                                        quarantine_binance_spot_l2_inference_state(
+                                            state,
+                                            metrics,
+                                            connection_id,
+                                            engine.update_id(),
+                                            &detail,
+                                        ).await;
+                                        continue;
                                     }
                                     reached_synchronization = true;
                                 }
@@ -7453,11 +7468,16 @@ async fn run_binance_spot_l2_connection(
                                     update_id,
                                     features,
                                 ).await {
-                                    break 'connection BinanceSpotL2ConnectionExit::new(
-                                        BinanceSpotL2DisconnectReason::SourceInvalid,
-                                        Some(bounded_reference_detail(error)),
-                                        reached_synchronization,
-                                    );
+                                    let detail = bounded_reference_detail(error);
+                                    engine.quarantine_qualification();
+                                    quarantine_binance_spot_l2_inference_state(
+                                        state,
+                                        metrics,
+                                        connection_id,
+                                        engine.update_id(),
+                                        &detail,
+                                    ).await;
+                                    continue;
                                 }
                             }
                             Ok(BinanceSpotL2UpdateOutcome::AppliedUnqualified) => {
@@ -7475,6 +7495,7 @@ async fn run_binance_spot_l2_connection(
                                     metrics,
                                     connection_id,
                                     engine.update_id(),
+                                    "Binance spot L2 update exceeded the source-age qualification bound",
                                 ).await;
                             }
                             Ok(BinanceSpotL2UpdateOutcome::IgnoredStale) => {
@@ -7499,43 +7520,51 @@ async fn run_binance_spot_l2_connection(
                                         .sequence_gaps
                                         .saturating_add(1);
                                 }
-                                if was_synchronized {
-                                    break 'connection BinanceSpotL2ConnectionExit::new(
-                                        BinanceSpotL2DisconnectReason::SequenceGap,
-                                        Some(detail),
-                                        reached_synchronization,
-                                    );
-                                }
+                                engine.invalidate();
+                                bootstrap.clear();
                                 snapshot_installed = false;
-                                if snapshot_attempts >= BINANCE_SPOT_L2_SNAPSHOT_ATTEMPTS_PER_CONNECTION {
-                                    break 'connection BinanceSpotL2ConnectionExit::new(
-                                        BinanceSpotL2DisconnectReason::SnapshotBehindBuffer,
-                                        Some(detail),
-                                        reached_synchronization,
-                                    );
+                                schedule_binance_spot_l2_snapshot_retry(
+                                    &mut snapshot_attempts,
+                                    &mut snapshot_request,
+                                    client,
+                                    config,
+                                    metrics,
+                                ).await;
+                                {
+                                    let mut runtime_metrics = metrics.write().await;
+                                    runtime_metrics.binance_spot_l2.snapshot_behind_buffer =
+                                        runtime_metrics
+                                            .binance_spot_l2
+                                            .snapshot_behind_buffer
+                                            .saturating_add(1);
                                 }
-                                snapshot_attempts = snapshot_attempts.saturating_add(1);
-                                snapshot_request = Some(binance_spot_l2_snapshot_future(
-                                    client.clone(),
-                                    config.binance_rest_base_url.clone(),
-                                ));
-                                let mut runtime_metrics = metrics.write().await;
-                                runtime_metrics.binance_spot_l2.snapshot_behind_buffer =
-                                    runtime_metrics
-                                        .binance_spot_l2
-                                        .snapshot_behind_buffer
-                                        .saturating_add(1);
-                                runtime_metrics.binance_spot_l2.snapshot_requests = runtime_metrics
-                                    .binance_spot_l2
-                                    .snapshot_requests
-                                    .saturating_add(1);
+                                quarantine_binance_spot_l2_inference_state(
+                                    state,
+                                    metrics,
+                                    connection_id,
+                                    None,
+                                    &detail,
+                                ).await;
                             }
                             Err(error) => {
-                                break 'connection BinanceSpotL2ConnectionExit::new(
-                                    BinanceSpotL2DisconnectReason::SourceInvalid,
-                                    Some(bounded_reference_detail(error)),
-                                    reached_synchronization,
-                                );
+                                let detail = bounded_reference_detail(error);
+                                engine.invalidate();
+                                bootstrap.clear();
+                                snapshot_installed = false;
+                                schedule_binance_spot_l2_snapshot_retry(
+                                    &mut snapshot_attempts,
+                                    &mut snapshot_request,
+                                    client,
+                                    config,
+                                    metrics,
+                                ).await;
+                                quarantine_binance_spot_l2_inference_state(
+                                    state,
+                                    metrics,
+                                    connection_id,
+                                    None,
+                                    &detail,
+                                ).await;
                             }
                         }
                     }
@@ -7598,16 +7627,31 @@ async fn run_binance_spot_l2_connection(
                         );
                     }
                     Message::Binary(_) => {
-                        let mut runtime_metrics = metrics.write().await;
-                        runtime_metrics.binance_spot_l2.decode_errors = runtime_metrics
-                            .binance_spot_l2
-                            .decode_errors
-                            .saturating_add(1);
-                        break 'connection BinanceSpotL2ConnectionExit::new(
-                            BinanceSpotL2DisconnectReason::DecodeFailed,
-                            Some("Binance spot L2 websocket emitted an unexpected binary frame".to_string()),
-                            reached_synchronization,
-                        );
+                        let detail = "Binance spot L2 websocket emitted an unexpected binary frame";
+                        {
+                            let mut runtime_metrics = metrics.write().await;
+                            runtime_metrics.binance_spot_l2.decode_errors = runtime_metrics
+                                .binance_spot_l2
+                                .decode_errors
+                                .saturating_add(1);
+                        }
+                        engine.invalidate();
+                        bootstrap.clear();
+                        snapshot_installed = false;
+                        schedule_binance_spot_l2_snapshot_retry(
+                            &mut snapshot_attempts,
+                            &mut snapshot_request,
+                            client,
+                            config,
+                            metrics,
+                        ).await;
+                        quarantine_binance_spot_l2_inference_state(
+                            state,
+                            metrics,
+                            connection_id,
+                            None,
+                            detail,
+                        ).await;
                     }
                     Message::Pong(_) | Message::Frame(_) => {}
                 }
@@ -7771,7 +7815,7 @@ async fn run_binance_supervisor(
         let mut disconnect_detail = None;
         let mut stats = ReferenceSessionStats::default();
         let watchdog_started = Instant::now();
-        let mut watchdog = ReferenceFeedWatchdog::new(watchdog_started, kind);
+        let mut watchdog = ReferenceFeedWatchdog::new(watchdog_started);
         let mut heartbeat = interval_at(watchdog_started + heartbeat_interval, heartbeat_interval);
         heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut model_recovery_retry = interval(BINANCE_MODEL_RECOVERY_RETRY_INTERVAL);
@@ -8080,7 +8124,7 @@ async fn run_binance_supervisor(
                                                 }
                                             }
                                             if health_progress {
-                                                watchdog.on_required_tick(received_instant, kind);
+                                                watchdog.on_required_tick(received_instant);
                                                 stats.required_ticks =
                                                     stats.required_ticks.saturating_add(1);
                                                 stats.last_required_tick_at = Some(received_at);
@@ -13080,11 +13124,7 @@ mod tests {
     #[test]
     fn reference_watchdog_maintains_independent_deadlines_and_exact_pong_identity() {
         let started_at = Instant::now();
-        let mut watchdog = ReferenceFeedWatchdog::new(started_at, ReferenceFeedKind::Rtds);
-        assert_eq!(
-            watchdog.required_data_deadline,
-            Some(started_at + RTDS_REQUIRED_DATA_TIMEOUT)
-        );
+        let mut watchdog = ReferenceFeedWatchdog::new(started_at);
         assert_eq!(
             watchdog.read_idle_deadline,
             started_at + REFERENCE_READ_IDLE_TIMEOUT
@@ -13098,29 +13138,22 @@ mod tests {
             watchdog.read_idle_deadline,
             frame_at + REFERENCE_READ_IDLE_TIMEOUT
         );
-        assert_eq!(
-            watchdog.required_data_deadline,
-            Some(started_at + RTDS_REQUIRED_DATA_TIMEOUT)
-        );
 
         let data_at = started_at + StdDuration::from_secs(3);
-        watchdog.on_required_tick(data_at, ReferenceFeedKind::Rtds);
-        assert_eq!(
-            watchdog.required_data_deadline,
-            Some(data_at + RTDS_REQUIRED_DATA_TIMEOUT)
-        );
+        watchdog.on_required_tick(data_at);
         assert_eq!(
             watchdog.stable_deadline,
             Some(data_at + REFERENCE_STABLE_RESET_AFTER)
         );
         let stable_deadline = watchdog.stable_deadline;
-        watchdog.on_required_tick(data_at + StdDuration::from_secs(1), ReferenceFeedKind::Rtds);
+        watchdog.on_required_tick(data_at + StdDuration::from_secs(1));
         assert_eq!(watchdog.stable_deadline, stable_deadline);
 
         let probe_at = started_at + StdDuration::from_secs(5);
         assert_eq!(RTDS_HEARTBEAT_MESSAGE, "ping");
         // RTDS requires a text keepalive but does not guarantee a correlated
-        // acknowledgement. Required-data and read-idle deadlines detect loss.
+        // acknowledgement. Frame-idle detection remains the transport watchdog;
+        // required-data freshness is enforced at the trading boundary.
         assert!(!watchdog.awaiting_pong());
 
         let expected = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -13144,28 +13177,17 @@ mod tests {
     }
 
     #[test]
-    fn binance_watchdog_keeps_freshness_separate_from_transport_liveness() {
+    fn reference_watchdog_keeps_freshness_separate_from_transport_liveness() {
         let started_at = Instant::now();
-        let mut watchdog = ReferenceFeedWatchdog::new(started_at, ReferenceFeedKind::Binance);
-
-        assert_eq!(
-            ReferenceFeedKind::Rtds.required_data_disconnect_timeout(),
-            Some(RTDS_REQUIRED_DATA_TIMEOUT)
-        );
-        assert_eq!(
-            ReferenceFeedKind::Binance.required_data_disconnect_timeout(),
-            None
-        );
-        assert!(watchdog.required_data_deadline.is_none());
+        let mut watchdog = ReferenceFeedWatchdog::new(started_at);
         assert_eq!(
             watchdog.read_idle_deadline,
             started_at + REFERENCE_READ_IDLE_TIMEOUT
         );
 
         let data_at = started_at + StdDuration::from_secs(3);
-        watchdog.on_required_tick(data_at, ReferenceFeedKind::Binance);
+        watchdog.on_required_tick(data_at);
 
-        assert!(watchdog.required_data_deadline.is_none());
         assert_eq!(
             watchdog.stable_deadline,
             Some(data_at + REFERENCE_STABLE_RESET_AFTER)

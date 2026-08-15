@@ -46,6 +46,7 @@ use super::{
     },
     execution_guard::{BtcExecutionFreshnessBounds, BtcReferenceExecutionGuard},
     execution_lifecycle::{BtcExecutionLifecycle, BtcExecutionMode, PaperExecutionLifecycle},
+    feed_contract::BtcModelFeedId,
     feeds::BookRegistry,
     paper::{PaperPreviewConfig, PaperVenue, PAPER_DYNAMIC_FEE_RATE_METADATA_KEY},
     predictive_regime_v2::{
@@ -2744,9 +2745,7 @@ fn snapshot_quality_flags(
             readiness
                 .reasons
                 .iter()
-                .filter(|reason| {
-                    !directional_model || !chainlink_reference_readiness_reason(reason)
-                })
+                .filter(|reason| runtime_readiness_reason_required(config, reason))
                 .map(|reason| format!("runtime:{reason}")),
         );
     }
@@ -2861,13 +2860,47 @@ fn runtime_readiness_satisfied(
     config: &BtcStrategyConfig,
     readiness: &super::types::Readiness,
 ) -> bool {
-    readiness.ready
-        || (runtime_model_configured(config)
-            && !readiness.reasons.is_empty()
-            && readiness
-                .reasons
+    if readiness.ready {
+        return true;
+    }
+    if readiness.reasons.is_empty() {
+        return false;
+    }
+    readiness
+        .reasons
+        .iter()
+        .all(|reason| !runtime_readiness_reason_required(config, reason))
+}
+
+pub fn process_runtime_readiness(
+    config: &BtcStrategyConfig,
+    readiness: &super::types::Readiness,
+) -> super::types::Readiness {
+    let mut process_readiness = readiness.clone();
+    let had_reasons = !process_readiness.reasons.is_empty();
+    process_readiness
+        .reasons
+        .retain(|reason| runtime_readiness_reason_required(config, reason));
+    process_readiness.ready =
+        readiness.ready || (had_reasons && process_readiness.reasons.is_empty());
+    process_readiness
+}
+
+fn runtime_readiness_reason_required(config: &BtcStrategyConfig, reason: &str) -> bool {
+    if !runtime_model_configured(config) {
+        return true;
+    }
+    if chainlink_reference_readiness_reason(reason) {
+        return false;
+    }
+    if direct_binance_reference_readiness_reason(reason) {
+        return config.required_model_feeds.is_empty()
+            || config
+                .required_model_feeds
                 .iter()
-                .all(|reason| chainlink_reference_readiness_reason(reason)))
+                .any(|requirement| requirement.feed == BtcModelFeedId::BinanceBtcusdtOneSecondV1);
+    }
+    true
 }
 
 fn chainlink_reference_readiness_reason(reason: &str) -> bool {
@@ -2878,6 +2911,16 @@ fn chainlink_reference_readiness_reason(reason: &str) -> bool {
         kind,
         "missing_reference" | "future_reference" | "stale_reference"
     ) && source == ReferencePriceSource::RtdsChainlink.as_str()
+}
+
+fn direct_binance_reference_readiness_reason(reason: &str) -> bool {
+    let Some((kind, source)) = reason.split_once(':') else {
+        return false;
+    };
+    matches!(
+        kind,
+        "missing_reference" | "future_reference" | "stale_reference"
+    ) && source == ReferencePriceSource::DirectBinance.as_str()
 }
 
 fn observation_clob_connection_id(
@@ -3478,6 +3521,7 @@ fn sha256_json<T: Serialize>(value: &T) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::feed_contract::BtcModelFeedRequirement;
     use super::*;
     use chrono::TimeZone;
     use rust_decimal_macros::dec;
@@ -5442,6 +5486,49 @@ mod tests {
             );
             assert!(decision.approved_intent.is_none());
         }
+    }
+
+    #[test]
+    fn declared_model_feeds_isolate_unrelated_reference_failures() {
+        let now = Utc::now();
+        let readiness = Readiness {
+            ready: false,
+            checked_at: now,
+            reasons: vec!["stale_reference:direct_binance".to_string()],
+            ..Readiness::default()
+        };
+        let model = BtcDecisionStrategyConfig::BtcDirectionalModel {
+            model_key: BTC_DIRECTIONAL_MODEL_V1_KEY.to_string(),
+            artifact_sha256: BTC_DIRECTIONAL_MODEL_V1_ARTIFACT_SHA256.to_string(),
+            feature_schema_sha256: BTC_DIRECTIONAL_MODEL_V1_FEATURE_SCHEMA_SHA256.to_string(),
+        };
+        let l2_only = BtcStrategyConfig {
+            decision_strategy: Some(model.clone()),
+            required_model_feeds: vec![BtcModelFeedRequirement {
+                feed: BtcModelFeedId::BinanceBtcusdtL2V1,
+                maximum_age_ms: 2_000,
+                require_sequence_integrity: true,
+            }],
+            ..BtcStrategyConfig::default()
+        };
+        let one_second = BtcStrategyConfig {
+            decision_strategy: Some(model),
+            required_model_feeds: vec![BtcModelFeedRequirement {
+                feed: BtcModelFeedId::BinanceBtcusdtOneSecondV1,
+                maximum_age_ms: 1_000,
+                require_sequence_integrity: false,
+            }],
+            ..BtcStrategyConfig::default()
+        };
+
+        assert!(runtime_readiness_satisfied(&l2_only, &readiness));
+        assert!(!runtime_readiness_satisfied(&one_second, &readiness));
+        let isolated = process_runtime_readiness(&l2_only, &readiness);
+        assert!(isolated.ready);
+        assert!(isolated.reasons.is_empty());
+        let required = process_runtime_readiness(&one_second, &readiness);
+        assert!(!required.ready);
+        assert_eq!(required.reasons, readiness.reasons);
     }
 
     #[test]

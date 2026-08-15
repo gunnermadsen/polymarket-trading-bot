@@ -42,6 +42,7 @@ const OPEN_INTEREST_CAPACITY: usize = 32;
 const OPEN_INTEREST_LATEST_LIMIT: usize = 24;
 const MAX_SOURCE_ERROR_BYTES: usize = 256;
 const HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+const POLYGON_ORACLE_FUTURE_TOLERANCE: chrono::Duration = chrono::Duration::seconds(2);
 
 #[derive(Clone)]
 pub struct DirectionalExternalRuntimeConfig {
@@ -642,8 +643,12 @@ fn decode_polygon_oracle_round(
         )
         .single()
         .context("invalid Polygon oracle timestamp")?;
-    if source_timestamp > received_at {
-        bail!("Polygon oracle round timestamp was in the future");
+    let future_skew = source_timestamp.signed_duration_since(received_at);
+    if future_skew > POLYGON_ORACLE_FUTURE_TOLERANCE {
+        bail!(
+            "Polygon oracle round timestamp exceeded the bounded future tolerance: skew_ms={}",
+            future_skew.num_milliseconds(),
+        );
     }
     let price = Decimal::from_i128_with_scale(answer, decimals);
     if price <= Decimal::ZERO {
@@ -840,9 +845,24 @@ mod tests {
     }
 
     #[test]
-    fn oracle_round_later_than_response_receipt_remains_rejected() {
+    fn oracle_round_with_bounded_clock_skew_preserves_causal_availability() {
         let composite = (u128::from(3_u16) << 64) | 42;
         let source_timestamp = 1_700_000_003_u64;
+        let encoded = format!(
+            "0x{composite:064x}{:064x}{:064x}{source_timestamp:064x}{composite:064x}",
+            6_123_456_789_000_i128, 1_700_000_000_u64,
+        );
+        let received_at = DateTime::from_timestamp(1_700_000_002, 0).unwrap();
+
+        let point = decode_polygon_oracle_round(&encoded, 8, received_at).unwrap();
+        assert_eq!(point.source_timestamp.timestamp(), 1_700_000_003);
+        assert_eq!(point.available_at, point.source_timestamp);
+    }
+
+    #[test]
+    fn oracle_round_beyond_bounded_clock_skew_remains_rejected() {
+        let composite = (u128::from(3_u16) << 64) | 42;
+        let source_timestamp = 1_700_000_005_u64;
         let encoded = format!(
             "0x{composite:064x}{:064x}{:064x}{source_timestamp:064x}{composite:064x}",
             6_123_456_789_000_i128, 1_700_000_000_u64,

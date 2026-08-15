@@ -385,6 +385,10 @@ impl BinanceSpotL2Engine {
         self.rolling.clear();
     }
 
+    pub fn quarantine_qualification(&mut self) {
+        self.invalidate_qualification();
+    }
+
     pub fn synchronized(&self) -> bool {
         self.synchronized
     }

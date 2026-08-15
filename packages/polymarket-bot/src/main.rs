@@ -12,13 +12,13 @@ use async_trait::async_trait;
 use chrono::Utc;
 use polymarket_bot::{
     btc::{
-        runtime_model, runtime_status_from_inputs, BookRegistry, BtcDecisionStrategyConfig,
-        BtcDirectionalModelEntryPolicy, BtcEntryAdmissionConfig, BtcExecutionLifecycle,
-        BtcExecutionMode, BtcLiveExecutionAdapter, BtcModelFeedId, BtcPlaybookRuntimeHandle,
-        BtcProcessConfig, BtcProcessRunner, BtcRepository, BtcRuntime, BtcRuntimeConfig,
-        BtcRuntimeHandle, BtcStrategyConfig, LiveExecutionLifecycle, PaperExecutionLifecycle,
-        PaperPreviewConfig, PaperVenue as BtcPaperVenue, PaperVenueConfig, RuntimeModelSelection,
-        BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_VERSION,
+        process_runtime_readiness, runtime_model, runtime_status_from_inputs, BookRegistry,
+        BtcDecisionStrategyConfig, BtcDirectionalModelEntryPolicy, BtcEntryAdmissionConfig,
+        BtcExecutionLifecycle, BtcExecutionMode, BtcLiveExecutionAdapter, BtcModelFeedId,
+        BtcPlaybookRuntimeHandle, BtcProcessConfig, BtcProcessRunner, BtcRepository, BtcRuntime,
+        BtcRuntimeConfig, BtcRuntimeHandle, BtcStrategyConfig, LiveExecutionLifecycle,
+        PaperExecutionLifecycle, PaperPreviewConfig, PaperVenue as BtcPaperVenue, PaperVenueConfig,
+        RuntimeModelSelection, BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_VERSION,
         BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
         BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION,
         BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION,
@@ -1022,6 +1022,7 @@ struct ActiveBtcPlaybook {
     run_key: String,
     config_hash: String,
     execution_mode: BtcExecutionMode,
+    strategy: BtcStrategyConfig,
     live_venue: Option<Arc<LiveVenue>>,
     runtime: BtcPlaybookRuntimeHandle,
 }
@@ -2017,6 +2018,7 @@ impl BtcProcessManager {
             }),
         )
         .await;
+        let active_strategy = strategy.clone();
 
         let startup_result: Result<(BtcPlaybookRuntimeHandle, Option<Arc<LiveVenue>>)> = async {
             let (state, books) = self
@@ -2080,6 +2082,7 @@ impl BtcProcessManager {
                 run_key: run_key.clone(),
                 config_hash: config_hash.clone(),
                 execution_mode,
+                strategy: active_strategy,
                 live_venue: live_process_venue,
                 runtime,
             },
@@ -2274,6 +2277,7 @@ impl BtcProcessManager {
                 run_key: run_key.clone(),
                 config_hash: config_hash.clone(),
                 execution_mode,
+                strategy,
                 live_venue: live_process_venue,
                 runtime,
             },
@@ -2911,6 +2915,7 @@ impl BtcProcessManager {
                     active.run_key.clone(),
                     active.config_hash.clone(),
                     active.execution_mode,
+                    active.strategy.clone(),
                     active.live_venue.clone(),
                     active.runtime.status_inputs(),
                 )
@@ -2921,12 +2926,14 @@ impl BtcProcessManager {
             run_key,
             config_hash,
             execution_mode,
+            strategy,
             live_venue,
             inputs,
         )) = active
         {
             let (state, metrics, config, running) = inputs;
-            let runtime = runtime_status_from_inputs(state, metrics, config, running).await;
+            let mut runtime = runtime_status_from_inputs(state, metrics, config, running).await;
+            runtime.readiness = process_runtime_readiness(&strategy, &runtime.readiness);
             let mut status = serde_json::json!({
                 "capability_enabled": true,
                 "active": true,
