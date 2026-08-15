@@ -1,0 +1,26 @@
+[
+  {
+    "event_type": "book",
+    "market": "0x1111111111111111111111111111111111111111111111111111111111111111",
+    "asset_id": "111111111111111111111111111111111111111111111111111111111111111111",
+    "timestamp": "1783902600123",
+    "hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bids": [
+      {"price": "0.48", "size": "30"},
+      {"price": "0.47", "size": "12.5"}
+    ],
+    "asks": [
+      {"price": "0.52", "size": "25"},
+      {"price": "0.53", "size": "11"}
+    ]
+  },
+  {
+    "event_type": "book",
+    "market": "0x1111111111111111111111111111111111111111111111111111111111111111",
+    "asset_id": "222222222222222222222222222222222222222222222222222222222222222222",
+    "timestamp": 1783902600124,
+    "hash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "bids": [],
+    "asks": []
+  }
+]

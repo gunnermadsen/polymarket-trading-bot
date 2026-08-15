@@ -1,0 +1,45 @@
+services:
+  market-data-ingester:
+    profiles:
+      - market-data-ingestion
+    build:
+      context: ./packages/market-data-ingester
+      dockerfile: Dockerfile
+      args:
+        MARKET_DATA_INGESTER_GIT_REVISION: ${MARKET_DATA_INGESTER_GIT_REVISION:-}
+    image: ${MARKET_DATA_INGESTER_IMAGE:-capitonic/market-data-ingester:development}
+    container_name: market-data-ingester
+    hostname: market-data-ingester
+    init: true
+    mem_limit: 512m
+    cpus: "1.0"
+    pids_limit: 128
+    env_file:
+      - .env.postgres
+      - path: .env.market-data-ingester
+        required: false
+    environment:
+      RUST_LOG: "info"
+      POSTGRES_HOST: "timescaledb-0"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "polymarket"
+      POSTGRES_SSL_MODE: "disable"
+      MARKET_DATA_INGESTER_INSTANCE: "market-data-ingester-1"
+      MARKET_DATA_INGESTER_API_BIND: "0.0.0.0:8098"
+      MARKET_DATA_INGESTER_DB_POOL_CONNECTIONS: "4"
+      MARKET_DATA_INGESTER_CHAINLINK_DATA_STREAMS_API_KEY: ${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY}
+      MARKET_DATA_INGESTER_CHAINLINK_DATA_STREAMS_API_SECRET: ${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET}
+      MARKET_DATA_INGESTER_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY: ${POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY}
+    ports:
+      - "127.0.0.1:8099:8098"
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      timescaledb-0:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 60s
+    restart: unless-stopped

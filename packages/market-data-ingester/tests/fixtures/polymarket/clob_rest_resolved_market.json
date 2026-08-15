@@ -1,0 +1,22 @@
+{
+  "enable_order_book": false,
+  "active": true,
+  "closed": true,
+  "accepting_orders": false,
+  "condition_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "market_slug": "btc-updown-5m-1783902600",
+  "tokens": [
+    {
+      "token_id": "100000000000000000000000000000000000000000000000000000000000000001",
+      "outcome": "Up",
+      "price": 1,
+      "winner": true
+    },
+    {
+      "token_id": "200000000000000000000000000000000000000000000000000000000000000002",
+      "outcome": "Down",
+      "price": 0,
+      "winner": false
+    }
+  ]
+}
