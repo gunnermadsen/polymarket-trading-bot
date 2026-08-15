@@ -10,10 +10,12 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::types::{
-    BinanceAggregateTrade, BookReadiness, BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus,
-    MarketFeedEvent, MarketFeedEventType, OrderbookCheckpoint, OrderbookLevel, Readiness,
-    RealtimeState, ReferencePriceSource, ReferencePriceTick, SourceReadiness,
+    BinanceAggregateTrade, BookReadiness, BtcIntervalMarket, BtcOutcome, ChainlinkTwap60Point,
+    FeedIntegrityStatus, MarketFeedEvent, MarketFeedEventType, OrderbookCheckpoint, OrderbookLevel,
+    Readiness, RealtimeState, ReferencePriceSource, ReferencePriceTick, SourceReadiness,
 };
+
+const CHAINLINK_E18_SCALE: u64 = 1_000_000_000_000_000_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClobMessage {
@@ -232,6 +234,45 @@ pub fn parse_rtds_reference_tick(
         None,
         value.clone(),
     )
+}
+
+pub(super) fn parse_rtds_chainlink_twap_60(
+    value: &Value,
+    received_at: DateTime<Utc>,
+) -> Result<ChainlinkTwap60Point> {
+    let object = value
+        .as_object()
+        .context("RTDS TWAP message must be an object")?;
+    if required_string(object, &["topic"])? != "crypto_prices_twap_sixty"
+        || required_string(object, &["type"])? != "update"
+    {
+        bail!("RTDS message is not a Chainlink 60-second TWAP update");
+    }
+    let payload = object
+        .get("payload")
+        .and_then(Value::as_object)
+        .context("RTDS TWAP update is missing payload")?;
+    let symbol = required_string(payload, &["symbol"])?;
+    if !symbol.eq_ignore_ascii_case("btc/usd") {
+        bail!("RTDS TWAP update has unexpected symbol {symbol}");
+    }
+    let window_seconds = payload
+        .get("window_s")
+        .and_then(Value::as_u64)
+        .context("RTDS TWAP update is missing window_s")?;
+    if window_seconds != 60 {
+        bail!("RTDS TWAP update has unexpected window {window_seconds}s");
+    }
+    let fixed_point = required_decimal(payload, &["full_accuracy_value"])?;
+    let price = fixed_point / Decimal::from(CHAINLINK_E18_SCALE);
+    if price <= Decimal::ZERO {
+        bail!("RTDS TWAP update price must be positive");
+    }
+    Ok(ChainlinkTwap60Point {
+        price,
+        source_timestamp: timestamp_field(payload, &["timestamp"])?,
+        available_at: received_at,
+    })
 }
 
 pub fn parse_binance_agg_trade(
@@ -1629,6 +1670,50 @@ mod tests {
         )
         .unwrap();
         assert_eq!(binance.source, ReferencePriceSource::RtdsBinance);
+    }
+
+    #[test]
+    fn parses_chainlink_twap_60_from_exact_e18_value() {
+        let received = ts(1_783_902_701_250);
+        let point = parse_rtds_chainlink_twap_60(
+            &serde_json::json!({
+                "topic": "crypto_prices_twap_sixty",
+                "type": "update",
+                "timestamp": 1783902701200_i64,
+                "payload": {
+                    "symbol": "btc/usd",
+                    "value": 67234.5,
+                    "full_accuracy_value": "67234501234567890123456",
+                    "timestamp": 1783902701100_i64,
+                    "window_s": 60
+                }
+            }),
+            received,
+        )
+        .unwrap();
+
+        assert_eq!(point.price, dec!(67234.501234567890123456));
+        assert_eq!(point.source_timestamp, ts(1_783_902_701_100));
+        assert_eq!(point.available_at, received);
+    }
+
+    #[test]
+    fn rejects_a_non_sixty_second_twap_payload() {
+        let result = parse_rtds_chainlink_twap_60(
+            &serde_json::json!({
+                "topic": "crypto_prices_twap_sixty",
+                "type": "update",
+                "payload": {
+                    "symbol": "btc/usd",
+                    "full_accuracy_value": "67234500000000000000000",
+                    "timestamp": 1783902701100_i64,
+                    "window_s": 30
+                }
+            }),
+            ts(1_783_902_701_250),
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]

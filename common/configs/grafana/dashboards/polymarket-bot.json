@@ -3199,7 +3199,7 @@
         "type": "grafana",
         "uid": "grafana"
       },
-      "description": "Global Chainlink BTC/USD settlement-price path for only the active five-minute Polymarket window, with the immutable opening Chainlink reference shown as Price to Beat. The bounded current-market path is resent every second so a refreshed browser reconstructs the elapsed window and the completed market is replaced at rollover. This panel is independent of trading-process and PnL filters.",
+      "description": "Global Chainlink BTC/USD 60-second TWAP path for only the active five-minute Polymarket window, with the first boundary TWAP shown as Price to Beat. The bounded current-market path is resent every second so a refreshed browser reconstructs the elapsed window and the completed market is replaced at rollover. This panel is independent of trading-process and PnL filters.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3254,12 +3254,12 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "chainlink_price"
+              "options": "twap_price"
             },
             "properties": [
               {
                 "id": "displayName",
-                "value": "Chainlink BTC/USD"
+                "value": "Chainlink BTC/USD TWAP 60s"
               },
               {
                 "id": "color",
@@ -3339,7 +3339,7 @@
           "filter": {
             "fields": [
               "time",
-              "chainlink_price",
+              "twap_price",
               "price_to_beat"
             ]
           },
@@ -3416,6 +3416,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 134,
+  "version": 135,
   "weekStart": ""
 }

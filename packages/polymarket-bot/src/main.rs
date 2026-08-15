@@ -38,7 +38,7 @@ use polymarket_bot::{
         LiveOrderDryRunRequest, LivePoly1271FunderProbeRequest, LivePoly1271FunderProbeResponse,
         LiveVenueStatus, LiveWalletAddressDiagnostics,
     },
-    grafana_live::{CountdownSnapshot, GrafanaLivePublisher, MarketPathPoint, MarketPathSnapshot},
+    grafana_live::{CountdownSnapshot, GrafanaLivePublisher, MarketPathSnapshot},
     http as control_http,
     http::{
         ControlApi, HealthResponse, HealthStatus, HttpError, IngestionBackfillCancelResponse,
@@ -1061,13 +1061,6 @@ struct PendingBtcTerminal {
     allow_inactive_process: bool,
 }
 
-#[derive(Debug, Clone)]
-struct CachedGrafanaMarketTarget {
-    market_id: String,
-    source_timestamp: chrono::DateTime<Utc>,
-    price: Decimal,
-}
-
 #[derive(Clone)]
 struct BtcProcessManager {
     store: Store,
@@ -1079,7 +1072,6 @@ struct BtcProcessManager {
     active_playbooks: Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, ActiveBtcPlaybook>>>,
     shared_runtime: Arc<tokio::sync::Mutex<Option<SharedBtcRuntime>>>,
     terminal_pending: Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, PendingBtcTerminal>>>,
-    grafana_market_target: Arc<tokio::sync::Mutex<Option<CachedGrafanaMarketTarget>>>,
 }
 
 impl BtcProcessManager {
@@ -1099,7 +1091,6 @@ impl BtcProcessManager {
             active_playbooks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             shared_runtime: Arc::new(tokio::sync::Mutex::new(None)),
             terminal_pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-            grafana_market_target: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -2789,76 +2780,24 @@ impl BtcProcessManager {
             .as_ref()
             .map(|shared| shared.runtime.shared_state());
         let Some(state) = state else {
-            self.grafana_market_target.lock().await.take();
             return Ok(None);
         };
-        let (market, chainlink_history) = {
+        let (market, twap_history) = {
             let state = state.read().await;
             let Some(market) = state.current_market.clone() else {
-                drop(state);
-                self.grafana_market_target.lock().await.take();
                 return Ok(None);
             };
-            let chainlink_history = state
-                .directional_external
-                .chainlink_mid
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>();
-            (market, chainlink_history)
+            let twap_history = state.chainlink_twap_60.iter().cloned().collect::<Vec<_>>();
+            (market, twap_history)
         };
         if !market.is_trade_window(observed_at) {
-            self.grafana_market_target.lock().await.take();
             return Ok(None);
         }
-
-        let cached_target = self
-            .grafana_market_target
-            .lock()
-            .await
-            .as_ref()
-            .filter(|cached| cached.market_id == market.market_id)
-            .map(|cached| MarketPathPoint {
-                observed_at: cached.source_timestamp,
-                price: cached.price,
-            });
-        let opening_reference = match cached_target {
-            Some(reference) => Some(reference),
-            None => {
-                let reference = self
-                    .repository
-                    .load_market_opening_reference(
-                        &market,
-                        observed_at,
-                        chrono::Duration::seconds(5),
-                    )
-                    .await?;
-                let opening_reference = reference.map(|reference| MarketPathPoint {
-                    observed_at: reference.source_timestamp,
-                    price: reference.price,
-                });
-                let mut cached = self.grafana_market_target.lock().await;
-                if let Some(reference) = opening_reference.as_ref() {
-                    *cached = Some(CachedGrafanaMarketTarget {
-                        market_id: market.market_id.clone(),
-                        source_timestamp: reference.observed_at,
-                        price: reference.price,
-                    });
-                } else if cached
-                    .as_ref()
-                    .is_some_and(|cached| cached.market_id != market.market_id)
-                {
-                    cached.take();
-                }
-                opening_reference
-            }
-        };
 
         Ok(Some(MarketPathSnapshot::resolve(
             observed_at,
             &market,
-            opening_reference,
-            chainlink_history,
+            twap_history,
         )))
     }
 

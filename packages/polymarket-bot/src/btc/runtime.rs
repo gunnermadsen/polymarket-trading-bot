@@ -45,8 +45,8 @@ use super::{
         run_directional_external_supervisor, DirectionalExternalRuntimeConfig,
     },
     feeds::{
-        parse_binance_agg_trade_with_details, parse_clob_messages, parse_rtds_reference_tick,
-        BookRegistry, ClobMessage,
+        parse_binance_agg_trade_with_details, parse_clob_messages, parse_rtds_chainlink_twap_60,
+        parse_rtds_reference_tick, BookRegistry, ClobMessage,
     },
     market::{
         discovery_windows, parse_clob_rest_official_resolution, parse_gamma_btc_interval_event,
@@ -6095,17 +6095,39 @@ async fn run_rtds_supervisor(
                                         Message::Text(text) => {
                                             sequence = sequence.saturating_add(1);
                                             session.messages_received = session.messages_received.saturating_add(1);
-                                            let parsed = serde_json::from_str::<serde_json::Value>(&text)
-                                                .context("failed to decode RTDS JSON")
-                                                .and_then(|value| {
-                                                    if !is_rtds_reference_update(&value) {
-                                                        return Ok(None);
+                                            let decoded = serde_json::from_str::<serde_json::Value>(&text)
+                                                .context("failed to decode RTDS JSON");
+                                            if let Ok(value) = decoded.as_ref() {
+                                                if is_rtds_twap_60_update(value) {
+                                                    match parse_rtds_chainlink_twap_60(value, received_at) {
+                                                        Ok(point) => state
+                                                            .write()
+                                                            .await
+                                                            .chainlink_twap_60
+                                                            .observe(point),
+                                                        Err(error) => {
+                                                            session.decode_errors = session.decode_errors.saturating_add(1);
+                                                            {
+                                                                let mut runtime_metrics = metrics.write().await;
+                                                                runtime_metrics.decode_errors = runtime_metrics
+                                                                    .decode_errors
+                                                                    .saturating_add(1);
+                                                            }
+                                                            record_error(&metrics, error).await;
+                                                        }
                                                     }
-                                                    parse_rtds_reference_tick(
-                                                        &value, connection_id, sequence, received_at
-                                                    )
-                                                    .map(Some)
-                                                });
+                                                    continue;
+                                                }
+                                            }
+                                            let parsed = decoded.and_then(|value| {
+                                                if !is_rtds_reference_update(&value) {
+                                                    return Ok(None);
+                                                }
+                                                parse_rtds_reference_tick(
+                                                    &value, connection_id, sequence, received_at
+                                                )
+                                                .map(Some)
+                                            });
                                             match parsed {
                                                 Ok(Some(tick)) => {
                                                     let (health_progress, external_error) = {
@@ -9163,9 +9185,19 @@ fn rtds_subscription() -> String {
             "topic": "crypto_prices_chainlink",
             "type": "*",
             "filters": "{\"symbol\":\"btc/usd\"}"
+        }, {
+            "topic": "crypto_prices_twap_sixty",
+            "type": "update",
+            "filters": "{\"symbol\":\"btc/usd\"}"
         }]
     })
     .to_string()
+}
+
+fn is_rtds_twap_60_update(value: &serde_json::Value) -> bool {
+    value.get("type").and_then(serde_json::Value::as_str) == Some("update")
+        && value.get("topic").and_then(serde_json::Value::as_str)
+            == Some("crypto_prices_twap_sixty")
 }
 
 fn is_rtds_reference_update(value: &serde_json::Value) -> bool {
@@ -12439,6 +12471,14 @@ mod tests {
         assert_eq!(clob["initial_dump"], true);
         let rtds: serde_json::Value = serde_json::from_str(&rtds_subscription()).unwrap();
         assert_eq!(rtds["subscriptions"][0]["filters"], "btcusdt");
+        assert_eq!(
+            rtds["subscriptions"][2],
+            serde_json::json!({
+                "topic": "crypto_prices_twap_sixty",
+                "type": "update",
+                "filters": "{\"symbol\":\"btc/usd\"}"
+            })
+        );
     }
 
     #[test]
@@ -12677,6 +12717,16 @@ mod tests {
         })));
         assert!(is_rtds_reference_update(&serde_json::json!({
             "topic": "crypto_prices_chainlink",
+            "type": "update",
+            "payload": {}
+        })));
+        assert!(is_rtds_twap_60_update(&serde_json::json!({
+            "topic": "crypto_prices_twap_sixty",
+            "type": "update",
+            "payload": {}
+        })));
+        assert!(!is_rtds_reference_update(&serde_json::json!({
+            "topic": "crypto_prices_twap_sixty",
             "type": "update",
             "payload": {}
         })));

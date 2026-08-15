@@ -17,6 +17,7 @@ pub const BINANCE_ONE_SECOND_WINDOW_CAPACITY: usize = 305;
 pub const BINANCE_PREWINDOW_SUMMARY_CAPACITY: usize = 12;
 pub const BINANCE_ONE_SECOND_BOOTSTRAP_CAPACITY: usize =
     BINANCE_ONE_SECOND_WINDOW_CAPACITY + BINANCE_PREWINDOW_SUMMARY_CAPACITY * 300;
+pub const CHAINLINK_TWAP_60_WINDOW_CAPACITY: usize = 600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -96,6 +97,48 @@ pub struct ReferencePriceTick {
     pub ingest_sequence: u64,
     pub source_event_id: Option<String>,
     pub raw_payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainlinkTwap60Point {
+    pub price: Decimal,
+    pub source_timestamp: DateTime<Utc>,
+    pub available_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainlinkTwap60Window {
+    points: VecDeque<ChainlinkTwap60Point>,
+    capacity: usize,
+}
+
+impl Default for ChainlinkTwap60Window {
+    fn default() -> Self {
+        Self {
+            points: VecDeque::with_capacity(CHAINLINK_TWAP_60_WINDOW_CAPACITY),
+            capacity: CHAINLINK_TWAP_60_WINDOW_CAPACITY,
+        }
+    }
+}
+
+impl ChainlinkTwap60Window {
+    pub fn observe(&mut self, point: ChainlinkTwap60Point) {
+        if self
+            .points
+            .back()
+            .is_some_and(|last| last.source_timestamp == point.source_timestamp)
+        {
+            self.points.pop_back();
+        }
+        self.points.push_back(point);
+        while self.points.len() > self.capacity {
+            self.points.pop_front();
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &ChainlinkTwap60Point> {
+        self.points.iter()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -672,6 +715,9 @@ pub struct RealtimeState {
     /// Bounded, inference-only external context shared by every directional-model process.
     #[serde(skip)]
     pub directional_external: DirectionalExternalState,
+    /// Bounded display-only history from Polymarket's Chainlink BTC/USD TWAP 60s topic.
+    #[serde(skip)]
+    pub chainlink_twap_60: ChainlinkTwap60Window,
     pub resolved_outcome: Option<BtcOutcome>,
     pub last_updated_at: Option<DateTime<Utc>>,
 }
@@ -709,6 +755,40 @@ mod tests {
 
         state.primary_persistence_degraded = true;
         assert!(!state.primary_persistence_available());
+    }
+
+    #[test]
+    fn chainlink_twap_window_is_bounded_and_replaces_duplicate_timestamp() {
+        let mut window = ChainlinkTwap60Window {
+            points: VecDeque::new(),
+            capacity: 2,
+        };
+        let first_at = at(1_000);
+        window.observe(ChainlinkTwap60Point {
+            price: dec!(100),
+            source_timestamp: first_at,
+            available_at: first_at,
+        });
+        window.observe(ChainlinkTwap60Point {
+            price: dec!(101),
+            source_timestamp: first_at,
+            available_at: first_at,
+        });
+        window.observe(ChainlinkTwap60Point {
+            price: dec!(102),
+            source_timestamp: at(2_000),
+            available_at: at(2_000),
+        });
+        window.observe(ChainlinkTwap60Point {
+            price: dec!(103),
+            source_timestamp: at(3_000),
+            available_at: at(3_000),
+        });
+
+        let points = window.iter().collect::<Vec<_>>();
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0].price, dec!(102));
+        assert_eq!(points[1].price, dec!(103));
     }
 
     fn trade(
