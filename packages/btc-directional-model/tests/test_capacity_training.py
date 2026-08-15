@@ -2,12 +2,18 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 from btc_directional_model.capacity_training import (
     _attach_asymmetric_book_features,
     _metrics,
+    _require_complete_capacity_coverage,
 )
 from btc_directional_model.capacity_training_config import (
+    CapacityExecution,
+    CapacityGates,
+    CapacityTrainingConfig,
+    CapacityWindows,
     load_capacity_training_config,
 )
 
@@ -65,3 +71,42 @@ def test_metrics_apply_quantity_fee_reserve_and_one_cent_stress() -> None:
     assert metrics["trades"] == 2
     assert abs(metrics["net_pnl"] - 2.9) < 1e-12
     assert abs(metrics["stress_plus_one_cent"]["net_pnl"] - 2.7) < 1e-12
+
+
+def test_extraction_fails_closed_until_every_capacity_hour_is_complete(tmp_path: Path) -> None:
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, _query, _parameters):
+            return None
+
+        def fetchone(self):
+            return 2, datetime(2026, 4, 21, tzinfo=UTC)
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+    start = datetime(2026, 4, 21, tzinfo=UTC)
+    config = CapacityTrainingConfig(
+        source_path=tmp_path / "config.toml",
+        package_root=tmp_path,
+        windows=CapacityWindows(
+            development_start=start,
+            calibration_start=start + timedelta(days=1),
+            policy_start=start + timedelta(days=2),
+            freeze_at=start + timedelta(days=3),
+        ),
+        execution=CapacityExecution((10, 15, 20), 10, 0.25, 0.005, 0.55),
+        gates=CapacityGates(1, 1, 1.0, 0.0, 1),
+        evidence=tmp_path / "evidence",
+        runs=tmp_path / "runs",
+        lineages=(),
+    )
+
+    with pytest.raises(RuntimeError, match="2 hourly partition"):
+        _require_complete_capacity_coverage(Connection(), config)

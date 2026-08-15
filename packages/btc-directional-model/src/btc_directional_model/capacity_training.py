@@ -88,8 +88,10 @@ def extract_capacity_evidence(
         raise RuntimeError("capacity evidence contract changed; use a new evidence path")
     old = {item["path"]: item for item in (existing or {}).get("partitions", [])}
     partitions: list[dict[str, Any]] = []
-    connection = None
+    connection = database_connection()
+    configure_read_only_connection(connection)
     try:
+        _require_complete_capacity_coverage(connection, config)
         start = config.windows.development_start
         while start < config.windows.freeze_at:
             end = min(start + timedelta(days=1), config.windows.freeze_at)
@@ -101,9 +103,6 @@ def extract_capacity_evidence(
                 if expected and (expected["sha256"] != sha256 or expected["rows"] != rows):
                     raise RuntimeError(f"capacity partition changed: {destination.name}")
             else:
-                if connection is None:
-                    connection = database_connection()
-                    configure_read_only_connection(connection)
                 rows = _extract_partition(
                     connection,
                     query,
@@ -118,8 +117,7 @@ def extract_capacity_evidence(
             )
             start = end
     finally:
-        if connection is not None:
-            connection.close()
+        connection.close()
     manifest = {
         **contract,
         "created_at": datetime.now(UTC).isoformat(),
@@ -131,6 +129,46 @@ def extract_capacity_evidence(
     }
     write_json_atomic(manifest_path, manifest)
     return manifest
+
+
+def _require_complete_capacity_coverage(
+    connection: Any, config: CapacityTrainingConfig
+) -> None:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            WITH expected AS MATERIALIZED (
+              SELECT hour
+              FROM generate_series(
+                %(range_start)s::timestamptz,
+                %(range_end)s::timestamptz - interval '1 hour',
+                interval '1 hour'
+              ) AS hour
+            ), completed AS MATERIALIZED (
+              SELECT minimum_source_timestamp AS hour
+              FROM polymarket.backfill_artifacts
+              WHERE provider = 'pmxt_v2_capacity_execution_snapshots'
+                AND status = 'completed'
+                AND minimum_source_timestamp >= %(range_start)s
+                AND minimum_source_timestamp < %(range_end)s
+                AND record_count = 1152
+            )
+            SELECT count(*)::bigint, min(expected.hour)
+            FROM expected
+            LEFT JOIN completed USING (hour)
+            WHERE completed.hour IS NULL
+            """,
+            {
+                "range_start": config.windows.development_start,
+                "range_end": config.windows.freeze_at,
+            },
+        )
+        missing, first_missing = cursor.fetchone()
+    if missing:
+        raise RuntimeError(
+            "capacity evidence is not materialized for "
+            f"{missing} hourly partition(s); first missing hour: {first_missing.isoformat()}"
+        )
 
 
 def run_capacity_training(
