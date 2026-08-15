@@ -182,10 +182,9 @@ impl Default for BtcRuntimeConfig {
             clob_rest_base_url: "https://clob.polymarket.com".to_string(),
             clob_ws_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market".to_string(),
             rtds_ws_url: "wss://ws-live-data.polymarket.com".to_string(),
-            binance_ws_url: "wss://stream.binance.com:9443/ws/btcusdt@aggTrade".to_string(),
+            binance_ws_url: "wss://stream.binance.com/ws/btcusdt@aggTrade".to_string(),
             binance_spot_l2_enabled: false,
-            binance_spot_l2_ws_url: "wss://stream.binance.com:9443/ws/btcusdt@depth@100ms"
-                .to_string(),
+            binance_spot_l2_ws_url: "wss://stream.binance.com/ws/btcusdt@depth@100ms".to_string(),
             binance_rest_base_url: "https://data-api.binance.vision".to_string(),
             discovery_interval: StdDuration::from_secs(5),
             reconnect_initial_delay: StdDuration::from_secs(1),
@@ -11260,7 +11259,7 @@ mod tests {
         assert!(!config.binance_spot_l2_enabled);
         assert_eq!(
             config.binance_spot_l2_ws_url,
-            "wss://stream.binance.com:9443/ws/btcusdt@depth@100ms"
+            "wss://stream.binance.com/ws/btcusdt@depth@100ms"
         );
         config.validate().unwrap();
     }
