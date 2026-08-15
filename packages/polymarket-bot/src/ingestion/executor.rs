@@ -28,7 +28,8 @@ use super::{
     },
     execution_snapshots::{
         ExecutionMarketSeed, ExecutionSnapshotReconstructor, EXECUTION_SNAPSHOTS_PER_MARKET,
-        EXECUTION_SNAPSHOT_END_MILLIS, EXECUTION_SNAPSHOT_INTERVAL_MILLIS,
+        EXECUTION_SNAPSHOT_EARLY_END_MILLIS, EXECUTION_SNAPSHOT_EARLY_INTERVAL_MILLIS,
+        EXECUTION_SNAPSHOT_END_MILLIS, EXECUTION_SNAPSHOT_LATER_INTERVAL_MILLIS,
         EXECUTION_SNAPSHOT_SCHEMA_VERSION, EXECUTION_SNAPSHOT_START_MILLIS,
     },
     huggingface_binance_l2::{
@@ -1808,7 +1809,7 @@ impl IngestionExecutor {
     ) -> std::result::Result<BackfillJobSummary, IngestionExecutionError> {
         if range_start.timestamp() < PMXT_COVERAGE_START_EPOCH + 3_600 {
             return Err(IngestionExecutionError::permanent(
-                "compact PMXT reconstruction requires the preceding seed hour",
+                "capacity PMXT reconstruction requires the preceding seed hour",
             ));
         }
         let mut summary = summary_from_progress(&progress);
@@ -1851,7 +1852,7 @@ impl IngestionExecutor {
                 .map_err(IngestionExecutionError::transient)?;
             if output_scope.len() != 12 {
                 return Err(IngestionExecutionError::permanent(format!(
-                    "expected 12 valid BTC five-minute markets for compact PMXT hour {hour}, found {}",
+                    "expected 12 valid BTC five-minute markets for capacity PMXT hour {hour}, found {}",
                     output_scope.len()
                 )));
             }
@@ -1867,12 +1868,12 @@ impl IngestionExecutor {
             let expected_reconstruction_markets = 12 + usize::from(needs_next_hour_seed);
             if reconstruction_scope.len() != expected_reconstruction_markets {
                 return Err(IngestionExecutionError::permanent(format!(
-                    "expected {expected_reconstruction_markets} BTC market identities for compact PMXT hour {hour}, found {}",
+                    "expected {expected_reconstruction_markets} BTC market identities for capacity PMXT hour {hour}, found {}",
                     reconstruction_scope.len()
                 )));
             }
             let stamp = hour.format("%Y-%m-%dT%H");
-            let logical_key = format!("pmxt:v2:btc5m_execution_snapshots:90-140s-5s:{stamp}");
+            let logical_key = format!("pmxt:v2:btc5m_capacity_execution_snapshots:1-240s:{stamp}");
             progress.current_logical_key = Some(logical_key.clone());
             let prepared = self
                 .repository
@@ -1882,19 +1883,21 @@ impl IngestionExecutor {
                         job_id: claim.job.job_id,
                         ingester: IngesterKey::PolymarketBtcFiveMinuteExecutionSnapshots,
                         logical_key,
-                        provider: "pmxt_v2_execution_snapshots".to_string(),
+                        provider: "pmxt_v2_capacity_execution_snapshots".to_string(),
                         source_uri: format!(
-                            "{}#btc5m-90-140s-5s",
+                            "{}#btc5m-capacity-1-240s",
                             source_specs
                                 .last()
-                                .expect("compact PMXT source contains the current hour")
+                                .expect("capacity PMXT source contains the current hour")
                                 .source_uri
                         ),
                         source_date: Some(hour.date_naive()),
                         expected_checksum: None,
                         metadata: serde_json::json!({
                             "schema_version": EXECUTION_SNAPSHOT_SCHEMA_VERSION,
-                            "sample_interval_milliseconds": EXECUTION_SNAPSHOT_INTERVAL_MILLIS,
+                            "early_sample_end_milliseconds": EXECUTION_SNAPSHOT_EARLY_END_MILLIS,
+                            "early_sample_interval_milliseconds": EXECUTION_SNAPSHOT_EARLY_INTERVAL_MILLIS,
+                            "later_sample_interval_milliseconds": EXECUTION_SNAPSHOT_LATER_INTERVAL_MILLIS,
                             "sample_window_start_milliseconds": EXECUTION_SNAPSHOT_START_MILLIS,
                             "sample_window_end_milliseconds": EXECUTION_SNAPSHOT_END_MILLIS,
                             "source_logical_keys": logical_keys,
@@ -2163,7 +2166,7 @@ impl IngestionExecutor {
                     .map(|market| market.market_id.as_str())
                     .ok_or_else(|| {
                         IngestionExecutionError::permanent(
-                            "compact PMXT reconstruction scope is missing its next-hour seed market",
+                            "capacity PMXT reconstruction scope is missing its next-hour seed market",
                         )
                     })?;
                 reconstructor.market_seed(next_market_id)
@@ -2180,7 +2183,7 @@ impl IngestionExecutor {
                 u64::try_from(output.len()).map_err(IngestionExecutionError::permanent)?;
             if produced_records != expected_records {
                 let message = format!(
-                    "compact PMXT hour {hour} produced {produced_records} snapshots; expected {expected_records}"
+                    "capacity PMXT hour {hour} produced {produced_records} snapshots; expected {expected_records}"
                 );
                 let _ = self
                     .repository
@@ -2213,7 +2216,9 @@ impl IngestionExecutor {
                         ),
                         metadata: serde_json::json!({
                             "schema_version": EXECUTION_SNAPSHOT_SCHEMA_VERSION,
-                            "sample_interval_milliseconds": EXECUTION_SNAPSHOT_INTERVAL_MILLIS,
+                            "early_sample_end_milliseconds": EXECUTION_SNAPSHOT_EARLY_END_MILLIS,
+                            "early_sample_interval_milliseconds": EXECUTION_SNAPSHOT_EARLY_INTERVAL_MILLIS,
+                            "later_sample_interval_milliseconds": EXECUTION_SNAPSHOT_LATER_INTERVAL_MILLIS,
                             "sample_window_start_milliseconds": EXECUTION_SNAPSHOT_START_MILLIS,
                             "sample_window_end_milliseconds": EXECUTION_SNAPSHOT_END_MILLIS,
                             "source_events_consumed": source_events,

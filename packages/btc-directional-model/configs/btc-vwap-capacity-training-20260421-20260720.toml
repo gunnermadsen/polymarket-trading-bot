@@ -1,0 +1,61 @@
+[windows]
+development_start = "2026-04-21T00:00:00Z"
+calibration_start = "2026-06-01T00:00:00Z"
+policy_start = "2026-07-01T00:00:00Z"
+freeze_at = "2026-07-20T00:00:00Z"
+
+[execution]
+quantities = [10, 15, 20]
+freshness_seconds = 10
+maximum_depth_participation = 0.25
+execution_reserve_per_share = 0.005
+confidence_threshold = 0.55
+
+[gates]
+minimum_training_rows = 500
+minimum_policy_trades = 25
+minimum_profit_factor = 1.0
+minimum_stress_expectancy_per_trade = 0.0
+minimum_improving_folds = 3
+
+[paths]
+evidence = "data/btc-vwap-capacity-training-20260421-20260720/execution"
+runs = "runs/btc-vwap-capacity-training-20260421-20260720"
+
+[[lineages]]
+name = "boundary-alignment"
+hypothesis = "directional"
+process_id = "78f614b9-97c9-4202-a9b1-cc8f01af455b"
+model = "runtime-models/btc-5m-directional-boundary-alignment-20260421-20260720-paper-v1/model.json"
+manifest = "runtime-models/btc-5m-directional-boundary-alignment-20260421-20260720-paper-v1/manifest.json"
+features = ["data/btc-core-boundary-aligned-20260421-20260720/features/development.parquet"]
+
+[[lineages]]
+name = "histogram-enriched"
+hypothesis = "directional"
+process_id = "88fc207a-39d0-407d-88a7-cc33ac3f795e"
+model = "runtime-models/btc-5m-directional-histogram-enriched-20260421-20260620-v1/model.json"
+manifest = "runtime-models/btc-5m-directional-histogram-enriched-20260421-20260620-v1/manifest.json"
+features = [
+  "data/btc-core-20260421-20260720/features/development.parquet",
+  "data/btc-core-20260421-20260720/features/holdout.parquet",
+]
+
+[[lineages]]
+name = "histogram-enriched-coverage"
+hypothesis = "directional"
+process_id = "bab4c090-68bd-415f-8cad-8788865bc058"
+model = "runtime-models/btc-5m-directional-histogram-enriched-20260421-20260720-coverage-v2/model.json"
+manifest = "runtime-models/btc-5m-directional-histogram-enriched-20260421-20260720-coverage-v2/manifest.json"
+features = [
+  "data/btc-core-20260421-20260720/features/development.parquet",
+  "data/btc-core-20260421-20260720/features/holdout.parquet",
+]
+
+[[lineages]]
+name = "asymmetric-value-core-oracle"
+hypothesis = "asymmetric_value"
+process_id = "81f82de7-002b-4ac7-814b-236c6742d81c"
+model = "runtime-models/btc-5m-asymmetric-core-oracle-paper-20260805-v1/model.json"
+manifest = "runtime-models/btc-5m-asymmetric-core-oracle-paper-20260805-v1/manifest.json"
+features = ["data/btc-asymmetric-value-calibrated-20260414-20260802/features/development-oracle-propagation-2s.parquet"]

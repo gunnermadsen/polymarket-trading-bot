@@ -32,7 +32,7 @@ const POSTGRES_MAX_BIND_PARAMETERS: usize = 65_535;
 const ORDERBOOK_EVENT_INSERT_COLUMNS: usize = 18;
 const MAX_ORDERBOOK_EVENT_INSERT_ROWS: usize =
     POSTGRES_MAX_BIND_PARAMETERS / ORDERBOOK_EVENT_INSERT_COLUMNS;
-const EXECUTION_SNAPSHOT_INSERT_COLUMNS: usize = 31;
+const EXECUTION_SNAPSHOT_INSERT_COLUMNS: usize = 35;
 const MAX_EXECUTION_SNAPSHOT_INSERT_ROWS: usize =
     POSTGRES_MAX_BIND_PARAMETERS / EXECUTION_SNAPSHOT_INSERT_COLUMNS;
 const POLYGON_CHAINLINK_INSERT_COLUMNS: usize = 15;
@@ -1363,14 +1363,16 @@ impl IngestionRepository {
         let mut inserted = 0u64;
         for chunk in records.chunks(MAX_EXECUTION_SNAPSHOT_INSERT_ROWS) {
             let mut query = QueryBuilder::<Postgres>::new(
-                "INSERT INTO polymarket.btc_market_decision_execution_snapshots (market_id, sampled_at, \
+                "INSERT INTO polymarket.btc_market_capacity_execution_snapshots (market_id, sampled_at, \
                  artifact_id, schema_version, up_source_row_number, up_source_timestamp, \
                  up_provider_received_at, up_best_bid, up_best_ask, up_best_bid_size, \
                  up_best_ask_size, up_bid_depth, up_ask_depth, up_ask_vwap_1, up_ask_vwap_5, \
-                 up_ask_vwap_10, up_imbalance, down_source_row_number, down_source_timestamp, \
+                 up_ask_vwap_10, up_ask_vwap_15, up_ask_vwap_20, up_imbalance, \
+                 down_source_row_number, down_source_timestamp, \
                  down_provider_received_at, down_best_bid, down_best_ask, down_best_bid_size, \
                  down_best_ask_size, down_bid_depth, down_ask_depth, down_ask_vwap_1, \
-                 down_ask_vwap_5, down_ask_vwap_10, down_imbalance, quality_flags) ",
+                 down_ask_vwap_5, down_ask_vwap_10, down_ask_vwap_15, down_ask_vwap_20, \
+                 down_imbalance, quality_flags) ",
             );
             query.push_values(chunk, |mut row, record| {
                 row.push_bind(&record.market_id)
@@ -1389,6 +1391,8 @@ impl IngestionRepository {
                     .push_bind(record.up_ask_vwap_1)
                     .push_bind(record.up_ask_vwap_5)
                     .push_bind(record.up_ask_vwap_10)
+                    .push_bind(record.up_ask_vwap_15)
+                    .push_bind(record.up_ask_vwap_20)
                     .push_bind(record.up_imbalance)
                     .push_bind(record.down_source_row_number)
                     .push_bind(record.down_source_timestamp)
@@ -1402,6 +1406,8 @@ impl IngestionRepository {
                     .push_bind(record.down_ask_vwap_1)
                     .push_bind(record.down_ask_vwap_5)
                     .push_bind(record.down_ask_vwap_10)
+                    .push_bind(record.down_ask_vwap_15)
+                    .push_bind(record.down_ask_vwap_20)
                     .push_bind(record.down_imbalance)
                     .push_bind(record.quality_flags);
             });
@@ -4123,6 +4129,10 @@ fn validate_execution_snapshot_batch(records: &[BtcExecutionSnapshot]) -> Result
             || !valid_price(record.down_ask_vwap_1)
             || !valid_price(record.down_ask_vwap_5)
             || !valid_price(record.down_ask_vwap_10)
+            || !valid_price(record.up_ask_vwap_15)
+            || !valid_price(record.up_ask_vwap_20)
+            || !valid_price(record.down_ask_vwap_15)
+            || !valid_price(record.down_ask_vwap_20)
             || !valid_size(record.up_best_bid_size)
             || !valid_size(record.up_best_ask_size)
             || !valid_size(record.up_bid_depth)

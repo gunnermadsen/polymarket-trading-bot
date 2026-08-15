@@ -843,6 +843,8 @@ pub struct BtcExecutionSnapshot {
     pub up_ask_vwap_1: Option<Decimal>,
     pub up_ask_vwap_5: Option<Decimal>,
     pub up_ask_vwap_10: Option<Decimal>,
+    pub up_ask_vwap_15: Option<Decimal>,
+    pub up_ask_vwap_20: Option<Decimal>,
     pub up_imbalance: Option<Decimal>,
     pub down_source_row_number: Option<i64>,
     pub down_source_timestamp: Option<DateTime<Utc>>,
@@ -856,6 +858,8 @@ pub struct BtcExecutionSnapshot {
     pub down_ask_vwap_1: Option<Decimal>,
     pub down_ask_vwap_5: Option<Decimal>,
     pub down_ask_vwap_10: Option<Decimal>,
+    pub down_ask_vwap_15: Option<Decimal>,
+    pub down_ask_vwap_20: Option<Decimal>,
     pub down_imbalance: Option<Decimal>,
     pub quality_flags: i32,
 }
