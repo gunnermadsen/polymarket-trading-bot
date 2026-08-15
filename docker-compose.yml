@@ -151,7 +151,7 @@ services:
     container_name: polymarket-bot
     hostname: polymarket-bot
     mem_limit: 512m
-    cpus: "0.30"
+    cpus: "1.0"
     logging: *default-logging
     env_file:
       - *app-env-file
@@ -172,9 +172,9 @@ services:
       POLYMARKET_LIVE_RECONCILE_INTERVAL_SECS: "30"
       POLYMARKET_LIVE_STALE_RECONCILE_SECS: "60"
       POLYMARKET_BTC_RTDS_WS_URL: "wss://ws-live-data.polymarket.com"
-      POLYMARKET_BTC_BINANCE_WS_URL: "wss://stream.binance.com:9443/ws/btcusdt@aggTrade"
+      POLYMARKET_BTC_BINANCE_WS_URL: "wss://stream.binance.com/ws/btcusdt@aggTrade"
       POLYMARKET_BTC_BINANCE_SPOT_L2_ENABLED: "true"
-      POLYMARKET_BTC_BINANCE_SPOT_L2_WS_URL: "wss://stream.binance.com:9443/ws/btcusdt@depth@100ms"
+      POLYMARKET_BTC_BINANCE_SPOT_L2_WS_URL: "wss://stream.binance.com/ws/btcusdt@depth@100ms"
       POLYMARKET_BTC_BINANCE_REST_BASE_URL: "https://data-api.binance.vision"
       POLYMARKET_BTC_DIRECTIONAL_EXTERNAL_ENABLED: "true"
       POLYMARKET_BTC_CHAINLINK_REFPRICE_POLL_MS: "2000"

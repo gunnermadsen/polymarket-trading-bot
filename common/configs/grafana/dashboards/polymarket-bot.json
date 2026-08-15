@@ -2319,7 +2319,7 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "polymarket-bot-runtime"
       },
-  "description": "Live status of the shared Polymarket CLOB websocket. A positive active connection epoch maps to Connected; zero or no value means there is no current active connection. This is a global shared-feed signal, independent of the selected trading process.",
+  "description": "Transport status of the shared Polymarket CLOB websocket. A connected connection epoch means the socket is established and receiving transport traffic; execution-ready orderbook state is evaluated separately by each trading process.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2414,8 +2414,8 @@
       "root_selector": "",
           "columns": [
             {
-          "selector": "shared_market_data.metrics.clob_active_connection_epoch",
-          "text": "CLOB Active Connection Epoch",
+          "selector": "shared_market_data.metrics.clob_connected_connection_epoch",
+          "text": "CLOB Socket Connection Epoch",
           "type": "number"
             }
           ],
@@ -2424,7 +2424,7 @@
           }
         }
       ],
-  "title": "CLOB Active Connection",
+  "title": "CLOB Socket Connection",
       "type": "stat"
     },
     {
@@ -2432,7 +2432,7 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "polymarket-bot-runtime"
       },
-      "description": "Most recent ping/pong round-trip time for the active Polymarket CLOB websocket. This is a live transport-latency signal; a missing value means there is no active socket to measure.",
+      "description": "Most recent correlated ping/pong round-trip time for the Polymarket CLOB websocket. Ordinary inbound market-data frames also prove socket liveness, so a missing value does not mean the socket is disconnected.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2440,7 +2440,7 @@
           },
           "decimals": 0,
           "mappings": [],
-          "noValue": "No active socket",
+          "noValue": "No correlated PONG sample",
           "thresholds": {
             "mode": "absolute",
             "steps": [

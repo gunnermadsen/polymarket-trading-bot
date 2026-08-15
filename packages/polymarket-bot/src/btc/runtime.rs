@@ -182,10 +182,9 @@ impl Default for BtcRuntimeConfig {
             clob_rest_base_url: "https://clob.polymarket.com".to_string(),
             clob_ws_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market".to_string(),
             rtds_ws_url: "wss://ws-live-data.polymarket.com".to_string(),
-            binance_ws_url: "wss://stream.binance.com:9443/ws/btcusdt@aggTrade".to_string(),
+            binance_ws_url: "wss://stream.binance.com/ws/btcusdt@aggTrade".to_string(),
             binance_spot_l2_enabled: false,
-            binance_spot_l2_ws_url: "wss://stream.binance.com:9443/ws/btcusdt@depth@100ms"
-                .to_string(),
+            binance_spot_l2_ws_url: "wss://stream.binance.com/ws/btcusdt@depth@100ms".to_string(),
             binance_rest_base_url: "https://data-api.binance.vision".to_string(),
             discovery_interval: StdDuration::from_secs(5),
             reconnect_initial_delay: StdDuration::from_secs(1),
@@ -7152,6 +7151,7 @@ async fn run_binance_spot_l2_connection(
                         }
                         Ok(BinanceSpotL2UpdateOutcome::AppliedUnqualified) => {
                             applied = applied.saturating_add(1);
+                            discarded = discarded.saturating_add(1);
                             tentative_features.clear();
                         }
                         Ok(BinanceSpotL2UpdateOutcome::IgnoredStale) => {
@@ -7504,6 +7504,11 @@ async fn run_binance_spot_l2_connection(
                                         .binance_spot_l2
                                         .updates_applied
                                         .saturating_add(1);
+                                    runtime_metrics.binance_spot_l2.updates_discarded =
+                                        runtime_metrics
+                                            .binance_spot_l2
+                                            .updates_discarded
+                                            .saturating_add(1);
                                     runtime_metrics.binance_spot_l2.active_last_update_id =
                                         engine.update_id();
                                 }
@@ -11254,7 +11259,7 @@ mod tests {
         assert!(!config.binance_spot_l2_enabled);
         assert_eq!(
             config.binance_spot_l2_ws_url,
-            "wss://stream.binance.com:9443/ws/btcusdt@depth@100ms"
+            "wss://stream.binance.com/ws/btcusdt@depth@100ms"
         );
         config.validate().unwrap();
     }

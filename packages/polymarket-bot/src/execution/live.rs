@@ -105,12 +105,6 @@ pub struct LiveVenue {
 
 #[derive(Debug, Clone)]
 struct LiveTransportState {
-    live_confirmed: bool,
-    geoblock_readable: bool,
-    geoblock_blocked: Option<bool>,
-    geoblock_country: Option<String>,
-    geoblock_region: Option<String>,
-    geoblock_checked_at: Option<DateTime<Utc>>,
     user_ws_connected: bool,
     last_user_ws_pong_at: Option<DateTime<Utc>>,
 }
@@ -146,12 +140,6 @@ struct GlobalLiveEntryGate {
 impl LiveTransportState {
     fn initial() -> Self {
         Self {
-            live_confirmed: false,
-            geoblock_readable: false,
-            geoblock_blocked: None,
-            geoblock_country: None,
-            geoblock_region: None,
-            geoblock_checked_at: None,
             user_ws_connected: false,
             last_user_ws_pong_at: None,
         }
@@ -613,80 +601,6 @@ impl LiveVenue {
         }
         serde_json::from_value(payload)
             .context("Polymarket CLOB trades response failed strict decoding")
-    }
-
-    async fn refresh_geoblock(&self) -> Result<()> {
-        #[cfg(test)]
-        {
-            // Unit tests explicitly seed bounded geoblock evidence when exercising checked
-            // enable semantics. Production builds always perform the SDK read below.
-            if self
-                .transport_state
-                .lock()
-                .await
-                .geoblock_checked_at
-                .is_some()
-            {
-                return Ok(());
-            }
-        }
-        let result = async {
-            let client = SdkClient::new(&self.clob_base_url, SdkConfig::default())
-                .context("failed to create Polymarket geoblock client")?;
-            client
-                .check_geoblock()
-                .await
-                .context("failed to read Polymarket geoblock status")
-        }
-        .await;
-        let checked_at = Utc::now();
-        match result {
-            Ok(response) => {
-                self.record_geoblock_state(
-                    true,
-                    Some(response.blocked),
-                    bounded_geoblock_component(&response.country),
-                    bounded_geoblock_component(&response.region),
-                    checked_at,
-                )
-                .await;
-                Ok(())
-            }
-            Err(error) => {
-                self.record_geoblock_state(false, None, None, None, checked_at)
-                    .await;
-                Err(error)
-            }
-        }
-    }
-
-    async fn record_geoblock_state(
-        &self,
-        readable: bool,
-        blocked: Option<bool>,
-        country: Option<String>,
-        region: Option<String>,
-        checked_at: DateTime<Utc>,
-    ) {
-        {
-            let mut state = self.transport_state.lock().await;
-            state.geoblock_readable = readable;
-            state.geoblock_blocked = blocked;
-            state.geoblock_country = country;
-            state.geoblock_region = region;
-            state.geoblock_checked_at = Some(checked_at);
-            state.live_confirmed = readable && blocked == Some(false);
-        }
-        if !readable {
-            self.halt_global_entries("live_geoblock_unreadable").await;
-        } else if blocked != Some(false) {
-            self.halt_global_entries("live_geoblock_blocked").await;
-        }
-    }
-
-    async fn halt_global_entries(&self, reason: &str) -> u64 {
-        let mut gate = self.global_entry_gate.lock().await;
-        record_global_entry_halt(&mut gate, reason)
     }
 
     async fn all_open_order_responses(
@@ -2894,11 +2808,6 @@ impl ExecutionVenue for LiveVenue {
         };
         let store = self.store()?;
         let reconcile_result = async {
-            self.refresh_geoblock().await?;
-            let geoblock = self.transport_state.lock().await.clone();
-            if !geoblock.geoblock_readable || geoblock.geoblock_blocked != Some(false) {
-                bail!("Polymarket live reconciliation requires an unblocked readable geoblock status");
-            }
             let mut fills_backfilled = self
                 .backfill_fills_from_live_events()
                 .await
@@ -3207,24 +3116,18 @@ impl ExecutionVenue for LiveVenue {
         let global = self.global_entry_gate.lock().await;
         let now = Utc::now();
         let last_user_ws_pong_age_secs = stateful_age_seconds(transport.last_user_ws_pong_at, now);
-        let last_geoblock_check_age_secs = stateful_age_seconds(transport.geoblock_checked_at, now);
         let last_rest_reconcile_age_secs = stateful_age_seconds(state.last_rest_reconcile_at, now);
         let rest_fresh = last_rest_reconcile_age_secs
             .map(|age| age <= self.config.stale_reconcile.as_secs() as i64)
             .unwrap_or(false);
-        let geoblock_fresh = transport.geoblock_readable
-            && transport.geoblock_blocked == Some(false)
-            && last_geoblock_check_age_secs
-                .is_some_and(|age| age <= self.config.stale_reconcile.as_secs() as i64);
-        let live_confirmed = transport.live_confirmed && geoblock_fresh;
         let order_submit_enabled = self.order_submission_enabled();
-        let entries_enabled = live_confirmed
-            && order_submit_enabled
+        let live_confirmed = order_submit_enabled
             && self.config.submit_auth_available()
+            && state.process_accounting_proven
+            && rest_fresh;
+        let entries_enabled = live_confirmed
             && !global.halted
             && state.manual_entries_enabled
-            && state.process_accounting_proven
-            && rest_fresh
             && state.idempotency_clean
             && state.unresolved_live_order_count == 0;
         let reason = if entries_enabled {
@@ -3233,12 +3136,6 @@ impl ExecutionVenue for LiveVenue {
             Some("live_order_submit_disabled".to_string())
         } else if !self.config.submit_auth_available() {
             Some("live_submit_auth_missing".to_string())
-        } else if !transport.geoblock_readable {
-            Some("live_geoblock_status_unreadable".to_string())
-        } else if transport.geoblock_blocked != Some(false) {
-            Some("live_geoblock_blocked".to_string())
-        } else if !geoblock_fresh {
-            Some("live_geoblock_status_stale".to_string())
         } else if global.halted {
             Some(format!("live_global_halt:{}", global.reason))
         } else if !state.manual_entries_enabled {
@@ -3263,11 +3160,11 @@ impl ExecutionVenue for LiveVenue {
         Ok(LiveVenueStatus {
             mode: "live".to_string(),
             live_confirmed,
-            geoblock_readable: transport.geoblock_readable,
-            geoblock_blocked: transport.geoblock_blocked,
-            geoblock_country: transport.geoblock_country.clone(),
-            geoblock_region: transport.geoblock_region.clone(),
-            last_geoblock_check_age_secs,
+            geoblock_readable: false,
+            geoblock_blocked: None,
+            geoblock_country: None,
+            geoblock_region: None,
+            last_geoblock_check_age_secs: None,
             order_submit_enabled,
             user_ws_enabled: self.config.user_ws_auth_available(),
             user_ws_connected: transport.user_ws_connected,
@@ -3293,12 +3190,6 @@ impl ExecutionVenue for LiveVenue {
     }
 
     async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics> {
-        let geoblock_error = self
-            .refresh_geoblock()
-            .await
-            .err()
-            .map(|error| error.to_string().chars().take(256).collect::<String>());
-        let geoblock = self.transport_state.lock().await.clone();
         let signature_type = parse_signature_type(self.config.signature_type.as_deref())?;
         let signer_address = self
             .config
@@ -3334,11 +3225,11 @@ impl ExecutionVenue for LiveVenue {
         let mut diagnostics = LiveIdentityDiagnostics {
             mode: "live".to_string(),
             clob_api_base_url: self.clob_base_url.clone(),
-            geoblock_readable: geoblock.geoblock_readable,
-            geoblock_blocked: geoblock.geoblock_blocked,
-            geoblock_country: geoblock.geoblock_country,
-            geoblock_region: geoblock.geoblock_region,
-            geoblock_error,
+            geoblock_readable: false,
+            geoblock_blocked: None,
+            geoblock_country: None,
+            geoblock_region: None,
+            geoblock_error: None,
             signer_address,
             configured_funder_address: self.config.funder_address.clone(),
             configured_signature_type: self.config.signature_type.clone(),
@@ -3782,15 +3673,10 @@ impl ExecutionVenue for LiveVenue {
         }
 
         let now = Utc::now();
-        let transport = self.transport_state.lock().await;
         let mut state = self.readiness_state.lock().await;
         let mut global = self.global_entry_gate.lock().await;
         let rest_fresh = stateful_age_seconds(state.last_rest_reconcile_at, now)
             .is_some_and(|age| age <= self.config.stale_reconcile.as_secs() as i64);
-        let geoblock_fresh = transport.geoblock_readable
-            && transport.geoblock_blocked == Some(false)
-            && stateful_age_seconds(transport.geoblock_checked_at, now)
-                .is_some_and(|age| age <= self.config.stale_reconcile.as_secs() as i64);
         let configured_identity = canonical_configured_account_identity(
             &self.config,
             self.bound_account_ref()
@@ -3800,7 +3686,6 @@ impl ExecutionVenue for LiveVenue {
             == Some(configured_identity.fingerprint_sha256.as_str());
         if !self.order_submission_enabled()
             || !self.config.submit_auth_available()
-            || !geoblock_fresh
             || !rest_fresh
             || !state.process_accounting_proven
             || !identity_matches
@@ -3810,7 +3695,7 @@ impl ExecutionVenue for LiveVenue {
             || state.reconciled_safety_generation != Some(expected_safety_generation)
         {
             bail!(
-                "checked process-bound live enable requires an unblocked egress, fresh reconciliation, proven accounting, matching identity, and clean idempotency"
+                "checked process-bound live enable requires fresh reconciliation, proven accounting, matching identity, and clean idempotency"
             );
         }
         if !commit_checked_live_enable(&mut global, &mut state, expected_safety_generation) {
@@ -3818,7 +3703,6 @@ impl ExecutionVenue for LiveVenue {
         }
         drop(global);
         drop(state);
-        drop(transport);
         self.live_status().await
     }
 }
@@ -3833,16 +3717,6 @@ fn bounded_live_gate_reason(reason: Option<&str>, fallback: &str) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or(fallback);
     reason.chars().take(128).collect()
-}
-
-fn bounded_geoblock_component(value: &str) -> Option<String> {
-    let bounded = value
-        .trim()
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
-        .take(16)
-        .collect::<String>();
-    (!bounded.is_empty()).then_some(bounded)
 }
 
 fn next_clob_reconciliation_cursor(
@@ -4351,16 +4225,6 @@ mod tests {
         );
     }
 
-    async fn seed_fresh_unblocked_geoblock(venue: &LiveVenue) {
-        let mut transport = venue.transport_state.lock().await;
-        transport.live_confirmed = true;
-        transport.geoblock_readable = true;
-        transport.geoblock_blocked = Some(false);
-        transport.geoblock_country = Some("US".to_string());
-        transport.geoblock_region = Some("NY".to_string());
-        transport.geoblock_checked_at = Some(Utc::now());
-    }
-
     fn rest_backfill_order(
         process_id: Uuid,
         order_id: &str,
@@ -4540,7 +4404,6 @@ mod tests {
             .unwrap()
             .bind_process(Uuid::new_v4(), &live_execution())
             .unwrap();
-        seed_fresh_unblocked_geoblock(&venue).await;
         {
             let mut transport = venue.transport_state.lock().await;
             transport.user_ws_connected = true;
@@ -4564,6 +4427,12 @@ mod tests {
 
         let status = venue.live_status().await.unwrap();
         assert!(status.entries_enabled);
+        assert!(status.live_confirmed);
+        assert!(!status.geoblock_readable);
+        assert_eq!(status.geoblock_blocked, None);
+        assert_eq!(status.geoblock_country, None);
+        assert_eq!(status.geoblock_region, None);
+        assert_eq!(status.last_geoblock_check_age_secs, None);
         assert_eq!(status.last_user_ws_pong_age_secs, None);
         assert_eq!(status.reason, None);
 
@@ -4590,7 +4459,6 @@ mod tests {
             .unwrap()
             .bind_process(Uuid::new_v4(), &live_execution())
             .unwrap();
-        seed_fresh_unblocked_geoblock(&venue).await;
         {
             let mut state = venue.readiness_state.lock().await;
             state.last_rest_reconcile_at = Some(Utc::now());
@@ -4622,36 +4490,6 @@ mod tests {
         assert_eq!(status.reason, None);
         assert!(venue.readiness_state.lock().await.manual_entries_enabled);
         assert!(!venue.global_entry_gate.lock().await.halted);
-    }
-
-    #[tokio::test]
-    async fn unsafe_geoblock_refresh_revokes_the_shared_live_generation() {
-        let root = LiveVenue::new_for_test(live_config()).unwrap();
-        let venue = root
-            .bind_process(Uuid::new_v4(), &live_execution())
-            .unwrap();
-        {
-            let mut global = venue.global_entry_gate.lock().await;
-            global.halted = false;
-            global.reason = "active_test_grant".to_string();
-            global.safety_generation = 7;
-        }
-
-        root.record_geoblock_state(true, Some(true), Some("XX".to_string()), None, Utc::now())
-            .await;
-        {
-            let global = venue.global_entry_gate.lock().await;
-            assert!(global.halted);
-            assert_eq!(global.reason, "live_geoblock_blocked");
-            assert_eq!(global.safety_generation, 8);
-        }
-
-        root.record_geoblock_state(false, None, None, None, Utc::now())
-            .await;
-        let global = venue.global_entry_gate.lock().await;
-        assert!(global.halted);
-        assert_eq!(global.reason, "live_geoblock_unreadable");
-        assert_eq!(global.safety_generation, 9);
     }
 
     #[test]
@@ -4779,7 +4617,7 @@ mod tests {
         };
         let mut state = LiveVenueState::fail_closed();
         state.reconciled_safety_generation = Some(11);
-        record_global_entry_halt(&mut gate, "live_geoblock_unreadable");
+        record_global_entry_halt(&mut gate, "account_reconciliation_failed");
         assert!(!commit_checked_live_enable(&mut gate, &mut state, 11));
         assert!(gate.halted);
         assert!(!state.manual_entries_enabled);
@@ -4789,7 +4627,7 @@ mod tests {
         state.manual_entries_enabled = true;
         state.reconciled_safety_generation = Some(gate.safety_generation);
         let admitted_generation = gate.safety_generation;
-        record_global_entry_halt(&mut gate, "live_geoblock_blocked");
+        record_global_entry_halt(&mut gate, "account_transport_unavailable");
         assert_eq!(
             commit_live_post_attempt(&mut gate, &mut state, admitted_generation),
             Some(LiveExecutionGateReason::GlobalHalt)
@@ -5017,8 +4855,6 @@ mod tests {
             .unwrap()
             .bind_process(uuid::Uuid::new_v4(), &live_execution())
             .unwrap();
-        seed_fresh_unblocked_geoblock(&venue).await;
-
         let error = venue
             .set_live_entries_enabled(true, None)
             .await
@@ -5042,7 +4878,6 @@ mod tests {
         let bound = root.bind_process(process_id, &live_execution()).unwrap();
         let identity =
             canonical_configured_account_identity(&bound.config, "polymarket-test").unwrap();
-        seed_fresh_unblocked_geoblock(&bound).await;
         {
             let mut transport = bound.transport_state.lock().await;
             transport.user_ws_connected = true;
