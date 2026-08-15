@@ -227,6 +227,7 @@ pub enum BinanceSpotL2ApplyOutcome {
         features: Vec<BinanceL2OneSecondFeature>,
         synchronized_now: bool,
     },
+    AppliedUnqualified,
     IgnoredStale,
     SequenceGap {
         expected_update_id: u64,
@@ -311,12 +312,11 @@ impl BinanceSpotL2Engine {
             .map_or(reported_available_at, |previous| {
                 previous.max(reported_available_at)
             });
-        if available_at.signed_duration_since(update.event_time)
-            > Duration::milliseconds(BINANCE_SPOT_L2_MAX_SOURCE_AGE_MILLISECONDS)
-        {
-            bail!("Binance spot L2 update exceeded the source-age qualification bound");
+        let qualified = available_at.signed_duration_since(update.event_time)
+            <= Duration::milliseconds(BINANCE_SPOT_L2_MAX_SOURCE_AGE_MILLISECONDS);
+        if qualified {
+            self.advance_flow_second(floor_utc_second(available_at))?;
         }
-        self.advance_flow_second(floor_utc_second(available_at))?;
         for level in &update.bids {
             self.apply_level(BinanceSpotL2Side::Bid, level)?;
         }
@@ -325,11 +325,18 @@ impl BinanceSpotL2Engine {
         }
         self.require_bounded_book()?;
         self.require_valid_top_book()?;
-        let synchronized_now = !self.synchronized;
-        self.synchronized = true;
         self.last_update_id = Some(update.final_update_id);
         self.last_source_event_timestamp = Some(update.event_time);
         self.last_available_at = Some(available_at);
+        if !qualified {
+            // Preserve the verified order-book sequence while excluding late
+            // observations from the causal feature window. A subsequent fresh
+            // update can resume qualification without a transport reconnect.
+            self.invalidate_qualification();
+            return Ok(BinanceSpotL2ApplyOutcome::AppliedUnqualified);
+        }
+        let synchronized_now = !self.synchronized;
+        self.synchronized = true;
         let source_update_id = i64::try_from(update.final_update_id)
             .context("Binance spot L2 update id exceeded storage range")?;
         let state = self
@@ -364,6 +371,14 @@ impl BinanceSpotL2Engine {
         self.synchronized = false;
         self.last_source_event_timestamp = None;
         self.last_available_at = None;
+        self.current_flow_second = None;
+        self.current_flow = QuoteFlow::default();
+        self.pending_second = None;
+        self.rolling.clear();
+    }
+
+    fn invalidate_qualification(&mut self) {
+        self.synchronized = false;
         self.current_flow_second = None;
         self.current_flow = QuoteFlow::default();
         self.pending_second = None;
@@ -1017,6 +1032,35 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn late_update_preserves_book_sequence_and_resumes_on_fresh_data() {
+        let start = 1_776_000_000;
+        let mut engine = BinanceSpotL2Engine::default();
+        engine.install_snapshot(snapshot(10), at(start, 0)).unwrap();
+
+        let late = engine
+            .apply_update(update(start, 11, dec!(2)), at(start + 2, 0))
+            .unwrap();
+
+        assert_eq!(late, BinanceSpotL2ApplyOutcome::AppliedUnqualified);
+        assert_eq!(engine.update_id(), Some(11));
+        assert!(!engine.synchronized());
+
+        let recovered = engine
+            .apply_update(update(start + 2, 12, dec!(3)), at(start + 2, 110))
+            .unwrap();
+
+        assert!(matches!(
+            recovered,
+            BinanceSpotL2ApplyOutcome::Applied {
+                synchronized_now: true,
+                features,
+            } if features.is_empty()
+        ));
+        assert_eq!(engine.update_id(), Some(12));
+        assert!(engine.synchronized());
     }
 
     #[test]

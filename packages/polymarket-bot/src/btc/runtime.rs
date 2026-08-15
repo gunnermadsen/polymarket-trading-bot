@@ -6692,6 +6692,7 @@ fn binance_spot_l2_snapshot_future(
     rest_base_url: String,
 ) -> BinanceSpotL2SnapshotFuture {
     Box::pin(async move {
+        let request_started = Instant::now();
         let endpoint = format!("{}/api/v3/depth", rest_base_url.trim_end_matches('/'));
         let query = [
             ("symbol", "BTCUSDT".to_string()),
@@ -6705,9 +6706,24 @@ fn binance_spot_l2_snapshot_future(
         .context("Binance spot L2 snapshot request timed out")??
         .error_for_status()
         .context("Binance spot L2 snapshot returned an error status")?;
-        let body = timeout(BINANCE_SPOT_L2_SNAPSHOT_TIMEOUT, response.bytes())
-            .await
-            .context("Binance spot L2 snapshot body timed out")??;
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("unknown")
+            .to_string();
+        let body = match timeout(BINANCE_SPOT_L2_SNAPSHOT_TIMEOUT, response.bytes()).await {
+            Ok(Ok(body)) => body,
+            Ok(Err(error)) => bail!(
+                "Binance spot L2 snapshot body failed: status={status}, content_type={content_type}, elapsed_ms={}: {error}",
+                duration_milliseconds(request_started.elapsed()),
+            ),
+            Err(_) => bail!(
+                "Binance spot L2 snapshot body timed out: status={status}, content_type={content_type}, elapsed_ms={}",
+                duration_milliseconds(request_started.elapsed()),
+            ),
+        };
         if body.len() > BINANCE_SPOT_L2_SNAPSHOT_MAX_BYTES {
             bail!("Binance spot L2 snapshot exceeded its response-size bound");
         }
@@ -6743,6 +6759,30 @@ async fn clear_binance_spot_l2_runtime_state(
     runtime_metrics.binance_spot_l2.synchronized = false;
     runtime_metrics.binance_spot_l2.active_connection_id = None;
     runtime_metrics.binance_spot_l2.active_last_update_id = None;
+}
+
+async fn quarantine_binance_spot_l2_inference_state(
+    state: &Arc<RwLock<RealtimeState>>,
+    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
+    connection_id: Uuid,
+    last_update_id: Option<u64>,
+) {
+    state
+        .write()
+        .await
+        .binance_spot_l2
+        .clear_epoch(connection_id);
+    let unavailable_at = Utc::now();
+    let mut runtime_metrics = metrics.write().await;
+    runtime_metrics.binance_spot_l2.synchronized = false;
+    runtime_metrics.binance_spot_l2.active_connection_id = Some(connection_id);
+    runtime_metrics.binance_spot_l2.active_last_update_id = last_update_id;
+    runtime_metrics.binance_spot_l2.last_error =
+        Some("Binance spot L2 update exceeded the source-age qualification bound".to_string());
+    runtime_metrics
+        .binance_spot_l2
+        .recovery_unavailable_since
+        .get_or_insert(unavailable_at);
 }
 
 async fn publish_binance_spot_l2_features(
@@ -6794,9 +6834,33 @@ async fn record_binance_spot_l2_synchronized(
     runtime_metrics.binance_spot_l2.synchronized = true;
     runtime_metrics.binance_spot_l2.active_last_update_id = engine.update_id();
     runtime_metrics.binance_spot_l2.last_synchronized_at = Some(synchronized_at);
+    runtime_metrics.binance_spot_l2.last_error = None;
     runtime_metrics.binance_spot_l2.recovery_unavailable_since = None;
     runtime_metrics.binance_spot_l2.consecutive_failures = 0;
     Ok(())
+}
+
+async fn schedule_binance_spot_l2_snapshot_retry(
+    snapshot_attempts: &mut u32,
+    snapshot_request: &mut Option<BinanceSpotL2SnapshotFuture>,
+    client: &reqwest::Client,
+    config: &BtcRuntimeConfig,
+    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
+) -> bool {
+    if *snapshot_attempts >= BINANCE_SPOT_L2_SNAPSHOT_ATTEMPTS_PER_CONNECTION {
+        return false;
+    }
+    *snapshot_attempts = snapshot_attempts.saturating_add(1);
+    *snapshot_request = Some(binance_spot_l2_snapshot_future(
+        client.clone(),
+        config.binance_rest_base_url.clone(),
+    ));
+    let mut runtime_metrics = metrics.write().await;
+    runtime_metrics.binance_spot_l2.snapshot_requests = runtime_metrics
+        .binance_spot_l2
+        .snapshot_requests
+        .saturating_add(1);
+    true
 }
 
 async fn run_binance_spot_l2_supervisor(
@@ -7011,11 +7075,24 @@ async fn run_binance_spot_l2_connection(
                     Ok(snapshot) => snapshot,
                     Err(error) => {
                         let detail = bounded_reference_detail(error);
-                        let mut runtime_metrics = metrics.write().await;
-                        runtime_metrics.binance_spot_l2.snapshot_failures = runtime_metrics
-                            .binance_spot_l2
-                            .snapshot_failures
-                            .saturating_add(1);
+                        {
+                            let mut runtime_metrics = metrics.write().await;
+                            runtime_metrics.binance_spot_l2.snapshot_failures = runtime_metrics
+                                .binance_spot_l2
+                                .snapshot_failures
+                                .saturating_add(1);
+                        }
+                        engine.invalidate();
+                        snapshot_installed = false;
+                        if schedule_binance_spot_l2_snapshot_retry(
+                            &mut snapshot_attempts,
+                            &mut snapshot_request,
+                            client,
+                            config,
+                            metrics,
+                        ).await {
+                            continue;
+                        }
                         break 'connection BinanceSpotL2ConnectionExit::new(
                             BinanceSpotL2DisconnectReason::SnapshotFailed,
                             Some(detail),
@@ -7024,21 +7101,37 @@ async fn run_binance_spot_l2_connection(
                     }
                 };
                 let snapshot = match serde_json::from_str::<serde_json::Value>(&body)
-                    .context("failed to decode Binance spot L2 snapshot JSON")
+                    .with_context(|| format!(
+                        "failed to decode Binance spot L2 snapshot JSON: body_bytes={}",
+                        body.len(),
+                    ))
                     .and_then(|value| parse_depth_snapshot(&value))
                 {
                     Ok(snapshot) => snapshot,
                     Err(error) => {
                         let detail = bounded_reference_detail(error);
-                        let mut runtime_metrics = metrics.write().await;
-                        runtime_metrics.binance_spot_l2.snapshot_failures = runtime_metrics
-                            .binance_spot_l2
-                            .snapshot_failures
-                            .saturating_add(1);
-                        runtime_metrics.binance_spot_l2.decode_errors = runtime_metrics
-                            .binance_spot_l2
-                            .decode_errors
-                            .saturating_add(1);
+                        {
+                            let mut runtime_metrics = metrics.write().await;
+                            runtime_metrics.binance_spot_l2.snapshot_failures = runtime_metrics
+                                .binance_spot_l2
+                                .snapshot_failures
+                                .saturating_add(1);
+                            runtime_metrics.binance_spot_l2.decode_errors = runtime_metrics
+                                .binance_spot_l2
+                                .decode_errors
+                                .saturating_add(1);
+                        }
+                        engine.invalidate();
+                        snapshot_installed = false;
+                        if schedule_binance_spot_l2_snapshot_retry(
+                            &mut snapshot_attempts,
+                            &mut snapshot_request,
+                            client,
+                            config,
+                            metrics,
+                        ).await {
+                            continue;
+                        }
                         break 'connection BinanceSpotL2ConnectionExit::new(
                             BinanceSpotL2DisconnectReason::DecodeFailed,
                             Some(detail),
@@ -7048,11 +7141,23 @@ async fn run_binance_spot_l2_connection(
                 };
                 if let Err(error) = engine.install_snapshot(snapshot, snapshot_received_at) {
                     let detail = bounded_reference_detail(error);
-                    let mut runtime_metrics = metrics.write().await;
-                    runtime_metrics.binance_spot_l2.snapshot_failures = runtime_metrics
-                        .binance_spot_l2
-                        .snapshot_failures
-                        .saturating_add(1);
+                    {
+                        let mut runtime_metrics = metrics.write().await;
+                        runtime_metrics.binance_spot_l2.snapshot_failures = runtime_metrics
+                            .binance_spot_l2
+                            .snapshot_failures
+                            .saturating_add(1);
+                    }
+                    snapshot_installed = false;
+                    if schedule_binance_spot_l2_snapshot_retry(
+                        &mut snapshot_attempts,
+                        &mut snapshot_request,
+                        client,
+                        config,
+                        metrics,
+                    ).await {
+                        continue;
+                    }
                     break 'connection BinanceSpotL2ConnectionExit::new(
                         BinanceSpotL2DisconnectReason::SourceInvalid,
                         Some(detail),
@@ -7073,6 +7178,10 @@ async fn run_binance_spot_l2_connection(
                         Ok(BinanceSpotL2UpdateOutcome::Applied { features, .. }) => {
                             applied = applied.saturating_add(1);
                             tentative_features.extend(features);
+                        }
+                        Ok(BinanceSpotL2UpdateOutcome::AppliedUnqualified) => {
+                            applied = applied.saturating_add(1);
+                            tentative_features.clear();
                         }
                         Ok(BinanceSpotL2UpdateOutcome::IgnoredStale) => {
                             discarded = discarded.saturating_add(1);
@@ -7111,23 +7220,19 @@ async fn run_binance_spot_l2_connection(
                     }
                     engine.invalidate();
                     snapshot_installed = false;
-                    if snapshot_attempts >= BINANCE_SPOT_L2_SNAPSHOT_ATTEMPTS_PER_CONNECTION {
+                    if !schedule_binance_spot_l2_snapshot_retry(
+                        &mut snapshot_attempts,
+                        &mut snapshot_request,
+                        client,
+                        config,
+                        metrics,
+                    ).await {
                         break 'connection BinanceSpotL2ConnectionExit::new(
                             BinanceSpotL2DisconnectReason::SnapshotBehindBuffer,
                             Some(detail),
                             reached_synchronization,
                         );
                     }
-                    snapshot_attempts = snapshot_attempts.saturating_add(1);
-                    snapshot_request = Some(binance_spot_l2_snapshot_future(
-                        client.clone(),
-                        config.binance_rest_base_url.clone(),
-                    ));
-                    let mut runtime_metrics = metrics.write().await;
-                    runtime_metrics.binance_spot_l2.snapshot_requests = runtime_metrics
-                        .binance_spot_l2
-                        .snapshot_requests
-                        .saturating_add(1);
                     continue;
                 }
                 {
@@ -7354,6 +7459,23 @@ async fn run_binance_spot_l2_connection(
                                         reached_synchronization,
                                     );
                                 }
+                            }
+                            Ok(BinanceSpotL2UpdateOutcome::AppliedUnqualified) => {
+                                {
+                                    let mut runtime_metrics = metrics.write().await;
+                                    runtime_metrics.binance_spot_l2.updates_applied = runtime_metrics
+                                        .binance_spot_l2
+                                        .updates_applied
+                                        .saturating_add(1);
+                                    runtime_metrics.binance_spot_l2.active_last_update_id =
+                                        engine.update_id();
+                                }
+                                quarantine_binance_spot_l2_inference_state(
+                                    state,
+                                    metrics,
+                                    connection_id,
+                                    engine.update_id(),
+                                ).await;
                             }
                             Ok(BinanceSpotL2UpdateOutcome::IgnoredStale) => {
                                 let mut runtime_metrics = metrics.write().await;

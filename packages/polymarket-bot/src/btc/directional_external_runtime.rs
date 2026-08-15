@@ -535,7 +535,7 @@ impl PolygonOraclePoller {
                 decimals
             }
         };
-        let latest = self.fetch_round(client, None, decimals, at).await?;
+        let latest = self.fetch_round(client, None, decimals).await?;
         if self.latest_round == Some(composite_round_id(&latest)) {
             return Ok(Vec::new());
         }
@@ -550,10 +550,7 @@ impl PolygonOraclePoller {
                     break;
                 }
                 composite = (phase << 64) | (round - 1);
-                let point = match self
-                    .fetch_round(client, Some(composite), decimals, at)
-                    .await
-                {
+                let point = match self.fetch_round(client, Some(composite), decimals).await {
                     Ok(point) => point,
                     Err(_) => break,
                 };
@@ -574,7 +571,6 @@ impl PolygonOraclePoller {
         client: &Client,
         round_id: Option<u128>,
         decimals: u32,
-        available_at: DateTime<Utc>,
     ) -> Result<PolygonOraclePoint> {
         let (signature, argument) = match round_id {
             Some(round_id) => ("getRoundData(uint80)", Some(format!("{round_id:064x}"))),
@@ -583,42 +579,12 @@ impl PolygonOraclePoller {
         let value = self
             .eth_call(client, &abi_calldata(signature, argument.as_deref()))
             .await?;
-        let words = abi_words(&value, 5)?;
-        let round_id = parse_u128_word(words[0])?;
-        let answer = parse_positive_i128_word(words[1])?;
-        let updated_at = parse_u128_word(words[3])?;
-        let answered_in_round = parse_u128_word(words[4])?;
-        if updated_at == 0 || answered_in_round < round_id {
-            bail!("Polygon oracle returned an incomplete round");
-        }
-        let phase_id = u16::try_from(round_id >> 64).context("Polygon phase ID overflow")?;
-        let round =
-            u64::try_from(round_id & u128::from(u64::MAX)).context("Polygon round ID overflow")?;
-        let source_timestamp = Utc
-            .timestamp_opt(
-                i64::try_from(updated_at).context("oracle timestamp overflow")?,
-                0,
-            )
-            .single()
-            .context("invalid Polygon oracle timestamp")?;
-        if source_timestamp > available_at {
-            bail!("Polygon oracle round timestamp was in the future");
-        }
-        let price = Decimal::from_i128_with_scale(answer, decimals);
-        if price <= Decimal::ZERO {
-            bail!("Polygon oracle returned an invalid price");
-        }
-        Ok(PolygonOraclePoint {
-            phase_id,
-            round_id: round,
-            source_timestamp,
-            // The Polygon provider's AnswerUpdated logs report the same timestamp for the
-            // source update and its containing block. This equality was verified across the
-            // full July archive and is preserved by latestRoundData.updatedAt.
-            block_timestamp: source_timestamp,
-            available_at,
-            price,
-        })
+        // A round can be published while the RPC request is in flight. Use the
+        // completed response time for causality validation instead of the poll
+        // start time so a newly published, already observable round is not
+        // rejected as future data.
+        let received_at = Utc::now();
+        decode_polygon_oracle_round(&value, decimals, received_at)
     }
 
     async fn eth_call(&self, client: &Client, data: &str) -> Result<String> {
@@ -651,6 +617,49 @@ impl PolygonOraclePoller {
             .and_then(|value| value.as_str().map(str::to_string))
             .context("Polygon oracle RPC omitted a hexadecimal result")
     }
+}
+
+fn decode_polygon_oracle_round(
+    value: &str,
+    decimals: u32,
+    received_at: DateTime<Utc>,
+) -> Result<PolygonOraclePoint> {
+    let words = abi_words(value, 5)?;
+    let round_id = parse_u128_word(words[0])?;
+    let answer = parse_positive_i128_word(words[1])?;
+    let updated_at = parse_u128_word(words[3])?;
+    let answered_in_round = parse_u128_word(words[4])?;
+    if updated_at == 0 || answered_in_round < round_id {
+        bail!("Polygon oracle returned an incomplete round");
+    }
+    let phase_id = u16::try_from(round_id >> 64).context("Polygon phase ID overflow")?;
+    let round =
+        u64::try_from(round_id & u128::from(u64::MAX)).context("Polygon round ID overflow")?;
+    let source_timestamp = Utc
+        .timestamp_opt(
+            i64::try_from(updated_at).context("oracle timestamp overflow")?,
+            0,
+        )
+        .single()
+        .context("invalid Polygon oracle timestamp")?;
+    if source_timestamp > received_at {
+        bail!("Polygon oracle round timestamp was in the future");
+    }
+    let price = Decimal::from_i128_with_scale(answer, decimals);
+    if price <= Decimal::ZERO {
+        bail!("Polygon oracle returned an invalid price");
+    }
+    Ok(PolygonOraclePoint {
+        phase_id,
+        round_id: round,
+        source_timestamp,
+        // The Polygon provider's AnswerUpdated logs report the same timestamp for the
+        // source update and its containing block. This equality was verified across the
+        // full July archive and is preserved by latestRoundData.updatedAt.
+        block_timestamp: source_timestamp,
+        available_at: received_at.max(source_timestamp),
+        price,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -812,6 +821,35 @@ mod tests {
             6_123_456_789_000
         );
         assert_eq!(parse_u128_word(words[3]).unwrap(), 1_700_000_001);
+    }
+
+    #[test]
+    fn oracle_round_published_during_request_uses_response_receipt_time() {
+        let composite = (u128::from(3_u16) << 64) | 42;
+        let source_timestamp = 1_700_000_001_u64;
+        let encoded = format!(
+            "0x{composite:064x}{:064x}{:064x}{source_timestamp:064x}{composite:064x}",
+            6_123_456_789_000_i128, 1_700_000_000_u64,
+        );
+        let received_at = DateTime::from_timestamp(1_700_000_002, 0).unwrap();
+
+        let point = decode_polygon_oracle_round(&encoded, 8, received_at).unwrap();
+
+        assert_eq!(point.source_timestamp.timestamp(), 1_700_000_001);
+        assert_eq!(point.available_at, received_at);
+    }
+
+    #[test]
+    fn oracle_round_later_than_response_receipt_remains_rejected() {
+        let composite = (u128::from(3_u16) << 64) | 42;
+        let source_timestamp = 1_700_000_003_u64;
+        let encoded = format!(
+            "0x{composite:064x}{:064x}{:064x}{source_timestamp:064x}{composite:064x}",
+            6_123_456_789_000_i128, 1_700_000_000_u64,
+        );
+        let received_at = DateTime::from_timestamp(1_700_000_002, 0).unwrap();
+
+        assert!(decode_polygon_oracle_round(&encoded, 8, received_at).is_err());
     }
 
     #[test]
