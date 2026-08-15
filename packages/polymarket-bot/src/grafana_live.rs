@@ -1,12 +1,18 @@
-use std::{collections::BTreeSet, time::Duration};
+use std::{collections::BTreeSet, fmt::Write as _, time::Duration};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 
-use crate::{btc::BtcIntervalMarket, config::GrafanaLiveConfig};
+use crate::{
+    btc::{BinanceOneSecondKline, BtcIntervalMarket, BTC_INTERVAL_SECONDS},
+    config::GrafanaLiveConfig,
+};
 
 pub const COUNTDOWN_CHANNEL: &str = "stream/polymarket/btc_market_countdown";
+pub const MARKET_PATH_CHANNEL: &str = "stream/polymarket/btc_market_path";
 const COUNTDOWN_MEASUREMENT: &str = "btc_market_countdown";
+const MARKET_PATH_MEASUREMENT: &str = "btc_market_path";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CountdownStatus {
@@ -132,6 +138,92 @@ impl CountdownSnapshot {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarketPathPoint {
+    pub observed_at: DateTime<Utc>,
+    pub price: Decimal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarketPathSnapshot {
+    pub observed_at: DateTime<Utc>,
+    pub market_id: String,
+    pub price_to_beat: Option<Decimal>,
+    pub points: Vec<MarketPathPoint>,
+}
+
+impl MarketPathSnapshot {
+    pub fn resolve(
+        observed_at: DateTime<Utc>,
+        market: &BtcIntervalMarket,
+        price_to_beat: Option<Decimal>,
+        candles: impl IntoIterator<Item = BinanceOneSecondKline>,
+    ) -> Self {
+        let points = candles
+            .into_iter()
+            .filter(|candle| {
+                candle.open_timestamp >= market.window_start
+                    && candle.close_timestamp <= market.window_end
+                    && candle.close_timestamp <= observed_at
+            })
+            .take(BTC_INTERVAL_SECONDS as usize)
+            .map(|candle| MarketPathPoint {
+                observed_at: candle.close_timestamp,
+                price: candle.close_price,
+            })
+            .collect();
+        Self {
+            observed_at,
+            market_id: market.market_id.clone(),
+            price_to_beat,
+            points,
+        }
+    }
+
+    pub fn reset(observed_at: DateTime<Utc>) -> Self {
+        Self {
+            observed_at,
+            market_id: String::new(),
+            price_to_beat: None,
+            points: Vec::new(),
+        }
+    }
+
+    pub fn influx_body(&self) -> String {
+        let snapshot_epoch_nanos = self
+            .observed_at
+            .timestamp_nanos_opt()
+            .expect("a current UTC timestamp is representable in nanoseconds");
+        let snapshot_field = format!("snapshot_{snapshot_epoch_nanos}");
+        if self.points.is_empty() {
+            return format!("{MARKET_PATH_MEASUREMENT} {snapshot_field}=1i {snapshot_epoch_nanos}");
+        }
+
+        let mut body = String::with_capacity(self.points.len().saturating_mul(128));
+        for point in &self.points {
+            let point_epoch_nanos = point
+                .observed_at
+                .timestamp_nanos_opt()
+                .expect("a current UTC timestamp is representable in nanoseconds");
+            match self.price_to_beat {
+                Some(price_to_beat) => writeln!(
+                    body,
+                    "{MARKET_PATH_MEASUREMENT} btc_price={},price_to_beat={price_to_beat},{snapshot_field}=1i {point_epoch_nanos}",
+                    point.price,
+                ),
+                None => writeln!(
+                    body,
+                    "{MARKET_PATH_MEASUREMENT} btc_price={},{}=1i {point_epoch_nanos}",
+                    point.price, snapshot_field,
+                ),
+            }
+            .expect("writing an Influx line into a String cannot fail");
+        }
+        body.pop();
+        body
+    }
+}
+
 fn escape_influx_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -158,11 +250,20 @@ impl GrafanaLivePublisher {
     }
 
     pub async fn publish(&self, snapshot: &CountdownSnapshot) -> Result<()> {
+        self.publish_body(snapshot.influx_line(), "countdown").await
+    }
+
+    pub async fn publish_market_path(&self, snapshot: &MarketPathSnapshot) -> Result<()> {
+        self.publish_body(snapshot.influx_body(), "market path")
+            .await
+    }
+
+    async fn publish_body(&self, body: String, measurement_name: &str) -> Result<()> {
         let request = self
             .client
             .post(&self.config.push_url)
             .header(reqwest::header::CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(snapshot.influx_line());
+            .body(body);
         let request = if let Some(token) = &self.config.bearer_token {
             request.bearer_auth(token)
         } else {
@@ -177,9 +278,11 @@ impl GrafanaLivePublisher {
         request
             .send()
             .await
-            .context("failed to send Grafana Live countdown measurement")?
+            .with_context(|| format!("failed to send Grafana Live {measurement_name} measurement"))?
             .error_for_status()
-            .context("Grafana rejected Grafana Live countdown measurement")?;
+            .with_context(|| {
+                format!("Grafana rejected Grafana Live {measurement_name} measurement")
+            })?;
         Ok(())
     }
 }
@@ -211,6 +314,29 @@ mod tests {
             fees_enabled: false,
             fee_schedule: serde_json::json!({}),
             raw_payload: serde_json::json!({}),
+        }
+    }
+
+    fn candle(open_timestamp: DateTime<Utc>, close_price: Decimal) -> BinanceOneSecondKline {
+        BinanceOneSecondKline {
+            open_timestamp,
+            close_timestamp: open_timestamp + ChronoDuration::seconds(1),
+            open_price: close_price,
+            high_price: close_price,
+            low_price: close_price,
+            close_price,
+            base_volume: dec!(1),
+            quote_volume: close_price,
+            trade_count: 1,
+            taker_buy_base_volume: dec!(1),
+            taker_buy_quote_volume: close_price,
+            first_aggregate_trade_id: 1,
+            last_aggregate_trade_id: 1,
+            first_source_timestamp: open_timestamp,
+            last_source_timestamp: open_timestamp,
+            max_received_at: open_timestamp,
+            source_complete: true,
+            synthetic: false,
         }
     }
 
@@ -260,5 +386,54 @@ mod tests {
         assert!(line.contains("available=true"));
         assert!(line.contains("status=\"active\""));
         assert!(line.contains("market_id=\"one\""));
+    }
+
+    #[test]
+    fn market_path_contains_only_the_current_bounded_market_window() {
+        let now = Utc.timestamp_opt(1_800_000_100, 0).unwrap();
+        let market = market("one", now);
+        let before = candle(market.window_start - ChronoDuration::seconds(1), dec!(99));
+        let current = candle(market.window_start, dec!(100));
+        let future = candle(now, dec!(101));
+
+        let snapshot = MarketPathSnapshot::resolve(
+            now,
+            &market,
+            Some(dec!(100.5)),
+            [before, current.clone(), future],
+        );
+
+        assert_eq!(snapshot.points.len(), 1);
+        assert_eq!(snapshot.points[0].observed_at, current.close_timestamp);
+        assert_eq!(snapshot.points[0].price, dec!(100));
+    }
+
+    #[test]
+    fn market_path_renders_price_target_and_snapshot_replacement_marker() {
+        let now = Utc.timestamp_opt(1_800_000_100, 0).unwrap();
+        let market = market("one", now);
+        let snapshot = MarketPathSnapshot::resolve(
+            now,
+            &market,
+            Some(dec!(100.5)),
+            [candle(market.window_start, dec!(100))],
+        );
+        let body = snapshot.influx_body();
+
+        assert!(body.starts_with("btc_market_path btc_price=100,price_to_beat=100.5"));
+        assert!(body.contains("snapshot_1800000100000000000=1i"));
+        assert_ne!(
+            body,
+            MarketPathSnapshot::reset(now + ChronoDuration::seconds(1)).influx_body()
+        );
+    }
+
+    #[test]
+    fn market_path_reset_emits_an_empty_replacement_frame() {
+        let now = Utc.timestamp_opt(1_800_000_100, 0).unwrap();
+        assert_eq!(
+            MarketPathSnapshot::reset(now).influx_body(),
+            "btc_market_path snapshot_1800000100000000000=1i 1800000100000000000"
+        );
     }
 }

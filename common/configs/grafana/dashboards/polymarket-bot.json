@@ -2326,32 +2326,7 @@
             "mode": "thresholds"
           },
           "decimals": 0,
-          "mappings": [
-        {
-          "type": "range",
-          "options": {
-            "from": 0,
-            "to": 0,
-            "result": {
-              "color": "red",
-              "index": 0,
-              "text": "Disconnected"
-            }
-          }
-        },
-        {
-          "type": "range",
-          "options": {
-            "from": 1,
-            "to": 2147483647,
-            "result": {
-              "color": "green",
-              "index": 1,
-              "text": "Connected"
-            }
-          }
-        }
-          ],
+          "mappings": [],
           "noValue": "Unavailable",
           "thresholds": {
             "mode": "absolute",
@@ -2369,6 +2344,59 @@
           "unit": "none"
         },
         "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CLOB Socket Connection Epoch"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0,
+                      "to": 0,
+                      "result": {
+                        "color": "red",
+                        "index": 0,
+                        "text": "Disconnected"
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 1,
+                      "to": 2147483647,
+                      "result": {
+                        "color": "green",
+                        "index": 1,
+                        "text": "Connected"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": 0
+                    },
+                    {
+                      "color": "green",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
           {
             "matcher": {
               "id": "byName",
@@ -3152,6 +3180,176 @@
       ],
       "title": "Lifetime Net Realized PnL by Trading Process",
       "type": "barchart"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 68
+      },
+      "id": 26,
+      "panels": [],
+      "title": "Global BTC Market",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana",
+        "uid": "grafana"
+      },
+      "description": "Global Binance BTC/USDT one-second price path for only the active five-minute Polymarket window, with the official Chainlink opening reference shown as Price to Beat. The bounded current-market path is resent every second so a refreshed browser reconstructs the elapsed window and the completed market is replaced at rollover. This panel is independent of trading-process and PnL filters.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "BTC Price (USD)",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 4,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 3,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "btc_price"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "BTC Price"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "price_to_beat"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Price to Beat"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    6
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 13,
+        "w": 24,
+        "x": 0,
+        "y": 69
+      },
+      "id": 27,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "buffer": 300000,
+          "channel": "stream/polymarket/btc_market_path",
+          "datasource": {
+            "type": "grafana",
+            "uid": "grafana"
+          },
+          "filter": {
+            "fields": [
+              "time",
+              "btc_price",
+              "price_to_beat"
+            ]
+          },
+          "queryType": "measurements",
+          "refId": "A"
+        }
+      ],
+      "timeFrom": "5m",
+      "title": "BTC 5-Minute Realtime Market",
+      "type": "timeseries"
     }
   ],
   "preload": false,
@@ -3218,6 +3416,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 132,
+  "version": 133,
   "weekStart": ""
 }

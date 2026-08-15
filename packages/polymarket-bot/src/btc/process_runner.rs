@@ -1823,7 +1823,7 @@ impl BtcProcessRunner {
                         model.feature_schema_version(),
                     ) {
                         self.repository
-                            .load_directional_model_opening_reference(
+                            .load_market_opening_reference(
                                 market,
                                 feature_as_of,
                                 chrono::Duration::milliseconds(

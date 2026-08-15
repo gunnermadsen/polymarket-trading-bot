@@ -38,7 +38,7 @@ use polymarket_bot::{
         LiveOrderDryRunRequest, LivePoly1271FunderProbeRequest, LivePoly1271FunderProbeResponse,
         LiveVenueStatus, LiveWalletAddressDiagnostics,
     },
-    grafana_live::{CountdownSnapshot, GrafanaLivePublisher},
+    grafana_live::{CountdownSnapshot, GrafanaLivePublisher, MarketPathSnapshot},
     http as control_http,
     http::{
         ControlApi, HealthResponse, HealthStatus, HttpError, IngestionBackfillCancelResponse,
@@ -1061,6 +1061,12 @@ struct PendingBtcTerminal {
     allow_inactive_process: bool,
 }
 
+#[derive(Debug, Clone)]
+struct CachedGrafanaMarketTarget {
+    market_id: String,
+    price: Decimal,
+}
+
 #[derive(Clone)]
 struct BtcProcessManager {
     store: Store,
@@ -1072,6 +1078,7 @@ struct BtcProcessManager {
     active_playbooks: Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, ActiveBtcPlaybook>>>,
     shared_runtime: Arc<tokio::sync::Mutex<Option<SharedBtcRuntime>>>,
     terminal_pending: Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, PendingBtcTerminal>>>,
+    grafana_market_target: Arc<tokio::sync::Mutex<Option<CachedGrafanaMarketTarget>>>,
 }
 
 impl BtcProcessManager {
@@ -1091,6 +1098,7 @@ impl BtcProcessManager {
             active_playbooks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             shared_runtime: Arc::new(tokio::sync::Mutex::new(None)),
             terminal_pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            grafana_market_target: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -2769,6 +2777,83 @@ impl BtcProcessManager {
         CountdownSnapshot::resolve(observed_at, active_processes, markets)
     }
 
+    async fn grafana_market_path_snapshot(
+        &self,
+        observed_at: chrono::DateTime<Utc>,
+    ) -> Result<Option<MarketPathSnapshot>> {
+        let state = self
+            .shared_runtime
+            .lock()
+            .await
+            .as_ref()
+            .map(|shared| shared.runtime.shared_state());
+        let Some(state) = state else {
+            self.grafana_market_target.lock().await.take();
+            return Ok(None);
+        };
+        let (market, candles) = {
+            let state = state.read().await;
+            let Some(market) = state.current_market.clone() else {
+                drop(state);
+                self.grafana_market_target.lock().await.take();
+                return Ok(None);
+            };
+            let candles = state
+                .binance_one_second_window
+                .completed()
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            (market, candles)
+        };
+        if !market.is_trade_window(observed_at) {
+            self.grafana_market_target.lock().await.take();
+            return Ok(None);
+        }
+
+        let cached_target = self
+            .grafana_market_target
+            .lock()
+            .await
+            .as_ref()
+            .filter(|cached| cached.market_id == market.market_id)
+            .map(|cached| cached.price);
+        let price_to_beat = match cached_target {
+            Some(price) => Some(price),
+            None => {
+                let reference = self
+                    .repository
+                    .load_market_opening_reference(
+                        &market,
+                        observed_at,
+                        chrono::Duration::seconds(5),
+                    )
+                    .await?;
+                let price = reference.map(|reference| reference.price);
+                let mut cached = self.grafana_market_target.lock().await;
+                if let Some(price) = price {
+                    *cached = Some(CachedGrafanaMarketTarget {
+                        market_id: market.market_id.clone(),
+                        price,
+                    });
+                } else if cached
+                    .as_ref()
+                    .is_some_and(|cached| cached.market_id != market.market_id)
+                {
+                    cached.take();
+                }
+                price
+            }
+        };
+
+        Ok(Some(MarketPathSnapshot::resolve(
+            observed_at,
+            &market,
+            price_to_beat,
+            candles,
+        )))
+    }
+
     async fn reconcile_failed_runtime(&self) {
         let pending = self
             .terminal_pending
@@ -3744,17 +3829,19 @@ impl ControlApi for RuntimeControl {
     }
 }
 
-async fn run_grafana_live_countdown(
+async fn run_grafana_live(
     manager: BtcProcessManager,
     publisher: GrafanaLivePublisher,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     let mut ticker = tokio::time::interval(publisher.publish_interval());
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    let mut last_publish_error: Option<String> = None;
+    let mut last_countdown_error: Option<String> = None;
+    let mut last_market_path_error: Option<String> = None;
     info!(
-        channel = polymarket_bot::grafana_live::COUNTDOWN_CHANNEL,
-        "Grafana Live BTC market countdown publisher started"
+        countdown_channel = polymarket_bot::grafana_live::COUNTDOWN_CHANNEL,
+        market_path_channel = polymarket_bot::grafana_live::MARKET_PATH_CHANNEL,
+        "Grafana Live BTC market publishers started"
     );
     loop {
         tokio::select! {
@@ -3767,25 +3854,54 @@ async fn run_grafana_live_countdown(
                 let snapshot = manager.grafana_countdown_snapshot(Utc::now()).await;
                 match publisher.publish(&snapshot).await {
                     Ok(()) => {
-                        if last_publish_error.take().is_some() {
+                        if last_countdown_error.take().is_some() {
                             info!("Grafana Live BTC market countdown publishing recovered");
                         }
                     }
                     Err(publish_error) => {
                         let message = format!("{publish_error:#}");
-                        if last_publish_error.as_deref() != Some(message.as_str()) {
+                        if last_countdown_error.as_deref() != Some(message.as_str()) {
                             warn!(
                                 error = %message,
                                 "Grafana Live BTC market countdown publish failed; retrying"
                             );
-                            last_publish_error = Some(message);
+                            last_countdown_error = Some(message);
+                        }
+                    }
+                }
+
+                let observed_at = Utc::now();
+                let market_path_result = match manager
+                    .grafana_market_path_snapshot(observed_at)
+                    .await
+                {
+                    Ok(Some(snapshot)) => publisher.publish_market_path(&snapshot).await,
+                    Ok(None) => publisher
+                        .publish_market_path(&MarketPathSnapshot::reset(observed_at))
+                        .await,
+                    Err(error) => Err(error),
+                };
+                match market_path_result {
+                    Ok(()) => {
+                        if last_market_path_error.take().is_some() {
+                            info!("Grafana Live BTC market path publishing recovered");
+                        }
+                    }
+                    Err(publish_error) => {
+                        let message = format!("{publish_error:#}");
+                        if last_market_path_error.as_deref() != Some(message.as_str()) {
+                            warn!(
+                                error = %message,
+                                "Grafana Live BTC market path publish failed; retrying"
+                            );
+                            last_market_path_error = Some(message);
                         }
                     }
                 }
             }
         }
     }
-    info!("Grafana Live BTC market countdown publisher stopped");
+    info!("Grafana Live BTC market publishers stopped");
 }
 
 #[tokio::main]
@@ -3879,7 +3995,7 @@ async fn main() -> Result<()> {
             .clone()
             .context("Grafana Live countdown requires the BTC process manager")?;
         let publisher = GrafanaLivePublisher::new(config.grafana_live.clone())?;
-        Some(tokio::spawn(run_grafana_live_countdown(
+        Some(tokio::spawn(run_grafana_live(
             manager,
             publisher,
             grafana_live_shutdown_rx,

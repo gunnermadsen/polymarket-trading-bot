@@ -2462,20 +2462,20 @@ impl BtcRepository {
 
     /// Loads the market's immutable official Chainlink opening reference without rebuilding
     /// reference histories. The receipt-time and configured boundary-window predicates preserve
-    /// the model feature timestamp's no-lookahead contract.
-    pub(crate) async fn load_directional_model_opening_reference(
+    /// the caller's point-in-time boundary.
+    pub async fn load_market_opening_reference(
         &self,
         market: &BtcIntervalMarket,
         feature_as_of: DateTime<Utc>,
         max_chainlink_open_delay: chrono::Duration,
     ) -> Result<Option<ReferencePriceTick>> {
         if max_chainlink_open_delay <= Duration::zero() {
-            bail!("directional-model Chainlink opening-reference delay must be positive");
+            bail!("Chainlink opening-reference delay must be positive");
         }
         let latest_valid_open = market
             .window_start
             .checked_add_signed(max_chainlink_open_delay)
-            .context("directional-model Chainlink opening window exceeds the timestamp range")?;
+            .context("Chainlink opening window exceeds the timestamp range")?;
         sqlx::query_as::<_, ReferenceTickRow>(
             r#"
             SELECT t.tick_id, t.source_timestamp, t.received_at, t.source, t.symbol, t.price,
@@ -2508,7 +2508,7 @@ impl BtcRepository {
         .bind(latest_valid_open)
         .fetch_optional(&self.pool)
         .await
-        .context("failed to load directional-model Chainlink opening reference")?
+        .context("failed to load market Chainlink opening reference")?
         .map(reference_tick_from_row)
         .transpose()
     }
