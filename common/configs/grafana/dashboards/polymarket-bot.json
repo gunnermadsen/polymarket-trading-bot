@@ -2319,7 +2319,7 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "polymarket-bot-runtime"
       },
-  "description": "Transport status of the shared Polymarket CLOB websocket. A connected connection epoch means the socket is established and receiving transport traffic; execution-ready orderbook state is evaluated separately by each trading process.",
+  "description": "Transport status of the shared Polymarket CLOB websocket, using the connected epoch and age of the most recent inbound frame. Execution-ready orderbook state is evaluated separately by each trading process.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2368,7 +2368,48 @@
           },
           "unit": "none"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CLOB Last Inbound Frame Age"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "mappings",
+                "value": []
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "orange",
+                      "value": 5000
+                    },
+                    {
+                      "color": "red",
+                      "value": 15000
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "noValue",
+                "value": "No inbound frame"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 4,
@@ -2417,6 +2458,11 @@
           "selector": "shared_market_data.metrics.clob_connected_connection_epoch",
           "text": "CLOB Socket Connection Epoch",
           "type": "number"
+            },
+            {
+          "selector": "shared_market_data.metrics.clob_active_last_inbound_frame_age_milliseconds",
+          "text": "CLOB Last Inbound Frame Age",
+          "type": "number"
             }
           ],
           "json_options": {
@@ -2424,7 +2470,7 @@
           }
         }
       ],
-  "title": "CLOB Socket Connection",
+  "title": "CLOB Socket Health",
       "type": "stat"
     },
     {
