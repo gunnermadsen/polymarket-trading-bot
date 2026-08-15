@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use alloy_signer_local::PrivateKeySigner;
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::URL_SAFE, Engine as _};
@@ -34,7 +35,7 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::Sha256;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -91,6 +92,8 @@ pub struct LiveVenue {
     config: LiveExecutionConfig,
     clob_base_url: String,
     http_client: reqwest::Client,
+    signer: Option<Arc<PrivateKeySigner>>,
+    authenticated_client_cache: Arc<OnceCell<AuthenticatedClient>>,
     store: Option<Store>,
     data_api: Option<DataApiClient>,
     bound_process_id: Option<Uuid>,
@@ -205,10 +208,13 @@ impl LiveVenue {
         data_api: DataApiClient,
     ) -> Result<Self> {
         config.validate_for_live()?;
+        let signer = configured_submit_signer(&config)?;
         let venue = Self {
             config,
             clob_base_url,
             http_client: reqwest::Client::new(),
+            signer,
+            authenticated_client_cache: Arc::new(OnceCell::new()),
             store: Some(store),
             data_api: Some(data_api),
             bound_process_id: None,
@@ -227,10 +233,13 @@ impl LiveVenue {
     #[cfg(test)]
     fn new_for_test(config: LiveExecutionConfig) -> Result<Self> {
         config.validate_for_live()?;
+        let signer = configured_submit_signer(&config)?;
         Ok(Self {
             config,
             clob_base_url: "https://clob-v2.polymarket.com".to_string(),
             http_client: reqwest::Client::new(),
+            signer,
+            authenticated_client_cache: Arc::new(OnceCell::new()),
             store: None,
             data_api: None,
             bound_process_id: None,
@@ -269,6 +278,8 @@ impl LiveVenue {
             config: self.config.clone(),
             clob_base_url: self.clob_base_url.clone(),
             http_client: self.http_client.clone(),
+            signer: self.signer.clone(),
+            authenticated_client_cache: self.authenticated_client_cache.clone(),
             store: self.store.clone(),
             data_api: self.data_api.clone(),
             bound_process_id: Some(process_id),
@@ -466,55 +477,71 @@ impl LiveVenue {
         if !self.config.submit_auth_available() {
             bail!("live submit auth is incomplete");
         }
-        let api_key = self
-            .config
-            .clob_api_key
-            .as_deref()
-            .context("missing CLOB API key")?;
-        let secret = self
-            .config
-            .clob_secret
-            .clone()
-            .context("missing CLOB secret")?;
-        let passphrase = self
-            .config
-            .clob_passphrase
-            .clone()
-            .context("missing CLOB passphrase")?;
-        let private_key = self
-            .config
-            .private_key
-            .as_deref()
-            .context("missing private key")?;
-        let signature_type = parse_signature_type(self.config.signature_type.as_deref())?;
-        let signer = LocalSigner::from_str(private_key)
-            .context("failed to parse POLYMARKET_PRIVATE_KEY")?
-            .with_chain_id(Some(POLYGON));
-        let credentials = Credentials::new(
-            Uuid::parse_str(api_key).context("POLYMARKET_CLOB_API_KEY must be a UUID")?,
-            secret,
-            passphrase,
-        );
-        let mut builder = SdkClient::new(&self.clob_base_url, SdkConfig::default())
-            .context("failed to create Polymarket CLOB SDK client")?
-            .authentication_builder(&signer)
-            .credentials(credentials)
-            .signature_type(signature_type);
-        if signature_type != SignatureType::Eoa {
-            let funder = self
-                .config
-                .funder_address
-                .as_deref()
-                .context("missing POLYMARKET_FUNDER_ADDRESS")?;
-            builder = builder.funder(
-                Address::from_str(funder).context("failed to parse POLYMARKET_FUNDER_ADDRESS")?,
-            );
-        }
-        let client = builder
-            .authenticate()
-            .await
-            .context("failed to authenticate Polymarket CLOB SDK client")?;
-        Ok(client)
+        let client = self
+            .authenticated_client_cache
+            .get_or_try_init(|| async {
+                let api_key = self
+                    .config
+                    .clob_api_key
+                    .as_deref()
+                    .context("missing CLOB API key")?;
+                let secret = self
+                    .config
+                    .clob_secret
+                    .clone()
+                    .context("missing CLOB secret")?;
+                let passphrase = self
+                    .config
+                    .clob_passphrase
+                    .clone()
+                    .context("missing CLOB passphrase")?;
+                let signature_type = parse_signature_type(self.config.signature_type.as_deref())?;
+                let signer = self
+                    .signer
+                    .as_deref()
+                    .context("missing live submit signer")?;
+                let credentials = Credentials::new(
+                    Uuid::parse_str(api_key).context("POLYMARKET_CLOB_API_KEY must be a UUID")?,
+                    secret,
+                    passphrase,
+                );
+                let mut builder = SdkClient::new(&self.clob_base_url, SdkConfig::default())
+                    .context("failed to create Polymarket CLOB SDK client")?
+                    .authentication_builder(signer)
+                    .credentials(credentials)
+                    .signature_type(signature_type);
+                if signature_type != SignatureType::Eoa {
+                    let funder = self
+                        .config
+                        .funder_address
+                        .as_deref()
+                        .context("missing POLYMARKET_FUNDER_ADDRESS")?;
+                    builder = builder.funder(
+                        Address::from_str(funder)
+                            .context("failed to parse POLYMARKET_FUNDER_ADDRESS")?,
+                    );
+                }
+                builder
+                    .authenticate()
+                    .await
+                    .context("failed to authenticate Polymarket CLOB SDK client")
+            })
+            .await?;
+        Ok(client.clone())
+    }
+
+    async fn prewarm_order_metadata(
+        &self,
+        client: &AuthenticatedClient,
+        token_id: U256,
+    ) -> Result<()> {
+        let _ = tokio::try_join!(
+            client.version(),
+            client.tick_size(token_id),
+            client.neg_risk(token_id),
+        )
+        .context("failed to prepare Polymarket CLOB order metadata")?;
+        Ok(())
     }
 
     fn authenticated_read_headers(
@@ -1117,9 +1144,59 @@ impl LiveVenue {
         }
 
         let store = self.store()?;
-        let exposure = store
-            .conservative_live_process_exposure(process_id, ignored_client_order_id)
-            .await?;
+        let max_daily_loss_usd = self.bound_execution()?.max_daily_loss_usd;
+        let account_ref = (request.side == OrderSide::Buy)
+            .then(|| {
+                self.bound_account_ref()
+                    .context("live account capital admission requires account_ref")
+            })
+            .transpose()?;
+        let exposure_read =
+            store.conservative_live_process_exposure(process_id, ignored_client_order_id);
+        let daily_pnl_read = async {
+            let Some(_) = max_daily_loss_usd else {
+                return Ok::<_, anyhow::Error>(None);
+            };
+            let now = Utc::now();
+            let day_start = now
+                .date_naive()
+                .and_hms_opt(0, 0, 0)
+                .expect("midnight is a valid UTC time")
+                .and_utc();
+            let day_end = day_start + chrono::Duration::days(1);
+            Ok(Some(
+                store
+                    .recognized_live_process_net_pnl_for_utc_day(
+                        process_id, day_start, day_end, now,
+                    )
+                    .await?,
+            ))
+        };
+        let account_orders_read = async {
+            let Some(account_ref) = account_ref else {
+                return Ok::<_, anyhow::Error>(None);
+            };
+            Ok(Some(
+                store
+                    .live_account_nonterminal_orders(
+                        account_ref,
+                        (MAX_CLOB_RECONCILIATION_ROWS + 1) as i64,
+                    )
+                    .await?,
+            ))
+        };
+        let collateral_read = async {
+            if request.side != OrderSide::Buy {
+                return Ok::<_, anyhow::Error>(None);
+            }
+            Ok(Some(self.get_balances().await?))
+        };
+        let (exposure, recognized_net_pnl, account_orders, balances) = tokio::try_join!(
+            exposure_read,
+            daily_pnl_read,
+            account_orders_read,
+            collateral_read,
+        )?;
         if exposure.has_unredeemed_settlement {
             return Ok(Some(LiveExecutionGateReason::SettlementRedemptionUnproven));
         }
@@ -1136,17 +1213,9 @@ impl LiveVenue {
             return Ok(Some(reason));
         }
 
-        if let Some(max_daily_loss_usd) = self.bound_execution()?.max_daily_loss_usd {
-            let now = Utc::now();
-            let day_start = now
-                .date_naive()
-                .and_hms_opt(0, 0, 0)
-                .expect("midnight is a valid UTC time")
-                .and_utc();
-            let day_end = day_start + chrono::Duration::days(1);
-            let recognized_net_pnl = store
-                .recognized_live_process_net_pnl_for_utc_day(process_id, day_start, day_end, now)
-                .await?;
+        if let (Some(max_daily_loss_usd), Some(recognized_net_pnl)) =
+            (max_daily_loss_usd, recognized_net_pnl)
+        {
             if recognized_net_pnl <= -max_daily_loss_usd {
                 return Ok(Some(LiveExecutionGateReason::DailyLossLimit));
             }
@@ -1165,17 +1234,7 @@ impl LiveVenue {
             return Ok(Some(LiveExecutionGateReason::OpenPositionLimit));
         }
 
-        if request.side == OrderSide::Buy {
-            let account_ref = self
-                .bound_account_ref()
-                .context("live account capital admission requires account_ref")?;
-            let account_orders = self
-                .store()?
-                .live_account_nonterminal_orders(
-                    account_ref,
-                    (MAX_CLOB_RECONCILIATION_ROWS + 1) as i64,
-                )
-                .await?;
+        if let (Some(account_orders), Some(balances)) = (account_orders, balances) {
             if account_orders.len() > MAX_CLOB_RECONCILIATION_ROWS {
                 bail!(
                     "live account exceeds the bounded {}-order capital admission window",
@@ -1196,9 +1255,7 @@ impl LiveVenue {
                     )
                     .context("live account buy reservation overflow")?;
             }
-            let available_collateral = self
-                .get_balances()
-                .await?
+            let available_collateral = balances
                 .into_iter()
                 .find_map(|(asset, balance)| (asset == "USDC").then_some(balance))
                 .context("live account collateral balance is unavailable")?;
@@ -1236,19 +1293,11 @@ impl LiveVenue {
         Ok(Some(LiveExecutionGateReason::VenueReadiness))
     }
 
-    async fn final_submission_gate_reason(
-        &self,
-        process_id: Uuid,
-        request: &OrderRequest,
-    ) -> Result<Option<LiveExecutionGateReason>> {
+    async fn final_submission_gate_reason(&self) -> Result<Option<LiveExecutionGateReason>> {
         if self.global_entry_gate.lock().await.halted {
             return Ok(Some(LiveExecutionGateReason::GlobalHalt));
         }
-        if let Some(reason) = self.current_entry_gate_reason().await? {
-            return Ok(Some(reason));
-        }
-        self.enforce_submission_risk(process_id, request, Some(request.client_order_id))
-            .await
+        self.current_entry_gate_reason().await
     }
 
     async fn mark_idempotency_dirty(&self) {
@@ -1503,6 +1552,20 @@ fn parse_signature_type(value: Option<&str>) -> Result<SignatureType> {
         "3" | "poly1271" | "poly_1271" => Ok(SignatureType::Poly1271),
         other => bail!("unsupported POLYMARKET_SIGNATURE_TYPE={other}"),
     }
+}
+
+fn configured_submit_signer(config: &LiveExecutionConfig) -> Result<Option<Arc<PrivateKeySigner>>> {
+    if !config.submit_auth_available() {
+        return Ok(None);
+    }
+    let Some(private_key) = config.private_key.as_deref() else {
+        return Ok(None);
+    };
+    Ok(Some(Arc::new(
+        LocalSigner::from_str(private_key)
+            .context("failed to parse POLYMARKET_PRIVATE_KEY")?
+            .with_chain_id(Some(POLYGON)),
+    )))
 }
 
 fn configured_account_address(config: &LiveExecutionConfig) -> Result<Option<String>> {
@@ -2512,24 +2575,6 @@ impl ExecutionVenue for LiveVenue {
             return live_execution_gate_closed_order(request, reason);
         }
         let store = self.store()?;
-        if let Some(reason) = self
-            .enforce_submission_risk(process_id, &request, None)
-            .await?
-        {
-            return live_execution_gate_closed_order(request, reason);
-        }
-
-        // Complete all local validation, CLOB metadata reads and signing before claiming a pending
-        // order. The durable row is then written immediately before the only operation whose
-        // outcome can be ambiguous: the venue POST.
-        let private_key = self
-            .config
-            .private_key
-            .as_deref()
-            .context("missing private key")?;
-        let signer = LocalSigner::from_str(private_key)
-            .context("failed to parse POLYMARKET_PRIVATE_KEY")?
-            .with_chain_id(Some(POLYGON));
         let client = match self
             .authenticated_client()
             .await
@@ -2547,6 +2592,23 @@ impl ExecutionVenue for LiveVenue {
         };
         let token_id =
             U256::from_str(&request.token_id).context("failed to parse CLOB token_id")?;
+        let (risk_result, metadata_result) = tokio::join!(
+            self.enforce_submission_risk(process_id, &request, None),
+            self.prewarm_order_metadata(&client, token_id),
+        );
+        if let Some(reason) = risk_result? {
+            return live_execution_gate_closed_order(request, reason);
+        }
+        if let Err(error) = metadata_result {
+            if is_retryable_live_pre_submit_error(&error) {
+                return live_pre_submit_transient_gate_order(request, "order_metadata", &error);
+            }
+            return Err(error);
+        }
+
+        // Complete all local validation, CLOB metadata reads and signing before claiming a pending
+        // order. The durable row is then written immediately before the only operation whose
+        // outcome can be ambiguous: the venue POST.
         let signable = match client
             .limit_order()
             .token_id(token_id)
@@ -2564,18 +2626,19 @@ impl ExecutionVenue for LiveVenue {
             }
             Err(error) => return Err(error),
         };
+        let signer = self
+            .signer
+            .as_deref()
+            .context("missing live submit signer")?;
         let signed = client
-            .sign(&signer, signable)
+            .sign(signer, signable)
             .await
             .context("failed to sign Polymarket CLOB order")?;
         let (pending_order, newly_created) = store.create_pending_order(&request).await?;
         if !newly_created {
             return Ok(pending_order);
         }
-        let final_gate_reason = match self
-            .final_submission_gate_reason(process_id, &request)
-            .await
-        {
+        let final_gate_reason = match self.final_submission_gate_reason().await {
             Ok(reason) => reason,
             Err(error) => {
                 persist_pre_submit_hard_failure(&store, &pending_order, &error).await?;
@@ -4192,6 +4255,36 @@ mod tests {
             funder_address: Some("0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf".to_string()),
             signature_type: Some("0".to_string()),
         }
+    }
+
+    #[tokio::test]
+    async fn process_bound_venues_share_the_initialized_live_authentication_cache() {
+        let root = LiveVenue::new_for_test(live_config()).unwrap();
+        let first = root
+            .bind_process(Uuid::new_v4(), &live_execution())
+            .unwrap();
+        let second = root
+            .bind_process(Uuid::new_v4(), &live_execution())
+            .unwrap();
+
+        assert!(Arc::ptr_eq(
+            &root.authenticated_client_cache,
+            &first.authenticated_client_cache
+        ));
+        assert!(Arc::ptr_eq(
+            &first.authenticated_client_cache,
+            &second.authenticated_client_cache
+        ));
+        assert!(Arc::ptr_eq(
+            first.signer.as_ref().unwrap(),
+            second.signer.as_ref().unwrap()
+        ));
+        assert!(root.authenticated_client_cache.get().is_none());
+
+        first.authenticated_client().await.unwrap();
+
+        assert!(root.authenticated_client_cache.get().is_some());
+        assert!(second.authenticated_client_cache.get().is_some());
     }
 
     fn live_execution() -> EffectiveProcessExecutionConfig {
