@@ -424,6 +424,26 @@ pub struct BtcRuntimeMetrics {
     pub clob_last_disconnect_at: Option<DateTime<Utc>>,
     pub clob_recovery_unavailable_since: Option<DateTime<Utc>>,
     pub clob_last_disconnect_reason: Option<String>,
+    #[serde(default)]
+    pub clob_book_unavailable_reason: Option<String>,
+    #[serde(default)]
+    pub clob_book_unavailable_market_id: Option<String>,
+    #[serde(default)]
+    pub clob_book_unavailable_token_id: Option<String>,
+    #[serde(default)]
+    pub clob_book_unavailable_integrity_status: Option<FeedIntegrityStatus>,
+    #[serde(default)]
+    pub clob_book_unavailable_bootstrapped: Option<bool>,
+    #[serde(default)]
+    pub clob_book_unavailable_has_bid: Option<bool>,
+    #[serde(default)]
+    pub clob_book_unavailable_has_ask: Option<bool>,
+    #[serde(default)]
+    pub clob_book_unavailable_source_age_milliseconds: Option<i64>,
+    #[serde(default)]
+    pub clob_book_unavailable_receipt_age_milliseconds: Option<i64>,
+    #[serde(default)]
+    pub clob_book_unavailable_source_to_receive_lag_milliseconds: Option<i64>,
     pub clob_active_subscribed_assets: u64,
     pub clob_active_subscription_target_fingerprint_sha256: Option<String>,
     pub clob_active_peer_address: Option<String>,
@@ -499,6 +519,7 @@ fn runtime_metrics_snapshot(
 struct ClobRecoveryWindow {
     since: Option<DateTime<Utc>>,
     started_at: Option<Instant>,
+    diagnostic: Option<ClobReadinessDiagnostic>,
 }
 
 impl ClobRecoveryWindow {
@@ -506,6 +527,7 @@ impl ClobRecoveryWindow {
         Self {
             since: Some(since),
             started_at: Some(started_at),
+            diagnostic: None,
         }
     }
 
@@ -518,10 +540,65 @@ impl ClobRecoveryWindow {
 
     fn close(&mut self, ended_at: Instant) -> u64 {
         self.since = None;
+        self.diagnostic = None;
         self.started_at
             .take()
             .map(|started_at| duration_milliseconds(ended_at.duration_since(started_at)))
             .unwrap_or(0)
+    }
+
+    fn update_diagnostic(&mut self, diagnostic: ClobReadinessDiagnostic) -> bool {
+        if self.diagnostic.as_ref() == Some(&diagnostic) {
+            return false;
+        }
+        self.diagnostic = Some(diagnostic);
+        true
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClobReadinessDiagnostic {
+    reason: &'static str,
+    market_id: Option<String>,
+    token_id: Option<String>,
+    integrity_status: Option<FeedIntegrityStatus>,
+    bootstrapped: Option<bool>,
+    has_bid: Option<bool>,
+    has_ask: Option<bool>,
+    source_age_milliseconds: Option<i64>,
+    receipt_age_milliseconds: Option<i64>,
+    source_to_receive_lag_milliseconds: Option<i64>,
+}
+
+impl ClobReadinessDiagnostic {
+    fn missing_current_market() -> Self {
+        Self {
+            reason: "current_market_not_unique",
+            market_id: None,
+            token_id: None,
+            integrity_status: None,
+            bootstrapped: None,
+            has_bid: None,
+            has_ask: None,
+            source_age_milliseconds: None,
+            receipt_age_milliseconds: None,
+            source_to_receive_lag_milliseconds: None,
+        }
+    }
+
+    fn transport_unavailable() -> Self {
+        Self {
+            reason: "transport_unavailable",
+            market_id: None,
+            token_id: None,
+            integrity_status: None,
+            bootstrapped: None,
+            has_bid: None,
+            has_ask: None,
+            source_age_milliseconds: None,
+            receipt_age_milliseconds: None,
+            source_to_receive_lag_milliseconds: None,
+        }
     }
 }
 
@@ -4748,8 +4825,11 @@ async fn run_clob_supervisor(
                     .await;
                     record_clob_epoch_unavailable(
                         &metrics,
+                        failed.connection_id,
+                        failed.connection_epoch,
                         unavailable_at,
                         unavailable_instant,
+                        ClobReadinessDiagnostic::transport_unavailable(),
                         &mut recovery_window,
                     )
                     .await;
@@ -5046,8 +5126,97 @@ fn clob_epoch_ready(
     now: DateTime<Utc>,
     max_age: Duration,
 ) -> bool {
-    unique_current_clob_market(markets, now)
-        .is_some_and(|market| registry.market_books_ready(market, now, max_age))
+    clob_epoch_readiness_diagnostic(registry, markets, now, max_age).is_none()
+}
+
+fn clob_epoch_readiness_diagnostic(
+    registry: &BookRegistry,
+    markets: &[BtcIntervalMarket],
+    now: DateTime<Utc>,
+    max_age: Duration,
+) -> Option<ClobReadinessDiagnostic> {
+    let Some(market) = unique_current_clob_market(markets, now) else {
+        return Some(ClobReadinessDiagnostic::missing_current_market());
+    };
+    if registry.market_books_ready(market, now, max_age) {
+        return None;
+    }
+    let books = registry.book_readiness();
+    for token_id in [&market.up_token_id, &market.down_token_id] {
+        let Some(book) = books.iter().find(|book| book.token_id == *token_id) else {
+            return Some(ClobReadinessDiagnostic {
+                reason: "missing_book",
+                market_id: Some(market.market_id.clone()),
+                token_id: Some(token_id.clone()),
+                integrity_status: None,
+                bootstrapped: None,
+                has_bid: None,
+                has_ask: None,
+                source_age_milliseconds: None,
+                receipt_age_milliseconds: None,
+                source_to_receive_lag_milliseconds: None,
+            });
+        };
+        let source_age_milliseconds = book
+            .source_timestamp
+            .map(|source_timestamp| (now - source_timestamp).num_milliseconds());
+        let receipt_age_milliseconds = book
+            .received_at
+            .map(|received_at| (now - received_at).num_milliseconds());
+        let source_to_receive_lag_milliseconds =
+            book.source_timestamp
+                .zip(book.received_at)
+                .map(|(source_timestamp, received_at)| {
+                    (received_at - source_timestamp).num_milliseconds()
+                });
+        let reason = if book.market_id != market.market_id {
+            Some("book_identity_mismatch")
+        } else if !book.bootstrapped {
+            Some("book_not_bootstrapped")
+        } else if book.integrity_status != FeedIntegrityStatus::Ok {
+            Some("book_integrity")
+        } else if book.source_timestamp.is_none() {
+            Some("missing_source_timestamp")
+        } else if source_age_milliseconds.is_some_and(|age| age < -max_age.num_milliseconds()) {
+            Some("future_source_timestamp")
+        } else if book.received_at.is_none() {
+            Some("missing_received_at")
+        } else if receipt_age_milliseconds.is_some_and(|age| age < 0) {
+            Some("future_received_at")
+        } else if source_to_receive_lag_milliseconds
+            .is_some_and(|lag| lag > max_age.num_milliseconds())
+        {
+            Some("source_to_receive_lag")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Some(ClobReadinessDiagnostic {
+                reason,
+                market_id: Some(market.market_id.clone()),
+                token_id: Some(token_id.clone()),
+                integrity_status: Some(book.integrity_status),
+                bootstrapped: Some(book.bootstrapped),
+                has_bid: Some(book.best_bid.is_some()),
+                has_ask: Some(book.best_ask.is_some()),
+                source_age_milliseconds,
+                receipt_age_milliseconds,
+                source_to_receive_lag_milliseconds,
+            });
+        }
+    }
+    Some(ClobReadinessDiagnostic {
+        reason: "book_identity_mismatch",
+        market_id: Some(market.market_id.clone()),
+        token_id: None,
+        integrity_status: None,
+        bootstrapped: None,
+        has_bid: None,
+        has_ask: None,
+        source_age_milliseconds: None,
+        receipt_age_milliseconds: None,
+        source_to_receive_lag_milliseconds: None,
+    })
 }
 
 fn clob_epoch_structurally_ready(
@@ -5222,6 +5391,7 @@ async fn record_clob_epoch_healthy(
         runtime_metrics.clob_active_connection_id = Some(connection_id);
         runtime_metrics.clob_last_healthy_at = Some(ready_at);
         runtime_metrics.clob_recovery_unavailable_since = None;
+        clear_clob_book_unavailable_metrics(&mut runtime_metrics);
     }
     tracing::info!(
         feed = "polymarket_clob_market",
@@ -5234,15 +5404,64 @@ async fn record_clob_epoch_healthy(
 
 async fn record_clob_epoch_unavailable(
     metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
+    connection_id: Uuid,
+    connection_epoch: i32,
     unavailable_at: DateTime<Utc>,
     unavailable_instant: Instant,
+    diagnostic: ClobReadinessDiagnostic,
     recovery_window: &mut ClobRecoveryWindow,
 ) {
     recovery_window.open_if_closed(unavailable_at, unavailable_instant);
+    if !recovery_window.update_diagnostic(diagnostic.clone()) {
+        return;
+    }
     let mut runtime_metrics = metrics.write().await;
     runtime_metrics.clob_active_connection_epoch = None;
     runtime_metrics.clob_active_connection_id = None;
     runtime_metrics.clob_recovery_unavailable_since = recovery_window.since;
+    runtime_metrics.clob_book_unavailable_reason = Some(diagnostic.reason.to_string());
+    runtime_metrics.clob_book_unavailable_market_id = diagnostic.market_id.clone();
+    runtime_metrics.clob_book_unavailable_token_id = diagnostic.token_id.clone();
+    runtime_metrics.clob_book_unavailable_integrity_status = diagnostic.integrity_status;
+    runtime_metrics.clob_book_unavailable_bootstrapped = diagnostic.bootstrapped;
+    runtime_metrics.clob_book_unavailable_has_bid = diagnostic.has_bid;
+    runtime_metrics.clob_book_unavailable_has_ask = diagnostic.has_ask;
+    runtime_metrics.clob_book_unavailable_source_age_milliseconds =
+        diagnostic.source_age_milliseconds;
+    runtime_metrics.clob_book_unavailable_receipt_age_milliseconds =
+        diagnostic.receipt_age_milliseconds;
+    runtime_metrics.clob_book_unavailable_source_to_receive_lag_milliseconds =
+        diagnostic.source_to_receive_lag_milliseconds;
+    drop(runtime_metrics);
+    tracing::warn!(
+        feed = "polymarket_clob_market",
+        %connection_id,
+        connection_epoch,
+        reason = diagnostic.reason,
+        market_id = ?diagnostic.market_id,
+        token_id = ?diagnostic.token_id,
+        integrity_status = ?diagnostic.integrity_status,
+        bootstrapped = ?diagnostic.bootstrapped,
+        has_bid = ?diagnostic.has_bid,
+        has_ask = ?diagnostic.has_ask,
+        source_age_ms = ?diagnostic.source_age_milliseconds,
+        receipt_age_ms = ?diagnostic.receipt_age_milliseconds,
+        source_to_receive_lag_ms = ?diagnostic.source_to_receive_lag_milliseconds,
+        "CLOB orderbooks became unavailable; transport retained"
+    );
+}
+
+fn clear_clob_book_unavailable_metrics(metrics: &mut BtcRuntimeMetrics) {
+    metrics.clob_book_unavailable_reason = None;
+    metrics.clob_book_unavailable_market_id = None;
+    metrics.clob_book_unavailable_token_id = None;
+    metrics.clob_book_unavailable_integrity_status = None;
+    metrics.clob_book_unavailable_bootstrapped = None;
+    metrics.clob_book_unavailable_has_bid = None;
+    metrics.clob_book_unavailable_has_ask = None;
+    metrics.clob_book_unavailable_source_age_milliseconds = None;
+    metrics.clob_book_unavailable_receipt_age_milliseconds = None;
+    metrics.clob_book_unavailable_source_to_receive_lag_milliseconds = None;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5260,7 +5479,9 @@ async fn update_clob_usability(
     consecutive_failures: &mut u32,
     recovery_window: &mut ClobRecoveryWindow,
 ) {
-    let ready_now = clob_epoch_ready(registry, active_markets, checked_at, max_book_age);
+    let unavailable =
+        clob_epoch_readiness_diagnostic(registry, active_markets, checked_at, max_book_age);
+    let ready_now = unavailable.is_none();
     if ready_now && !*books_usable {
         let first_healthy_transition = !*healthy_epoch;
         *books_usable = true;
@@ -5276,9 +5497,18 @@ async fn update_clob_usability(
             recovery_window,
         )
         .await;
-    } else if !ready_now && *books_usable {
+    } else if !ready_now {
         *books_usable = false;
-        record_clob_epoch_unavailable(metrics, checked_at, checked_instant, recovery_window).await;
+        record_clob_epoch_unavailable(
+            metrics,
+            connection_id,
+            connection_epoch,
+            checked_at,
+            checked_instant,
+            unavailable.expect("unavailable CLOB epoch has a diagnostic"),
+            recovery_window,
+        )
+        .await;
     }
 }
 
@@ -10181,6 +10411,48 @@ mod tests {
     }
 
     #[test]
+    fn clob_unavailability_diagnostic_names_the_affected_book_state() {
+        let current = market();
+        let checked_at = current.window_start + Duration::minutes(1);
+        let mut registry = ready_book_registry(&current, checked_at - Duration::milliseconds(1));
+
+        assert!(clob_epoch_readiness_diagnostic(
+            &registry,
+            std::slice::from_ref(&current),
+            checked_at,
+            Duration::seconds(2),
+        )
+        .is_none());
+
+        registry.quarantine(FeedIntegrityStatus::TopOfBookMismatch);
+        let diagnostic = clob_epoch_readiness_diagnostic(
+            &registry,
+            std::slice::from_ref(&current),
+            checked_at,
+            Duration::seconds(2),
+        )
+        .expect("quarantined book must expose a causal diagnostic");
+        assert_eq!(diagnostic.reason, "book_integrity");
+        assert_eq!(
+            diagnostic.market_id.as_deref(),
+            Some(current.market_id.as_str())
+        );
+        assert!(matches!(
+            diagnostic.token_id.as_deref(),
+            Some(token_id)
+                if token_id == current.up_token_id.as_str()
+                    || token_id == current.down_token_id.as_str()
+        ));
+        assert_eq!(
+            diagnostic.integrity_status,
+            Some(FeedIntegrityStatus::TopOfBookMismatch)
+        );
+        assert_eq!(diagnostic.bootstrapped, Some(true));
+        assert_eq!(diagnostic.has_bid, Some(true));
+        assert_eq!(diagnostic.has_ask, Some(true));
+    }
+
+    #[test]
     fn successor_attempt_metrics_do_not_overwrite_active_availability() {
         let connected_id = Uuid::new_v4();
         let disconnected_at = Utc::now();
@@ -12195,8 +12467,11 @@ mod tests {
         let unavailable_instant = ready_instant + StdDuration::from_millis(250);
         record_clob_epoch_unavailable(
             &metrics,
+            Uuid::new_v4(),
+            9,
             unavailable_at,
             unavailable_instant,
+            ClobReadinessDiagnostic::transport_unavailable(),
             &mut recovery_window,
         )
         .await;
