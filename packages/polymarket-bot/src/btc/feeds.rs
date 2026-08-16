@@ -671,6 +671,26 @@ impl BookRegistry {
         self.connection_id
     }
 
+    /// Publishes only the books touched by one frame while preserving the rest of the active
+    /// connection epoch. Subscription changes and connection promotion still replace the complete
+    /// published registry at their explicit publication boundaries.
+    pub(crate) fn publish_frame_books_from<'a>(
+        &mut self,
+        source: &BookRegistry,
+        token_ids: impl IntoIterator<Item = &'a str>,
+    ) {
+        if self.connection_id != source.connection_id {
+            *self = source.clone();
+            return;
+        }
+        self.next_sequence = source.next_sequence;
+        for token_id in token_ids {
+            if let Some(book) = source.books.get(token_id) {
+                self.books.insert(token_id.to_string(), book.clone());
+            }
+        }
+    }
+
     pub fn register_market(&mut self, market: &BtcIntervalMarket) {
         self.try_register_market(market)
             .unwrap_or_else(|error| panic!("invalid orderbook market registration: {error}"));
@@ -1118,6 +1138,9 @@ impl BookRegistry {
                         .source_timestamp
                         .is_some_and(|timestamp| timestamp - now <= max_age)
                     && book.received_at.is_some_and(|timestamp| timestamp <= now)
+                    && book.source_timestamp.zip(book.received_at).is_some_and(
+                        |(source_timestamp, received_at)| received_at - source_timestamp <= max_age,
+                    )
             })
         })
     }
@@ -2260,6 +2283,48 @@ mod tests {
                 }));
             }
         }
+    }
+
+    #[test]
+    fn frame_publication_updates_only_touched_books() {
+        let market = market();
+        let connection_id = Uuid::new_v4();
+        let mut active = BookRegistry::new(connection_id);
+        active.register_market(&market);
+        seed_book(&mut active, &market.up_token_id, 1_783_902_701_000);
+        seed_book(&mut active, &market.down_token_id, 1_783_902_701_000);
+        let mut published = active.clone();
+        let down_before = published.checkpoint(&market.down_token_id).unwrap();
+
+        let events = active.apply(
+            ClobMessage::PriceChange {
+                market_id: market.market_id.clone(),
+                changes: vec![PriceChange {
+                    token_id: market.up_token_id.clone(),
+                    side: BookUpdateSide::Ask,
+                    price: dec!(0.52),
+                    size: dec!(20),
+                    source_hash: Some("updated-up".to_string()),
+                    best_bid: Some(dec!(0.48)),
+                    best_ask: Some(dec!(0.52)),
+                }],
+                source_timestamp: ts(1_783_902_701_010),
+                raw_payload: serde_json::json!({}),
+            },
+            ts(1_783_902_701_015),
+        );
+        assert!(events[0].applied);
+
+        published.publish_frame_books_from(&active, [&market.up_token_id].map(String::as_str));
+
+        assert_same_book_state(
+            &active.checkpoint(&market.up_token_id).unwrap(),
+            &published.checkpoint(&market.up_token_id).unwrap(),
+        );
+        assert_same_book_state(
+            &down_before,
+            &published.checkpoint(&market.down_token_id).unwrap(),
+        );
     }
 
     #[test]

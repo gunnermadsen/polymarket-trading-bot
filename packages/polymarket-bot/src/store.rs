@@ -852,6 +852,28 @@ impl Store {
         Ok(())
     }
 
+    pub async fn order_venue_reject_reason(
+        &self,
+        process_id: Uuid,
+        client_order_id: Uuid,
+    ) -> Result<Option<String>> {
+        sqlx::query_scalar::<_, Option<String>>(
+            r#"
+            SELECT NULLIF(raw_payload #>> '{venue,reject_reason}', '')
+            FROM polymarket.orders
+            WHERE process_id = $1
+              AND client_order_id = $2
+            LIMIT 1
+            "#,
+        )
+        .bind(process_id)
+        .bind(client_order_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to load durable venue order rejection reason")
+        .map(Option::flatten)
+    }
+
     async fn try_insert_order(&self, order: &OrderRecord) -> Result<bool> {
         let side = serialized_name(&order.request.side)?;
         let order_type = serialized_name(&order.request.order_type)?;

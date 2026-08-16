@@ -2379,6 +2379,37 @@ fn post_order_response_payload(response: &PostOrderResponse) -> serde_json::Valu
     })
 }
 
+const LIVE_VENUE_FOK_UNFILLED_REASON: &str = "venue_fok_unfilled";
+const LIVE_VENUE_REJECTED_REASON: &str = "venue_rejected";
+
+fn definitive_live_venue_reject_reason(order_type: OrderType, error: Option<&str>) -> &'static str {
+    let fok_unfilled = order_type == OrderType::Fok
+        && error.is_some_and(|error| {
+            let normalized = error.to_ascii_lowercase();
+            normalized.contains("couldn't be fully filled")
+                || normalized.contains("could not be fully filled")
+                || normalized.contains("fully filled or killed")
+        });
+    if fok_unfilled {
+        LIVE_VENUE_FOK_UNFILLED_REASON
+    } else {
+        LIVE_VENUE_REJECTED_REASON
+    }
+}
+
+fn with_live_venue_reject_reason(
+    mut payload: serde_json::Value,
+    reject_reason: &str,
+) -> serde_json::Value {
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "reject_reason".to_string(),
+            serde_json::Value::String(reject_reason.to_string()),
+        );
+    }
+    payload
+}
+
 fn normalized_address(value: Option<&str>) -> Option<String> {
     value
         .map(|address| address.trim().to_ascii_lowercase())
@@ -2694,7 +2725,14 @@ impl ExecutionVenue for LiveVenue {
                     .await
             }
             Ok(response) => {
-                let raw = post_order_response_payload(&response);
+                let reject_reason = definitive_live_venue_reject_reason(
+                    request.order_type,
+                    response.error_msg.as_deref(),
+                );
+                let raw = with_live_venue_reject_reason(
+                    post_order_response_payload(&response),
+                    reject_reason,
+                );
                 let failed_order = self
                     .store()?
                     .mark_order_submit_failed(request.client_order_id, "venue_rejected", raw)
@@ -2712,14 +2750,19 @@ impl ExecutionVenue for LiveVenue {
             Err(error) => {
                 let error_chain = format!("{error:#}");
                 if is_definitive_live_submit_error(&error) {
+                    let reject_reason =
+                        definitive_live_venue_reject_reason(request.order_type, Some(&error_chain));
                     let failed_order = store
                         .mark_order_submit_failed(
                             request.client_order_id,
                             "venue_rejected",
-                            json!({
-                                "error": error.to_string(),
-                                "error_chain": error_chain
-                            }),
+                            with_live_venue_reject_reason(
+                                json!({
+                                    "error": error.to_string(),
+                                    "error_chain": error_chain
+                                }),
+                                reject_reason,
+                            ),
                         )
                         .await?;
                     warn!(
@@ -5165,6 +5208,28 @@ mod tests {
         assert!(!is_definitive_live_submit_error(&anyhow::anyhow!(
             "connection reset after write"
         )));
+    }
+
+    #[test]
+    fn definitive_fok_liquidity_rejection_has_stable_decision_reason() {
+        assert_eq!(
+            definitive_live_venue_reject_reason(
+                OrderType::Fok,
+                Some("order couldn't be fully filled. FOK orders are fully filled or killed."),
+            ),
+            LIVE_VENUE_FOK_UNFILLED_REASON
+        );
+        assert_eq!(
+            definitive_live_venue_reject_reason(OrderType::Fok, Some("invalid signature")),
+            LIVE_VENUE_REJECTED_REASON
+        );
+        assert_eq!(
+            definitive_live_venue_reject_reason(
+                OrderType::Gtc,
+                Some("order couldn't be fully filled")
+            ),
+            LIVE_VENUE_REJECTED_REASON
+        );
     }
 
     #[test]

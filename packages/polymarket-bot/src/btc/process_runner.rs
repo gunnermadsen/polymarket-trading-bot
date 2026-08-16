@@ -2162,19 +2162,31 @@ impl BtcProcessRunner {
             }
         }
         self.store.persist_order_plan_report(&report).await?;
-        let primary_state = report
+        let primary_order = report
             .orders
             .first()
-            .map(|order| order.state)
             .context("BTC OrderPlan report omitted its primary order")?;
+        let primary_state = primary_order.state;
         let filled = primary_state == OrderState::Filled;
         let execution_status = decision_execution_status(primary_state);
-        let execution_reject_reason = report
-            .orders
-            .first()
-            .and_then(|order| order.request.metadata.get("reject_reason"))
+        let mut execution_reject_reason = primary_order
+            .request
+            .metadata
+            .get("reject_reason")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
+        if execution_reject_reason.is_none()
+            && matches!(execution_mode, BtcExecutionMode::Live)
+            && primary_state == OrderState::Rejected
+        {
+            execution_reject_reason = self
+                .store
+                .order_venue_reject_reason(
+                    self.config.process_id,
+                    primary_order.request.client_order_id,
+                )
+                .await?;
+        }
         let execution_metadata = execution_result_metadata(
             execution_mode,
             &report,

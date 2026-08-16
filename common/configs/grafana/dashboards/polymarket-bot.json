@@ -2319,7 +2319,7 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "polymarket-bot-runtime"
       },
-  "description": "Transport status of the shared Polymarket CLOB websocket, using the connected epoch and age of the most recent inbound frame. Execution-ready orderbook state is evaluated separately by each trading process.",
+  "description": "Transport status of the shared Polymarket CLOB websocket, using the connected epoch and age of the most recent inbound frame. Source-to-receive lag shows delayed market evidence separately and does not disconnect the socket. Execution-ready orderbook state is evaluated separately by each trading process.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2436,6 +2436,46 @@
                 "value": "No inbound frame"
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CLOB Source-to-Receive Lag"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "mappings",
+                "value": []
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "orange",
+                      "value": 1000
+                    },
+                    {
+                      "color": "red",
+                      "value": 2000
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "noValue",
+                "value": "No book frame"
+              }
+            ]
           }
         ]
       },
@@ -2490,6 +2530,11 @@
             {
           "selector": "shared_market_data.metrics.clob_active_last_inbound_frame_age_milliseconds",
           "text": "CLOB Last Inbound Frame Age",
+          "type": "number"
+            },
+            {
+          "selector": "shared_market_data.metrics.clob_active_last_source_to_receive_lag_milliseconds",
+          "text": "CLOB Source-to-Receive Lag",
           "type": "number"
             }
           ],

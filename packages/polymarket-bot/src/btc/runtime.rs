@@ -433,6 +433,8 @@ pub struct BtcRuntimeMetrics {
     pub clob_active_last_data_or_heartbeat_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub clob_active_last_inbound_frame_age_milliseconds: Option<u64>,
+    #[serde(default)]
+    pub clob_active_last_source_to_receive_lag_milliseconds: Option<i64>,
     pub clob_active_heartbeat_probes: u64,
     pub clob_active_heartbeat_acknowledgements: u64,
     pub clob_active_last_heartbeat_sent_at: Option<DateTime<Utc>>,
@@ -3042,6 +3044,24 @@ async fn apply_active_clob_frame(
     }
     let applied_count = events.iter().filter(|event| event.applied).count();
     let integrity_gap_count = events.len().saturating_sub(applied_count);
+    let source_to_receive_lag_milliseconds = events
+        .iter()
+        .filter(|event| event.applied)
+        .map(|event| {
+            (event.received_at - event.source_timestamp)
+                .num_milliseconds()
+                .max(0)
+        })
+        .max();
+    let frame_token_ids = events
+        .iter()
+        .filter_map(|event| event.token_id.as_deref())
+        .fold(Vec::<String>::new(), |mut token_ids, token_id| {
+            if !token_ids.iter().any(|existing| existing == token_id) {
+                token_ids.push(token_id.to_string());
+            }
+            token_ids
+        });
     epoch.session.integrity_gaps = epoch
         .session
         .integrity_gaps
@@ -3054,6 +3074,10 @@ async fn apply_active_clob_frame(
         runtime_metrics.integrity_gaps = runtime_metrics
             .integrity_gaps
             .saturating_add(u64::try_from(integrity_gap_count).unwrap_or(u64::MAX));
+        if let Some(lag_milliseconds) = source_to_receive_lag_milliseconds {
+            runtime_metrics.clob_active_last_source_to_receive_lag_milliseconds =
+                Some(lag_milliseconds);
+        }
     }
     let frame_changed = !events.is_empty() || !resolutions.is_empty();
     for event in events {
@@ -3077,7 +3101,8 @@ async fn apply_active_clob_frame(
     if frame_changed {
         let mut published_books = shared_books.write().await;
         let mut shared = state.write().await;
-        *published_books = epoch.registry.clone();
+        published_books
+            .publish_frame_books_from(&epoch.registry, frame_token_ids.iter().map(String::as_str));
         shared.update_books(&epoch.registry);
         shared.last_updated_at = Some(received_at);
         for resolution in resolutions {
@@ -5275,6 +5300,7 @@ fn clear_clob_connection_metrics(
     metrics.clob_active_edge_server = None;
     metrics.clob_active_handshake_date = None;
     metrics.clob_active_last_data_or_heartbeat_at = None;
+    metrics.clob_active_last_source_to_receive_lag_milliseconds = None;
     metrics.clob_active_heartbeat_probes = 0;
     metrics.clob_active_heartbeat_acknowledgements = 0;
     metrics.clob_active_last_heartbeat_sent_at = None;
@@ -11873,6 +11899,7 @@ mod tests {
             clob_active_peer_address: Some("203.0.113.10:443".to_string()),
             clob_active_edge_request_id: Some("LIM-example".to_string()),
             clob_active_last_data_or_heartbeat_at: Some(updated_at),
+            clob_active_last_source_to_receive_lag_milliseconds: Some(23_783),
             clob_active_heartbeat_probes: 11,
             clob_active_heartbeat_acknowledgements: 10,
             ..BtcRuntimeMetrics::default()
@@ -11887,6 +11914,10 @@ mod tests {
         let value = serde_json::to_value(status).unwrap();
         assert_eq!(value["metrics"]["clob_subscription_updates"], 3);
         assert_eq!(value["metrics"]["clob_active_subscribed_assets"], 8);
+        assert_eq!(
+            value["metrics"]["clob_active_last_source_to_receive_lag_milliseconds"],
+            23_783
+        );
         assert_eq!(
             value["metrics"]["clob_active_subscription_target_fingerprint_sha256"],
             "a".repeat(64)
@@ -12030,6 +12061,7 @@ mod tests {
             clob_active_edge_server: Some("cloudflare".to_string()),
             clob_active_handshake_date: Some("date".to_string()),
             clob_active_last_data_or_heartbeat_at: Some(updated_at),
+            clob_active_last_source_to_receive_lag_milliseconds: Some(23_783),
             clob_active_heartbeat_probes: 4,
             clob_active_heartbeat_acknowledgements: 3,
             clob_active_last_heartbeat_sent_at: Some(updated_at),
@@ -12059,6 +12091,9 @@ mod tests {
         assert!(metrics.clob_active_edge_server.is_none());
         assert!(metrics.clob_active_handshake_date.is_none());
         assert!(metrics.clob_active_last_data_or_heartbeat_at.is_none());
+        assert!(metrics
+            .clob_active_last_source_to_receive_lag_milliseconds
+            .is_none());
         assert_eq!(metrics.clob_active_heartbeat_probes, 0);
         assert_eq!(metrics.clob_active_heartbeat_acknowledgements, 0);
         assert!(metrics.clob_active_last_heartbeat_sent_at.is_none());

@@ -125,6 +125,8 @@ pub struct BtcReferenceExecutionAssessment {
     pub selected_book_source_age_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected_book_receive_age_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_book_source_to_receive_lag_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -603,22 +605,30 @@ impl BtcReferenceExecutionGuard {
             }
             None
         };
-        let (selected_book_source_age_ms, selected_book_receive_age_ms) =
-            if let Some(book) = self.selected_book.as_ref() {
-                if book.received_at > checked_at
-                    || book.source_timestamp - checked_at > max_reference_age
-                {
-                    return Err(BtcReferenceExecutionRejectReason::FutureEvidence);
-                }
-                let source_age = checked_at - book.source_timestamp;
-                let receive_age = checked_at - book.received_at;
-                (
-                    Some(source_age.num_milliseconds()),
-                    Some(receive_age.num_milliseconds()),
-                )
-            } else {
-                (None, None)
-            };
+        let (
+            selected_book_source_age_ms,
+            selected_book_receive_age_ms,
+            selected_book_source_to_receive_lag_ms,
+        ) = if let Some(book) = self.selected_book.as_ref() {
+            if book.received_at > checked_at
+                || book.source_timestamp - checked_at > max_reference_age
+            {
+                return Err(BtcReferenceExecutionRejectReason::FutureEvidence);
+            }
+            let source_to_receive_lag = book.received_at - book.source_timestamp;
+            if source_to_receive_lag > max_reference_age {
+                return Err(BtcReferenceExecutionRejectReason::StaleEvidence);
+            }
+            let source_age = checked_at - book.source_timestamp;
+            let receive_age = checked_at - book.received_at;
+            (
+                Some(source_age.num_milliseconds()),
+                Some(receive_age.num_milliseconds()),
+                Some(source_to_receive_lag.num_milliseconds()),
+            )
+        } else {
+            (None, None, None)
+        };
         Ok(BtcReferenceExecutionAssessment {
             guard_version: self.guard_version.clone(),
             evidence_sha256: self.evidence_sha256.clone(),
@@ -632,6 +642,7 @@ impl BtcReferenceExecutionGuard {
             directional_model_feature_age_ms,
             selected_book_source_age_ms,
             selected_book_receive_age_ms,
+            selected_book_source_to_receive_lag_ms,
         })
     }
 
@@ -1372,6 +1383,7 @@ mod tests {
         assert_eq!(assessment.max_directional_feature_age_ms, Some(5_000));
         assert_eq!(assessment.selected_book_source_age_ms, Some(70));
         assert_eq!(assessment.selected_book_receive_age_ms, Some(60));
+        assert_eq!(assessment.selected_book_source_to_receive_lag_ms, Some(10));
 
         let mut wrong_identity = guarded_request.clone();
         wrong_identity.metadata["profile_id"] = "another-model".into();
@@ -1544,6 +1556,25 @@ mod tests {
             )
             .unwrap();
         assert_eq!(assessment.selected_book_receive_age_ms, Some(2_001));
+
+        let mut delayed_book = sealed_directional_model_guard(checked_at);
+        let book = delayed_book.selected_book.as_mut().unwrap();
+        book.source_timestamp = checked_at - Duration::milliseconds(5_000);
+        book.received_at = checked_at - Duration::milliseconds(50);
+        delayed_book.reseal_for_test();
+        let delayed_book_request = directional_model_request(&delayed_book);
+        assert_eq!(
+            delayed_book
+                .validate_for_request(
+                    &delayed_book_request,
+                    checked_at,
+                    delayed_book.process_id,
+                    Duration::seconds(2),
+                    Some(Duration::seconds(5)),
+                )
+                .unwrap_err(),
+            BtcReferenceExecutionRejectReason::StaleEvidence
+        );
     }
 
     #[test]

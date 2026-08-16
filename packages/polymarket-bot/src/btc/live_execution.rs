@@ -198,7 +198,9 @@ fn book_timestamps_are_causal(
     checked_at: chrono::DateTime<Utc>,
     max_book_age: Duration,
 ) -> bool {
-    received_at <= checked_at && source_timestamp - checked_at <= max_book_age
+    received_at <= checked_at
+        && source_timestamp - checked_at <= max_book_age
+        && received_at - source_timestamp <= max_book_age
 }
 
 fn validate_market_pair_snapshot(
@@ -992,7 +994,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unchanged_opposite_book_source_remains_usable() {
+    async fn delayed_opposite_book_frame_is_rejected_before_delegate_submission() {
         let checked_at = Utc::now();
         let process_id = Uuid::new_v4();
         let fake = Arc::new(FakeVenue::default());
@@ -1030,8 +1032,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(order.state, OrderState::Submitted);
-        assert_eq!(fake.submit_calls(), 1);
+        assert_gate_rejection(&order, LiveExecutionGateReason::OrderbookFreshness);
+        assert_eq!(fake.submit_calls(), 0);
     }
 
     #[tokio::test]
