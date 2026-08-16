@@ -77,7 +77,7 @@ const BTC_LIVE_QUIESCE_TIMEOUT: Duration = Duration::from_secs(10);
 const BTC_LIVE_CONTROL_TIMEOUT: Duration = Duration::from_secs(20);
 const COMPILED_SOURCE_IDENTITY: &str = env!("POLYMARKET_COMPILED_SOURCE_ID");
 
-fn should_restore_checked_live_entries(
+fn should_resume_configured_live_entries(
     process: &TradingProcess,
     execution: &EffectiveProcessExecutionConfig,
 ) -> bool {
@@ -1673,7 +1673,7 @@ impl BtcProcessManager {
         enabled: bool,
     ) -> Result<LiveVenueStatus, HttpError> {
         let _transition_guard = self.transition.lock().await;
-        self.set_live_entries_enabled_locked(process_id, enabled, false)
+        self.set_live_entries_enabled_locked(process_id, enabled)
             .await
     }
 
@@ -1681,7 +1681,6 @@ impl BtcProcessManager {
         &self,
         process_id: uuid::Uuid,
         enabled: bool,
-        durable_resume: bool,
     ) -> Result<LiveVenueStatus, HttpError> {
         let (venue, active_run_id, active_run_key, active_config_hash) = {
             let active = self.active_playbooks.lock().await;
@@ -1790,52 +1789,18 @@ impl BtcProcessManager {
                 "btc_live_entries_disabled"
             },
             if enabled {
-                if durable_resume {
-                    "BTC live entries restored after restart through strict reconciliation"
-                } else {
-                    "BTC live entries manually enabled after strict reconciliation"
-                }
+                "BTC live entries manually enabled after strict reconciliation"
             } else {
                 "BTC live entries manually disabled"
             },
             serde_json::json!({
                 "entries_enabled": status.entries_enabled,
                 "reason": &status.reason,
-                "source": if durable_resume {
-                    "durable_resume_checked_reconciliation"
-                } else {
-                    "manual_process_control"
-                },
+                "source": "manual_process_control",
             }),
         )
         .await;
         Ok(status)
-    }
-
-    async fn restore_checked_live_entries_after_resume(
-        &self,
-        process: &TradingProcess,
-        execution: &EffectiveProcessExecutionConfig,
-    ) {
-        if !should_restore_checked_live_entries(process, execution) {
-            return;
-        }
-        if let Err(error) = self
-            .set_live_entries_enabled_locked(process.process_id, true, true)
-            .await
-        {
-            self.record_event(
-                process.process_id,
-                "warn",
-                "btc_live_entry_restore_failed",
-                "BTC live entries remained fail-closed because restart reconciliation failed",
-                serde_json::json!({
-                    "entries_enabled": false,
-                    "error": format!("{error:?}"),
-                }),
-            )
-            .await;
-        }
     }
 
     async fn ensure_start_slot_available(&self, process_id: uuid::Uuid) -> Result<(), HttpError> {
@@ -2091,6 +2056,14 @@ impl BtcProcessManager {
                 &strategy,
             )?;
             let live_process_venue = components.live_venue.clone();
+            if should_resume_configured_live_entries(&process, &execution) {
+                live_process_venue
+                    .as_ref()
+                    .context("configured live resume omitted its process venue")?
+                    .restore_configured_entries_after_restart()
+                    .await
+                    .context("failed to restore configured live authorization before resume")?;
+            }
             let process_runner = Arc::new(
                 BtcProcessRunner::new_with_execution(
                     self.repository.clone(),
@@ -2165,8 +2138,6 @@ impl BtcProcessManager {
             config_hash = %config_hash,
             "durable BTC realtime execution runtime resumed"
         );
-        self.restore_checked_live_entries_after_resume(&process, &execution)
-            .await;
         Ok(process)
     }
 
@@ -4153,7 +4124,7 @@ mod lifecycle_tests {
     }
 
     #[test]
-    fn durable_resume_restores_only_explicit_running_live_capital_authorization() {
+    fn durable_resume_uses_only_explicit_running_live_capital_authorization() {
         let mut process = eligible_btc_process();
         process.enabled = true;
         process.status = "running".to_string();
@@ -4162,13 +4133,13 @@ mod lifecycle_tests {
         configured.live_capital = true;
         configured.account_ref = Some("polymarket-primary".to_string());
         let execution = process.effective_execution();
-        assert!(should_restore_checked_live_entries(&process, &execution));
+        assert!(should_resume_configured_live_entries(&process, &execution));
 
         process.enabled = false;
-        assert!(!should_restore_checked_live_entries(&process, &execution));
+        assert!(!should_resume_configured_live_entries(&process, &execution));
         process.enabled = true;
         process.status = "stopping".to_string();
-        assert!(!should_restore_checked_live_entries(&process, &execution));
+        assert!(!should_resume_configured_live_entries(&process, &execution));
     }
 
     fn prepared_btc_definition_with_default_runtime() -> PreparedBtcStartDefinition {

@@ -32,6 +32,8 @@ WHERE process_id = $1
   AND status IN ('starting', 'running', 'stopping')
 "#;
 
+const LIVE_CUSTODY_REDEMPTION_PROOF_TYPE: &str = "polymarket_data_api_redeem";
+
 const RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL: &str = r#"
 INSERT INTO polymarket.trading_process_events (
   event_id, process_id, timestamp_utc, level, event_type, message, metadata, created_at
@@ -1805,6 +1807,7 @@ impl Store {
               WHERE settlement.process_id = $1
                 AND settlement.execution_mode = 'live'
                 AND settlement.credit_status = 'credited'
+                AND settlement.credit_evidence ->> 'proof_type' = $2
               GROUP BY settlement.token_id
             ), tokens AS (
               SELECT token_id FROM filled
@@ -1822,6 +1825,7 @@ impl Store {
             "#,
         )
         .bind(process_id)
+        .bind(LIVE_CUSTODY_REDEMPTION_PROOF_TYPE)
         .fetch_all(&self.pool)
         .await
         .context("failed to reconstruct live process position sizes")?;
@@ -1894,6 +1898,7 @@ impl Store {
                 ON process.process_id = settlement.process_id
               WHERE settlement.execution_mode = 'live'
                 AND settlement.credit_status = 'credited'
+                AND settlement.credit_evidence ->> 'proof_type' = $2
               GROUP BY settlement.token_id
             ), tokens AS (
               SELECT token_id FROM filled
@@ -1911,6 +1916,7 @@ impl Store {
             "#,
         )
         .bind(account_ref)
+        .bind(LIVE_CUSTODY_REDEMPTION_PROOF_TYPE)
         .fetch_all(&self.pool)
         .await
         .context("failed to reconstruct live account position sizes")?;

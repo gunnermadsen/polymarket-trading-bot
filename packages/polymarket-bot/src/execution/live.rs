@@ -301,6 +301,23 @@ impl LiveVenue {
         self.bound_account_ref.as_deref()
     }
 
+    pub async fn restore_configured_entries_after_restart(&self) -> Result<()> {
+        if self.bound_process_id.is_none() || !self.order_submission_enabled() {
+            bail!("restart authorization requires a configured live-capital process");
+        }
+
+        let _submit_guard = self.submit_guard.lock().await;
+        let mut state = self.readiness_state.lock().await;
+        let mut global = self.global_entry_gate.lock().await;
+        state.manual_entries_enabled = true;
+        state.manual_entries_reason = None;
+        if global.halted && global.reason == "global_enable_required" {
+            global.halted = false;
+            global.reason = "configured_resume_authorization".to_string();
+        }
+        Ok(())
+    }
+
     fn bound_execution(&self) -> Result<&EffectiveProcessExecutionConfig> {
         self.bound_execution
             .as_ref()
@@ -5005,6 +5022,30 @@ mod tests {
             status.reason.as_deref(),
             Some("live_global_halt:global_enable_required")
         );
+    }
+
+    #[tokio::test]
+    async fn configured_restart_authorization_does_not_bypass_reconciliation_readiness() {
+        let venue = LiveVenue::new_for_test(live_config())
+            .unwrap()
+            .bind_process(uuid::Uuid::new_v4(), &live_execution())
+            .unwrap();
+
+        venue
+            .restore_configured_entries_after_restart()
+            .await
+            .unwrap();
+
+        let status = venue.live_status().await.unwrap();
+        assert!(!status.entries_enabled);
+        assert!(!status.process_accounting_proven);
+        assert!(!status.idempotency_clean);
+        assert_eq!(
+            status.reason.as_deref(),
+            Some("live_process_accounting_not_proven:unproven")
+        );
+        assert!(venue.readiness_state.lock().await.manual_entries_enabled);
+        assert!(!venue.global_entry_gate.lock().await.halted);
     }
 
     #[tokio::test]
