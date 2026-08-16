@@ -3605,13 +3605,13 @@ fn private_clob_event_disposition(
 async fn apply_active_clob_frame(
     epoch: &mut ClobEpoch,
     frame: ClobIngressFrame,
-    ingress_queue_depth: usize,
     repository: &BtcRepository,
     writer: &mpsc::Sender<PersistItem>,
     state: &Arc<RwLock<RealtimeState>>,
     shared_books: &Arc<RwLock<BookRegistry>>,
     metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
 ) -> Result<ClobFrameAction> {
+    let ingress_queue_depth = epoch.transport.events.len();
     epoch.telemetry.record_ingress_frame(&frame, Instant::now());
     let ClobIngressFrame {
         message,
@@ -4835,11 +4835,9 @@ async fn run_clob_supervisor(
                     }
                     Some(ClobIngressEvent::Frame(frame)) => {
                         let epoch = active.as_mut().expect("active epoch remains installed");
-                        let ingress_queue_depth = epoch.transport.events.len();
                         match apply_active_clob_frame(
                             epoch,
                             frame,
-                            ingress_queue_depth,
                             &repository,
                             &writer,
                             &state,
@@ -11549,13 +11547,11 @@ mod tests {
         candidate.transport = start_clob_ingress(client);
         let (_shutdown_tx, mut shutdown) = watch::channel(false);
 
-        assert!(repair_delayed_clob_market(
-            &mut candidate,
-            &mut shutdown,
-            Duration::seconds(2),
-        )
-        .await
-        .unwrap());
+        assert!(
+            repair_delayed_clob_market(&mut candidate, &mut shutdown, Duration::seconds(2),)
+                .await
+                .unwrap()
+        );
         for expected_operation in ["unsubscribe", "subscribe"] {
             let message = timeout(StdDuration::from_secs(1), server.next())
                 .await
@@ -11568,9 +11564,7 @@ mod tests {
             let value: serde_json::Value = serde_json::from_str(payload.as_str()).unwrap();
             assert_eq!(value["operation"], expected_operation);
         }
-        assert!(!candidate
-            .registry
-            .market_books_bootstrapped(&current));
+        assert!(!candidate.registry.market_books_bootstrapped(&current));
         assert_eq!(candidate.connection_id, candidate.registry.connection_id());
         assert!(candidate.session.disconnect_reason.is_none());
     }

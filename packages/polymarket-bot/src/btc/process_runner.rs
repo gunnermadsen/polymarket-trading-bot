@@ -5368,8 +5368,7 @@ mod tests {
         let mut delayed = checkpoint.clone();
         delayed.source_timestamp = now - chrono::Duration::milliseconds(2_500);
         delayed.received_at = now;
-        let delayed_features =
-            book_features(BtcOutcome::Up, "up", Some(&delayed), now, dec!(5));
+        let delayed_features = book_features(BtcOutcome::Up, "up", Some(&delayed), now, dec!(5));
         assert_eq!(delayed_features.age_ms, Some(2_500));
 
         let mut empty = checkpoint;
