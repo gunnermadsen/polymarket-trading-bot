@@ -2492,7 +2492,7 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "polymarket-bot-runtime"
       },
-      "description": "Transport status of the shared Polymarket CLOB websocket, using the connected epoch and age of the most recent inbound frame. Source-to-receive lag shows delayed market evidence separately and does not disconnect the socket. Execution-ready orderbook state is evaluated separately by each trading process.",
+      "description": "Transport status of the shared Polymarket CLOB websocket, using the connected epoch and age of the most recent inbound frame. Book state and standby quarantine are shown separately because neither condition disconnects the active socket. Source-to-receive lag shows delayed market evidence separately and does not disconnect the socket.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2661,6 +2661,78 @@
                 "value": "No book frame"
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CLOB Book Unavailable Reason"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Books"
+              },
+              {
+                "id": "noValue",
+                "value": "Ready"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CLOB Successor Quarantine Reason"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Standby"
+              },
+              {
+                "id": "noValue",
+                "value": "Healthy"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CLOB Successor Quarantine Age"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Standby quarantine age"
+              },
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "noValue",
+                "value": "None"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "orange",
+                      "value": 5000
+                    },
+                    {
+                      "color": "red",
+                      "value": 30000
+                    }
+                  ]
+                }
+              }
+            ]
           }
         ]
       },
@@ -2705,6 +2777,21 @@
             {
               "selector": "shared_market_data.metrics.clob_active_last_source_to_receive_lag_milliseconds",
               "text": "CLOB Source-to-Receive Lag",
+              "type": "number"
+            },
+            {
+              "selector": "shared_market_data.metrics.clob_book_unavailable_reason",
+              "text": "CLOB Book Unavailable Reason",
+              "type": "string"
+            },
+            {
+              "selector": "shared_market_data.metrics.clob_successor_quarantine_reason",
+              "text": "CLOB Successor Quarantine Reason",
+              "type": "string"
+            },
+            {
+              "selector": "shared_market_data.metrics.clob_successor_quarantine_age_milliseconds",
+              "text": "CLOB Successor Quarantine Age",
               "type": "number"
             }
           ],
