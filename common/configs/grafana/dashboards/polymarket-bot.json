@@ -28,6 +28,178 @@
         "x": 0,
         "y": 0
       },
+      "id": 26,
+      "panels": [],
+      "title": "Global BTC Market",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana",
+        "uid": "grafana"
+      },
+      "description": "Global Chainlink BTC/USD 60-second TWAP path for only the active five-minute Polymarket window, with the first boundary TWAP shown as Price to Beat. The bounded current-market path is resent every second so a refreshed browser reconstructs the elapsed window and the completed market is replaced at rollover. This panel is independent of trading-process and PnL filters.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "BTC Price (USD)",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 4,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 3,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "twap_price"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Chainlink BTC/USD TWAP 60s"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "price_to_beat"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Price to Beat"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    6
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 13,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "id": 27,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "buffer": 300000,
+          "channel": "stream/polymarket/btc_market_path",
+          "datasource": {
+            "type": "grafana",
+            "uid": "grafana"
+          },
+          "filter": {
+            "fields": [
+              "time",
+              "twap_price",
+              "price_to_beat"
+            ]
+          },
+          "queryType": "measurements",
+          "refId": "A"
+        }
+      ],
+      "timeFrom": "5m",
+      "title": "BTC 5-Minute Realtime Market",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
       "id": 14,
       "panels": [],
       "title": "BTC 5-Minute Realtime Paper",
@@ -118,7 +290,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 1
+        "y": 15
       },
       "id": 3,
       "options": {
@@ -229,7 +401,7 @@
         "h": 13,
         "w": 19,
         "x": 5,
-        "y": 1
+        "y": 15
       },
       "id": 19,
       "options": {
@@ -1846,7 +2018,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 6
+        "y": 20
       },
       "id": 7,
       "options": {
@@ -1906,7 +2078,7 @@
             "steps": [
               {
                 "color": "text",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -1929,7 +2101,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 11
+        "y": 25
       },
       "id": 25,
       "options": {
@@ -1980,6 +2152,7 @@
           }
         }
       ],
+      "title": "Trading Entry Status",
       "transformations": [
         {
           "id": "rowsToFields",
@@ -1997,113 +2170,6 @@
           }
         }
       ],
-      "title": "Trading Entry Status",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgres"
-      },
-      "description": "Aggregate fresh unrealized PnL for the current PnL scope, using only current scheduled-market entries. All processes sums across processes. When entries exist but no bid is fresh within two seconds, PnL displays No fresh mark instead of $0.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 2,
-          "mappings": [],
-          "noValue": "No fresh mark",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "currencyUSD"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Current Market Entry Orders"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "none"
-              },
-              {
-                "id": "decimals",
-                "value": 0
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 5,
-        "x": 0,
-        "y": 16
-      },
-      "id": 4,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "last"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgres"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "WITH clock AS MATERIALIZED (\n  SELECT now() AS at\n), selected_process AS MATERIALIZED (\n  SELECT p.process_id\n  FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m'\n    AND p.process_scope='realtime_paper'\n  AND p.status <> 'completed'\n), current_entries AS MATERIALIZED (\n  SELECT\n    o.process_id,\n    o.order_id,\n    o.token_id,\n    SUM(f.size)::numeric AS filled_size,\n    SUM(f.price * f.size)::numeric AS entry_cost,\n    SUM(f.fee)::numeric AS entry_fees\n  FROM selected_process p\n  JOIN polymarket.orders o USING (process_id)\n  JOIN polymarket.fills f\n    ON f.order_id = o.order_id\n   AND f.process_id = o.process_id\n   AND f.source IN ('paper','live')\n  JOIN polymarket.btc_interval_markets m ON m.market_id = o.market_id\n  CROSS JOIN clock c\n  WHERE m.window_start <= c.at\n    AND m.window_end > c.at\n    AND m.official_resolution_received_at IS NULL\n  GROUP BY o.process_id, o.order_id, o.token_id\n), marked AS MATERIALIZED (\n  SELECT e.*, mark.best_bid\n  FROM current_entries e\n  CROSS JOIN clock c\n  LEFT JOIN LATERAL (\n    SELECT checkpoint.best_bid\n    FROM polymarket.orderbook_checkpoints checkpoint\n    WHERE checkpoint.token_id = e.token_id\n      AND checkpoint.integrity_status = 'ok'\n      AND checkpoint.best_bid IS NOT NULL\n      AND checkpoint.source_timestamp BETWEEN c.at - interval '2 seconds' AND c.at + interval '1 second'\n      AND checkpoint.received_at BETWEEN c.at - interval '2 seconds' AND c.at\n    ORDER BY checkpoint.source_timestamp DESC, checkpoint.received_at DESC, checkpoint.ingest_sequence DESC\n    LIMIT 1\n  ) mark ON true\n)\nSELECT\n  CASE\n    WHEN COUNT(*) = 0 THEN 0::numeric\n    WHEN COUNT(best_bid) = 0 THEN NULL::numeric\n    ELSE SUM(filled_size * best_bid - entry_cost - entry_fees)\n      FILTER (WHERE best_bid IS NOT NULL)\n  END::double precision AS \"Current Fresh Unrealized PnL\",\n  COUNT(*) AS \"Current Market Entry Orders\"\nFROM marked;",
-          "refId": "A",
-          "sql": {
-            "columns": [
-              {
-                "parameters": [],
-                "type": "function"
-              }
-            ],
-            "groupBy": [
-              {
-                "property": {
-                  "type": "string"
-                },
-                "type": "groupBy"
-              }
-            ],
-            "limit": 50
-          }
-        }
-      ],
-      "title": "Current Fresh Unrealized PnL",
       "type": "stat"
     },
     {
@@ -2174,7 +2240,7 @@
         "h": 13,
         "w": 19,
         "x": 5,
-        "y": 19
+        "y": 28
       },
       "id": 1,
       "options": {
@@ -2231,6 +2297,112 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgres"
       },
+      "description": "Aggregate fresh unrealized PnL for the current PnL scope, using only current scheduled-market entries. All processes sums across processes. When entries exist but no bid is fresh within two seconds, PnL displays No fresh mark instead of $0.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "noValue": "No fresh mark",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Current Market Entry Orders"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 5,
+        "x": 0,
+        "y": 30
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH clock AS MATERIALIZED (\n  SELECT now() AS at\n), selected_process AS MATERIALIZED (\n  SELECT p.process_id\n  FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m'\n    AND p.process_scope='realtime_paper'\n  AND p.status <> 'completed'\n), current_entries AS MATERIALIZED (\n  SELECT\n    o.process_id,\n    o.order_id,\n    o.token_id,\n    SUM(f.size)::numeric AS filled_size,\n    SUM(f.price * f.size)::numeric AS entry_cost,\n    SUM(f.fee)::numeric AS entry_fees\n  FROM selected_process p\n  JOIN polymarket.orders o USING (process_id)\n  JOIN polymarket.fills f\n    ON f.order_id = o.order_id\n   AND f.process_id = o.process_id\n   AND f.source IN ('paper','live')\n  JOIN polymarket.btc_interval_markets m ON m.market_id = o.market_id\n  CROSS JOIN clock c\n  WHERE m.window_start <= c.at\n    AND m.window_end > c.at\n    AND m.official_resolution_received_at IS NULL\n  GROUP BY o.process_id, o.order_id, o.token_id\n), marked AS MATERIALIZED (\n  SELECT e.*, mark.best_bid\n  FROM current_entries e\n  CROSS JOIN clock c\n  LEFT JOIN LATERAL (\n    SELECT checkpoint.best_bid\n    FROM polymarket.orderbook_checkpoints checkpoint\n    WHERE checkpoint.token_id = e.token_id\n      AND checkpoint.integrity_status = 'ok'\n      AND checkpoint.best_bid IS NOT NULL\n      AND checkpoint.source_timestamp BETWEEN c.at - interval '2 seconds' AND c.at + interval '1 second'\n      AND checkpoint.received_at BETWEEN c.at - interval '2 seconds' AND c.at\n    ORDER BY checkpoint.source_timestamp DESC, checkpoint.received_at DESC, checkpoint.ingest_sequence DESC\n    LIMIT 1\n  ) mark ON true\n)\nSELECT\n  CASE\n    WHEN COUNT(*) = 0 THEN 0::numeric\n    WHEN COUNT(best_bid) = 0 THEN NULL::numeric\n    ELSE SUM(filled_size * best_bid - entry_cost - entry_fees)\n      FILTER (WHERE best_bid IS NOT NULL)\n  END::double precision AS \"Current Fresh Unrealized PnL\",\n  COUNT(*) AS \"Current Market Entry Orders\"\nFROM marked;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Current Fresh Unrealized PnL",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
       "description": "Aggregate lifetime net realized PnL for the current PnL scope. All processes sums across processes; processes without resolved fills contribute zero. Values use process-owned paper fills and official outcomes.",
       "fieldConfig": {
         "defaults": {
@@ -2260,7 +2432,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 21
+        "y": 35
       },
       "id": 5,
       "options": {
@@ -2319,7 +2491,7 @@
         "type": "yesoreyeram-infinity-datasource",
         "uid": "polymarket-bot-runtime"
       },
-  "description": "Transport status of the shared Polymarket CLOB websocket, using the connected epoch and age of the most recent inbound frame. Source-to-receive lag shows delayed market evidence separately and does not disconnect the socket. Execution-ready orderbook state is evaluated separately by each trading process.",
+      "description": "Transport status of the shared Polymarket CLOB websocket, using the connected epoch and age of the most recent inbound frame. Source-to-receive lag shows delayed market evidence separately and does not disconnect the socket. Execution-ready orderbook state is evaluated separately by each trading process.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2358,28 +2530,28 @@
                 "id": "mappings",
                 "value": [
                   {
-                    "type": "range",
                     "options": {
                       "from": 0,
-                      "to": 0,
                       "result": {
                         "color": "red",
                         "index": 0,
                         "text": "Disconnected"
-                      }
-                    }
+                      },
+                      "to": 0
+                    },
+                    "type": "range"
                   },
                   {
-                    "type": "range",
                     "options": {
                       "from": 1,
-                      "to": 2147483647,
                       "result": {
                         "color": "green",
                         "index": 1,
                         "text": "Connected"
-                      }
-                    }
+                      },
+                      "to": 2147483647
+                    },
+                    "type": "range"
                   }
                 ]
               },
@@ -2492,10 +2664,10 @@
         ]
       },
       "gridPos": {
-        "h": 4,
+        "h": 5,
         "w": 5,
         "x": 0,
-        "y": 26
+        "y": 40
       },
       "id": 21,
       "options": {
@@ -2518,228 +2690,44 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "refId": "A",
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "polymarket-bot-runtime"
-          },
-          "type": "json",
-          "source": "url",
-          "format": "table",
-      "parser": "backend",
-      "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
-      "url_options": {
-        "method": "GET",
-        "data": ""
-      },
-      "root_selector": "",
           "columns": [
             {
-          "selector": "shared_market_data.metrics.clob_connected_connection_epoch",
-          "text": "CLOB Socket Connection Epoch",
-          "type": "number"
+              "selector": "shared_market_data.metrics.clob_connected_connection_epoch",
+              "text": "CLOB Socket Connection Epoch",
+              "type": "number"
             },
             {
-          "selector": "shared_market_data.metrics.clob_active_last_inbound_frame_age_milliseconds",
-          "text": "CLOB Last Inbound Frame Age",
-          "type": "number"
+              "selector": "shared_market_data.metrics.clob_active_last_inbound_frame_age_milliseconds",
+              "text": "CLOB Last Inbound Frame Age",
+              "type": "number"
             },
             {
-          "selector": "shared_market_data.metrics.clob_active_last_source_to_receive_lag_milliseconds",
-          "text": "CLOB Source-to-Receive Lag",
-          "type": "number"
-            }
-          ],
-          "json_options": {
-            "root_is_not_array": true
-          }
-        }
-      ],
-  "title": "CLOB Socket Health",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "polymarket-bot-runtime"
-      },
-      "description": "Most recent correlated ping/pong round-trip time for the Polymarket CLOB websocket. Ordinary inbound market-data frames also prove socket liveness, so a missing value does not mean the socket is disconnected.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "noValue": "No correlated PONG sample",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "orange",
-                "value": 500
-              },
-              {
-                "color": "red",
-                "value": 1000
-              }
-            ]
-          },
-          "unit": "ms"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 5,
-        "x": 0,
-        "y": 30
-      },
-      "id": 22,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "polymarket-bot-runtime"
-          },
-          "type": "json",
-          "source": "url",
-          "format": "table",
-      "parser": "backend",
-      "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
-      "url_options": {
-        "method": "GET",
-        "data": ""
-      },
-      "root_selector": "",
-          "columns": [
-            {
-              "selector": "shared_market_data.metrics.clob_active_last_pong_round_trip_milliseconds",
-              "text": "CLOB Pong RTT",
+              "selector": "shared_market_data.metrics.clob_active_last_source_to_receive_lag_milliseconds",
+              "text": "CLOB Source-to-Receive Lag",
               "type": "number"
             }
           ],
-          "json_options": {
-            "root_is_not_array": true
-          }
-        }
-      ],
-      "title": "CLOB Pong RTT",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "polymarket-bot-runtime"
-      },
-      "description": "Current consecutive CLOB websocket connection failures. Zero is normal; a non-zero value indicates the active connection/recovery cycle is failing repeatedly.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "noValue": "Unavailable",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "orange",
-                "value": 1
-              },
-              {
-                "color": "red",
-                "value": 3
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 5,
-        "x": 0,
-        "y": 34
-      },
-      "id": 23,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "refId": "A",
           "datasource": {
             "type": "yesoreyeram-infinity-datasource",
             "uid": "polymarket-bot-runtime"
           },
-          "type": "json",
-          "source": "url",
           "format": "table",
-      "parser": "backend",
-      "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
-      "url_options": {
-        "method": "GET",
-        "data": ""
-      },
-      "root_selector": "",
-          "columns": [
-            {
-              "selector": "shared_market_data.metrics.clob_consecutive_failures",
-              "text": "CLOB Consecutive Failures",
-              "type": "number"
-            }
-          ],
           "json_options": {
             "root_is_not_array": true
+          },
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
+          "url_options": {
+            "data": "",
+            "method": "GET"
           }
         }
       ],
-      "title": "CLOB Consecutive Failures",
+      "title": "CLOB Socket Health",
       "type": "stat"
     },
     {
@@ -2962,7 +2950,7 @@
         "h": 8,
         "w": 19,
         "x": 5,
-        "y": 32
+        "y": 41
       },
       "id": 2,
       "options": {
@@ -3008,6 +2996,190 @@
       ],
       "title": "Process PnL, Runtime, and Settlement Status",
       "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "polymarket-bot-runtime"
+      },
+      "description": "Current consecutive CLOB websocket connection failures. Zero is normal; a non-zero value indicates the active connection/recovery cycle is failing repeatedly.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "noValue": "Unavailable",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 0,
+        "y": 45
+      },
+      "id": 23,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "shared_market_data.metrics.clob_consecutive_failures",
+              "text": "CLOB Consecutive Failures",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "polymarket-bot-runtime"
+          },
+          "format": "table",
+          "json_options": {
+            "root_is_not_array": true
+          },
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
+          "url_options": {
+            "data": "",
+            "method": "GET"
+          }
+        }
+      ],
+      "title": "CLOB Consecutive Failures",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "polymarket-bot-runtime"
+      },
+      "description": "Most recent correlated ping/pong round-trip time for the Polymarket CLOB websocket. Ordinary inbound market-data frames also prove socket liveness, so a missing value does not mean the socket is disconnected.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "noValue": "No correlated PONG sample",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "orange",
+                "value": 500
+              },
+              {
+                "color": "red",
+                "value": 1000
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 2,
+        "x": 3,
+        "y": 45
+      },
+      "id": 22,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "columns": [
+            {
+              "selector": "shared_market_data.metrics.clob_active_last_pong_round_trip_milliseconds",
+              "text": "CLOB Pong RTT",
+              "type": "number"
+            }
+          ],
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "polymarket-bot-runtime"
+          },
+          "format": "table",
+          "json_options": {
+            "root_is_not_array": true
+          },
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "",
+          "source": "url",
+          "type": "json",
+          "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
+          "url_options": {
+            "data": "",
+            "method": "GET"
+          }
+        }
+      ],
+      "title": "CLOB Pong RTT",
+      "type": "stat"
     },
     {
       "datasource": {
@@ -3064,7 +3236,7 @@
         "h": 13,
         "w": 24,
         "x": 0,
-        "y": 40
+        "y": 49
       },
       "id": 24,
       "options": {
@@ -3179,7 +3351,7 @@
         "h": 15,
         "w": 24,
         "x": 0,
-        "y": 53
+        "y": 62
       },
       "id": 20,
       "options": {
@@ -3237,176 +3409,6 @@
       ],
       "title": "Lifetime Net Realized PnL by Trading Process",
       "type": "barchart"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 68
-      },
-      "id": 26,
-      "panels": [],
-      "title": "Global BTC Market",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "grafana",
-        "uid": "grafana"
-      },
-      "description": "Global Chainlink BTC/USD 60-second TWAP path for only the active five-minute Polymarket window, with the first boundary TWAP shown as Price to Beat. The bounded current-market path is resent every second so a refreshed browser reconstructs the elapsed window and the completed market is replaced at rollover. This panel is independent of trading-process and PnL filters.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "BTC Price (USD)",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 4,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 3,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "decimals": 2,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "currencyUSD"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "twap_price"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Chainlink BTC/USD TWAP 60s"
-              },
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "blue",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "price_to_beat"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Price to Beat"
-              },
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "orange",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "dash": [
-                    10,
-                    6
-                  ],
-                  "fill": "dash"
-                }
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 0
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 13,
-        "w": 24,
-        "x": 0,
-        "y": 69
-      },
-      "id": 27,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "buffer": 300000,
-          "channel": "stream/polymarket/btc_market_path",
-          "datasource": {
-            "type": "grafana",
-            "uid": "grafana"
-          },
-          "filter": {
-            "fields": [
-              "time",
-              "twap_price",
-              "price_to_beat"
-            ]
-          },
-          "queryType": "measurements",
-          "refId": "A"
-        }
-      ],
-      "timeFrom": "5m",
-      "title": "BTC 5-Minute Realtime Market",
-      "type": "timeseries"
     }
   ],
   "preload": false,
@@ -3473,6 +3475,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 136,
+  "version": 169,
   "weekStart": ""
 }
