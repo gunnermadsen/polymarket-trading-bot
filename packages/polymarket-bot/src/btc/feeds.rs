@@ -777,15 +777,23 @@ impl BookRegistry {
         self.connection_id = connection_id;
         self.next_sequence = 1;
         for book in self.books.values_mut() {
-            book.bids.clear();
-            book.asks.clear();
-            book.bootstrapped = false;
-            book.integrity_status = FeedIntegrityStatus::PreSnapshot;
-            book.source_timestamp = None;
-            book.received_at = None;
-            book.source_hash = None;
-            book.ingest_sequence = 0;
+            reset_book_for_snapshot(book);
         }
+    }
+
+    /// Clears only one registered outcome pair so a same-socket resubscription can replace
+    /// quarantined levels with authoritative snapshots. Registry ownership and connection epoch
+    /// remain unchanged.
+    pub(crate) fn reset_market_for_snapshot(&mut self, market: &BtcIntervalMarket) -> Result<()> {
+        self.validate_market_registration(market)?;
+        for token_id in [&market.up_token_id, &market.down_token_id] {
+            let book = self
+                .books
+                .get_mut(token_id)
+                .with_context(|| format!("registered market is missing token {token_id}"))?;
+            reset_book_for_snapshot(book);
+        }
+        Ok(())
     }
 
     /// Fail every bootstrapped book closed after a message-level CLOB decode failure. A later
@@ -1194,6 +1202,17 @@ impl BookRegistry {
         self.next_sequence = self.next_sequence.saturating_add(1);
         sequence
     }
+}
+
+fn reset_book_for_snapshot(book: &mut FeedBook) {
+    book.bids.clear();
+    book.asks.clear();
+    book.bootstrapped = false;
+    book.integrity_status = FeedIntegrityStatus::PreSnapshot;
+    book.source_timestamp = None;
+    book.received_at = None;
+    book.source_hash = None;
+    book.ingest_sequence = 0;
 }
 
 impl RealtimeState {
