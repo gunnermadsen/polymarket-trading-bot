@@ -11030,7 +11030,7 @@ mod tests {
     }
 
     #[test]
-    fn one_sided_snapshot_pair_satisfies_bootstrap_only() {
+    fn one_sided_snapshot_pair_is_structurally_ready_without_reconnecting() {
         let current = market();
         let checked_at = current.window_start + Duration::minutes(1);
         let now = Instant::now();
@@ -11085,9 +11085,16 @@ mod tests {
                 assert_eq!(watchdog.bootstrap_deadline, Some(initial_deadline));
             }
         }
+        let readiness_checked_at = checked_at + Duration::milliseconds(2);
         assert!(registry.market_books_bootstrapped(&current));
-        assert!(!registry.market_books_structurally_ready(&current));
-        assert!(!registry.market_books_ready(&current, checked_at, Duration::seconds(2)));
+        assert!(registry.market_books_structurally_ready(&current));
+        assert!(registry.market_books_ready(&current, readiness_checked_at, Duration::seconds(2)));
+        assert!(clob_epoch_ready(
+            &registry,
+            std::slice::from_ref(&current),
+            readiness_checked_at,
+            Duration::seconds(2),
+        ));
         assert_eq!(watchdog.bootstrap_deadline, None);
 
         let mut replacement = current.clone();

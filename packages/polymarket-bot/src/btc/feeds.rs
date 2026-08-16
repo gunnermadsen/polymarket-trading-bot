@@ -1105,8 +1105,6 @@ impl BookRegistry {
                     && book.outcome == outcome
                     && book.bootstrapped
                     && book.integrity_status == FeedIntegrityStatus::Ok
-                    && book.best_bid().is_some()
-                    && book.best_ask().is_some()
                     && book.source_timestamp.is_some()
                     && book.received_at.is_some()
             })
@@ -1132,8 +1130,6 @@ impl BookRegistry {
                     && book.outcome == outcome
                     && book.bootstrapped
                     && book.integrity_status == FeedIntegrityStatus::Ok
-                    && book.best_bid().is_some()
-                    && book.best_ask().is_some()
                     && book
                         .source_timestamp
                         .is_some_and(|timestamp| timestamp - now <= max_age)
@@ -1296,9 +1292,6 @@ impl RealtimeState {
                 }
                 Some(book) if book.integrity_status != FeedIntegrityStatus::Ok => {
                     reasons.push(format!("book_integrity:{token_id}"))
-                }
-                Some(book) if book.best_bid.is_none() || book.best_ask.is_none() => {
-                    reasons.push(format!("book_has_no_two_sided_quote:{token_id}"))
                 }
                 Some(book)
                     if book
