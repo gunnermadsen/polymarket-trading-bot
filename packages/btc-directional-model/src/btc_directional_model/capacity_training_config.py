@@ -77,21 +77,15 @@ def load_capacity_training_config(path: Path) -> CapacityTrainingConfig:
         execution=CapacityExecution(
             quantities=tuple(int(value) for value in execution["quantities"]),
             freshness_seconds=int(execution["freshness_seconds"]),
-            maximum_depth_participation=float(
-                execution["maximum_depth_participation"]
-            ),
-            execution_reserve_per_share=float(
-                execution["execution_reserve_per_share"]
-            ),
+            maximum_depth_participation=float(execution["maximum_depth_participation"]),
+            execution_reserve_per_share=float(execution["execution_reserve_per_share"]),
             confidence_threshold=float(execution["confidence_threshold"]),
         ),
         gates=CapacityGates(
             minimum_training_rows=int(gates["minimum_training_rows"]),
             minimum_policy_trades=int(gates["minimum_policy_trades"]),
             minimum_profit_factor=float(gates["minimum_profit_factor"]),
-            minimum_stress_expectancy_per_trade=float(
-                gates["minimum_stress_expectancy_per_trade"]
-            ),
+            minimum_stress_expectancy_per_trade=float(gates["minimum_stress_expectancy_per_trade"]),
             minimum_improving_folds=int(gates["minimum_improving_folds"]),
         ),
         evidence=_path(package_root, paths["evidence"]),
@@ -103,9 +97,7 @@ def load_capacity_training_config(path: Path) -> CapacityTrainingConfig:
                 process_id=uuid.UUID(str(lineage["process_id"])),
                 model=_path(package_root, lineage["model"]),
                 manifest=_path(package_root, lineage["manifest"]),
-                features=tuple(
-                    _path(package_root, value) for value in lineage["features"]
-                ),
+                features=tuple(_path(package_root, value) for value in lineage["features"]),
             )
             for lineage in raw["lineages"]
         ),
@@ -125,8 +117,22 @@ def _validate(config: CapacityTrainingConfig) -> None:
         raise ValueError("capacity training windows must be UTC")
     if list(ordered) != sorted(ordered) or len(set(ordered)) != len(ordered):
         raise ValueError("capacity training windows must be strictly chronological")
-    if config.execution.quantities != (10, 15, 20):
-        raise ValueError("capacity training is fixed to VWAP 10/15/20")
+    if config.execution.quantities != (
+        10,
+        15,
+        20,
+        25,
+        30,
+        40,
+        50,
+        75,
+        100,
+        125,
+        150,
+        175,
+        200,
+    ):
+        raise ValueError("capacity training is fixed to the exact VWAP 10-200 suite")
     if config.execution.freshness_seconds <= 0:
         raise ValueError("capacity freshness must be positive")
     if config.execution.maximum_depth_participation != 0.25:
@@ -142,8 +148,7 @@ def _validate(config: CapacityTrainingConfig) -> None:
     if sum(lineage.hypothesis == "asymmetric_value" for lineage in config.lineages) != 1:
         raise ValueError("capacity training requires one asymmetric-value lineage")
     if any(
-        lineage.hypothesis not in {"directional", "asymmetric_value"}
-        for lineage in config.lineages
+        lineage.hypothesis not in {"directional", "asymmetric_value"} for lineage in config.lineages
     ):
         raise ValueError("unsupported capacity hypothesis")
     names = [lineage.name for lineage in config.lineages]

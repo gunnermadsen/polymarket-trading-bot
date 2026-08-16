@@ -1,4 +1,4 @@
-"""Exact-size retraining of frozen BTC model lineages at VWAP 10/15/20."""
+"""Exact-size retraining of frozen BTC model lineages at VWAP 10 through 200."""
 
 from __future__ import annotations
 
@@ -29,8 +29,9 @@ from .core_extract import (
 )
 from .runtime_export import score_runtime_model
 
-SCHEMA_VERSION = "btc-vwap-capacity-training-v1"
-EVIDENCE_SCHEMA_VERSION = "btc-vwap-capacity-evidence-v1"
+SCHEMA_VERSION = "btc-vwap-capacity-training-v2"
+EVIDENCE_SCHEMA_VERSION = "btc-vwap-capacity-evidence-v2"
+MATERIALIZED_VWAP_QUANTITIES = (5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175, 200)
 
 EVIDENCE_SCHEMA = pa.schema(
     [
@@ -46,21 +47,18 @@ EVIDENCE_SCHEMA = pa.schema(
         pa.field("up_provider_received_at", pa.timestamp("us", tz="UTC")),
         pa.field("up_best_ask", pa.float64()),
         pa.field("up_ask_depth", pa.float64()),
-        pa.field("up_ask_vwap_5", pa.float64()),
-        pa.field("up_ask_vwap_10", pa.float64()),
-        pa.field("up_ask_vwap_15", pa.float64()),
-        pa.field("up_ask_vwap_20", pa.float64()),
+        *(
+            pa.field(f"up_ask_vwap_{quantity}", pa.float64())
+            for quantity in MATERIALIZED_VWAP_QUANTITIES
+        ),
         pa.field("down_provider_received_at", pa.timestamp("us", tz="UTC")),
         pa.field("down_best_ask", pa.float64()),
         pa.field("down_ask_depth", pa.float64()),
-        pa.field("down_ask_vwap_5", pa.float64()),
-        pa.field("down_ask_vwap_10", pa.float64()),
-        pa.field("down_ask_vwap_15", pa.float64()),
-        pa.field("down_ask_vwap_20", pa.float64()),
+        *(
+            pa.field(f"down_ask_vwap_{quantity}", pa.float64())
+            for quantity in MATERIALIZED_VWAP_QUANTITIES
+        ),
         pa.field("quality_flags", pa.int32(), nullable=False),
-        pa.field("strict_both_side_eligible_10", pa.bool_(), nullable=False),
-        pa.field("strict_both_side_eligible_15", pa.bool_(), nullable=False),
-        pa.field("strict_both_side_eligible_20", pa.bool_(), nullable=False),
     ]
 )
 
@@ -112,9 +110,7 @@ def extract_capacity_evidence(
                     freshness_seconds=config.execution.freshness_seconds,
                 )
                 sha256 = file_sha256(destination)
-            partitions.append(
-                {"path": destination.name, "rows": rows, "sha256": sha256}
-            )
+            partitions.append({"path": destination.name, "rows": rows, "sha256": sha256})
             start = end
     finally:
         connection.close()
@@ -122,7 +118,7 @@ def extract_capacity_evidence(
         **contract,
         "created_at": datetime.now(UTC).isoformat(),
         "source_table": "polymarket.btc_market_capacity_execution_snapshots",
-        "source_provider": "pmxt_v2_capacity_execution_snapshots",
+        "source_provider": "pmxt_v2_capacity_execution_snapshots_v2",
         "immutable_completed_artifacts_only": True,
         "partitions": partitions,
         "rows": sum(item["rows"] for item in partitions),
@@ -131,9 +127,7 @@ def extract_capacity_evidence(
     return manifest
 
 
-def _require_complete_capacity_coverage(
-    connection: Any, config: CapacityTrainingConfig
-) -> None:
+def _require_complete_capacity_coverage(connection: Any, config: CapacityTrainingConfig) -> None:
     with connection.cursor() as cursor:
         cursor.execute(
             """
@@ -147,7 +141,7 @@ def _require_complete_capacity_coverage(
             ), completed AS MATERIALIZED (
               SELECT minimum_source_timestamp AS hour
               FROM polymarket.backfill_artifacts
-              WHERE provider = 'pmxt_v2_capacity_execution_snapshots'
+              WHERE provider = 'pmxt_v2_capacity_execution_snapshots_v2'
                 AND status = 'completed'
                 AND minimum_source_timestamp >= %(range_start)s
                 AND minimum_source_timestamp < %(range_end)s
@@ -174,7 +168,7 @@ def _require_complete_capacity_coverage(
 def run_capacity_training(
     config: CapacityTrainingConfig, *, force: bool = False
 ) -> tuple[Path, dict[str, Any]]:
-    """Extract exact execution evidence and fit 12 size-aware child calibrators."""
+    """Extract exact execution evidence and fit the configured size-aware calibrators."""
 
     evidence_manifest = extract_capacity_evidence(config, force=force)
     if evidence_manifest["rows"] == 0:
@@ -187,20 +181,14 @@ def run_capacity_training(
     for lineage in config.lineages:
         missing_features = [path for path in lineage.features if not path.is_file()]
         if missing_features:
-            raise RuntimeError(
-                f"{lineage.name} feature cache is missing: {missing_features[0]}"
-            )
+            raise RuntimeError(f"{lineage.name} feature cache is missing: {missing_features[0]}")
         model, identity = _load_lineage(lineage)
         feature_names = tuple(model["features"]["names"])
         feature_schema = pl.scan_parquet(lineage.features).collect_schema()
-        selected_feature_names = tuple(
-            name for name in feature_names if name in feature_schema
-        )
+        selected_feature_names = tuple(name for name in feature_names if name in feature_schema)
         missing_model_features = set(feature_names) - set(selected_feature_names)
         if lineage.hypothesis == "directional" and missing_model_features:
-            raise RuntimeError(
-                f"{lineage.name} feature cache does not satisfy its runtime schema"
-            )
+            raise RuntimeError(f"{lineage.name} feature cache does not satisfy its runtime schema")
         features = (
             pl.read_parquet(lineage.features)
             .filter(
@@ -266,9 +254,10 @@ def _extract_partition(
     writer: pq.ParquetWriter | None = None
     count = 0
     try:
-        with connection.transaction(), connection.cursor(
-            name=f"btc_capacity_{batch_start:%Y%m%d}"
-        ) as cursor:
+        with (
+            connection.transaction(),
+            connection.cursor(name=f"btc_capacity_{batch_start:%Y%m%d}") as cursor,
+        ):
             cursor.execute(
                 query,
                 {
@@ -280,9 +269,7 @@ def _extract_partition(
             while rows := cursor.fetchmany(10_000):
                 records = [dict(zip(EVIDENCE_SCHEMA.names, row, strict=True)) for row in rows]
                 table = pa.Table.from_pylist(records, schema=EVIDENCE_SCHEMA)
-                writer = writer or pq.ParquetWriter(
-                    temporary, EVIDENCE_SCHEMA, compression="zstd"
-                )
+                writer = writer or pq.ParquetWriter(temporary, EVIDENCE_SCHEMA, compression="zstd")
                 writer.write_table(table)
                 count += len(rows)
     finally:
@@ -294,9 +281,7 @@ def _extract_partition(
     return count
 
 
-def _load_evidence(
-    config: CapacityTrainingConfig, manifest: dict[str, Any]
-) -> pl.DataFrame:
+def _load_evidence(config: CapacityTrainingConfig, manifest: dict[str, Any]) -> pl.DataFrame:
     paths = []
     for item in manifest["partitions"]:
         path = config.evidence / item["path"]
@@ -307,7 +292,40 @@ def _load_evidence(
     duplicates = frame.group_by("market_id", "observed_at").len().filter(pl.col("len") != 1)
     if duplicates.height:
         raise RuntimeError("capacity evidence contains duplicate decision points")
-    return frame
+    clean_book = (pl.col("quality_flags") & 63) == 0
+    causal_fresh = (
+        pl.col("up_provider_received_at").is_not_null()
+        & pl.col("down_provider_received_at").is_not_null()
+        & (pl.col("up_provider_received_at") <= pl.col("observed_at"))
+        & (pl.col("down_provider_received_at") <= pl.col("observed_at"))
+        & (
+            pl.col("up_provider_received_at")
+            >= pl.col("observed_at") - pl.duration(seconds=config.execution.freshness_seconds)
+        )
+        & (
+            pl.col("down_provider_received_at")
+            >= pl.col("observed_at") - pl.duration(seconds=config.execution.freshness_seconds)
+        )
+    )
+    return frame.with_columns(
+        *(
+            (
+                clean_book
+                & causal_fresh
+                & pl.col(f"up_ask_vwap_{quantity}").is_not_null()
+                & pl.col(f"down_ask_vwap_{quantity}").is_not_null()
+                & (
+                    pl.col("up_ask_depth")
+                    >= quantity / config.execution.maximum_depth_participation
+                )
+                & (
+                    pl.col("down_ask_depth")
+                    >= quantity / config.execution.maximum_depth_participation
+                )
+            ).alias(f"strict_both_side_eligible_{quantity}")
+            for quantity in config.execution.quantities
+        )
+    )
 
 
 def _load_lineage(lineage: CapacityLineage) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -326,8 +344,7 @@ def _load_lineage(lineage: CapacityLineage) -> tuple[dict[str, Any], dict[str, A
         "manifest_sha256": file_sha256(lineage.manifest),
         "feature_schema_sha256": model["features"]["schema_sha256"],
         "feature_files": [
-            {"path": str(path), "sha256": file_sha256(path)}
-            for path in lineage.features
+            {"path": str(path), "sha256": file_sha256(path)} for path in lineage.features
         ],
         "source_process_id": str(lineage.process_id),
     }
@@ -368,9 +385,7 @@ def _train_directional(
     )
     control = policy.with_columns(pl.lit(True).alias("policy_selected"))
     folds = _directional_folds(config, frame, quantity)
-    result = _result(
-        config, lineage, identity, quantity, training, control, candidate, folds
-    )
+    result = _result(config, lineage, identity, quantity, training, control, candidate, folds)
     artifact = {
         "schema_version": "btc-vwap-capacity-calibrator-v1",
         **identity,
@@ -424,9 +439,7 @@ def _train_asymmetric(
     candidate = _select_asymmetric(policy, probability, quantity)
     control = _select_asymmetric(policy, policy["parent_probability_up"].to_numpy(), quantity)
     folds = _asymmetric_folds(config, frame, quantity)
-    result = _result(
-        config, lineage, identity, quantity, training, control, candidate, folds
-    )
+    result = _result(config, lineage, identity, quantity, training, control, candidate, folds)
     artifact = {
         "schema_version": "btc-vwap-capacity-calibrator-v1",
         **identity,
@@ -471,9 +484,7 @@ def _directional_first_crossings(frame: pl.DataFrame, model: dict[str, Any]) -> 
     return pl.DataFrame(records)
 
 
-def _join_execution(
-    decisions: pl.DataFrame, evidence: pl.DataFrame, quantity: int
-) -> pl.DataFrame:
+def _join_execution(decisions: pl.DataFrame, evidence: pl.DataFrame, quantity: int) -> pl.DataFrame:
     eligible = f"strict_both_side_eligible_{quantity}"
     joined = decisions.join(
         evidence.filter(pl.col(eligible)),
@@ -492,9 +503,7 @@ def _join_execution(
         .alias("selected_ask_vwap_5"),
         (pl.col("selected_up") == pl.col("label_up").cast(pl.Boolean)).alias("correct"),
     ).with_columns(
-        (pl.col("selected_ask_vwap") - pl.col("selected_ask_vwap_5")).alias(
-            "vwap_size_minus_vwap5"
-        )
+        (pl.col("selected_ask_vwap") - pl.col("selected_ask_vwap_5")).alias("vwap_size_minus_vwap5")
     )
 
 
@@ -516,9 +525,7 @@ def _join_asymmetric_rows(
     joined = _attach_asymmetric_book_features(joined, quantity, reserve)
     missing = sorted(set(frozen.feature_names) - set(joined.columns))
     if missing:
-        raise RuntimeError(
-            "asymmetric capacity feature frame is missing: " + ", ".join(missing)
-        )
+        raise RuntimeError("asymmetric capacity feature frame is missing: " + ", ".join(missing))
     predictions = []
     raw_logits = []
     matrix = joined.select(*frozen.feature_names).to_numpy()
@@ -544,12 +551,8 @@ def _join_asymmetric_rows(
         pl.col(f"up_ask_vwap_{quantity}").alias("up_ask_vwap"),
         pl.col(f"down_ask_vwap_{quantity}").alias("down_ask_vwap"),
     ).with_columns(
-        (pl.col("up_ask_vwap") - pl.col("up_ask_vwap_5")).alias(
-            "up_vwap_size_minus_vwap5"
-        ),
-        (pl.col("down_ask_vwap") - pl.col("down_ask_vwap_5")).alias(
-            "down_vwap_size_minus_vwap5"
-        ),
+        (pl.col("up_ask_vwap") - pl.col("up_ask_vwap_5")).alias("up_vwap_size_minus_vwap5"),
+        (pl.col("down_ask_vwap") - pl.col("down_ask_vwap_5")).alias("down_vwap_size_minus_vwap5"),
     )
 
 
@@ -561,9 +564,7 @@ def _attach_asymmetric_book_features(
     epsilon = 1e-6
     enriched = frame.with_columns(
         (
-            pl.col(up_vwap)
-            + pl.col("fee_rate") * pl.col(up_vwap) * (1 - pl.col(up_vwap))
-            + reserve
+            pl.col(up_vwap) + pl.col("fee_rate") * pl.col(up_vwap) * (1 - pl.col(up_vwap)) + reserve
         ).alias("pm_yes_cost_per_share"),
         (
             pl.col(down_vwap)
@@ -594,13 +595,11 @@ def _attach_asymmetric_book_features(
             / (pl.col("up_ask_depth") + pl.col("down_ask_depth")).clip(1e-9)
         ).alias("pm_depth_imbalance"),
         (
-            (pl.col("observed_at") - pl.col("up_provider_received_at"))
-            .dt.total_milliseconds()
+            (pl.col("observed_at") - pl.col("up_provider_received_at")).dt.total_milliseconds()
             / 1_000
         ).alias("pm_yes_book_age_seconds"),
         (
-            (pl.col("observed_at") - pl.col("down_provider_received_at"))
-            .dt.total_milliseconds()
+            (pl.col("observed_at") - pl.col("down_provider_received_at")).dt.total_milliseconds()
             / 1_000
         ).alias("pm_no_book_age_seconds"),
     )
@@ -611,22 +610,35 @@ def _select_asymmetric(
     frame: pl.DataFrame, probability_up: np.ndarray, quantity: int
 ) -> pl.DataFrame:
     policy = FROZEN_ASYMMETRIC_INCUMBENT_POLICY
-    candidates = frame.with_columns(pl.Series("probability_up", probability_up)).with_columns(
-        (pl.col("probability_up") - pl.col("up_ask_vwap")).alias("up_edge"),
-        ((1.0 - pl.col("probability_up")) - pl.col("down_ask_vwap")).alias("down_edge"),
-    ).with_columns(
-        (pl.col("up_edge") >= pl.col("down_edge")).alias("selected_up"),
-    ).with_columns(
-        pl.when(pl.col("selected_up")).then(pl.col("up_edge")).otherwise(pl.col("down_edge")).alias("selected_edge"),
-        pl.when(pl.col("selected_up")).then(pl.col("up_ask_vwap")).otherwise(pl.col("down_ask_vwap")).alias("selected_ask_vwap"),
-        (pl.col("selected_up") == pl.col("label_up").cast(pl.Boolean)).alias("correct"),
-    ).filter(
-        pl.col("selected_ask_vwap").is_between(
-            policy.minimum_share_price, policy.maximum_share_price, closed="both"
+    candidates = (
+        frame.with_columns(pl.Series("probability_up", probability_up))
+        .with_columns(
+            (pl.col("probability_up") - pl.col("up_ask_vwap")).alias("up_edge"),
+            ((1.0 - pl.col("probability_up")) - pl.col("down_ask_vwap")).alias("down_edge"),
         )
-        & (pl.col("selected_ask_vwap") <= policy.maximum_cost_per_share)
-        & (pl.col("selected_edge") >= policy.minimum_edge_per_share)
-    ).sort(["market_id", "seconds_elapsed", "observed_at"])
+        .with_columns(
+            (pl.col("up_edge") >= pl.col("down_edge")).alias("selected_up"),
+        )
+        .with_columns(
+            pl.when(pl.col("selected_up"))
+            .then(pl.col("up_edge"))
+            .otherwise(pl.col("down_edge"))
+            .alias("selected_edge"),
+            pl.when(pl.col("selected_up"))
+            .then(pl.col("up_ask_vwap"))
+            .otherwise(pl.col("down_ask_vwap"))
+            .alias("selected_ask_vwap"),
+            (pl.col("selected_up") == pl.col("label_up").cast(pl.Boolean)).alias("correct"),
+        )
+        .filter(
+            pl.col("selected_ask_vwap").is_between(
+                policy.minimum_share_price, policy.maximum_share_price, closed="both"
+            )
+            & (pl.col("selected_ask_vwap") <= policy.maximum_cost_per_share)
+            & (pl.col("selected_edge") >= policy.minimum_edge_per_share)
+        )
+        .sort(["market_id", "seconds_elapsed", "observed_at"])
+    )
     selected = candidates.group_by("market_id", maintain_order=True).first()
     return selected.with_columns(pl.lit(True).alias("policy_selected"))
 
@@ -728,9 +740,7 @@ def _asymmetric_folds(
             c=1.0,
             maximum_iterations=500,
         )
-        candidate = _select_asymmetric(
-            evaluation, calibrator.probability(evaluation), quantity
-        )
+        candidate = _select_asymmetric(evaluation, calibrator.probability(evaluation), quantity)
         control = _select_asymmetric(
             evaluation, evaluation["parent_probability_up"].to_numpy(), quantity
         )
@@ -762,12 +772,8 @@ def _fold_result(
     quantity: int,
     config: CapacityTrainingConfig,
 ) -> dict[str, Any]:
-    control_metrics = _metrics(
-        control, quantity, config.execution.execution_reserve_per_share
-    )
-    candidate_metrics = _metrics(
-        candidate, quantity, config.execution.execution_reserve_per_share
-    )
+    control_metrics = _metrics(control, quantity, config.execution.execution_reserve_per_share)
+    candidate_metrics = _metrics(candidate, quantity, config.execution.execution_reserve_per_share)
     return {
         "fold": index,
         "fit_rows": fit.height,
@@ -775,8 +781,7 @@ def _fold_result(
         "evaluation_end": end.isoformat(),
         "control": control_metrics,
         "candidate": candidate_metrics,
-        "candidate_improves_control": candidate_metrics["net_pnl"]
-        > control_metrics["net_pnl"],
+        "candidate_improves_control": candidate_metrics["net_pnl"] > control_metrics["net_pnl"],
     }
 
 
@@ -801,7 +806,9 @@ def _metrics(frame: pl.DataFrame, quantity: int, reserve: float) -> dict[str, An
     stress = pnl - 0.01 * quantity
     values = pnl.to_numpy()
     cumulative = np.cumsum(values)
-    drawdown = np.maximum.accumulate(np.concatenate(([0.0], cumulative))) - np.concatenate(([0.0], cumulative))
+    drawdown = np.maximum.accumulate(np.concatenate(([0.0], cumulative))) - np.concatenate(
+        ([0.0], cumulative)
+    )
     gains = float(values[values > 0].sum())
     losses = float(-values[values < 0].sum())
     tail_count = max(1, math.ceil(len(values) * 0.01))

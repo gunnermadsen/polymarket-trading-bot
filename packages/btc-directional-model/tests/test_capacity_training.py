@@ -18,13 +18,13 @@ from btc_directional_model.capacity_training_config import (
 )
 
 
-def test_capacity_training_config_pins_four_lineages_and_three_sizes() -> None:
+def test_capacity_training_config_pins_four_lineages_and_capacity_suite() -> None:
     root = Path(__file__).resolve().parents[1]
     config = load_capacity_training_config(
         root / "configs" / "btc-vwap-capacity-training-20260421-20260720.toml"
     )
 
-    assert config.execution.quantities == (10, 15, 20)
+    assert config.execution.quantities == (10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175, 200)
     assert config.execution.maximum_depth_participation == 0.25
     assert len(config.lineages) == 4
     assert sum(item.hypothesis == "asymmetric_value" for item in config.lineages) == 1

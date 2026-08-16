@@ -9,7 +9,10 @@ use super::job::{
     BtcExecutionSnapshot, BtcOrderbookArchiveEvent, BtcOrderbookMarketScope, BtcOutcome,
 };
 
-pub const EXECUTION_SNAPSHOT_SCHEMA_VERSION: &str = "btc5m-capacity-book-1-240s-v1";
+pub const EXECUTION_SNAPSHOT_SCHEMA_VERSION: &str = "btc5m-capacity-book-1-240s-v2";
+pub const EXECUTION_SNAPSHOT_VWAP_QUANTITIES: [i64; 15] = [
+    1, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175, 200,
+];
 pub const EXECUTION_SNAPSHOT_START_MILLIS: i64 = 1_000;
 pub const EXECUTION_SNAPSHOT_END_MILLIS: i64 = 240_000;
 pub const EXECUTION_SNAPSHOT_EARLY_END_MILLIS: i64 = 59_000;
@@ -308,6 +311,16 @@ struct BookMeasures {
     ask_vwap_10: Option<Decimal>,
     ask_vwap_15: Option<Decimal>,
     ask_vwap_20: Option<Decimal>,
+    ask_vwap_25: Option<Decimal>,
+    ask_vwap_30: Option<Decimal>,
+    ask_vwap_40: Option<Decimal>,
+    ask_vwap_50: Option<Decimal>,
+    ask_vwap_75: Option<Decimal>,
+    ask_vwap_100: Option<Decimal>,
+    ask_vwap_125: Option<Decimal>,
+    ask_vwap_150: Option<Decimal>,
+    ask_vwap_175: Option<Decimal>,
+    ask_vwap_200: Option<Decimal>,
     imbalance: Option<Decimal>,
     missing: bool,
     stale: bool,
@@ -384,6 +397,16 @@ fn snapshot(
         up_ask_vwap_10: up.ask_vwap_10,
         up_ask_vwap_15: up.ask_vwap_15,
         up_ask_vwap_20: up.ask_vwap_20,
+        up_ask_vwap_25: up.ask_vwap_25,
+        up_ask_vwap_30: up.ask_vwap_30,
+        up_ask_vwap_40: up.ask_vwap_40,
+        up_ask_vwap_50: up.ask_vwap_50,
+        up_ask_vwap_75: up.ask_vwap_75,
+        up_ask_vwap_100: up.ask_vwap_100,
+        up_ask_vwap_125: up.ask_vwap_125,
+        up_ask_vwap_150: up.ask_vwap_150,
+        up_ask_vwap_175: up.ask_vwap_175,
+        up_ask_vwap_200: up.ask_vwap_200,
         up_imbalance: up.imbalance,
         down_source_row_number: down.source_row_number,
         down_source_timestamp: down.source_timestamp,
@@ -399,6 +422,16 @@ fn snapshot(
         down_ask_vwap_10: down.ask_vwap_10,
         down_ask_vwap_15: down.ask_vwap_15,
         down_ask_vwap_20: down.ask_vwap_20,
+        down_ask_vwap_25: down.ask_vwap_25,
+        down_ask_vwap_30: down.ask_vwap_30,
+        down_ask_vwap_40: down.ask_vwap_40,
+        down_ask_vwap_50: down.ask_vwap_50,
+        down_ask_vwap_75: down.ask_vwap_75,
+        down_ask_vwap_100: down.ask_vwap_100,
+        down_ask_vwap_125: down.ask_vwap_125,
+        down_ask_vwap_150: down.ask_vwap_150,
+        down_ask_vwap_175: down.ask_vwap_175,
+        down_ask_vwap_200: down.ask_vwap_200,
         down_imbalance: down.imbalance,
         quality_flags,
     }
@@ -426,11 +459,8 @@ fn measure(state: &BookState, sampled_at: DateTime<Utc>) -> BookMeasures {
             .num_milliseconds()
             > STALE_AFTER_MILLIS
     });
-    let ask_vwap_1 = ask_vwap(&state.asks, Decimal::ONE);
-    let ask_vwap_5 = ask_vwap(&state.asks, Decimal::from(5));
-    let ask_vwap_10 = ask_vwap(&state.asks, Decimal::from(10));
-    let ask_vwap_15 = ask_vwap(&state.asks, Decimal::from(15));
-    let ask_vwap_20 = ask_vwap(&state.asks, Decimal::from(20));
+    let [ask_vwap_1, ask_vwap_5, ask_vwap_10, ask_vwap_15, ask_vwap_20, ask_vwap_25, ask_vwap_30, ask_vwap_40, ask_vwap_50, ask_vwap_75, ask_vwap_100, ask_vwap_125, ask_vwap_150, ask_vwap_175, ask_vwap_200] =
+        ask_vwaps(&state.asks, EXECUTION_SNAPSHOT_VWAP_QUANTITIES);
     BookMeasures {
         source_row_number: state.source_row_number,
         source_timestamp: state.source_timestamp,
@@ -450,6 +480,16 @@ fn measure(state: &BookState, sampled_at: DateTime<Utc>) -> BookMeasures {
         ask_vwap_10: (!crossed).then_some(ask_vwap_10).flatten(),
         ask_vwap_15: (!crossed).then_some(ask_vwap_15).flatten(),
         ask_vwap_20: (!crossed).then_some(ask_vwap_20).flatten(),
+        ask_vwap_25: (!crossed).then_some(ask_vwap_25).flatten(),
+        ask_vwap_30: (!crossed).then_some(ask_vwap_30).flatten(),
+        ask_vwap_40: (!crossed).then_some(ask_vwap_40).flatten(),
+        ask_vwap_50: (!crossed).then_some(ask_vwap_50).flatten(),
+        ask_vwap_75: (!crossed).then_some(ask_vwap_75).flatten(),
+        ask_vwap_100: (!crossed).then_some(ask_vwap_100).flatten(),
+        ask_vwap_125: (!crossed).then_some(ask_vwap_125).flatten(),
+        ask_vwap_150: (!crossed).then_some(ask_vwap_150).flatten(),
+        ask_vwap_175: (!crossed).then_some(ask_vwap_175).flatten(),
+        ask_vwap_200: (!crossed).then_some(ask_vwap_200).flatten(),
         imbalance: (!total_depth.is_zero()).then(|| (bid_depth - ask_depth) / total_depth),
         missing: best_bid.is_none() || best_ask.is_none(),
         stale,
@@ -461,18 +501,33 @@ fn measure(state: &BookState, sampled_at: DateTime<Utc>) -> BookMeasures {
     }
 }
 
-fn ask_vwap(levels: &BTreeMap<Decimal, Decimal>, target: Decimal) -> Option<Decimal> {
-    let mut remaining = target;
-    let mut notional = Decimal::ZERO;
+fn ask_vwaps<const N: usize>(
+    levels: &BTreeMap<Decimal, Decimal>,
+    target_quantities: [i64; N],
+) -> [Option<Decimal>; N] {
+    let mut results = [None; N];
+    let mut target_index = 0;
+    let mut cumulative_size = Decimal::ZERO;
+    let mut cumulative_notional = Decimal::ZERO;
     for (price, size) in levels {
-        let consumed = remaining.min(*size);
-        notional += *price * consumed;
-        remaining -= consumed;
-        if remaining.is_zero() {
-            return Some(notional / target);
+        let level_end = cumulative_size + *size;
+        while target_index < N {
+            let target = Decimal::from(target_quantities[target_index]);
+            if target > level_end {
+                break;
+            }
+            let consumed_at_level = target - cumulative_size;
+            results[target_index] =
+                Some((cumulative_notional + (*price * consumed_at_level)) / target);
+            target_index += 1;
+        }
+        cumulative_size = level_end;
+        cumulative_notional += *price * *size;
+        if target_index == N {
+            break;
         }
     }
-    None
+    results
 }
 
 fn parse_levels(value: Option<&Value>, name: &str) -> Result<BTreeMap<Decimal, Decimal>> {
@@ -553,7 +608,7 @@ mod tests {
             asset_id: asset_id.to_string(),
             event_type: "book".to_string(),
             bids: Some(json!([["0.40", "10"]])),
-            asks: Some(json!([["0.45", "4"], ["0.50", "26"]])),
+            asks: Some(json!([["0.45", "4"], ["0.50", "216"]])),
             price: None,
             size: None,
             side: None,
@@ -586,6 +641,8 @@ mod tests {
         assert_eq!(snapshots[0].up_best_ask, Some(Decimal::new(45, 2)));
         assert_eq!(snapshots[0].up_ask_vwap_5, Some(Decimal::new(46, 2)));
         assert_eq!(snapshots[0].up_ask_vwap_20, Some(Decimal::new(49, 2)));
+        assert_eq!(snapshots[0].up_ask_vwap_25, Some(Decimal::new(492, 3)));
+        assert_eq!(snapshots[0].up_ask_vwap_200, Some(Decimal::new(499, 3)));
     }
 
     #[test]

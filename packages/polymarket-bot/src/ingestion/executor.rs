@@ -31,6 +31,7 @@ use super::{
         EXECUTION_SNAPSHOT_EARLY_END_MILLIS, EXECUTION_SNAPSHOT_EARLY_INTERVAL_MILLIS,
         EXECUTION_SNAPSHOT_END_MILLIS, EXECUTION_SNAPSHOT_LATER_INTERVAL_MILLIS,
         EXECUTION_SNAPSHOT_SCHEMA_VERSION, EXECUTION_SNAPSHOT_START_MILLIS,
+        EXECUTION_SNAPSHOT_VWAP_QUANTITIES,
     },
     huggingface_binance_l2::{
         download_goooddy_object, goooddy_month_spec, spawn_goooddy_parser, GoooddyParseRequest,
@@ -1873,7 +1874,8 @@ impl IngestionExecutor {
                 )));
             }
             let stamp = hour.format("%Y-%m-%dT%H");
-            let logical_key = format!("pmxt:v2:btc5m_capacity_execution_snapshots:1-240s:{stamp}");
+            let logical_key =
+                format!("pmxt:v2:btc5m_capacity_execution_snapshots:v2:1-240s:{stamp}");
             progress.current_logical_key = Some(logical_key.clone());
             let prepared = self
                 .repository
@@ -1883,7 +1885,7 @@ impl IngestionExecutor {
                         job_id: claim.job.job_id,
                         ingester: IngesterKey::PolymarketBtcFiveMinuteExecutionSnapshots,
                         logical_key,
-                        provider: "pmxt_v2_capacity_execution_snapshots".to_string(),
+                        provider: "pmxt_v2_capacity_execution_snapshots_v2".to_string(),
                         source_uri: format!(
                             "{}#btc5m-capacity-1-240s",
                             source_specs
@@ -1900,6 +1902,7 @@ impl IngestionExecutor {
                             "later_sample_interval_milliseconds": EXECUTION_SNAPSHOT_LATER_INTERVAL_MILLIS,
                             "sample_window_start_milliseconds": EXECUTION_SNAPSHOT_START_MILLIS,
                             "sample_window_end_milliseconds": EXECUTION_SNAPSHOT_END_MILLIS,
+                            "vwap_share_quantities": EXECUTION_SNAPSHOT_VWAP_QUANTITIES,
                             "source_logical_keys": logical_keys,
                             "source_mode": if reuse_raw_materialization {
                                 "existing_raw_materialization"

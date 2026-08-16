@@ -29,6 +29,16 @@ SELECT
   snapshot.up_ask_vwap_10::double precision AS up_ask_vwap_10,
   snapshot.up_ask_vwap_15::double precision AS up_ask_vwap_15,
   snapshot.up_ask_vwap_20::double precision AS up_ask_vwap_20,
+  snapshot.up_ask_vwap_25::double precision AS up_ask_vwap_25,
+  snapshot.up_ask_vwap_30::double precision AS up_ask_vwap_30,
+  snapshot.up_ask_vwap_40::double precision AS up_ask_vwap_40,
+  snapshot.up_ask_vwap_50::double precision AS up_ask_vwap_50,
+  snapshot.up_ask_vwap_75::double precision AS up_ask_vwap_75,
+  snapshot.up_ask_vwap_100::double precision AS up_ask_vwap_100,
+  snapshot.up_ask_vwap_125::double precision AS up_ask_vwap_125,
+  snapshot.up_ask_vwap_150::double precision AS up_ask_vwap_150,
+  snapshot.up_ask_vwap_175::double precision AS up_ask_vwap_175,
+  snapshot.up_ask_vwap_200::double precision AS up_ask_vwap_200,
   snapshot.down_provider_received_at,
   snapshot.down_best_ask::double precision AS down_best_ask,
   snapshot.down_ask_depth::double precision AS down_ask_depth,
@@ -36,59 +46,24 @@ SELECT
   snapshot.down_ask_vwap_10::double precision AS down_ask_vwap_10,
   snapshot.down_ask_vwap_15::double precision AS down_ask_vwap_15,
   snapshot.down_ask_vwap_20::double precision AS down_ask_vwap_20,
-  snapshot.quality_flags,
-  (
-    (snapshot.quality_flags & 831) = 0
-    AND snapshot.up_provider_received_at IS NOT NULL
-    AND snapshot.down_provider_received_at IS NOT NULL
-    AND snapshot.up_provider_received_at <= snapshot.sampled_at
-    AND snapshot.down_provider_received_at <= snapshot.sampled_at
-    AND snapshot.up_provider_received_at >=
-      snapshot.sampled_at - (%(freshness_seconds)s * interval '1 second')
-    AND snapshot.down_provider_received_at >=
-      snapshot.sampled_at - (%(freshness_seconds)s * interval '1 second')
-    AND snapshot.up_ask_vwap_10 IS NOT NULL
-    AND snapshot.down_ask_vwap_10 IS NOT NULL
-    AND snapshot.up_ask_depth >= 40
-    AND snapshot.down_ask_depth >= 40
-  ) AS strict_both_side_eligible_10,
-  (
-    (snapshot.quality_flags & 3135) = 0
-    AND snapshot.up_provider_received_at IS NOT NULL
-    AND snapshot.down_provider_received_at IS NOT NULL
-    AND snapshot.up_provider_received_at <= snapshot.sampled_at
-    AND snapshot.down_provider_received_at <= snapshot.sampled_at
-    AND snapshot.up_provider_received_at >=
-      snapshot.sampled_at - (%(freshness_seconds)s * interval '1 second')
-    AND snapshot.down_provider_received_at >=
-      snapshot.sampled_at - (%(freshness_seconds)s * interval '1 second')
-    AND snapshot.up_ask_vwap_15 IS NOT NULL
-    AND snapshot.down_ask_vwap_15 IS NOT NULL
-    AND snapshot.up_ask_depth >= 60
-    AND snapshot.down_ask_depth >= 60
-  ) AS strict_both_side_eligible_15,
-  (
-    (snapshot.quality_flags & 12351) = 0
-    AND snapshot.up_provider_received_at IS NOT NULL
-    AND snapshot.down_provider_received_at IS NOT NULL
-    AND snapshot.up_provider_received_at <= snapshot.sampled_at
-    AND snapshot.down_provider_received_at <= snapshot.sampled_at
-    AND snapshot.up_provider_received_at >=
-      snapshot.sampled_at - (%(freshness_seconds)s * interval '1 second')
-    AND snapshot.down_provider_received_at >=
-      snapshot.sampled_at - (%(freshness_seconds)s * interval '1 second')
-    AND snapshot.up_ask_vwap_20 IS NOT NULL
-    AND snapshot.down_ask_vwap_20 IS NOT NULL
-    AND snapshot.up_ask_depth >= 80
-    AND snapshot.down_ask_depth >= 80
-  ) AS strict_both_side_eligible_20
+  snapshot.down_ask_vwap_25::double precision AS down_ask_vwap_25,
+  snapshot.down_ask_vwap_30::double precision AS down_ask_vwap_30,
+  snapshot.down_ask_vwap_40::double precision AS down_ask_vwap_40,
+  snapshot.down_ask_vwap_50::double precision AS down_ask_vwap_50,
+  snapshot.down_ask_vwap_75::double precision AS down_ask_vwap_75,
+  snapshot.down_ask_vwap_100::double precision AS down_ask_vwap_100,
+  snapshot.down_ask_vwap_125::double precision AS down_ask_vwap_125,
+  snapshot.down_ask_vwap_150::double precision AS down_ask_vwap_150,
+  snapshot.down_ask_vwap_175::double precision AS down_ask_vwap_175,
+  snapshot.down_ask_vwap_200::double precision AS down_ask_vwap_200,
+  snapshot.quality_flags
 FROM polymarket.btc_market_capacity_execution_snapshots snapshot
 JOIN polymarket.backfill_artifacts artifact
   ON artifact.artifact_id = snapshot.artifact_id
  AND artifact.status = 'completed'
- AND artifact.provider = 'pmxt_v2_capacity_execution_snapshots'
+ AND artifact.provider = 'pmxt_v2_capacity_execution_snapshots_v2'
 JOIN eligible_markets market ON market.market_id = snapshot.market_id
 WHERE snapshot.sampled_at >= %(batch_start)s
   AND snapshot.sampled_at < %(batch_end)s
-  AND snapshot.schema_version = 'btc5m-capacity-book-1-240s-v1'
+  AND snapshot.schema_version = 'btc5m-capacity-book-1-240s-v2'
 ORDER BY snapshot.market_id, snapshot.sampled_at;

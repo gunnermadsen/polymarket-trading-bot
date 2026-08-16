@@ -85,7 +85,8 @@ channel.
 The capacity ingester reconstructs each token book using only events whose provider receipt time is
 at or before the sample. It persists one row per market every second from seconds 1 through 59 and
 every five seconds from seconds 60 through 240 with both outcomes: best bid/ask and sizes, total
-depth, executable ask VWAP for 1, 5, 10, 15, and 20 shares, imbalance, source timestamps, and
+depth, executable ask VWAP for 1, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175,
+and 200 shares, imbalance, source timestamps, and
 separate missing, stale, crossed-book, and quantity-depth flags. It does not fabricate a book.
 Each five-minute market therefore has exactly 96 rows and a full UTC day has 27,648 rows. The
 preceding UTC hour is read for full-book seeds. When a completed raw

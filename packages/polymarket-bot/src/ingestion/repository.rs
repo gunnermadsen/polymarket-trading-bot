@@ -32,7 +32,7 @@ const POSTGRES_MAX_BIND_PARAMETERS: usize = 65_535;
 const ORDERBOOK_EVENT_INSERT_COLUMNS: usize = 18;
 const MAX_ORDERBOOK_EVENT_INSERT_ROWS: usize =
     POSTGRES_MAX_BIND_PARAMETERS / ORDERBOOK_EVENT_INSERT_COLUMNS;
-const EXECUTION_SNAPSHOT_INSERT_COLUMNS: usize = 35;
+const EXECUTION_SNAPSHOT_INSERT_COLUMNS: usize = 55;
 const MAX_EXECUTION_SNAPSHOT_INSERT_ROWS: usize =
     POSTGRES_MAX_BIND_PARAMETERS / EXECUTION_SNAPSHOT_INSERT_COLUMNS;
 const POLYGON_CHAINLINK_INSERT_COLUMNS: usize = 15;
@@ -1367,11 +1367,17 @@ impl IngestionRepository {
                  artifact_id, schema_version, up_source_row_number, up_source_timestamp, \
                  up_provider_received_at, up_best_bid, up_best_ask, up_best_bid_size, \
                  up_best_ask_size, up_bid_depth, up_ask_depth, up_ask_vwap_1, up_ask_vwap_5, \
-                 up_ask_vwap_10, up_ask_vwap_15, up_ask_vwap_20, up_imbalance, \
+                 up_ask_vwap_10, up_ask_vwap_15, up_ask_vwap_20, up_ask_vwap_25, \
+                 up_ask_vwap_30, up_ask_vwap_40, up_ask_vwap_50, up_ask_vwap_75, \
+                 up_ask_vwap_100, up_ask_vwap_125, up_ask_vwap_150, up_ask_vwap_175, \
+                 up_ask_vwap_200, up_imbalance, \
                  down_source_row_number, down_source_timestamp, \
                  down_provider_received_at, down_best_bid, down_best_ask, down_best_bid_size, \
                  down_best_ask_size, down_bid_depth, down_ask_depth, down_ask_vwap_1, \
                  down_ask_vwap_5, down_ask_vwap_10, down_ask_vwap_15, down_ask_vwap_20, \
+                 down_ask_vwap_25, down_ask_vwap_30, down_ask_vwap_40, down_ask_vwap_50, \
+                 down_ask_vwap_75, down_ask_vwap_100, down_ask_vwap_125, \
+                 down_ask_vwap_150, down_ask_vwap_175, down_ask_vwap_200, \
                  down_imbalance, quality_flags) ",
             );
             query.push_values(chunk, |mut row, record| {
@@ -1393,6 +1399,16 @@ impl IngestionRepository {
                     .push_bind(record.up_ask_vwap_10)
                     .push_bind(record.up_ask_vwap_15)
                     .push_bind(record.up_ask_vwap_20)
+                    .push_bind(record.up_ask_vwap_25)
+                    .push_bind(record.up_ask_vwap_30)
+                    .push_bind(record.up_ask_vwap_40)
+                    .push_bind(record.up_ask_vwap_50)
+                    .push_bind(record.up_ask_vwap_75)
+                    .push_bind(record.up_ask_vwap_100)
+                    .push_bind(record.up_ask_vwap_125)
+                    .push_bind(record.up_ask_vwap_150)
+                    .push_bind(record.up_ask_vwap_175)
+                    .push_bind(record.up_ask_vwap_200)
                     .push_bind(record.up_imbalance)
                     .push_bind(record.down_source_row_number)
                     .push_bind(record.down_source_timestamp)
@@ -1408,6 +1424,16 @@ impl IngestionRepository {
                     .push_bind(record.down_ask_vwap_10)
                     .push_bind(record.down_ask_vwap_15)
                     .push_bind(record.down_ask_vwap_20)
+                    .push_bind(record.down_ask_vwap_25)
+                    .push_bind(record.down_ask_vwap_30)
+                    .push_bind(record.down_ask_vwap_40)
+                    .push_bind(record.down_ask_vwap_50)
+                    .push_bind(record.down_ask_vwap_75)
+                    .push_bind(record.down_ask_vwap_100)
+                    .push_bind(record.down_ask_vwap_125)
+                    .push_bind(record.down_ask_vwap_150)
+                    .push_bind(record.down_ask_vwap_175)
+                    .push_bind(record.down_ask_vwap_200)
                     .push_bind(record.down_imbalance)
                     .push_bind(record.quality_flags);
             });
@@ -4131,8 +4157,28 @@ fn validate_execution_snapshot_batch(records: &[BtcExecutionSnapshot]) -> Result
             || !valid_price(record.down_ask_vwap_10)
             || !valid_price(record.up_ask_vwap_15)
             || !valid_price(record.up_ask_vwap_20)
+            || !valid_price(record.up_ask_vwap_25)
+            || !valid_price(record.up_ask_vwap_30)
+            || !valid_price(record.up_ask_vwap_40)
+            || !valid_price(record.up_ask_vwap_50)
+            || !valid_price(record.up_ask_vwap_75)
+            || !valid_price(record.up_ask_vwap_100)
+            || !valid_price(record.up_ask_vwap_125)
+            || !valid_price(record.up_ask_vwap_150)
+            || !valid_price(record.up_ask_vwap_175)
+            || !valid_price(record.up_ask_vwap_200)
             || !valid_price(record.down_ask_vwap_15)
             || !valid_price(record.down_ask_vwap_20)
+            || !valid_price(record.down_ask_vwap_25)
+            || !valid_price(record.down_ask_vwap_30)
+            || !valid_price(record.down_ask_vwap_40)
+            || !valid_price(record.down_ask_vwap_50)
+            || !valid_price(record.down_ask_vwap_75)
+            || !valid_price(record.down_ask_vwap_100)
+            || !valid_price(record.down_ask_vwap_125)
+            || !valid_price(record.down_ask_vwap_150)
+            || !valid_price(record.down_ask_vwap_175)
+            || !valid_price(record.down_ask_vwap_200)
             || !valid_size(record.up_best_bid_size)
             || !valid_size(record.up_best_ask_size)
             || !valid_size(record.up_bid_depth)
