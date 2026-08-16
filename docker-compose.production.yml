@@ -72,6 +72,44 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  pgbouncer:
+    image: ${PGBOUNCER_IMAGE:-edoburu/pgbouncer:v1.25.2-p0}
+    container_name: pgbouncer
+    hostname: pgbouncer
+    init: true
+    mem_limit: 128m
+    cpus: "0.10"
+    pids_limit: 64
+    labels: *watchtower-labels
+    logging: *default-logging
+    entrypoint:
+      - /usr/local/bin/capitonic-pgbouncer-entrypoint.sh
+    command:
+      - /usr/bin/pgbouncer
+      - /etc/pgbouncer/pgbouncer.ini
+    env_file:
+      - *postgres-env-file
+    environment:
+      POSTGRES_USER: "postgres"
+    ports:
+      - "127.0.0.1:${PGBOUNCER_HOST_PORT:-6432}:6432"
+    volumes:
+      - ./common/configs/pgbouncer:/etc/pgbouncer:ro
+      - ./common/scripts/pgbouncer-entrypoint.sh:/usr/local/bin/capitonic-pgbouncer-entrypoint.sh:ro
+    depends_on:
+      timescaledb-0:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "6432", "-U", "postgres", "-d", "polymarket"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    restart: unless-stopped
+
   db-migrate:
     image: 192200846560.dkr.ecr.mx-central-1.amazonaws.com/capitonic/db-migrate:production
     container_name: db-migrate
@@ -111,8 +149,8 @@ services:
       - *postgres-env-file
     environment:
       RUST_LOG: "info"
-      POSTGRES_HOST: "timescaledb-0"
-      POSTGRES_PORT: "5432"
+      POSTGRES_HOST: "pgbouncer"
+      POSTGRES_PORT: "6432"
       POSTGRES_USER: "postgres"
       POSTGRES_DB: "polymarket"
       POSTGRES_SSL_MODE: "disable"
@@ -144,7 +182,7 @@ services:
     depends_on:
       db-migrate:
         condition: service_completed_successfully
-      timescaledb-0:
+      pgbouncer:
         condition: service_healthy
     stop_grace_period: 60s
     restart: unless-stopped
@@ -165,8 +203,8 @@ services:
       - *postgres-env-file
     environment:
       RUST_LOG: "info"
-      POSTGRES_HOST: "timescaledb-0"
-      POSTGRES_PORT: "5432"
+      POSTGRES_HOST: "pgbouncer"
+      POSTGRES_PORT: "6432"
       POSTGRES_USER: "postgres"
       POSTGRES_DB: "polymarket"
       POSTGRES_SSL_MODE: "disable"
@@ -200,7 +238,7 @@ services:
     depends_on:
       db-migrate:
         condition: service_completed_successfully
-      timescaledb-0:
+      pgbouncer:
         condition: service_healthy
     read_only: true
     tmpfs:
@@ -224,6 +262,10 @@ services:
     environment:
       GF_USERS_DEFAULT_THEME: "dark"
       GF_DATE_FORMATS_DEFAULT_TIMEZONE: "browser"
+      GRAFANA_POSTGRES_HOST: "pgbouncer"
+      GRAFANA_POSTGRES_PORT: "6432"
+      GRAFANA_POSTGRES_MAX_OPEN_CONNS: "2"
+      GRAFANA_POSTGRES_MAX_IDLE_CONNS: "1"
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
@@ -232,7 +274,7 @@ services:
       - ./common/configs/grafana/dashboards:/etc/grafana/dashboards/polymarket-bot:ro
       - ./common/scripts/grafana-provisioning-entrypoint.sh:/usr/local/bin/grafana-provisioning-entrypoint.sh:ro
     depends_on:
-      timescaledb-0:
+      pgbouncer:
         condition: service_healthy
     restart: unless-stopped
 

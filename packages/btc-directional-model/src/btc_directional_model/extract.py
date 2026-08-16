@@ -167,7 +167,7 @@ def database_connection() -> psycopg.Connection[Any]:
         raise RuntimeError("BTC_MODEL_DB_PASSWORD or POSTGRES_PASSWORD is required")
     return psycopg.connect(
         host=os.environ.get("BTC_MODEL_DB_HOST", "127.0.0.1"),
-        port=int(os.environ.get("BTC_MODEL_DB_PORT", "55433")),
+        port=int(os.environ.get("BTC_MODEL_DB_PORT", "6432")),
         dbname=os.environ.get("BTC_MODEL_DB_NAME", "polymarket"),
         user=os.environ.get("BTC_MODEL_DB_USER", "postgres"),
         password=password,
