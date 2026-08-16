@@ -49,7 +49,8 @@
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "BTC Price (USD)",
-            "axisPlacement": "auto",
+            "axisPlacement": "left",
+            "axisWidth": 96,
             "barAlignment": 0,
             "barWidthFactor": 0.6,
             "drawStyle": "line",
@@ -89,7 +90,7 @@
               }
             ]
           },
-          "unit": "currencyUSD"
+          "unit": "prefix:$"
         },
         "overrides": [
           {
@@ -3475,6 +3476,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 169,
+  "version": 170,
   "weekStart": ""
 }
