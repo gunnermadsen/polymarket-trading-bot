@@ -15,13 +15,16 @@ use std::{
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use futures_util::{stream, FutureExt, SinkExt, StreamExt};
+use futures_util::{
+    stream::{self, SplitSink, SplitStream},
+    FutureExt, Sink, SinkExt, StreamExt,
+};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::{
     net::TcpStream,
-    sync::{mpsc, watch, RwLock},
+    sync::{mpsc, watch, OwnedSemaphorePermit, RwLock, Semaphore},
     task::JoinHandle,
     time::{interval, interval_at, sleep, sleep_until, timeout, Instant, MissedTickBehavior},
 };
@@ -81,6 +84,8 @@ const CLOB_BOOTSTRAP_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const CLOB_READ_IDLE_TIMEOUT: StdDuration = StdDuration::from_secs(40);
 const CLOB_GRACEFUL_CLOSE_TIMEOUT: StdDuration = StdDuration::from_millis(100);
 const CLOB_SUCCESSOR_INTEGRITY_SUMMARY_INTERVAL: StdDuration = StdDuration::from_secs(30);
+const CLOB_INGRESS_FRAME_CAPACITY: usize = 2_048;
+const CLOB_INGRESS_BYTE_CAPACITY: usize = 16 * 1024 * 1024;
 const CLOB_PROVENANCE_VALUE_MAX_BYTES: usize = 128;
 const CLOB_ERROR_REASON_MAX_BYTES: usize = 256;
 const REFERENCE_CONNECT_TIMEOUT: StdDuration = StdDuration::from_secs(5);
@@ -101,6 +106,36 @@ const REFERENCE_STABLE_RESET_AFTER: StdDuration = StdDuration::from_secs(30);
 const REFERENCE_RETRY_JITTER_PERCENT: u64 = 20;
 
 type ClobSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type ClobSocketSink = SplitSink<ClobSocket, Message>;
+type ClobSocketStream = SplitStream<ClobSocket>;
+
+#[derive(Debug)]
+struct ClobIngressFrame {
+    message: Message,
+    received_at: DateTime<Utc>,
+    received_instant: Instant,
+    sequence: u64,
+    payload_bytes: usize,
+    _byte_permit: Option<OwnedSemaphorePermit>,
+}
+
+#[derive(Debug)]
+enum ClobIngressEvent {
+    Frame(ClobIngressFrame),
+    TransportError {
+        reason: String,
+        detail: ClobTransportErrorDetail,
+    },
+    Eof,
+}
+
+#[derive(Debug)]
+struct ClobIngressTransport {
+    sink: ClobSocketSink,
+    events: mpsc::Receiver<ClobIngressEvent>,
+    overflowed: Arc<AtomicBool>,
+    reader_task: JoinHandle<()>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BtcHeartbeatConfig {
@@ -481,6 +516,20 @@ pub struct BtcRuntimeMetrics {
     pub clob_active_last_inbound_frame_age_milliseconds: Option<u64>,
     #[serde(default)]
     pub clob_active_last_source_to_receive_lag_milliseconds: Option<i64>,
+    #[serde(default)]
+    pub clob_active_ingress_frames: u64,
+    #[serde(default)]
+    pub clob_active_ingress_bytes: u64,
+    #[serde(default)]
+    pub clob_active_last_ingress_sequence: u64,
+    #[serde(default)]
+    pub clob_active_ingress_queue_depth: u64,
+    #[serde(default)]
+    pub clob_active_last_ingress_queue_dwell_milliseconds: u64,
+    #[serde(default)]
+    pub clob_active_max_ingress_queue_dwell_milliseconds: u64,
+    #[serde(default)]
+    pub clob_active_ingress_overflows: u64,
     pub clob_active_heartbeat_probes: u64,
     pub clob_active_heartbeat_acknowledgements: u64,
     pub clob_active_last_heartbeat_sent_at: Option<DateTime<Utc>>,
@@ -868,6 +917,12 @@ struct ClobSocketTelemetry {
     last_frame_at: Option<DateTime<Utc>>,
     last_frame_instant: Option<Instant>,
     last_data_or_heartbeat_at: Option<DateTime<Utc>>,
+    ingress_frames: u64,
+    ingress_bytes: u64,
+    last_ingress_sequence: u64,
+    last_ingress_queue_dwell: StdDuration,
+    max_ingress_queue_dwell: StdDuration,
+    ingress_overflows: u64,
     remote_close_observed: bool,
     remote_close_code: Option<u16>,
     remote_close_reason: Option<String>,
@@ -892,6 +947,12 @@ impl ClobSocketTelemetry {
             last_frame_at: None,
             last_frame_instant: None,
             last_data_or_heartbeat_at: None,
+            ingress_frames: 0,
+            ingress_bytes: 0,
+            last_ingress_sequence: 0,
+            last_ingress_queue_dwell: StdDuration::ZERO,
+            max_ingress_queue_dwell: StdDuration::ZERO,
+            ingress_overflows: 0,
             remote_close_observed: false,
             remote_close_code: None,
             remote_close_reason: None,
@@ -902,6 +963,22 @@ impl ClobSocketTelemetry {
     fn record_frame(&mut self, received_at: DateTime<Utc>, received_instant: Instant) {
         self.last_frame_at = Some(received_at);
         self.last_frame_instant = Some(received_instant);
+    }
+
+    fn record_ingress_frame(&mut self, frame: &ClobIngressFrame, processing_at: Instant) {
+        let queue_dwell = processing_at.saturating_duration_since(frame.received_instant);
+        self.record_frame(frame.received_at, frame.received_instant);
+        self.ingress_frames = self.ingress_frames.saturating_add(1);
+        self.ingress_bytes = self
+            .ingress_bytes
+            .saturating_add(u64::try_from(frame.payload_bytes).unwrap_or(u64::MAX));
+        self.last_ingress_sequence = frame.sequence;
+        self.last_ingress_queue_dwell = queue_dwell;
+        self.max_ingress_queue_dwell = self.max_ingress_queue_dwell.max(queue_dwell);
+    }
+
+    fn record_ingress_overflow(&mut self) {
+        self.ingress_overflows = self.ingress_overflows.saturating_add(1);
     }
 
     fn record_heartbeat_probe(
@@ -1077,6 +1154,88 @@ fn clob_socket_provenance(
     provenance
 }
 
+fn start_clob_ingress(socket: ClobSocket) -> ClobIngressTransport {
+    let (sink, stream) = socket.split();
+    let (sender, events) = mpsc::channel(CLOB_INGRESS_FRAME_CAPACITY);
+    let byte_budget = Arc::new(Semaphore::new(CLOB_INGRESS_BYTE_CAPACITY));
+    let overflowed = Arc::new(AtomicBool::new(false));
+    let reader_overflowed = Arc::clone(&overflowed);
+    let reader_task = tokio::spawn(run_clob_ingress_reader(
+        stream,
+        sender,
+        reader_overflowed,
+        byte_budget,
+    ));
+    ClobIngressTransport {
+        sink,
+        events,
+        overflowed,
+        reader_task,
+    }
+}
+
+async fn run_clob_ingress_reader(
+    mut stream: ClobSocketStream,
+    sender: mpsc::Sender<ClobIngressEvent>,
+    overflowed: Arc<AtomicBool>,
+    byte_budget: Arc<Semaphore>,
+) {
+    let mut sequence = 0u64;
+    loop {
+        match stream.next().await {
+            Some(Ok(message)) => {
+                let received_instant = Instant::now();
+                let received_at = Utc::now();
+                sequence = sequence.saturating_add(1);
+                let payload_bytes = message.len();
+                let permit_count = match u32::try_from(payload_bytes.max(1)) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        overflowed.store(true, Ordering::Release);
+                        return;
+                    }
+                };
+                let byte_permit =
+                    match Arc::clone(&byte_budget).try_acquire_many_owned(permit_count) {
+                        Ok(permit) => permit,
+                        Err(_) => {
+                            overflowed.store(true, Ordering::Release);
+                            return;
+                        }
+                    };
+                let frame = ClobIngressEvent::Frame(ClobIngressFrame {
+                    payload_bytes,
+                    message,
+                    received_at,
+                    received_instant,
+                    sequence,
+                    _byte_permit: Some(byte_permit),
+                });
+                match sender.try_send(frame) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        overflowed.store(true, Ordering::Release);
+                        return;
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => return,
+                }
+            }
+            Some(Err(error)) => {
+                let detail = clob_transport_error_detail(&error);
+                let reason = bounded_clob_error_reason(&format!("transport_read_failed:{error}"));
+                let _ = sender
+                    .send(ClobIngressEvent::TransportError { reason, detail })
+                    .await;
+                return;
+            }
+            None => {
+                let _ = sender.send(ClobIngressEvent::Eof).await;
+                return;
+            }
+        }
+    }
+}
+
 fn clob_response_provenance(response: &ClobHandshakeResponse) -> ClobSocketProvenance {
     ClobSocketProvenance {
         peer_address: None,
@@ -1137,6 +1296,14 @@ fn publish_active_clob_socket_metrics(
         duration_milliseconds(telemetry.max_heartbeat_send_lateness);
     metrics.clob_active_last_pong_round_trip_milliseconds =
         telemetry.last_pong_round_trip.map(duration_milliseconds);
+    metrics.clob_active_ingress_frames = telemetry.ingress_frames;
+    metrics.clob_active_ingress_bytes = telemetry.ingress_bytes;
+    metrics.clob_active_last_ingress_sequence = telemetry.last_ingress_sequence;
+    metrics.clob_active_last_ingress_queue_dwell_milliseconds =
+        duration_milliseconds(telemetry.last_ingress_queue_dwell);
+    metrics.clob_active_max_ingress_queue_dwell_milliseconds =
+        duration_milliseconds(telemetry.max_ingress_queue_dwell);
+    metrics.clob_active_ingress_overflows = telemetry.ingress_overflows;
 }
 
 #[derive(Debug)]
@@ -1259,20 +1426,26 @@ impl ClobSuccessorIntegrityState {
     }
 }
 
-async fn send_clob_text(
-    socket: &mut ClobSocket,
+async fn send_clob_text<S>(
+    socket: &mut S,
     payload: String,
     shutdown: &mut watch::Receiver<bool>,
-) -> std::result::Result<(), ClobSendFailure> {
+) -> std::result::Result<(), ClobSendFailure>
+where
+    S: Sink<Message, Error = Error> + Unpin,
+{
     send_clob_text_with_timeout(socket, payload, shutdown, CLOB_SEND_TIMEOUT).await
 }
 
-async fn send_clob_text_with_timeout(
-    socket: &mut ClobSocket,
+async fn send_clob_text_with_timeout<S>(
+    socket: &mut S,
     payload: String,
     shutdown: &mut watch::Receiver<bool>,
     send_timeout: StdDuration,
-) -> std::result::Result<(), ClobSendFailure> {
+) -> std::result::Result<(), ClobSendFailure>
+where
+    S: Sink<Message, Error = Error> + Unpin,
+{
     if *shutdown.borrow() {
         return Err(ClobSendFailure::Shutdown);
     }
@@ -1296,7 +1469,7 @@ async fn send_clob_text_with_timeout(
 struct ClobEpoch {
     connection_id: Uuid,
     connection_epoch: i32,
-    socket: ClobSocket,
+    transport: ClobIngressTransport,
     registry: BookRegistry,
     markets: Vec<BtcIntervalMarket>,
     session: FeedSession,
@@ -1308,6 +1481,12 @@ struct ClobEpoch {
     books_usable: bool,
     successor_integrity: ClobSuccessorIntegrityState,
     pending_resolutions: HashMap<String, BufferedClobResolution>,
+}
+
+impl Drop for ClobEpoch {
+    fn drop(&mut self) {
+        self.transport.reader_task.abort();
+    }
 }
 
 #[derive(Debug)]
@@ -1489,7 +1668,7 @@ async fn connect_clob_epoch(
         epoch: Box::new(ClobEpoch {
             connection_id,
             connection_epoch,
-            socket,
+            transport: start_clob_ingress(socket),
             registry,
             markets: desired_markets,
             session,
@@ -3042,7 +3221,7 @@ async fn update_clob_epoch_subscriptions(
     if !delta.added_assets.is_empty() {
         let payload =
             clob_subscription_operation(&delta.added_assets, ClobSubscriptionOperation::Subscribe);
-        match send_clob_text(&mut epoch.socket, payload, shutdown).await {
+        match send_clob_text(&mut epoch.transport.sink, payload, shutdown).await {
             Ok(()) => {}
             Err(ClobSendFailure::Shutdown) => return Err(ClobEpochUpdateError::Shutdown),
             Err(ClobSendFailure::Timeout) => {
@@ -3075,7 +3254,7 @@ async fn update_clob_epoch_subscriptions(
             &delta.removed_assets,
             ClobSubscriptionOperation::Unsubscribe,
         );
-        match send_clob_text(&mut epoch.socket, payload, shutdown).await {
+        match send_clob_text(&mut epoch.transport.sink, payload, shutdown).await {
             Ok(()) => {}
             Err(ClobSendFailure::Shutdown) => return Err(ClobEpochUpdateError::Shutdown),
             Err(ClobSendFailure::Timeout) => {
@@ -3167,7 +3346,7 @@ async fn repair_quarantined_clob_successor(
     ] {
         let payload = clob_subscription_operation(&assets, operation);
         match send_clob_text_with_timeout(
-            &mut epoch.socket,
+            &mut epoch.transport.sink,
             payload,
             shutdown,
             CLOB_SUCCESSOR_REPAIR_SEND_TIMEOUT,
@@ -3216,6 +3395,79 @@ async fn repair_quarantined_clob_successor(
         up_token_id = %market.up_token_id,
         down_token_id = %market.down_token_id,
         "private CLOB successor requested authoritative snapshots on the existing socket"
+    );
+    Ok(true)
+}
+
+async fn repair_delayed_clob_market(
+    epoch: &mut ClobEpoch,
+    shutdown: &mut watch::Receiver<bool>,
+    max_book_age: Duration,
+) -> std::result::Result<bool, ClobEpochUpdateError> {
+    let checked_at = Utc::now();
+    let Some(diagnostic) =
+        clob_epoch_readiness_diagnostic(&epoch.registry, &epoch.markets, checked_at, max_book_age)
+    else {
+        return Ok(false);
+    };
+    if diagnostic.reason != "source_to_receive_lag" {
+        return Ok(false);
+    }
+    let market = unique_current_clob_market(&epoch.markets, checked_at)
+        .cloned()
+        .ok_or_else(|| {
+            ClobEpochUpdateError::Recoverable(
+                "source_lag_repair_current_market_not_unique".to_string(),
+            )
+        })?;
+    let mut assets = vec![market.up_token_id.clone(), market.down_token_id.clone()];
+    assets.sort_unstable();
+    for operation in [
+        ClobSubscriptionOperation::Unsubscribe,
+        ClobSubscriptionOperation::Subscribe,
+    ] {
+        let payload = clob_subscription_operation(&assets, operation);
+        match send_clob_text(&mut epoch.transport.sink, payload, shutdown).await {
+            Ok(()) => {}
+            Err(ClobSendFailure::Shutdown) => return Err(ClobEpochUpdateError::Shutdown),
+            Err(ClobSendFailure::Timeout) => {
+                return Err(ClobEpochUpdateError::Recoverable(format!(
+                    "source_lag_repair_{}_timeout",
+                    operation.as_str()
+                )));
+            }
+            Err(ClobSendFailure::Transport { error, detail }) => {
+                epoch.telemetry.last_transport_error = Some(detail);
+                return Err(ClobEpochUpdateError::Recoverable(
+                    bounded_clob_error_reason(&format!(
+                        "source_lag_repair_{}_failed:{error}",
+                        operation.as_str()
+                    )),
+                ));
+            }
+        }
+    }
+    epoch
+        .registry
+        .reset_market_for_snapshot(&market)
+        .map_err(|error| {
+            ClobEpochUpdateError::Recoverable(bounded_clob_error_reason(&format!(
+                "source_lag_snapshot_reset_failed:{error}"
+            )))
+        })?;
+    let repaired_at = Utc::now();
+    epoch.subscription_stats.updates = epoch.subscription_stats.updates.saturating_add(1);
+    epoch.subscription_stats.last_updated_at = Some(repaired_at);
+    epoch.refresh_private_health(repaired_at, Instant::now(), max_book_age);
+    tracing::warn!(
+        feed = "polymarket_clob_market",
+        connection_id = %epoch.connection_id,
+        connection_epoch = epoch.connection_epoch,
+        connection_role = epoch.telemetry.role.as_str(),
+        market_id = %market.market_id,
+        token_id = ?diagnostic.token_id.as_deref(),
+        source_to_receive_lag_ms = ?diagnostic.source_to_receive_lag_milliseconds,
+        "delayed CLOB book pair requested authoritative snapshots on the existing socket"
     );
     Ok(true)
 }
@@ -3352,15 +3604,21 @@ fn private_clob_event_disposition(
 
 async fn apply_active_clob_frame(
     epoch: &mut ClobEpoch,
-    message: Message,
+    frame: ClobIngressFrame,
+    ingress_queue_depth: usize,
     repository: &BtcRepository,
     writer: &mpsc::Sender<PersistItem>,
     state: &Arc<RwLock<RealtimeState>>,
     shared_books: &Arc<RwLock<BookRegistry>>,
     metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
 ) -> Result<ClobFrameAction> {
-    let received_instant = Instant::now();
-    let received_at = Utc::now();
+    epoch.telemetry.record_ingress_frame(&frame, Instant::now());
+    let ClobIngressFrame {
+        message,
+        received_at,
+        received_instant,
+        ..
+    } = frame;
     let pong_round_trip = match &message {
         Message::Text(text) => epoch
             .watchdog
@@ -3407,6 +3665,9 @@ async fn apply_active_clob_frame(
         runtime_metrics.clob_messages_received =
             runtime_metrics.clob_messages_received.saturating_add(1);
         runtime_metrics.clob_active_last_data_or_heartbeat_at = Some(received_at);
+        runtime_metrics.clob_active_ingress_queue_depth =
+            u64::try_from(ingress_queue_depth).unwrap_or(u64::MAX);
+        publish_active_clob_socket_metrics(&mut runtime_metrics, &epoch.telemetry);
     }
     let messages = match parsed {
         Ok(messages) => messages,
@@ -3509,9 +3770,17 @@ async fn apply_active_clob_frame(
     Ok(ClobFrameAction::Continue)
 }
 
-fn apply_private_clob_frame(epoch: &mut ClobEpoch, message: Message) -> ClobFrameAction {
-    let received_instant = Instant::now();
-    let received_at = Utc::now();
+fn apply_private_clob_ingress_frame(
+    epoch: &mut ClobEpoch,
+    frame: ClobIngressFrame,
+) -> ClobFrameAction {
+    epoch.telemetry.record_ingress_frame(&frame, Instant::now());
+    let ClobIngressFrame {
+        message,
+        received_at,
+        received_instant,
+        ..
+    } = frame;
     let pong_round_trip = match &message {
         Message::Text(text) => epoch
             .watchdog
@@ -3660,6 +3929,21 @@ fn apply_private_clob_frame(epoch: &mut ClobEpoch, message: Message) -> ClobFram
     ClobFrameAction::Continue
 }
 
+#[cfg(test)]
+fn apply_private_clob_frame(epoch: &mut ClobEpoch, message: Message) -> ClobFrameAction {
+    apply_private_clob_ingress_frame(
+        epoch,
+        ClobIngressFrame {
+            payload_bytes: message.len(),
+            message,
+            received_at: Utc::now(),
+            received_instant: Instant::now(),
+            sequence: epoch.telemetry.last_ingress_sequence.saturating_add(1),
+            _byte_permit: None,
+        },
+    )
+}
+
 fn same_clob_resolution_outcome(left: &ClobMessage, right: &ClobMessage) -> bool {
     match (left, right) {
         (
@@ -3686,16 +3970,13 @@ enum ClobCloseOutcome {
     Failed(ClobTransportErrorDetail),
 }
 
-async fn attempt_clob_close<S>(
-    socket: &mut WebSocketStream<S>,
-    action: ClobCloseAction,
-) -> ClobCloseOutcome
+async fn attempt_clob_close<S>(socket: &mut S, action: ClobCloseAction) -> ClobCloseOutcome
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: Sink<Message, Error = Error> + Unpin,
 {
     let result = match action {
         ClobCloseAction::Skip => return ClobCloseOutcome::Skipped,
-        ClobCloseAction::Initiate => timeout(CLOB_GRACEFUL_CLOSE_TIMEOUT, socket.close(None)).await,
+        ClobCloseAction::Initiate => timeout(CLOB_GRACEFUL_CLOSE_TIMEOUT, socket.close()).await,
         ClobCloseAction::AcknowledgeRemote => {
             timeout(CLOB_GRACEFUL_CLOSE_TIMEOUT, socket.flush()).await
         }
@@ -3775,7 +4056,7 @@ async fn complete_clob_epoch_with_close(
 ) -> bool {
     let disconnected_at = Utc::now();
     let disconnected_instant = Instant::now();
-    match attempt_clob_close(&mut epoch.socket, close_action).await {
+    match attempt_clob_close(&mut epoch.transport.sink, close_action).await {
         ClobCloseOutcome::Skipped => {}
         ClobCloseOutcome::Completed => {
             tracing::debug!(
@@ -3812,6 +4093,7 @@ async fn complete_clob_epoch_with_close(
             );
         }
     }
+    epoch.transport.reader_task.abort();
     let reason = bounded_clob_error_reason(&reason);
     epoch.session.disconnected_at = Some(disconnected_at);
     epoch.session.disconnect_reason = Some(reason.clone());
@@ -4504,46 +4786,60 @@ async fn run_clob_supervisor(
                     }
                 }
             }
-            message = async {
+            event = async {
                 active
                     .as_mut()
                     .expect("active CLOB socket branch is guarded")
-                    .socket
-                    .next()
+                    .transport
+                    .events
+                    .recv()
                     .await
             }, if active.is_some() => {
-                match message {
+                match event {
                     None => {
-                        active
-                            .as_mut()
-                            .expect("active epoch remains installed")
-                            .telemetry
-                            .last_transport_error = Some(ClobTransportErrorDetail::websocket_eof());
-                        let cause = clob_disconnect_cause(
-                            false,
-                            false,
-                            false,
-                            false,
-                        );
-                        active_failure = Some(("websocket_eof".to_string(), cause, None));
+                        let epoch = active.as_mut().expect("active epoch remains installed");
+                        if epoch.transport.overflowed.load(Ordering::Acquire) {
+                            epoch.telemetry.record_ingress_overflow();
+                            let mut runtime_metrics = metrics.write().await;
+                            publish_active_clob_socket_metrics(&mut runtime_metrics, &epoch.telemetry);
+                            active_failure = Some((
+                                "ingress_queue_overflow".to_string(),
+                                ClobDisconnectCause::TransportFailure,
+                                None,
+                            ));
+                        } else {
+                            epoch.telemetry.last_transport_error =
+                                Some(ClobTransportErrorDetail::websocket_eof());
+                            let cause = clob_disconnect_cause(false, false, false, false);
+                            active_failure = Some(("websocket_eof".to_string(), cause, None));
+                        }
                     }
-                    Some(Err(error)) => {
-                        active
-                            .as_mut()
-                            .expect("active epoch remains installed")
-                            .telemetry
-                            .last_transport_error = Some(clob_transport_error_detail(&error));
+                    Some(ClobIngressEvent::TransportError { reason, detail }) => {
+                        active.as_mut().expect("active epoch remains installed")
+                            .telemetry.last_transport_error = Some(detail);
                         active_failure = Some((
-                            bounded_clob_error_reason(&format!("transport_read_failed:{error}")),
+                            reason,
                             ClobDisconnectCause::TransportFailure,
                             None,
                         ));
                     }
-                    Some(Ok(message)) => {
+                    Some(ClobIngressEvent::Eof) => {
+                        active.as_mut().expect("active epoch remains installed")
+                            .telemetry.last_transport_error =
+                            Some(ClobTransportErrorDetail::websocket_eof());
+                        active_failure = Some((
+                            "websocket_eof".to_string(),
+                            ClobDisconnectCause::TransportFailure,
+                            None,
+                        ));
+                    }
+                    Some(ClobIngressEvent::Frame(frame)) => {
                         let epoch = active.as_mut().expect("active epoch remains installed");
+                        let ingress_queue_depth = epoch.transport.events.len();
                         match apply_active_clob_frame(
                             epoch,
-                            message,
+                            frame,
+                            ingress_queue_depth,
                             &repository,
                             &writer,
                             &state,
@@ -4564,6 +4860,36 @@ async fn run_clob_supervisor(
                                 ));
                             }
                             Ok(ClobFrameAction::Continue) => {
+                                match repair_delayed_clob_market(
+                                    epoch,
+                                    &mut shutdown,
+                                    max_book_age,
+                                )
+                                .await
+                                {
+                                    Ok(true) => {
+                                        let reset_at = Utc::now();
+                                        let mut published_books = shared_books.write().await;
+                                        let mut shared = state.write().await;
+                                        *published_books = epoch.registry.clone();
+                                        shared.update_books(&epoch.registry);
+                                        shared.last_updated_at = Some(reset_at);
+                                    }
+                                    Ok(false) => {}
+                                    Err(ClobEpochUpdateError::Shutdown) => {
+                                        shutdown_requested = true;
+                                    }
+                                    Err(ClobEpochUpdateError::Recoverable(reason)) => {
+                                        active_failure = Some((
+                                            reason,
+                                            ClobDisconnectCause::SubscriptionFailure,
+                                            None,
+                                        ));
+                                    }
+                                    Err(ClobEpochUpdateError::Critical(_)) => {
+                                        unreachable!("same-socket source-lag repair has no persistence boundary")
+                                    }
+                                }
                                 let checked_at = Utc::now();
                                 epoch.watchdog.refresh_bootstrap(
                                     Instant::now(),
@@ -4598,42 +4924,55 @@ async fn run_clob_supervisor(
                     }
                 }
             }
-            message = async {
+            event = async {
                 successor
                     .as_mut()
                     .expect("successor CLOB socket branch is guarded")
-                    .socket
-                    .next()
+                    .transport
+                    .events
+                    .recv()
                     .await
             }, if successor.is_some() => {
-                match message {
+                match event {
                     None => {
-                        successor
-                            .as_mut()
-                            .expect("successor epoch remains installed")
-                            .telemetry
-                            .last_transport_error = Some(ClobTransportErrorDetail::websocket_eof());
+                        let epoch = successor.as_mut().expect("successor epoch remains installed");
+                        if epoch.transport.overflowed.load(Ordering::Acquire) {
+                            epoch.telemetry.record_ingress_overflow();
+                            successor_failure = Some((
+                                "ingress_queue_overflow".to_string(),
+                                ClobDisconnectCause::TransportFailure,
+                            ));
+                        } else {
+                            epoch.telemetry.last_transport_error =
+                                Some(ClobTransportErrorDetail::websocket_eof());
+                            successor_failure = Some((
+                                "websocket_eof".to_string(),
+                                ClobDisconnectCause::TransportFailure,
+                            ));
+                        }
+                    }
+                    Some(ClobIngressEvent::TransportError { reason, detail }) => {
+                        successor.as_mut().expect("successor epoch remains installed")
+                            .telemetry.last_transport_error = Some(detail);
+                        successor_failure = Some((
+                            reason,
+                            ClobDisconnectCause::TransportFailure,
+                        ));
+                    }
+                    Some(ClobIngressEvent::Eof) => {
+                        successor.as_mut().expect("successor epoch remains installed")
+                            .telemetry.last_transport_error =
+                            Some(ClobTransportErrorDetail::websocket_eof());
                         successor_failure = Some((
                             "websocket_eof".to_string(),
                             ClobDisconnectCause::TransportFailure,
                         ));
                     }
-                    Some(Err(error)) => {
-                        successor
-                            .as_mut()
-                            .expect("successor epoch remains installed")
-                            .telemetry
-                            .last_transport_error = Some(clob_transport_error_detail(&error));
-                        successor_failure = Some((
-                            bounded_clob_error_reason(&format!("transport_read_failed:{error}")),
-                            ClobDisconnectCause::TransportFailure,
-                        ));
-                    }
-                    Some(Ok(message)) => {
+                    Some(ClobIngressEvent::Frame(frame)) => {
                         let epoch = successor
                             .as_mut()
                             .expect("successor epoch remains installed");
-                        let action = apply_private_clob_frame(epoch, message);
+                        let action = apply_private_clob_ingress_frame(epoch, frame);
                         if action == ClobFrameAction::Disconnect {
                             successor_failure = Some((
                                 epoch
@@ -4646,13 +4985,20 @@ async fn run_clob_supervisor(
                                 ),
                             ));
                         } else {
-                            match repair_quarantined_clob_successor(
+                            let lag_repair = repair_delayed_clob_market(
                                 epoch,
                                 &mut shutdown,
                                 max_book_age,
                             )
-                            .await
-                            {
+                            .await;
+                            match lag_repair {
+                                Ok(_) => match repair_quarantined_clob_successor(
+                                    epoch,
+                                    &mut shutdown,
+                                    max_book_age,
+                                )
+                                .await
+                                {
                                 Ok(_) => {
                                     let checked_at = Utc::now();
                                     epoch.refresh_private_health(
@@ -4684,6 +5030,17 @@ async fn run_clob_supervisor(
                                 }
                                 Err(ClobEpochUpdateError::Critical(_)) => {
                                     unreachable!("same-socket successor repair has no persistence boundary")
+                                }
+                                },
+                                Err(ClobEpochUpdateError::Shutdown) => shutdown_requested = true,
+                                Err(ClobEpochUpdateError::Recoverable(reason)) => {
+                                    successor_failure = Some((
+                                        reason,
+                                        ClobDisconnectCause::SubscriptionFailure,
+                                    ));
+                                }
+                                Err(ClobEpochUpdateError::Critical(_)) => {
+                                    unreachable!("same-socket source-lag repair has no persistence boundary")
                                 }
                             }
                         }
@@ -4975,7 +5332,7 @@ async fn run_clob_supervisor(
             scheduled_at = heartbeat.tick() => {
                 let mut active_probe = None;
                 if let Some(epoch) = active.as_mut() {
-                    match send_clob_text(&mut epoch.socket, "PING".to_string(), &mut shutdown).await {
+                    match send_clob_text(&mut epoch.transport.sink, "PING".to_string(), &mut shutdown).await {
                             Ok(()) => {
                                 let sent_instant = Instant::now();
                                 epoch.watchdog.record_text_ping(sent_instant, pong_timeout);
@@ -5006,7 +5363,7 @@ async fn run_clob_supervisor(
                     }
                 }
                 if let Some(epoch) = successor.as_mut() {
-                    match send_clob_text(&mut epoch.socket, "PING".to_string(), &mut shutdown).await {
+                    match send_clob_text(&mut epoch.transport.sink, "PING".to_string(), &mut shutdown).await {
                             Ok(()) => {
                                 let sent_instant = Instant::now();
                                 epoch.watchdog.record_text_ping(sent_instant, pong_timeout);
@@ -5561,7 +5918,7 @@ fn clob_epoch_readiness_diagnostic(
                     (received_at - source_timestamp).num_milliseconds()
                 });
         let reason = if book.market_id != market.market_id {
-            Some("book_identity_mismatch")
+            Some("canonical_market_identity_mismatch")
         } else if !book.bootstrapped {
             Some("book_not_bootstrapped")
         } else if book.integrity_status != FeedIntegrityStatus::Ok {
@@ -5596,8 +5953,22 @@ fn clob_epoch_readiness_diagnostic(
             });
         }
     }
+    if let Some(identity) = registry.market_book_identity_diagnostic(market) {
+        return Some(ClobReadinessDiagnostic {
+            reason: identity.reason,
+            market_id: Some(market.market_id.clone()),
+            token_id: Some(identity.token_id),
+            integrity_status: None,
+            bootstrapped: None,
+            has_bid: None,
+            has_ask: None,
+            source_age_milliseconds: None,
+            receipt_age_milliseconds: None,
+            source_to_receive_lag_milliseconds: None,
+        });
+    }
     Some(ClobReadinessDiagnostic {
-        reason: "book_identity_mismatch",
+        reason: "unclassified_book_readiness_failure",
         market_id: Some(market.market_id.clone()),
         token_id: None,
         integrity_status: None,
@@ -5976,6 +6347,13 @@ fn clear_clob_connection_metrics(
     metrics.clob_active_handshake_date = None;
     metrics.clob_active_last_data_or_heartbeat_at = None;
     metrics.clob_active_last_source_to_receive_lag_milliseconds = None;
+    metrics.clob_active_ingress_frames = 0;
+    metrics.clob_active_ingress_bytes = 0;
+    metrics.clob_active_last_ingress_sequence = 0;
+    metrics.clob_active_ingress_queue_depth = 0;
+    metrics.clob_active_last_ingress_queue_dwell_milliseconds = 0;
+    metrics.clob_active_max_ingress_queue_dwell_milliseconds = 0;
+    metrics.clob_active_ingress_overflows = 0;
     metrics.clob_active_heartbeat_probes = 0;
     metrics.clob_active_heartbeat_acknowledgements = 0;
     metrics.clob_active_last_heartbeat_sent_at = None;
@@ -6090,6 +6468,14 @@ fn log_clob_disconnect(
                 max_heartbeat_send_lateness_ms =
                     duration_milliseconds(telemetry.max_heartbeat_send_lateness),
                 last_frame_age_ms = ?last_frame_age_milliseconds,
+                ingress_frames = telemetry.ingress_frames,
+                ingress_bytes = telemetry.ingress_bytes,
+                last_ingress_sequence = telemetry.last_ingress_sequence,
+                last_ingress_queue_dwell_ms =
+                    duration_milliseconds(telemetry.last_ingress_queue_dwell),
+                max_ingress_queue_dwell_ms =
+                    duration_milliseconds(telemetry.max_ingress_queue_dwell),
+                ingress_overflows = telemetry.ingress_overflows,
                 remote_close_observed = telemetry.remote_close_observed,
                 remote_close_code = ?telemetry.remote_close_code,
                 remote_close_reason = ?telemetry.remote_close_reason.as_deref(),
@@ -10562,6 +10948,61 @@ mod tests {
         (client, server)
     }
 
+    #[tokio::test]
+    async fn clob_ingress_reader_drains_and_timestamps_before_processing() {
+        let (client, mut server) = clob_socket_pair().await;
+        let mut transport = start_clob_ingress(client);
+        let payload = r#"{"event_type":"test"}"#;
+        let sent_before = Utc::now();
+        server
+            .send(Message::Text(payload.to_string().into()))
+            .await
+            .unwrap();
+        tokio::time::sleep(StdDuration::from_millis(20)).await;
+
+        let event = timeout(StdDuration::from_secs(1), transport.events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let ClobIngressEvent::Frame(frame) = event else {
+            panic!("expected an ingress frame")
+        };
+        assert_eq!(frame.sequence, 1);
+        assert_eq!(frame.payload_bytes, payload.len());
+        assert!(frame.received_at >= sent_before);
+        assert!(frame.received_at <= Utc::now());
+        let mut telemetry = ClobSocketTelemetry::new(&[]);
+        telemetry.record_ingress_frame(&frame, Instant::now());
+        assert!(telemetry.last_ingress_queue_dwell >= StdDuration::from_millis(10));
+        assert_eq!(telemetry.ingress_frames, 1);
+        assert_eq!(telemetry.ingress_bytes, payload.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn clob_ingress_overflow_invalidates_the_connection_without_dropping_and_continuing() {
+        let (client, mut server) = clob_socket_pair().await;
+        let transport = start_clob_ingress(client);
+        for _ in 0..=CLOB_INGRESS_FRAME_CAPACITY {
+            if server
+                .send(Message::Text("x".to_string().into()))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+        timeout(StdDuration::from_secs(2), async {
+            while !transport.overflowed.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(transport.overflowed.load(Ordering::Acquire));
+        assert_eq!(transport.events.len(), CLOB_INGRESS_FRAME_CAPACITY);
+        assert!(transport.reader_task.is_finished());
+    }
+
     async fn private_clob_epoch(
         market: BtcIntervalMarket,
         registry: BookRegistry,
@@ -10579,7 +11020,7 @@ mod tests {
         ClobEpoch {
             connection_id,
             connection_epoch: 1,
-            socket: inert_clob_socket().await,
+            transport: start_clob_ingress(inert_clob_socket().await),
             registry,
             markets: vec![market],
             session: new_session(
@@ -11074,6 +11515,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delayed_book_pair_requests_authoritative_same_socket_snapshots() {
+        let mut current = market();
+        let checked_at = Utc::now();
+        current.window_start = checked_at - Duration::minutes(1);
+        current.window_end = checked_at + Duration::minutes(4);
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&current);
+        for token_id in [&current.up_token_id, &current.down_token_id] {
+            let events = registry.apply(
+                ClobMessage::Book {
+                    market_id: current.condition_id.clone(),
+                    token_id: token_id.clone(),
+                    bids: vec![OrderbookLevel {
+                        price: dec!(0.48),
+                        size: dec!(10),
+                    }],
+                    asks: vec![OrderbookLevel {
+                        price: dec!(0.52),
+                        size: dec!(10),
+                    }],
+                    source_timestamp: checked_at - Duration::seconds(3),
+                    source_hash: Some(format!("delayed-{token_id}")),
+                    raw_payload: serde_json::json!({}),
+                },
+                checked_at,
+            );
+            assert!(events.iter().all(|event| event.applied));
+        }
+        let mut candidate = private_clob_epoch(current.clone(), registry, checked_at).await;
+        let (client, mut server) = clob_socket_pair().await;
+        candidate.transport.reader_task.abort();
+        candidate.transport = start_clob_ingress(client);
+        let (_shutdown_tx, mut shutdown) = watch::channel(false);
+
+        assert!(repair_delayed_clob_market(
+            &mut candidate,
+            &mut shutdown,
+            Duration::seconds(2),
+        )
+        .await
+        .unwrap());
+        for expected_operation in ["unsubscribe", "subscribe"] {
+            let message = timeout(StdDuration::from_secs(1), server.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let Message::Text(payload) = message else {
+                panic!("expected subscription control text")
+            };
+            let value: serde_json::Value = serde_json::from_str(payload.as_str()).unwrap();
+            assert_eq!(value["operation"], expected_operation);
+        }
+        assert!(!candidate
+            .registry
+            .market_books_bootstrapped(&current));
+        assert_eq!(candidate.connection_id, candidate.registry.connection_id());
+        assert!(candidate.session.disconnect_reason.is_none());
+    }
+
+    #[tokio::test]
     async fn top_mismatch_repairs_successor_on_the_same_socket_without_warning_storms() {
         let mut current = market();
         let checked_at = Utc::now();
@@ -11083,7 +11585,8 @@ mod tests {
         let connection_id = registry.connection_id();
         let mut candidate = private_clob_epoch(current.clone(), registry, checked_at).await;
         let (client, mut server) = clob_socket_pair().await;
-        candidate.socket = client;
+        candidate.transport.reader_task.abort();
+        candidate.transport = start_clob_ingress(client);
 
         let mismatch_at = checked_at - Duration::milliseconds(1);
         let mismatch = serde_json::json!({
@@ -11836,7 +12339,7 @@ mod tests {
         let mut epoch = ClobEpoch {
             connection_id,
             connection_epoch: 1,
-            socket: inert_clob_socket().await,
+            transport: start_clob_ingress(inert_clob_socket().await),
             registry,
             markets: vec![current],
             session: new_session(

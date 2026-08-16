@@ -658,6 +658,12 @@ pub struct BookRegistry {
     next_sequence: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BookIdentityDiagnostic {
+    pub reason: &'static str,
+    pub token_id: String,
+}
+
 impl BookRegistry {
     pub fn new(connection_id: Uuid) -> Self {
         Self {
@@ -1147,6 +1153,38 @@ impl BookRegistry {
                     )
             })
         })
+    }
+
+    pub(crate) fn market_book_identity_diagnostic(
+        &self,
+        market: &BtcIntervalMarket,
+    ) -> Option<BookIdentityDiagnostic> {
+        for (token_id, outcome) in [
+            (&market.up_token_id, BtcOutcome::Up),
+            (&market.down_token_id, BtcOutcome::Down),
+        ] {
+            let Some(book) = self.books.get(token_id) else {
+                continue;
+            };
+            let reason = if book.market_id != market.market_id {
+                Some("canonical_market_identity_mismatch")
+            } else if book.wire_market_id != market.condition_id {
+                Some("wire_market_identity_mismatch")
+            } else if book.token_id != *token_id {
+                Some("token_identity_mismatch")
+            } else if book.outcome != outcome {
+                Some("outcome_identity_mismatch")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                return Some(BookIdentityDiagnostic {
+                    reason,
+                    token_id: token_id.clone(),
+                });
+            }
+        }
+        None
     }
 
     pub fn book_readiness(&self) -> Vec<BookReadiness> {
@@ -2363,6 +2401,39 @@ mod tests {
         registry.quarantine(FeedIntegrityStatus::Stale);
         assert!(!registry.market_books_structurally_ready(&market));
         assert!(!registry.market_books_ready(&market, ready_at, max_age));
+    }
+
+    #[test]
+    fn market_book_identity_diagnostic_names_the_exact_hidden_field() {
+        let market = market();
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&market);
+        seed_book(&mut registry, &market.up_token_id, 1_783_902_701_000);
+        seed_book(&mut registry, &market.down_token_id, 1_783_902_701_000);
+
+        registry
+            .books
+            .get_mut(&market.up_token_id)
+            .unwrap()
+            .wire_market_id = "wrong-condition".to_string();
+        assert_eq!(
+            registry
+                .market_book_identity_diagnostic(&market)
+                .unwrap()
+                .reason,
+            "wire_market_identity_mismatch"
+        );
+
+        let up = registry.books.get_mut(&market.up_token_id).unwrap();
+        up.wire_market_id = market.condition_id.clone();
+        up.outcome = BtcOutcome::Down;
+        assert_eq!(
+            registry
+                .market_book_identity_diagnostic(&market)
+                .unwrap()
+                .reason,
+            "outcome_identity_mismatch"
+        );
     }
 
     fn replace_book(
