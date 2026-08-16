@@ -11,7 +11,10 @@ use crate::{
     execution::{live::LiveVenueEvent, LIVE_EXTERNAL_EVENT_CLOCK_SKEW},
     idempotency::event_hash,
     models::{DataApiActivity, DataApiPosition},
-    store::{AccountPositionSnapshot, AccountTrade, LiveRedemptionEvidence, Store},
+    store::{
+        AccountLiveFillEvidence, AccountPositionSnapshot, AccountTrade, LiveRedemptionEvidence,
+        Store,
+    },
 };
 
 const DATA_API_RECONCILIATION_PAGE_SIZE: usize = 500;
@@ -134,7 +137,8 @@ pub async fn reconcile_account_positions(
     // newly inserted account event can shift every later page and make a clean reconciliation
     // silently skip or duplicate evidence.
     let activity_window_end = Utc::now();
-    let start = (activity_window_end - chrono::Duration::hours(lookback_hours)).timestamp();
+    let activity_window_start = activity_window_end - chrono::Duration::hours(lookback_hours);
+    let start = activity_window_start.timestamp();
     let mut activity_query = ActivityQuery::for_user(account_address.clone());
     activity_query.limit = Some(DATA_API_RECONCILIATION_PAGE_SIZE);
     activity_query.start = Some(start);
@@ -204,7 +208,30 @@ pub async fn reconcile_account_positions(
             &venue_order_ids,
         )
         .await?;
-        let unlinked_normalized = link_process_owned_trades(&mut trades, &owned_orders);
+        let mut transaction_hashes = trades
+            .iter()
+            .filter(|trade| trade.venue_order_id.is_none())
+            .filter_map(|trade| {
+                trade
+                    .transaction_hash
+                    .as_deref()
+                    .and_then(normalize_transaction_hash)
+            })
+            .collect::<Vec<_>>();
+        transaction_hashes.sort_unstable();
+        transaction_hashes.dedup();
+        let owned_fills = account_owned_fills_for_reconciliation(
+            store,
+            account_ref
+                .as_deref()
+                .context("process-scoped reconciliation is missing account_ref")?,
+            &transaction_hashes,
+            activity_window_start - LIVE_EXTERNAL_EVENT_CLOCK_SKEW,
+            activity_window_end + LIVE_EXTERNAL_EVENT_CLOCK_SKEW,
+        )
+        .await?;
+        let unlinked_normalized =
+            link_process_owned_trades(&mut trades, &owned_orders, &owned_fills);
         let unmatched = unlinked_normalized
             .saturating_add(external_trade_activities.saturating_sub(trades.len()));
         unmatched as u64
@@ -728,26 +755,99 @@ fn activity_external_id(activity: &DataApiActivity, keys: &[&str]) -> Option<Str
     })
 }
 
-/// Attributes a normalized account trade only when its explicit venue order identity resolves to
-/// an order already owned by the requested process. Token and market similarity are deliberately
-/// not considered ownership evidence.
+fn normalize_transaction_hash(value: &str) -> Option<String> {
+    let value = value.trim();
+    is_prefixed_hex(value, 32).then(|| value.to_ascii_lowercase())
+}
+
+/// Attributes a normalized account trade through either its explicit venue order identity or one
+/// unique persisted live fill carrying the same venue transaction identity. Fill economics only
+/// disambiguate candidates inside that exact transaction; token or market similarity alone never
+/// establishes ownership.
 fn link_process_owned_trades(
     trades: &mut [AccountTrade],
     owned_orders: &HashMap<String, String>,
+    owned_fills: &[AccountLiveFillEvidence],
 ) -> usize {
+    let mut fills_by_transaction = HashMap::<&str, Vec<&AccountLiveFillEvidence>>::new();
+    for evidence in owned_fills {
+        fills_by_transaction
+            .entry(evidence.transaction_hash.as_str())
+            .or_default()
+            .push(evidence);
+    }
     let mut unmatched = 0usize;
     for trade in trades {
-        let Some(order_id) = trade
-            .venue_order_id
-            .as_ref()
-            .and_then(|venue_order_id| owned_orders.get(venue_order_id))
-        else {
+        let order_id = if let Some(venue_order_id) = trade.venue_order_id.as_ref() {
+            owned_orders.get(venue_order_id).cloned()
+        } else {
+            trade
+                .transaction_hash
+                .as_deref()
+                .and_then(normalize_transaction_hash)
+                .and_then(|transaction_hash| fills_by_transaction.get(transaction_hash.as_str()))
+                .and_then(|candidates| {
+                    let order_ids = candidates
+                        .iter()
+                        .filter(|evidence| {
+                            evidence.token_id == trade.token_id
+                                && evidence.side.eq_ignore_ascii_case(&trade.side)
+                                && evidence.price == trade.price
+                                && evidence.size == trade.size
+                        })
+                        .map(|evidence| evidence.order_id.as_str())
+                        .collect::<HashSet<_>>();
+                    (order_ids.len() == 1).then(|| {
+                        order_ids
+                            .into_iter()
+                            .next()
+                            .expect("one exact fill order identity must exist")
+                            .to_string()
+                    })
+                })
+        };
+        let Some(order_id) = order_id else {
             unmatched = unmatched.saturating_add(1);
             continue;
         };
-        trade.linked_order_id = Some(order_id.clone());
+        trade.linked_order_id = Some(order_id);
     }
     unmatched
+}
+
+async fn account_owned_fills_for_reconciliation(
+    store: &Store,
+    account_ref: &str,
+    transaction_hashes: &[String],
+    window_start: chrono::DateTime<Utc>,
+    window_end: chrono::DateTime<Utc>,
+) -> Result<Vec<AccountLiveFillEvidence>> {
+    if transaction_hashes.len() > MAX_DATA_API_RECONCILIATION_ROWS {
+        bail!(
+            "account reconciliation exceeds the bounded {}-transaction ownership window",
+            MAX_DATA_API_RECONCILIATION_ROWS
+        );
+    }
+    let mut owned_fills = Vec::new();
+    for chunk in transaction_hashes.chunks(DATA_API_RECONCILIATION_PAGE_SIZE) {
+        owned_fills.extend(
+            store
+                .account_live_fill_evidence_by_transaction_hashes(
+                    account_ref,
+                    chunk,
+                    window_start,
+                    window_end,
+                )
+                .await?,
+        );
+        if owned_fills.len() > MAX_DATA_API_RECONCILIATION_ROWS {
+            bail!(
+                "account reconciliation exceeds the bounded {}-fill ownership window",
+                MAX_DATA_API_RECONCILIATION_ROWS
+            );
+        }
+    }
+    Ok(owned_fills)
 }
 
 async fn account_owned_orders_for_reconciliation(
@@ -1039,7 +1139,7 @@ mod tests {
         let owned_orders =
             HashMap::from([("venue-owned".to_string(), "persisted-order".to_string())]);
 
-        let unmatched = link_process_owned_trades(&mut trades, &owned_orders);
+        let unmatched = link_process_owned_trades(&mut trades, &owned_orders, &[]);
 
         assert_eq!(unmatched, 1);
         assert_eq!(
@@ -1047,6 +1147,61 @@ mod tests {
             Some("persisted-order")
         );
         assert_eq!(trades[1].linked_order_id, None);
+    }
+
+    #[test]
+    fn process_trade_linkage_uses_unique_exact_account_fill_transaction_evidence() {
+        let transaction_hash = format!("0x{}", "a".repeat(64));
+        let activity: DataApiActivity = serde_json::from_value(serde_json::json!({
+            "type": "TRADE",
+            "timestamp": 1710000000,
+            "conditionId": "market-1",
+            "asset": "token-1",
+            "side": "BUY",
+            "price": "0.40",
+            "size": "2",
+            "transactionHash": transaction_hash
+        }))
+        .unwrap();
+        let trade = account_trade_from_activity("0xabc", &activity, "poll").unwrap();
+        assert_eq!(trade.venue_order_id, None);
+        let exact = AccountLiveFillEvidence {
+            transaction_hash: transaction_hash.clone(),
+            order_id: "persisted-order".to_string(),
+            token_id: "token-1".to_string(),
+            side: "buy".to_string(),
+            price: Decimal::new(40, 2),
+            size: Decimal::new(2, 0),
+        };
+
+        let mut uniquely_owned = vec![trade.clone()];
+        assert_eq!(
+            link_process_owned_trades(&mut uniquely_owned, &HashMap::new(), &[exact.clone()]),
+            0
+        );
+        assert_eq!(
+            uniquely_owned[0].linked_order_id.as_deref(),
+            Some("persisted-order")
+        );
+
+        let mut conflicting = exact;
+        conflicting.order_id = "different-order".to_string();
+        let mut ambiguous = vec![trade];
+        assert_eq!(
+            link_process_owned_trades(
+                &mut ambiguous,
+                &HashMap::new(),
+                &[
+                    AccountLiveFillEvidence {
+                        order_id: "persisted-order".to_string(),
+                        ..conflicting.clone()
+                    },
+                    conflicting,
+                ],
+            ),
+            1
+        );
+        assert_eq!(ambiguous[0].linked_order_id, None);
     }
 
     #[test]

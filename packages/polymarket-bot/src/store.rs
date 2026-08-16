@@ -418,6 +418,16 @@ pub struct AccountTrade {
     pub raw_payload: serde_json::Value,
 }
 
+#[derive(Debug, Clone, PartialEq, FromRow)]
+pub(crate) struct AccountLiveFillEvidence {
+    pub transaction_hash: String,
+    pub order_id: String,
+    pub token_id: String,
+    pub side: String,
+    pub price: Decimal,
+    pub size: Decimal,
+}
+
 impl AccountTrade {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -1407,6 +1417,76 @@ impl Store {
             .into_iter()
             .map(|row| (row.venue_order_id, row.order_id))
             .collect())
+    }
+
+    /// Resolves transaction identities only through already-persisted live fills owned by one
+    /// configured account. The fill timestamp bound preserves hypertable pruning and prevents an
+    /// account reconciliation from searching historical execution data without limit.
+    pub(crate) async fn account_live_fill_evidence_by_transaction_hashes(
+        &self,
+        account_ref: &str,
+        transaction_hashes: &[String],
+        window_start: DateTime<Utc>,
+        window_end: DateTime<Utc>,
+    ) -> Result<Vec<AccountLiveFillEvidence>> {
+        const MAX_RECONCILIATION_TRANSACTION_HASHES: usize = 500;
+        const MAX_RECONCILIATION_FILL_EVIDENCE: usize = 4_000;
+        let account_ref = account_ref.trim();
+        if account_ref.is_empty() || account_ref.len() > 128 {
+            bail!("account fill ownership lookup requires a bounded account_ref");
+        }
+        if transaction_hashes.len() > MAX_RECONCILIATION_TRANSACTION_HASHES {
+            bail!(
+                "account fill ownership lookup exceeds the bounded {}-identity window",
+                MAX_RECONCILIATION_TRANSACTION_HASHES
+            );
+        }
+        if transaction_hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+        if window_start > window_end {
+            bail!("account fill ownership lookup has an invalid time window");
+        }
+
+        let rows = sqlx::query_as::<_, AccountLiveFillEvidence>(
+            r#"
+            SELECT
+              lower(btrim(orders.raw_payload #>> '{venue,raw_payload,transaction_hash}')) AS transaction_hash,
+              fills.order_id,
+              fills.token_id,
+              lower(orders.side) AS side,
+              fills.price,
+              fills.size
+            FROM polymarket.fills fills
+            JOIN polymarket.orders orders
+              ON orders.order_id = fills.order_id
+             AND orders.process_id = fills.process_id
+            JOIN polymarket.trading_processes process
+              ON process.process_id = fills.process_id
+            WHERE fills.source = 'live'
+              AND fills.timestamp_utc >= $3
+              AND fills.timestamp_utc <= $4
+              AND process.config #>> '{execution,mode}' = 'live'
+              AND lower(btrim(process.config #>> '{execution,account_ref}')) = lower($1)
+              AND lower(btrim(orders.raw_payload #>> '{venue,raw_payload,transaction_hash}')) = ANY($2::text[])
+            ORDER BY fills.timestamp_utc, fills.fill_id
+            LIMIT 4001
+            "#,
+        )
+        .bind(account_ref)
+        .bind(transaction_hashes)
+        .bind(window_start)
+        .bind(window_end)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to resolve account-owned live fill transaction identities")?;
+        if rows.len() > MAX_RECONCILIATION_FILL_EVIDENCE {
+            bail!(
+                "account fill ownership lookup exceeds the bounded {}-fill evidence window",
+                MAX_RECONCILIATION_FILL_EVIDENCE
+            );
+        }
+        Ok(rows)
     }
 
     pub async fn oldest_unrecognized_live_fill_at(
