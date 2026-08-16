@@ -1,15 +1,21 @@
-use std::{env, net::SocketAddr};
+use std::{env, net::SocketAddr, time::Duration};
 
 use anyhow::{bail, Context, Result};
 use sqlx::postgres::{PgConnectOptions, PgSslMode};
 
 const DEFAULT_API_BIND: &str = "0.0.0.0:8098";
 const DEFAULT_POOL_CONNECTIONS: u32 = 4;
+const DEFAULT_CONTROL_POOL_CONNECTIONS: u32 = 1;
+const DEFAULT_DATABASE_ACQUIRE_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_CONTROL_DATABASE_ACQUIRE_TIMEOUT_SECS: u64 = 3;
 
 #[derive(Clone)]
 pub(crate) struct BootstrapSettings {
     pub database: PgConnectOptions,
     pub database_pool_connections: u32,
+    pub control_database_pool_connections: u32,
+    pub database_acquire_timeout: Duration,
+    pub control_database_acquire_timeout: Duration,
     pub service_instance: String,
     pub api_bind: SocketAddr,
     pub admin_token: String,
@@ -25,17 +31,38 @@ impl BootstrapSettings {
             .unwrap_or_else(|_| DEFAULT_API_BIND.to_owned())
             .parse()
             .context("MARKET_DATA_INGESTER_API_BIND must be a socket address")?;
-        let database_pool_connections = env::var("MARKET_DATA_INGESTER_DB_POOL_CONNECTIONS")
-            .map_or(Ok(DEFAULT_POOL_CONNECTIONS), |value| {
-                value
-                    .parse::<u32>()
-                    .context("MARKET_DATA_INGESTER_DB_POOL_CONNECTIONS must be an integer")
-            })?;
+        let database_pool_connections = env_u32(
+            "MARKET_DATA_INGESTER_DB_POOL_CONNECTIONS",
+            DEFAULT_POOL_CONNECTIONS,
+        )?;
+        let control_database_pool_connections = env_u32(
+            "MARKET_DATA_INGESTER_CONTROL_DB_POOL_CONNECTIONS",
+            DEFAULT_CONTROL_POOL_CONNECTIONS,
+        )?;
+        let database_acquire_timeout = env_duration_secs(
+            "MARKET_DATA_INGESTER_DB_ACQUIRE_TIMEOUT_SECS",
+            DEFAULT_DATABASE_ACQUIRE_TIMEOUT_SECS,
+        )?;
+        let control_database_acquire_timeout = env_duration_secs(
+            "MARKET_DATA_INGESTER_CONTROL_DB_ACQUIRE_TIMEOUT_SECS",
+            DEFAULT_CONTROL_DATABASE_ACQUIRE_TIMEOUT_SECS,
+        )?;
         if service_instance.trim().is_empty() {
             bail!("MARKET_DATA_INGESTER_INSTANCE must not be empty");
         }
         if !(1..=8).contains(&database_pool_connections) {
             bail!("MARKET_DATA_INGESTER_DB_POOL_CONNECTIONS must be between 1 and 8");
+        }
+        if !(1..=2).contains(&control_database_pool_connections) {
+            bail!("MARKET_DATA_INGESTER_CONTROL_DB_POOL_CONNECTIONS must be between 1 and 2");
+        }
+        if !(Duration::from_secs(1)..=Duration::from_secs(60)).contains(&database_acquire_timeout) {
+            bail!("MARKET_DATA_INGESTER_DB_ACQUIRE_TIMEOUT_SECS must be between 1 and 60");
+        }
+        if !(Duration::from_secs(1)..=Duration::from_secs(30))
+            .contains(&control_database_acquire_timeout)
+        {
+            bail!("MARKET_DATA_INGESTER_CONTROL_DB_ACQUIRE_TIMEOUT_SECS must be between 1 and 30");
         }
         if !(32..=4096).contains(&admin_token.len()) {
             bail!("MARKET_DATA_INGESTER_ADMIN_TOKEN must be between 32 and 4096 bytes");
@@ -43,11 +70,31 @@ impl BootstrapSettings {
         Ok(Self {
             database,
             database_pool_connections,
+            control_database_pool_connections,
+            database_acquire_timeout,
+            control_database_acquire_timeout,
             service_instance,
             api_bind,
             admin_token,
         })
     }
+}
+
+fn env_u32(key: &str, default: u32) -> Result<u32> {
+    env::var(key).map_or(Ok(default), |value| {
+        value
+            .parse::<u32>()
+            .with_context(|| format!("{key} must be an integer"))
+    })
+}
+
+fn env_duration_secs(key: &str, default: u64) -> Result<Duration> {
+    env::var(key).map_or(Ok(Duration::from_secs(default)), |value| {
+        value
+            .parse::<u64>()
+            .map(Duration::from_secs)
+            .with_context(|| format!("{key} must be an integer"))
+    })
 }
 
 fn database_options() -> Result<PgConnectOptions> {

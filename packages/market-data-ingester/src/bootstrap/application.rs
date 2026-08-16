@@ -18,7 +18,8 @@ const COMPONENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(45);
 
 pub struct Application {
     settings: BootstrapSettings,
-    pool: sqlx::PgPool,
+    strategy_pool: sqlx::PgPool,
+    control_pool: sqlx::PgPool,
     registry: StrategyRegistry,
 }
 
@@ -31,25 +32,36 @@ impl Application {
 
     pub async fn from_environment_with_registry(registry: StrategyRegistry) -> Result<Self> {
         let settings = BootstrapSettings::from_environment()?;
-        let pool = PgPoolOptions::new()
+        let strategy_pool = PgPoolOptions::new()
             .max_connections(settings.database_pool_connections)
-            .acquire_timeout(Duration::from_secs(5))
+            .acquire_timeout(settings.database_acquire_timeout)
             .connect_with(settings.database.clone())
             .await
-            .context("failed to connect market-data ingester to TimescaleDB")?;
-        sqlx::query_scalar::<_, i32>("SELECT 1")
-            .fetch_one(&pool)
+            .context("failed to connect market-data ingester strategy pool to TimescaleDB")?;
+        let control_pool = PgPoolOptions::new()
+            .max_connections(settings.control_database_pool_connections)
+            .acquire_timeout(settings.control_database_acquire_timeout)
+            .connect_with(settings.database.clone())
             .await
-            .context("market-data ingester database healthcheck failed")?;
+            .context("failed to connect market-data ingester control pool to TimescaleDB")?;
+        sqlx::query_scalar::<_, i32>("SELECT 1")
+            .fetch_one(&strategy_pool)
+            .await
+            .context("market-data ingester strategy pool healthcheck failed")?;
+        sqlx::query_scalar::<_, i32>("SELECT 1")
+            .fetch_one(&control_pool)
+            .await
+            .context("market-data ingester control pool healthcheck failed")?;
         Ok(Self {
             settings,
-            pool,
+            strategy_pool,
+            control_pool,
             registry,
         })
     }
 
     pub async fn run(self) -> Result<()> {
-        let profiles = ProfileRepository::new(self.pool.clone());
+        let profiles = ProfileRepository::new(self.control_pool.clone());
         let (readiness_sender, readiness) = ControlReadiness::channel(false);
         let shutdown = CancellationToken::new();
         let api = ControlApi::new(
@@ -61,7 +73,7 @@ impl Application {
         let supervisor = StrategySupervisor::new(
             profiles,
             self.registry,
-            self.pool.clone(),
+            self.strategy_pool.clone(),
             self.settings.service_instance.clone(),
             SupervisorSettings::default(),
         )?;
@@ -69,6 +81,8 @@ impl Application {
         info!(
             service_instance = %self.settings.service_instance,
             api_bind = %self.settings.api_bind,
+            strategy_database_pool_connections = self.settings.database_pool_connections,
+            control_database_pool_connections = self.settings.control_database_pool_connections,
             "market-data ingester starting"
         );
 
@@ -128,7 +142,8 @@ impl Application {
             }
         };
 
-        self.pool.close().await;
+        self.strategy_pool.close().await;
+        self.control_pool.close().await;
         info!("market-data ingester shutdown completed");
         match component_failure {
             Some(error) => Err(error),

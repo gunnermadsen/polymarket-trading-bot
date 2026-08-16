@@ -20,14 +20,17 @@ services:
         required: false
     environment:
       RUST_LOG: "info"
-      POSTGRES_HOST: "timescaledb-0"
-      POSTGRES_PORT: "5432"
+      POSTGRES_HOST: "pgbouncer"
+      POSTGRES_PORT: "6432"
       POSTGRES_USER: "postgres"
       POSTGRES_DB: "polymarket"
       POSTGRES_SSL_MODE: "disable"
       MARKET_DATA_INGESTER_INSTANCE: "market-data-ingester-1"
       MARKET_DATA_INGESTER_API_BIND: "0.0.0.0:8098"
       MARKET_DATA_INGESTER_DB_POOL_CONNECTIONS: "4"
+      MARKET_DATA_INGESTER_CONTROL_DB_POOL_CONNECTIONS: "1"
+      MARKET_DATA_INGESTER_DB_ACQUIRE_TIMEOUT_SECS: "10"
+      MARKET_DATA_INGESTER_CONTROL_DB_ACQUIRE_TIMEOUT_SECS: "3"
       MARKET_DATA_INGESTER_CHAINLINK_DATA_STREAMS_API_KEY: ${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY}
       MARKET_DATA_INGESTER_CHAINLINK_DATA_STREAMS_API_SECRET: ${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET}
       MARKET_DATA_INGESTER_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY: ${POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY}
@@ -36,7 +39,7 @@ services:
     depends_on:
       db-migrate:
         condition: service_completed_successfully
-      timescaledb-0:
+      pgbouncer:
         condition: service_healthy
     read_only: true
     tmpfs:
