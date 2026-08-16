@@ -83,7 +83,7 @@ impl KrakenBackfillWorker {
         let app = AppConfig::from_env()?;
         let pool = PgPoolOptions::new()
             .max_connections(config.database_pool_connections)
-            .connect_with(app.postgres.connect_options()?)
+            .connect(&app.postgres.database_url())
             .await
             .context("failed to connect Kraken worker to PostgreSQL")?;
         let repository = KrakenRepository::from_pool(pool);

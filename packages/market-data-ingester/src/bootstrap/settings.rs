@@ -98,42 +98,34 @@ fn env_duration_secs(key: &str, default: u64) -> Result<Duration> {
 }
 
 fn database_options() -> Result<PgConnectOptions> {
-    let statement_cache_capacity =
-        env::var("POSTGRES_STATEMENT_CACHE_CAPACITY").map_or(Ok(100), |value| {
-            value
-                .parse::<usize>()
-                .context("POSTGRES_STATEMENT_CACHE_CAPACITY must be a non-negative integer")
-        })?;
-    let options = if let Ok(database_url) = env::var("DATABASE_URL") {
+    if let Ok(database_url) = env::var("DATABASE_URL") {
         if database_url.trim().is_empty() {
             bail!("DATABASE_URL must not be empty when provided");
         }
-        database_url
+        return database_url
             .parse::<PgConnectOptions>()
-            .context("DATABASE_URL must be a valid PostgreSQL connection URL")?
-    } else {
-        let host = env_or("POSTGRES_HOST", "timescaledb-0");
-        let port = env_or("POSTGRES_PORT", "5432")
-            .parse::<u16>()
-            .context("POSTGRES_PORT must be an integer between 1 and 65535")?;
-        if port == 0 {
-            bail!("POSTGRES_PORT must be between 1 and 65535");
-        }
-        let user = env_or("POSTGRES_USER", "postgres");
-        let password = required("POSTGRES_PASSWORD")?;
-        let database = env_or("POSTGRES_DB", "polymarket");
-        let ssl_mode = parse_ssl_mode(&env_or("POSTGRES_SSL_MODE", "disable"))?;
+            .context("DATABASE_URL must be a valid PostgreSQL connection URL");
+    }
 
-        PgConnectOptions::new()
-            .host(&host)
-            .port(port)
-            .username(&user)
-            .password(&password)
-            .database(&database)
-            .ssl_mode(ssl_mode)
-    };
+    let host = env_or("POSTGRES_HOST", "timescaledb-0");
+    let port = env_or("POSTGRES_PORT", "5432")
+        .parse::<u16>()
+        .context("POSTGRES_PORT must be an integer between 1 and 65535")?;
+    if port == 0 {
+        bail!("POSTGRES_PORT must be between 1 and 65535");
+    }
+    let user = env_or("POSTGRES_USER", "postgres");
+    let password = required("POSTGRES_PASSWORD")?;
+    let database = env_or("POSTGRES_DB", "polymarket");
+    let ssl_mode = parse_ssl_mode(&env_or("POSTGRES_SSL_MODE", "disable"))?;
 
-    Ok(options.statement_cache_capacity(statement_cache_capacity))
+    Ok(PgConnectOptions::new()
+        .host(&host)
+        .port(port)
+        .username(&user)
+        .password(&password)
+        .database(&database)
+        .ssl_mode(ssl_mode))
 }
 
 fn parse_ssl_mode(value: &str) -> Result<PgSslMode> {
