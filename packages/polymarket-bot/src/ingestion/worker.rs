@@ -132,7 +132,7 @@ impl BackfillWorker {
         prepare_cache_directory(&config).await?;
         let pool = PgPoolOptions::new()
             .max_connections(config.database_pool_connections)
-            .connect(&app.postgres.database_url())
+            .connect_with(app.postgres.connect_options()?)
             .await
             .context("failed to connect backfill worker to Postgres")?;
         let repository = IngestionRepository::from_pool(pool);

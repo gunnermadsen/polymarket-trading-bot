@@ -3847,7 +3847,7 @@ async fn main() -> Result<()> {
 
     let pool = PgPoolOptions::new()
         .max_connections(8)
-        .connect(&config.postgres.database_url())
+        .connect_with(config.postgres.connect_options()?)
         .await
         .context("failed to connect Polymarket application to Postgres")?;
     let store = Store::from_pool(pool.clone());

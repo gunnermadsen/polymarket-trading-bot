@@ -22,6 +22,7 @@ services:
       RUST_LOG: "info"
       POSTGRES_HOST: "pgbouncer"
       POSTGRES_PORT: "6432"
+      POSTGRES_STATEMENT_CACHE_CAPACITY: "0"
       POSTGRES_USER: "postgres"
       POSTGRES_DB: "polymarket"
       POSTGRES_SSL_MODE: "disable"

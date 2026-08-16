@@ -1,7 +1,8 @@
 use std::{env, fmt, time::Duration};
 
 use crate::btc::{BtcHeartbeatConfig, DirectionalExternalRuntimeConfig};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
+use sqlx::postgres::PgConnectOptions;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -67,6 +68,7 @@ pub struct PostgresConfig {
     pub password: String,
     pub ssl_mode: String,
     pub ssl_root_cert: Option<String>,
+    pub statement_cache_capacity: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -222,6 +224,7 @@ impl AppConfig {
                 password: required_env("POSTGRES_PASSWORD")?,
                 ssl_mode: env_or("POSTGRES_SSL_MODE", "disable"),
                 ssl_root_cert: first_non_empty_env(&["POSTGRES_SSL_CA_FILE", "PGSSLROOTCERT"]),
+                statement_cache_capacity: parse_usize("POSTGRES_STATEMENT_CACHE_CAPACITY", 100),
             },
             http: HttpConfig {
                 enabled: parse_bool("POLYMARKET_HTTP_ENABLED", true),
@@ -308,6 +311,13 @@ impl PostgresConfig {
         }
         url
     }
+
+    pub fn connect_options(&self) -> Result<PgConnectOptions> {
+        self.database_url()
+            .parse::<PgConnectOptions>()
+            .context("failed to parse PostgreSQL connection options")
+            .map(|options| options.statement_cache_capacity(self.statement_cache_capacity))
+    }
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -345,6 +355,13 @@ fn parse_u16(key: &str, default: u16) -> u16 {
     env::var(key)
         .ok()
         .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+fn parse_usize(key: &str, default: usize) -> usize {
+    env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(default)
 }
 
