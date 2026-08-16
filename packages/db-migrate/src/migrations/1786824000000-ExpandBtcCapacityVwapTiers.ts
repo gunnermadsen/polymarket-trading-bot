@@ -32,6 +32,7 @@ export class ExpandBtcCapacityVwapTiers1786824000000
           record_count = 0,
           minimum_source_timestamp = NULL,
           maximum_source_timestamp = NULL,
+          completed_at = NULL,
           metadata = metadata || jsonb_build_object(
             'superseded_by_schema_version', 'btc5m-capacity-book-1-240s-v2',
             'superseded_reason', 'expanded exact VWAP tiers through 200 shares'
