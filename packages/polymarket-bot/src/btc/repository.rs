@@ -2534,6 +2534,9 @@ impl BtcRepository {
             LIMIT 5000
             "#,
         )
+        // SQLx executes persistent(false) through the unnamed statement slot across a
+        // Parse/Sync and Bind/Execute boundary. PgBouncer must retain session affinity
+        // for this query; transaction pooling can move Bind to a different backend.
         .persistent(false)
         .bind(start)
         .bind(end)
@@ -2668,6 +2671,8 @@ impl BtcRepository {
         // A cached PostgreSQL generic plan expands this Timescale hypertable across every
         // compressed and uncompressed chunk before runtime exclusion. Keep this statement
         // custom-planned so the timestamp bounds prune chunks before relation locks are taken.
+        // SQLx implements this with an unnamed statement across a protocol synchronization
+        // boundary, so PgBouncer must use session pooling unless this query is redesigned.
         .persistent(false)
         .bind(token_id)
         .bind(fresh_since)
