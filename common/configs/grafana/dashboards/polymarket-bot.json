@@ -2351,6 +2351,10 @@
             },
             "properties": [
               {
+                "id": "displayName",
+                "value": "Socket"
+              },
+              {
                 "id": "mappings",
                 "value": [
                   {
@@ -2404,6 +2408,10 @@
             },
             "properties": [
               {
+                "id": "displayName",
+                "value": "Inbound age"
+              },
+              {
                 "id": "unit",
                 "value": "ms"
               },
@@ -2443,6 +2451,10 @@
               "options": "CLOB Source-to-Receive Lag"
             },
             "properties": [
+              {
+                "id": "displayName",
+                "value": "Market-data lag"
+              },
               {
                 "id": "unit",
                 "value": "ms"
@@ -2500,7 +2512,7 @@
           "values": false
         },
         "showPercentChange": false,
-        "textMode": "value",
+        "textMode": "value_and_name",
         "wideLayout": true
       },
       "pluginVersion": "12.4.2",
@@ -3461,6 +3473,6 @@
   "timezone": "browser",
   "title": "polymarket-bot",
   "uid": "polymarket-bot",
-  "version": 135,
+  "version": 136,
   "weekStart": ""
 }
