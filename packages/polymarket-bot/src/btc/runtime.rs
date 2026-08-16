@@ -578,11 +578,12 @@ impl ClobRecoveryWindow {
     }
 
     fn update_diagnostic(&mut self, diagnostic: ClobReadinessDiagnostic) -> bool {
-        if self.diagnostic.as_ref() == Some(&diagnostic) {
-            return false;
-        }
+        let causal_transition = self
+            .diagnostic
+            .as_ref()
+            .is_none_or(|current| !current.same_cause(&diagnostic));
         self.diagnostic = Some(diagnostic);
-        true
+        causal_transition
     }
 }
 
@@ -601,6 +602,16 @@ struct ClobReadinessDiagnostic {
 }
 
 impl ClobReadinessDiagnostic {
+    fn same_cause(&self, other: &Self) -> bool {
+        self.reason == other.reason
+            && self.market_id == other.market_id
+            && self.token_id == other.token_id
+            && self.integrity_status == other.integrity_status
+            && self.bootstrapped == other.bootstrapped
+            && self.has_bid == other.has_bid
+            && self.has_ask == other.has_ask
+    }
+
     fn missing_current_market() -> Self {
         Self {
             reason: "current_market_not_unique",
@@ -13003,6 +13014,38 @@ mod tests {
             ClobRetryAction::Stop
         );
         assert_eq!(failures, 5);
+    }
+
+    #[test]
+    fn clob_recovery_diagnostic_ignores_changing_age_samples_for_transitions() {
+        let started = Instant::now();
+        let since = Utc.timestamp_opt(1_783_902_610, 0).unwrap();
+        let mut recovery_window = ClobRecoveryWindow::open(since, started);
+        let initial = ClobReadinessDiagnostic {
+            reason: "source_to_receive_lag",
+            market_id: Some("market-1".to_string()),
+            token_id: Some("token-1".to_string()),
+            integrity_status: Some(FeedIntegrityStatus::Ok),
+            bootstrapped: Some(true),
+            has_bid: Some(true),
+            has_ask: Some(true),
+            source_age_milliseconds: Some(2_001),
+            receipt_age_milliseconds: Some(1),
+            source_to_receive_lag_milliseconds: Some(2_000),
+        };
+
+        assert!(recovery_window.update_diagnostic(initial.clone()));
+
+        let mut later_sample = initial.clone();
+        later_sample.source_age_milliseconds = Some(35_000);
+        later_sample.receipt_age_milliseconds = Some(0);
+        later_sample.source_to_receive_lag_milliseconds = Some(35_000);
+        assert!(!recovery_window.update_diagnostic(later_sample.clone()));
+        assert_eq!(recovery_window.diagnostic, Some(later_sample.clone()));
+
+        let mut different_token = later_sample;
+        different_token.token_id = Some("token-2".to_string());
+        assert!(recovery_window.update_diagnostic(different_token));
     }
 
     #[tokio::test]
