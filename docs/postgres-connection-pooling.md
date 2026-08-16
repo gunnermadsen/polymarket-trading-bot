@@ -31,6 +31,21 @@ unnamed prepared statement does not exist
 Session pooling preserves the physical backend for the client connection and therefore
 preserves both the custom-plan optimization and SQLx's protocol assumptions.
 
+## Connection budget
+
+Session pooling does not multiplex connected clients across fewer PostgreSQL backends. The
+PgBouncer server ceiling therefore matches the complete declared application budget:
+
+- polymarket bot: 8
+- market-data ingester strategy and control pools: 5
+- Grafana: 2
+- six backfill workers: 9
+
+PgBouncer accepts at most 24 server connections for `polymarket`. PostgreSQL accepts 32 total
+connections, reserving eight slots outside the PgBouncer ceiling for `db-migrate`, emergency
+administration, and exceptional direct connections. Additional clients may connect to
+PgBouncer up to `max_client_conn`, but wait at the gateway instead of exhausting PostgreSQL.
+
 ## How a database error fails a trading process
 
 The failure is intentionally fail-closed:

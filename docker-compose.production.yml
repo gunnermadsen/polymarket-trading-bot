@@ -34,7 +34,9 @@ services:
       POSTGRES_DB: "polymarket"
       TS_TUNE_MEMORY: "2GB"
       TS_TUNE_NUM_CPUS: "1"
-      TS_TUNE_MAX_CONNS: "25"
+      # Capacity budget: 24 session-pooled application backends plus 8 slots for
+      # db-migrate, administration, and exceptional direct connections.
+      TS_TUNE_MAX_CONNS: "32"
       TS_TUNE_MAX_BG_WORKERS: "4"
     command:
       - postgres
@@ -49,7 +51,7 @@ services:
       - -c
       - work_mem=10485kB
       - -c
-      - max_connections=25
+      - max_connections=32
       - -c
       - max_locks_per_transaction=128
       - -c
