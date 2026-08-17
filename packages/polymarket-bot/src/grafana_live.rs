@@ -3,6 +3,8 @@ use std::{collections::BTreeSet, fmt::Write as _, time::Duration};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
+use serde::Serialize;
+use uuid::Uuid;
 
 use crate::{
     btc::{BtcIntervalMarket, ChainlinkTwap60Point},
@@ -11,8 +13,191 @@ use crate::{
 
 pub const COUNTDOWN_CHANNEL: &str = "stream/polymarket/btc_market_countdown";
 pub const MARKET_PATH_CHANNEL: &str = "stream/polymarket/btc_market_path";
+pub const ENTRY_STATUS_CHANNEL: &str = "stream/polymarket/btc_entry_status";
 const COUNTDOWN_MEASUREMENT: &str = "btc_market_countdown";
 const MARKET_PATH_MEASUREMENT: &str = "btc_market_path";
+const ENTRY_STATUS_MEASUREMENT: &str = "btc_entry_status";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryPermissionState {
+    Enabled,
+    Blocked,
+    DisabledByConfiguration,
+    Stopped,
+    Unknown,
+}
+
+impl EntryPermissionState {
+    const fn alert_enabled(self) -> i64 {
+        match self {
+            Self::Enabled => 1,
+            _ => 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EntryPermission {
+    pub state: EntryPermissionState,
+    pub display: String,
+    pub reason: Option<String>,
+    pub alert_enabled: i64,
+}
+
+impl EntryPermission {
+    pub fn enabled() -> Self {
+        Self::new(EntryPermissionState::Enabled, None)
+    }
+
+    pub fn blocked(reason: Option<String>) -> Self {
+        Self::new(EntryPermissionState::Blocked, reason)
+    }
+
+    pub fn disabled() -> Self {
+        Self::new(EntryPermissionState::DisabledByConfiguration, None)
+    }
+
+    pub fn stopped() -> Self {
+        Self::new(EntryPermissionState::Stopped, None)
+    }
+
+    pub fn unknown(reason: Option<String>) -> Self {
+        Self::new(EntryPermissionState::Unknown, reason)
+    }
+
+    fn new(state: EntryPermissionState, reason: Option<String>) -> Self {
+        let reason = reason.filter(|value| !value.trim().is_empty());
+        let display = match state {
+            EntryPermissionState::Enabled => "Enabled".to_string(),
+            EntryPermissionState::Blocked => format!(
+                "Blocked — {}",
+                reason.as_deref().unwrap_or("status unavailable")
+            ),
+            EntryPermissionState::DisabledByConfiguration => {
+                "Blocked — disabled by configuration".to_string()
+            }
+            EntryPermissionState::Stopped => "Blocked — stopped".to_string(),
+            EntryPermissionState::Unknown => "Blocked — status unavailable".to_string(),
+        };
+        Self {
+            state,
+            display,
+            reason,
+            alert_enabled: state.alert_enabled(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProcessEntryPermission {
+    pub process_id: Uuid,
+    #[serde(flatten)]
+    pub permission: EntryPermission,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TradingEntryStatusSnapshot {
+    pub observed_at: DateTime<Utc>,
+    pub observed_at_epoch_seconds: i64,
+    pub processes: Vec<ProcessEntryPermission>,
+    pub aggregate: EntryPermission,
+}
+
+impl TradingEntryStatusSnapshot {
+    pub fn new(observed_at: DateTime<Utc>, mut processes: Vec<ProcessEntryPermission>) -> Self {
+        processes.sort_by_key(|process| process.process_id);
+        let aggregate = aggregate_entry_permission(&processes);
+        Self {
+            observed_at,
+            observed_at_epoch_seconds: observed_at.timestamp(),
+            processes,
+            aggregate,
+        }
+    }
+
+    pub fn select(&self, scope: &str, process_id: Option<Uuid>) -> EntryStatusSelection {
+        let permission = if scope.eq_ignore_ascii_case("all processes") || scope == "all" {
+            self.aggregate.clone()
+        } else {
+            process_id
+                .and_then(|process_id| {
+                    self.processes
+                        .iter()
+                        .find(|process| process.process_id == process_id)
+                })
+                .map(|process| process.permission.clone())
+                .unwrap_or_else(|| {
+                    EntryPermission::unknown(Some("process_status_unavailable".to_string()))
+                })
+        };
+        let state = if permission.state == EntryPermissionState::Enabled {
+            EntryPermissionState::Enabled
+        } else {
+            EntryPermissionState::Blocked
+        };
+        EntryStatusSelection {
+            observed_at: self.observed_at,
+            observed_at_epoch_seconds: self.observed_at_epoch_seconds,
+            state,
+            display: permission.display,
+            reason: permission.reason,
+            alert_enabled: permission.alert_enabled,
+        }
+    }
+
+    pub fn influx_line(&self) -> String {
+        let timestamp_nanos = self
+            .observed_at
+            .timestamp_nanos_opt()
+            .expect("a current UTC timestamp is representable in nanoseconds");
+        let mut fields = Vec::with_capacity(self.processes.len() + 1);
+        fields.push(format!(
+            "aggregate=\"{}\"",
+            escape_influx_string(&self.aggregate.display)
+        ));
+        for process in &self.processes {
+            fields.push(format!(
+                "process_{}=\"{}\"",
+                process.process_id.simple(),
+                escape_influx_string(&process.permission.display)
+            ));
+        }
+        format!(
+            "{ENTRY_STATUS_MEASUREMENT} {} {timestamp_nanos}",
+            fields.join(",")
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EntryStatusSelection {
+    pub observed_at: DateTime<Utc>,
+    pub observed_at_epoch_seconds: i64,
+    pub state: EntryPermissionState,
+    pub display: String,
+    pub reason: Option<String>,
+    pub alert_enabled: i64,
+}
+
+fn aggregate_entry_permission(processes: &[ProcessEntryPermission]) -> EntryPermission {
+    if processes.is_empty() {
+        return EntryPermission::blocked(Some("status unavailable".to_string()));
+    }
+    let total = processes.len();
+    let blocked = processes
+        .iter()
+        .filter(|process| process.permission.state != EntryPermissionState::Enabled)
+        .count();
+    if blocked > 0 {
+        let mut permission = EntryPermission::blocked(Some(format!("{blocked}_of_{total}")));
+        permission.display = format!("Blocked — {blocked} of {total}");
+        return permission;
+    }
+    let mut permission = EntryPermission::enabled();
+    permission.display = "All enabled".to_string();
+    permission
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CountdownStatus {
@@ -221,7 +406,11 @@ impl MarketPathSnapshot {
 }
 
 fn escape_influx_string(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
 }
 
 pub struct GrafanaLivePublisher {
@@ -254,6 +443,11 @@ impl GrafanaLivePublisher {
             return Ok(());
         };
         self.publish_body(body, "market path").await
+    }
+
+    pub async fn publish_entry_status(&self, snapshot: &TradingEntryStatusSnapshot) -> Result<()> {
+        self.publish_body(snapshot.influx_line(), "trading entry status")
+            .await
     }
 
     async fn publish_body(&self, body: String, measurement_name: &str) -> Result<()> {
@@ -321,6 +515,89 @@ mod tests {
             available_at: source_timestamp,
             price,
         }
+    }
+
+    fn process_permission(process_id: &str, permission: EntryPermission) -> ProcessEntryPermission {
+        ProcessEntryPermission {
+            process_id: Uuid::parse_str(process_id).unwrap(),
+            permission,
+        }
+    }
+
+    #[test]
+    fn entry_status_selects_exactly_one_process_or_aggregate_value() {
+        let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
+        let enabled_id = "11111111-1111-1111-1111-111111111111";
+        let blocked_id = "22222222-2222-2222-2222-222222222222";
+        let snapshot = TradingEntryStatusSnapshot::new(
+            now,
+            vec![
+                process_permission(enabled_id, EntryPermission::enabled()),
+                process_permission(
+                    blocked_id,
+                    EntryPermission::blocked(Some("live_rest_reconcile_stale".to_string())),
+                ),
+            ],
+        );
+
+        assert_eq!(
+            snapshot
+                .select(
+                    "Selected process",
+                    Some(Uuid::parse_str(enabled_id).unwrap())
+                )
+                .display,
+            "Enabled"
+        );
+        assert_eq!(
+            snapshot.select("All processes", None).display,
+            "Blocked — 1 of 2"
+        );
+        assert_eq!(snapshot.select("All processes", None).alert_enabled, 0);
+        let unavailable = snapshot.select("Selected process", None);
+        assert_eq!(unavailable.state, EntryPermissionState::Blocked);
+        assert_eq!(unavailable.display, "Blocked — status unavailable");
+    }
+
+    #[test]
+    fn entry_status_aggregate_reports_every_non_enabled_process_as_blocked() {
+        let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
+        let snapshot = TradingEntryStatusSnapshot::new(
+            now,
+            vec![
+                process_permission(
+                    "11111111-1111-1111-1111-111111111111",
+                    EntryPermission::unknown(Some("runtime_not_attached".to_string())),
+                ),
+                process_permission(
+                    "22222222-2222-2222-2222-222222222222",
+                    EntryPermission::stopped(),
+                ),
+                process_permission(
+                    "33333333-3333-3333-3333-333333333333",
+                    EntryPermission::disabled(),
+                ),
+            ],
+        );
+
+        assert_eq!(snapshot.aggregate.display, "Blocked — 3 of 3");
+        assert_eq!(snapshot.aggregate.state, EntryPermissionState::Blocked);
+    }
+
+    #[test]
+    fn entry_status_live_measurement_has_one_field_per_selection() {
+        let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
+        let snapshot = TradingEntryStatusSnapshot::new(
+            now,
+            vec![process_permission(
+                "11111111-1111-1111-1111-111111111111",
+                EntryPermission::enabled(),
+            )],
+        );
+        let line = snapshot.influx_line();
+
+        assert!(line.starts_with("btc_entry_status aggregate=\"All enabled\""));
+        assert!(line.contains("process_11111111111111111111111111111111=\"Enabled\""));
     }
 
     #[test]

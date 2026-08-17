@@ -22,6 +22,7 @@ use crate::{
         LivePoly1271FunderProbeRequest, LivePoly1271FunderProbeResponse, LiveVenueStatus,
         LiveWalletAddressDiagnostics, ReconciliationReport,
     },
+    grafana_live::EntryStatusSelection,
     ingestion::job::{
         BackfillJob as IngestionBackfillJob, BackfillJobEvent as IngestionBackfillJobEvent,
         BackfillJobStatus as IngestionBackfillJobStatus,
@@ -74,6 +75,13 @@ pub trait ControlApi: Send + Sync + 'static {
         Err(HttpError::not_implemented(
             "BTC realtime status is not wired",
         ))
+    }
+
+    async fn btc_entry_status(
+        &self,
+        _request: EntryStatusRequest,
+    ) -> Result<EntryStatusSelection, HttpError> {
+        Err(HttpError::not_implemented("BTC entry status is not wired"))
     }
 
     async fn enqueue_ingestion_backfill(
@@ -274,6 +282,7 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
 
     let admin_routes = Router::new()
         .route("/strategy/btc-5m/readiness", get(btc_realtime_status))
+        .route("/strategy/btc-5m/entry-status", get(btc_entry_status))
         .route("/backfill/ingesters", get(list_ingesters))
         .route(
             "/backfill/jobs",
@@ -370,6 +379,13 @@ async fn btc_realtime_status(
     State(state): State<HttpState>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
     state.control.btc_realtime_status().await.map(Json)
+}
+
+async fn btc_entry_status(
+    State(state): State<HttpState>,
+    Query(request): Query<EntryStatusRequest>,
+) -> Result<Json<EntryStatusSelection>, HttpError> {
+    state.control.btc_entry_status(request).await.map(Json)
 }
 
 async fn enqueue_ingestion_backfill(
@@ -760,6 +776,17 @@ pub struct ListIngestionBackfillEventsRequest {
 pub struct IngestionReadinessRequest {
     pub range_start: DateTime<Utc>,
     pub range_end: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntryStatusRequest {
+    #[serde(default = "default_entry_status_scope")]
+    pub scope: String,
+    pub process_id: Option<Uuid>,
+}
+
+fn default_entry_status_scope() -> String {
+    "Selected process".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

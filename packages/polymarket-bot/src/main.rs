@@ -38,14 +38,18 @@ use polymarket_bot::{
         LiveOrderDryRunRequest, LivePoly1271FunderProbeRequest, LivePoly1271FunderProbeResponse,
         LiveVenueStatus, LiveWalletAddressDiagnostics,
     },
-    grafana_live::{CountdownSnapshot, GrafanaLivePublisher, MarketPathSnapshot},
+    grafana_live::{
+        CountdownSnapshot, EntryPermission, GrafanaLivePublisher, MarketPathSnapshot,
+        ProcessEntryPermission, TradingEntryStatusSnapshot,
+    },
     http as control_http,
     http::{
-        ControlApi, HealthResponse, HealthStatus, HttpError, IngestionBackfillCancelResponse,
-        IngestionBackfillEnqueueResponse, IngestionBackfillEventsResponse,
-        IngestionBackfillJobResponse, IngestionBackfillJobsResponse, MetricsResponse,
-        TradingProcessLivePreflightResponse, TradingProcessResponse,
-        TradingProcessStartPreviewResponse, TradingProcessStatusResponse, TradingProcessesResponse,
+        ControlApi, EntryStatusRequest, HealthResponse, HealthStatus, HttpError,
+        IngestionBackfillCancelResponse, IngestionBackfillEnqueueResponse,
+        IngestionBackfillEventsResponse, IngestionBackfillJobResponse,
+        IngestionBackfillJobsResponse, MetricsResponse, TradingProcessLivePreflightResponse,
+        TradingProcessResponse, TradingProcessStartPreviewResponse, TradingProcessStatusResponse,
+        TradingProcessesResponse,
     },
     ingestion::{
         job::BackfillRequest as IngestionBackfillRequest, repository::IngestionRepository,
@@ -75,6 +79,7 @@ const BTC_PROCESS_SCOPE: &str = "realtime_paper";
 const BTC_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(45);
 const BTC_LIVE_QUIESCE_TIMEOUT: Duration = Duration::from_secs(10);
 const BTC_LIVE_CONTROL_TIMEOUT: Duration = Duration::from_secs(20);
+const GRAFANA_STATUS_READ_TIMEOUT: Duration = Duration::from_millis(25);
 const COMPILED_SOURCE_IDENTITY: &str = env!("POLYMARKET_COMPILED_SOURCE_ID");
 
 fn should_resume_configured_live_entries(
@@ -2848,6 +2853,80 @@ impl BtcProcessManager {
         CountdownSnapshot::resolve(observed_at, active_processes, markets)
     }
 
+    async fn grafana_entry_status_snapshot(
+        &self,
+        observed_at: chrono::DateTime<Utc>,
+    ) -> Result<TradingEntryStatusSnapshot> {
+        let processes = self.store.list_observable_btc_processes().await?;
+        let active = self
+            .active_playbooks
+            .lock()
+            .await
+            .iter()
+            .map(|(process_id, active)| {
+                (
+                    *process_id,
+                    (
+                        active.execution_mode,
+                        active.runtime.is_running(),
+                        active.live_venue.clone(),
+                    ),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let mut permissions = Vec::with_capacity(processes.len());
+        for process in processes {
+            let execution = process.effective_execution();
+            let permission = if !process.enabled || !execution.execute_signals {
+                EntryPermission::disabled()
+            } else if matches!(
+                process.status.as_str(),
+                "stopping" | "stopped" | "failed" | "expired"
+            ) {
+                EntryPermission::stopped()
+            } else if process.status != "running" {
+                EntryPermission::unknown(Some(format!("durable_process_{}", process.status)))
+            } else {
+                match active.get(&process.process_id) {
+                    None => EntryPermission::unknown(Some("runtime_not_attached".to_string())),
+                    Some((_, false, _)) => {
+                        EntryPermission::unknown(Some("runtime_not_running".to_string()))
+                    }
+                    Some((BtcExecutionMode::Paper, true, _)) if execution.mode == "paper" => {
+                        EntryPermission::enabled()
+                    }
+                    Some((BtcExecutionMode::Live, true, Some(venue)))
+                        if execution.mode == "live" =>
+                    {
+                        match tokio::time::timeout(GRAFANA_STATUS_READ_TIMEOUT, venue.live_status())
+                            .await
+                        {
+                            Ok(Ok(status)) if status.entries_enabled => EntryPermission::enabled(),
+                            Ok(Ok(status)) => EntryPermission::blocked(status.reason),
+                            Ok(Err(_)) => EntryPermission::unknown(Some(
+                                "live_status_unavailable".to_string(),
+                            )),
+                            Err(_) => EntryPermission::unknown(Some(
+                                "live_status_read_timeout".to_string(),
+                            )),
+                        }
+                    }
+                    Some((BtcExecutionMode::Live, true, None)) if execution.mode == "live" => {
+                        EntryPermission::unknown(Some("live_venue_unavailable".to_string()))
+                    }
+                    Some(_) => EntryPermission::unknown(Some(
+                        "runtime_execution_mode_mismatch".to_string(),
+                    )),
+                }
+            };
+            permissions.push(ProcessEntryPermission {
+                process_id: process.process_id,
+                permission,
+            });
+        }
+        Ok(TradingEntryStatusSnapshot::new(observed_at, permissions))
+    }
+
     async fn grafana_market_path_snapshot(
         &self,
         observed_at: chrono::DateTime<Utc>,
@@ -3218,6 +3297,20 @@ impl ControlApi for RuntimeControl {
             }));
         };
         Ok(manager.runtime_status().await)
+    }
+
+    async fn btc_entry_status(
+        &self,
+        request: EntryStatusRequest,
+    ) -> Result<polymarket_bot::grafana_live::EntryStatusSelection, HttpError> {
+        let manager = self.btc_manager.as_ref().ok_or_else(|| {
+            HttpError::internal("BTC realtime capability is disabled for this deployment")
+        })?;
+        let snapshot = manager
+            .grafana_entry_status_snapshot(Utc::now())
+            .await
+            .map_err(|error| HttpError::internal(error.to_string()))?;
+        Ok(snapshot.select(&request.scope, request.process_id))
     }
 
     async fn enqueue_ingestion_backfill(
@@ -3838,9 +3931,11 @@ async fn run_grafana_live(
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut last_countdown_error: Option<String> = None;
     let mut last_market_path_error: Option<String> = None;
+    let mut last_entry_status_error: Option<String> = None;
     info!(
         countdown_channel = polymarket_bot::grafana_live::COUNTDOWN_CHANNEL,
         market_path_channel = polymarket_bot::grafana_live::MARKET_PATH_CHANNEL,
+        entry_status_channel = polymarket_bot::grafana_live::ENTRY_STATUS_CHANNEL,
         "Grafana Live BTC market publishers started"
     );
     loop {
@@ -3893,6 +3988,31 @@ async fn run_grafana_live(
                                 "Grafana Live BTC market path publish failed; retrying"
                             );
                             last_market_path_error = Some(message);
+                        }
+                    }
+                }
+
+                let entry_status_result = match manager
+                    .grafana_entry_status_snapshot(Utc::now())
+                    .await
+                {
+                    Ok(snapshot) => publisher.publish_entry_status(&snapshot).await,
+                    Err(error) => Err(error),
+                };
+                match entry_status_result {
+                    Ok(()) => {
+                        if last_entry_status_error.take().is_some() {
+                            info!("Grafana Live trading entry status publishing recovered");
+                        }
+                    }
+                    Err(publish_error) => {
+                        let message = format!("{publish_error:#}");
+                        if last_entry_status_error.as_deref() != Some(message.as_str()) {
+                            warn!(
+                                error = %message,
+                                "Grafana Live trading entry status publish failed; retrying"
+                            );
+                            last_entry_status_error = Some(message);
                         }
                     }
                 }
