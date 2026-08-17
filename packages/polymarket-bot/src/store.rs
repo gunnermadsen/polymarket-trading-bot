@@ -2729,9 +2729,7 @@ impl Store {
         .bind(report.position_snapshots_inserted as i32)
         .bind(report.exits_detected as i32)
         .bind(report.exits_applied as i32)
-        .bind(report.mismatches.len().saturating_add(usize::from(
-            report.process_id.is_some() && !report.process_accounting_proven,
-        )) as i32)
+        .bind(report.mismatches.len() as i32)
         .bind(report.unmatched_trades as i32)
         .bind(serde_json::json!({
             "report": report,
