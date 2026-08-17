@@ -13,6 +13,7 @@ use polymarket_bot::{
         LivePoly1271FunderProbeResponse, LiveVenueStatus, LiveWalletAddressDiagnostics,
         LiveWalletCandidateAddressDiagnostics, LiveWalletTokenBalances, ReconciliationReport,
     },
+    grafana_live::{EntryPermissionState, EntryStatusSelection},
     http::{self, ControlApi, HttpError, MetricsResponse},
     ingestion::job::{
         BackfillEventLevel as IngestionBackfillEventLevel, BackfillJob as IngestionBackfillJob,
@@ -43,6 +44,21 @@ impl ControlApi for FakeControlApi {
 
     async fn btc_realtime_status(&self) -> Result<Value, HttpError> {
         Ok(serde_json::json!({"enabled": true, "readiness": {"ready": true}}))
+    }
+
+    async fn btc_entry_status(
+        &self,
+        _request: http::EntryStatusRequest,
+    ) -> Result<EntryStatusSelection, HttpError> {
+        let observed_at = Utc::now();
+        Ok(EntryStatusSelection {
+            observed_at,
+            observed_at_epoch_seconds: observed_at.timestamp(),
+            state: EntryPermissionState::Enabled,
+            display: "Enabled".to_string(),
+            reason: None,
+            alert_enabled: 1,
+        })
     }
 
     async fn enqueue_ingestion_backfill(
@@ -1053,6 +1069,30 @@ async fn authenticated_admin_can_read_btc_realtime_status() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn authenticated_admin_can_read_alertable_btc_entry_status() {
+    let process_id = Uuid::new_v4();
+    let app = http::router(Arc::new(FakeControlApi), "secret");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/admin/strategy/btc-5m/entry-status?scope=Selected%20process&process_id={process_id}"
+                ))
+                .header(AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["display"], "Enabled");
+    assert_eq!(json["alert_enabled"], 1);
+    assert!(json["observed_at_epoch_seconds"].as_i64().is_some());
 }
 
 #[tokio::test]

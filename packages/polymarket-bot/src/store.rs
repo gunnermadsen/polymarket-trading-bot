@@ -749,6 +749,25 @@ impl Store {
         rows.into_iter().map(trading_process_from_row).collect()
     }
 
+    pub async fn list_observable_btc_processes(&self) -> Result<Vec<TradingProcess>> {
+        let rows = sqlx::query_as::<_, TradingProcessRow>(
+            r#"
+            SELECT process_id, name, process_type, process_scope, process_key, status, enabled, config, metadata,
+              created_at, updated_at, started_at, stopped_at, last_error
+            FROM polymarket.trading_processes
+            WHERE process_type = 'btc_5m'
+              AND process_scope = 'realtime_paper'
+              AND status <> 'completed'
+            ORDER BY process_id
+            LIMIT 500
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to list observable BTC trading processes")?;
+        rows.into_iter().map(trading_process_from_row).collect()
+    }
+
     pub async fn get_trading_process(&self, process_id: Uuid) -> Result<Option<TradingProcess>> {
         let row = sqlx::query_as::<_, TradingProcessRow>(
             r#"
