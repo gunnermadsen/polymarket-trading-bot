@@ -60,7 +60,7 @@ impl CountdownSnapshot {
 
         let current_markets = markets
             .into_iter()
-            .filter(|market| market.is_trade_window(observed_at))
+            .filter(|market| market.is_interval_window(observed_at))
             .collect::<Vec<_>>();
         if current_markets.is_empty() {
             return Self::unavailable(observed_at, CountdownStatus::Discovering, active_processes);
@@ -185,23 +185,14 @@ impl MarketPathSnapshot {
         }
     }
 
-    pub fn reset(observed_at: DateTime<Utc>) -> Self {
-        Self {
-            observed_at,
-            market_id: String::new(),
-            price_to_beat: None,
-            points: Vec::new(),
-        }
-    }
-
-    pub fn influx_body(&self) -> String {
+    pub fn influx_body(&self) -> Option<String> {
         let snapshot_epoch_nanos = self
             .observed_at
             .timestamp_nanos_opt()
             .expect("a current UTC timestamp is representable in nanoseconds");
         let snapshot_field = format!("snapshot_{snapshot_epoch_nanos}");
         if self.points.is_empty() {
-            return format!("{MARKET_PATH_MEASUREMENT} {snapshot_field}=1i {snapshot_epoch_nanos}");
+            return None;
         }
 
         let mut body = String::with_capacity(self.points.len().saturating_mul(128));
@@ -225,7 +216,7 @@ impl MarketPathSnapshot {
             .expect("writing an Influx line into a String cannot fail");
         }
         body.pop();
-        body
+        Some(body)
     }
 }
 
@@ -259,8 +250,10 @@ impl GrafanaLivePublisher {
     }
 
     pub async fn publish_market_path(&self, snapshot: &MarketPathSnapshot) -> Result<()> {
-        self.publish_body(snapshot.influx_body(), "market path")
-            .await
+        let Some(body) = snapshot.influx_body() else {
+            return Ok(());
+        };
+        self.publish_body(body, "market path").await
     }
 
     async fn publish_body(&self, body: String, measurement_name: &str) -> Result<()> {
@@ -364,6 +357,19 @@ mod tests {
     }
 
     #[test]
+    fn countdown_uses_time_window_without_weakening_trading_status() {
+        let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
+        let mut closed = market("one", now);
+        closed.closed = true;
+        closed.accepting_orders = false;
+
+        assert!(!closed.is_trade_window(now));
+        let snapshot = CountdownSnapshot::resolve(now, 1, vec![closed]);
+        assert_eq!(snapshot.status, CountdownStatus::Active);
+        assert_eq!(snapshot.seconds_remaining, 147);
+    }
+
+    #[test]
     fn renders_a_stable_influx_measurement_contract() {
         let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
         let snapshot = CountdownSnapshot::resolve(now, 1, vec![market("one", now)]);
@@ -409,22 +415,18 @@ mod tests {
                 twap_point(market.window_start + ChronoDuration::seconds(1), dec!(100)),
             ],
         );
-        let body = snapshot.influx_body();
+        let body = snapshot.influx_body().expect("market path has points");
 
         assert!(body.starts_with("btc_market_path twap_price=100.5,price_to_beat=100.5"));
         assert!(body.contains("snapshot_1800000100000000000=1i"));
-        assert_ne!(
-            body,
-            MarketPathSnapshot::reset(now + ChronoDuration::seconds(1)).influx_body()
-        );
     }
 
     #[test]
-    fn market_path_reset_emits_an_empty_replacement_frame() {
+    fn market_path_without_points_does_not_emit_an_invalid_numeric_frame() {
         let now = Utc.timestamp_opt(1_800_000_100, 0).unwrap();
-        assert_eq!(
-            MarketPathSnapshot::reset(now).influx_body(),
-            "btc_market_path snapshot_1800000100000000000=1i 1800000100000000000"
-        );
+        let market = market("one", now);
+        let snapshot = MarketPathSnapshot::resolve(now, &market, []);
+
+        assert_eq!(snapshot.influx_body(), None);
     }
 }

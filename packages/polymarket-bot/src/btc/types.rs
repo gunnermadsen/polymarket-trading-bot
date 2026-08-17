@@ -56,12 +56,12 @@ impl BtcIntervalMarket {
         }
     }
 
+    pub fn is_interval_window(&self, now: DateTime<Utc>) -> bool {
+        now >= self.window_start && now < self.window_end
+    }
+
     pub fn is_trade_window(&self, now: DateTime<Utc>) -> bool {
-        self.active
-            && !self.closed
-            && self.accepting_orders
-            && now >= self.window_start
-            && now < self.window_end
+        self.active && !self.closed && self.accepting_orders && self.is_interval_window(now)
     }
 }
 
@@ -700,6 +700,10 @@ pub struct SourceReadiness {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RealtimeState {
     pub current_market: Option<BtcIntervalMarket>,
+    /// Time-window identity used only by operator displays. Trading continues to use
+    /// `current_market`, whose active/closed/accepting flags fail closed independently.
+    #[serde(skip)]
+    pub display_market: Option<BtcIntervalMarket>,
     pub books: BTreeMap<String, BookReadiness>,
     pub reference_prices: BTreeMap<ReferencePriceSource, ReferencePriceTick>,
     #[serde(default)]

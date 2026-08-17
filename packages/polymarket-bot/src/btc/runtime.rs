@@ -2491,13 +2491,14 @@ async fn run_discovery(
             _ = ticker.tick() => {
                 let now = Utc::now();
                 let fresh_markets = match discover_markets(&client, &config, now).await {
-                    Ok(markets) => markets,
+                    Ok(markets) => Some(markets),
                     Err(error) => {
                         record_error(&metrics, error).await;
-                        Vec::new()
+                        None
                     }
                 };
-                for market in &fresh_markets {
+                let fresh_market_slice = fresh_markets.as_deref().unwrap_or_default();
+                for market in fresh_market_slice {
                     if let Err(error) = repository.upsert_interval_market(market).await {
                         record_critical_persistence_error(&metrics, error).await;
                         return;
@@ -2515,13 +2516,16 @@ async fn run_discovery(
                         .saturating_add(1);
                 }
 
-                // Only a fresh Gamma response is eligible to become tradable. Durable recovery
-                // rows are subscription/audit inputs and can never re-open an old market.
-                let current = fresh_markets
-                    .iter()
-                    .find(|market| market.is_trade_window(now))
-                    .cloned();
-                state.write().await.set_current_market(current);
+                // Only Gamma responses can replace the current market; durable recovery rows
+                // are subscription/audit inputs and can never re-open an old market. A failed
+                // request is not evidence that the current market stopped trading, so retain
+                // the last successful response. All order paths still enforce is_trade_window(),
+                // preventing an expired retained market from authorizing a trade.
+                if let Some(update) = current_market_update(fresh_markets.as_deref(), now) {
+                    let mut state = state.write().await;
+                    state.set_current_market(update.tradable);
+                    state.display_market = update.display;
+                }
 
                 let watches = match repository
                     .load_unsettled_official_resolution_watches()
@@ -2606,7 +2610,7 @@ async fn run_discovery(
                     .iter()
                     .map(|market| market.market_id.clone())
                     .collect::<HashSet<_>>();
-                for market in &fresh_markets {
+                for market in fresh_market_slice {
                     if recovery_ids.insert(market.market_id.clone()) {
                         recovery_markets.push(market.clone());
                     }
@@ -2615,7 +2619,9 @@ async fn run_discovery(
                 publish_market_subscriptions_if_changed(&market_sender, &pending_markets);
                 {
                     let mut runtime_metrics = metrics.write().await;
-                    runtime_metrics.markets_discovered = fresh_markets.len() as u64;
+                    if let Some(fresh_markets) = fresh_markets.as_ref() {
+                        runtime_metrics.markets_discovered = fresh_markets.len() as u64;
+                    }
                     runtime_metrics.resolution_watches_active = pending_markets.len() as u64;
                 }
                 if boundary_hydration_retry_at.is_some_and(|retry_at| Instant::now() < retry_at) {
@@ -3010,6 +3016,31 @@ async fn discover_markets(
     }
     markets.sort_by_key(|market| market.window_start);
     Ok(markets)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CurrentMarketUpdate {
+    tradable: Option<BtcIntervalMarket>,
+    display: Option<BtcIntervalMarket>,
+}
+
+/// Returns `None` when discovery failed and the caller must retain its prior markets.
+/// A successful response always returns an update. Display identity follows the clock
+/// window while trading identity additionally honors active/closed/accepting flags.
+fn current_market_update(
+    fresh_markets: Option<&[BtcIntervalMarket]>,
+    now: DateTime<Utc>,
+) -> Option<CurrentMarketUpdate> {
+    fresh_markets.map(|markets| CurrentMarketUpdate {
+        tradable: markets
+            .iter()
+            .find(|market| market.is_trade_window(now))
+            .cloned(),
+        display: markets
+            .iter()
+            .find(|market| market.is_interval_window(now))
+            .cloned(),
+    })
 }
 
 #[derive(Debug)]
@@ -13513,6 +13544,32 @@ mod tests {
         conflicting.up_token_id = "other-up".to_string();
         conflicting.down_token_id = "other-down".to_string();
         assert!(unique_current_clob_market(&[current, conflicting], checked_at).is_none());
+    }
+
+    #[test]
+    fn discovery_failure_retains_current_market_but_success_can_clear_it() {
+        let current = market();
+        let checked_at = current.window_start + Duration::minutes(1);
+
+        assert_eq!(current_market_update(None, checked_at), None);
+        assert_eq!(
+            current_market_update(Some(std::slice::from_ref(&current)), checked_at),
+            Some(CurrentMarketUpdate {
+                tradable: Some(current.clone()),
+                display: Some(current.clone()),
+            })
+        );
+
+        let mut closed = current;
+        closed.closed = true;
+        closed.accepting_orders = false;
+        assert_eq!(
+            current_market_update(Some(std::slice::from_ref(&closed)), checked_at),
+            Some(CurrentMarketUpdate {
+                tradable: None,
+                display: Some(closed),
+            })
+        );
     }
 
     #[test]

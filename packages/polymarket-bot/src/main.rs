@@ -2731,7 +2731,7 @@ impl BtcProcessManager {
             .as_ref()
             .map(|shared| shared.runtime.shared_state());
         let current_market = match state {
-            Some(state) => state.read().await.current_market.clone(),
+            Some(state) => state.read().await.display_market.clone(),
             None => None,
         };
         let markets = current_market
@@ -2755,13 +2755,13 @@ impl BtcProcessManager {
         };
         let (market, twap_history) = {
             let state = state.read().await;
-            let Some(market) = state.current_market.clone() else {
+            let Some(market) = state.display_market.clone() else {
                 return Ok(None);
             };
             let twap_history = state.chainlink_twap_60.iter().cloned().collect::<Vec<_>>();
             (market, twap_history)
         };
-        if !market.is_trade_window(observed_at) {
+        if !market.is_interval_window(observed_at) {
             return Ok(None);
         }
 
@@ -3794,9 +3794,7 @@ async fn run_grafana_live(
                     .await
                 {
                     Ok(Some(snapshot)) => publisher.publish_market_path(&snapshot).await,
-                    Ok(None) => publisher
-                        .publish_market_path(&MarketPathSnapshot::reset(observed_at))
-                        .await,
+                    Ok(None) => Ok(()),
                     Err(error) => Err(error),
                 };
                 match market_path_result {
