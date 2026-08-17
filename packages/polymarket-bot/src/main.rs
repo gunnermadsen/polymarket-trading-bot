@@ -204,6 +204,18 @@ fn shared_market_data_config_compatible(left: &BtcRuntimeConfig, right: &BtcRunt
         && left.writer_capacity == right.writer_capacity
 }
 
+fn shared_runtime_recovery_required(active_process_count: usize, shared_running: bool) -> bool {
+    active_process_count > 0 && !shared_running
+}
+
+async fn invalidate_shared_market_data_evidence(
+    state: &Arc<tokio::sync::RwLock<polymarket_bot::btc::RealtimeState>>,
+    books: &Arc<tokio::sync::RwLock<BookRegistry>>,
+) {
+    *state.write().await = polymarket_bot::btc::RealtimeState::default();
+    *books.write().await = BookRegistry::new(uuid::Uuid::new_v4());
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct BtcRealtimePaperControlConfig {
@@ -1047,7 +1059,9 @@ struct BtcExecutionComponents {
 
 struct SharedBtcRuntime {
     config: BtcRuntimeConfig,
-    runtime: BtcRuntimeHandle,
+    state: Arc<tokio::sync::RwLock<polymarket_bot::btc::RealtimeState>>,
+    books: Arc<tokio::sync::RwLock<BookRegistry>>,
+    runtime: Option<BtcRuntimeHandle>,
 }
 
 #[derive(Debug, Clone)]
@@ -1179,11 +1193,13 @@ impl BtcProcessManager {
             let mut shared = self.shared_runtime.lock().await;
             if let Some(existing) = shared.as_ref() {
                 let compatible = shared_market_data_config_compatible(&existing.config, config);
-                if compatible && existing.runtime.is_running() {
-                    return Ok((
-                        existing.runtime.shared_state(),
-                        existing.runtime.shared_book_registry(),
-                    ));
+                if compatible
+                    && existing
+                        .runtime
+                        .as_ref()
+                        .is_some_and(BtcRuntimeHandle::is_running)
+                {
+                    return Ok((existing.state.clone(), existing.books.clone()));
                 }
                 if active_playbooks > 0 {
                     let message = if compatible {
@@ -1197,18 +1213,18 @@ impl BtcProcessManager {
             shared.take()
         };
         if let Some(retired) = retired_runtime {
-            match tokio::time::timeout(BTC_RUNTIME_SHUTDOWN_TIMEOUT, retired.runtime.shutdown())
-                .await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => warn!(
-                    error = ?error,
-                    "retired BTC shared market-data runtime reported an integrity failure"
-                ),
-                Err(_) => warn!(
-                    timeout_secs = BTC_RUNTIME_SHUTDOWN_TIMEOUT.as_secs(),
-                    "timed out retiring BTC shared market-data runtime"
-                ),
+            if let Some(runtime) = retired.runtime {
+                match tokio::time::timeout(BTC_RUNTIME_SHUTDOWN_TIMEOUT, runtime.shutdown()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => warn!(
+                        error = ?error,
+                        "retired BTC shared market-data runtime reported an integrity failure"
+                    ),
+                    Err(_) => warn!(
+                        timeout_secs = BTC_RUNTIME_SHUTDOWN_TIMEOUT.as_secs(),
+                        "timed out retiring BTC shared market-data runtime"
+                    ),
+                }
             }
         }
 
@@ -1241,9 +1257,90 @@ impl BtcProcessManager {
         debug_assert!(shared.is_none());
         *shared = Some(SharedBtcRuntime {
             config: config.clone(),
-            runtime,
+            state: state.clone(),
+            books: books.clone(),
+            runtime: Some(runtime),
         });
         Ok((state, books))
+    }
+
+    async fn recover_shared_runtime(&self) {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return;
+        }
+        let _transition_guard = self.transition.lock().await;
+        if self.shutting_down.load(Ordering::Acquire)
+            || self.active_playbooks.lock().await.is_empty()
+        {
+            return;
+        }
+
+        let (config, state, books, failed_runtime) = {
+            let mut shared_guard = self.shared_runtime.lock().await;
+            let Some(shared) = shared_guard.as_mut() else {
+                error!(
+                    "BTC shared market-data runtime handle is unavailable; preserving active process configuration"
+                );
+                return;
+            };
+            if shared
+                .runtime
+                .as_ref()
+                .is_some_and(BtcRuntimeHandle::is_running)
+            {
+                return;
+            }
+            (
+                shared.config.clone(),
+                shared.state.clone(),
+                shared.books.clone(),
+                shared.runtime.take(),
+            )
+        };
+
+        if let Some(runtime) = failed_runtime {
+            match tokio::time::timeout(BTC_RUNTIME_SHUTDOWN_TIMEOUT, runtime.shutdown()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => warn!(
+                    error = ?error,
+                    "failed BTC shared market-data runtime reported an integrity failure during recovery"
+                ),
+                Err(_) => warn!(
+                    timeout_secs = BTC_RUNTIME_SHUTDOWN_TIMEOUT.as_secs(),
+                    "timed out retiring failed BTC shared market-data runtime during recovery"
+                ),
+            }
+        }
+
+        invalidate_shared_market_data_evidence(&state, &books).await;
+
+        let heartbeat = self.config.btc.data_source_heartbeat;
+        let recovery = BtcRuntime::new(config.clone(), heartbeat, self.repository.clone())
+            .with_directional_external(self.config.btc.directional_external.clone())
+            .with_shared_state(state)
+            .with_shared_book_registry(books)
+            .start()
+            .await;
+        match recovery {
+            Ok(runtime) => {
+                let mut shared_guard = self.shared_runtime.lock().await;
+                let Some(shared) = shared_guard.as_mut() else {
+                    warn!("recovered BTC shared market-data runtime lost its manager slot");
+                    drop(runtime);
+                    return;
+                };
+                shared.runtime = Some(runtime);
+                drop(shared_guard);
+                info!(
+                    active_process_count = self.active_playbooks.lock().await.len(),
+                    "BTC shared market-data runtime recovered without changing durable process state"
+                );
+            }
+            Err(error) => warn!(
+                error = ?error,
+                "BTC shared market-data runtime recovery deferred; active process configuration remains enabled"
+            ),
+        }
     }
 
     async fn shutdown_shared_runtime_if_idle(&self) {
@@ -1254,7 +1351,10 @@ impl BtcProcessManager {
         let Some(shared) = shared else {
             return;
         };
-        match tokio::time::timeout(BTC_RUNTIME_SHUTDOWN_TIMEOUT, shared.runtime.shutdown()).await {
+        let Some(runtime) = shared.runtime else {
+            return;
+        };
+        match tokio::time::timeout(BTC_RUNTIME_SHUTDOWN_TIMEOUT, runtime.shutdown()).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => warn!(
                 error = ?error,
@@ -1836,11 +1936,15 @@ impl BtcProcessManager {
             }
             match venue.reconcile().await {
                 Ok(report) if report.open_orders == 0 && report.unresolved_count == 0 => {}
-                Ok(report) => failures.push(format!(
-                    "live_quiesce_unresolved: open_orders={} unresolved_count={}",
-                    report.open_orders, report.unresolved_count
-                )),
-                Err(error) => failures.push(format!("live_quiesce_reconcile_failed: {error:#}")),
+                Ok(report) => warn!(
+                    open_orders = report.open_orders,
+                    unresolved_count = report.unresolved_count,
+                    "live stop reconciliation remains unresolved without changing terminal intent"
+                ),
+                Err(error) => warn!(
+                    error = %error,
+                    "live stop reconciliation failed without changing terminal intent"
+                ),
             }
             failures
         };
@@ -2692,17 +2796,21 @@ impl BtcProcessManager {
         }
         let shared_runtime = { self.shared_runtime.lock().await.take() };
         if let Some(shared) = shared_runtime {
-            let shutdown_result =
-                tokio::time::timeout(BTC_RUNTIME_SHUTDOWN_TIMEOUT, shared.runtime.shutdown()).await;
-            if let Some(shutdown_failure) = match shutdown_result {
-                Ok(Ok(())) => None,
-                Ok(Err(error)) => Some(format!("shared_btc_runtime_shutdown_failed: {error:#}")),
-                Err(_) => Some(format!(
-                    "shared_btc_runtime_shutdown_timeout_after_{}s",
-                    BTC_RUNTIME_SHUTDOWN_TIMEOUT.as_secs()
-                )),
-            } {
-                failures.push(shutdown_failure);
+            if let Some(runtime) = shared.runtime {
+                let shutdown_result =
+                    tokio::time::timeout(BTC_RUNTIME_SHUTDOWN_TIMEOUT, runtime.shutdown()).await;
+                if let Some(shutdown_failure) = match shutdown_result {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) => {
+                        Some(format!("shared_btc_runtime_shutdown_failed: {error:#}"))
+                    }
+                    Err(_) => Some(format!(
+                        "shared_btc_runtime_shutdown_timeout_after_{}s",
+                        BTC_RUNTIME_SHUTDOWN_TIMEOUT.as_secs()
+                    )),
+                } {
+                    failures.push(shutdown_failure);
+                }
             }
         }
         if failures.is_empty() {
@@ -2729,7 +2837,7 @@ impl BtcProcessManager {
             .lock()
             .await
             .as_ref()
-            .map(|shared| shared.runtime.shared_state());
+            .map(|shared| shared.state.clone());
         let current_market = match state {
             Some(state) => state.read().await.display_market.clone(),
             None => None,
@@ -2749,7 +2857,7 @@ impl BtcProcessManager {
             .lock()
             .await
             .as_ref()
-            .map(|shared| shared.runtime.shared_state());
+            .map(|shared| shared.state.clone());
         let Some(state) = state else {
             return Ok(None);
         };
@@ -2813,7 +2921,7 @@ impl BtcProcessManager {
             .lock()
             .await
             .as_ref()
-            .map(|shared| shared.runtime.status_inputs());
+            .and_then(|shared| shared.runtime.as_ref().map(BtcRuntimeHandle::status_inputs));
         let shared_status = match shared_status_inputs {
             Some((state, metrics, config, running)) => {
                 Some(runtime_status_from_inputs(state, metrics, config, running).await)
@@ -2821,42 +2929,16 @@ impl BtcProcessManager {
             None => None,
         };
         let shared_running = shared_status.as_ref().is_some_and(|status| status.running);
-        if !process_ids.is_empty() && !shared_running {
-            let failure_reason = format!(
-                "btc_shared_market_data_runtime_failed: {}",
-                shared_status
+        if shared_runtime_recovery_required(process_ids.len(), shared_running) {
+            warn!(
+                reason = shared_status
                     .as_ref()
                     .and_then(|status| status.metrics.last_error.as_deref())
-                    .unwrap_or("shared market-data runtime handle is unavailable")
+                    .unwrap_or("shared market-data runtime handle is unavailable"),
+                active_process_count = process_ids.len(),
+                "BTC shared market-data runtime is unavailable; preserving process state and attempting recovery"
             );
-            for process_id in process_ids {
-                let run_id = self
-                    .active_playbooks
-                    .lock()
-                    .await
-                    .get(&process_id)
-                    .map(|active| active.run_id);
-                let Some(run_id) = run_id else {
-                    continue;
-                };
-                if let Err(stop_error) = self
-                    .stop_process_for_generation(
-                        process_id,
-                        Some(run_id),
-                        &failure_reason,
-                        true,
-                        "stopped",
-                    )
-                    .await
-                {
-                    error!(
-                        error = ?stop_error,
-                        process_id = %process_id,
-                        run_id = %run_id,
-                        "failed to terminalize playbook after shared market-data failure"
-                    );
-                }
-            }
+            self.recover_shared_runtime().await;
             return;
         }
         for process_id in process_ids {
@@ -2939,7 +3021,7 @@ impl BtcProcessManager {
             .lock()
             .await
             .as_ref()
-            .map(|shared| shared.runtime.status_inputs());
+            .and_then(|shared| shared.runtime.as_ref().map(BtcRuntimeHandle::status_inputs));
         let shared_market_data = match shared_inputs {
             Some((state, metrics, config, running)) => serde_json::to_value(
                 runtime_status_from_inputs(state, metrics, config, running).await,
@@ -5532,6 +5614,40 @@ mod lifecycle_tests {
             &shared,
             &l2_url_playbook
         ));
+    }
+
+    #[test]
+    fn shared_feed_loss_requests_recovery_only_for_active_processes() {
+        assert!(shared_runtime_recovery_required(17, false));
+        assert!(!shared_runtime_recovery_required(17, true));
+        assert!(!shared_runtime_recovery_required(0, false));
+    }
+
+    #[tokio::test]
+    async fn shared_feed_recovery_invalidates_evidence_without_rebinding_consumers() {
+        let state = Arc::new(tokio::sync::RwLock::new(
+            polymarket_bot::btc::RealtimeState {
+                primary_persistence_degraded: true,
+                last_updated_at: Some(Utc::now()),
+                ..polymarket_bot::btc::RealtimeState::default()
+            },
+        ));
+        let original_connection_id = uuid::Uuid::new_v4();
+        let books = Arc::new(tokio::sync::RwLock::new(BookRegistry::new(
+            original_connection_id,
+        )));
+        let state_consumer = state.clone();
+        let books_consumer = books.clone();
+
+        invalidate_shared_market_data_evidence(&state, &books).await;
+
+        assert!(Arc::ptr_eq(&state, &state_consumer));
+        assert!(Arc::ptr_eq(&books, &books_consumer));
+        assert_eq!(
+            *state.read().await,
+            polymarket_bot::btc::RealtimeState::default()
+        );
+        assert_ne!(books.read().await.connection_id(), original_connection_id);
     }
 
     #[test]

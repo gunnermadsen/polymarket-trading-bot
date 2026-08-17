@@ -326,6 +326,10 @@ fn validate_marketable_depth(
 
 #[async_trait]
 impl ExecutionVenue for BtcLiveExecutionAdapter {
+    fn preserve_liveness_on_post_order_reconcile_error(&self) -> bool {
+        true
+    }
+
     async fn find_existing_order(&self, request: &OrderRequest) -> Result<Option<OrderRecord>> {
         self.delegate.find_existing_order(request).await
     }
@@ -364,6 +368,16 @@ impl ExecutionVenue for BtcLiveExecutionAdapter {
 
     async fn reconcile(&self) -> Result<ReconciliationReport> {
         self.delegate.reconcile().await
+    }
+
+    async fn update_live_reconciliation_health(
+        &self,
+        pending_settlement_count: usize,
+        error: Option<String>,
+    ) -> Result<()> {
+        self.delegate
+            .update_live_reconciliation_health(pending_settlement_count, error)
+            .await
     }
 
     async fn fills_for_order(&self, order_id: &str) -> Result<Vec<FillRecord>> {
@@ -487,6 +501,19 @@ mod tests {
         fn pause_before_pre_post(&self) {
             self.pause_before_pre_post.store(true, Ordering::SeqCst);
         }
+    }
+
+    #[test]
+    fn live_adapter_preserves_runtime_liveness_on_post_order_reconciliation_failure() {
+        let fake = Arc::new(FakeVenue::default());
+        let process_id = Uuid::new_v4();
+        let now = Utc::now();
+        let adapter = adapter(
+            &fake,
+            seeded_registry("market", "token", now, now, dec!(10)),
+            process_id,
+        );
+        assert!(adapter.preserve_liveness_on_post_order_reconcile_error());
     }
 
     #[async_trait]

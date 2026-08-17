@@ -639,14 +639,24 @@ WITH order_identity AS MATERIALIZED (
     o.order_id,
     o.market_id,
     o.token_id,
+    COALESCE(
+      NULLIF(o.raw_payload #>> '{request,metadata,run_id}', ''),
+      NULLIF(o.raw_payload #>> '{request,metadata,experiment_id}', '')
+    )::uuid AS order_run_id,
     o.raw_payload #>> '{request,metadata,run_id}' AS metadata_run_id,
     o.raw_payload #>> '{request,metadata,experiment_id}'
       AS legacy_experiment_id
   FROM polymarket.orders o
   WHERE o.process_id = $1
     AND (
-      o.raw_payload #>> '{request,metadata,run_id}' = $2::text
-      OR o.raw_payload #>> '{request,metadata,experiment_id}' = $2::text
+      ($3 = 'live' AND COALESCE(
+        NULLIF(o.raw_payload #>> '{request,metadata,run_id}', ''),
+        NULLIF(o.raw_payload #>> '{request,metadata,experiment_id}', '')
+      ) IS NOT NULL)
+      OR ($3 <> 'live' AND (
+        o.raw_payload #>> '{request,metadata,run_id}' = $2::text
+        OR o.raw_payload #>> '{request,metadata,experiment_id}' = $2::text
+      ))
     )
 ), identity_state AS (
   SELECT COALESCE(
@@ -661,7 +671,7 @@ WITH order_identity AS MATERIALIZED (
 ), entered AS (
   SELECT
     o.process_id,
-    $2::uuid AS run_id,
+    CASE WHEN $3 = 'live' THEN o.order_run_id ELSE $2::uuid END AS run_id,
     o.order_id,
     o.market_id,
     o.token_id,
@@ -678,7 +688,7 @@ WITH order_identity AS MATERIALIZED (
     o.metadata_run_id <> o.legacy_experiment_id,
     false
   )
-  GROUP BY o.process_id, o.order_id, o.market_id, o.token_id
+  GROUP BY o.process_id, o.order_run_id, o.order_id, o.market_id, o.token_id
 ), eligible AS (
   SELECT
     e.*,
@@ -738,8 +748,8 @@ SELECT settlement_id, run_id, process_id, execution_mode, order_id, market_id, t
   created_at, updated_at
 FROM polymarket.btc_paper_settlement_ledger
 WHERE process_id = $1
-  AND run_id = $2
   AND execution_mode = $3
+  AND ($3 = 'live' OR run_id = $2)
   AND credit_status = 'pending'
 ORDER BY official_resolution_received_at, order_id, settlement_id
 "#;
@@ -2719,6 +2729,37 @@ impl BtcRepository {
             count => bail!(
                 "BTC run manifest identity matched {count} immutable events for process {process_id}"
             ),
+        }
+    }
+
+    pub async fn run_config_hash(&self, process_id: Uuid, run_id: Uuid) -> Result<String> {
+        let hashes = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT metadata #>> '{config_hash}'
+            FROM polymarket.trading_process_events
+            WHERE process_id = $1
+              AND event_type = 'btc_run_manifest'
+              AND event_id = $2
+              AND metadata #>> '{run_id}' = $2::text
+            ORDER BY timestamp_utc, created_at
+            LIMIT 2
+            "#,
+        )
+        .bind(process_id)
+        .bind(run_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to load immutable BTC run config hash")?;
+        match hashes.as_slice() {
+            [config_hash]
+                if config_hash.len() == 64
+                    && config_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
+            {
+                Ok(config_hash.clone())
+            }
+            [] => bail!("BTC process {process_id} run {run_id} has no immutable run manifest"),
+            [_] => bail!("BTC process {process_id} run {run_id} has an invalid config hash"),
+            _ => bail!("BTC process {process_id} run {run_id} has duplicate run manifests"),
         }
     }
 
@@ -5160,7 +5201,9 @@ mod tests {
         assert!(discovery.contains("as has_identity_conflict"));
         assert!(discovery.contains("on f.process_id = $1"));
         assert!(discovery.contains("and f.source = $3"));
-        assert!(discovery.contains("$2::uuid as run_id"));
+        assert!(discovery
+            .contains("case when $3 = 'live' then o.order_run_id else $2::uuid end as run_id"));
+        assert!(discovery.contains("$3 = 'live' and coalesce("));
         assert!(discovery.contains("process_id, run_id, execution_mode"));
         assert!(discovery.contains("process_id, run_id, $3"));
         assert!(discovery.contains("on conflict (run_id, order_id) do nothing"));
@@ -5172,16 +5215,17 @@ mod tests {
         assert!(discovery.matches("experiment_id").count() >= 2);
         assert!(!discovery.contains("btc_paper_experiments"));
 
-        for query in [LOAD_PENDING_SETTLEMENTS_SQL, MARK_SETTLEMENT_RECOGNIZED_SQL] {
-            let normalized = query.to_ascii_lowercase();
-            assert!(normalized.contains("process_id = $1"));
-            assert!(normalized.contains("run_id = $2"));
-            assert!(
-                normalized.contains("execution_mode = $3")
-                    || normalized.contains("execution_mode = $4")
-            );
-            assert!(!normalized.contains("experiment_id"));
-        }
+        let pending = LOAD_PENDING_SETTLEMENTS_SQL.to_ascii_lowercase();
+        assert!(pending.contains("process_id = $1"));
+        assert!(pending.contains("execution_mode = $3"));
+        assert!(pending.contains("$3 = 'live' or run_id = $2"));
+        assert!(!pending.contains("experiment_id"));
+
+        let recognized = MARK_SETTLEMENT_RECOGNIZED_SQL.to_ascii_lowercase();
+        assert!(recognized.contains("process_id = $1"));
+        assert!(recognized.contains("run_id = $2"));
+        assert!(recognized.contains("execution_mode = $4"));
+        assert!(!recognized.contains("experiment_id"));
     }
 
     #[test]

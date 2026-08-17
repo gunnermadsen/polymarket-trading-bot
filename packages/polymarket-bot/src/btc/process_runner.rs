@@ -1064,7 +1064,14 @@ impl BtcProcessRunner {
                         .await?;
                 }
                 self.initialize_entry_admission(resume).await?;
-                self.force_refresh_settlement_and_reconcile().await?;
+                if let Err(error) = self.force_refresh_settlement_and_reconcile().await {
+                    warn!(
+                        process_id = %self.config.process_id,
+                        run_id = %self.config.run_id,
+                        error = %error,
+                        "initial reconciliation deferred; runtime remains active for automatic recovery"
+                    );
+                }
                 Ok::<(), anyhow::Error>(())
             })
             .await?;
@@ -1678,7 +1685,14 @@ impl BtcProcessRunner {
                 }
             }
         }
-        self.force_refresh_settlement_and_reconcile().await?;
+        if let Err(error) = self.force_refresh_settlement_and_reconcile().await {
+            warn!(
+                process_id = %self.config.process_id,
+                run_id = %self.config.run_id,
+                error = %error,
+                "shutdown reconciliation failed without changing durable process authorization"
+            );
+        }
         Ok(())
     }
 
@@ -1745,7 +1759,14 @@ impl BtcProcessRunner {
         } else {
             None
         };
-        self.refresh_settlement_and_reconcile_if_due().await?;
+        if let Err(error) = self.refresh_settlement_and_reconcile_if_due().await {
+            warn!(
+                process_id = %self.config.process_id,
+                run_id = %self.config.run_id,
+                error = %error,
+                "periodic reconciliation deferred; strategy runtime remains active"
+            );
+        }
 
         let Some(market) = observation.state.current_market.as_ref() else {
             return Ok(());
@@ -2205,7 +2226,14 @@ impl BtcProcessRunner {
             )
             .await?;
         if filled {
-            self.force_refresh_settlement_and_reconcile().await?;
+            if let Err(error) = self.force_refresh_settlement_and_reconcile().await {
+                warn!(
+                    process_id = %self.config.process_id,
+                    run_id = %self.config.run_id,
+                    error = %error,
+                    "post-fill reconciliation deferred; strategy runtime remains active"
+                );
+            }
         }
         Ok(())
     }
@@ -3055,6 +3083,21 @@ fn build_directional_model_feature_snapshot(
 
 #[async_trait]
 impl BtcStrategyRunner for BtcProcessRunner {
+    async fn reconcile_if_due(&self) -> Result<()> {
+        if self.initialized.get().is_none() {
+            return Ok(());
+        }
+        if let Err(error) = self.refresh_settlement_and_reconcile_if_due().await {
+            warn!(
+                process_id = %self.config.process_id,
+                run_id = %self.config.run_id,
+                error = %error,
+                "timer-driven reconciliation deferred; strategy runtime remains active"
+            );
+        }
+        Ok(())
+    }
+
     async fn on_observation(&self, observation: StrategyObservation) -> Result<()> {
         self.observe(observation).await
     }

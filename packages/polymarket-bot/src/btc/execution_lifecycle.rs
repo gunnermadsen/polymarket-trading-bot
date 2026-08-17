@@ -222,77 +222,98 @@ impl BtcExecutionLifecycle for LiveExecutionLifecycle {
         run_id: Uuid,
         config_hash: &str,
     ) -> Result<()> {
-        let reconciliation = match self.venue.reconcile().await {
-            Ok(reconciliation) => reconciliation,
-            Err(error) => {
-                warn!(
-                    process_id = %process_id,
-                    run_id = %run_id,
-                    error = %error,
-                    "BTC live HTTP reconciliation backup failed; preserving process authorization and retrying"
-                );
-                return Ok(());
+        let attempt = async {
+            let reconciliation = self.venue.reconcile().await?;
+            let pending = repository
+                .discover_pending_settlements(process_id, run_id, BtcExecutionMode::Live)
+                .await?;
+            let mut pending_redemption_count = 0usize;
+            for settlement in &pending {
+                if settlement.payout == Decimal::ZERO {
+                    let settlement_config_hash = if settlement.run_id == run_id {
+                        config_hash.to_string()
+                    } else {
+                        repository
+                            .run_config_hash(process_id, settlement.run_id)
+                            .await?
+                    };
+                    let recognized = repository
+                        .recognize_live_zero_payout_settlement(
+                            process_id,
+                            settlement.run_id,
+                            settlement,
+                            &settlement_config_hash,
+                        )
+                        .await?;
+                    if recognized {
+                        info!(
+                            process_id = %process_id,
+                            run_id = %settlement.run_id,
+                            settlement_id = %settlement.settlement_id,
+                            order_id = %settlement.order_id,
+                            net_pnl = %settlement.net_pnl,
+                            "BTC live zero-payout settlement recognized from official resolution"
+                        );
+                    }
+                } else {
+                    pending_redemption_count = pending_redemption_count.saturating_add(1);
+                }
             }
-        };
-        let pending = repository
-            .discover_pending_settlements(process_id, run_id, BtcExecutionMode::Live)
-            .await?;
-        let mut pending_redemption_count = 0usize;
-        for settlement in &pending {
-            if settlement.payout == Decimal::ZERO {
-                let recognized = repository
-                    .recognize_live_zero_payout_settlement(
-                        process_id,
-                        run_id,
-                        settlement,
-                        config_hash,
-                    )
-                    .await?;
-                if recognized {
-                    info!(
+            Ok::<_, anyhow::Error>((reconciliation, pending_redemption_count))
+        }
+        .await;
+
+        match attempt {
+            Ok((reconciliation, pending_redemption_count)) => {
+                let reason =
+                    live_reconciliation_gate_reason(&reconciliation, pending_redemption_count)
+                        .map(str::to_string);
+                if let Err(error) = self
+                    .venue
+                    .update_live_reconciliation_health(pending_redemption_count, reason.clone())
+                    .await
+                {
+                    warn!(
                         process_id = %process_id,
                         run_id = %run_id,
-                        settlement_id = %settlement.settlement_id,
-                        order_id = %settlement.order_id,
-                        net_pnl = %settlement.net_pnl,
-                        "BTC live zero-payout settlement recognized from official resolution"
+                        error = %error,
+                        "failed to update process-scoped reconciliation readiness"
                     );
                 }
-            } else {
-                pending_redemption_count = pending_redemption_count.saturating_add(1);
+                if let Some(reason) = reason {
+                    warn!(
+                        process_id = %process_id,
+                        run_id = %run_id,
+                        pending_settlement_count = pending_redemption_count,
+                        balances_checked = reconciliation.balances_checked,
+                        reconciliation_mismatches = reconciliation.mismatches_found,
+                        reconciliation_unresolved = reconciliation.unresolved_count,
+                        reason,
+                        "BTC live reconciliation is degraded; process authorization is preserved and clean retry restores entries"
+                    );
+                }
             }
-        }
-        if let Some(reason) =
-            live_reconciliation_gate_reason(&reconciliation, pending_redemption_count)
-        {
-            if reason == LIVE_PENDING_REDEMPTION_GATE_REASON {
-                let status = self
+            Err(error) => {
+                let error_chain = format!("{error:#}");
+                if let Err(readiness_error) = self
                     .venue
-                    .set_live_entries_enabled(false, Some(reason.to_string()))
-                    .await?;
-                if status.entries_enabled {
-                    bail!("BTC pending redemption did not close execution entries");
+                    .update_live_reconciliation_health(0, Some(error_chain.clone()))
+                    .await
+                {
+                    warn!(
+                        process_id = %process_id,
+                        run_id = %run_id,
+                        error = %readiness_error,
+                        "failed to mark process-scoped reconciliation degraded"
+                    );
                 }
                 warn!(
                     process_id = %process_id,
                     run_id = %run_id,
-                    pending_settlement_count = pending_redemption_count,
-                    reason,
-                    "BTC live settlement redemption remains unproven; entries remain manually closed"
+                    error = %error_chain,
+                    "BTC live reconciliation failed; preserving process authorization and retrying"
                 );
-                return Ok(());
             }
-            warn!(
-                process_id = %process_id,
-                run_id = %run_id,
-                pending_settlement_count = pending_redemption_count,
-                balances_checked = reconciliation.balances_checked,
-                reconciliation_mismatches = reconciliation.mismatches_found,
-                reconciliation_unresolved = reconciliation.unresolved_count,
-                reason,
-                "BTC live HTTP reconciliation backup reported an unsafe state; clean reconciliation restores readiness automatically"
-            );
-            return Ok(());
         }
         Ok(())
     }

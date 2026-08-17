@@ -4,6 +4,8 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use rust_decimal::prelude::ToPrimitive;
 
+use crate::fees::dynamic_crypto_taker_fee_per_contract_f64;
+
 use super::{
     binance_spot_l2::BinanceL2OneSecondFeature,
     directional_features::build_directional_features_for_asymmetric_value,
@@ -257,8 +259,12 @@ fn polymarket_features(snapshot: &BtcFeatureSnapshot) -> Result<([f64; 13], f64,
     {
         bail!("Polymarket asymmetric feature evidence was invalid");
     }
-    let yes_cost = yes_vwap + fee_rate * yes_vwap * (1.0 - yes_vwap) + EXECUTION_RESERVE_PER_SHARE;
-    let no_cost = no_vwap + fee_rate * no_vwap * (1.0 - no_vwap) + EXECUTION_RESERVE_PER_SHARE;
+    let yes_cost = yes_vwap
+        + dynamic_crypto_taker_fee_per_contract_f64(fee_rate, yes_vwap)
+        + EXECUTION_RESERVE_PER_SHARE;
+    let no_cost = no_vwap
+        + dynamic_crypto_taker_fee_per_contract_f64(fee_rate, no_vwap)
+        + EXECUTION_RESERVE_PER_SHARE;
     let logit = |value: f64| {
         let clipped = value.clamp(1e-6, 1.0 - 1e-6);
         (clipped / (1.0 - clipped)).ln()

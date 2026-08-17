@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::fees::dynamic_crypto_taker_fee;
+
 use super::{
     predictive_regime_v2::ShadowPredictiveRegimeCircuitBreakerConfigSelector, types::BtcOutcome,
 };
@@ -214,11 +216,7 @@ impl ProposedEntryExposure {
         if fee_rate < Decimal::ZERO || fee_rate > Decimal::ONE {
             bail!("proposed entry fee rate must be between 0 and 1");
         }
-        let fee = if limit_price == Decimal::ONE {
-            Decimal::ZERO
-        } else {
-            size * fee_rate * limit_price * (Decimal::ONE - limit_price)
-        };
+        let fee = dynamic_crypto_taker_fee(size, fee_rate, limit_price);
         Ok(Self {
             size,
             limit_price,
