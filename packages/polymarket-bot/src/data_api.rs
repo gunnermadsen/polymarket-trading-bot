@@ -1,19 +1,22 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use reqwest::{header::RETRY_AFTER, Client, StatusCode, Url};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use tokio::{sync::Mutex, time::Instant};
 
 use crate::models::{DataApiActivity, DataApiPosition};
 
 const MAX_RATE_LIMIT_RETRIES: u32 = 4;
 const MAX_RATE_LIMIT_DELAY: Duration = Duration::from_secs(10);
+const MIN_REQUEST_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone)]
 pub struct DataApiClient {
     http: Client,
     base_url: String,
+    next_request_at: Arc<Mutex<Instant>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -60,6 +63,7 @@ impl DataApiClient {
         Self {
             http,
             base_url: base_url.into().trim_end_matches('/').to_string(),
+            next_request_at: Arc::new(Mutex::new(Instant::now())),
         }
     }
 
@@ -81,6 +85,7 @@ impl DataApiClient {
             .with_context(|| format!("invalid Polymarket Data API {path} URL"))?;
         let mut rate_limit_retries = 0u32;
         loop {
+            self.wait_for_request_slot().await;
             let response = self
                 .http
                 .get(url.clone())
@@ -93,7 +98,7 @@ impl DataApiClient {
             {
                 let delay = rate_limit_retry_delay(&response, rate_limit_retries);
                 rate_limit_retries = rate_limit_retries.saturating_add(1);
-                tokio::time::sleep(delay).await;
+                self.defer_requests(delay).await;
                 continue;
             }
             return response
@@ -102,6 +107,23 @@ impl DataApiClient {
                 .json::<T>()
                 .await
                 .with_context(|| format!("failed to decode Polymarket {path}"));
+        }
+    }
+
+    async fn wait_for_request_slot(&self) {
+        let mut next_request_at = self.next_request_at.lock().await;
+        let now = Instant::now();
+        if *next_request_at > now {
+            tokio::time::sleep_until(*next_request_at).await;
+        }
+        *next_request_at = Instant::now() + MIN_REQUEST_INTERVAL;
+    }
+
+    async fn defer_requests(&self, delay: Duration) {
+        let mut next_request_at = self.next_request_at.lock().await;
+        let deferred_until = Instant::now() + delay;
+        if *next_request_at < deferred_until {
+            *next_request_at = deferred_until;
         }
     }
 }
@@ -301,6 +323,32 @@ mod tests {
 
         assert!(positions.is_empty());
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cloned_clients_share_the_rate_limit_cooldown() {
+        async fn positions() -> Response {
+            (StatusCode::OK, "[]").into_response()
+        }
+
+        let app = Router::new().route("/positions", get(positions));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = DataApiClient::new(format!("http://{address}"));
+        let cloned = client.clone();
+        cloned.defer_requests(Duration::from_millis(100)).await;
+        let started_at = Instant::now();
+
+        let positions = client
+            .fetch_positions(&PositionsQuery::for_user("0xabc"))
+            .await
+            .unwrap();
+
+        assert!(positions.is_empty());
+        assert!(started_at.elapsed() >= Duration::from_millis(80));
         server.abort();
     }
 }
