@@ -30,9 +30,20 @@ Think of Capitonic as a vision to generate income through systems with automatio
 - A `development` tip is golden only when an annotated `golden/<image_name>/sha256-<docker-sha256-hash>` tag identifies the exact accepted image. Branch position or an `image/...` build tag alone is not golden evidence.
 - Feature verification proves readiness for integration; it does not make a feature branch or its image golden.
 - Use the persistent `target/worktrees/trading-soak` worktree for integrated trading release candidates. Create a fresh domain-specific `integration/<trading-domain>-<candidate-identity>` branch from the current accepted `development` tip for each candidate cohort.
+- Creating the integration candidate is the one point where that cohort branches from `development`. After the candidate exists, any new branch whose work belongs to that cohort starts from the active integration branch, not from `development`, and merges back into that integration branch.
+- A narrowly scoped integration-policy or coordination correction may be committed directly on the integration branch when the user explicitly requests it. Feature and fix implementation still use branches rooted in the active integration lineage.
 - Merge selected verified feature branches into the candidate with `--no-ff`. Never merge a feature branch directly into `development`.
 - Once a candidate image begins soaking, its source commit, image digest, migrations, model identity, and material runtime configuration are immutable. An artifact-affecting change creates a new candidate and restarts acceptance.
+- Any integration-tip change made after an image was built supersedes that image's soak identity, even when the change does not alter the runtime binary. Build and deploy an image carrying the new exact Git revision and restart the soak before that new tip can be admitted or promoted.
 - Abandon a rejected candidate branch rather than repairing its integration history with merge reverts. Preserve the rejected branch until its result and any reusable commits are accounted for.
+
+## Abandoned Lineages
+
+- Before deleting or otherwise retiring an intentionally discarded branch, divergent commit, rejected candidate, or superseded release snapshot, create an annotated tag on its final retained commit using `abandoned/<domain>/git-<full-git-commit-id>`.
+- The abandoned tag annotation records the original branch or ref when known, the reason for abandonment, the replacement or superseding commit when one exists, any image identity built from it, and whether it was ever deployed.
+- An `abandoned/...` tag permanently excludes that lineage and its images from integration, soak admission, golden promotion, and rollback selection unless the user explicitly restores it through a new reviewed lineage.
+- Preserve abandoned tags when removing worktrees or branches. An image build tag may remain for provenance, but it does not override abandoned status.
+- Release and integration tasks must inspect `abandoned/...` tags before selecting branches, commits, or images and must fail closed rather than merge or deploy an abandoned lineage implicitly.
 
 ## Golden Image Admission and Promotion
 
@@ -62,7 +73,7 @@ Think of Capitonic as a vision to generate income through systems with automatio
 -- using this pattern for container images: image/<image_name>/sha256-<docker-sha256-hash>
 -- using this pattern for a container image using a new model: model/<model-name-with-metadata>
 - Every new, independent feature domain must use a dedicated feature branch.
-- An independent feature branch starts from the current accepted `development` commit.
+- Before a candidate cohort exists, an independent feature branch starts from the current accepted `development` commit. After the candidate exists, work intended for that cohort starts from its active integration branch.
 - Follow-up work that must inherit an existing feature or training lineage starts from that lineage’s designated base or integration branch, not from `development`.
 - Keep unrelated feature domains on separate branches.
 - Do not merge a feature branch directly into `development`.
