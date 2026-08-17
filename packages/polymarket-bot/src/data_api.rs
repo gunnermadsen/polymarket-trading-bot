@@ -1,11 +1,14 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use reqwest::{Client, Url};
+use reqwest::{header::RETRY_AFTER, Client, StatusCode, Url};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::models::{DataApiActivity, DataApiPosition};
+
+const MAX_RATE_LIMIT_RETRIES: u32 = 4;
+const MAX_RATE_LIMIT_DELAY: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub struct DataApiClient {
@@ -76,18 +79,42 @@ impl DataApiClient {
     {
         let url = Url::parse(&format!("{}/{}", self.base_url, path))
             .with_context(|| format!("invalid Polymarket Data API {path} URL"))?;
-        self.http
-            .get(url)
-            .query(&params)
-            .send()
-            .await
-            .with_context(|| format!("failed to request Polymarket {path}"))?
-            .error_for_status()
-            .with_context(|| format!("Polymarket {path} response was not successful"))?
-            .json::<T>()
-            .await
-            .with_context(|| format!("failed to decode Polymarket {path}"))
+        let mut rate_limit_retries = 0u32;
+        loop {
+            let response = self
+                .http
+                .get(url.clone())
+                .query(&params)
+                .send()
+                .await
+                .with_context(|| format!("failed to request Polymarket {path}"))?;
+            if response.status() == StatusCode::TOO_MANY_REQUESTS
+                && rate_limit_retries < MAX_RATE_LIMIT_RETRIES
+            {
+                let delay = rate_limit_retry_delay(&response, rate_limit_retries);
+                rate_limit_retries = rate_limit_retries.saturating_add(1);
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+            return response
+                .error_for_status()
+                .with_context(|| format!("Polymarket {path} response was not successful"))?
+                .json::<T>()
+                .await
+                .with_context(|| format!("failed to decode Polymarket {path}"));
+        }
     }
+}
+
+fn rate_limit_retry_delay(response: &reqwest::Response, retry_index: u32) -> Duration {
+    response
+        .headers()
+        .get(RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(1u64 << retry_index.min(3)))
+        .min(MAX_RATE_LIMIT_DELAY)
 }
 
 impl PositionsQuery {
@@ -195,6 +222,18 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    use axum::{
+        extract::State,
+        http::{header::RETRY_AFTER, StatusCode},
+        response::{IntoResponse, Response},
+        routing::get,
+        Router,
+    };
     use rust_decimal_macros::dec;
 
     use super::*;
@@ -235,5 +274,33 @@ mod tests {
             position.extra.get("unexpectedField"),
             Some(&serde_json::Value::String("kept".to_string()))
         );
+    }
+
+    #[tokio::test]
+    async fn data_api_retries_a_bounded_rate_limit_response() {
+        async fn positions(State(attempts): State<Arc<AtomicUsize>>) -> Response {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                return (StatusCode::TOO_MANY_REQUESTS, [(RETRY_AFTER, "0")], "[]").into_response();
+            }
+            (StatusCode::OK, "[]").into_response()
+        }
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/positions", get(positions))
+            .with_state(attempts.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = DataApiClient::new(format!("http://{address}"));
+        let positions = client
+            .fetch_positions(&PositionsQuery::for_user("0xabc"))
+            .await
+            .unwrap();
+
+        assert!(positions.is_empty());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        server.abort();
     }
 }
