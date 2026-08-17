@@ -71,8 +71,8 @@ trades in memory. Completed artifacts and BTC reference facts are immutable, and
 must match the original values.
 
 PMXT files use the same bounded, atomic cache path but are Parquet rather than ZIP CSV. The cache is
-bound to `/Volumes/docker-data/polymarket-bot/backfill-cache`, separated by worker, capped at 40 GiB
-per worker, and removes partial or stale files on worker startup. Each transfer is checked against
+stored in the Compose-managed `polymarket-backfill-cache` Docker volume, separated by worker,
+capped at 8 GiB per worker, and removes partial or stale files on worker startup. Each transfer is checked against
 the source object's content length and ETag before it is atomically published; invalid cached or
 new transfers are removed and downloaded again. Each worker prefetches up to four archives
 concurrently and bounds its ready queue to 48 archives so network transfer can overlap Parquet
