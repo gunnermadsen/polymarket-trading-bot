@@ -3294,7 +3294,7 @@ fn book_features(
     outcome: BtcOutcome,
     token_id: &str,
     checkpoint: Option<&OrderbookCheckpoint>,
-    observed_at: DateTime<Utc>,
+    _observed_at: DateTime<Utc>,
     target_size: Decimal,
 ) -> BtcOutcomeBookFeatures {
     let Some(checkpoint) = checkpoint else {
@@ -3351,7 +3351,10 @@ fn book_features(
         imbalance,
         source_timestamp: Some(checkpoint.source_timestamp),
         received_at: Some(checkpoint.received_at),
-        age_ms: Some((observed_at - checkpoint.observed_at).num_milliseconds()),
+        // This field is the causal delivery age used by the existing book-quality threshold.
+        // Checkpoint construction time is local and always near zero, so it cannot expose the
+        // delayed evidence rejected by CLOB readiness and the execution guard.
+        age_ms: Some((checkpoint.received_at - checkpoint.source_timestamp).num_milliseconds()),
         integrity_status: checkpoint.integrity_status,
         connection_id: Some(checkpoint.connection_id),
     }
@@ -5404,6 +5407,12 @@ mod tests {
         assert_eq!(features.quoted_size, dec!(5));
         assert_eq!(features.marketable_limit_price, Some(dec!(0.51)));
         assert_eq!(features.executable_ask_vwap, Some(dec!(0.506)));
+
+        let mut delayed = checkpoint.clone();
+        delayed.source_timestamp = now - chrono::Duration::milliseconds(2_500);
+        delayed.received_at = now;
+        let delayed_features = book_features(BtcOutcome::Up, "up", Some(&delayed), now, dec!(5));
+        assert_eq!(delayed_features.age_ms, Some(2_500));
 
         let mut empty = checkpoint;
         empty.best_bid = None;

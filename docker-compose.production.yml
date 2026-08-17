@@ -143,7 +143,7 @@ services:
     container_name: polymarket-bot
     hostname: polymarket-bot
     mem_limit: 512m
-    cpus: "1.0"
+    cpus: "2.0"
     labels: *watchtower-labels
     logging: *default-logging
     env_file:
@@ -151,6 +151,7 @@ services:
       - *postgres-env-file
     environment:
       RUST_LOG: "info"
+      TOKIO_WORKER_THREADS: "2"
       POSTGRES_HOST: "pgbouncer"
       POSTGRES_PORT: "6432"
       POSTGRES_USER: "postgres"
