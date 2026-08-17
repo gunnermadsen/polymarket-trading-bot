@@ -137,6 +137,32 @@ WHERE f.process_id = $1
       AND settlement.execution_mode = 'live'
       AND settlement.credit_status = 'credited'
   )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM polymarket.account_trades account_exit
+    JOIN polymarket.orders exit_order
+      ON exit_order.order_id = account_exit.linked_order_id
+    WHERE exit_order.process_id = $1
+      AND exit_order.order_id = f.order_id
+      AND exit_order.token_id = f.token_id
+      AND account_exit.token_id = f.token_id
+      AND account_exit.side = 'sell'
+      AND account_exit.applied_exit_size = account_exit.size
+      AND account_exit.applied_exit_size = (
+        SELECT round(SUM(entry_fill.size), 10)::numeric
+        FROM polymarket.fills entry_fill
+        WHERE entry_fill.process_id = $1
+          AND entry_fill.order_id = f.order_id
+          AND entry_fill.token_id = f.token_id
+          AND entry_fill.source = 'live'
+      )
+      AND account_exit.raw_payload #>> '{reconciliation,kind}' = 'manual_live_full_exit'
+      AND account_exit.raw_payload #>> '{reconciliation,process_id}' = $1::text
+      AND account_exit.raw_payload #>> '{reconciliation,order_id}' = f.order_id
+      AND account_exit.raw_payload #>> '{reconciliation,net_proceeds}'
+            ~ '^[0-9]+([.][0-9]+)?$'
+      AND (account_exit.raw_payload #>> '{reconciliation,net_proceeds}')::numeric > 0
+  )
 ORDER BY f.timestamp_utc, f.fill_id
 LIMIT $2
 "#;
@@ -328,8 +354,9 @@ struct LiveExposureFillRow {
 
 /// Conservative, process-owned capital exposure used by the live submission gate.
 ///
-/// Filled BUY exposure is intentionally cumulative until an exact, credited live redemption is
-/// persisted. A SELL or market resolution alone does not release it.
+/// Filled BUY exposure is intentionally cumulative until an exact, credited live redemption or a
+/// fully applied, process-owned manual exit is persisted. Unrecognized SELL activity and market
+/// resolution alone do not release it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LiveProcessExposureSnapshot {
     pub process_id: Uuid,
@@ -1038,8 +1065,9 @@ impl Store {
     ///
     /// Pending/unknown/nonterminal orders reserve their full requested notional and deterministic
     /// dynamic fee. Every historical live BUY fill retains its actual notional and fee until the
-    /// existing settlement ledger contains exact credited exchange-redemption evidence. This does
-    /// not infer release from a SELL or market resolution alone.
+    /// settlement ledger contains exact credited exchange-redemption evidence or reconciliation
+    /// persists an exact, fully applied, process-owned manual exit. This does not infer release
+    /// from an unapplied SELL or market resolution alone.
     pub async fn conservative_live_process_exposure(
         &self,
         process_id: Uuid,
@@ -4452,7 +4480,7 @@ mod tests {
     }
 
     #[test]
-    fn live_exposure_queries_are_process_scoped_bounded_and_release_only_credited_redemption() {
+    fn live_exposure_queries_release_only_exact_process_owned_terminal_evidence() {
         assert!(SELECT_LIVE_PROCESS_EXPOSURE_ORDERS_SQL.contains("process_id = $1"));
         assert!(SELECT_LIVE_PROCESS_EXPOSURE_ORDERS_SQL.contains("LIMIT $2"));
         assert!(SELECT_LIVE_PROCESS_EXPOSURE_ORDERS_SQL
@@ -4470,8 +4498,16 @@ mod tests {
         );
         assert!(SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL
             .contains("settlement.credit_status = 'credited'"));
+        assert!(SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL.contains("exit_order.process_id = $1"));
+        assert!(SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL
+            .contains("account_exit.applied_exit_size = account_exit.size"));
+        assert!(
+            SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL.contains("account_exit.applied_exit_size = (")
+        );
+        assert!(SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL.contains("entry_fill.process_id = $1"));
+        assert!(SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL.contains("manual_live_full_exit"));
+        assert!(SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL.contains("{reconciliation,net_proceeds}"));
         assert!(!SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL.contains("resolution"));
-        assert!(!SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL.contains("sell"));
     }
 
     #[test]
@@ -4488,7 +4524,7 @@ mod tests {
     }
 
     #[test]
-    fn conservative_live_exposure_counts_pending_plus_buy_fills_without_netting() {
+    fn conservative_live_exposure_counts_pending_plus_unreleased_buy_fills() {
         let process_id = Uuid::from_u128(200);
         let at = Utc::now();
         let pending = live_exposure_order_row(process_id, OrderState::PartiallyFilled, at);
