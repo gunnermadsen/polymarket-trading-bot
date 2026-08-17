@@ -429,7 +429,7 @@ struct TradingProcessRow {
     last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct AccountTrade {
     pub account_trade_id: Uuid,
     pub account_address: String,
@@ -3015,6 +3015,49 @@ impl Store {
             )
         })?;
         Ok(inserted)
+    }
+
+    pub(crate) async fn unapplied_account_live_sell_trades(
+        &self,
+        account_address: &str,
+        window_start: DateTime<Utc>,
+        window_end: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<AccountTrade>> {
+        if account_address.trim().is_empty()
+            || window_start >= window_end
+            || !(1..=4_000).contains(&limit)
+        {
+            bail!("unapplied account live exit query requires bounded inputs");
+        }
+        let rows = sqlx::query_as::<_, AccountTrade>(
+            r#"
+            SELECT account_trade_id, account_address, token_id, market_id, side, price, size,
+              notional, timestamp_utc, transaction_hash, venue_order_id, venue_trade_id,
+              source, linked_order_id, raw_payload
+            FROM polymarket.account_trades
+            WHERE account_address = lower($1)
+              AND side = 'sell'
+              AND linked_order_id IS NULL
+              AND applied_exit_size = 0
+              AND timestamp_utc >= $2
+              AND timestamp_utc <= $3
+              AND raw_payload ? 'usdcSize'
+            ORDER BY timestamp_utc, account_trade_id
+            LIMIT $4
+            "#,
+        )
+        .bind(account_address.trim())
+        .bind(window_start)
+        .bind(window_end)
+        .bind(limit + 1)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to load unapplied account live exits")?;
+        if rows.len() > limit as usize {
+            bail!("unapplied account live exits exceed the bounded reconciliation window");
+        }
+        Ok(rows)
     }
 
     pub async fn insert_account_position_snapshot(

@@ -202,6 +202,25 @@ pub async fn reconcile_account_positions(
                 .unwrap_or(true)
         })
         .collect::<Vec<_>>();
+    if process_id.is_some() {
+        let persisted_unapplied_sells = store
+            .unapplied_account_live_sell_trades(
+                &account_address,
+                activity_window_end - chrono::Duration::days(30),
+                activity_window_end + LIVE_EXTERNAL_EVENT_CLOCK_SKEW,
+                MAX_DATA_API_RECONCILIATION_ROWS as i64,
+            )
+            .await?;
+        let mut trade_ids = trades
+            .iter()
+            .map(|trade| trade.account_trade_id)
+            .collect::<HashSet<_>>();
+        trades.extend(
+            persisted_unapplied_sells
+                .into_iter()
+                .filter(|trade| trade_ids.insert(trade.account_trade_id)),
+        );
+    }
     trades.sort_by_key(|trade| trade.timestamp_utc);
 
     let normalization_failures = if process_id.is_some() {
