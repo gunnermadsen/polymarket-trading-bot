@@ -24,6 +24,37 @@ Think of Capitonic as a vision to generate income through systems with automatio
 
 # Source Control and Worktrees
 
+## Trading Release Roles
+
+- `development` is the settlement branch for accepted trading-capable releases. Do not implement features, fixes, experiments, or integration corrections directly on `development`.
+- A `development` tip is golden only when an annotated `golden/<image_name>/sha256-<docker-sha256-hash>` tag identifies the exact accepted image. Branch position or an `image/...` build tag alone is not golden evidence.
+- Feature verification proves readiness for integration; it does not make a feature branch or its image golden.
+- Use the persistent `target/worktrees/trading-soak` worktree for integrated trading release candidates. Create a fresh domain-specific `integration/<trading-domain>-<candidate-identity>` branch from the current accepted `development` tip for each candidate cohort.
+- Merge selected verified feature branches into the candidate with `--no-ff`. Never merge a feature branch directly into `development`.
+- Once a candidate image begins soaking, its source commit, image digest, migrations, model identity, and material runtime configuration are immutable. An artifact-affecting change creates a new candidate and restarts acceptance.
+- Abandon a rejected candidate branch rather than repairing its integration history with merge reverts. Preserve the rejected branch until its result and any reusable commits are accounted for.
+
+## Golden Image Admission and Promotion
+
+- Treat a successful build, passing tests, a running container, and elapsed time without a reported failure as necessary evidence where applicable, not as sufficient golden evidence.
+- Admit only the exact candidate tuple that was evaluated: Git commit, immutable Docker image ID or registry digest, embedded source revision, migration state, material runtime configuration, model identity when applicable, and soak evidence window.
+- Golden admission requires positive evidence that the exact candidate image:
+  - was built from a clean committed worktree with `POLYMARKET_GIT_REVISION` matching the candidate commit;
+  - passed the required compilation, linting, focused tests, and migration checks;
+  - remained deployed without artifact-affecting changes for the configured soak;
+  - preserved automatic container, database, reconciliation, and transport recovery where affected;
+  - preserved enabled paper and live process eligibility without bypassing capital, identity, accounting, order, or market-safety controls;
+  - produced healthy order, fill, reconciliation, settlement, and accounting evidence appropriate to the affected paths;
+  - avoided sustained crash loops, resource exhaustion, systemic readiness poisoning, and cross-process failure propagation; and
+  - remained rollback-compatible with the immediately preceding golden image and its database state.
+- The absence of negative evidence is not positive soak evidence. If required evidence is missing, stale, inferred, ambiguous, or belongs to another candidate tuple, do not promote.
+- A Codex task performing integration or release stewardship must inspect the active candidate and golden tags before acting. If exactly one candidate has complete admission evidence, promotion is authorized without an additional confirmation prompt.
+- Promote by fast-forwarding `development` with `--ff-only` to the exact soaked candidate commit. Do not create a promotion merge commit, rebuild the image, rewrite `development`, or force-push.
+- Create an annotated `golden/<image_name>/sha256-<docker-sha256-hash>` tag recording the Git revision, immutable image identity, soak interval, migration/config/model identity, evidence summary, and accepted limitations.
+- Promote or alias the already-soaked image manifest; never mint a replacement build as golden. Verify the resulting branch, tag, image identity, and embedded provenance.
+- If the candidate diverges from `development`, `development` advanced after candidate creation, multiple candidates claim eligibility, or promotion would require history rewriting, stop and report the exact condition.
+- Roll back by deploying a previously annotated immutable golden image. Do not rebuild the old commit and do not reset `development` merely to change the deployed image.
+
 ## Branching
 
 - Commit changes in coherent groups organized by feature domain.
@@ -31,11 +62,11 @@ Think of Capitonic as a vision to generate income through systems with automatio
 -- using this pattern for container images: image/<image_name>/sha256-<docker-sha256-hash>
 -- using this pattern for a container image using a new model: model/<model-name-with-metadata>
 - Every new, independent feature domain must use a dedicated feature branch.
-- An independent feature branch starts from the latest `development` commit.
+- An independent feature branch starts from the current accepted `development` commit.
 - Follow-up work that must inherit an existing feature or training lineage starts from that lineage’s designated base or integration branch, not from `development`.
 - Keep unrelated feature domains on separate branches.
-- Do not merge a single feature branch into `development` unless the user explicitly requests integration.
-- When a task contains multiple completed feature branches that must be integrated, merge each stable branch into the designated integration branch using `--no-ff`. Merge the integration branch into `development` only when explicitly requested.
+- Do not merge a feature branch directly into `development`.
+- When completed feature branches must be integrated, merge each verified branch into a fresh trading release candidate using `--no-ff`. Advance `development` only through the golden admission and fast-forward promotion rules above.
 - Never discard, rewrite, or bypass an existing feature lineage merely to satisfy the “latest development” rule.
 
 ## When to Create a Worktree
