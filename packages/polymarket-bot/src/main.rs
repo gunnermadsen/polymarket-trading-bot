@@ -10,6 +10,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
+use polymarket_bot::grafana_live::MarketPathPublicationState;
 use polymarket_bot::{
     btc::{
         process_runtime_readiness, runtime_model, runtime_status_from_inputs, BookRegistry,
@@ -39,8 +40,8 @@ use polymarket_bot::{
         LiveVenueStatus, LiveWalletAddressDiagnostics,
     },
     grafana_live::{
-        CountdownSnapshot, EntryPermission, GrafanaLivePublisher, MarketPathSnapshot,
-        ProcessEntryPermission, TradingEntryStatusSnapshot,
+        CountdownSnapshot, EntryPermission, GrafanaLivePublisher, ProcessEntryPermission,
+        TradingEntryStatusSnapshot,
     },
     http as control_http,
     http::{
@@ -2927,10 +2928,12 @@ impl BtcProcessManager {
         Ok(TradingEntryStatusSnapshot::new(observed_at, permissions))
     }
 
-    async fn grafana_market_path_snapshot(
+    async fn grafana_market_path_observation(
         &self,
-        observed_at: chrono::DateTime<Utc>,
-    ) -> Result<Option<MarketPathSnapshot>> {
+    ) -> Option<(
+        polymarket_bot::btc::BtcIntervalMarket,
+        Vec<polymarket_bot::btc::ChainlinkTwap60Point>,
+    )> {
         let state = self
             .shared_runtime
             .lock()
@@ -2938,25 +2941,17 @@ impl BtcProcessManager {
             .as_ref()
             .map(|shared| shared.state.clone());
         let Some(state) = state else {
-            return Ok(None);
+            return None;
         };
         let (market, twap_history) = {
             let state = state.read().await;
             let Some(market) = state.display_market.clone() else {
-                return Ok(None);
+                return None;
             };
             let twap_history = state.chainlink_twap_60.iter().cloned().collect::<Vec<_>>();
             (market, twap_history)
         };
-        if !market.is_interval_window(observed_at) {
-            return Ok(None);
-        }
-
-        Ok(Some(MarketPathSnapshot::resolve(
-            observed_at,
-            &market,
-            twap_history,
-        )))
+        Some((market, twap_history))
     }
 
     async fn reconcile_failed_runtime(&self) {
@@ -3938,6 +3933,7 @@ async fn run_grafana_live(
         entry_status_channel = polymarket_bot::grafana_live::ENTRY_STATUS_CHANNEL,
         "Grafana Live BTC market publishers started"
     );
+    let mut market_path_state = MarketPathPublicationState::default();
     loop {
         tokio::select! {
             changed = shutdown.changed() => {
@@ -3966,13 +3962,12 @@ async fn run_grafana_live(
                 }
 
                 let observed_at = Utc::now();
-                let market_path_result = match manager
-                    .grafana_market_path_snapshot(observed_at)
-                    .await
+                let market_path_observation = manager.grafana_market_path_observation().await;
+                let market_path_result = match market_path_state
+                    .observe(observed_at, market_path_observation)
                 {
-                    Ok(Some(snapshot)) => publisher.publish_market_path(&snapshot).await,
-                    Ok(None) => Ok(()),
-                    Err(error) => Err(error),
+                    Some(snapshot) => publisher.publish_market_path(&snapshot).await,
+                    None => Ok(()),
                 };
                 match market_path_result {
                     Ok(()) => {

@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, fmt::Write as _, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
+    time::Duration,
+};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
@@ -17,6 +21,7 @@ pub const ENTRY_STATUS_CHANNEL: &str = "stream/polymarket/btc_entry_status";
 const COUNTDOWN_MEASUREMENT: &str = "btc_market_countdown";
 const MARKET_PATH_MEASUREMENT: &str = "btc_market_path";
 const ENTRY_STATUS_MEASUREMENT: &str = "btc_entry_status";
+const MARKET_DISCOVERY_GRACE: chrono::Duration = chrono::Duration::seconds(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -335,6 +340,88 @@ pub struct MarketPathSnapshot {
     pub market_id: String,
     pub price_to_beat: Option<Decimal>,
     pub points: Vec<MarketPathPoint>,
+}
+
+#[derive(Debug, Clone)]
+struct RetainedMarketPath {
+    market_id: String,
+    window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+    price_to_beat: Option<Decimal>,
+    points: BTreeMap<DateTime<Utc>, Decimal>,
+}
+
+#[derive(Debug, Default)]
+pub struct MarketPathPublicationState {
+    retained: Option<RetainedMarketPath>,
+}
+
+impl MarketPathPublicationState {
+    pub fn observe(
+        &mut self,
+        observed_at: DateTime<Utc>,
+        observation: Option<(BtcIntervalMarket, Vec<ChainlinkTwap60Point>)>,
+    ) -> Option<MarketPathSnapshot> {
+        if let Some((market, points)) = observation {
+            let rollover = self
+                .retained
+                .as_ref()
+                .is_none_or(|retained| retained.market_id != market.market_id);
+            if rollover {
+                self.retained = Some(RetainedMarketPath {
+                    market_id: market.market_id.clone(),
+                    window_start: market.window_start,
+                    window_end: market.window_end,
+                    price_to_beat: None,
+                    points: BTreeMap::new(),
+                });
+            }
+            if let Some(retained) = self.retained.as_mut() {
+                for point in points {
+                    if point.source_timestamp < retained.window_start
+                        || point.source_timestamp > retained.window_end
+                        || point.source_timestamp > observed_at
+                        || point.available_at > observed_at
+                    {
+                        continue;
+                    }
+                    retained.points.insert(point.source_timestamp, point.price);
+                }
+                if retained.price_to_beat.is_none() {
+                    retained.price_to_beat = retained
+                        .points
+                        .range(
+                            retained.window_start
+                                ..=retained.window_start + chrono::Duration::seconds(5),
+                        )
+                        .next()
+                        .map(|(_, price)| *price);
+                }
+            }
+        }
+
+        let retained = self.retained.as_ref()?;
+        if observed_at > retained.window_end + MARKET_DISCOVERY_GRACE {
+            self.retained = None;
+            return None;
+        }
+        if retained.points.is_empty() {
+            return None;
+        }
+        Some(MarketPathSnapshot {
+            observed_at,
+            market_id: retained.market_id.clone(),
+            price_to_beat: retained.price_to_beat,
+            points: retained
+                .points
+                .iter()
+                .map(|(observed_at, price)| MarketPathPoint {
+                    observed_at: *observed_at,
+                    price: *price,
+                })
+                .collect(),
+        })
+    }
 }
 
 impl MarketPathSnapshot {
@@ -705,5 +792,102 @@ mod tests {
         let snapshot = MarketPathSnapshot::resolve(now, &market, []);
 
         assert_eq!(snapshot.influx_body(), None);
+    }
+
+    #[test]
+    fn publication_state_retains_opening_target_after_more_than_six_hundred_updates() {
+        let now = Utc.timestamp_opt(1_800_000_100, 0).unwrap();
+        let market = market("one", now);
+        let first_batch = (0..600)
+            .map(|index| {
+                twap_point(
+                    market.window_start + ChronoDuration::milliseconds(index * 100),
+                    dec!(100.5),
+                )
+            })
+            .collect();
+        let second_batch = (600..1_200)
+            .map(|index| {
+                twap_point(
+                    market.window_start + ChronoDuration::milliseconds(index * 100),
+                    dec!(101),
+                )
+            })
+            .collect();
+        let mut state = MarketPathPublicationState::default();
+        state.observe(
+            market.window_start + ChronoDuration::seconds(60),
+            Some((market.clone(), first_batch)),
+        );
+        let snapshot = state
+            .observe(
+                market.window_start + ChronoDuration::seconds(120),
+                Some((market.clone(), second_batch)),
+            )
+            .unwrap();
+
+        assert_eq!(snapshot.points.len(), 1_200);
+        assert_eq!(snapshot.points[0].observed_at, market.window_start);
+        assert_eq!(snapshot.price_to_beat, Some(dec!(100.5)));
+    }
+
+    #[test]
+    fn publication_state_freezes_target_and_survives_discovery_gap_through_close() {
+        let now = Utc.timestamp_opt(1_800_000_100, 0).unwrap();
+        let market = market("one", now);
+        let mut state = MarketPathPublicationState::default();
+        state.observe(
+            market.window_start + ChronoDuration::seconds(1),
+            Some((
+                market.clone(),
+                vec![twap_point(market.window_start, dec!(100.5))],
+            )),
+        );
+        let changed_opening = ChainlinkTwap60Point {
+            price: dec!(999),
+            source_timestamp: market.window_start,
+            available_at: market.window_start + ChronoDuration::seconds(2),
+        };
+        let updated = state
+            .observe(
+                market.window_start + ChronoDuration::seconds(2),
+                Some((market.clone(), vec![changed_opening])),
+            )
+            .unwrap();
+        let at_close = state.observe(market.window_end, None).unwrap();
+
+        assert_eq!(updated.price_to_beat, Some(dec!(100.5)));
+        assert_eq!(at_close.price_to_beat, Some(dec!(100.5)));
+        assert_eq!(at_close.market_id, "one");
+    }
+
+    #[test]
+    fn publication_state_resets_only_for_confirmed_successor_market() {
+        let now = Utc.timestamp_opt(1_800_000_100, 0).unwrap();
+        let first = market("one", now);
+        let mut second = market("two", now + ChronoDuration::seconds(300));
+        second.window_start = first.window_end;
+        second.window_end = second.window_start + ChronoDuration::seconds(300);
+        let mut state = MarketPathPublicationState::default();
+        state.observe(
+            first.window_start,
+            Some((
+                first.clone(),
+                vec![twap_point(first.window_start, dec!(100.5))],
+            )),
+        );
+        let successor = state
+            .observe(
+                second.window_start,
+                Some((
+                    second.clone(),
+                    vec![twap_point(second.window_start, dec!(102))],
+                )),
+            )
+            .unwrap();
+
+        assert_eq!(successor.market_id, "two");
+        assert_eq!(successor.points.len(), 1);
+        assert_eq!(successor.price_to_beat, Some(dec!(102)));
     }
 }
