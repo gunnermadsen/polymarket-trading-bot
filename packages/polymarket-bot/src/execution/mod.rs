@@ -396,6 +396,13 @@ pub trait ExecutionVenue: Send + Sync {
     async fn get_balances(&self) -> Result<Vec<(String, Decimal)>>;
     async fn get_open_orders(&self) -> Result<Vec<OrderRecord>>;
     async fn reconcile(&self) -> Result<ReconciliationReport>;
+    async fn update_live_reconciliation_health(
+        &self,
+        _pending_settlement_count: usize,
+        _error: Option<String>,
+    ) -> Result<()> {
+        Ok(())
+    }
     async fn fills_for_order(&self, order_id: &str) -> Result<Vec<FillRecord>>;
     async fn live_status(&self) -> Result<LiveVenueStatus>;
     async fn live_identity_diagnostics(&self) -> Result<LiveIdentityDiagnostics>;

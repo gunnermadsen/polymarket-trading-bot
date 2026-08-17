@@ -13,6 +13,7 @@ use crate::{
         live::LiveVenueEvent, OrderPlanReport, LIVE_EXTERNAL_EVENT_CLOCK_SKEW,
         LIVE_FILL_RECONCILIATION_SKEW,
     },
+    fees::{dynamic_crypto_taker_fee, sealed_dynamic_fee_rate},
     models::{
         FillRecord, OrderRecord, OrderRequest, OrderState, TradingProcess, TradingProcessConfig,
     },
@@ -31,8 +32,6 @@ WHERE process_id = $1
   AND enabled = true
   AND status IN ('starting', 'running', 'stopping')
 "#;
-
-const LIVE_CUSTODY_REDEMPTION_PROOF_TYPE: &str = "polymarket_data_api_redeem";
 
 const RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL: &str = r#"
 INSERT INTO polymarket.trading_process_events (
@@ -1521,6 +1520,84 @@ impl Store {
         .context("failed to load oldest unrecognized live fill")
     }
 
+    /// Returns bounded process-owned resolved live fill sizes that are not covered by an exact
+    /// credited settlement. These rows prevent realized PnL proof until settlement recovery
+    /// completes, regardless of which runtime generation originally owned the order.
+    pub async fn unsettled_resolved_live_position_sizes(
+        &self,
+        process_id: Uuid,
+    ) -> Result<Vec<(String, Decimal)>> {
+        const MAX_UNSETTLED_RESOLVED_ORDERS: usize = 4_000;
+        if process_id.is_nil() {
+            bail!("resolved live settlement proof requires a non-nil process_id");
+        }
+        let rows = sqlx::query_as::<_, (String, Decimal)>(
+            r#"
+            SELECT orders.token_id, round(SUM(fill.size), 10)::numeric AS filled_size
+            FROM polymarket.orders orders
+            JOIN polymarket.fills fill
+              ON fill.order_id = orders.order_id
+             AND fill.process_id = orders.process_id
+             AND fill.source = 'live'
+            JOIN polymarket.btc_interval_markets market ON market.market_id = orders.market_id
+            JOIN polymarket.btc_official_resolution_watches watch
+              ON watch.market_id = market.market_id
+             AND watch.status IN ('resolved', 'resolved_late')
+             AND watch.resolution_received_at = market.official_resolution_received_at
+             AND watch.resolution_source = market.official_resolution_source
+            WHERE orders.process_id = $1
+              AND market.official_outcome IS NOT NULL
+              AND market.official_winning_token_id IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM polymarket.btc_paper_settlement_ledger settlement
+                WHERE settlement.process_id = $1
+                  AND settlement.order_id = orders.order_id
+                  AND settlement.token_id = orders.token_id
+                  AND settlement.execution_mode = 'live'
+                  AND settlement.credit_status = 'credited'
+                  AND settlement.filled_size = (
+                    SELECT round(SUM(expected_fill.size), 10)::numeric
+                    FROM polymarket.fills expected_fill
+                    WHERE expected_fill.process_id = $1
+                      AND expected_fill.order_id = orders.order_id
+                      AND expected_fill.source = 'live'
+                  )
+                  AND jsonb_array_length(settlement.fill_ids) = (
+                    SELECT COUNT(*)::integer
+                    FROM polymarket.fills expected_fill
+                    WHERE expected_fill.process_id = $1
+                      AND expected_fill.order_id = orders.order_id
+                      AND expected_fill.source = 'live'
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM polymarket.fills expected_fill
+                    WHERE expected_fill.process_id = $1
+                      AND expected_fill.order_id = orders.order_id
+                      AND expected_fill.source = 'live'
+                      AND NOT settlement.fill_ids @>
+                        jsonb_build_array(to_jsonb(expected_fill.fill_id))
+                  )
+              )
+            GROUP BY orders.order_id, orders.token_id
+            ORDER BY orders.order_id
+            LIMIT 4001
+            "#,
+        )
+        .bind(process_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to prove resolved live fill settlement coverage")?;
+        if rows.len() > MAX_UNSETTLED_RESOLVED_ORDERS {
+            bail!(
+                "resolved live settlement proof exceeds the bounded {}-order window",
+                MAX_UNSETTLED_RESOLVED_ORDERS
+            );
+        }
+        Ok(rows)
+    }
+
     pub async fn recognize_process_live_redemption(
         &self,
         process_id: Uuid,
@@ -1540,7 +1617,8 @@ impl Store {
             || evidence.token_id.trim().is_empty()
             || evidence.transaction_hash.trim().is_empty()
             || evidence.redeemed_size <= Decimal::ZERO
-            || evidence.payout_usd != evidence.redeemed_size
+            || (evidence.payout_usd != Decimal::ZERO
+                && evidence.payout_usd != evidence.redeemed_size)
             || !evidence.raw_payload.is_object()
         {
             bail!("live redemption recognition requires complete exact payout evidence");
@@ -1618,7 +1696,10 @@ impl Store {
                 AND orders.side = 'buy'
                 AND orders.token_id = $3
                 AND market.condition_id = $2
-                AND market.official_winning_token_id = $3
+                AND (
+                  ($10 = $4 AND market.official_winning_token_id = $3)
+                  OR ($10 = 0 AND market.official_winning_token_id <> $3)
+                )
                 AND market.official_outcome IN ('up', 'down')
                 AND market.resolution_source_timestamp <= $5
               GROUP BY
@@ -1626,6 +1707,7 @@ impl Store {
                 market.official_outcome, market.official_winning_token_id,
                 market.official_resolution_received_at, market.official_resolution_source
               HAVING MAX(fill.timestamp_utc) <= $5
+                AND round(SUM(fill.size), 10) = $4
             ), candidate_state AS (
               SELECT COUNT(*)::bigint AS candidate_count FROM candidate
             ), transaction_state AS (
@@ -1634,11 +1716,11 @@ impl Store {
                 COALESCE(
                   BOOL_AND(
                     settlement.token_id = $3
-                    AND settlement.filled_size = settlement.payout
+                    AND settlement.payout = $10
                   ),
                   true
                 )
-                AND COALESCE(SUM(settlement.payout), 0) <= $4 AS transaction_consistent
+                AND COALESCE(SUM(settlement.payout), 0) <= $10 AS transaction_consistent
               FROM polymarket.btc_paper_settlement_ledger settlement
               WHERE settlement.execution_mode = 'live'
                 AND settlement.credit_status = 'credited'
@@ -1683,8 +1765,8 @@ impl Store {
                 candidate.official_resolution_received_at,
                 candidate.official_resolution_source,
                 candidate.filled_size, candidate.entry_notional, candidate.entry_fees,
-                candidate.filled_size,
-                (candidate.filled_size - candidate.entry_notional - candidate.entry_fees)::numeric(30,10),
+                $10,
+                ($10 - candidate.entry_notional - candidate.entry_fees)::numeric(30,10),
                 'credited', now(), 1, $6
               FROM candidate
               CROSS JOIN owners
@@ -1764,6 +1846,7 @@ impl Store {
         .bind(apply)
         .bind(&evidence.transaction_hash)
         .bind(account_ref)
+        .bind(evidence.payout_usd)
         .fetch_one(&self.pool)
         .await
         .context("failed to reconcile process-owned live redemption")?;
@@ -1796,7 +1879,8 @@ impl Store {
             .context("matched live redemption is missing its settlement identity")?;
         if row.settlement_process_id != Some(process_id)
             || row.settlement_token_id.as_deref() != Some(evidence.token_id.as_str())
-            || row.settlement_filled_size != row.settlement_payout
+            || row.settlement_filled_size != Some(evidence.redeemed_size)
+            || row.settlement_payout != Some(evidence.payout_usd)
             || row.credit_status.as_deref() != Some("credited")
             || row.settlement_order_id.as_deref().is_none_or(str::is_empty)
         {
@@ -1807,6 +1891,21 @@ impl Store {
             .as_ref()
             .and_then(|value| value.get("redemption_transaction_hash"))
             .and_then(serde_json::Value::as_str);
+        let persisted_proof_type = row
+            .credit_evidence
+            .as_ref()
+            .and_then(|value| value.get("proof_type"))
+            .and_then(serde_json::Value::as_str);
+        if evidence.payout_usd == Decimal::ZERO
+            && persisted_transaction_hash.is_none()
+            && persisted_proof_type == Some("btc_official_zero_payout_loss")
+        {
+            return Ok(LiveRedemptionRecognition {
+                matched: true,
+                applied: false,
+                redeemed_size: evidence.redeemed_size,
+            });
+        }
         if persisted_transaction_hash != Some(evidence.transaction_hash.as_str()) {
             bail!(
                 "credited live redemption {} has conflicting transaction evidence",
@@ -1887,7 +1986,6 @@ impl Store {
               WHERE settlement.process_id = $1
                 AND settlement.execution_mode = 'live'
                 AND settlement.credit_status = 'credited'
-                AND settlement.credit_evidence ->> 'proof_type' = $2
               GROUP BY settlement.token_id
             ), tokens AS (
               SELECT token_id FROM filled
@@ -1905,7 +2003,6 @@ impl Store {
             "#,
         )
         .bind(process_id)
-        .bind(LIVE_CUSTODY_REDEMPTION_PROOF_TYPE)
         .fetch_all(&self.pool)
         .await
         .context("failed to reconstruct live process position sizes")?;
@@ -1978,7 +2075,6 @@ impl Store {
                 ON process.process_id = settlement.process_id
               WHERE settlement.execution_mode = 'live'
                 AND settlement.credit_status = 'credited'
-                AND settlement.credit_evidence ->> 'proof_type' = $2
               GROUP BY settlement.token_id
             ), tokens AS (
               SELECT token_id FROM filled
@@ -1996,7 +2092,6 @@ impl Store {
             "#,
         )
         .bind(account_ref)
-        .bind(LIVE_CUSTODY_REDEMPTION_PROOF_TYPE)
         .fetch_all(&self.pool)
         .await
         .context("failed to reconstruct live account position sizes")?;
@@ -3082,29 +3177,10 @@ fn live_requested_exposure(request: &OrderRequest) -> Result<(Decimal, Decimal)>
     {
         bail!("live requested exposure contains invalid price or size");
     }
-    let fee_rate = request
-        .metadata
-        .get("dynamic_fee_rate")
-        .cloned()
-        .context("live requested exposure is missing dynamic_fee_rate")?;
-    let fee_rate = serde_json::from_value::<Decimal>(fee_rate)
-        .context("live requested exposure has malformed dynamic_fee_rate")?;
-    if fee_rate < Decimal::ZERO || fee_rate > Decimal::ONE {
-        bail!("live requested exposure dynamic_fee_rate must be between zero and one");
-    }
+    let fee_rate = sealed_dynamic_fee_rate(&request.metadata)
+        .context("live requested exposure has invalid dynamic_fee_rate")?;
     let notional = checked_live_exposure_mul(request.price, request.size, "requested notional")?;
-    let fee = if request.price == Decimal::ONE {
-        Decimal::ZERO
-    } else {
-        let complement = Decimal::ONE
-            .checked_sub(request.price)
-            .context("live requested fee price complement overflow")?;
-        let rate_size =
-            checked_live_exposure_mul(request.size, fee_rate, "requested fee rate and size")?;
-        let rate_size_price =
-            checked_live_exposure_mul(rate_size, request.price, "requested fee price")?;
-        checked_live_exposure_mul(rate_size_price, complement, "requested fee complement")?
-    };
+    let fee = dynamic_crypto_taker_fee(request.size, fee_rate, request.price);
     Ok((notional, fee))
 }
 

@@ -1836,11 +1836,15 @@ impl BtcProcessManager {
             }
             match venue.reconcile().await {
                 Ok(report) if report.open_orders == 0 && report.unresolved_count == 0 => {}
-                Ok(report) => failures.push(format!(
-                    "live_quiesce_unresolved: open_orders={} unresolved_count={}",
-                    report.open_orders, report.unresolved_count
-                )),
-                Err(error) => failures.push(format!("live_quiesce_reconcile_failed: {error:#}")),
+                Ok(report) => warn!(
+                    open_orders = report.open_orders,
+                    unresolved_count = report.unresolved_count,
+                    "live stop reconciliation remains unresolved without changing terminal intent"
+                ),
+                Err(error) => warn!(
+                    error = %error,
+                    "live stop reconciliation failed without changing terminal intent"
+                ),
             }
             failures
         };

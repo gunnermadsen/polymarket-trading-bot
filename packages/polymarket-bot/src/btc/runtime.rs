@@ -1740,6 +1740,10 @@ pub struct StrategyObservation {
 
 #[async_trait]
 pub trait BtcStrategyRunner: Send + Sync {
+    async fn reconcile_if_due(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn on_observation(&self, observation: StrategyObservation) -> Result<()>;
 
     /// Drains strategy-owned asynchronous work after feed tasks have stopped producing.
@@ -9043,6 +9047,12 @@ async fn run_strategy_loop(
         tokio::select! {
             _ = shutdown.changed() => break,
             _ = ticker.tick() => {
+                if let Err(error) = strategy.reconcile_if_due().await {
+                    tracing::warn!(
+                        error = %error,
+                        "BTC reconciliation maintenance failed; runtime remains active"
+                    );
+                }
                 let snapshot = state.read().await.clone();
                 if snapshot.last_updated_at == last_observed_at {
                     continue;
@@ -12594,6 +12604,54 @@ mod tests {
             self.callbacks.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
+    }
+
+    #[derive(Debug, Default)]
+    struct RecoverableReconciliationStrategyRunner {
+        reconciliation_attempts: std::sync::atomic::AtomicUsize,
+        callbacks: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl BtcStrategyRunner for RecoverableReconciliationStrategyRunner {
+        async fn reconcile_if_due(&self) -> Result<()> {
+            self.reconciliation_attempts.fetch_add(1, Ordering::Relaxed);
+            bail!("temporary reconciliation failure")
+        }
+
+        async fn on_observation(&self, _observation: StrategyObservation) -> Result<()> {
+            self.callbacks.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn reconciliation_maintenance_failure_never_terminates_strategy_runtime() {
+        let config = BtcRuntimeConfig {
+            enabled: true,
+            strategy_interval: StdDuration::from_millis(1),
+            ..BtcRuntimeConfig::default()
+        };
+        let state = Arc::new(RwLock::new(RealtimeState {
+            last_updated_at: Some(Utc::now()),
+            ..RealtimeState::default()
+        }));
+        let strategy = Arc::new(RecoverableReconciliationStrategyRunner::default());
+        let handle = BtcPlaybookRuntimeHandle::start(config, strategy.clone(), state).unwrap();
+
+        tokio::time::timeout(StdDuration::from_secs(1), async {
+            while strategy.reconciliation_attempts.load(Ordering::Relaxed) < 2
+                || strategy.callbacks.load(Ordering::Relaxed) == 0
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("reconciliation maintenance must retry independently of observations");
+
+        assert!(handle.is_running());
+        assert!(handle.metrics.read().await.last_error.is_none());
+        handle.shutdown().await.unwrap();
     }
 
     #[tokio::test]

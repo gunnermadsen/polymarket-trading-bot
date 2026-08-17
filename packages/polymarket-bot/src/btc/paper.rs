@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    str::FromStr,
     sync::Arc,
     time::Duration,
 };
@@ -20,7 +19,6 @@ use super::{
         BtcReferenceExecutionRejectReason,
     },
     feeds::BookRegistry,
-    strategy::dynamic_crypto_taker_fee,
     types::{FeedIntegrityStatus, OrderbookCheckpoint, OrderbookLevel},
 };
 use crate::{
@@ -31,13 +29,14 @@ use crate::{
         LiveVenueStatus, LiveWalletAddressDiagnostics, LiveWalletCandidateAddressDiagnostics,
         ReconciliationReport,
     },
+    fees::{dynamic_crypto_taker_fee, dynamic_fee_rate_from_metadata},
     models::{
         EffectiveProcessExecutionConfig, FillRecord, FillSource, OrderRecord, OrderRequest,
         OrderSide, OrderState, OrderType,
     },
 };
 
-pub const PAPER_DYNAMIC_FEE_RATE_METADATA_KEY: &str = "dynamic_fee_rate";
+pub use crate::fees::DYNAMIC_FEE_RATE_METADATA_KEY as PAPER_DYNAMIC_FEE_RATE_METADATA_KEY;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PaperVenueConfig {
@@ -528,7 +527,7 @@ impl PaperVenue {
         {
             return paper_reject(base, "invalid_order_price_or_size");
         }
-        let fee_rate = match dynamic_fee_rate(&request.metadata) {
+        let fee_rate = match dynamic_fee_rate_from_metadata(&request.metadata) {
             Some(rate) if rate >= Decimal::ZERO && rate <= Decimal::ONE => rate,
             Some(_) => return paper_reject(base, "invalid_dynamic_fee_rate"),
             None => return paper_reject(base, "missing_dynamic_fee_rate"),
@@ -1255,29 +1254,6 @@ fn available_ask_depth(
         })
 }
 
-fn dynamic_fee_rate(metadata: &serde_json::Value) -> Option<Decimal> {
-    [
-        metadata.get(PAPER_DYNAMIC_FEE_RATE_METADATA_KEY),
-        metadata.get("taker_fee_rate"),
-        metadata
-            .get("execution")
-            .and_then(|execution| execution.get(PAPER_DYNAMIC_FEE_RATE_METADATA_KEY)),
-        metadata
-            .get("execution")
-            .and_then(|execution| execution.get("taker_fee_rate")),
-    ]
-    .into_iter()
-    .flatten()
-    .find_map(decimal_from_json)
-}
-
-fn decimal_from_json(value: &serde_json::Value) -> Option<Decimal> {
-    value
-        .as_str()
-        .and_then(|text| Decimal::from_str(text).ok())
-        .or_else(|| Decimal::from_str(&value.to_string()).ok())
-}
-
 fn deterministic_checkpoint_id(checkpoint: &OrderbookCheckpoint) -> Uuid {
     Uuid::new_v5(
         &Uuid::NAMESPACE_URL,
@@ -1347,6 +1323,7 @@ mod tests {
     use chrono::{Duration as ChronoDuration, TimeZone};
 
     use super::*;
+    use crate::fees::decimal_from_json;
     use crate::{
         btc::{
             directional_model::{

@@ -55,6 +55,7 @@ use crate::{
         LiveWalletAddressDiagnostics, LiveWalletCandidateAddressDiagnostics,
         LiveWalletTokenBalances, ReconciliationReport, LIVE_FILL_RECONCILIATION_SKEW,
     },
+    fees::{dynamic_crypto_taker_fee, sealed_dynamic_fee_rate},
     idempotency::event_hash,
     models::{EffectiveProcessExecutionConfig, FillRecord, OrderRecord, OrderRequest},
     models::{FillSource, OrderSide, OrderState, OrderType},
@@ -123,6 +124,8 @@ struct LiveVenueState {
     process_accounting_status: String,
     credential_account_fingerprint_sha256: Option<String>,
     reconciled_safety_generation: Option<u64>,
+    pending_settlement_count: usize,
+    reconciliation_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +164,8 @@ impl LiveVenueState {
             process_accounting_status: "unproven".to_string(),
             credential_account_fingerprint_sha256: None,
             reconciled_safety_generation: None,
+            pending_settlement_count: 0,
+            reconciliation_error: None,
         }
     }
 }
@@ -1301,6 +1306,12 @@ impl LiveVenue {
             return Ok(Some(LiveExecutionGateReason::GlobalHalt));
         }
         let state = self.readiness_state.lock().await;
+        if state.pending_settlement_count != 0 {
+            return Ok(Some(LiveExecutionGateReason::SettlementRedemptionUnproven));
+        }
+        if state.reconciliation_error.is_some() {
+            return Ok(Some(LiveExecutionGateReason::ProcessAccountingReadiness));
+        }
         if !state.manual_entries_enabled {
             return Ok(Some(LiveExecutionGateReason::ManualEnableRequired));
         }
@@ -1929,13 +1940,8 @@ fn fill_record_from_trade_for_order(
         );
     }
 
-    let fee = price
-        .checked_mul(size)
-        .context("live REST fill notional overflow")?
-        .checked_mul(fee_rate_bps)
-        .context("live REST fill fee overflow")?
-        .checked_div(Decimal::from(10_000))
-        .context("live REST fill fee division failed")?;
+    let fee = live_fill_fee(order, price, size)
+        .context("live REST fill is missing sealed dynamic fee evidence")?;
     Ok(FillRecord {
         fill_id: Uuid::new_v5(
             &Uuid::NAMESPACE_URL,
@@ -2159,14 +2165,8 @@ async fn live_fill_records_from_event(
         let size = details
             .size
             .unwrap_or(json_decimal(&event.raw_payload, "size")?);
-        let fee_rate_bps = match details.fee_rate_bps {
-            Some(value) => value,
-            None if event.raw_payload.get("fee_rate_bps").is_some() => {
-                json_decimal(&event.raw_payload, "fee_rate_bps")?
-            }
-            None => Decimal::ZERO,
-        };
-        let fee = price * size * fee_rate_bps / Decimal::from(10_000);
+        let fee = live_fill_fee(&order, price, size)
+            .context("live websocket fill is missing sealed dynamic fee evidence")?;
         let token_id = details
             .token_id
             .or_else(|| json_str(&event.raw_payload, "asset_id").map(str::to_string))
@@ -2197,6 +2197,11 @@ async fn live_fill_records_from_event(
     }
 
     Ok(resolved)
+}
+
+fn live_fill_fee(order: &OrderRecord, price: Decimal, size: Decimal) -> Result<Decimal> {
+    let fee_rate = sealed_dynamic_fee_rate(&order.request.metadata)?;
+    Ok(dynamic_crypto_taker_fee(size, fee_rate, price))
 }
 
 fn is_fill_trade_status(status: Option<&str>) -> bool {
@@ -2321,7 +2326,6 @@ fn live_event_order_id_candidates(payload: &Value) -> Vec<String> {
 struct LiveEventFillDetails {
     price: Option<Decimal>,
     size: Option<Decimal>,
-    fee_rate_bps: Option<Decimal>,
     token_id: Option<String>,
 }
 
@@ -2337,7 +2341,6 @@ fn live_event_fill_details_for_order(
             return Ok(LiveEventFillDetails {
                 price: Some(json_decimal(maker_order, "price")?),
                 size: Some(json_decimal(maker_order, "matched_amount")?),
-                fee_rate_bps: Some(json_decimal(maker_order, "fee_rate_bps")?),
                 token_id: json_str(maker_order, "asset_id").map(str::to_string),
             });
         }
@@ -3065,10 +3068,7 @@ impl ExecutionVenue for LiveVenue {
                 .saturating_add(foreign_venue_orders)
                 .saturating_add(foreign_wallet_trades)
                 .saturating_add(account_reconcile.mismatches.len())
-                .saturating_add(account_reconcile.unmatched_trades as usize)
-                .saturating_add(usize::from(
-                    self.bound_process_id.is_some() && !account_reconcile.process_accounting_proven,
-                ));
+                .saturating_add(account_reconcile.unmatched_trades as usize);
             if self.global_entry_gate.lock().await.safety_generation
                 != reconciliation_safety_generation
             {
@@ -3233,6 +3233,27 @@ impl ExecutionVenue for LiveVenue {
         .await
     }
 
+    async fn update_live_reconciliation_health(
+        &self,
+        pending_settlement_count: usize,
+        error: Option<String>,
+    ) -> Result<()> {
+        if self.bound_process_id.is_none() {
+            return Ok(());
+        }
+        let mut state = self.readiness_state.lock().await;
+        state.pending_settlement_count = pending_settlement_count;
+        state.reconciliation_error = error.map(|error| {
+            let mut error = error;
+            error.truncate(512);
+            error
+        });
+        if state.reconciliation_error.is_some() {
+            state.reconciled_safety_generation = None;
+        }
+        Ok(())
+    }
+
     async fn live_status(&self) -> Result<LiveVenueStatus> {
         let transport = self.transport_state.lock().await;
         let state = self.readiness_state.lock().await;
@@ -3252,7 +3273,9 @@ impl ExecutionVenue for LiveVenue {
             && !global.halted
             && state.manual_entries_enabled
             && state.idempotency_clean
-            && state.unresolved_live_order_count == 0;
+            && state.unresolved_live_order_count == 0
+            && state.pending_settlement_count == 0
+            && state.reconciliation_error.is_none();
         let reason = if entries_enabled {
             None
         } else if !order_submit_enabled {
@@ -3271,6 +3294,10 @@ impl ExecutionVenue for LiveVenue {
                 "live_process_accounting_not_proven:{}",
                 state.process_accounting_status
             ))
+        } else if state.pending_settlement_count != 0 {
+            Some("live_pending_settlement_present".to_string())
+        } else if let Some(error) = state.reconciliation_error.as_deref() {
+            Some(format!("live_reconciliation_degraded:{error}"))
         } else if !rest_fresh {
             Some("live_rest_reconcile_stale".to_string())
         } else if !state.idempotency_clean {
@@ -4397,7 +4424,10 @@ mod tests {
                 order_type: OrderType::Fok,
                 price,
                 size,
-                metadata: json!({"execution_intent": "entry"}),
+                metadata: json!({
+                    "execution_intent": "entry",
+                    "dynamic_fee_rate": "0.25"
+                }),
             },
             state: OrderState::Acknowledged,
             created_at,
@@ -4478,7 +4508,7 @@ mod tests {
         assert_eq!(fills[0].token_id, "1");
         assert_eq!(fills[0].price, dec!(0.49));
         assert_eq!(fills[0].size, order.request.size);
-        assert_eq!(fills[0].fee, dec!(0.00245));
+        assert_eq!(fills[0].fee, dec!(0.124950));
         assert_eq!(
             fills[0].fill_id,
             Uuid::new_v5(
@@ -4486,6 +4516,26 @@ mod tests {
                 b"polymarket:trade-order:trade-1:venue-order-1"
             )
         );
+    }
+
+    #[test]
+    fn live_fill_fee_uses_sealed_rate_for_websocket_and_rest_economics() {
+        let order = rest_backfill_order(
+            Uuid::new_v4(),
+            "venue-order-fee",
+            OrderSide::Buy,
+            dec!(0.50),
+            dec!(10),
+            Utc::now(),
+        );
+
+        assert_eq!(
+            live_fill_fee(&order, dec!(0.40), dec!(10)).unwrap(),
+            dec!(0.60)
+        );
+        let mut missing = order;
+        missing.request.metadata = json!({"execution_intent": "entry"});
+        assert!(live_fill_fee(&missing, dec!(0.40), dec!(10)).is_err());
     }
 
     #[test]
@@ -4548,7 +4598,7 @@ mod tests {
         assert_eq!(fills[0].token_id, "1");
         assert_eq!(fills[0].price, dec!(0.42));
         assert_eq!(fills[0].size, dec!(1));
-        assert_eq!(fills[0].fee, dec!(0.000294));
+        assert_eq!(fills[0].fee, dec!(0.060900));
     }
 
     #[tokio::test]
@@ -4604,6 +4654,48 @@ mod tests {
         assert!(!status.entries_enabled);
         assert_eq!(status.last_rest_reconcile_age_secs, None);
         assert_eq!(status.reason.as_deref(), Some("live_rest_reconcile_stale"));
+    }
+
+    #[tokio::test]
+    async fn reconciliation_failure_gate_recovers_without_mutating_manual_authorization() {
+        let venue = LiveVenue::new_for_test(live_config())
+            .unwrap()
+            .bind_process(Uuid::new_v4(), &live_execution())
+            .unwrap();
+        {
+            let mut state = venue.readiness_state.lock().await;
+            state.last_rest_reconcile_at = Some(Utc::now());
+            state.idempotency_clean = true;
+            state.unresolved_live_order_count = 0;
+            state.manual_entries_enabled = true;
+            state.manual_entries_reason = None;
+            state.process_accounting_proven = true;
+            state.process_accounting_status = "proven".to_string();
+        }
+        {
+            let mut global = venue.global_entry_gate.lock().await;
+            global.halted = false;
+            global.reason = "configured_resume_authorization".to_string();
+        }
+
+        venue
+            .update_live_reconciliation_health(
+                1,
+                Some("temporary settlement discovery failure".to_string()),
+            )
+            .await
+            .unwrap();
+        let degraded = venue.live_status().await.unwrap();
+        assert!(!degraded.entries_enabled);
+        assert!(venue.readiness_state.lock().await.manual_entries_enabled);
+
+        venue
+            .update_live_reconciliation_health(0, None)
+            .await
+            .unwrap();
+        let recovered = venue.live_status().await.unwrap();
+        assert!(recovered.entries_enabled);
+        assert!(venue.readiness_state.lock().await.manual_entries_enabled);
     }
 
     #[tokio::test]

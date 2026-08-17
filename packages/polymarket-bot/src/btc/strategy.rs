@@ -5,6 +5,8 @@ use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub use crate::fees::dynamic_crypto_taker_fee;
+
 use super::{
     directional_model::{
         asymmetric_value_model_input_sha256, directional_model_input_sha256, runtime_model,
@@ -1479,18 +1481,6 @@ fn build_decision_from_estimate(
         Some(down_edge),
         selected,
     )
-}
-
-/// Polymarket's dynamic crypto taker fee: `contracts * rate * price * (1 - price)`.
-pub fn dynamic_crypto_taker_fee(contracts: Decimal, fee_rate: Decimal, price: Decimal) -> Decimal {
-    if contracts <= Decimal::ZERO
-        || fee_rate <= Decimal::ZERO
-        || price <= Decimal::ZERO
-        || price >= Decimal::ONE
-    {
-        return Decimal::ZERO;
-    }
-    contracts * fee_rate * price * (Decimal::ONE - price)
 }
 
 pub fn estimate_fair_value(
