@@ -401,7 +401,7 @@ fn process_accounting_proof(
 ) -> Result<(ProcessAccountingProof, Vec<AccountPositionMismatch>)> {
     let mut account_sizes = HashMap::with_capacity(account_positions.len());
     for position in account_positions {
-        if position.size <= Decimal::ZERO {
+        if position.size <= Decimal::ZERO || is_settled_zero_payout_position(position) {
             continue;
         }
         if account_sizes
@@ -488,6 +488,15 @@ fn process_accounting_proof(
         }
     };
     Ok((proof, mismatches))
+}
+
+fn is_settled_zero_payout_position(position: &AccountPositionSnapshot) -> bool {
+    position.current_value == Some(Decimal::ZERO)
+        && position
+            .raw_payload
+            .get("redeemable")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
 }
 
 async fn fetch_bounded_activity(
@@ -1415,6 +1424,23 @@ mod tests {
 
         let (proof, mismatches) =
             process_accounting_proof(&process_positions, &positions, 0, &[]).unwrap();
+
+        assert_eq!(proof.status, "proven");
+        assert!(mismatches.is_empty());
+    }
+
+    #[test]
+    fn redeemable_zero_value_losing_token_is_not_open_wallet_custody() {
+        let mut losing_position = account_position("losing-token", dec!(5));
+        losing_position.current_value = Some(Decimal::ZERO);
+        losing_position.raw_payload = serde_json::json!({
+            "size": "5",
+            "currentValue": "0",
+            "redeemable": true
+        });
+
+        let (proof, mismatches) =
+            process_accounting_proof(&HashMap::new(), &[losing_position], 0, &[]).unwrap();
 
         assert_eq!(proof.status, "proven");
         assert!(mismatches.is_empty());
