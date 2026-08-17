@@ -268,6 +268,19 @@ struct LiveSettlementFillRow {
 }
 
 #[derive(Debug, FromRow)]
+struct LiveDailyAccountExitRow {
+    account_trade_id: Uuid,
+    process_id: Uuid,
+    order_id: String,
+    token_id: String,
+    exit_size: Decimal,
+    net_proceeds: Decimal,
+    entry_filled_size: Decimal,
+    entry_notional: Decimal,
+    entry_fees: Decimal,
+}
+
+#[derive(Debug, FromRow)]
 struct LiveExposureOrderRow {
     order_id: String,
     client_order_id: Uuid,
@@ -361,6 +374,24 @@ pub struct LiveRedemptionRecognition {
     pub matched: bool,
     pub applied: bool,
     pub redeemed_size: Decimal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveAccountExitRecognition {
+    pub matched: bool,
+    pub applied: bool,
+    pub order_id: Option<String>,
+    pub exited_size: Decimal,
+}
+
+#[derive(Debug, FromRow)]
+struct LiveAccountExitCandidateRow {
+    process_id: Uuid,
+    order_id: String,
+    filled_size: Decimal,
+    entry_notional: Decimal,
+    entry_fees: Decimal,
+    order_payload: serde_json::Value,
 }
 
 #[derive(Debug, FromRow)]
@@ -1258,6 +1289,69 @@ impl Store {
             }
             net_pnl += settlement.net_pnl;
         }
+
+        let account_exits = sqlx::query_as::<_, LiveDailyAccountExitRow>(
+            r#"
+            SELECT
+              account_exit.account_trade_id,
+              orders.process_id,
+              orders.order_id,
+              orders.token_id,
+              account_exit.applied_exit_size AS exit_size,
+              (account_exit.raw_payload #>> '{reconciliation,net_proceeds}')::numeric
+                AS net_proceeds,
+              round(SUM(fill.size), 10)::numeric AS entry_filled_size,
+              round(SUM(fill.price * fill.size), 10)::numeric AS entry_notional,
+              round(SUM(fill.fee), 10)::numeric AS entry_fees
+            FROM polymarket.account_trades account_exit
+            JOIN polymarket.orders orders ON orders.order_id = account_exit.linked_order_id
+            JOIN polymarket.fills fill
+              ON fill.process_id = orders.process_id
+             AND fill.order_id = orders.order_id
+             AND fill.source = 'live'
+            WHERE orders.process_id = $1
+              AND account_exit.side = 'sell'
+              AND account_exit.applied_exit_size = account_exit.size
+              AND account_exit.timestamp_utc >= $2
+              AND account_exit.timestamp_utc < $3
+            GROUP BY account_exit.account_trade_id, orders.process_id, orders.order_id,
+              orders.token_id, account_exit.applied_exit_size,
+              account_exit.raw_payload #>> '{reconciliation,net_proceeds}'
+            ORDER BY account_exit.timestamp_utc, account_exit.account_trade_id
+            LIMIT $4
+            "#,
+        )
+        .bind(process_id)
+        .bind(day_start)
+        .bind(day_end)
+        .bind(MAX_LIVE_DAILY_SETTLEMENTS + 1)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to load recognized manual live exits for UTC day")?;
+        if account_exits.len() > MAX_LIVE_DAILY_SETTLEMENTS as usize {
+            bail!(
+                "live process {} exceeds the bounded {}-manual-exit daily loss window",
+                process_id,
+                MAX_LIVE_DAILY_SETTLEMENTS
+            );
+        }
+        let mut account_trade_ids = HashSet::with_capacity(account_exits.len());
+        for account_exit in account_exits {
+            if account_exit.process_id != process_id
+                || account_exit.order_id.trim().is_empty()
+                || account_exit.token_id.trim().is_empty()
+                || account_exit.exit_size <= Decimal::ZERO
+                || account_exit.exit_size != account_exit.entry_filled_size
+                || account_exit.net_proceeds <= Decimal::ZERO
+                || account_exit.entry_notional <= Decimal::ZERO
+                || account_exit.entry_fees < Decimal::ZERO
+                || !account_trade_ids.insert(account_exit.account_trade_id)
+            {
+                bail!("manual live exit daily PnL evidence is invalid or ambiguous");
+            }
+            net_pnl +=
+                account_exit.net_proceeds - account_exit.entry_notional - account_exit.entry_fees;
+        }
         Ok(net_pnl)
     }
 
@@ -1512,6 +1606,13 @@ impl Store {
                   AND settlement.execution_mode = 'live'
                   AND settlement.credit_status = 'credited'
               )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM polymarket.account_trades account_exit
+                WHERE account_exit.linked_order_id = orders.order_id
+                  AND account_exit.side = 'sell'
+                  AND account_exit.applied_exit_size > 0
+              )
             "#,
         )
         .bind(process_id)
@@ -1580,6 +1681,13 @@ impl Store {
                         jsonb_build_array(to_jsonb(expected_fill.fill_id))
                   )
               )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM polymarket.account_trades account_exit
+                WHERE account_exit.linked_order_id = orders.order_id
+                  AND account_exit.side = 'sell'
+                  AND account_exit.applied_exit_size > 0
+              )
             GROUP BY orders.order_id, orders.token_id
             ORDER BY orders.order_id
             LIMIT 4001
@@ -1596,6 +1704,227 @@ impl Store {
             );
         }
         Ok(rows)
+    }
+
+    /// Reconciles one exact, full manual wallet exit to a unique account-owned live entry.
+    /// Partial or ambiguous exits remain unmatched so custody and realized PnL stay fail-closed.
+    pub async fn recognize_account_live_exit(
+        &self,
+        account_ref: &str,
+        trade: &AccountTrade,
+        apply: bool,
+    ) -> Result<LiveAccountExitRecognition> {
+        let exit_fee_tolerance = Decimal::new(1, 5);
+        let account_ref = account_ref.trim();
+        if account_ref.is_empty() || account_ref.len() > 128 {
+            bail!("manual live exit recognition requires a bounded account_ref");
+        }
+        if trade.side != "sell"
+            || trade.account_address.trim().is_empty()
+            || trade.token_id.trim().is_empty()
+            || trade.price <= Decimal::ZERO
+            || trade.price >= Decimal::ONE
+            || trade.size <= Decimal::ZERO
+            || trade.transaction_hash.as_deref().is_none_or(str::is_empty)
+        {
+            bail!("manual live exit recognition requires complete sell evidence");
+        }
+        let net_proceeds = trade
+            .raw_payload
+            .get("usdcSize")
+            .and_then(crate::fees::decimal_from_json)
+            .context("manual live exit is missing Data API net proceeds")?;
+        if net_proceeds <= Decimal::ZERO || net_proceeds > trade.notional {
+            bail!("manual live exit has invalid Data API net proceeds");
+        }
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin manual live exit reconciliation")?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("live-account-exit:{}", trade.account_trade_id))
+            .execute(&mut *tx)
+            .await
+            .context("failed to lock manual live exit reconciliation")?;
+
+        if let Some((order_id, applied_size)) = sqlx::query_as::<_, (Option<String>, Decimal)>(
+            r#"
+                SELECT linked_order_id, applied_exit_size
+                FROM polymarket.account_trades
+                WHERE account_trade_id = $1
+                "#,
+        )
+        .bind(trade.account_trade_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("failed to inspect existing manual live exit recognition")?
+        {
+            if order_id.is_some() && applied_size == trade.size {
+                tx.commit()
+                    .await
+                    .context("failed to commit idempotent manual live exit reconciliation")?;
+                return Ok(LiveAccountExitRecognition {
+                    matched: true,
+                    applied: false,
+                    order_id,
+                    exited_size: trade.size,
+                });
+            }
+        }
+
+        let candidates = sqlx::query_as::<_, LiveAccountExitCandidateRow>(
+            r#"
+            WITH account_processes AS (
+              SELECT process_id
+              FROM polymarket.trading_processes
+              WHERE config #>> '{execution,mode}' = 'live'
+                AND lower(btrim(config #>> '{execution,account_ref}')) = lower($1)
+            ), entries AS (
+              SELECT
+                orders.process_id,
+                orders.order_id,
+                round(SUM(fill.size), 10)::numeric AS filled_size,
+                round(SUM(fill.price * fill.size), 10)::numeric AS entry_notional,
+                round(SUM(fill.fee), 10)::numeric AS entry_fees,
+                orders.raw_payload AS order_payload,
+                COALESCE((
+                  SELECT SUM(existing_exit.applied_exit_size)
+                  FROM polymarket.account_trades existing_exit
+                  WHERE existing_exit.linked_order_id = orders.order_id
+                    AND existing_exit.side = 'sell'
+                ), 0)::numeric AS already_exited_size
+              FROM polymarket.orders orders
+              JOIN account_processes process ON process.process_id = orders.process_id
+              JOIN polymarket.fills fill
+                ON fill.process_id = orders.process_id
+               AND fill.order_id = orders.order_id
+               AND fill.source = 'live'
+              WHERE orders.side = 'buy'
+                AND orders.token_id = $2
+                AND fill.timestamp_utc <= $3
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM polymarket.btc_paper_settlement_ledger settlement
+                  WHERE settlement.process_id = orders.process_id
+                    AND settlement.order_id = orders.order_id
+                    AND settlement.execution_mode = 'live'
+                    AND settlement.credit_status = 'credited'
+                )
+              GROUP BY orders.process_id, orders.order_id, orders.raw_payload
+            )
+            SELECT process_id, order_id, filled_size, entry_notional, entry_fees, order_payload
+            FROM entries
+            WHERE filled_size - already_exited_size = $4
+            ORDER BY order_id
+            LIMIT 2
+            "#,
+        )
+        .bind(account_ref)
+        .bind(&trade.token_id)
+        .bind(trade.timestamp_utc + LIVE_EXTERNAL_EVENT_CLOCK_SKEW)
+        .bind(trade.size)
+        .fetch_all(&mut *tx)
+        .await
+        .context("failed to resolve manual live exit ownership")?;
+        if candidates.len() != 1 {
+            tx.commit()
+                .await
+                .context("failed to commit unmatched manual live exit reconciliation")?;
+            return Ok(LiveAccountExitRecognition {
+                matched: false,
+                applied: false,
+                order_id: None,
+                exited_size: Decimal::ZERO,
+            });
+        }
+        let candidate = &candidates[0];
+        if candidate.filled_size != trade.size {
+            bail!("manual live exit does not exactly close its unique entry");
+        }
+        let fee_rate = sealed_dynamic_fee_rate(
+            candidate
+                .order_payload
+                .get("request")
+                .and_then(|request| request.get("metadata"))
+                .context("manual live exit entry is missing sealed metadata")?,
+        )?;
+        let (expected_exit_fee, observed_exit_fee, net_pnl) = manual_live_exit_economics(
+            trade.size,
+            trade.price,
+            fee_rate,
+            net_proceeds,
+            candidate.entry_notional,
+            candidate.entry_fees,
+            exit_fee_tolerance,
+        )?;
+        if apply {
+            sqlx::query(
+                r#"
+                DELETE FROM polymarket.btc_paper_settlement_ledger
+                WHERE process_id = $1
+                  AND order_id = $2
+                  AND execution_mode = 'live'
+                  AND credit_status = 'pending'
+                  AND official_resolution_received_at > $3
+                "#,
+            )
+            .bind(candidate.process_id)
+            .bind(&candidate.order_id)
+            .bind(trade.timestamp_utc)
+            .execute(&mut *tx)
+            .await
+            .context("failed to remove superseded pending live settlement")?;
+            let updated = sqlx::query(
+                r#"
+                UPDATE polymarket.account_trades
+                SET linked_order_id = $2,
+                    applied_exit_size = size,
+                    raw_payload = raw_payload || jsonb_build_object(
+                      'reconciliation', jsonb_build_object(
+                        'kind', 'manual_live_full_exit',
+                        'process_id', $3::text,
+                        'order_id', $2,
+                        'net_proceeds', $4::text,
+                        'observed_exit_fee', $5::text,
+                        'expected_exit_fee', $6::text,
+                        'entry_notional', $7::text,
+                        'entry_fees', $8::text,
+                        'net_pnl', $9::text
+                      )
+                    ),
+                    updated_at = now()
+                WHERE account_trade_id = $1
+                  AND linked_order_id IS NULL
+                  AND applied_exit_size = 0
+                "#,
+            )
+            .bind(trade.account_trade_id)
+            .bind(&candidate.order_id)
+            .bind(candidate.process_id)
+            .bind(net_proceeds)
+            .bind(observed_exit_fee)
+            .bind(expected_exit_fee)
+            .bind(candidate.entry_notional)
+            .bind(candidate.entry_fees)
+            .bind(net_pnl)
+            .execute(&mut *tx)
+            .await
+            .context("failed to persist manual live exit recognition")?;
+            if updated.rows_affected() != 1 {
+                bail!("manual live exit recognition lost its atomic ownership claim");
+            }
+        }
+        tx.commit()
+            .await
+            .context("failed to commit manual live exit reconciliation")?;
+        Ok(LiveAccountExitRecognition {
+            matched: true,
+            applied: apply,
+            order_id: Some(candidate.order_id.clone()),
+            exited_size: trade.size,
+        })
     }
 
     pub async fn recognize_process_live_redemption(
@@ -1987,17 +2316,31 @@ impl Store {
                 AND settlement.execution_mode = 'live'
                 AND settlement.credit_status = 'credited'
               GROUP BY settlement.token_id
+            ), exited AS (
+              SELECT orders.token_id,
+                SUM(account_exit.applied_exit_size)::numeric AS size
+              FROM polymarket.account_trades account_exit
+              JOIN polymarket.orders orders ON orders.order_id = account_exit.linked_order_id
+              WHERE orders.process_id = $1
+                AND account_exit.side = 'sell'
+                AND account_exit.applied_exit_size > 0
+              GROUP BY orders.token_id
             ), tokens AS (
               SELECT token_id FROM filled
               UNION
               SELECT token_id FROM redeemed
+              UNION
+              SELECT token_id FROM exited
             )
             SELECT tokens.token_id,
-              (COALESCE(filled.size, 0) - COALESCE(redeemed.size, 0))::numeric AS size
+              (COALESCE(filled.size, 0) - COALESCE(redeemed.size, 0)
+                - COALESCE(exited.size, 0))::numeric AS size
             FROM tokens
             LEFT JOIN filled USING (token_id)
             LEFT JOIN redeemed USING (token_id)
-            WHERE COALESCE(filled.size, 0) - COALESCE(redeemed.size, 0) <> 0
+            LEFT JOIN exited USING (token_id)
+            WHERE COALESCE(filled.size, 0) - COALESCE(redeemed.size, 0)
+              - COALESCE(exited.size, 0) <> 0
             ORDER BY tokens.token_id
             LIMIT 4001
             "#,
@@ -2076,17 +2419,31 @@ impl Store {
               WHERE settlement.execution_mode = 'live'
                 AND settlement.credit_status = 'credited'
               GROUP BY settlement.token_id
+            ), exited AS (
+              SELECT orders.token_id,
+                SUM(account_exit.applied_exit_size)::numeric AS size
+              FROM polymarket.account_trades account_exit
+              JOIN polymarket.orders orders ON orders.order_id = account_exit.linked_order_id
+              JOIN account_processes process ON process.process_id = orders.process_id
+              WHERE account_exit.side = 'sell'
+                AND account_exit.applied_exit_size > 0
+              GROUP BY orders.token_id
             ), tokens AS (
               SELECT token_id FROM filled
               UNION
               SELECT token_id FROM redeemed
+              UNION
+              SELECT token_id FROM exited
             )
             SELECT tokens.token_id,
-              (COALESCE(filled.size, 0) - COALESCE(redeemed.size, 0))::numeric AS size
+              (COALESCE(filled.size, 0) - COALESCE(redeemed.size, 0)
+                - COALESCE(exited.size, 0))::numeric AS size
             FROM tokens
             LEFT JOIN filled USING (token_id)
             LEFT JOIN redeemed USING (token_id)
-            WHERE COALESCE(filled.size, 0) - COALESCE(redeemed.size, 0) <> 0
+            LEFT JOIN exited USING (token_id)
+            WHERE COALESCE(filled.size, 0) - COALESCE(redeemed.size, 0)
+              - COALESCE(exited.size, 0) <> 0
             ORDER BY tokens.token_id
             LIMIT 4001
             "#,
@@ -3632,6 +3989,40 @@ fn is_prefixed_sha256_hex(value: &str) -> bool {
         && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn manual_live_exit_economics(
+    exit_size: Decimal,
+    exit_price: Decimal,
+    fee_rate: Decimal,
+    net_proceeds: Decimal,
+    entry_notional: Decimal,
+    entry_fees: Decimal,
+    fee_tolerance: Decimal,
+) -> Result<(Decimal, Decimal, Decimal)> {
+    let gross_proceeds = exit_size * exit_price;
+    if exit_size <= Decimal::ZERO
+        || exit_price <= Decimal::ZERO
+        || exit_price >= Decimal::ONE
+        || net_proceeds <= Decimal::ZERO
+        || net_proceeds > gross_proceeds
+        || entry_notional <= Decimal::ZERO
+        || entry_fees < Decimal::ZERO
+        || fee_tolerance < Decimal::ZERO
+    {
+        bail!("manual live exit economics are invalid");
+    }
+    let expected_exit_fee = dynamic_crypto_taker_fee(exit_size, fee_rate, exit_price);
+    let observed_exit_fee = gross_proceeds - net_proceeds;
+    if (expected_exit_fee - observed_exit_fee).abs() > fee_tolerance {
+        bail!("manual live exit net proceeds do not match centralized fee economics");
+    }
+    Ok((
+        expected_exit_fee,
+        observed_exit_fee,
+        net_proceeds - entry_notional - entry_fees,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{Duration, Utc};
@@ -3646,11 +4037,11 @@ mod tests {
         store::{
             build_live_process_exposure_snapshot, canonical_fill_for_storage,
             durable_fill_state_supersedes_report, fill_record_matches, live_requested_exposure,
-            order_request_identity_matches, order_request_result_matches, required_fill_process_id,
-            validate_live_daily_settlement, validate_live_exposure_fill, LiveDailySettlementRow,
-            LiveExposureFillRow, LiveExposureOrderRow, HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL,
-            INSERT_FILL_IDENTITY_SQL, INSERT_FILL_SQL, INSERT_ORDER_SQL,
-            RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL,
+            manual_live_exit_economics, order_request_identity_matches,
+            order_request_result_matches, required_fill_process_id, validate_live_daily_settlement,
+            validate_live_exposure_fill, LiveDailySettlementRow, LiveExposureFillRow,
+            LiveExposureOrderRow, HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL, INSERT_FILL_IDENTITY_SQL,
+            INSERT_FILL_SQL, INSERT_ORDER_SQL, RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL,
             SELECT_CREDITED_LIVE_PROCESS_SETTLEMENTS_SQL, SELECT_FILL_IDENTITY_SQL,
             SELECT_FILL_SQL, SELECT_LIVE_PROCESS_CROSS_OWNED_FILL_EXISTS_SQL,
             SELECT_LIVE_PROCESS_EXPOSURE_FILLS_SQL, SELECT_LIVE_PROCESS_EXPOSURE_ORDERS_SQL,
@@ -3666,6 +4057,34 @@ mod tests {
             .contains("status IN ('starting', 'running', 'stopping')"));
         assert!(!HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL.contains("SET status"));
         assert!(!HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL.contains("SET enabled"));
+    }
+
+    #[test]
+    fn manual_live_exit_uses_centralized_fee_math_and_actual_net_proceeds() {
+        let (expected_fee, observed_fee, net_pnl) = manual_live_exit_economics(
+            dec!(5),
+            dec!(0.999),
+            dec!(0.07),
+            dec!(4.99466),
+            dec!(4.75),
+            dec!(0.016625),
+            dec!(0.00001),
+        )
+        .unwrap();
+
+        assert_eq!(expected_fee, dec!(0.00034965));
+        assert_eq!(observed_fee, dec!(0.00034));
+        assert_eq!(net_pnl, dec!(0.228035));
+        assert!(manual_live_exit_economics(
+            dec!(5),
+            dec!(0.999),
+            dec!(0.07),
+            dec!(4.99),
+            dec!(4.75),
+            dec!(0.016625),
+            dec!(0.00001),
+        )
+        .is_err());
     }
 
     #[test]

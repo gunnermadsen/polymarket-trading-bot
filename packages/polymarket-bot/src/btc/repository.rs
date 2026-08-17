@@ -648,6 +648,13 @@ WITH order_identity AS MATERIALIZED (
       AS legacy_experiment_id
   FROM polymarket.orders o
   WHERE o.process_id = $1
+    AND NOT EXISTS (
+      SELECT 1
+      FROM polymarket.account_trades account_exit
+      WHERE account_exit.linked_order_id = o.order_id
+        AND account_exit.side = 'sell'
+        AND account_exit.applied_exit_size > 0
+    )
     AND (
       ($3 = 'live' AND COALESCE(
         NULLIF(o.raw_payload #>> '{request,metadata,run_id}', ''),
@@ -5197,6 +5204,8 @@ mod tests {
         let discovery = DISCOVER_PENDING_SETTLEMENTS_SQL.to_ascii_lowercase();
         assert!(discovery.contains("with order_identity as materialized"));
         assert!(discovery.contains("where o.process_id = $1"));
+        assert!(discovery.contains("account_exit.linked_order_id = o.order_id"));
+        assert!(discovery.contains("account_exit.applied_exit_size > 0"));
         assert!(discovery.contains("bool_or("));
         assert!(discovery.contains("as has_identity_conflict"));
         assert!(discovery.contains("on f.process_id = $1"));

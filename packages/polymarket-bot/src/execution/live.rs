@@ -3064,9 +3064,11 @@ impl ExecutionVenue for LiveVenue {
             } else {
                 open_orders.len()
             };
+            // Wallet trades are account-scoped and may belong to a sibling sleeve or an exact
+            // reconciled manual exit. The account reconciliation report is the authoritative
+            // ownership result; keep the raw REST count diagnostic-only to avoid double-counting.
             let mismatches = missing_local_orders
                 .saturating_add(foreign_venue_orders)
-                .saturating_add(foreign_wallet_trades)
                 .saturating_add(account_reconcile.mismatches.len())
                 .saturating_add(account_reconcile.unmatched_trades as usize);
             if self.global_entry_gate.lock().await.safety_generation

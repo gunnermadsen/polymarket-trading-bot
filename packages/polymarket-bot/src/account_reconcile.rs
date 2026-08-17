@@ -204,7 +204,7 @@ pub async fn reconcile_account_positions(
         .collect::<Vec<_>>();
     trades.sort_by_key(|trade| trade.timestamp_utc);
 
-    let unmatched_trades = if process_id.is_some() {
+    let normalization_failures = if process_id.is_some() {
         let mut venue_order_ids = trades
             .iter()
             .filter_map(|trade| trade.venue_order_id.clone())
@@ -241,11 +241,8 @@ pub async fn reconcile_account_positions(
             activity_window_end + LIVE_EXTERNAL_EVENT_CLOCK_SKEW,
         )
         .await?;
-        let unlinked_normalized =
-            link_process_owned_trades(&mut trades, &owned_orders, &owned_fills);
-        let unmatched = unlinked_normalized
-            .saturating_add(external_trade_activities.saturating_sub(trades.len()));
-        unmatched as u64
+        link_process_owned_trades(&mut trades, &owned_orders, &owned_fills);
+        external_trade_activities.saturating_sub(trades.len())
     } else {
         // Account-wide administrative reconciliation predates process ownership. Preserve its
         // reporting contract instead of pretending wallet activity belongs to one process.
@@ -294,6 +291,45 @@ pub async fn reconcile_account_positions(
     let mut exits_detected = 0u64;
     let mut exits_applied = 0u64;
     let mut exit_size_applied = Decimal::ZERO;
+    if process_id.is_some() {
+        for trade in trades
+            .iter_mut()
+            .filter(|trade| trade.linked_order_id.is_none() && trade.side == "sell")
+        {
+            let recognition = store
+                .recognize_account_live_exit(
+                    account_ref
+                        .as_deref()
+                        .context("process-scoped reconciliation is missing account_ref")?,
+                    trade,
+                    !request.dry_run,
+                )
+                .await?;
+            if recognition.matched {
+                exits_detected = exits_detected
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("manual live exit count overflow"))?;
+                trade.linked_order_id = recognition.order_id;
+            }
+            if recognition.applied {
+                exits_applied = exits_applied
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("applied manual live exit count overflow"))?;
+                exit_size_applied = exit_size_applied
+                    .checked_add(recognition.exited_size)
+                    .ok_or_else(|| anyhow::anyhow!("applied manual live exit size overflow"))?;
+            }
+        }
+    }
+    let unmatched_trades = if process_id.is_some() {
+        trades
+            .iter()
+            .filter(|trade| trade.linked_order_id.is_none())
+            .count()
+            .saturating_add(normalization_failures) as u64
+    } else {
+        0
+    };
     if let Some(process_id) = process_id {
         let account_position_tokens = snapshots
             .iter()
@@ -479,6 +515,8 @@ fn process_accounting_proof(
         ProcessAccountingProof {
             status: "proven".to_string(),
             position_ownership: "account_sleeve_fill_ledger_match".to_string(),
+            // Preserve the established report contract. Recognized account exits are persisted
+            // as process-owned realization evidence adjacent to the settlement ledger.
             realized_pnl: "process_owned_settlement_ledger".to_string(),
             reason: if expected_account_positions.is_empty() {
                 "clean_account_baseline".to_string()
