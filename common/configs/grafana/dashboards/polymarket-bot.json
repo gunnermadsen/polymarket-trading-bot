@@ -392,7 +392,38 @@
           },
           "unit": "percentunit"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "DOWN"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 13,
@@ -434,7 +465,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH resolved_decisions AS MATERIALIZED (\n  SELECT d.decision_at,d.decision_id,d.process_id,d.outcome AS forecast_outcome,d.fair_probability,\n         m.official_outcome,m.official_winning_token_id,o.order_id,o.market_id,o.token_id\n  FROM polymarket.btc_strategy_decisions d\n  JOIN polymarket.btc_interval_markets m ON m.market_id=d.market_id\n  JOIN polymarket.orders o ON o.process_id=d.process_id\n   AND (o.client_order_id=COALESCE(d.metadata#>>'{paper_order_plan,orders,0,request,client_order_id}',d.metadata#>>'{order_plan,orders,0,request,client_order_id}')::uuid\n     OR o.raw_payload#>>'{request,metadata,decision_id}'=d.decision_id::text)\n  WHERE d.process_id=(${process_id:sqlstring})::uuid AND d.execution_mode IN ('paper','live') AND d.action='buy'\n    AND d.outcome IN ('up','down') AND d.fair_probability BETWEEN 0 AND 1\n    AND d.decision_at BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n    AND m.official_outcome IN ('up','down') AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n    AND EXISTS (SELECT 1 FROM polymarket.fills f WHERE f.order_id=o.order_id AND f.process_id=o.process_id\n      AND f.source IN ('paper','live') LIMIT 1)\n  ORDER BY d.decision_at DESC LIMIT 20\n), filled_orders AS MATERIALIZED (\n  SELECT d.process_id,d.order_id,d.market_id,d.token_id,d.decision_at,d.decision_id,d.forecast_outcome,\n         d.fair_probability,d.official_outcome,d.official_winning_token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,BOOL_AND(f.source='live') AS is_live\n  FROM resolved_decisions d JOIN polymarket.fills f\n    ON f.order_id=d.order_id AND f.process_id=d.process_id AND f.source IN ('paper','live')\n  GROUP BY d.process_id,d.order_id,d.market_id,d.token_id,d.decision_at,d.decision_id,d.forecast_outcome,\n           d.fair_probability,d.official_outcome,d.official_winning_token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), presentation AS (\n  SELECT e.*,COALESCE(x.net_proceeds-e.entry_cost-e.entry_fees,\n    CASE WHEN e.token_id=e.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees) AS net_pnl\n  FROM filled_orders e LEFT JOIN recognized_exits x USING(process_id,order_id)\n)\nSELECT CASE WHEN forecast_outcome=official_outcome THEN '✅ ' ELSE '❌ ' END||\n       CASE WHEN forecast_outcome='up' THEN 'UP ' ELSE 'DOWN ' END||\n       to_char(decision_at AT TIME ZONE 'UTC','MM-DD HH24:MI')||' UTC - '||\n       CASE WHEN net_pnl>0 THEN '+'||chr(36)||to_char(net_pnl,'FM999999990.00')\n            WHEN net_pnl<0 THEN '-'||chr(36)||to_char(abs(net_pnl),'FM999999990.00')\n            ELSE chr(36)||'0.00' END AS \"Decision\",\n       fair_probability::double precision AS \"Forecast confidence\"\nFROM presentation ORDER BY decision_at DESC;",
+          "rawSql": "WITH resolved_decisions AS MATERIALIZED (\n  SELECT d.decision_at,d.decision_id,d.process_id,d.outcome AS forecast_outcome,d.fair_probability,\n         m.official_outcome,m.official_winning_token_id,o.order_id,o.market_id,o.token_id\n  FROM polymarket.btc_strategy_decisions d\n  JOIN polymarket.btc_interval_markets m ON m.market_id=d.market_id\n  JOIN polymarket.orders o ON o.process_id=d.process_id\n   AND (o.client_order_id=COALESCE(d.metadata#>>'{paper_order_plan,orders,0,request,client_order_id}',d.metadata#>>'{order_plan,orders,0,request,client_order_id}')::uuid\n     OR o.raw_payload#>>'{request,metadata,decision_id}'=d.decision_id::text)\n  WHERE d.process_id=(${process_id:sqlstring})::uuid AND d.execution_mode IN ('paper','live') AND d.action='buy'\n    AND d.outcome IN ('up','down') AND d.fair_probability BETWEEN 0 AND 1\n    AND d.decision_at BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n    AND m.official_outcome IN ('up','down') AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n    AND EXISTS (SELECT 1 FROM polymarket.fills f WHERE f.order_id=o.order_id AND f.process_id=o.process_id\n      AND f.source IN ('paper','live') LIMIT 1)\n  ORDER BY d.decision_at DESC LIMIT 20\n), filled_orders AS MATERIALIZED (\n  SELECT d.process_id,d.order_id,d.market_id,d.token_id,d.decision_at,d.decision_id,d.forecast_outcome,\n         d.fair_probability,d.official_outcome,d.official_winning_token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,BOOL_AND(f.source='live') AS is_live\n  FROM resolved_decisions d JOIN polymarket.fills f\n    ON f.order_id=d.order_id AND f.process_id=d.process_id AND f.source IN ('paper','live')\n  GROUP BY d.process_id,d.order_id,d.market_id,d.token_id,d.decision_at,d.decision_id,d.forecast_outcome,\n           d.fair_probability,d.official_outcome,d.official_winning_token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), presentation AS (\n  SELECT e.*,COALESCE(x.net_proceeds-e.entry_cost-e.entry_fees,\n    CASE WHEN e.token_id=e.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees) AS net_pnl\n  FROM filled_orders e LEFT JOIN recognized_exits x USING(process_id,order_id)\n)\nSELECT CASE WHEN forecast_outcome=official_outcome THEN '✅ ' ELSE '❌ ' END||\n       CASE WHEN forecast_outcome='up' THEN 'UP ' ELSE 'DOWN ' END||\n       to_char(decision_at AT TIME ZONE 'UTC','MM-DD HH24:MI')||' UTC - '||\n       CASE WHEN net_pnl>0 THEN '+'||chr(36)||to_char(net_pnl,'FM999999990.00')\n            WHEN net_pnl<0 THEN '-'||chr(36)||to_char(abs(net_pnl),'FM999999990.00')\n            ELSE chr(36)||'0.00' END AS \"Decision\",\n       CASE WHEN forecast_outcome='up' THEN fair_probability::double precision END AS \"UP\",\n       CASE WHEN forecast_outcome='down' THEN fair_probability::double precision END AS \"DOWN\"\nFROM presentation ORDER BY decision_at DESC;",
           "refId": "A",
           "sql": {
             "columns": [
