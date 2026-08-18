@@ -11,8 +11,8 @@ use uuid::Uuid;
 
 use super::types::{
     BinanceAggregateTrade, BookReadiness, BtcIntervalMarket, BtcOutcome, ChainlinkTwap60Point,
-    FeedIntegrityStatus, MarketFeedEvent, MarketFeedEventType, OrderbookCheckpoint, OrderbookLevel,
-    Readiness, RealtimeState, ReferencePriceSource, ReferencePriceTick, SourceReadiness,
+    FeedIntegrityStatus, OrderbookCheckpoint, OrderbookLevel, Readiness, RealtimeState,
+    ReferencePriceSource, ReferencePriceTick, SourceReadiness,
 };
 
 const CHAINLINK_E18_SCALE: u64 = 1_000_000_000_000_000_000;
@@ -103,7 +103,6 @@ pub fn parse_clob_messages(value: &Value) -> Result<Vec<ClobMessage>> {
     }
     let source_timestamp = timestamp_field(object, &["timestamp"])?;
     let market_id = required_string(object, &["market"])?;
-    let raw_payload = value.clone();
     let parsed = match event_type.as_str() {
         "book" => ClobMessage::Book {
             market_id,
@@ -112,7 +111,7 @@ pub fn parse_clob_messages(value: &Value) -> Result<Vec<ClobMessage>> {
             asks: parse_levels(object.get("asks"), "asks")?,
             source_timestamp,
             source_hash: string_field(object, &["hash"]),
-            raw_payload,
+            raw_payload: Value::Null,
         },
         "price_change" => {
             let raw_changes = object
@@ -148,7 +147,7 @@ pub fn parse_clob_messages(value: &Value) -> Result<Vec<ClobMessage>> {
                 market_id,
                 changes,
                 source_timestamp,
-                raw_payload,
+                raw_payload: Value::Null,
             }
         }
         "best_bid_ask" => ClobMessage::BestBidAsk {
@@ -157,7 +156,7 @@ pub fn parse_clob_messages(value: &Value) -> Result<Vec<ClobMessage>> {
             best_bid: optional_decimal_field(object, &["best_bid"])?,
             best_ask: optional_decimal_field(object, &["best_ask"])?,
             source_timestamp,
-            raw_payload,
+            raw_payload: Value::Null,
         },
         "tick_size_change" => ClobMessage::TickSizeChange {
             market_id,
@@ -165,7 +164,7 @@ pub fn parse_clob_messages(value: &Value) -> Result<Vec<ClobMessage>> {
             old_tick_size: required_decimal(object, &["old_tick_size"])?,
             new_tick_size: required_decimal(object, &["new_tick_size"])?,
             source_timestamp,
-            raw_payload,
+            raw_payload: Value::Null,
         },
         "last_trade_price" => ClobMessage::LastTradePrice {
             market_id,
@@ -173,14 +172,14 @@ pub fn parse_clob_messages(value: &Value) -> Result<Vec<ClobMessage>> {
             price: required_decimal(object, &["price"])?,
             size: required_decimal(object, &["size"])?,
             source_timestamp,
-            raw_payload,
+            raw_payload: Value::Null,
         },
         "market_resolved" => ClobMessage::MarketResolved {
             market_id,
             winning_token_id: required_string(object, &["winning_asset_id"])?,
             winning_outcome: required_string(object, &["winning_outcome"])?,
             source_timestamp,
-            raw_payload,
+            raw_payload: Value::Null,
         },
         other => bail!("unsupported CLOB market event type {other}"),
     };
@@ -664,6 +663,14 @@ pub(crate) struct BookIdentityDiagnostic {
     pub token_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BookApplyResult {
+    pub(crate) token_id: Option<String>,
+    pub(crate) source_timestamp: DateTime<Utc>,
+    pub(crate) applied: bool,
+    pub(crate) integrity_status: FeedIntegrityStatus,
+}
+
 impl BookRegistry {
     pub fn new(connection_id: Uuid) -> Self {
         Self {
@@ -799,7 +806,7 @@ impl BookRegistry {
         &mut self,
         message: ClobMessage,
         received_at: DateTime<Utc>,
-    ) -> Vec<MarketFeedEvent> {
+    ) -> Vec<BookApplyResult> {
         match message {
             ClobMessage::Book {
                 market_id,
@@ -808,14 +815,9 @@ impl BookRegistry {
                 asks,
                 source_timestamp,
                 source_hash,
-                raw_payload,
+                raw_payload: _,
             } => {
                 let sequence = self.take_sequence();
-                let canonical_market_id = self
-                    .books
-                    .get(&token_id)
-                    .map(|book| book.market_id.clone())
-                    .unwrap_or_else(|| market_id.clone());
                 let status = if let Some(book) = self.books.get_mut(&token_id) {
                     if !book.matches_market(&market_id) {
                         FeedIntegrityStatus::MarketMismatch
@@ -833,39 +835,27 @@ impl BookRegistry {
                 } else {
                     FeedIntegrityStatus::UnknownToken
                 };
-                vec![feed_event(
-                    canonical_market_id,
+                vec![book_apply_result(
                     Some(token_id),
-                    MarketFeedEventType::Book,
                     source_timestamp,
-                    received_at,
-                    self.connection_id,
-                    sequence,
-                    source_hash,
                     status == FeedIntegrityStatus::Ok,
                     status,
-                    raw_payload,
                 )]
             }
             ClobMessage::PriceChange {
                 market_id,
                 changes,
                 source_timestamp,
-                raw_payload,
+                raw_payload: _,
             } => {
                 let mut entries = Vec::with_capacity(changes.len());
                 for change in changes {
                     let sequence = self.take_sequence();
-                    let canonical_market_id = self
-                        .books
-                        .get(&change.token_id)
-                        .map(|book| book.market_id.clone())
-                        .unwrap_or_else(|| market_id.clone());
-                    entries.push((change, sequence, canonical_market_id));
+                    entries.push((change, sequence));
                 }
 
                 let mut by_token: HashMap<String, Vec<usize>> = HashMap::new();
-                for (index, (change, _, _)) in entries.iter().enumerate() {
+                for (index, (change, _)) in entries.iter().enumerate() {
                     by_token
                         .entry(change.token_id.clone())
                         .or_default()
@@ -953,23 +943,9 @@ impl BookRegistry {
                 entries
                     .into_iter()
                     .zip(outcomes)
-                    .map(
-                        |((change, sequence, canonical_market_id), (applied, status))| {
-                            feed_event(
-                                canonical_market_id,
-                                Some(change.token_id),
-                                MarketFeedEventType::PriceChange,
-                                source_timestamp,
-                                received_at,
-                                self.connection_id,
-                                sequence,
-                                change.source_hash,
-                                applied,
-                                status,
-                                raw_payload.clone(),
-                            )
-                        },
-                    )
+                    .map(|((change, _sequence), (applied, status))| {
+                        book_apply_result(Some(change.token_id), source_timestamp, applied, status)
+                    })
                     .collect()
             }
             ClobMessage::BestBidAsk {
@@ -978,30 +954,18 @@ impl BookRegistry {
                 best_bid: _,
                 best_ask: _,
                 source_timestamp,
-                raw_payload,
-            } => vec![self.non_mutating_event(
-                market_id,
-                token_id,
-                MarketFeedEventType::BestBidAsk,
-                source_timestamp,
-                received_at,
-                raw_payload,
-            )],
+                raw_payload: _,
+            } => vec![self.non_mutating_result(market_id, token_id, source_timestamp)],
             ClobMessage::TickSizeChange {
                 market_id,
                 token_id,
                 old_tick_size: _,
                 new_tick_size,
                 source_timestamp,
-                raw_payload,
+                raw_payload: _,
             } => {
                 let sequence = self.take_sequence();
                 let mut applied = false;
-                let canonical_market_id = self
-                    .books
-                    .get(&token_id)
-                    .map(|book| book.market_id.clone())
-                    .unwrap_or_else(|| market_id.clone());
                 let status = if let Some(book) = self.books.get_mut(&token_id) {
                     if !book.matches_market(&market_id) {
                         FeedIntegrityStatus::MarketMismatch
@@ -1020,18 +984,11 @@ impl BookRegistry {
                 } else {
                     FeedIntegrityStatus::UnknownToken
                 };
-                vec![feed_event(
-                    canonical_market_id,
+                vec![book_apply_result(
                     Some(token_id),
-                    MarketFeedEventType::TickSizeChange,
                     source_timestamp,
-                    received_at,
-                    self.connection_id,
-                    sequence,
-                    None,
                     applied,
                     status,
-                    raw_payload,
                 )]
             }
             ClobMessage::LastTradePrice {
@@ -1040,29 +997,15 @@ impl BookRegistry {
                 price: _,
                 size: _,
                 source_timestamp,
-                raw_payload,
-            } => vec![self.non_mutating_event(
-                market_id,
-                token_id,
-                MarketFeedEventType::LastTradePrice,
-                source_timestamp,
-                received_at,
-                raw_payload,
-            )],
+                raw_payload: _,
+            } => vec![self.non_mutating_result(market_id, token_id, source_timestamp)],
             ClobMessage::MarketResolved {
                 market_id,
                 winning_token_id,
                 winning_outcome: _,
                 source_timestamp,
-                raw_payload,
-            } => vec![self.non_mutating_event(
-                market_id,
-                winning_token_id,
-                MarketFeedEventType::MarketResolved,
-                source_timestamp,
-                received_at,
-                raw_payload,
-            )],
+                raw_payload: _,
+            } => vec![self.non_mutating_result(market_id, winning_token_id, source_timestamp)],
         }
     }
 
@@ -1182,21 +1125,13 @@ impl BookRegistry {
         books
     }
 
-    fn non_mutating_event(
+    fn non_mutating_result(
         &mut self,
         market_id: String,
         token_id: String,
-        event_type: MarketFeedEventType,
         source_timestamp: DateTime<Utc>,
-        received_at: DateTime<Utc>,
-        raw_payload: Value,
-    ) -> MarketFeedEvent {
-        let sequence = self.take_sequence();
-        let canonical_market_id = self
-            .books
-            .get(&token_id)
-            .map(|book| book.market_id.clone())
-            .unwrap_or_else(|| market_id.clone());
+    ) -> BookApplyResult {
+        self.take_sequence();
         let (applied, status) = match self.books.get(&token_id) {
             Some(book) if !book.matches_market(&market_id) => {
                 (false, FeedIntegrityStatus::MarketMismatch)
@@ -1205,19 +1140,7 @@ impl BookRegistry {
             Some(_) => (false, FeedIntegrityStatus::PreSnapshot),
             None => (false, FeedIntegrityStatus::UnknownToken),
         };
-        feed_event(
-            canonical_market_id,
-            Some(token_id),
-            event_type,
-            source_timestamp,
-            received_at,
-            self.connection_id,
-            sequence,
-            None,
-            applied,
-            status,
-            raw_payload,
-        )
+        book_apply_result(Some(token_id), source_timestamp, applied, status)
     }
 
     fn take_sequence(&mut self) -> u64 {
@@ -1384,32 +1307,17 @@ impl RealtimeState {
     }
 }
 
-fn feed_event(
-    market_id: String,
+fn book_apply_result(
     token_id: Option<String>,
-    event_type: MarketFeedEventType,
     source_timestamp: DateTime<Utc>,
-    received_at: DateTime<Utc>,
-    connection_id: Uuid,
-    ingest_sequence: u64,
-    source_hash: Option<String>,
     applied: bool,
     integrity_status: FeedIntegrityStatus,
-    raw_payload: Value,
-) -> MarketFeedEvent {
-    MarketFeedEvent {
-        event_id: Uuid::new_v4(),
-        market_id,
+) -> BookApplyResult {
+    BookApplyResult {
         token_id,
-        event_type,
         source_timestamp,
-        received_at,
-        connection_id,
-        ingest_sequence,
-        source_hash,
         applied,
         integrity_status,
-        raw_payload,
     }
 }
 
@@ -1997,7 +1905,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_accepts_condition_id_from_wire_and_persists_canonical_market_id() {
+    fn registry_accepts_condition_id_from_wire_and_keeps_canonical_market_id() {
         let market = market();
         let mut registry = BookRegistry::new(Uuid::new_v4());
         registry.register_market(&market);
@@ -2020,8 +1928,14 @@ mod tests {
             ts(1_783_902_701_005),
         );
         assert!(events[0].applied);
-        assert_eq!(events[0].market_id, market.market_id);
-        assert!(registry.checkpoint(&market.up_token_id).is_some());
+        assert_eq!(
+            events[0].token_id.as_deref(),
+            Some(market.up_token_id.as_str())
+        );
+        assert_eq!(
+            registry.checkpoint(&market.up_token_id).unwrap().market_id,
+            market.market_id
+        );
     }
 
     fn seed_book(registry: &mut BookRegistry, token: &str, millis: i64) {
@@ -2428,7 +2342,7 @@ mod tests {
         asks: &[(Decimal, Decimal)],
         millis: i64,
         source_hash: &str,
-    ) -> Vec<MarketFeedEvent> {
+    ) -> Vec<BookApplyResult> {
         registry.apply(
             ClobMessage::Book {
                 market_id: "market".to_string(),

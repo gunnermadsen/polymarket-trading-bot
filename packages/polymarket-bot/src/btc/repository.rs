@@ -29,8 +29,8 @@ use super::{
         BtcStrategyPrediction, FairValueEstimate,
     },
     types::{
-        BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, MarketFeedEvent, OrderbookCheckpoint,
-        OrderbookLevel, ReferencePriceSource, ReferencePriceTick,
+        BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, OrderbookCheckpoint, OrderbookLevel,
+        ReferencePriceSource, ReferencePriceTick,
     },
 };
 
@@ -1396,35 +1396,6 @@ impl BtcRepository {
         .execute(&self.pool)
         .await
         .context("failed to insert BTC reference price tick")?;
-        Ok(result.rows_affected() == 1)
-    }
-
-    pub async fn insert_feed_event(&self, event: &MarketFeedEvent) -> Result<bool> {
-        let result = sqlx::query(
-            r#"
-            INSERT INTO polymarket.market_feed_events (
-              feed_event_id, source_timestamp, received_at, connection_id, ingest_sequence,
-              market_id, token_id, event_type, source_hash, applied, integrity_status, raw_payload
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-            ON CONFLICT (feed_event_id, source_timestamp) DO NOTHING
-            "#,
-        )
-        .bind(event.event_id)
-        .bind(event.source_timestamp)
-        .bind(event.received_at)
-        .bind(event.connection_id)
-        .bind(sequence_i64(event.ingest_sequence))
-        .bind(empty_to_none(&event.market_id))
-        .bind(&event.token_id)
-        .bind(serde_name(&event.event_type)?)
-        .bind(&event.source_hash)
-        .bind(event.applied)
-        .bind(serde_name(&event.integrity_status)?)
-        .bind(&event.raw_payload)
-        .execute(&self.pool)
-        .await
-        .context("failed to insert BTC market feed event")?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -3883,10 +3854,6 @@ fn validate_orderbook_checkpoint_pair(
     Ok((first, second))
 }
 
-fn empty_to_none(value: &str) -> Option<&str> {
-    (!value.trim().is_empty()).then_some(value)
-}
-
 fn serde_name<T: Serialize>(value: &T) -> Result<String> {
     serde_json::to_value(value)?
         .as_str()
@@ -4595,7 +4562,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
-    use crate::btc::types::{FeedIntegrityStatus, MarketFeedEventType};
+    use crate::btc::types::FeedIntegrityStatus;
     use crate::btc::{
         admission::{
             ShadowPredictiveRegimeCandidate, ShadowPredictiveRegimeCircuitBreakerConfig,
@@ -6078,10 +6045,6 @@ mod tests {
 
     #[test]
     fn serializes_database_enum_names() {
-        assert_eq!(
-            serde_name(&MarketFeedEventType::PriceChange).unwrap(),
-            "price_change"
-        );
         assert_eq!(
             serde_name(&FeedIntegrityStatus::PreSnapshot).unwrap(),
             "pre_snapshot"

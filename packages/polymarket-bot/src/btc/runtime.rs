@@ -59,8 +59,8 @@ use super::{
     },
     types::{
         BinanceAggregateTrade, BinanceOneSecondKline, BinanceOneSecondWindow, BtcIntervalMarket,
-        BtcOutcome, FeedIntegrityStatus, MarketFeedEventType, Readiness, RealtimeState,
-        ReferencePriceSource, ReferencePriceTick, BINANCE_ONE_SECOND_BOOTSTRAP_CAPACITY,
+        BtcOutcome, FeedIntegrityStatus, Readiness, RealtimeState, ReferencePriceSource,
+        ReferencePriceTick, BINANCE_ONE_SECOND_BOOTSTRAP_CAPACITY,
     },
 };
 
@@ -2005,7 +2005,6 @@ pub async fn runtime_status_from_inputs(
 #[derive(Debug)]
 enum PersistItem {
     ReferenceTick(ReferencePriceTick),
-    FeedEvent(super::types::MarketFeedEvent),
     Checkpoint(super::types::OrderbookCheckpoint),
 }
 
@@ -2013,7 +2012,6 @@ impl PersistItem {
     fn kind(&self) -> &'static str {
         match self {
             Self::ReferenceTick(_) => "reference tick",
-            Self::FeedEvent(_) => "feed event",
             Self::Checkpoint(_) => "orderbook checkpoint",
         }
     }
@@ -2074,7 +2072,6 @@ async fn persist_item(repository: &BtcRepository, item: &PersistItem) -> Result<
         PersistItem::ReferenceTick(tick) => {
             repository.insert_reference_tick(tick).await.map(|_| ())
         }
-        PersistItem::FeedEvent(event) => repository.insert_feed_event(event).await.map(|_| ()),
         PersistItem::Checkpoint(checkpoint) => repository
             .insert_orderbook_checkpoint(checkpoint, "websocket_book")
             .await
@@ -2256,16 +2253,6 @@ async fn enqueue(
             PersistEnqueueOutcome::Closed
         }
     }
-}
-
-fn should_persist_feed_event(event: &super::types::MarketFeedEvent) -> bool {
-    !event.applied
-        || matches!(
-            event.event_type,
-            MarketFeedEventType::Book
-                | MarketFeedEventType::TickSizeChange
-                | MarketFeedEventType::MarketResolved
-        )
 }
 
 async fn run_discovery(
@@ -2978,7 +2965,6 @@ enum ClobFrameAction {
 async fn apply_active_clob_frame(
     epoch: &mut ClobEpoch,
     message: Message,
-    writer: &mpsc::Sender<PersistItem>,
     state: &Arc<RwLock<RealtimeState>>,
     shared_books: &Arc<RwLock<BookRegistry>>,
     metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
@@ -3063,7 +3049,7 @@ async fn apply_active_clob_frame(
         .iter()
         .filter(|event| event.applied)
         .map(|event| {
-            (event.received_at - event.source_timestamp)
+            (received_at - event.source_timestamp)
                 .num_milliseconds()
                 .max(0)
         })
@@ -3102,23 +3088,6 @@ async fn apply_active_clob_frame(
             .publish_frame_books_from(&epoch.registry, frame_token_ids.iter().map(String::as_str));
         shared.update_books(&epoch.registry);
         shared.last_updated_at = Some(received_at);
-    }
-    for event in events {
-        if !should_persist_feed_event(&event) {
-            continue;
-        }
-        match enqueue(writer, PersistItem::FeedEvent(event), state, metrics).await {
-            PersistEnqueueOutcome::Queued => {
-                epoch.session.messages_persisted =
-                    epoch.session.messages_persisted.saturating_add(1);
-            }
-            PersistEnqueueOutcome::Saturated => {
-                epoch.session.dropped_messages = epoch.session.dropped_messages.saturating_add(1);
-            }
-            PersistEnqueueOutcome::Closed => {
-                epoch.session.dropped_messages = epoch.session.dropped_messages.saturating_add(1);
-            }
-        }
     }
     ClobFrameAction::Continue
 }
@@ -3541,7 +3510,6 @@ async fn run_clob_supervisor(
                         match apply_active_clob_frame(
                             epoch,
                             message,
-                            &writer,
                             &state,
                             &shared_books,
                             &metrics,
@@ -8862,7 +8830,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_clob_frame_publishes_canonical_book_when_persistence_is_closed() {
+    async fn direct_clob_frame_publishes_canonical_book_without_persistence() {
         let current = market();
         let received_at = current.window_start + Duration::seconds(100);
         let received_instant = Instant::now();
@@ -8899,8 +8867,6 @@ mod tests {
         let state = Arc::new(RwLock::new(RealtimeState::default()));
         let shared_books = Arc::new(RwLock::new(registry));
         let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
-        let (writer, receiver) = mpsc::channel(1);
-        drop(receiver);
         let payload = serde_json::json!({
             "event_type": "book",
             "market": current.market_id.clone(),
@@ -8913,7 +8879,6 @@ mod tests {
         let action = apply_active_clob_frame(
             &mut epoch,
             Message::Text(payload.to_string().into()),
-            &writer,
             &state,
             &shared_books,
             &metrics,
@@ -8928,7 +8893,7 @@ mod tests {
             .unwrap();
         assert_eq!(checkpoint.best_bid, Some(dec!(0.48)));
         assert_eq!(checkpoint.best_ask, Some(dec!(0.52)));
-        assert_eq!(metrics.read().await.dropped_messages, 1);
+        assert_eq!(metrics.read().await.dropped_messages, 0);
     }
 
     #[tokio::test]
