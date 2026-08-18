@@ -24,15 +24,18 @@ Think of Capitonic as a vision to generate income through systems with automatio
 
 # Source Control and Worktrees
 
-## Trading Release Roles
+## Integration Cycle and Trading Release Roles
 
 - `development` is the settlement branch for accepted trading-capable releases. Do not implement features, fixes, experiments, or integration corrections directly on `development`.
 - A `development` tip is golden only when an annotated `golden/<image_name>/sha256-<docker-sha256-hash>` tag identifies the exact accepted image. Branch position or an `image/...` build tag alone is not golden evidence.
 - Feature verification proves readiness for integration; it does not make a feature branch or its image golden.
-- Use the persistent `target/worktrees/trading-soak` worktree for integrated trading release candidates. Create a fresh domain-specific `integration/<trading-domain>-<candidate-identity>` branch from the current accepted `development` tip for each candidate cohort.
-- Creating the integration candidate is the one point where that cohort branches from `development`. After the candidate exists, any new branch whose work belongs to that cohort starts from the active integration branch, not from `development`, and merges back into that integration branch.
-- A narrowly scoped integration-policy or coordination correction may be committed directly on the integration branch when the user explicitly requests it. Feature and fix implementation still use branches rooted in the active integration lineage.
-- Merge selected verified feature branches into the candidate with `--no-ff`. Never merge a feature branch directly into `development`.
+- Use exactly one active integration branch for each golden-image build cycle. Name it `integration-<YYYY-MM-DD>`.
+- Create the integration branch once from the current accepted `development` tip at the beginning of the cycle. Record a unique cycle-opening commit and an annotated `integration-cycle/<YYYY-MM-DD>` tag before creating feature or defect branches so branch eligibility can be verified by ancestry.
+- The active integration branch is always checked out in the main repository worktree. Never create or keep it in a disposable worktree under `target/worktrees`.
+- The integration branch is the single collection point for the cycle. Do not create feature-specific, defect-specific, candidate-specific, or secondary integration branches.
+- Creating the integration branch is the only point where the cycle branches from `development`. After it exists, every new feature or defect intended for that cycle starts from the latest integration tip and merges back into that same integration branch.
+- A narrowly scoped integration-policy or coordination correction may be committed directly on the integration branch when the user explicitly requests it. Feature and defect implementation still use branches rooted in the active integration lineage.
+- Merge selected verified feature and defect branches into the integration branch with `--no-ff`. Never merge a feature or defect branch directly into `development`.
 - Once a candidate image begins soaking, its source commit, image digest, migrations, model identity, and material runtime configuration are immutable. An artifact-affecting change creates a new candidate and restarts acceptance.
 - Any integration-tip change made after an image was built supersedes that image's soak identity, even when the change does not alter the runtime binary. Build and deploy an image carrying the new exact Git revision and restart the soak before that new tip can be admitted or promoted.
 - Abandon a rejected candidate branch rather than repairing its integration history with merge reverts. Preserve the rejected branch until its result and any reusable commits are accounted for.
@@ -72,12 +75,23 @@ Think of Capitonic as a vision to generate income through systems with automatio
 - When building a new image, tag the commit for which the image was built:
 -- using this pattern for container images: image/<image_name>/sha256-<docker-sha256-hash>
 -- using this pattern for a container image using a new model: model/<model-name-with-metadata>
-- Every new, independent feature domain must use a dedicated feature branch.
-- Before a candidate cohort exists, an independent feature branch starts from the current accepted `development` commit. After the candidate exists, work intended for that cohort starts from its active integration branch.
+- Use only these branch names for new cycle work: `integration-<YYYY-MM-DD>`, `feature/<feature-name>`, and `defect/<defect-name>`.
+- Every new, independent feature domain must use a dedicated `feature/<feature-name>` branch. Every defect must use a dedicated `defect/<defect-name>` branch.
+- Create feature and defect branches from the latest tip of the active integration branch, never from `development` while an integration cycle is active.
 - Follow-up work that must inherit an existing feature or training lineage starts from that lineage’s designated base or integration branch, not from `development`.
 - Keep unrelated feature domains on separate branches.
-- Do not merge a feature branch directly into `development`.
-- When completed feature branches must be integrated, merge each verified branch into a fresh trading release candidate using `--no-ff`. Advance `development` only through the golden admission and fast-forward promotion rules above.
+- Do not merge a feature or defect branch directly into `development`.
+- Before merging a feature or defect branch into integration, verify that the exact selected branch:
+  - was explicitly identified for integration;
+  - descends from the active cycle marker `integration-cycle/<YYYY-MM-DD>`;
+  - is not marked by an `abandoned/...` tag;
+  - has clean, committed, proportionately tested work;
+  - has incorporated the latest integration tip when other work has been collected since it branched; and
+  - has a reviewed commit log, merge base, and diff against the active integration branch.
+- Merge each admitted feature or defect branch into the active integration branch using `--no-ff`. Never infer merge eligibility from recency, branch-name similarity, worktree existence, dirty state, or whether Git reports the branch as unmerged.
+- Do not merge an old, pre-cycle, cross-cycle, or otherwise unrelated branch unless the user explicitly authorizes that exact branch or commit. Prefer applying explicitly selected commits onto a new branch rooted in the active integration cycle when old work must be recovered.
+- After integration collects new work, create subsequent feature and defect branches from the new integration tip so they begin with the complete collected code.
+- Advance `development` only through the golden admission and fast-forward promotion rules above.
 - Never discard, rewrite, or bypass an existing feature lineage merely to satisfy the “latest development” rule.
 
 ## When to Create a Worktree
@@ -103,7 +117,7 @@ Think of Capitonic as a vision to generate income through systems with automatio
 
 - Store all persistent project worktrees under `target/worktrees/<feature-domain>`.
 - Do not create persistent worktrees under `/tmp`, `/private/tmp`, or arbitrary external directories.
-- Each worktree owns one overarching feature domain and one designated feature or integration branch.
+- Each disposable worktree owns one overarching feature domain and one designated `feature/...` or `defect/...` branch. The active integration branch belongs only to the main worktree.
 - Related temporary change branches may be created and checked out inside that same worktree; they do not receive separate worktrees.
 - Keep all implementation, tests, generated evidence, and related fixes for the feature inside its assigned worktree.
 - Before creating a worktree, run `git worktree list` and confirm that no existing worktree already covers the feature domain.
