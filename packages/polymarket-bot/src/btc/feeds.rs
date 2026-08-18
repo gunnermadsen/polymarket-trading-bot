@@ -787,21 +787,6 @@ impl BookRegistry {
         }
     }
 
-    /// Clears only one registered outcome pair so a same-socket resubscription can replace
-    /// quarantined levels with authoritative snapshots. Registry ownership and connection epoch
-    /// remain unchanged.
-    pub(crate) fn reset_market_for_snapshot(&mut self, market: &BtcIntervalMarket) -> Result<()> {
-        self.validate_market_registration(market)?;
-        for token_id in [&market.up_token_id, &market.down_token_id] {
-            let book = self
-                .books
-                .get_mut(token_id)
-                .with_context(|| format!("registered market is missing token {token_id}"))?;
-            reset_book_for_snapshot(book);
-        }
-        Ok(())
-    }
-
     /// Fail every bootstrapped book closed after a message-level CLOB decode failure. A later
     /// delta cannot clear this status; only a complete venue snapshot can restore readiness.
     pub fn quarantine(&mut self, status: FeedIntegrityStatus) {
