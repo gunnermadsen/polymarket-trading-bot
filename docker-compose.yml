@@ -217,7 +217,7 @@ services:
       dockerfile: packages/polymarket-bot/Dockerfile
       args:
         POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-1b7bc59}
+    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-45b2619}
     container_name: polymarket-backfill-worker
     hostname: polymarket-backfill-worker
     entrypoint:
@@ -284,7 +284,7 @@ services:
       dockerfile: packages/polymarket-bot/Dockerfile
       args:
         POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-1b7bc59}
+    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-45b2619}
     container_name: polymarket-backfill-worker-2
     hostname: polymarket-backfill-worker-2
     entrypoint:
@@ -351,7 +351,7 @@ services:
       dockerfile: packages/polymarket-bot/Dockerfile
       args:
         POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-1b7bc59}
+    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-45b2619}
     container_name: polymarket-backfill-worker-3
     hostname: polymarket-backfill-worker-3
     entrypoint:
@@ -418,7 +418,7 @@ services:
       dockerfile: packages/polymarket-bot/Dockerfile
       args:
         POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-1b7bc59}
+    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-45b2619}
     container_name: polymarket-backfill-worker-4
     hostname: polymarket-backfill-worker-4
     entrypoint:
@@ -481,7 +481,7 @@ services:
       dockerfile: packages/polymarket-bot/Dockerfile
       args:
         POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-1b7bc59}
+    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-45b2619}
     container_name: polymarket-backfill-worker-5
     hostname: polymarket-backfill-worker-5
     entrypoint:
@@ -544,7 +544,7 @@ services:
       dockerfile: packages/polymarket-bot/Dockerfile
       args:
         POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-1b7bc59}
+    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-45b2619}
     container_name: polymarket-backfill-worker-6
     hostname: polymarket-backfill-worker-6
     entrypoint:
