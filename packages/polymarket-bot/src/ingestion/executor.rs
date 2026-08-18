@@ -1942,6 +1942,7 @@ impl IngestionExecutor {
             let mut digest = Sha256::new();
             let mut reconstructed_records = 0u64;
             let mut source_events = 0u64;
+            let mut empty_source_logical_keys = Vec::new();
             let mut source_failure: Option<(&'static str, String)> = None;
             let compressed_bytes;
 
@@ -2021,11 +2022,9 @@ impl IngestionExecutor {
                         .await
                         .map_err(IngestionExecutionError::transient)?
                     else {
-                        source_failure = Some((
-                            "missing_pmxt_archive",
-                            format!("PMXT archive object was absent for {}", spec.hour),
-                        ));
-                        break;
+                        // PMXT omits v2 object keys for UTC hours with zero events.
+                        empty_source_logical_keys.push(spec.logical_key.clone());
+                        continue;
                     };
                     if !archive.reused_cache {
                         progress.bytes_downloaded = progress
@@ -2107,14 +2106,23 @@ impl IngestionExecutor {
                         break 'source_archives;
                     }
                 }
+                if !direct_ready && source_failure.is_none() {
+                    self.set_artifact_status(
+                        claim,
+                        prepared.artifact.artifact_id,
+                        BackfillArtifactStatus::Ingesting,
+                    )
+                    .await?;
+                }
                 compressed_bytes = source_bytes;
                 if source_failure.is_none() && source_specs.len() == 2 {
-                    cleanup_archive_cache(
-                        &self.repository,
-                        claim,
-                        &self.config.cache_directory.join(&source_specs[0].file_name),
-                    )
-                    .await;
+                    let seed_path = self.config.cache_directory.join(&source_specs[0].file_name);
+                    if retained_direct_cache.as_deref() == Some(seed_path.as_path()) {
+                        retained_direct_cache.take();
+                    }
+                    if seed_path.exists() {
+                        cleanup_archive_cache(&self.repository, claim, &seed_path).await;
+                    }
                 }
             }
 
@@ -2225,6 +2233,7 @@ impl IngestionExecutor {
                             "sample_window_start_milliseconds": EXECUTION_SNAPSHOT_START_MILLIS,
                             "sample_window_end_milliseconds": EXECUTION_SNAPSHOT_END_MILLIS,
                             "source_events_consumed": source_events,
+                            "empty_source_logical_keys": empty_source_logical_keys,
                             "source_artifact_ids": source_artifacts
                                 .iter()
                                 .map(|artifact| artifact.artifact_id)

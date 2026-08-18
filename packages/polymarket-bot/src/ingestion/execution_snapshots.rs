@@ -662,6 +662,23 @@ mod tests {
     }
 
     #[test]
+    fn empty_event_window_emits_explicit_missing_book_observations() {
+        let mut reconstructor = ExecutionSnapshotReconstructor::new(vec![scope()]).unwrap();
+        let mut snapshots = Vec::new();
+
+        reconstructor.finish(time(300_000), &mut snapshots);
+
+        assert_eq!(snapshots.len(), EXECUTION_SNAPSHOTS_PER_MARKET);
+        assert!(snapshots.iter().all(|snapshot| {
+            snapshot.quality_flags & (QUALITY_UP_MISSING | QUALITY_DOWN_MISSING)
+                == QUALITY_UP_MISSING | QUALITY_DOWN_MISSING
+        }));
+        assert!(snapshots
+            .iter()
+            .all(|snapshot| snapshot.up_best_ask.is_none() && snapshot.down_best_ask.is_none()));
+    }
+
+    #[test]
     fn accepts_provider_ordering_within_each_outcome_stream() {
         let mut reconstructor = ExecutionSnapshotReconstructor::new(vec![scope()]).unwrap();
         let mut snapshots = Vec::new();
