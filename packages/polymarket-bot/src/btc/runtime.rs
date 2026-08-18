@@ -3434,79 +3434,6 @@ async fn repair_quarantined_clob_successor(
     Ok(true)
 }
 
-async fn repair_delayed_clob_market(
-    epoch: &mut ClobEpoch,
-    shutdown: &mut watch::Receiver<bool>,
-    max_book_age: Duration,
-) -> std::result::Result<bool, ClobEpochUpdateError> {
-    let checked_at = Utc::now();
-    let Some(diagnostic) =
-        clob_epoch_readiness_diagnostic(&epoch.registry, &epoch.markets, checked_at, max_book_age)
-    else {
-        return Ok(false);
-    };
-    if diagnostic.reason != "source_to_receive_lag" {
-        return Ok(false);
-    }
-    let market = unique_current_clob_market(&epoch.markets, checked_at)
-        .cloned()
-        .ok_or_else(|| {
-            ClobEpochUpdateError::Recoverable(
-                "source_lag_repair_current_market_not_unique".to_string(),
-            )
-        })?;
-    let mut assets = vec![market.up_token_id.clone(), market.down_token_id.clone()];
-    assets.sort_unstable();
-    for operation in [
-        ClobSubscriptionOperation::Unsubscribe,
-        ClobSubscriptionOperation::Subscribe,
-    ] {
-        let payload = clob_subscription_operation(&assets, operation);
-        match send_clob_text(&mut epoch.transport.sink, payload, shutdown).await {
-            Ok(()) => {}
-            Err(ClobSendFailure::Shutdown) => return Err(ClobEpochUpdateError::Shutdown),
-            Err(ClobSendFailure::Timeout) => {
-                return Err(ClobEpochUpdateError::Recoverable(format!(
-                    "source_lag_repair_{}_timeout",
-                    operation.as_str()
-                )));
-            }
-            Err(ClobSendFailure::Transport { error, detail }) => {
-                epoch.telemetry.last_transport_error = Some(detail);
-                return Err(ClobEpochUpdateError::Recoverable(
-                    bounded_clob_error_reason(&format!(
-                        "source_lag_repair_{}_failed:{error}",
-                        operation.as_str()
-                    )),
-                ));
-            }
-        }
-    }
-    epoch
-        .registry
-        .reset_market_for_snapshot(&market)
-        .map_err(|error| {
-            ClobEpochUpdateError::Recoverable(bounded_clob_error_reason(&format!(
-                "source_lag_snapshot_reset_failed:{error}"
-            )))
-        })?;
-    let repaired_at = Utc::now();
-    epoch.subscription_stats.updates = epoch.subscription_stats.updates.saturating_add(1);
-    epoch.subscription_stats.last_updated_at = Some(repaired_at);
-    epoch.refresh_private_health(repaired_at, Instant::now(), max_book_age);
-    tracing::warn!(
-        feed = "polymarket_clob_market",
-        connection_id = %epoch.connection_id,
-        connection_epoch = epoch.connection_epoch,
-        connection_role = epoch.telemetry.role.as_str(),
-        market_id = %market.market_id,
-        token_id = ?diagnostic.token_id.as_deref(),
-        source_to_receive_lag_ms = ?diagnostic.source_to_receive_lag_milliseconds,
-        "delayed CLOB book pair requested authoritative snapshots on the existing socket"
-    );
-    Ok(true)
-}
-
 fn complete_repaired_clob_successor_quarantine(
     epoch: &mut ClobEpoch,
     checked_at: DateTime<Utc>,
@@ -4893,36 +4820,6 @@ async fn run_clob_supervisor(
                                 ));
                             }
                             Ok(ClobFrameAction::Continue) => {
-                                match repair_delayed_clob_market(
-                                    epoch,
-                                    &mut shutdown,
-                                    max_book_age,
-                                )
-                                .await
-                                {
-                                    Ok(true) => {
-                                        let reset_at = Utc::now();
-                                        let mut published_books = shared_books.write().await;
-                                        let mut shared = state.write().await;
-                                        *published_books = epoch.registry.clone();
-                                        shared.update_books(&epoch.registry);
-                                        shared.last_updated_at = Some(reset_at);
-                                    }
-                                    Ok(false) => {}
-                                    Err(ClobEpochUpdateError::Shutdown) => {
-                                        shutdown_requested = true;
-                                    }
-                                    Err(ClobEpochUpdateError::Recoverable(reason)) => {
-                                        active_failure = Some((
-                                            reason,
-                                            ClobDisconnectCause::SubscriptionFailure,
-                                            None,
-                                        ));
-                                    }
-                                    Err(ClobEpochUpdateError::Critical(_)) => {
-                                        unreachable!("same-socket source-lag repair has no persistence boundary")
-                                    }
-                                }
                                 let checked_at = Utc::now();
                                 epoch.watchdog.refresh_bootstrap(
                                     Instant::now(),
@@ -5018,20 +4915,13 @@ async fn run_clob_supervisor(
                                 ),
                             ));
                         } else {
-                            let lag_repair = repair_delayed_clob_market(
+                            match repair_quarantined_clob_successor(
                                 epoch,
                                 &mut shutdown,
                                 max_book_age,
                             )
-                            .await;
-                            match lag_repair {
-                                Ok(_) => match repair_quarantined_clob_successor(
-                                    epoch,
-                                    &mut shutdown,
-                                    max_book_age,
-                                )
-                                .await
-                                {
+                            .await
+                            {
                                 Ok(_) => {
                                     let checked_at = Utc::now();
                                     epoch.refresh_private_health(
@@ -5063,17 +4953,6 @@ async fn run_clob_supervisor(
                                 }
                                 Err(ClobEpochUpdateError::Critical(_)) => {
                                     unreachable!("same-socket successor repair has no persistence boundary")
-                                }
-                                },
-                                Err(ClobEpochUpdateError::Shutdown) => shutdown_requested = true,
-                                Err(ClobEpochUpdateError::Recoverable(reason)) => {
-                                    successor_failure = Some((
-                                        reason,
-                                        ClobDisconnectCause::SubscriptionFailure,
-                                    ));
-                                }
-                                Err(ClobEpochUpdateError::Critical(_)) => {
-                                    unreachable!("same-socket source-lag repair has no persistence boundary")
                                 }
                             }
                         }
@@ -11554,7 +11433,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delayed_book_pair_requests_authoritative_same_socket_snapshots() {
+    async fn delayed_book_pair_stays_unsafe_without_same_socket_subscription_churn() {
         let mut current = market();
         let checked_at = Utc::now();
         current.window_start = checked_at - Duration::minutes(1);
@@ -11586,28 +11465,58 @@ mod tests {
         let (client, mut server) = clob_socket_pair().await;
         candidate.transport.reader_task.abort();
         candidate.transport = start_clob_ingress(client);
-        let (_shutdown_tx, mut shutdown) = watch::channel(false);
 
-        assert!(
-            repair_delayed_clob_market(&mut candidate, &mut shutdown, Duration::seconds(2),)
-                .await
-                .unwrap()
-        );
-        for expected_operation in ["unsubscribe", "subscribe"] {
-            let message = timeout(StdDuration::from_secs(1), server.next())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
-            let Message::Text(payload) = message else {
-                panic!("expected subscription control text")
-            };
-            let value: serde_json::Value = serde_json::from_str(payload.as_str()).unwrap();
-            assert_eq!(value["operation"], expected_operation);
+        let delayed = clob_epoch_readiness_diagnostic(
+            &candidate.registry,
+            &candidate.markets,
+            checked_at,
+            Duration::seconds(2),
+        )
+        .expect("delayed books must remain unavailable");
+        assert_eq!(delayed.reason, "source_to_receive_lag");
+        candidate.refresh_private_health(checked_at, Instant::now(), Duration::seconds(2));
+        assert!(!candidate.books_usable);
+        assert!(candidate.registry.market_books_bootstrapped(&current));
+        assert!(timeout(StdDuration::from_millis(25), server.next())
+            .await
+            .is_err());
+
+        let recovered_at = checked_at + Duration::milliseconds(1);
+        for token_id in [&current.up_token_id, &current.down_token_id] {
+            let events = candidate.registry.apply(
+                ClobMessage::Book {
+                    market_id: current.condition_id.clone(),
+                    token_id: token_id.clone(),
+                    bids: vec![OrderbookLevel {
+                        price: dec!(0.48),
+                        size: dec!(10),
+                    }],
+                    asks: vec![OrderbookLevel {
+                        price: dec!(0.52),
+                        size: dec!(10),
+                    }],
+                    source_timestamp: recovered_at,
+                    source_hash: Some(format!("fresh-{token_id}")),
+                    raw_payload: serde_json::json!({}),
+                },
+                recovered_at,
+            );
+            assert!(events.iter().all(|event| event.applied));
         }
-        assert!(!candidate.registry.market_books_bootstrapped(&current));
+        candidate.refresh_private_health(recovered_at, Instant::now(), Duration::seconds(2));
+        assert!(candidate.books_usable);
+        assert!(clob_epoch_readiness_diagnostic(
+            &candidate.registry,
+            &candidate.markets,
+            recovered_at,
+            Duration::seconds(2),
+        )
+        .is_none());
         assert_eq!(candidate.connection_id, candidate.registry.connection_id());
         assert!(candidate.session.disconnect_reason.is_none());
+        assert!(timeout(StdDuration::from_millis(25), server.next())
+            .await
+            .is_err());
     }
 
     #[tokio::test]
