@@ -30,19 +30,19 @@ Think of Capitonic as a vision to generate income through systems with automatio
 - A `development` tip is golden only when an annotated `golden/<image_name>/sha256-<docker-sha256-hash>` tag identifies the exact accepted image. Branch position or an `image/...` build tag alone is not golden evidence.
 - Feature verification proves readiness for integration; it does not make a feature branch or its image golden.
 - Use exactly one active integration branch for each golden-image build cycle. Name it `integration-<YYYY-MM-DD>`.
-- Create the integration branch once from the current accepted `development` tip at the beginning of the cycle. Record a unique cycle-opening commit and an annotated `integration-cycle/<YYYY-MM-DD>` tag before creating feature or defect branches so branch eligibility can be verified by ancestry.
+- Create the integration branch once from the current accepted `development` tip at the beginning of the cycle. An annotated `integration-cycle/<YYYY-MM-DD>` tag may record the cycle boundary for ancestry inspection, but its absence does not block explicitly authorized branch creation or integration.
 - The active integration branch is always checked out in the main repository worktree. Never create or keep it in a disposable worktree under `target/worktrees`.
 - The integration branch is the single collection point for the cycle. Do not create feature-specific, defect-specific, candidate-specific, or secondary integration branches.
 - Creating the integration branch is the only point where the cycle branches from `development`. After it exists, every new feature or defect intended for that cycle starts from the latest integration tip and merges back into that same integration branch.
 - A narrowly scoped integration-policy or coordination correction may be committed directly on the integration branch when the user explicitly requests it. Feature and defect implementation still use branches rooted in the active integration lineage.
-- Merge a selected verified feature or defect branch into the integration branch with `--no-ff` only after the user explicitly authorizes merging that exact branch. Never merge a feature or defect branch directly into `development`.
+- Merge a selected feature or defect branch into the integration branch with `--no-ff` only after the user explicitly authorizes merging that exact branch. Verification findings must be reported but do not create an additional authorization gate. Never merge a feature or defect branch directly into `development`.
 - Abandon a rejected candidate branch rather than repairing its integration history with merge reverts. Preserve the rejected branch until its result and any reusable commits are accounted for.
 
 ## Abandoned Lineages
 
 - Before deleting or otherwise retiring an intentionally discarded branch, divergent commit, rejected candidate, or superseded release snapshot, create an annotated tag on its final retained commit using `abandoned/<domain>/git-<full-git-commit-id>`.
 - The abandoned tag annotation records the original branch or ref when known, the reason for abandonment, the replacement or superseding commit when one exists, any image identity built from it, and whether it was ever deployed.
-- An `abandoned/...` tag permanently excludes that lineage and its images from integration, candidate admission, golden promotion, and rollback selection unless the user explicitly restores it through a new reviewed lineage.
+- An `abandoned/...` tag excludes that lineage and its images from implicit integration, candidate admission, golden promotion, and rollback selection. The user may explicitly restore or use an exact abandoned branch, commit, or image without creating a new lineage.
 - Preserve abandoned tags when removing worktrees or branches. An image build tag may remain for provenance, but it does not override abandoned status.
 - Release and integration tasks must inspect `abandoned/...` tags before selecting branches, commits, or images and must fail closed rather than merge or deploy an abandoned lineage implicitly.
 
@@ -62,10 +62,9 @@ Think of Capitonic as a vision to generate income through systems with automatio
   - remained rollback-compatible with the immediately preceding golden image and its database state.
 - Missing operational evidence must be disclosed, but it does not override an explicit user instruction to mint the golden image unless the user explicitly made that evidence a requirement.
 - A Codex task performing integration or release stewardship must inspect the active candidate and golden tags before acting. If the user explicitly requests minting a golden image, proceed using the exact selected candidate without another confirmation prompt. Without an explicit request, promotion is authorized only when exactly one candidate has complete admission evidence.
-- Promote by fast-forwarding `development` with `--ff-only` to the exact selected candidate commit. Do not create a promotion merge commit, rebuild the image, rewrite `development`, or force-push.
+- Promote by fast-forwarding `development` with `--ff-only` to the exact selected candidate commit. Do not create a promotion merge commit, rewrite `development`, or force-push. Do not rebuild a user-selected immutable image unless the user explicitly authorizes building an image for the exact committed integration revision.
 - Create an annotated `golden/<image_name>/sha256-<docker-sha256-hash>` tag recording the Git revision, immutable image identity, migration/config/model identity, checks performed, and accepted limitations.
-- Promote or alias the selected already-built image manifest; never mint a replacement build as golden. Verify the resulting branch, tag, image identity, and embedded provenance.
-- If the candidate diverges from `development`, `development` advanced after candidate creation, multiple candidates claim eligibility, or promotion would require history rewriting, stop and report the exact condition.
+- Promote or alias the selected already-built image manifest when one exists. If the user explicitly directs minting and no image exists for the exact committed integration revision, build it with provenance, verify its immutable identity, and mint that image golden. Do not substitute a rebuilt image for a user-selected immutable digest without explicit authorization. Verify the resulting branch, tag, image identity, and embedded provenance.
 - Roll back by deploying a previously annotated immutable golden image. Do not rebuild the old commit and do not reset `development` merely to change the deployed image.
 
 ## Branching
@@ -74,22 +73,23 @@ Think of Capitonic as a vision to generate income through systems with automatio
 - When building a new image, tag the commit for which the image was built:
 -- using this pattern for container images: image/<image_name>/sha256-<docker-sha256-hash>
 -- using this pattern for a container image using a new model: model/<model-name-with-metadata>
-- Use only these branch names for new cycle work: `integration-<YYYY-MM-DD>`, `feature/<feature-name>`, and `defect/<defect-name>`.
-- Every new, independent feature domain must use a dedicated `feature/<feature-name>` branch. Every defect must use a dedicated `defect/<defect-name>` branch.
+- Use these standard branch names for new cycle work: `integration-<YYYY-MM-DD>`, `feature/<feature-name>`, and `defect/<defect-name>`. Use another branch name only when the user explicitly requests it.
+- By default, every new independent feature domain uses a dedicated `feature/<feature-name>` branch and every defect uses a dedicated `defect/<defect-name>` branch. An explicitly requested branch name may override this naming default.
 - Create feature and defect branches from the latest tip of the active integration branch, never from `development` while an integration cycle is active.
 - Follow-up work that must inherit an existing feature or training lineage starts from that lineage’s designated base or integration branch, not from `development`.
 - Keep unrelated feature domains on separate branches.
 - Do not merge a feature or defect branch directly into `development`.
 - Creating a `feature/...` or `defect/...` branch from the active integration branch authorizes isolated work on that branch only; it does not authorize merging it back. Keep the branch unmerged until the user explicitly grants permission to merge that exact branch into integration. Completing implementation, committing, testing, reviewing, or declaring the branch ready does not imply merge permission. If permission is absent or ambiguous, stop before the merge and ask for authorization.
-- Before merging a feature or defect branch into integration, verify that the exact selected branch:
-  - was explicitly identified for integration;
-  - descends from the active cycle marker `integration-cycle/<YYYY-MM-DD>`;
-  - is not marked by an `abandoned/...` tag;
-  - has clean, committed, proportionately tested work;
-  - has incorporated the latest integration tip when other work has been collected since it branched; and
-  - has a reviewed commit log, merge base, and diff against the active integration branch.
-- Merge each admitted feature or defect branch into the active integration branch using `--no-ff`. Never infer merge eligibility from recency, branch-name similarity, worktree existence, dirty state, or whether Git reports the branch as unmerged.
-- Do not merge an old, pre-cycle, cross-cycle, or otherwise unrelated branch unless the user explicitly authorizes that exact branch or commit. Prefer applying explicitly selected commits onto a new branch rooted in the active integration cycle when old work must be recovered.
+- Before carrying out an explicitly authorized merge, inspect and report:
+  - the exact selected branch or commit;
+  - its merge base and whether it descends from the active cycle marker when one exists;
+  - whether it is marked by an `abandoned/...` tag;
+  - its clean, committed, and test state;
+  - whether it incorporates the latest integration tip; and
+  - its commit log and diff against the active integration branch.
+- These findings are disclosure requirements, not independent vetoes. Explicit user authorization naming the exact branch or commit is sufficient to proceed. Stop only when the target is ambiguous, uncommitted work would be lost, or the action requires destructive history rewriting that the user did not explicitly authorize.
+- Merge each explicitly authorized feature or defect branch into the active integration branch using `--no-ff`. Never infer merge permission from recency, branch-name similarity, worktree existence, dirty state, or whether Git reports the branch as unmerged.
+- Do not merge an old, pre-cycle, cross-cycle, abandoned, or otherwise unrelated branch implicitly. Explicit user authorization naming the exact branch or commit is sufficient authorization for that merge; disclose its lineage and status before proceeding.
 - After integration collects new work, create subsequent feature and defect branches from the new integration tip so they begin with the complete collected code.
 - Advance `development` only through the golden admission and fast-forward promotion rules above.
 - Never discard, rewrite, or bypass an existing feature lineage merely to satisfy the “latest development” rule.
