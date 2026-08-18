@@ -468,6 +468,7 @@ impl FeedBook {
         &mut self,
         best_bid: Option<Decimal>,
         best_ask: Option<Decimal>,
+        undo: &mut Vec<(BookUpdateSide, Decimal, Option<Decimal>)>,
     ) -> FeedIntegrityStatus {
         if best_bid.is_some_and(|price| price < Decimal::ZERO || price >= Decimal::ONE)
             || best_ask.is_some_and(|price| price <= Decimal::ZERO || price > Decimal::ONE)
@@ -478,16 +479,46 @@ impl FeedBook {
 
         if let Some(best_bid) = best_bid {
             if best_bid == Decimal::ZERO {
-                self.bids.clear();
+                let stale_prices = self.bids.keys().copied().collect::<Vec<_>>();
+                for price in stale_prices {
+                    let previous = self.bids.remove(&price);
+                    undo.push((BookUpdateSide::Bid, price, previous));
+                }
             } else {
-                self.bids.retain(|price, _| *price <= best_bid);
+                let stale_prices = self
+                    .bids
+                    .range((
+                        std::ops::Bound::Excluded(best_bid),
+                        std::ops::Bound::Unbounded,
+                    ))
+                    .map(|(price, _)| *price)
+                    .collect::<Vec<_>>();
+                for price in stale_prices {
+                    let previous = self.bids.remove(&price);
+                    undo.push((BookUpdateSide::Bid, price, previous));
+                }
             }
         }
         if let Some(best_ask) = best_ask {
             if best_ask == Decimal::ONE {
-                self.asks.clear();
+                let stale_prices = self.asks.keys().copied().collect::<Vec<_>>();
+                for price in stale_prices {
+                    let previous = self.asks.remove(&price);
+                    undo.push((BookUpdateSide::Ask, price, previous));
+                }
             } else {
-                self.asks.retain(|price, _| *price >= best_ask);
+                let stale_prices = self
+                    .asks
+                    .range((
+                        std::ops::Bound::Unbounded,
+                        std::ops::Bound::Excluded(best_ask),
+                    ))
+                    .map(|(price, _)| *price)
+                    .collect::<Vec<_>>();
+                for price in stale_prices {
+                    let previous = self.asks.remove(&price);
+                    undo.push((BookUpdateSide::Ask, price, previous));
+                }
             }
         }
 
@@ -504,6 +535,20 @@ impl FeedBook {
             self.integrity_status = FeedIntegrityStatus::TopOfBookMismatch;
         }
         self.integrity_status
+    }
+
+    fn restore_levels(&mut self, undo: Vec<(BookUpdateSide, Decimal, Option<Decimal>)>) {
+        for (side, price, previous) in undo.into_iter().rev() {
+            let levels = match side {
+                BookUpdateSide::Bid => &mut self.bids,
+                BookUpdateSide::Ask => &mut self.asks,
+            };
+            if let Some(size) = previous {
+                levels.insert(price, size);
+            } else {
+                levels.remove(&price);
+            }
+        }
     }
 
     fn readiness(&self, connection_id: Uuid) -> BookReadiness {
@@ -864,7 +909,7 @@ impl BookRegistry {
                 let mut outcomes = vec![(false, FeedIntegrityStatus::UnknownToken); entries.len()];
 
                 for (token_id, indexes) in by_token {
-                    let status = if let Some(book) = self.books.get(&token_id).cloned() {
+                    let status = if let Some(book) = self.books.get_mut(&token_id) {
                         if !book.matches_market(&market_id) {
                             FeedIntegrityStatus::MarketMismatch
                         } else if !book.bootstrapped {
@@ -884,13 +929,15 @@ impl BookRegistry {
                         }) {
                             FeedIntegrityStatus::DecodeError
                         } else {
-                            let mut candidate = book;
+                            let mut undo = Vec::with_capacity(indexes.len());
                             for index in &indexes {
                                 let change = &entries[*index].0;
                                 let levels = match change.side {
-                                    BookUpdateSide::Bid => &mut candidate.bids,
-                                    BookUpdateSide::Ask => &mut candidate.asks,
+                                    BookUpdateSide::Bid => &mut book.bids,
+                                    BookUpdateSide::Ask => &mut book.asks,
                                 };
+                                let previous = levels.get(&change.price).copied();
+                                undo.push((change.side, change.price, previous));
                                 if change.size == Decimal::ZERO {
                                     levels.remove(&change.price);
                                 } else {
@@ -909,16 +956,18 @@ impl BookRegistry {
                                 .iter()
                                 .rev()
                                 .find_map(|index| entries[*index].0.best_ask);
-                            candidate.source_timestamp = Some(source_timestamp);
-                            candidate.received_at = Some(received_at);
-                            candidate.source_hash = indexes
-                                .iter()
-                                .rev()
-                                .find_map(|index| entries[*index].0.source_hash.clone());
-                            candidate.ingest_sequence = entries[last_index].1;
-                            let status = candidate.reconcile_advertised_top(best_bid, best_ask);
+                            let status =
+                                book.reconcile_advertised_top(best_bid, best_ask, &mut undo);
                             if status == FeedIntegrityStatus::Ok {
-                                self.books.insert(token_id.clone(), candidate);
+                                book.source_timestamp = Some(source_timestamp);
+                                book.received_at = Some(received_at);
+                                book.source_hash = indexes
+                                    .iter()
+                                    .rev()
+                                    .find_map(|index| entries[*index].0.source_hash.clone());
+                                book.ingest_sequence = entries[last_index].1;
+                            } else {
+                                book.restore_levels(undo);
                             }
                             status
                         }
@@ -2544,7 +2593,14 @@ mod tests {
         let market = market();
         let mut registry = BookRegistry::new(Uuid::new_v4());
         registry.register_market(&market);
-        seed_book(&mut registry, "up", 1_783_902_701_000);
+        replace_book(
+            &mut registry,
+            "up",
+            &[(dec!(0.48), dec!(10)), (dec!(0.47), dec!(10))],
+            &[(dec!(0.52), dec!(10))],
+            1_783_902_701_000,
+            "before-mismatch",
+        );
 
         let mismatch = registry.apply(
             ClobMessage::PriceChange {
@@ -2555,7 +2611,7 @@ mod tests {
                     price: dec!(0.48),
                     size: Decimal::ZERO,
                     source_hash: Some("mismatch".to_string()),
-                    best_bid: Some(dec!(0.47)),
+                    best_bid: Some(dec!(0.46)),
                     best_ask: Some(dec!(0.52)),
                 }],
                 source_timestamp: ts(1_783_902_701_100),
@@ -2570,6 +2626,10 @@ mod tests {
         assert!(!mismatch[0].applied);
         let quarantined = registry.checkpoint("up").unwrap();
         assert_eq!(quarantined.best_bid, Some(dec!(0.48)));
+        assert!(quarantined
+            .bids
+            .iter()
+            .any(|level| level.price == dec!(0.47) && level.size == dec!(10)));
         assert_eq!(
             quarantined.integrity_status,
             FeedIntegrityStatus::TopOfBookMismatch
