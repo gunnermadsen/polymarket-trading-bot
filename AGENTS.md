@@ -36,36 +36,35 @@ Think of Capitonic as a vision to generate income through systems with automatio
 - Creating the integration branch is the only point where the cycle branches from `development`. After it exists, every new feature or defect intended for that cycle starts from the latest integration tip and merges back into that same integration branch.
 - A narrowly scoped integration-policy or coordination correction may be committed directly on the integration branch when the user explicitly requests it. Feature and defect implementation still use branches rooted in the active integration lineage.
 - Merge a selected verified feature or defect branch into the integration branch with `--no-ff` only after the user explicitly authorizes merging that exact branch. Never merge a feature or defect branch directly into `development`.
-- Once a candidate image begins soaking, its source commit, image digest, migrations, model identity, and material runtime configuration are immutable. An artifact-affecting change creates a new candidate and restarts acceptance.
-- Any integration-tip change made after an image was built supersedes that image's soak identity, even when the change does not alter the runtime binary. Build and deploy an image carrying the new exact Git revision and restart the soak before that new tip can be admitted or promoted.
 - Abandon a rejected candidate branch rather than repairing its integration history with merge reverts. Preserve the rejected branch until its result and any reusable commits are accounted for.
 
 ## Abandoned Lineages
 
 - Before deleting or otherwise retiring an intentionally discarded branch, divergent commit, rejected candidate, or superseded release snapshot, create an annotated tag on its final retained commit using `abandoned/<domain>/git-<full-git-commit-id>`.
 - The abandoned tag annotation records the original branch or ref when known, the reason for abandonment, the replacement or superseding commit when one exists, any image identity built from it, and whether it was ever deployed.
-- An `abandoned/...` tag permanently excludes that lineage and its images from integration, soak admission, golden promotion, and rollback selection unless the user explicitly restores it through a new reviewed lineage.
+- An `abandoned/...` tag permanently excludes that lineage and its images from integration, candidate admission, golden promotion, and rollback selection unless the user explicitly restores it through a new reviewed lineage.
 - Preserve abandoned tags when removing worktrees or branches. An image build tag may remain for provenance, but it does not override abandoned status.
 - Release and integration tasks must inspect `abandoned/...` tags before selecting branches, commits, or images and must fail closed rather than merge or deploy an abandoned lineage implicitly.
 
 ## Golden Image Admission and Promotion
 
-- Treat a successful build, passing tests, a running container, and elapsed time without a reported failure as necessary evidence where applicable, not as sufficient golden evidence.
-- Admit only the exact candidate tuple that was evaluated: Git commit, immutable Docker image ID or registry digest, embedded source revision, migration state, material runtime configuration, model identity when applicable, and soak evidence window.
-- Golden admission requires positive evidence that the exact candidate image:
+- The user may explicitly authorize minting a golden image from an exact integration commit and immutable image at any time. That instruction is sufficient promotion authorization and must not be delayed or refused because of an undefined waiting period, elapsed-time requirement, or missing operational evidence.
+- Operational validation may be performed and recorded when requested, but it is not a mandatory time-based gate unless the user explicitly defines one.
+- Before minting, verify the selected Git commit, immutable Docker image ID or registry digest, embedded source revision, and clean committed state. Record which tests and operational checks were performed and disclose known limitations.
+- Track the exact candidate tuple that was evaluated: Git commit, immutable Docker image ID or registry digest, embedded source revision, migration state, material runtime configuration, and model identity when applicable.
+- When operational validation is requested, evaluate whether the exact candidate image:
   - was built from a clean committed worktree with `POLYMARKET_GIT_REVISION` matching the candidate commit;
   - passed the required compilation, linting, focused tests, and migration checks;
-  - remained deployed without artifact-affecting changes for the configured soak;
   - preserved automatic container, database, reconciliation, and transport recovery where affected;
   - preserved enabled paper and live process eligibility without bypassing capital, identity, accounting, order, or market-safety controls;
   - produced healthy order, fill, reconciliation, settlement, and accounting evidence appropriate to the affected paths;
   - avoided sustained crash loops, resource exhaustion, systemic readiness poisoning, and cross-process failure propagation; and
   - remained rollback-compatible with the immediately preceding golden image and its database state.
-- The absence of negative evidence is not positive soak evidence. If required evidence is missing, stale, inferred, ambiguous, or belongs to another candidate tuple, do not promote.
-- A Codex task performing integration or release stewardship must inspect the active candidate and golden tags before acting. If exactly one candidate has complete admission evidence, promotion is authorized without an additional confirmation prompt.
-- Promote by fast-forwarding `development` with `--ff-only` to the exact soaked candidate commit. Do not create a promotion merge commit, rebuild the image, rewrite `development`, or force-push.
-- Create an annotated `golden/<image_name>/sha256-<docker-sha256-hash>` tag recording the Git revision, immutable image identity, soak interval, migration/config/model identity, evidence summary, and accepted limitations.
-- Promote or alias the already-soaked image manifest; never mint a replacement build as golden. Verify the resulting branch, tag, image identity, and embedded provenance.
+- Missing operational evidence must be disclosed, but it does not override an explicit user instruction to mint the golden image unless the user explicitly made that evidence a requirement.
+- A Codex task performing integration or release stewardship must inspect the active candidate and golden tags before acting. If the user explicitly requests minting a golden image, proceed using the exact selected candidate without another confirmation prompt. Without an explicit request, promotion is authorized only when exactly one candidate has complete admission evidence.
+- Promote by fast-forwarding `development` with `--ff-only` to the exact selected candidate commit. Do not create a promotion merge commit, rebuild the image, rewrite `development`, or force-push.
+- Create an annotated `golden/<image_name>/sha256-<docker-sha256-hash>` tag recording the Git revision, immutable image identity, migration/config/model identity, checks performed, and accepted limitations.
+- Promote or alias the selected already-built image manifest; never mint a replacement build as golden. Verify the resulting branch, tag, image identity, and embedded provenance.
 - If the candidate diverges from `development`, `development` advanced after candidate creation, multiple candidates claim eligibility, or promotion would require history rewriting, stop and report the exact condition.
 - Roll back by deploying a previously annotated immutable golden image. Do not rebuild the old commit and do not reset `development` merely to change the deployed image.
 
