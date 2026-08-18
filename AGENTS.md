@@ -35,7 +35,7 @@ Think of Capitonic as a vision to generate income through systems with automatio
 - The integration branch is the single collection point for the cycle. Do not create feature-specific, defect-specific, candidate-specific, or secondary integration branches.
 - Creating the integration branch is the only point where the cycle branches from `development`. After it exists, every new feature or defect intended for that cycle starts from the latest integration tip and merges back into that same integration branch.
 - A narrowly scoped integration-policy or coordination correction may be committed directly on the integration branch when the user explicitly requests it. Feature and defect implementation still use branches rooted in the active integration lineage.
-- Merge selected verified feature and defect branches into the integration branch with `--no-ff`. Never merge a feature or defect branch directly into `development`.
+- Merge a selected verified feature or defect branch into the integration branch with `--no-ff` only after the user explicitly authorizes merging that exact branch. Never merge a feature or defect branch directly into `development`.
 - Once a candidate image begins soaking, its source commit, image digest, migrations, model identity, and material runtime configuration are immutable. An artifact-affecting change creates a new candidate and restarts acceptance.
 - Any integration-tip change made after an image was built supersedes that image's soak identity, even when the change does not alter the runtime binary. Build and deploy an image carrying the new exact Git revision and restart the soak before that new tip can be admitted or promoted.
 - Abandon a rejected candidate branch rather than repairing its integration history with merge reverts. Preserve the rejected branch until its result and any reusable commits are accounted for.
@@ -81,6 +81,7 @@ Think of Capitonic as a vision to generate income through systems with automatio
 - Follow-up work that must inherit an existing feature or training lineage starts from that lineage’s designated base or integration branch, not from `development`.
 - Keep unrelated feature domains on separate branches.
 - Do not merge a feature or defect branch directly into `development`.
+- Never merge a feature or defect branch into the active integration branch without explicit user permission naming the exact branch. Completing implementation, committing, testing, reviewing, or declaring a branch ready does not imply merge permission. If permission is absent or ambiguous, stop before the merge and ask for authorization.
 - Before merging a feature or defect branch into integration, verify that the exact selected branch:
   - was explicitly identified for integration;
   - descends from the active cycle marker `integration-cycle/<YYYY-MM-DD>`;
