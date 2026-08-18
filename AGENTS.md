@@ -81,7 +81,7 @@ Think of Capitonic as a vision to generate income through systems with automatio
 - Follow-up work that must inherit an existing feature or training lineage starts from that lineage’s designated base or integration branch, not from `development`.
 - Keep unrelated feature domains on separate branches.
 - Do not merge a feature or defect branch directly into `development`.
-- Never merge a feature or defect branch into the active integration branch without explicit user permission naming the exact branch. Completing implementation, committing, testing, reviewing, or declaring a branch ready does not imply merge permission. If permission is absent or ambiguous, stop before the merge and ask for authorization.
+- Creating a `feature/...` or `defect/...` branch from the active integration branch authorizes isolated work on that branch only; it does not authorize merging it back. Keep the branch unmerged until the user explicitly grants permission to merge that exact branch into integration. Completing implementation, committing, testing, reviewing, or declaring the branch ready does not imply merge permission. If permission is absent or ambiguous, stop before the merge and ask for authorization.
 - Before merging a feature or defect branch into integration, verify that the exact selected branch:
   - was explicitly identified for integration;
   - descends from the active cycle marker `integration-cycle/<YYYY-MM-DD>`;
