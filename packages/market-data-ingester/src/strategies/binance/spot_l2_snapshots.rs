@@ -21,7 +21,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
-use tokio::time::{Instant, MissedTickBehavior};
+use tokio::{
+    sync::mpsc,
+    task::JoinHandle,
+    time::{Instant, MissedTickBehavior},
+};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -52,6 +56,23 @@ const SAMPLING_POLICY_VERSION: &str = "binance-spot-btcusdt-l2-top-n-v1";
 const MAX_UPDATE_LEVELS: usize = 10_000;
 const MAX_UPDATE_FRAME_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SNAPSHOT_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
+enum BinanceIoEvent {
+    Update(BufferedUpdate),
+    Failed(StrategyError),
+}
+
+struct BinanceIoWorker {
+    shutdown: CancellationToken,
+    handle: JoinHandle<()>,
+}
+
+impl Drop for BinanceIoWorker {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+        self.handle.abort();
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -594,27 +615,53 @@ struct SamplingClock {
     next_sample_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SamplingClaim {
+    should_sample: bool,
+    missed_slots: Option<(DateTime<Utc>, DateTime<Utc>)>,
+}
+
 impl SamplingClock {
-    fn should_sample(&mut self, received_at: DateTime<Utc>, interval_ms: u64) -> bool {
+    fn claim(&mut self, received_at: DateTime<Utc>, interval_ms: u64) -> SamplingClaim {
         let Ok(interval_ms) = i64::try_from(interval_ms) else {
-            return false;
+            return SamplingClaim {
+                should_sample: false,
+                missed_slots: None,
+            };
         };
         let interval = chrono::Duration::milliseconds(interval_ms);
         let Some(mut next) = self.next_sample_at else {
             self.next_sample_at = received_at.checked_add_signed(interval);
-            return true;
+            return SamplingClaim {
+                should_sample: true,
+                missed_slots: None,
+            };
         };
         if received_at < next {
-            return false;
+            return SamplingClaim {
+                should_sample: false,
+                missed_slots: None,
+            };
         }
+        let first_missed = next;
+        let mut last_missed = None;
         while next <= received_at {
             let Some(advanced) = next.checked_add_signed(interval) else {
-                return false;
+                return SamplingClaim {
+                    should_sample: false,
+                    missed_slots: None,
+                };
             };
+            if advanced <= received_at {
+                last_missed = Some(next);
+            }
             next = advanced;
         }
         self.next_sample_at = Some(next);
-        true
+        SamplingClaim {
+            should_sample: true,
+            missed_slots: last_missed.map(|last| (first_missed, last)),
+        }
     }
 }
 
@@ -1626,13 +1673,100 @@ impl BinanceSpotL2SnapshotStrategy {
         })?
         .0;
         let (mut sink, mut stream) = websocket.split();
-        let mut ping = tokio::time::interval_at(
-            Instant::now() + Duration::from_millis(self.config.ping_interval_ms),
-            Duration::from_millis(self.config.ping_interval_ms),
-        );
-        ping.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let read_timeout = Duration::from_millis(self.config.read_timeout_ms);
-        let mut read_deadline = Instant::now() + read_timeout;
+        let write_timeout = Duration::from_millis(self.config.connect_timeout_ms);
+        let ping_interval = Duration::from_millis(self.config.ping_interval_ms);
+        let (io_sender, mut io_receiver) =
+            mpsc::channel::<BinanceIoEvent>(self.config.max_buffered_updates);
+        let io_shutdown = CancellationToken::new();
+        let worker_shutdown = io_shutdown.clone();
+        let io_handle = tokio::spawn(async move {
+            let mut ping = tokio::time::interval_at(Instant::now() + ping_interval, ping_interval);
+            ping.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            let mut read_deadline = Instant::now() + read_timeout;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = worker_shutdown.cancelled() => return,
+                    _ = tokio::time::sleep_until(read_deadline) => {
+                        let _ = io_sender.send(BinanceIoEvent::Failed(source_error(
+                            "binance_l2_websocket_read_timeout",
+                            "Binance spot L2 websocket produced no frames before its read deadline",
+                        ))).await;
+                        return;
+                    }
+                    _ = ping.tick() => {
+                        if let Err(error) = send_websocket_control(
+                            &mut sink,
+                            Message::Ping(Vec::new().into()),
+                            write_timeout,
+                        ).await {
+                            let _ = io_sender.send(BinanceIoEvent::Failed(error)).await;
+                            return;
+                        }
+                    }
+                    frame = stream.next() => {
+                        read_deadline = Instant::now() + read_timeout;
+                        let event = match frame {
+                            Some(Ok(Message::Text(text))) => {
+                                let received_at = Utc::now();
+                                match parse_depth_update(text.as_ref()) {
+                                    Ok(update) => BinanceIoEvent::Update(BufferedUpdate {
+                                        update,
+                                        received_at,
+                                    }),
+                                    Err(error) => BinanceIoEvent::Failed(error),
+                                }
+                            }
+                            Some(Ok(Message::Ping(payload))) => {
+                                if let Err(error) = send_websocket_control(
+                                    &mut sink,
+                                    Message::Pong(payload),
+                                    write_timeout,
+                                ).await {
+                                    let _ = io_sender.send(BinanceIoEvent::Failed(error)).await;
+                                    return;
+                                }
+                                continue;
+                            }
+                            Some(Ok(Message::Pong(_))) => continue,
+                            Some(Ok(Message::Close(frame))) => BinanceIoEvent::Failed(source_error(
+                                "binance_l2_websocket_closed",
+                                format!("Binance spot L2 websocket closed: {frame:?}"),
+                            )),
+                            Some(Ok(Message::Binary(_))) => BinanceIoEvent::Failed(source_error(
+                                "binance_l2_binary_frame",
+                                "Binance spot L2 websocket sent an unsupported binary frame",
+                            )),
+                            Some(Ok(_)) => continue,
+                            Some(Err(error)) => BinanceIoEvent::Failed(source_error(
+                                "binance_l2_websocket_read_failed",
+                                format!("failed to read Binance spot L2 websocket: {error}"),
+                            )),
+                            None => BinanceIoEvent::Failed(source_error(
+                                "binance_l2_websocket_eof",
+                                "Binance spot L2 websocket ended",
+                            )),
+                        };
+                        match io_sender.try_send(event) {
+                            Ok(()) => {}
+                            Err(mpsc::error::TrySendError::Closed(_)) => return,
+                            Err(mpsc::error::TrySendError::Full(_)) => {
+                                let _ = io_sender.send(BinanceIoEvent::Failed(source_error(
+                                    "binance_l2_consumer_backpressure",
+                                    "Binance spot L2 processing fell behind the bounded websocket buffer",
+                                ))).await;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let _io_worker = BinanceIoWorker {
+            shutdown: io_shutdown,
+            handle: io_handle,
+        };
         let mut buffer = DeltaBuffer::new(
             self.config.max_buffered_updates,
             self.config.max_buffered_levels,
@@ -1658,28 +1792,9 @@ impl BinanceSpotL2SnapshotStrategy {
                         )
                     })??;
                 }
-                _ = tokio::time::sleep_until(read_deadline) => {
-                    return Err(source_error(
-                        "binance_l2_websocket_read_timeout",
-                        "Binance spot L2 websocket produced no frames before its read deadline",
-                    ));
-                }
-                _ = ping.tick() => {
-                    send_websocket_control(
-                        &mut sink,
-                        Message::Ping(Vec::new().into()),
-                        Duration::from_millis(self.config.connect_timeout_ms),
-                    ).await?;
-                }
-                frame = stream.next() => {
-                    read_deadline = Instant::now() + read_timeout;
-                    match frame {
-                        Some(Ok(Message::Text(text))) => {
-                            let received_at = Utc::now();
-                            let buffered = BufferedUpdate {
-                                update: parse_depth_update(text.as_ref())?,
-                                received_at,
-                            };
+                event = io_receiver.recv() => {
+                    match event {
+                        Some(BinanceIoEvent::Update(buffered)) => {
                             let incoming_source_timestamp = buffered.update.source_timestamp;
                             let incoming_final_update_id = buffered.update.final_update_id;
                             if let Err(error) = buffer.push(buffered) {
@@ -1699,39 +1814,11 @@ impl BinanceSpotL2SnapshotStrategy {
                                 return Err(error);
                             }
                         }
-                        Some(Ok(Message::Ping(payload))) => {
-                            send_websocket_control(
-                                &mut sink,
-                                Message::Pong(payload),
-                                Duration::from_millis(self.config.connect_timeout_ms),
-                            ).await?;
-                        }
-                        Some(Ok(Message::Pong(_))) => {}
-                        Some(Ok(Message::Close(frame))) => {
-                            return Err(source_error(
-                                "binance_l2_websocket_closed",
-                                format!("Binance spot L2 websocket closed during bootstrap: {frame:?}"),
-                            ));
-                        }
-                        Some(Ok(Message::Binary(_))) => {
-                            return Err(source_error(
-                                "binance_l2_binary_frame",
-                                "Binance spot L2 websocket sent an unsupported binary frame",
-                            ));
-                        }
-                        Some(Ok(_)) => {}
-                        Some(Err(error)) => {
-                            return Err(source_error(
-                                "binance_l2_websocket_read_failed",
-                                format!("failed to read Binance spot L2 websocket: {error}"),
-                            ));
-                        }
-                        None => {
-                            return Err(source_error(
-                                "binance_l2_websocket_eof",
-                                "Binance spot L2 websocket ended during bootstrap",
-                            ));
-                        }
+                        Some(BinanceIoEvent::Failed(error)) => return Err(error),
+                        None => return Err(source_error(
+                            "binance_l2_io_worker_stopped",
+                            "Binance spot L2 socket worker stopped during bootstrap",
+                        )),
                     }
                 }
             }
@@ -1772,69 +1859,23 @@ impl BinanceSpotL2SnapshotStrategy {
             tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => return Ok(()),
-                _ = tokio::time::sleep_until(read_deadline) => {
-                    return Err(source_error(
-                        "binance_l2_websocket_read_timeout",
-                        "Binance spot L2 websocket produced no frames before its read deadline",
-                    ));
-                }
-                _ = ping.tick() => {
-                    send_websocket_control(
-                        &mut sink,
-                        Message::Ping(Vec::new().into()),
-                        Duration::from_millis(self.config.connect_timeout_ms),
-                    ).await?;
-                }
-                frame = stream.next() => {
-                    read_deadline = Instant::now() + read_timeout;
-                    match frame {
-                        Some(Ok(Message::Text(text))) => {
-                            let received_at = Utc::now();
+                event = io_receiver.recv() => {
+                    match event {
+                        Some(BinanceIoEvent::Update(buffered)) => {
                             self.apply_update(
                                 writer,
                                 sampling_clock,
                                 continuity,
                                 &mut book,
                                 connection_epoch,
-                                BufferedUpdate {
-                                    update: parse_depth_update(text.as_ref())?,
-                                    received_at,
-                                },
+                                buffered,
                             ).await?;
                         }
-                        Some(Ok(Message::Ping(payload))) => {
-                            send_websocket_control(
-                                &mut sink,
-                                Message::Pong(payload),
-                                Duration::from_millis(self.config.connect_timeout_ms),
-                            ).await?;
-                        }
-                        Some(Ok(Message::Pong(_))) => {}
-                        Some(Ok(Message::Close(frame))) => {
-                            return Err(source_error(
-                                "binance_l2_websocket_closed",
-                                format!("Binance spot L2 websocket closed: {frame:?}"),
-                            ));
-                        }
-                        Some(Ok(Message::Binary(_))) => {
-                            return Err(source_error(
-                                "binance_l2_binary_frame",
-                                "Binance spot L2 websocket sent an unsupported binary frame",
-                            ));
-                        }
-                        Some(Ok(_)) => {}
-                        Some(Err(error)) => {
-                            return Err(source_error(
-                                "binance_l2_websocket_read_failed",
-                                format!("failed to read Binance spot L2 websocket: {error}"),
-                            ));
-                        }
-                        None => {
-                            return Err(source_error(
-                                "binance_l2_websocket_eof",
-                                "Binance spot L2 websocket ended",
-                            ));
-                        }
+                        Some(BinanceIoEvent::Failed(error)) => return Err(error),
+                        None => return Err(source_error(
+                            "binance_l2_io_worker_stopped",
+                            "Binance spot L2 socket worker stopped unexpectedly",
+                        )),
                     }
                 }
             }
@@ -1970,7 +2011,28 @@ impl BinanceSpotL2SnapshotStrategy {
         continuity.last_update_id = Some(buffered.update.final_update_id);
         continuity.last_source_timestamp = Some(buffered.update.source_timestamp);
         continuity.last_received_at = Some(buffered.received_at);
-        if sampling_clock.should_sample(buffered.received_at, self.config.sample_interval_ms) {
+        let sampling_claim =
+            sampling_clock.claim(buffered.received_at, self.config.sample_interval_ms);
+        if let Some((first_missed, last_missed)) = sampling_claim.missed_slots {
+            let message = format!(
+                "Binance L2 sampler skipped receipt slots {first_missed} through {last_missed}"
+            );
+            writer
+                .record_gap(GapObservation {
+                    kind: "local_sampling_cadence",
+                    code: "binance_l2_sampling_slot_gap",
+                    message: &message,
+                    source_start: None,
+                    source_end: None,
+                    start_cursor: Some(format!(
+                        "sampling_slot:{}",
+                        first_missed.timestamp_millis()
+                    )),
+                    end_cursor: Some(format!("sampling_slot:{}", last_missed.timestamp_millis())),
+                })
+                .await?;
+        }
+        if sampling_claim.should_sample {
             let sample = match book.sample(self.config.top_n) {
                 Ok(sample) => sample,
                 Err(error) => {
@@ -2036,6 +2098,7 @@ fn gap_was_recorded(code: &str) -> bool {
     matches!(
         code,
         "binance_l2_sequence_gap"
+            | "binance_l2_sampling_slot_gap"
             | "binance_l2_buffer_overflow"
             | "binance_l2_book_too_large"
             | "binance_l2_crossed_book"
@@ -2225,11 +2288,31 @@ mod tests {
             .single()
             .expect("timestamp");
         let mut clock = SamplingClock::default();
-        assert!(clock.should_sample(start, 1_000));
-        assert!(!clock.should_sample(start + TimeDelta::milliseconds(999), 1_000));
-        assert!(clock.should_sample(start + TimeDelta::milliseconds(1_000), 1_000));
-        assert!(clock.should_sample(start + TimeDelta::milliseconds(5_500), 1_000));
-        assert!(!clock.should_sample(start + TimeDelta::milliseconds(5_999), 1_000));
+        assert!(clock.claim(start, 1_000).should_sample);
+        assert!(
+            !clock
+                .claim(start + TimeDelta::milliseconds(999), 1_000)
+                .should_sample
+        );
+        assert!(
+            clock
+                .claim(start + TimeDelta::milliseconds(1_000), 1_000)
+                .should_sample
+        );
+        let delayed = clock.claim(start + TimeDelta::milliseconds(5_500), 1_000);
+        assert!(delayed.should_sample);
+        assert_eq!(
+            delayed.missed_slots,
+            Some((
+                start + TimeDelta::milliseconds(2_000),
+                start + TimeDelta::milliseconds(4_000),
+            ))
+        );
+        assert!(
+            !clock
+                .claim(start + TimeDelta::milliseconds(5_999), 1_000)
+                .should_sample
+        );
     }
 
     #[test]

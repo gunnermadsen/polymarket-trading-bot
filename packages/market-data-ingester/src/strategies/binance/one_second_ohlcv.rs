@@ -1476,6 +1476,7 @@ impl BinanceSpotOneSecondOhlcvStrategy {
         state: &mut OhlcvRunState,
         shutdown: &CancellationToken,
     ) -> Result<(), StrategyError> {
+        self.resume_unresolved_gaps(state, shutdown).await?;
         let last_closed = last_fully_closed_open(Utc::now())?;
         match state.last_open {
             None => {
@@ -1511,6 +1512,64 @@ impl BinanceSpotOneSecondOhlcvStrategy {
                 Ok(())
             }
         }
+    }
+
+    async fn resume_unresolved_gaps(
+        &self,
+        state: &mut OhlcvRunState,
+        shutdown: &CancellationToken,
+    ) -> Result<(), StrategyError> {
+        let gaps = GapRepository::new(self.pool.clone())
+            .list_unresolved_limited(STRATEGY_KEY, 1_000)
+            .await
+            .map_err(|error| database_error("binance_ohlcv_gap_resume_read_failed", error))?;
+        for gap in gaps {
+            if shutdown.is_cancelled() {
+                return Err(shutdown_error());
+            }
+            if gap.reason_code != "binance_one_second_kline_gap" {
+                return Err(integrity_error(
+                    "binance_ohlcv_unknown_unresolved_gap",
+                    format!(
+                        "cannot resume unresolved OHLCV gap {} with reason {}",
+                        gap.gap_id, gap.reason_code
+                    ),
+                ));
+            }
+            let start = gap.source_time_start.ok_or_else(|| {
+                integrity_error(
+                    "binance_ohlcv_gap_missing_range",
+                    format!("unresolved OHLCV gap {} has no source start", gap.gap_id),
+                )
+            })?;
+            let inclusive_end = gap.source_time_end.ok_or_else(|| {
+                integrity_error(
+                    "binance_ohlcv_gap_missing_range",
+                    format!("unresolved OHLCV gap {} has no source end", gap.gap_id),
+                )
+            })?;
+            let end_millis = inclusive_end.timestamp_millis().div_euclid(1_000) * 1_000;
+            let end = Utc
+                .timestamp_millis_opt(end_millis)
+                .single()
+                .ok_or_else(|| {
+                    integrity_error(
+                        "binance_ohlcv_gap_invalid_range",
+                        format!(
+                            "unresolved OHLCV gap {} has an invalid source end",
+                            gap.gap_id
+                        ),
+                    )
+                })?;
+            if start.timestamp_subsec_nanos() != 0 || start > end {
+                return Err(integrity_error(
+                    "binance_ohlcv_gap_invalid_range",
+                    format!("unresolved OHLCV gap {} is not second-aligned", gap.gap_id),
+                ));
+            }
+            self.repair_gap(state, start, end, shutdown).await?;
+        }
+        Ok(())
     }
 
     async fn repair_gap(

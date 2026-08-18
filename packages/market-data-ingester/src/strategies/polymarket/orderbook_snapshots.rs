@@ -66,6 +66,7 @@ const MAX_IDENTIFIER_BYTES: usize = 512;
 const MAX_SOURCE_HASH_BYTES: usize = 256;
 const MAX_NUMERIC_BYTES: usize = 64;
 const MAX_PROVIDER_CLOCK_LEAD_MILLISECONDS: i64 = 1_000;
+const WEBSOCKET_EVENT_BUFFER: usize = 4_096;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -1591,10 +1592,8 @@ impl BookRegistry {
                         ));
                     }
                     if existing.tick_size != market.tick_size {
-                        return Err(integrity_error(
-                            "polymarket_contract_tick_race",
-                            "Gamma tick size changed without a matching CLOB tick update",
-                        ));
+                        existing.tick_size = market.tick_size;
+                        existing.source_hash = None;
                     }
                     // Preserve the first causal discovery receipt for an unchanged identity.
                     let receipt = existing.market.received_at.min(market.received_at);
@@ -1721,11 +1720,19 @@ impl BookRegistry {
                 if book.is_stale(source_timestamp) {
                     return Ok(ApplyOutcome::NonMutating);
                 }
-                if old_tick_size != book.tick_size
-                    || new_tick_size <= Decimal::ZERO
+                if new_tick_size <= Decimal::ZERO
                     || new_tick_size >= Decimal::ONE
                     || new_tick_size.scale() > 8
                 {
+                    return Err(source_error(
+                        "polymarket_clob_tick_size_mismatch",
+                        "CLOB tick-size transition did not match registered book state",
+                    ));
+                }
+                if new_tick_size == book.tick_size {
+                    return Ok(ApplyOutcome::NonMutating);
+                }
+                if old_tick_size != book.tick_size {
                     return Err(source_error(
                         "polymarket_clob_tick_size_mismatch",
                         "CLOB tick-size transition did not match registered book state",
@@ -3138,6 +3145,26 @@ struct DiscoveryWorker {
     handle: JoinHandle<()>,
 }
 
+enum ClobIoEvent {
+    Frame {
+        bytes: Vec<u8>,
+        received_at: DateTime<Utc>,
+    },
+    Failed(StrategyError),
+}
+
+struct ClobIoWorker {
+    shutdown: CancellationToken,
+    handle: JoinHandle<()>,
+}
+
+impl Drop for ClobIoWorker {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+        self.handle.abort();
+    }
+}
+
 impl Drop for DiscoveryWorker {
     fn drop(&mut self) {
         self.shutdown.cancel();
@@ -3318,43 +3345,157 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
         )
         .await?;
 
+        let (outgoing_sender, mut outgoing_receiver) = mpsc::channel::<Message>(64);
+        let (io_sender, mut io_receiver) = mpsc::channel::<ClobIoEvent>(WEBSOCKET_EVENT_BUFFER);
+        let io_shutdown = CancellationToken::new();
+        let worker_shutdown = io_shutdown.clone();
+        let ping_interval = Duration::from_millis(self.config.ping_interval_ms);
+        let pong_timeout = Duration::from_millis(self.config.pong_timeout_ms);
+        let read_timeout = Duration::from_millis(self.config.read_timeout_ms);
+        let write_timeout = Duration::from_millis(self.config.connect_timeout_ms);
+        let io_handle = tokio::spawn(async move {
+            let mut ping = tokio::time::interval_at(Instant::now() + ping_interval, ping_interval);
+            ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut read_deadline = Instant::now() + read_timeout;
+            let mut pong_deadline = None;
+            loop {
+                let disabled_deadline = Instant::now() + Duration::from_secs(86_400);
+                let pong_sleep =
+                    tokio::time::sleep_until(pong_deadline.unwrap_or(disabled_deadline));
+                tokio::pin!(pong_sleep);
+                tokio::select! {
+                    biased;
+                    _ = worker_shutdown.cancelled() => return,
+                    _ = &mut pong_sleep, if pong_deadline.is_some() => {
+                        let _ = io_sender.send(ClobIoEvent::Failed(source_error(
+                            "polymarket_clob_pong_timeout",
+                            "Polymarket CLOB did not acknowledge the oldest text PING",
+                        ))).await;
+                        return;
+                    }
+                    _ = tokio::time::sleep_until(read_deadline) => {
+                        let _ = io_sender.send(ClobIoEvent::Failed(source_error(
+                            "polymarket_clob_read_timeout",
+                            "Polymarket CLOB websocket produced no frames before its read-idle deadline",
+                        ))).await;
+                        return;
+                    }
+                    _ = ping.tick() => {
+                        let sent_at = Instant::now();
+                        if let Err(error) = send_websocket_message(
+                            &mut sink,
+                            Message::Text("PING".into()),
+                            write_timeout,
+                        ).await {
+                            let _ = io_sender.send(ClobIoEvent::Failed(error)).await;
+                            return;
+                        }
+                        pong_deadline.get_or_insert(sent_at + pong_timeout);
+                    }
+                    command = outgoing_receiver.recv() => {
+                        let Some(command) = command else { return; };
+                        if let Err(error) = send_websocket_message(&mut sink, command, write_timeout).await {
+                            let _ = io_sender.send(ClobIoEvent::Failed(error)).await;
+                            return;
+                        }
+                    }
+                    frame = stream.next() => {
+                        read_deadline = Instant::now() + read_timeout;
+                        let received_at = canonical_timestamp(Utc::now());
+                        let event = match frame {
+                            Some(Ok(Message::Text(text))) => {
+                                let value = text.as_str().trim();
+                                if acknowledge_text_pong(value, &mut pong_deadline) {
+                                    continue;
+                                }
+                                if value.eq_ignore_ascii_case("PING") {
+                                    if let Err(error) = send_websocket_message(
+                                        &mut sink,
+                                        Message::Text("PONG".into()),
+                                        write_timeout,
+                                    ).await {
+                                        let _ = io_sender.send(ClobIoEvent::Failed(error)).await;
+                                        return;
+                                    }
+                                    continue;
+                                }
+                                if value.is_empty() { continue; }
+                                ClobIoEvent::Frame { bytes: text.as_bytes().to_vec(), received_at }
+                            }
+                            Some(Ok(Message::Binary(bytes))) => ClobIoEvent::Frame {
+                                bytes: bytes.to_vec(),
+                                received_at,
+                            },
+                            Some(Ok(Message::Ping(payload))) => {
+                                if let Err(error) = send_websocket_message(
+                                    &mut sink,
+                                    Message::Pong(payload),
+                                    write_timeout,
+                                ).await {
+                                    let _ = io_sender.send(ClobIoEvent::Failed(error)).await;
+                                    return;
+                                }
+                                continue;
+                            }
+                            Some(Ok(Message::Pong(_))) => continue,
+                            Some(Ok(Message::Close(frame))) => ClobIoEvent::Failed(source_error(
+                                "polymarket_clob_closed",
+                                format!("Polymarket CLOB websocket closed: {frame:?}"),
+                            )),
+                            Some(Ok(_)) => continue,
+                            Some(Err(error)) => ClobIoEvent::Failed(source_error(
+                                "polymarket_clob_read_failed",
+                                format!("failed to read Polymarket CLOB websocket: {error}"),
+                            )),
+                            None => ClobIoEvent::Failed(source_error(
+                                "polymarket_clob_eof",
+                                "Polymarket CLOB websocket ended",
+                            )),
+                        };
+                        match io_sender.try_send(event) {
+                            Ok(()) => {}
+                            Err(mpsc::error::TrySendError::Closed(_)) => return,
+                            Err(mpsc::error::TrySendError::Full(_)) => {
+                                let _ = io_sender.send(ClobIoEvent::Failed(source_error(
+                                    "polymarket_clob_consumer_backpressure",
+                                    "Polymarket CLOB processing fell behind the bounded websocket buffer",
+                                ))).await;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let _io_worker = ClobIoWorker {
+            shutdown: io_shutdown,
+            handle: io_handle,
+        };
+
         let mut registry = BookRegistry::new(connection_epoch, &active_markets)?;
         // A new socket is always a new integrity epoch. No retained level may
         // receive a new-epoch delta before a complete token snapshot.
         registry.reset_connection(connection_epoch);
         let (_discovery_worker, mut discovery_updates) =
             start_discovery_worker(self.client.clone(), self.config.clone());
-        let ping_interval = Duration::from_millis(self.config.ping_interval_ms);
-        let mut ping = tokio::time::interval_at(Instant::now() + ping_interval, ping_interval);
-        ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let sample_interval = Duration::from_millis(self.config.sample_interval_ms);
         let mut sample_tick = tokio::time::interval_at(
             Instant::now() + next_sample_delay(Utc::now(), self.config.sample_interval_ms),
             sample_interval,
         );
         sample_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let read_timeout = Duration::from_millis(self.config.read_timeout_ms);
-        let mut read_deadline = Instant::now() + read_timeout;
-        let mut pong_deadline = None;
         let mut bootstrap_deadline =
             Some(Instant::now() + Duration::from_millis(self.config.bootstrap_timeout_ms));
         let mut missing_current_since = None;
 
         loop {
             let disabled_deadline = Instant::now() + Duration::from_secs(86_400);
-            let pong_sleep = tokio::time::sleep_until(pong_deadline.unwrap_or(disabled_deadline));
             let bootstrap_sleep =
                 tokio::time::sleep_until(bootstrap_deadline.unwrap_or(disabled_deadline));
-            tokio::pin!(pong_sleep, bootstrap_sleep);
+            tokio::pin!(bootstrap_sleep);
             tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => return Ok(()),
-                _ = &mut pong_sleep, if pong_deadline.is_some() => {
-                    return Err(source_error(
-                        "polymarket_clob_pong_timeout",
-                        "Polymarket CLOB did not acknowledge the oldest text PING",
-                    ));
-                }
                 _ = &mut bootstrap_sleep, if bootstrap_deadline.is_some() => {
                     let message = "Polymarket CLOB did not deliver every subscribed token's initial full book within the bootstrap bound";
                     writer.record_gap(GapObservation {
@@ -3367,12 +3508,6 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                         end_cursor: Some("awaiting_initial_full_books".to_owned()),
                     }).await?;
                     return Err(source_error("polymarket_clob_bootstrap_timeout", message));
-                }
-                _ = tokio::time::sleep_until(read_deadline) => {
-                    return Err(source_error(
-                        "polymarket_clob_read_timeout",
-                        "Polymarket CLOB websocket produced no frames before its read-idle deadline",
-                    ));
                 }
                 _ = sample_tick.tick() => {
                     let scheduled_at = Utc::now();
@@ -3394,6 +3529,24 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                             start_cursor: Some(format!("sampling_bucket:{first_missed}")),
                             end_cursor: Some(format!("sampling_bucket:{last_missed}")),
                         }).await?;
+                    }
+                    if !registry.all_bootstrapped() {
+                        let bucket = scheduled_at.timestamp_millis().div_euclid(
+                            i64::try_from(self.config.sample_interval_ms).unwrap_or(i64::MAX)
+                        );
+                        let message = format!(
+                            "aligned sampling bucket {bucket} had incomplete subscribed books"
+                        );
+                        writer.record_gap(GapObservation {
+                            kind: "local_sampling_cadence",
+                            code: "polymarket_sampling_bucket_unavailable",
+                            message: &message,
+                            source_start: None,
+                            source_end: None,
+                            start_cursor: Some(format!("sampling_bucket:{bucket}")),
+                            end_cursor: Some(format!("sampling_bucket:{bucket}")),
+                        }).await?;
+                        continue;
                     }
                     let current_window = aligned_market_window(scheduled_at);
                     let has_current = active_markets
@@ -3442,19 +3595,23 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                                 subscription_markets(&discovered_markets, Utc::now(), &self.config);
                             let delta = subscription_delta(&active_markets, &desired_markets);
                             if !delta.added.is_empty() {
-                                send_websocket_message(
-                                    &mut sink,
-                                    Message::Text(clob_subscription_operation(&delta.added, true).into()),
-                                    Duration::from_millis(self.config.connect_timeout_ms),
-                                ).await?;
+                                outgoing_sender
+                                    .send(Message::Text(clob_subscription_operation(&delta.added, true).into()))
+                                    .await
+                                    .map_err(|_| source_error(
+                                        "polymarket_clob_io_worker_stopped",
+                                        "Polymarket CLOB socket worker stopped before subscription update",
+                                    ))?;
                             }
                             registry.install_market_set(&desired_markets)?;
                             if !delta.removed.is_empty() {
-                                send_websocket_message(
-                                    &mut sink,
-                                    Message::Text(clob_subscription_operation(&delta.removed, false).into()),
-                                    Duration::from_millis(self.config.connect_timeout_ms),
-                                ).await?;
+                                outgoing_sender
+                                    .send(Message::Text(clob_subscription_operation(&delta.removed, false).into()))
+                                    .await
+                                    .map_err(|_| source_error(
+                                        "polymarket_clob_io_worker_stopped",
+                                        "Polymarket CLOB socket worker stopped before unsubscription update",
+                                    ))?;
                             }
                             if !delta.added.is_empty() {
                                 bootstrap_deadline = Some(
@@ -3472,87 +3629,23 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                         }
                     }
                 }
-                _ = ping.tick() => {
-                    let sent_at = Instant::now();
-                    send_websocket_message(
-                        &mut sink,
-                        Message::Text("PING".into()),
-                        Duration::from_millis(self.config.connect_timeout_ms),
-                    ).await?;
-                    pong_deadline.get_or_insert(
-                        sent_at + Duration::from_millis(self.config.pong_timeout_ms)
-                    );
-                }
-                frame = stream.next() => {
-                    read_deadline = Instant::now() + read_timeout;
-                    let received_at = canonical_timestamp(Utc::now());
-                    match frame {
-                        Some(Ok(Message::Text(text))) => {
-                            let value = text.as_str().trim();
-                            if acknowledge_text_pong(value, &mut pong_deadline) {
-                                continue;
-                            }
-                            if value.eq_ignore_ascii_case("PING") {
-                                send_websocket_message(
-                                    &mut sink,
-                                    Message::Text("PONG".into()),
-                                    Duration::from_millis(self.config.connect_timeout_ms),
-                                ).await?;
-                                continue;
-                            }
-                            if value.is_empty() {
-                                continue;
-                            }
+                event = io_receiver.recv() => {
+                    match event {
+                        Some(ClobIoEvent::Frame { bytes, received_at }) => {
                             self.apply_frame(
                                 writer,
                                 continuity,
                                 &mut registry,
                                 connection_epoch,
-                                text.as_bytes(),
+                                &bytes,
                                 received_at,
                             ).await?;
                         }
-                        Some(Ok(Message::Binary(bytes))) => {
-                            self.apply_frame(
-                                writer,
-                                continuity,
-                                &mut registry,
-                                connection_epoch,
-                                bytes.as_ref(),
-                                received_at,
-                            ).await?;
-                        }
-                        Some(Ok(Message::Ping(payload))) => {
-                            send_websocket_message(
-                                &mut sink,
-                                Message::Pong(payload),
-                                Duration::from_millis(self.config.connect_timeout_ms),
-                            ).await?;
-                        }
-                        Some(Ok(Message::Pong(_))) => {
-                            // The venue contract acknowledges text PING with text
-                            // PONG. A protocol control PONG is not equivalent and
-                            // cannot mask a missing venue acknowledgement.
-                        }
-                        Some(Ok(Message::Close(frame))) => {
-                            return Err(source_error(
-                                "polymarket_clob_closed",
-                                format!("Polymarket CLOB websocket closed: {frame:?}"),
-                            ));
-                        }
-                        Some(Ok(_)) => {}
-                        Some(Err(error)) => {
-                            return Err(source_error(
-                                "polymarket_clob_read_failed",
-                                format!("failed to read Polymarket CLOB websocket: {error}"),
-                            ));
-                        }
-                        None => {
-                            return Err(source_error(
-                                "polymarket_clob_eof",
-                                "Polymarket CLOB websocket ended",
-                            ));
-                        }
+                        Some(ClobIoEvent::Failed(error)) => return Err(error),
+                        None => return Err(source_error(
+                            "polymarket_clob_io_worker_stopped",
+                            "Polymarket CLOB socket worker stopped unexpectedly",
+                        )),
                     }
                     if registry.all_bootstrapped() {
                         bootstrap_deadline = None;
@@ -3707,6 +3800,7 @@ fn gap_was_recorded(code: &str) -> bool {
         "polymarket_clob_bootstrap_timeout"
             | "polymarket_current_contract_gap"
             | "polymarket_sampling_bucket_gap"
+            | "polymarket_sampling_bucket_unavailable"
             | "polymarket_clob_decode_failed"
             | "polymarket_clob_message_batch_too_large"
             | "polymarket_clob_invalid_message"
@@ -4157,6 +4251,41 @@ mod tests {
         assert_eq!(book.tick_size, Decimal::new(1, 3));
         assert_eq!(book.source_timestamp, Some(at(1_783_902_601_700)));
         assert!(book.source_hash.is_none());
+    }
+
+    #[test]
+    fn repeated_tick_transition_is_idempotent_after_gamma_or_clob_advance() {
+        let mut registry = bootstrapped_registry();
+        let market = fixture_market();
+        registry
+            .books
+            .get_mut(&market.up_token_id)
+            .expect("Up book")
+            .tick_size = Decimal::new(1, 3);
+
+        let outcome = registry
+            .apply(
+                ClobMessage::TickSizeChange {
+                    market_id: market.condition_id,
+                    token_id: market.up_token_id.clone(),
+                    old_tick_size: Decimal::new(1, 2),
+                    new_tick_size: Decimal::new(1, 3),
+                    source_timestamp: at(1_783_902_601_700),
+                },
+                at(1_783_902_601_710),
+                100,
+            )
+            .expect("idempotent tick transition");
+
+        assert_eq!(outcome, ApplyOutcome::NonMutating);
+        assert_eq!(
+            registry
+                .books
+                .get(&market.up_token_id)
+                .expect("Up book")
+                .tick_size,
+            Decimal::new(1, 3)
+        );
     }
 
     #[test]
