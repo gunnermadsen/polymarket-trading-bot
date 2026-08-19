@@ -22,7 +22,7 @@ const MAX_DATA_API_RECONCILIATION_ROWS: usize = 4_000;
 const MAX_DATA_API_RECONCILIATION_REQUESTS: usize =
     MAX_DATA_API_RECONCILIATION_ROWS / DATA_API_RECONCILIATION_PAGE_SIZE + 1;
 fn data_api_position_size_tolerance() -> Decimal {
-    Decimal::new(1, 6)
+    Decimal::new(1, 4)
 }
 
 fn data_api_trade_price_tolerance() -> Decimal {
@@ -1476,14 +1476,27 @@ mod tests {
 
     #[test]
     fn rounded_data_api_position_within_resolution_proves_accounting() {
-        let process_positions = HashMap::from([("token-1".to_string(), dec!(2.5000005))]);
-        let positions = vec![account_position("token-1", dec!(2.5))];
+        let process_positions = HashMap::from([("token-1".to_string(), dec!(5.287355))]);
+        let positions = vec![account_position("token-1", dec!(5.2873))];
 
         let (proof, mismatches) =
             process_accounting_proof(&process_positions, &positions, 0, &[]).unwrap();
 
         assert_eq!(proof.status, "proven");
         assert!(mismatches.is_empty());
+    }
+
+    #[test]
+    fn data_api_position_difference_above_resolution_fails_closed() {
+        let process_positions = HashMap::from([("token-1".to_string(), dec!(5.287401))]);
+        let positions = vec![account_position("token-1", dec!(5.2873))];
+
+        let (proof, mismatches) =
+            process_accounting_proof(&process_positions, &positions, 0, &[]).unwrap();
+
+        assert_eq!(proof.status, "unproven");
+        assert_eq!(mismatches[0].mismatch_type, "position_size_mismatch");
+        assert_eq!(mismatches[0].delta_size, dec!(-0.000101));
     }
 
     #[test]
