@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    str::FromStr,
-};
+use std::{collections::HashSet, str::FromStr};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -32,8 +29,8 @@ use super::{
         BtcStrategyPrediction, FairValueEstimate,
     },
     types::{
-        BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, MarketFeedEvent, OrderbookCheckpoint,
-        OrderbookLevel, ReferencePriceSource, ReferencePriceTick,
+        BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, OrderbookCheckpoint, OrderbookLevel,
+        ReferencePriceSource, ReferencePriceTick,
     },
 };
 
@@ -93,12 +90,6 @@ pub struct BtcOfficialResolutionWatch {
     pub market: BtcIntervalMarket,
     pub status: String,
     pub deadline_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BtcOfficialResolutionSubscriptionAck {
-    pub subscribed: u64,
-    pub already_terminal: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1077,72 +1068,6 @@ struct CheckpointRow {
     integrity_status: String,
 }
 
-fn validate_official_resolution_subscription_ack(
-    market_ids: &[String],
-    subscribed_market_ids: &[String],
-    watch_states: &[(String, String)],
-) -> Result<BtcOfficialResolutionSubscriptionAck> {
-    let requested = market_ids.iter().cloned().collect::<HashSet<_>>();
-    if requested.len() != market_ids.len() {
-        bail!("BTC official-resolution subscription contains duplicate market ids");
-    }
-    let subscribed = subscribed_market_ids
-        .iter()
-        .cloned()
-        .collect::<HashSet<_>>();
-    if subscribed.len() != subscribed_market_ids.len()
-        || subscribed
-            .iter()
-            .any(|market_id| !requested.contains(market_id))
-    {
-        bail!("BTC official-resolution subscription returned invalid updated market ids");
-    }
-    let states = watch_states.iter().cloned().collect::<HashMap<_, _>>();
-    if states.len() != watch_states.len() {
-        bail!("BTC official-resolution subscription returned duplicate watch rows");
-    }
-
-    let missing = requested
-        .iter()
-        .filter(|market_id| !states.contains_key(*market_id))
-        .cloned()
-        .collect::<Vec<_>>();
-    if !missing.is_empty() {
-        bail!(
-            "BTC official-resolution subscription is missing durable watches for: {}",
-            missing.join(",")
-        );
-    }
-
-    let mut already_terminal = 0u64;
-    let mut invalid = Vec::new();
-    for market_id in market_ids {
-        let status = states
-            .get(market_id)
-            .expect("every requested BTC resolution watch was verified above");
-        if subscribed.contains(market_id) {
-            if status != "pending" {
-                invalid.push(format!("{market_id}={status}:updated"));
-            }
-        } else if matches!(status.as_str(), "resolved" | "resolved_late") {
-            already_terminal = already_terminal.saturating_add(1);
-        } else {
-            invalid.push(format!("{market_id}={status}:not_updated"));
-        }
-    }
-    if !invalid.is_empty() {
-        bail!(
-            "BTC official-resolution subscription has invalid durable watch states: {}",
-            invalid.join(",")
-        );
-    }
-
-    Ok(BtcOfficialResolutionSubscriptionAck {
-        subscribed: subscribed.len() as u64,
-        already_terminal,
-    })
-}
-
 impl BtcRepository {
     pub fn from_pool(pool: PgPool) -> Self {
         Self { pool }
@@ -1371,60 +1296,6 @@ impl BtcRepository {
         .collect()
     }
 
-    pub async fn mark_official_resolution_watches_subscribed(
-        &self,
-        market_ids: &[String],
-        connection_id: Uuid,
-        subscribed_at: DateTime<Utc>,
-    ) -> Result<BtcOfficialResolutionSubscriptionAck> {
-        if market_ids.is_empty() {
-            return Ok(BtcOfficialResolutionSubscriptionAck::default());
-        }
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .context("failed to begin BTC official-resolution subscription transaction")?;
-        let subscribed_market_ids = sqlx::query_scalar::<_, String>(
-            r#"
-            UPDATE polymarket.btc_official_resolution_watches
-            SET last_subscribed_at = $2,
-                last_subscription_connection_id = $3,
-                subscription_count = subscription_count + 1,
-                updated_at = now()
-            WHERE market_id = ANY($1) AND status = 'pending'
-            RETURNING market_id
-            "#,
-        )
-        .bind(market_ids)
-        .bind(subscribed_at)
-        .bind(connection_id)
-        .fetch_all(&mut *tx)
-        .await
-        .context("failed to acknowledge BTC official-resolution subscriptions")?;
-        let watch_states = sqlx::query_as::<_, (String, String)>(
-            r#"
-            SELECT market_id, status
-            FROM polymarket.btc_official_resolution_watches
-            WHERE market_id = ANY($1)
-            ORDER BY market_id
-            "#,
-        )
-        .bind(market_ids)
-        .fetch_all(&mut *tx)
-        .await
-        .context("failed to verify BTC official-resolution subscription states")?;
-        let acknowledgement = validate_official_resolution_subscription_ack(
-            market_ids,
-            &subscribed_market_ids,
-            &watch_states,
-        )?;
-        tx.commit()
-            .await
-            .context("failed to commit BTC official-resolution subscriptions")?;
-        Ok(acknowledgement)
-    }
-
     pub async fn mark_official_resolution_watch_checked(
         &self,
         market_id: &str,
@@ -1525,35 +1396,6 @@ impl BtcRepository {
         .execute(&self.pool)
         .await
         .context("failed to insert BTC reference price tick")?;
-        Ok(result.rows_affected() == 1)
-    }
-
-    pub async fn insert_feed_event(&self, event: &MarketFeedEvent) -> Result<bool> {
-        let result = sqlx::query(
-            r#"
-            INSERT INTO polymarket.market_feed_events (
-              feed_event_id, source_timestamp, received_at, connection_id, ingest_sequence,
-              market_id, token_id, event_type, source_hash, applied, integrity_status, raw_payload
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-            ON CONFLICT (feed_event_id, source_timestamp) DO NOTHING
-            "#,
-        )
-        .bind(event.event_id)
-        .bind(event.source_timestamp)
-        .bind(event.received_at)
-        .bind(event.connection_id)
-        .bind(sequence_i64(event.ingest_sequence))
-        .bind(empty_to_none(&event.market_id))
-        .bind(&event.token_id)
-        .bind(serde_name(&event.event_type)?)
-        .bind(&event.source_hash)
-        .bind(event.applied)
-        .bind(serde_name(&event.integrity_status)?)
-        .bind(&event.raw_payload)
-        .execute(&self.pool)
-        .await
-        .context("failed to insert BTC market feed event")?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -4012,10 +3854,6 @@ fn validate_orderbook_checkpoint_pair(
     Ok((first, second))
 }
 
-fn empty_to_none(value: &str) -> Option<&str> {
-    (!value.trim().is_empty()).then_some(value)
-}
-
 fn serde_name<T: Serialize>(value: &T) -> Result<String> {
     serde_json::to_value(value)?
         .as_str()
@@ -4724,7 +4562,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
-    use crate::btc::types::{FeedIntegrityStatus, MarketFeedEventType};
+    use crate::btc::types::FeedIntegrityStatus;
     use crate::btc::{
         admission::{
             ShadowPredictiveRegimeCandidate, ShadowPredictiveRegimeCircuitBreakerConfig,
@@ -6206,62 +6044,7 @@ mod tests {
     }
 
     #[test]
-    fn resolution_subscription_ack_accepts_concurrent_terminal_transition() {
-        let requested = vec![
-            "market-a".to_string(),
-            "market-b".to_string(),
-            "market-c".to_string(),
-        ];
-        let subscribed = vec!["market-a".to_string(), "market-c".to_string()];
-        let states = vec![
-            ("market-a".to_string(), "pending".to_string()),
-            ("market-b".to_string(), "resolved".to_string()),
-            ("market-c".to_string(), "pending".to_string()),
-        ];
-
-        let acknowledgement =
-            validate_official_resolution_subscription_ack(&requested, &subscribed, &states)
-                .unwrap();
-
-        assert_eq!(acknowledgement.subscribed, 2);
-        assert_eq!(acknowledgement.already_terminal, 1);
-    }
-
-    #[test]
-    fn resolution_subscription_ack_rejects_missing_durable_watch() {
-        let requested = vec!["market-a".to_string(), "market-b".to_string()];
-        let subscribed = vec!["market-a".to_string()];
-        let states = vec![("market-a".to_string(), "pending".to_string())];
-
-        let error = validate_official_resolution_subscription_ack(&requested, &subscribed, &states)
-            .unwrap_err();
-
-        assert!(error
-            .to_string()
-            .contains("missing durable watches for: market-b"));
-    }
-
-    #[test]
-    fn resolution_subscription_ack_rejects_unacknowledged_pending_or_expired_watch() {
-        for status in ["pending", "expired"] {
-            let requested = vec!["market-a".to_string()];
-            let states = vec![("market-a".to_string(), status.to_string())];
-
-            let error = validate_official_resolution_subscription_ack(&requested, &[], &states)
-                .unwrap_err();
-
-            assert!(error
-                .to_string()
-                .contains(&format!("market-a={status}:not_updated")));
-        }
-    }
-
-    #[test]
     fn serializes_database_enum_names() {
-        assert_eq!(
-            serde_name(&MarketFeedEventType::PriceChange).unwrap(),
-            "price_change"
-        );
         assert_eq!(
             serde_name(&FeedIntegrityStatus::PreSnapshot).unwrap(),
             "pre_snapshot"
