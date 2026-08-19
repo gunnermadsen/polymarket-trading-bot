@@ -1702,7 +1702,6 @@ impl BtcRuntime {
                     self.config.clone(),
                     self.heartbeat.clob_interval,
                     self.heartbeat.clob_pong_timeout,
-                    self.repository.clone(),
                     market_rx,
                     writer_tx.clone(),
                     state.clone(),
@@ -3144,10 +3143,7 @@ fn clob_stop_close_action(telemetry: &ClobSocketTelemetry) -> ClobCloseAction {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn complete_clob_epoch_with_close(
-    repository: &BtcRepository,
-    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
     epoch: &mut ClobEpoch,
     reason: String,
     cause: ClobDisconnectCause,
@@ -3214,16 +3210,6 @@ async fn complete_clob_epoch_with_close(
         epoch.subscription_stats.active_assets,
         &epoch.telemetry,
     );
-    if let Err(error) = repository.finish_feed_session(&epoch.session).await {
-        record_error(
-            metrics,
-            error.context(format!(
-                "failed to audit completed {} feed session {}",
-                epoch.session.feed_name, epoch.session.connection_id
-            )),
-        )
-        .await;
-    }
 }
 
 fn clob_disconnect_metrics(
@@ -3276,7 +3262,6 @@ async fn run_clob_supervisor(
     config: BtcRuntimeConfig,
     heartbeat_interval: StdDuration,
     pong_timeout: StdDuration,
-    repository: BtcRepository,
     mut markets: watch::Receiver<Vec<BtcIntervalMarket>>,
     writer: mpsc::Sender<PersistItem>,
     state: Arc<RwLock<RealtimeState>>,
@@ -3627,11 +3612,6 @@ async fn run_clob_supervisor(
                                 consecutive_failures,
                                 &ClobSubscriptionStats::default(),
                             );
-                            if start_feed_session_or_fail(&repository, &session, &metrics).await {
-                                let _ =
-                                    finish_feed_session_or_fail(&repository, &session, &metrics)
-                                        .await;
-                            }
                             {
                                 let mut runtime_metrics = metrics.write().await;
                                 clob_failure_metrics(&mut runtime_metrics, cause);
@@ -3664,20 +3644,8 @@ async fn run_clob_supervisor(
                         connect_latency,
                     }) => {
                         epoch.subscription_stats.active_assets = epoch.registry.len();
-                        if let Err(error) = repository.start_feed_session(&epoch.session).await {
-                            record_error(
-                                &metrics,
-                                error.context(format!(
-                                    "failed to audit started {} feed session {}",
-                                    epoch.session.feed_name, epoch.session.connection_id
-                                )),
-                            )
-                            .await;
-                        }
                         if !same_market_subscriptions(&epoch.markets, &markets.borrow()) {
                             complete_clob_epoch_with_close(
-                                &repository,
-                                &metrics,
                                 &mut epoch,
                                 "subscription_target_changed_during_connect".to_string(),
                                 ClobDisconnectCause::SubscriptionFailure,
@@ -3882,8 +3850,6 @@ async fn run_clob_supervisor(
             }
             let close_action = clob_failure_close_action(&failed.telemetry);
             complete_clob_epoch_with_close(
-                &repository,
-                &metrics,
                 &mut failed,
                 reason,
                 cause,
@@ -3906,8 +3872,6 @@ async fn run_clob_supervisor(
             .await;
         let close_action = clob_stop_close_action(&epoch.telemetry);
         complete_clob_epoch_with_close(
-            &repository,
-            &metrics,
             &mut epoch,
             stop_reason.to_string(),
             stop_cause,
