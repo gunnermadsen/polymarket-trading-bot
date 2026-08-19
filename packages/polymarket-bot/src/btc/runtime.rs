@@ -15,13 +15,16 @@ use std::{
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use futures_util::{stream, FutureExt, Sink, SinkExt, StreamExt};
+use futures_util::{
+    stream::{self, SplitSink, SplitStream},
+    FutureExt, Sink, SinkExt, StreamExt,
+};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::{
     net::TcpStream,
-    sync::{mpsc, watch, RwLock},
+    sync::{mpsc, watch, OwnedSemaphorePermit, RwLock, Semaphore},
     task::JoinHandle,
     time::{interval, interval_at, sleep, sleep_until, timeout, Instant, MissedTickBehavior},
 };
@@ -78,6 +81,8 @@ const CLOB_SEND_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const CLOB_BOOTSTRAP_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 const CLOB_READ_IDLE_TIMEOUT: StdDuration = StdDuration::from_secs(40);
 const CLOB_GRACEFUL_CLOSE_TIMEOUT: StdDuration = StdDuration::from_millis(100);
+const CLOB_INGRESS_FRAME_CAPACITY: usize = 2_048;
+const CLOB_INGRESS_BYTE_CAPACITY: usize = 16 * 1024 * 1024;
 const CLOB_PROVENANCE_VALUE_MAX_BYTES: usize = 128;
 const CLOB_ERROR_REASON_MAX_BYTES: usize = 256;
 const REFERENCE_CONNECT_TIMEOUT: StdDuration = StdDuration::from_secs(5);
@@ -98,6 +103,36 @@ const REFERENCE_STABLE_RESET_AFTER: StdDuration = StdDuration::from_secs(30);
 const REFERENCE_RETRY_JITTER_PERCENT: u64 = 20;
 
 type ClobSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type ClobSocketSink = SplitSink<ClobSocket, Message>;
+type ClobSocketStream = SplitStream<ClobSocket>;
+
+#[derive(Debug)]
+struct ClobIngressFrame {
+    message: Message,
+    received_at: DateTime<Utc>,
+    received_instant: Instant,
+    sequence: u64,
+    payload_bytes: usize,
+    _byte_permit: Option<OwnedSemaphorePermit>,
+}
+
+#[derive(Debug)]
+enum ClobIngressEvent {
+    Frame(ClobIngressFrame),
+    TransportError {
+        reason: String,
+        detail: ClobTransportErrorDetail,
+    },
+    Eof,
+}
+
+#[derive(Debug)]
+struct ClobIngressTransport {
+    sink: ClobSocketSink,
+    events: mpsc::Receiver<ClobIngressEvent>,
+    overflowed: Arc<AtomicBool>,
+    reader_task: JoinHandle<()>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BtcHeartbeatConfig {
@@ -454,6 +489,28 @@ pub struct BtcRuntimeMetrics {
     pub clob_active_last_inbound_frame_age_milliseconds: Option<u64>,
     #[serde(default)]
     pub clob_active_last_source_to_receive_lag_milliseconds: Option<i64>,
+    #[serde(default)]
+    pub clob_active_ingress_frames: u64,
+    #[serde(default)]
+    pub clob_active_ingress_bytes: u64,
+    #[serde(default)]
+    pub clob_active_last_ingress_sequence: u64,
+    #[serde(default)]
+    pub clob_active_ingress_queue_depth: u64,
+    #[serde(default)]
+    pub clob_active_last_ingress_queue_dwell_milliseconds: u64,
+    #[serde(default)]
+    pub clob_active_max_ingress_queue_dwell_milliseconds: u64,
+    #[serde(default)]
+    pub clob_active_ingress_overflows: u64,
+    #[serde(default)]
+    pub clob_active_last_frame_processing_milliseconds: u64,
+    #[serde(default)]
+    pub clob_active_max_frame_processing_milliseconds: u64,
+    #[serde(default)]
+    pub clob_active_last_shared_books_lock_wait_milliseconds: u64,
+    #[serde(default)]
+    pub clob_active_max_shared_books_lock_wait_milliseconds: u64,
     pub clob_active_heartbeat_probes: u64,
     pub clob_active_heartbeat_acknowledgements: u64,
     pub clob_active_last_heartbeat_sent_at: Option<DateTime<Utc>>,
@@ -811,6 +868,16 @@ struct ClobSocketTelemetry {
     last_frame_at: Option<DateTime<Utc>>,
     last_frame_instant: Option<Instant>,
     last_data_or_heartbeat_at: Option<DateTime<Utc>>,
+    ingress_frames: u64,
+    ingress_bytes: u64,
+    last_ingress_sequence: u64,
+    last_ingress_queue_dwell: StdDuration,
+    max_ingress_queue_dwell: StdDuration,
+    ingress_overflows: u64,
+    last_frame_processing: StdDuration,
+    max_frame_processing: StdDuration,
+    last_shared_books_lock_wait: StdDuration,
+    max_shared_books_lock_wait: StdDuration,
     remote_close_observed: bool,
     remote_close_code: Option<u16>,
     remote_close_reason: Option<String>,
@@ -834,6 +901,16 @@ impl ClobSocketTelemetry {
             last_frame_at: None,
             last_frame_instant: None,
             last_data_or_heartbeat_at: None,
+            ingress_frames: 0,
+            ingress_bytes: 0,
+            last_ingress_sequence: 0,
+            last_ingress_queue_dwell: StdDuration::ZERO,
+            max_ingress_queue_dwell: StdDuration::ZERO,
+            ingress_overflows: 0,
+            last_frame_processing: StdDuration::ZERO,
+            max_frame_processing: StdDuration::ZERO,
+            last_shared_books_lock_wait: StdDuration::ZERO,
+            max_shared_books_lock_wait: StdDuration::ZERO,
             remote_close_observed: false,
             remote_close_code: None,
             remote_close_reason: None,
@@ -844,6 +921,34 @@ impl ClobSocketTelemetry {
     fn record_frame(&mut self, received_at: DateTime<Utc>, received_instant: Instant) {
         self.last_frame_at = Some(received_at);
         self.last_frame_instant = Some(received_instant);
+    }
+
+    fn record_ingress_frame(&mut self, frame: &ClobIngressFrame, processing_at: Instant) {
+        let queue_dwell = processing_at.saturating_duration_since(frame.received_instant);
+        self.record_frame(frame.received_at, frame.received_instant);
+        self.ingress_frames = self.ingress_frames.saturating_add(1);
+        self.ingress_bytes = self
+            .ingress_bytes
+            .saturating_add(u64::try_from(frame.payload_bytes).unwrap_or(u64::MAX));
+        self.last_ingress_sequence = frame.sequence;
+        self.last_ingress_queue_dwell = queue_dwell;
+        self.max_ingress_queue_dwell = self.max_ingress_queue_dwell.max(queue_dwell);
+    }
+
+    fn record_ingress_overflow(&mut self) {
+        self.ingress_overflows = self.ingress_overflows.saturating_add(1);
+    }
+
+    fn record_frame_processing(
+        &mut self,
+        processing_duration: StdDuration,
+        shared_books_lock_wait: StdDuration,
+    ) {
+        self.last_frame_processing = processing_duration;
+        self.max_frame_processing = self.max_frame_processing.max(processing_duration);
+        self.last_shared_books_lock_wait = shared_books_lock_wait;
+        self.max_shared_books_lock_wait =
+            self.max_shared_books_lock_wait.max(shared_books_lock_wait);
     }
 
     fn record_heartbeat_probe(
@@ -1015,6 +1120,88 @@ fn clob_socket_provenance(
     provenance
 }
 
+fn start_clob_ingress(socket: ClobSocket) -> ClobIngressTransport {
+    let (sink, stream) = socket.split();
+    let (sender, events) = mpsc::channel(CLOB_INGRESS_FRAME_CAPACITY);
+    let byte_budget = Arc::new(Semaphore::new(CLOB_INGRESS_BYTE_CAPACITY));
+    let overflowed = Arc::new(AtomicBool::new(false));
+    let reader_overflowed = Arc::clone(&overflowed);
+    let reader_task = tokio::spawn(run_clob_ingress_reader(
+        stream,
+        sender,
+        reader_overflowed,
+        byte_budget,
+    ));
+    ClobIngressTransport {
+        sink,
+        events,
+        overflowed,
+        reader_task,
+    }
+}
+
+async fn run_clob_ingress_reader(
+    mut stream: ClobSocketStream,
+    sender: mpsc::Sender<ClobIngressEvent>,
+    overflowed: Arc<AtomicBool>,
+    byte_budget: Arc<Semaphore>,
+) {
+    let mut sequence = 0u64;
+    loop {
+        match stream.next().await {
+            Some(Ok(message)) => {
+                let received_instant = Instant::now();
+                let received_at = Utc::now();
+                sequence = sequence.saturating_add(1);
+                let payload_bytes = message.len();
+                let permit_count = match u32::try_from(payload_bytes.max(1)) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        overflowed.store(true, Ordering::Release);
+                        return;
+                    }
+                };
+                let byte_permit =
+                    match Arc::clone(&byte_budget).try_acquire_many_owned(permit_count) {
+                        Ok(permit) => permit,
+                        Err(_) => {
+                            overflowed.store(true, Ordering::Release);
+                            return;
+                        }
+                    };
+                let frame = ClobIngressEvent::Frame(ClobIngressFrame {
+                    payload_bytes,
+                    message,
+                    received_at,
+                    received_instant,
+                    sequence,
+                    _byte_permit: Some(byte_permit),
+                });
+                match sender.try_send(frame) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        overflowed.store(true, Ordering::Release);
+                        return;
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => return,
+                }
+            }
+            Some(Err(error)) => {
+                let detail = clob_transport_error_detail(&error);
+                let reason = bounded_clob_error_reason(&format!("transport_read_failed:{error}"));
+                let _ = sender
+                    .send(ClobIngressEvent::TransportError { reason, detail })
+                    .await;
+                return;
+            }
+            None => {
+                let _ = sender.send(ClobIngressEvent::Eof).await;
+                return;
+            }
+        }
+    }
+}
+
 fn clob_response_provenance(response: &ClobHandshakeResponse) -> ClobSocketProvenance {
     ClobSocketProvenance {
         peer_address: None,
@@ -1075,6 +1262,22 @@ fn publish_active_clob_socket_metrics(
         duration_milliseconds(telemetry.max_heartbeat_send_lateness);
     metrics.clob_active_last_pong_round_trip_milliseconds =
         telemetry.last_pong_round_trip.map(duration_milliseconds);
+    metrics.clob_active_ingress_frames = telemetry.ingress_frames;
+    metrics.clob_active_ingress_bytes = telemetry.ingress_bytes;
+    metrics.clob_active_last_ingress_sequence = telemetry.last_ingress_sequence;
+    metrics.clob_active_last_ingress_queue_dwell_milliseconds =
+        duration_milliseconds(telemetry.last_ingress_queue_dwell);
+    metrics.clob_active_max_ingress_queue_dwell_milliseconds =
+        duration_milliseconds(telemetry.max_ingress_queue_dwell);
+    metrics.clob_active_ingress_overflows = telemetry.ingress_overflows;
+    metrics.clob_active_last_frame_processing_milliseconds =
+        duration_milliseconds(telemetry.last_frame_processing);
+    metrics.clob_active_max_frame_processing_milliseconds =
+        duration_milliseconds(telemetry.max_frame_processing);
+    metrics.clob_active_last_shared_books_lock_wait_milliseconds =
+        duration_milliseconds(telemetry.last_shared_books_lock_wait);
+    metrics.clob_active_max_shared_books_lock_wait_milliseconds =
+        duration_milliseconds(telemetry.max_shared_books_lock_wait);
 }
 
 #[derive(Debug)]
@@ -1130,7 +1333,7 @@ where
 struct ClobEpoch {
     connection_id: Uuid,
     connection_epoch: i32,
-    socket: ClobSocket,
+    transport: ClobIngressTransport,
     registry: BookRegistry,
     markets: Vec<BtcIntervalMarket>,
     session: FeedSession,
@@ -1140,6 +1343,12 @@ struct ClobEpoch {
     watchdog: ClobFeedWatchdog,
     healthy_epoch: bool,
     books_usable: bool,
+}
+
+impl Drop for ClobEpoch {
+    fn drop(&mut self) {
+        self.transport.reader_task.abort();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1310,7 +1519,7 @@ async fn connect_clob_epoch(
         epoch: Box::new(ClobEpoch {
             connection_id,
             connection_epoch,
-            socket,
+            transport: start_clob_ingress(socket),
             registry,
             markets: desired_markets,
             session,
@@ -2948,7 +3157,7 @@ async fn update_clob_epoch_subscriptions(
             &delta.removed_assets,
             ClobSubscriptionOperation::Unsubscribe,
         );
-        match send_clob_text(&mut epoch.socket, payload, shutdown).await {
+        match send_clob_text(&mut epoch.transport.sink, payload, shutdown).await {
             Ok(()) => {}
             Err(ClobSendFailure::Shutdown) => return Err(ClobEpochUpdateError::Shutdown),
             Err(ClobSendFailure::Timeout) => {
@@ -2967,7 +3176,7 @@ async fn update_clob_epoch_subscriptions(
     if !delta.added_assets.is_empty() {
         let payload =
             clob_subscription_operation(&delta.added_assets, ClobSubscriptionOperation::Subscribe);
-        match send_clob_text(&mut epoch.socket, payload, shutdown).await {
+        match send_clob_text(&mut epoch.transport.sink, payload, shutdown).await {
             Ok(()) => {}
             Err(ClobSendFailure::Shutdown) => return Err(ClobEpochUpdateError::Shutdown),
             Err(ClobSendFailure::Timeout) => {
@@ -3008,14 +3217,40 @@ async fn publish_clob_registry(registry: &BookRegistry, shared_books: &Arc<RwLoc
     *shared_books.write().await = registry.clone();
 }
 
+async fn finish_active_clob_frame(
+    epoch: &mut ClobEpoch,
+    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
+    processing_started: Instant,
+    shared_books_lock_wait: StdDuration,
+) {
+    epoch.telemetry.record_frame_processing(
+        Instant::now().saturating_duration_since(processing_started),
+        shared_books_lock_wait,
+    );
+    let mut runtime_metrics = metrics.write().await;
+    runtime_metrics.clob_active_ingress_queue_depth =
+        u64::try_from(epoch.transport.events.len()).unwrap_or(u64::MAX);
+    publish_active_clob_socket_metrics(&mut runtime_metrics, &epoch.telemetry);
+}
+
 async fn apply_active_clob_frame(
     epoch: &mut ClobEpoch,
-    message: Message,
+    frame: ClobIngressFrame,
     shared_books: &Arc<RwLock<BookRegistry>>,
     metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
 ) -> ClobFrameAction {
-    let received_instant = Instant::now();
-    let received_at = Utc::now();
+    let processing_started = Instant::now();
+    let ingress_queue_depth = epoch.transport.events.len();
+    epoch
+        .telemetry
+        .record_ingress_frame(&frame, processing_started);
+    epoch.telemetry.last_shared_books_lock_wait = StdDuration::ZERO;
+    let ClobIngressFrame {
+        message,
+        received_at,
+        received_instant,
+        ..
+    } = frame;
     let pong_round_trip = match &message {
         Message::Text(text) => epoch
             .watchdog
@@ -3062,6 +3297,8 @@ async fn apply_active_clob_frame(
         runtime_metrics.clob_messages_received =
             runtime_metrics.clob_messages_received.saturating_add(1);
         runtime_metrics.clob_active_last_data_or_heartbeat_at = Some(received_at);
+        runtime_metrics.clob_active_ingress_queue_depth =
+            u64::try_from(ingress_queue_depth).unwrap_or(u64::MAX);
         publish_active_clob_socket_metrics(&mut runtime_metrics, &epoch.telemetry);
     }
     let messages = match parsed {
@@ -3069,12 +3306,18 @@ async fn apply_active_clob_frame(
         Err(error) => {
             epoch.registry.quarantine(FeedIntegrityStatus::DecodeError);
             epoch.session.decode_errors = epoch.session.decode_errors.saturating_add(1);
-            publish_clob_registry(&epoch.registry, shared_books).await;
+            let lock_wait_started = Instant::now();
+            let mut published_books = shared_books.write().await;
+            let shared_books_lock_wait =
+                Instant::now().saturating_duration_since(lock_wait_started);
+            *published_books = epoch.registry.clone();
+            drop(published_books);
             {
                 let mut runtime_metrics = metrics.write().await;
                 runtime_metrics.decode_errors = runtime_metrics.decode_errors.saturating_add(1);
             }
             record_error(metrics, error).await;
+            epoch.telemetry.last_shared_books_lock_wait = shared_books_lock_wait;
             return ClobFrameAction::Continue;
         }
     };
@@ -3120,11 +3363,15 @@ async fn apply_active_clob_frame(
         }
     }
     let frame_changed = !events.is_empty();
+    let mut shared_books_lock_wait = StdDuration::ZERO;
     if frame_changed {
+        let lock_wait_started = Instant::now();
         let mut published_books = shared_books.write().await;
+        shared_books_lock_wait = Instant::now().saturating_duration_since(lock_wait_started);
         published_books
             .publish_frame_books_from(&epoch.registry, frame_token_ids.iter().map(String::as_str));
     }
+    epoch.telemetry.last_shared_books_lock_wait = shared_books_lock_wait;
     ClobFrameAction::Continue
 }
 
@@ -3180,7 +3427,8 @@ async fn complete_clob_epoch_with_close(
 ) {
     let disconnected_at = Utc::now();
     let disconnected_instant = Instant::now();
-    match attempt_clob_close(&mut epoch.socket, close_action).await {
+    epoch.transport.reader_task.abort();
+    match attempt_clob_close(&mut epoch.transport.sink, close_action).await {
         ClobCloseOutcome::Skipped => {}
         ClobCloseOutcome::Completed => {
             tracing::debug!(
@@ -3498,40 +3746,75 @@ async fn run_clob_supervisor(
                 active
                     .as_mut()
                     .expect("CLOB socket branch is guarded")
-                    .socket
-                    .next()
+                    .transport
+                    .events
+                    .recv()
                     .await
             }, if active.is_some() => {
                 match event {
                     None => {
                         let epoch = active.as_mut().expect("CLOB epoch remains installed");
-                        epoch.telemetry.last_transport_error =
+                        if epoch.transport.overflowed.load(Ordering::Acquire) {
+                            epoch.telemetry.record_ingress_overflow();
+                            let mut runtime_metrics = metrics.write().await;
+                            publish_active_clob_socket_metrics(
+                                &mut runtime_metrics,
+                                &epoch.telemetry,
+                            );
+                            active_failure = Some((
+                                "ingress_queue_overflow".to_string(),
+                                ClobDisconnectCause::TransportFailure,
+                            ));
+                        } else {
+                            epoch.telemetry.last_transport_error =
+                                Some(ClobTransportErrorDetail::websocket_eof());
+                            active_failure = Some((
+                                "websocket_eof".to_string(),
+                                ClobDisconnectCause::TransportFailure,
+                            ));
+                        }
+                    }
+                    Some(ClobIngressEvent::TransportError { reason, detail }) => {
+                        active
+                            .as_mut()
+                            .expect("CLOB epoch remains installed")
+                            .telemetry
+                            .last_transport_error = Some(detail);
+                        active_failure = Some((reason, ClobDisconnectCause::TransportFailure));
+                    }
+                    Some(ClobIngressEvent::Eof) => {
+                        active
+                            .as_mut()
+                            .expect("CLOB epoch remains installed")
+                            .telemetry
+                            .last_transport_error =
                             Some(ClobTransportErrorDetail::websocket_eof());
                         active_failure = Some((
                             "websocket_eof".to_string(),
                             ClobDisconnectCause::TransportFailure,
                         ));
                     }
-                    Some(Err(error)) => {
+                    Some(ClobIngressEvent::Frame(frame)) => {
                         let epoch = active.as_mut().expect("CLOB epoch remains installed");
-                        epoch.telemetry.last_transport_error =
-                            Some(clob_transport_error_detail(&error));
-                        active_failure = Some((
-                            bounded_clob_error_reason(&format!("transport_read_failed:{error}")),
-                            ClobDisconnectCause::TransportFailure,
-                        ));
-                    }
-                    Some(Ok(message)) => {
-                        let epoch = active.as_mut().expect("CLOB epoch remains installed");
+                        let processing_started = Instant::now();
                         match apply_active_clob_frame(
                             epoch,
-                            message,
+                            frame,
                             &shared_books,
                             &metrics,
                         )
                         .await
                         {
                             ClobFrameAction::Disconnect => {
+                                let shared_books_lock_wait =
+                                    epoch.telemetry.last_shared_books_lock_wait;
+                                finish_active_clob_frame(
+                                    epoch,
+                                    &metrics,
+                                    processing_started,
+                                    shared_books_lock_wait,
+                                )
+                                .await;
                                 active_failure = Some((
                                     epoch
                                         .session
@@ -3562,6 +3845,15 @@ async fn run_clob_supervisor(
                                     epoch.connection_epoch,
                                     &mut consecutive_failures,
                                     &mut recovery_window,
+                                )
+                                .await;
+                                let shared_books_lock_wait =
+                                    epoch.telemetry.last_shared_books_lock_wait;
+                                finish_active_clob_frame(
+                                    epoch,
+                                    &metrics,
+                                    processing_started,
+                                    shared_books_lock_wait,
                                 )
                                 .await;
                             }
@@ -3773,7 +4065,7 @@ async fn run_clob_supervisor(
             scheduled_at = heartbeat.tick() => {
                 if let Some(epoch) = active.as_mut() {
                     match send_clob_text(
-                        &mut epoch.socket,
+                        &mut epoch.transport.sink,
                         "PING".to_string(),
                         &mut shutdown,
                     )
@@ -4280,6 +4572,17 @@ fn clear_clob_connection_metrics(
     metrics.clob_active_handshake_date = None;
     metrics.clob_active_last_data_or_heartbeat_at = None;
     metrics.clob_active_last_source_to_receive_lag_milliseconds = None;
+    metrics.clob_active_ingress_frames = 0;
+    metrics.clob_active_ingress_bytes = 0;
+    metrics.clob_active_last_ingress_sequence = 0;
+    metrics.clob_active_ingress_queue_depth = 0;
+    metrics.clob_active_last_ingress_queue_dwell_milliseconds = 0;
+    metrics.clob_active_max_ingress_queue_dwell_milliseconds = 0;
+    metrics.clob_active_ingress_overflows = 0;
+    metrics.clob_active_last_frame_processing_milliseconds = 0;
+    metrics.clob_active_max_frame_processing_milliseconds = 0;
+    metrics.clob_active_last_shared_books_lock_wait_milliseconds = 0;
+    metrics.clob_active_max_shared_books_lock_wait_milliseconds = 0;
     metrics.clob_active_heartbeat_probes = 0;
     metrics.clob_active_heartbeat_acknowledgements = 0;
     metrics.clob_active_last_heartbeat_sent_at = None;
@@ -4393,6 +4696,20 @@ fn log_clob_disconnect(
                 max_heartbeat_send_lateness_ms =
                     duration_milliseconds(telemetry.max_heartbeat_send_lateness),
                 last_frame_age_ms = ?last_frame_age_milliseconds,
+                ingress_frames = telemetry.ingress_frames,
+                ingress_bytes = telemetry.ingress_bytes,
+                last_ingress_sequence = telemetry.last_ingress_sequence,
+                last_ingress_queue_dwell_ms =
+                    duration_milliseconds(telemetry.last_ingress_queue_dwell),
+                max_ingress_queue_dwell_ms =
+                    duration_milliseconds(telemetry.max_ingress_queue_dwell),
+                ingress_overflows = telemetry.ingress_overflows,
+                last_frame_processing_ms = duration_milliseconds(telemetry.last_frame_processing),
+                max_frame_processing_ms = duration_milliseconds(telemetry.max_frame_processing),
+                last_shared_books_lock_wait_ms =
+                    duration_milliseconds(telemetry.last_shared_books_lock_wait),
+                max_shared_books_lock_wait_ms =
+                    duration_milliseconds(telemetry.max_shared_books_lock_wait),
                 remote_close_observed = telemetry.remote_close_observed,
                 remote_close_code = ?telemetry.remote_close_code,
                 remote_close_reason = ?telemetry.remote_close_reason.as_deref(),
@@ -8809,6 +9126,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clob_ingress_reader_drains_in_order_before_processing() {
+        let (client, mut server) = clob_socket_pair().await;
+        let mut transport = start_clob_ingress(client);
+        let sent_before = Utc::now();
+        for payload in ["first", "second", "third"] {
+            server
+                .send(Message::Text(payload.to_string().into()))
+                .await
+                .unwrap();
+        }
+        tokio::time::sleep(StdDuration::from_millis(20)).await;
+
+        assert_eq!(transport.events.len(), 3);
+        for (expected_sequence, expected_payload) in [(1, "first"), (2, "second"), (3, "third")] {
+            let event = timeout(StdDuration::from_secs(1), transport.events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let ClobIngressEvent::Frame(frame) = event else {
+                panic!("expected an ingress frame")
+            };
+            assert_eq!(frame.sequence, expected_sequence);
+            assert_eq!(frame.payload_bytes, expected_payload.len());
+            assert_eq!(frame.message.into_text().unwrap(), expected_payload);
+            assert!(frame.received_at >= sent_before);
+            assert!(frame.received_at <= Utc::now());
+        }
+    }
+
+    #[tokio::test]
+    async fn clob_ingress_overflow_invalidates_instead_of_dropping_and_continuing() {
+        let (client, mut server) = clob_socket_pair().await;
+        let transport = start_clob_ingress(client);
+        for _ in 0..=CLOB_INGRESS_FRAME_CAPACITY {
+            if server
+                .send(Message::Text("x".to_string().into()))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+
+        timeout(StdDuration::from_secs(2), async {
+            while !transport.overflowed.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(transport.overflowed.load(Ordering::Acquire));
+        assert_eq!(transport.events.len(), CLOB_INGRESS_FRAME_CAPACITY);
+        assert!(transport.reader_task.is_finished());
+    }
+
+    #[tokio::test]
+    async fn clob_ingress_is_scoped_to_its_connection_epoch() {
+        let (first_client, mut first_server) = clob_socket_pair().await;
+        let first_transport = start_clob_ingress(first_client);
+        first_server
+            .send(Message::Text("old-epoch".to_string().into()))
+            .await
+            .unwrap();
+        timeout(StdDuration::from_secs(1), async {
+            while first_transport.events.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(first_transport);
+
+        let (second_client, mut second_server) = clob_socket_pair().await;
+        let mut second_transport = start_clob_ingress(second_client);
+        second_server
+            .send(Message::Text("new-epoch".to_string().into()))
+            .await
+            .unwrap();
+        let event = timeout(StdDuration::from_secs(1), second_transport.events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let ClobIngressEvent::Frame(frame) = event else {
+            panic!("expected a new-epoch ingress frame")
+        };
+        assert_eq!(frame.sequence, 1);
+        assert_eq!(frame.message.into_text().unwrap(), "new-epoch");
+    }
+
+    #[tokio::test]
     async fn direct_clob_frame_publishes_canonical_book_without_persistence() {
         let current = market();
         let received_at = current.window_start + Duration::seconds(100);
@@ -8826,7 +9234,7 @@ mod tests {
         let mut epoch = ClobEpoch {
             connection_id,
             connection_epoch: 1,
-            socket,
+            transport: start_clob_ingress(socket),
             registry: registry.clone(),
             markets: vec![current.clone()],
             session: new_session(
@@ -8854,9 +9262,17 @@ mod tests {
             "asks": [{"price": "0.52", "size": "10"}]
         });
 
+        let message = Message::Text(payload.to_string().into());
         let action = apply_active_clob_frame(
             &mut epoch,
-            Message::Text(payload.to_string().into()),
+            ClobIngressFrame {
+                payload_bytes: message.len(),
+                message,
+                received_at,
+                received_instant,
+                sequence: 1,
+                _byte_permit: None,
+            },
             &shared_books,
             &metrics,
         )
@@ -8870,7 +9286,11 @@ mod tests {
             .unwrap();
         assert_eq!(checkpoint.best_bid, Some(dec!(0.48)));
         assert_eq!(checkpoint.best_ask, Some(dec!(0.52)));
-        assert_eq!(metrics.read().await.dropped_messages, 0);
+        let metrics = metrics.read().await;
+        assert_eq!(metrics.dropped_messages, 0);
+        assert_eq!(metrics.clob_active_ingress_frames, 1);
+        assert_eq!(metrics.clob_active_last_ingress_sequence, 1);
+        assert_eq!(metrics.clob_active_ingress_overflows, 0);
     }
 
     #[tokio::test]
@@ -8897,7 +9317,7 @@ mod tests {
         let mut epoch = ClobEpoch {
             connection_id,
             connection_epoch: 1,
-            socket,
+            transport: start_clob_ingress(socket),
             registry,
             markets: vec![current.clone()],
             session: new_session(
@@ -9227,7 +9647,7 @@ mod tests {
         let mut epoch = ClobEpoch {
             connection_id,
             connection_epoch: 1,
-            socket: client,
+            transport: start_clob_ingress(client),
             registry,
             markets: vec![current.clone()],
             session: new_session(
@@ -10471,6 +10891,17 @@ mod tests {
             clob_active_edge_request_id: Some("LIM-example".to_string()),
             clob_active_last_data_or_heartbeat_at: Some(updated_at),
             clob_active_last_source_to_receive_lag_milliseconds: Some(23_783),
+            clob_active_ingress_frames: 12,
+            clob_active_ingress_bytes: 4_096,
+            clob_active_last_ingress_sequence: 12,
+            clob_active_ingress_queue_depth: 3,
+            clob_active_last_ingress_queue_dwell_milliseconds: 7,
+            clob_active_max_ingress_queue_dwell_milliseconds: 11,
+            clob_active_ingress_overflows: 1,
+            clob_active_last_frame_processing_milliseconds: 5,
+            clob_active_max_frame_processing_milliseconds: 9,
+            clob_active_last_shared_books_lock_wait_milliseconds: 2,
+            clob_active_max_shared_books_lock_wait_milliseconds: 4,
             clob_active_heartbeat_probes: 11,
             clob_active_heartbeat_acknowledgements: 10,
             ..BtcRuntimeMetrics::default()
@@ -10489,6 +10920,23 @@ mod tests {
         assert_eq!(
             value["metrics"]["clob_active_last_source_to_receive_lag_milliseconds"],
             23_783
+        );
+        assert_eq!(value["metrics"]["clob_active_ingress_frames"], 12);
+        assert_eq!(value["metrics"]["clob_active_ingress_bytes"], 4_096);
+        assert_eq!(value["metrics"]["clob_active_last_ingress_sequence"], 12);
+        assert_eq!(value["metrics"]["clob_active_ingress_queue_depth"], 3);
+        assert_eq!(
+            value["metrics"]["clob_active_max_ingress_queue_dwell_milliseconds"],
+            11
+        );
+        assert_eq!(value["metrics"]["clob_active_ingress_overflows"], 1);
+        assert_eq!(
+            value["metrics"]["clob_active_max_frame_processing_milliseconds"],
+            9
+        );
+        assert_eq!(
+            value["metrics"]["clob_active_max_shared_books_lock_wait_milliseconds"],
+            4
         );
         assert_eq!(
             value["metrics"]["clob_active_subscription_target_fingerprint_sha256"],
@@ -10635,6 +11083,17 @@ mod tests {
             clob_active_handshake_date: Some("date".to_string()),
             clob_active_last_data_or_heartbeat_at: Some(updated_at),
             clob_active_last_source_to_receive_lag_milliseconds: Some(23_783),
+            clob_active_ingress_frames: 12,
+            clob_active_ingress_bytes: 4_096,
+            clob_active_last_ingress_sequence: 12,
+            clob_active_ingress_queue_depth: 3,
+            clob_active_last_ingress_queue_dwell_milliseconds: 7,
+            clob_active_max_ingress_queue_dwell_milliseconds: 11,
+            clob_active_ingress_overflows: 1,
+            clob_active_last_frame_processing_milliseconds: 5,
+            clob_active_max_frame_processing_milliseconds: 9,
+            clob_active_last_shared_books_lock_wait_milliseconds: 2,
+            clob_active_max_shared_books_lock_wait_milliseconds: 4,
             clob_active_heartbeat_probes: 4,
             clob_active_heartbeat_acknowledgements: 3,
             clob_active_last_heartbeat_sent_at: Some(updated_at),
@@ -10667,6 +11126,23 @@ mod tests {
         assert!(metrics
             .clob_active_last_source_to_receive_lag_milliseconds
             .is_none());
+        assert_eq!(metrics.clob_active_ingress_frames, 0);
+        assert_eq!(metrics.clob_active_ingress_bytes, 0);
+        assert_eq!(metrics.clob_active_last_ingress_sequence, 0);
+        assert_eq!(metrics.clob_active_ingress_queue_depth, 0);
+        assert_eq!(metrics.clob_active_last_ingress_queue_dwell_milliseconds, 0);
+        assert_eq!(metrics.clob_active_max_ingress_queue_dwell_milliseconds, 0);
+        assert_eq!(metrics.clob_active_ingress_overflows, 0);
+        assert_eq!(metrics.clob_active_last_frame_processing_milliseconds, 0);
+        assert_eq!(metrics.clob_active_max_frame_processing_milliseconds, 0);
+        assert_eq!(
+            metrics.clob_active_last_shared_books_lock_wait_milliseconds,
+            0
+        );
+        assert_eq!(
+            metrics.clob_active_max_shared_books_lock_wait_milliseconds,
+            0
+        );
         assert_eq!(metrics.clob_active_heartbeat_probes, 0);
         assert_eq!(metrics.clob_active_heartbeat_acknowledgements, 0);
         assert!(metrics.clob_active_last_heartbeat_sent_at.is_none());
