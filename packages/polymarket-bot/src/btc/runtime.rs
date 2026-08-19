@@ -7688,6 +7688,14 @@ async fn run_strategy_loop(
                     .on_observation(StrategyObservation { state: snapshot, readiness })
                     .await
                 {
+                    if is_retryable_strategy_database_error(&error) {
+                        tracing::warn!(
+                            error = %format!("{error:#}"),
+                            "BTC strategy database dependency unavailable; skipping this evaluation and preserving the trading process"
+                        );
+                        last_observation = None;
+                        continue;
+                    }
                     let error_chain = format!("{error:#}");
                     tracing::error!(
                         error = %error_chain,
@@ -8550,6 +8558,26 @@ fn retryable_postgres_primary_persistence_sqlstate(code: &str) -> bool {
             code,
             "55P03" | "57014" | "57P01" | "57P02" | "57P03" | "57P05" | "58030"
         )
+}
+
+fn is_retryable_strategy_database_error(error: &anyhow::Error) -> bool {
+    let Some(sqlx_error) = error.downcast_ref::<sqlx::Error>() else {
+        return false;
+    };
+    match sqlx_error {
+        sqlx::Error::Database(error) => {
+            let message = error.message().trim();
+            error
+                .code()
+                .as_deref()
+                .is_some_and(retryable_postgres_primary_persistence_sqlstate)
+                || message == "query_wait_timeout"
+                || message.starts_with("query_wait_timeout:")
+                || message == "sorry, too many clients already"
+        }
+        sqlx::Error::Io(_) | sqlx::Error::Tls(_) | sqlx::Error::PoolTimedOut => true,
+        _ => false,
+    }
 }
 
 fn is_retryable_primary_persistence_error(error: &anyhow::Error) -> bool {
@@ -10635,6 +10663,22 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
+    struct TransientDatabaseFailureStrategyRunner {
+        attempts: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl BtcStrategyRunner for TransientDatabaseFailureStrategyRunner {
+        async fn on_observation(&self, _observation: StrategyObservation) -> Result<()> {
+            if self.attempts.fetch_add(1, Ordering::Relaxed) == 0 {
+                return Err(anyhow::Error::new(sqlx::Error::PoolTimedOut)
+                    .context("failed to load BTC market fee schedule"));
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Default)]
     struct CountingStrategyRunner {
         callbacks: std::sync::atomic::AtomicUsize,
     }
@@ -10695,6 +10739,47 @@ mod tests {
         assert!(handle.is_running());
         assert!(handle.metrics.read().await.last_error.is_none());
         handle.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn transient_strategy_database_failure_retries_without_terminating_process() {
+        let config = BtcRuntimeConfig {
+            enabled: true,
+            strategy_interval: StdDuration::from_millis(1),
+            ..BtcRuntimeConfig::default()
+        };
+        let state = Arc::new(RwLock::new(RealtimeState {
+            last_updated_at: Some(Utc::now()),
+            ..RealtimeState::default()
+        }));
+        let strategy = Arc::new(TransientDatabaseFailureStrategyRunner::default());
+        let books = Arc::new(RwLock::new(BookRegistry::new(Uuid::new_v4())));
+        let handle = BtcPlaybookRuntimeHandle::start(config, strategy.clone(), state, books)
+            .expect("playbook must start");
+
+        tokio::time::timeout(StdDuration::from_secs(1), async {
+            while strategy.attempts.load(Ordering::Relaxed) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the unchanged observation must retry after database recovery");
+
+        assert!(handle.is_running());
+        let status = handle.metrics.read().await;
+        assert_eq!(status.strategy_errors, 0);
+        assert_eq!(status.strategy_callbacks, 1);
+        assert!(status.last_error.is_none());
+        drop(status);
+        handle.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn immutable_order_identity_collision_is_not_a_retryable_database_failure() {
+        let error = anyhow::anyhow!(
+            "client_order_id collides with immutable order identity, result, or reference execution evidence"
+        );
+        assert!(!is_retryable_strategy_database_error(&error));
     }
 
     #[tokio::test]
