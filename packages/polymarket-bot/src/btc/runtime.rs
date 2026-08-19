@@ -2170,7 +2170,7 @@ async fn record_primary_persistence_success(
             .saturating_add(1);
     }
     runtime_metrics.primary_persistence_consecutive_failures = 0;
-    if recovered && runtime_metrics.primary_persistence_queue_overflows == 0 {
+    if recovered {
         let mut realtime = state.write().await;
         if realtime.primary_persistence_degraded {
             realtime.primary_persistence_degraded = false;
@@ -2220,23 +2220,33 @@ async fn enqueue(
 ) -> PersistEnqueueOutcome {
     let item_kind = item.kind();
     match sender.try_send(item) {
-        Ok(()) => PersistEnqueueOutcome::Queued,
+        Ok(()) => {
+            if metrics.try_read().is_ok_and(|runtime_metrics| {
+                runtime_metrics.primary_persistence_consecutive_failures == 0
+            }) {
+                match state.try_write() {
+                    Ok(mut realtime) if realtime.primary_persistence_degraded => {
+                        realtime.primary_persistence_degraded = false;
+                        realtime.last_updated_at = Some(Utc::now());
+                    }
+                    Ok(_) | Err(_) => {}
+                }
+            }
+            PersistEnqueueOutcome::Queued
+        }
         Err(mpsc::error::TrySendError::Full(_)) => {
             let mut metrics = metrics.write().await;
             metrics.dropped_messages = metrics.dropped_messages.saturating_add(1);
-            let first_overflow = metrics.primary_persistence_queue_overflows == 0;
             metrics.primary_persistence_queue_overflows = metrics
                 .primary_persistence_queue_overflows
                 .saturating_add(1);
-            if first_overflow {
+            let mut realtime = state.write().await;
+            if !realtime.primary_persistence_degraded {
+                realtime.primary_persistence_degraded = true;
+                realtime.last_updated_at = Some(Utc::now());
                 metrics.last_error = Some(format!(
                     "BTC persistence queue saturated; dropped {item_kind}"
                 ));
-                let mut realtime = state.write().await;
-                if !realtime.primary_persistence_degraded {
-                    realtime.primary_persistence_degraded = true;
-                    realtime.last_updated_at = Some(Utc::now());
-                }
                 tracing::error!(item_kind, "primary persistence queue saturated");
             }
             PersistEnqueueOutcome::Saturated
@@ -9927,7 +9937,10 @@ mod tests {
     async fn primary_persistence_retries_the_same_item_and_recovers() {
         let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let state = Arc::new(RwLock::new(RealtimeState::default()));
-        let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
+        let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics {
+            primary_persistence_queue_overflows: 7,
+            ..BtcRuntimeMetrics::default()
+        }));
         let (_shutdown_sender, mut shutdown) = watch::channel(false);
 
         let outcome = tokio::time::timeout(
@@ -9958,6 +9971,7 @@ mod tests {
         assert_eq!(status.primary_persistence_retryable_errors, 2);
         assert_eq!(status.primary_persistence_consecutive_failures, 0);
         assert_eq!(status.primary_persistence_recoveries, 1);
+        assert_eq!(status.primary_persistence_queue_overflows, 7);
         assert_eq!(status.persistence_items_written, 1);
         assert_eq!(status.persistence_errors, 0);
         drop(status);
@@ -10379,7 +10393,7 @@ mod tests {
     async fn primary_writer_queue_distinguishes_saturation_from_closure() {
         let state = Arc::new(RwLock::new(RealtimeState::default()));
         let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
-        let (sender, _receiver) = mpsc::channel(1);
+        let (sender, mut receiver) = mpsc::channel(1);
         sender
             .try_send(PersistItem::ReferenceTick(tick(Utc::now(), dec!(99))))
             .unwrap();
@@ -10402,11 +10416,28 @@ mod tests {
         drop(status);
         assert!(!state.read().await.primary_persistence_available());
 
-        record_primary_persistence_success(&state, &metrics).await;
-        assert!(
-            !state.read().await.primary_persistence_available(),
-            "a dropped durable item must latch the runtime fail-closed"
-        );
+        receiver.recv().await.expect("queued item must drain");
+        let recovered = enqueue(
+            &sender,
+            PersistItem::ReferenceTick(tick(Utc::now(), dec!(101))),
+            &state,
+            &metrics,
+        )
+        .await;
+        assert_eq!(recovered, PersistEnqueueOutcome::Queued);
+        assert!(state.read().await.primary_persistence_available());
+        assert_eq!(metrics.read().await.primary_persistence_queue_overflows, 1);
+
+        let saturated_again = enqueue(
+            &sender,
+            PersistItem::ReferenceTick(tick(Utc::now(), dec!(102))),
+            &state,
+            &metrics,
+        )
+        .await;
+        assert_eq!(saturated_again, PersistEnqueueOutcome::Saturated);
+        assert!(!state.read().await.primary_persistence_available());
+        assert_eq!(metrics.read().await.primary_persistence_queue_overflows, 2);
 
         let closed_state = Arc::new(RwLock::new(RealtimeState::default()));
         let closed_metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
@@ -10414,7 +10445,7 @@ mod tests {
         drop(closed_receiver);
         let closed = enqueue(
             &closed_sender,
-            PersistItem::ReferenceTick(tick(Utc::now(), dec!(101))),
+            PersistItem::ReferenceTick(tick(Utc::now(), dec!(103))),
             &closed_state,
             &closed_metrics,
         )
