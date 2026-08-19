@@ -2179,7 +2179,7 @@ impl BtcProcessManager {
                     self.repository.clone(),
                     self.store.clone(),
                     components.venue,
-                    books,
+                    books.clone(),
                     components.lifecycle,
                     BtcProcessConfig {
                         run_id,
@@ -2201,7 +2201,7 @@ impl BtcProcessManager {
                 .await
                 .context("failed to reattach immutable BTC run before feed resume")?;
             Ok((
-                BtcPlaybookRuntimeHandle::start(runtime_config, process_runner, state)?,
+                BtcPlaybookRuntimeHandle::start(runtime_config, process_runner, state, books)?,
                 live_process_venue,
             ))
         }
@@ -2347,7 +2347,7 @@ impl BtcProcessManager {
                     self.repository.clone(),
                     self.store.clone(),
                     components.venue,
-                    books,
+                    books.clone(),
                     components.lifecycle,
                     BtcProcessConfig {
                         run_id,
@@ -2369,7 +2369,7 @@ impl BtcProcessManager {
                 .await
                 .context("failed to initialize immutable BTC run before feed startup")?;
             Ok((
-                BtcPlaybookRuntimeHandle::start(runtime_config, process_runner, state)?,
+                BtcPlaybookRuntimeHandle::start(runtime_config, process_runner, state, books)?,
                 live_process_venue,
             ))
         }
@@ -2997,8 +2997,8 @@ impl BtcProcessManager {
             .as_ref()
             .and_then(|shared| shared.runtime.as_ref().map(BtcRuntimeHandle::status_inputs));
         let shared_status = match shared_status_inputs {
-            Some((state, metrics, config, running)) => {
-                Some(runtime_status_from_inputs(state, metrics, config, running).await)
+            Some((state, books, metrics, config, running)) => {
+                Some(runtime_status_from_inputs(state, books, metrics, config, running).await)
             }
             None => None,
         };
@@ -3023,8 +3023,8 @@ impl BtcProcessManager {
                 };
                 (active.run_id, active.runtime.status_inputs())
             };
-            let (run_id, (state, metrics, config, running)) = status_input;
-            let status = runtime_status_from_inputs(state, metrics, config, running).await;
+            let (run_id, (state, books, metrics, config, running)) = status_input;
+            let status = runtime_status_from_inputs(state, books, metrics, config, running).await;
             let runtime_running = status.running;
             let last_error = status.metrics.last_error;
             if runtime_running {
@@ -3097,8 +3097,8 @@ impl BtcProcessManager {
             .as_ref()
             .and_then(|shared| shared.runtime.as_ref().map(BtcRuntimeHandle::status_inputs));
         let shared_market_data = match shared_inputs {
-            Some((state, metrics, config, running)) => serde_json::to_value(
-                runtime_status_from_inputs(state, metrics, config, running).await,
+            Some((state, books, metrics, config, running)) => serde_json::to_value(
+                runtime_status_from_inputs(state, books, metrics, config, running).await,
             )
             .unwrap_or_else(|_| serde_json::json!({"running": false})),
             None => serde_json::json!({
@@ -3149,8 +3149,9 @@ impl BtcProcessManager {
             inputs,
         )) = active
         {
-            let (state, metrics, config, running) = inputs;
-            let mut runtime = runtime_status_from_inputs(state, metrics, config, running).await;
+            let (state, books, metrics, config, running) = inputs;
+            let mut runtime =
+                runtime_status_from_inputs(state, books, metrics, config, running).await;
             runtime.readiness = process_runtime_readiness(&strategy, &runtime.readiness);
             let mut status = serde_json::json!({
                 "capability_enabled": true,

@@ -1546,6 +1546,7 @@ impl ReferenceRecoveryWindow {
 
 pub type BtcRuntimeStatusInputs = (
     Arc<RwLock<RealtimeState>>,
+    Arc<RwLock<BookRegistry>>,
     Arc<RwLock<BtcRuntimeMetrics>>,
     BtcRuntimeConfig,
     Arc<AtomicBool>,
@@ -1833,6 +1834,7 @@ impl BtcRuntimeHandle {
     pub fn status_inputs(&self) -> BtcRuntimeStatusInputs {
         (
             self.state.clone(),
+            self.books.clone(),
             self.metrics.clone(),
             self.config.clone(),
             self.running.clone(),
@@ -1840,7 +1842,7 @@ impl BtcRuntimeHandle {
     }
 
     pub async fn status(&self) -> BtcRuntimeStatus {
-        let state = self.state.read().await.clone();
+        let state = realtime_snapshot(&self.state, &self.books).await;
         let checked_at = Utc::now();
         let readiness = state.readiness(
             checked_at,
@@ -1890,6 +1892,7 @@ pub struct BtcPlaybookRuntimeHandle {
     shutdown: watch::Sender<bool>,
     task: Option<JoinHandle<()>>,
     state: Arc<RwLock<RealtimeState>>,
+    books: Arc<RwLock<BookRegistry>>,
     metrics: Arc<RwLock<BtcRuntimeMetrics>>,
     config: BtcRuntimeConfig,
     running: Arc<AtomicBool>,
@@ -1901,6 +1904,7 @@ impl BtcPlaybookRuntimeHandle {
         config: BtcRuntimeConfig,
         strategy: Arc<dyn BtcStrategyRunner>,
         state: Arc<RwLock<RealtimeState>>,
+        books: Arc<RwLock<BookRegistry>>,
     ) -> Result<Self> {
         config.validate()?;
         let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
@@ -1912,6 +1916,7 @@ impl BtcPlaybookRuntimeHandle {
                 config.clone(),
                 strategy.clone(),
                 state.clone(),
+                books.clone(),
                 metrics.clone(),
                 shutdown_rx,
             ),
@@ -1922,6 +1927,7 @@ impl BtcPlaybookRuntimeHandle {
             shutdown,
             task: Some(task),
             state,
+            books,
             metrics,
             config,
             running,
@@ -1936,6 +1942,7 @@ impl BtcPlaybookRuntimeHandle {
     pub fn status_inputs(&self) -> BtcRuntimeStatusInputs {
         (
             self.state.clone(),
+            self.books.clone(),
             self.metrics.clone(),
             self.config.clone(),
             self.running.clone(),
@@ -1945,6 +1952,7 @@ impl BtcPlaybookRuntimeHandle {
     pub async fn status(&self) -> BtcRuntimeStatus {
         runtime_status_from_inputs(
             self.state.clone(),
+            self.books.clone(),
             self.metrics.clone(),
             self.config.clone(),
             self.running.clone(),
@@ -1982,11 +1990,12 @@ impl Drop for BtcPlaybookRuntimeHandle {
 
 pub async fn runtime_status_from_inputs(
     state: Arc<RwLock<RealtimeState>>,
+    books: Arc<RwLock<BookRegistry>>,
     metrics: Arc<RwLock<BtcRuntimeMetrics>>,
     config: BtcRuntimeConfig,
     running: Arc<AtomicBool>,
 ) -> BtcRuntimeStatus {
-    let state = state.read().await.clone();
+    let state = realtime_snapshot(&state, &books).await;
     let checked_at = Utc::now();
     let readiness = state.readiness(
         checked_at,
@@ -1999,6 +2008,30 @@ pub async fn runtime_status_from_inputs(
         readiness,
         metrics: runtime_metrics_snapshot(metrics.read().await.clone(), checked_at),
     }
+}
+
+async fn realtime_snapshot(
+    state: &Arc<RwLock<RealtimeState>>,
+    books: &Arc<RwLock<BookRegistry>>,
+) -> RealtimeState {
+    let mut snapshot = state.read().await.clone();
+    let books = books.read().await;
+    snapshot.update_books(&books);
+    if let Some(book_received_at) = snapshot
+        .books
+        .values()
+        .filter_map(|book| book.received_at)
+        .max()
+    {
+        snapshot.last_updated_at = Some(
+            snapshot
+                .last_updated_at
+                .map_or(book_received_at, |updated_at| {
+                    updated_at.max(book_received_at)
+                }),
+        );
+    }
+    snapshot
 }
 
 #[derive(Debug)]
@@ -2971,10 +3004,13 @@ enum ClobFrameAction {
     Disconnect,
 }
 
+async fn publish_clob_registry(registry: &BookRegistry, shared_books: &Arc<RwLock<BookRegistry>>) {
+    *shared_books.write().await = registry.clone();
+}
+
 async fn apply_active_clob_frame(
     epoch: &mut ClobEpoch,
     message: Message,
-    state: &Arc<RwLock<RealtimeState>>,
     shared_books: &Arc<RwLock<BookRegistry>>,
     metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
 ) -> ClobFrameAction {
@@ -3033,13 +3069,7 @@ async fn apply_active_clob_frame(
         Err(error) => {
             epoch.registry.quarantine(FeedIntegrityStatus::DecodeError);
             epoch.session.decode_errors = epoch.session.decode_errors.saturating_add(1);
-            {
-                let mut published_books = shared_books.write().await;
-                let mut shared = state.write().await;
-                *published_books = epoch.registry.clone();
-                shared.update_books(&epoch.registry);
-                shared.last_updated_at = Some(received_at);
-            }
+            publish_clob_registry(&epoch.registry, shared_books).await;
             {
                 let mut runtime_metrics = metrics.write().await;
                 runtime_metrics.decode_errors = runtime_metrics.decode_errors.saturating_add(1);
@@ -3092,11 +3122,8 @@ async fn apply_active_clob_frame(
     let frame_changed = !events.is_empty();
     if frame_changed {
         let mut published_books = shared_books.write().await;
-        let mut shared = state.write().await;
         published_books
             .publish_frame_books_from(&epoch.registry, frame_token_ids.iter().map(String::as_str));
-        shared.update_books(&epoch.registry);
-        shared.last_updated_at = Some(received_at);
     }
     ClobFrameAction::Continue
 }
@@ -3417,13 +3444,7 @@ async fn run_clob_supervisor(
                             {
                                 Ok(delta) => {
                                     let updated_at = Utc::now();
-                                    {
-                                        let mut published_books = shared_books.write().await;
-                                        let mut shared = state.write().await;
-                                        *published_books = epoch.registry.clone();
-                                        shared.update_books(&epoch.registry);
-                                        shared.last_updated_at = Some(updated_at);
-                                    }
+                                    publish_clob_registry(&epoch.registry, &shared_books).await;
                                     if !delta.is_empty() {
                                         let mut runtime_metrics = metrics.write().await;
                                         runtime_metrics.clob_subscription_updates = runtime_metrics
@@ -3505,7 +3526,6 @@ async fn run_clob_supervisor(
                         match apply_active_clob_frame(
                             epoch,
                             message,
-                            &state,
                             &shared_books,
                             &metrics,
                         )
@@ -3656,14 +3676,7 @@ async fn run_clob_supervisor(
                             .await;
                             retry_at = Instant::now();
                         } else {
-                            let connected_at = Utc::now();
-                            {
-                                let mut published_books = shared_books.write().await;
-                                let mut shared = state.write().await;
-                                *published_books = epoch.registry.clone();
-                                shared.update_books(&epoch.registry);
-                                shared.last_updated_at = Some(connected_at);
-                            }
+                            publish_clob_registry(&epoch.registry, &shared_books).await;
                             {
                                 let mut runtime_metrics = metrics.write().await;
                                 runtime_metrics.clob_connections_established = runtime_metrics
@@ -3821,13 +3834,7 @@ async fn run_clob_supervisor(
             }
             let unavailable_at = Utc::now();
             let unavailable_instant = Instant::now();
-            quarantine_clob_books_on_disconnect(
-                &mut failed.registry,
-                &state,
-                &shared_books,
-                unavailable_at,
-            )
-            .await;
+            quarantine_clob_books_on_disconnect(&mut failed.registry, &shared_books).await;
             record_clob_epoch_unavailable(
                 &metrics,
                 failed.connection_id,
@@ -3868,8 +3875,7 @@ async fn run_clob_supervisor(
     let stop_cause = ClobDisconnectCause::Shutdown;
     let stop_reason = "shutdown";
     if let Some(mut epoch) = active.take() {
-        quarantine_clob_books_on_disconnect(&mut epoch.registry, &state, &shared_books, Utc::now())
-            .await;
+        quarantine_clob_books_on_disconnect(&mut epoch.registry, &shared_books).await;
         let close_action = clob_stop_close_action(&epoch.telemetry);
         complete_clob_epoch_with_close(
             &mut epoch,
@@ -3941,16 +3947,10 @@ fn market_watch_disposition(
 
 async fn quarantine_clob_books_on_disconnect(
     registry: &mut BookRegistry,
-    state: &Arc<RwLock<RealtimeState>>,
     shared_books: &Arc<RwLock<BookRegistry>>,
-    disconnected_at: DateTime<Utc>,
 ) {
     registry.quarantine(FeedIntegrityStatus::Stale);
-    let mut published_books = shared_books.write().await;
-    let mut shared = state.write().await;
-    *published_books = registry.clone();
-    shared.update_books(registry);
-    shared.last_updated_at = Some(disconnected_at);
+    publish_clob_registry(registry, shared_books).await;
 }
 
 #[cfg(test)]
@@ -7330,6 +7330,7 @@ async fn run_strategy_loop(
     config: BtcRuntimeConfig,
     strategy: Arc<dyn BtcStrategyRunner>,
     state: Arc<RwLock<RealtimeState>>,
+    books: Arc<RwLock<BookRegistry>>,
     metrics: Arc<RwLock<BtcRuntimeMetrics>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -7338,7 +7339,7 @@ async fn run_strategy_loop(
     }
     let mut ticker = interval(config.strategy_interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut last_observed_at = None;
+    let mut last_observation = None;
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
@@ -7349,11 +7350,15 @@ async fn run_strategy_loop(
                         "BTC reconciliation maintenance failed; runtime remains active"
                     );
                 }
-                let snapshot = state.read().await.clone();
-                if snapshot.last_updated_at == last_observed_at {
+                let snapshot = realtime_snapshot(&state, &books).await;
+                let observation = (
+                    snapshot.last_updated_at,
+                    snapshot.books.values().cloned().collect::<Vec<_>>(),
+                );
+                if last_observation.as_ref() == Some(&observation) {
                     continue;
                 }
-                last_observed_at = snapshot.last_updated_at;
+                last_observation = Some(observation);
                 if !snapshot.primary_persistence_available() {
                     continue;
                 }
@@ -8838,7 +8843,6 @@ mod tests {
             healthy_epoch: false,
             books_usable: false,
         };
-        let state = Arc::new(RwLock::new(RealtimeState::default()));
         let shared_books = Arc::new(RwLock::new(registry));
         let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
         let payload = serde_json::json!({
@@ -8853,7 +8857,6 @@ mod tests {
         let action = apply_active_clob_frame(
             &mut epoch,
             Message::Text(payload.to_string().into()),
-            &state,
             &shared_books,
             &metrics,
         )
@@ -9731,9 +9734,9 @@ mod tests {
                 .ready
         );
 
-        quarantine_clob_books_on_disconnect(&mut registry, &state, &shared_books, checked_at).await;
+        quarantine_clob_books_on_disconnect(&mut registry, &shared_books).await;
 
-        let readiness = state.read().await.readiness(
+        let readiness = realtime_snapshot(&state, &shared_books).await.readiness(
             checked_at + Duration::milliseconds(1),
             Duration::seconds(2),
             Duration::seconds(2),
@@ -10255,7 +10258,9 @@ mod tests {
             ..RealtimeState::default()
         }));
         let strategy = Arc::new(RecoverableReconciliationStrategyRunner::default());
-        let handle = BtcPlaybookRuntimeHandle::start(config, strategy.clone(), state).unwrap();
+        let books = Arc::new(RwLock::new(BookRegistry::new(Uuid::new_v4())));
+        let handle =
+            BtcPlaybookRuntimeHandle::start(config, strategy.clone(), state, books).unwrap();
 
         tokio::time::timeout(StdDuration::from_secs(1), async {
             while strategy.reconciliation_attempts.load(Ordering::Relaxed) < 2
@@ -10286,8 +10291,10 @@ mod tests {
             ..RealtimeState::default()
         }));
         let strategy = Arc::new(CountingStrategyRunner::default());
-        let handle = BtcPlaybookRuntimeHandle::start(config, strategy.clone(), state.clone())
-            .expect("playbook must start");
+        let books = Arc::new(RwLock::new(BookRegistry::new(Uuid::new_v4())));
+        let handle =
+            BtcPlaybookRuntimeHandle::start(config, strategy.clone(), state.clone(), books)
+                .expect("playbook must start");
 
         tokio::time::sleep(StdDuration::from_millis(20)).await;
         assert_eq!(strategy.callbacks.load(Ordering::Relaxed), 0);
@@ -10320,15 +10327,21 @@ mod tests {
             ..RealtimeState::default()
         };
         let state = Arc::new(RwLock::new(state));
+        let books = Arc::new(RwLock::new(BookRegistry::new(Uuid::new_v4())));
         let failing = BtcPlaybookRuntimeHandle::start(
             config.clone(),
             Arc::new(FailingStrategyRunner),
             state.clone(),
+            books.clone(),
         )
         .unwrap();
-        let healthy =
-            BtcPlaybookRuntimeHandle::start(config, Arc::new(NoopStrategyRunner), state.clone())
-                .unwrap();
+        let healthy = BtcPlaybookRuntimeHandle::start(
+            config,
+            Arc::new(NoopStrategyRunner),
+            state.clone(),
+            books,
+        )
+        .unwrap();
 
         tokio::time::timeout(StdDuration::from_secs(1), async {
             while failing.is_running() {
@@ -10464,6 +10477,7 @@ mod tests {
         }));
         let status = runtime_status_from_inputs(
             Arc::new(RwLock::new(RealtimeState::default())),
+            Arc::new(RwLock::new(BookRegistry::new(Uuid::new_v4()))),
             metrics,
             BtcRuntimeConfig::default(),
             Arc::new(AtomicBool::new(true)),
@@ -10522,6 +10536,7 @@ mod tests {
         }));
         let status = runtime_status_from_inputs(
             Arc::new(RwLock::new(RealtimeState::default())),
+            Arc::new(RwLock::new(BookRegistry::new(Uuid::new_v4()))),
             metrics,
             BtcRuntimeConfig::default(),
             Arc::new(AtomicBool::new(true)),
