@@ -615,53 +615,27 @@ struct SamplingClock {
     next_sample_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SamplingClaim {
-    should_sample: bool,
-    missed_slots: Option<(DateTime<Utc>, DateTime<Utc>)>,
-}
-
 impl SamplingClock {
-    fn claim(&mut self, received_at: DateTime<Utc>, interval_ms: u64) -> SamplingClaim {
+    fn should_sample(&mut self, received_at: DateTime<Utc>, interval_ms: u64) -> bool {
         let Ok(interval_ms) = i64::try_from(interval_ms) else {
-            return SamplingClaim {
-                should_sample: false,
-                missed_slots: None,
-            };
+            return false;
         };
         let interval = chrono::Duration::milliseconds(interval_ms);
         let Some(mut next) = self.next_sample_at else {
             self.next_sample_at = received_at.checked_add_signed(interval);
-            return SamplingClaim {
-                should_sample: true,
-                missed_slots: None,
-            };
+            return true;
         };
         if received_at < next {
-            return SamplingClaim {
-                should_sample: false,
-                missed_slots: None,
-            };
+            return false;
         }
-        let first_missed = next;
-        let mut last_missed = None;
         while next <= received_at {
             let Some(advanced) = next.checked_add_signed(interval) else {
-                return SamplingClaim {
-                    should_sample: false,
-                    missed_slots: None,
-                };
+                return false;
             };
-            if advanced <= received_at {
-                last_missed = Some(next);
-            }
             next = advanced;
         }
         self.next_sample_at = Some(next);
-        SamplingClaim {
-            should_sample: true,
-            missed_slots: last_missed.map(|last| (first_missed, last)),
-        }
+        true
     }
 }
 
@@ -2011,28 +1985,7 @@ impl BinanceSpotL2SnapshotStrategy {
         continuity.last_update_id = Some(buffered.update.final_update_id);
         continuity.last_source_timestamp = Some(buffered.update.source_timestamp);
         continuity.last_received_at = Some(buffered.received_at);
-        let sampling_claim =
-            sampling_clock.claim(buffered.received_at, self.config.sample_interval_ms);
-        if let Some((first_missed, last_missed)) = sampling_claim.missed_slots {
-            let message = format!(
-                "Binance L2 sampler skipped receipt slots {first_missed} through {last_missed}"
-            );
-            writer
-                .record_gap(GapObservation {
-                    kind: "local_sampling_cadence",
-                    code: "binance_l2_sampling_slot_gap",
-                    message: &message,
-                    source_start: None,
-                    source_end: None,
-                    start_cursor: Some(format!(
-                        "sampling_slot:{}",
-                        first_missed.timestamp_millis()
-                    )),
-                    end_cursor: Some(format!("sampling_slot:{}", last_missed.timestamp_millis())),
-                })
-                .await?;
-        }
-        if sampling_claim.should_sample {
+        if sampling_clock.should_sample(buffered.received_at, self.config.sample_interval_ms) {
             let sample = match book.sample(self.config.top_n) {
                 Ok(sample) => sample,
                 Err(error) => {
@@ -2098,7 +2051,6 @@ fn gap_was_recorded(code: &str) -> bool {
     matches!(
         code,
         "binance_l2_sequence_gap"
-            | "binance_l2_sampling_slot_gap"
             | "binance_l2_buffer_overflow"
             | "binance_l2_book_too_large"
             | "binance_l2_crossed_book"
@@ -2288,31 +2240,11 @@ mod tests {
             .single()
             .expect("timestamp");
         let mut clock = SamplingClock::default();
-        assert!(clock.claim(start, 1_000).should_sample);
-        assert!(
-            !clock
-                .claim(start + TimeDelta::milliseconds(999), 1_000)
-                .should_sample
-        );
-        assert!(
-            clock
-                .claim(start + TimeDelta::milliseconds(1_000), 1_000)
-                .should_sample
-        );
-        let delayed = clock.claim(start + TimeDelta::milliseconds(5_500), 1_000);
-        assert!(delayed.should_sample);
-        assert_eq!(
-            delayed.missed_slots,
-            Some((
-                start + TimeDelta::milliseconds(2_000),
-                start + TimeDelta::milliseconds(4_000),
-            ))
-        );
-        assert!(
-            !clock
-                .claim(start + TimeDelta::milliseconds(5_999), 1_000)
-                .should_sample
-        );
+        assert!(clock.should_sample(start, 1_000));
+        assert!(!clock.should_sample(start + TimeDelta::milliseconds(999), 1_000));
+        assert!(clock.should_sample(start + TimeDelta::milliseconds(1_000), 1_000));
+        assert!(clock.should_sample(start + TimeDelta::milliseconds(5_500), 1_000));
+        assert!(!clock.should_sample(start + TimeDelta::milliseconds(5_999), 1_000));
     }
 
     #[test]
