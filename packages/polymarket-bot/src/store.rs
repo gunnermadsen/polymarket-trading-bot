@@ -15,9 +15,14 @@ use crate::{
     },
     fees::{dynamic_crypto_taker_fee, sealed_dynamic_fee_rate},
     models::{
-        FillRecord, OrderRecord, OrderRequest, OrderState, TradingProcess, TradingProcessConfig,
+        FillRecord, OrderRecord, OrderRequest, OrderSide, OrderState, TradingProcess,
+        TradingProcessConfig,
     },
 };
+
+fn live_buy_notional_rounding_tolerance_usd() -> Decimal {
+    Decimal::new(1, 6)
+}
 
 #[derive(Clone)]
 pub struct Store {
@@ -2663,10 +2668,11 @@ impl Store {
             .await
     }
 
-    pub async fn order_filled_size(&self, order_id: &str) -> Result<Decimal> {
-        sqlx::query_scalar::<_, Decimal>(
+    pub async fn order_filled_economics(&self, order_id: &str) -> Result<(Decimal, Decimal)> {
+        sqlx::query_as::<_, (Decimal, Decimal)>(
             r#"
-            SELECT COALESCE(SUM(size), 0)::numeric
+            SELECT COALESCE(SUM(size), 0)::numeric,
+                   COALESCE(SUM(price * size), 0)::numeric
             FROM polymarket.fills
             WHERE order_id = $1
             "#,
@@ -2674,7 +2680,7 @@ impl Store {
         .bind(order_id)
         .fetch_one(&self.pool)
         .await
-        .context("failed to calculate cumulative order fill size")
+        .context("failed to calculate cumulative order fill economics")
     }
 
     /// Applies cumulative fill progress without permitting a late partial-fill event to downgrade
@@ -3362,29 +3368,25 @@ fn build_live_process_exposure_snapshot(
     let mut filled_buy_notional_usd = Decimal::ZERO;
     let mut filled_buy_fees_usd = Decimal::ZERO;
     let mut fill_ids = HashSet::with_capacity(fills.len());
-    let mut filled_sizes_by_order: HashMap<&str, (Decimal, Decimal)> = HashMap::new();
+    let mut filled_economics_by_order: HashMap<&str, (Decimal, Decimal)> = HashMap::new();
     for row in fills {
         let order = validate_live_exposure_fill(row, process_id, as_of)?;
         if !fill_ids.insert(row.fill_id) {
             bail!("live process exposure contains a duplicate fill identity");
         }
-        let filled = filled_sizes_by_order
+        let filled = filled_economics_by_order
             .entry(row.fill_order_id.as_str())
-            .or_insert((Decimal::ZERO, order.request.size));
-        if filled.1 != order.request.size {
-            bail!("live process fill evidence has conflicting order sizes");
-        }
+            .or_insert((Decimal::ZERO, Decimal::ZERO));
         filled.0 = checked_live_exposure_add(filled.0, row.fill_size, "filled order size")?;
-        if filled.0 > filled.1 {
-            bail!("live process cumulative fill size exceeds its requested order size");
-        }
+        let fill_notional =
+            checked_live_exposure_mul(row.fill_price, row.fill_size, "filled order notional")?;
+        filled.1 = checked_live_exposure_add(filled.1, fill_notional, "filled order notional")?;
+        validate_live_cumulative_fill_economics(&order.request, filled.0, filled.1)?;
 
         if order.request.side == crate::models::OrderSide::Buy {
-            let notional =
-                checked_live_exposure_mul(row.fill_price, row.fill_size, "filled BUY notional")?;
             filled_buy_notional_usd = checked_live_exposure_add(
                 filled_buy_notional_usd,
-                notional,
+                fill_notional,
                 "filled BUY notional",
             )?;
             filled_buy_fees_usd =
@@ -3605,6 +3607,13 @@ fn validate_live_exposure_fill(
         order_size,
     )?;
     live_requested_exposure(&order.request)?;
+    let marketable = match order.request.side {
+        OrderSide::Buy => row.fill_price <= order.request.price,
+        OrderSide::Sell => row.fill_price >= order.request.price,
+    };
+    if !marketable {
+        bail!("live fill exposure violates its persisted order limit price");
+    }
     Ok(order)
 }
 
@@ -3647,6 +3656,33 @@ fn live_requested_exposure(request: &OrderRequest) -> Result<(Decimal, Decimal)>
     let notional = checked_live_exposure_mul(request.price, request.size, "requested notional")?;
     let fee = dynamic_crypto_taker_fee(request.size, fee_rate, request.price);
     Ok((notional, fee))
+}
+
+pub(crate) fn validate_live_cumulative_fill_economics(
+    request: &OrderRequest,
+    cumulative_filled_size: Decimal,
+    cumulative_filled_notional: Decimal,
+) -> Result<()> {
+    if cumulative_filled_size <= Decimal::ZERO || cumulative_filled_notional <= Decimal::ZERO {
+        bail!("live cumulative fill evidence contains non-positive economics");
+    }
+    let (authorized_notional, _) = live_requested_exposure(request)?;
+    match request.side {
+        OrderSide::Buy => {
+            let maximum_notional = authorized_notional
+                .checked_add(live_buy_notional_rounding_tolerance_usd())
+                .context("live BUY authorized notional tolerance overflow")?;
+            if cumulative_filled_notional > maximum_notional {
+                bail!("live BUY cumulative fill notional exceeds its authorized order notional");
+            }
+        }
+        OrderSide::Sell => {
+            if cumulative_filled_size > request.size {
+                bail!("live SELL cumulative fill size exceeds its authorized order size");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn checked_live_exposure_add(left: Decimal, right: Decimal, field: &str) -> Result<Decimal> {
@@ -4148,7 +4184,8 @@ mod tests {
             build_live_process_exposure_snapshot, canonical_fill_for_storage,
             durable_fill_state_supersedes_report, fill_record_matches, live_requested_exposure,
             manual_live_exit_economics, order_request_identity_matches,
-            order_request_result_matches, required_fill_process_id, validate_live_daily_settlement,
+            order_request_result_matches, required_fill_process_id,
+            validate_live_cumulative_fill_economics, validate_live_daily_settlement,
             validate_live_exposure_fill, LiveDailySettlementRow, LiveExposureFillRow,
             LiveExposureOrderRow, HEARTBEAT_ACTIVE_TRADING_PROCESS_SQL, INSERT_FILL_IDENTITY_SQL,
             INSERT_FILL_SQL, INSERT_ORDER_SQL, RECORD_IDEMPOTENT_TRADING_PROCESS_EVENT_SQL,
@@ -4586,6 +4623,61 @@ mod tests {
         assert_eq!(snapshot.filled_buy_fees_usd, dec!(0.01));
         assert_eq!(snapshot.total_exposure_usd, dec!(1.33));
         assert_eq!(snapshot.exposed_market_ids, vec!["market".to_string()]);
+    }
+
+    #[test]
+    fn price_improved_live_buy_uses_authorized_notional_not_requested_share_cap() {
+        let process_id = Uuid::from_u128(205);
+        let at = Utc::now();
+        let mut order = live_exposure_order_row(process_id, OrderState::Filled, at);
+        let mut record: OrderRecord = serde_json::from_value(order.raw_payload.clone()).unwrap();
+        record.request.price = dec!(0.82);
+        record.request.size = dec!(5);
+        order.price = record.request.price;
+        order.size = record.request.size;
+        order.raw_payload = serde_json::to_value(&record).unwrap();
+        order.raw_payload_bytes = order.raw_payload.to_string().len() as i64;
+
+        let mut fill = live_exposure_fill_row(&order, process_id, at, dec!(5.125), dec!(0.0574));
+        fill.fill_price = dec!(0.80);
+        let snapshot = build_live_process_exposure_snapshot(
+            process_id,
+            None,
+            at + Duration::seconds(1),
+            false,
+            &[],
+            &[fill],
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.filled_buy_notional_usd, dec!(4.10));
+        assert_eq!(snapshot.buy_fill_count, 1);
+    }
+
+    #[test]
+    fn live_fill_economics_reject_actual_overspend_and_sell_overfill() {
+        let mut request = OrderRequest {
+            client_order_id: Uuid::from_u128(206),
+            process_id: Some(Uuid::from_u128(207)),
+            market_id: "market".to_string(),
+            token_id: "token".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Fok,
+            price: dec!(0.82),
+            size: dec!(5),
+            metadata: serde_json::json!({
+                "dynamic_fee_rate": dec!(0.25),
+            }),
+        };
+        validate_live_cumulative_fill_economics(&request, dec!(5.125), dec!(4.10)).unwrap();
+        assert!(
+            validate_live_cumulative_fill_economics(&request, dec!(5.125), dec!(4.100002)).is_err()
+        );
+
+        request.side = OrderSide::Sell;
+        assert!(
+            validate_live_cumulative_fill_economics(&request, dec!(5.0000000001), dec!(4)).is_err()
+        );
     }
 
     #[test]

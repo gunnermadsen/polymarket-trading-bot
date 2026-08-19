@@ -59,7 +59,7 @@ use crate::{
     idempotency::event_hash,
     models::{EffectiveProcessExecutionConfig, FillRecord, OrderRecord, OrderRequest},
     models::{FillSource, OrderSide, OrderState, OrderType},
-    store::Store,
+    store::{validate_live_cumulative_fill_economics, Store},
 };
 
 type AuthenticatedClient = SdkClient<Authenticated<Normal>>;
@@ -379,7 +379,13 @@ impl LiveVenue {
         let fills = live_fill_records_from_event(store, event).await?;
         for (order, fill) in &fills {
             store.insert_fill(fill).await?;
-            let cumulative_filled_size = store.order_filled_size(&order.order_id).await?;
+            let (cumulative_filled_size, cumulative_filled_notional) =
+                store.order_filled_economics(&order.order_id).await?;
+            validate_live_cumulative_fill_economics(
+                &order.request,
+                cumulative_filled_size,
+                cumulative_filled_notional,
+            )?;
             store
                 .mark_order_fill_progress(
                     &order.order_id,
@@ -1899,7 +1905,8 @@ fn fill_record_from_trade_for_order(
     if price <= Decimal::ZERO || price > Decimal::ONE {
         bail!("live REST fill trade {} has an invalid price", trade.id);
     }
-    if size <= Decimal::ZERO || size > order.request.size {
+    if size <= Decimal::ZERO || (order.request.side == OrderSide::Sell && size > order.request.size)
+    {
         bail!("live REST fill trade {} has an invalid size", trade.id);
     }
     if fee_rate_bps < Decimal::ZERO || fee_rate_bps > Decimal::from(10_000) {
@@ -2088,13 +2095,13 @@ async fn persist_rest_fill_backfill(
         let order = local_orders
             .get(order_id.as_str())
             .context("live REST fill progress points to missing local order")?;
-        let cumulative_filled_size = store.order_filled_size(&order_id).await?;
-        if cumulative_filled_size <= Decimal::ZERO || cumulative_filled_size > order.request.size {
-            bail!(
-                "live REST cumulative fill size is invalid for order {}",
-                order_id
-            );
-        }
+        let (cumulative_filled_size, cumulative_filled_notional) =
+            store.order_filled_economics(&order_id).await?;
+        validate_live_cumulative_fill_economics(
+            &order.request,
+            cumulative_filled_size,
+            cumulative_filled_notional,
+        )?;
         let updated = store
             .mark_order_fill_progress(
                 &order_id,
@@ -2643,7 +2650,22 @@ impl ExecutionVenue for LiveVenue {
             self.enforce_submission_risk(process_id, &request, None),
             self.prewarm_order_metadata(&client, token_id),
         );
-        if let Some(reason) = risk_result? {
+        let risk_result = match risk_result {
+            Ok(result) => result,
+            Err(error) => {
+                warn!(
+                    client_order_id = %request.client_order_id,
+                    process_id = ?request.process_id,
+                    error = %format!("{error:#}"),
+                    "live pre-submit risk validation rejected this order; preserving trading process liveness"
+                );
+                return live_execution_gate_closed_order(
+                    request,
+                    LiveExecutionGateReason::ProcessAccountingReadiness,
+                );
+            }
+        };
+        if let Some(reason) = risk_result {
             return live_execution_gate_closed_order(request, reason);
         }
         if let Err(error) = metadata_result {
@@ -4512,6 +4534,50 @@ mod tests {
                 b"polymarket:trade-order:trade-1:venue-order-1"
             )
         );
+    }
+
+    #[test]
+    fn rest_fill_backfill_accepts_price_improved_buy_shares_within_authorized_notional() {
+        let process_id = Uuid::new_v4();
+        let checked_at = Utc::now();
+        let order = rest_backfill_order(
+            process_id,
+            "venue-order-price-improved",
+            OrderSide::Buy,
+            dec!(0.82),
+            dec!(5),
+            checked_at - chrono::Duration::seconds(1),
+        );
+        let trade = taker_trade(
+            "trade-price-improved",
+            "venue-order-price-improved",
+            dec!(0.80),
+            dec!(5.125),
+            Decimal::ZERO,
+            checked_at,
+        );
+        let owned_orders = HashMap::from([(
+            "venue-order-price-improved".to_string(),
+            "venue-order-price-improved".to_string(),
+        )]);
+
+        let fills = rest_fill_backfill_plan(
+            process_id,
+            std::slice::from_ref(&order),
+            &owned_orders,
+            &[trade],
+            checked_at,
+        )
+        .unwrap();
+
+        assert_eq!(fills[0].price, dec!(0.80));
+        assert_eq!(fills[0].size, dec!(5.125));
+        validate_live_cumulative_fill_economics(
+            &order.request,
+            fills[0].size,
+            fills[0].price * fills[0].size,
+        )
+        .unwrap();
     }
 
     #[test]
