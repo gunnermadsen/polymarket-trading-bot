@@ -121,6 +121,7 @@ struct LiveVenueState {
     manual_entries_enabled: bool,
     manual_entries_reason: Option<String>,
     process_accounting_proven: bool,
+    process_accounting_entry_safe: bool,
     process_accounting_status: String,
     credential_account_fingerprint_sha256: Option<String>,
     reconciled_safety_generation: Option<u64>,
@@ -161,6 +162,7 @@ impl LiveVenueState {
             manual_entries_enabled: false,
             manual_entries_reason: Some("manual_enable_required".to_string()),
             process_accounting_proven: false,
+            process_accounting_entry_safe: false,
             process_accounting_status: "unproven".to_string(),
             credential_account_fingerprint_sha256: None,
             reconciled_safety_generation: None,
@@ -1151,14 +1153,14 @@ impl LiveVenue {
             self.bound_account_ref()
                 .context("live risk checks require a process account_ref")?,
         )?;
-        let (process_accounting_proven, reconciled_fingerprint) = {
+        let (process_accounting_entry_safe, reconciled_fingerprint) = {
             let state = self.readiness_state.lock().await;
             (
-                state.process_accounting_proven,
+                state.process_accounting_entry_safe,
                 state.credential_account_fingerprint_sha256.clone(),
             )
         };
-        if !process_accounting_proven {
+        if !process_accounting_entry_safe {
             return Ok(Some(LiveExecutionGateReason::ProcessAccountingReadiness));
         }
         if reconciled_fingerprint.as_deref() != Some(identity.fingerprint_sha256.as_str()) {
@@ -1219,9 +1221,6 @@ impl LiveVenue {
             account_orders_read,
             collateral_read,
         )?;
-        if exposure.has_unredeemed_settlement {
-            return Ok(Some(LiveExecutionGateReason::SettlementRedemptionUnproven));
-        }
         let requested_exposure = Store::conservative_live_request_exposure(request)?;
         let resulting_exposure = exposure
             .total_exposure_usd
@@ -1306,16 +1305,13 @@ impl LiveVenue {
             return Ok(Some(LiveExecutionGateReason::GlobalHalt));
         }
         let state = self.readiness_state.lock().await;
-        if state.pending_settlement_count != 0 {
-            return Ok(Some(LiveExecutionGateReason::SettlementRedemptionUnproven));
-        }
         if state.reconciliation_error.is_some() {
             return Ok(Some(LiveExecutionGateReason::ProcessAccountingReadiness));
         }
         if !state.manual_entries_enabled {
             return Ok(Some(LiveExecutionGateReason::ManualEnableRequired));
         }
-        if !state.process_accounting_proven {
+        if !state.process_accounting_entry_safe {
             return Ok(Some(LiveExecutionGateReason::ProcessAccountingReadiness));
         }
         Ok(Some(LiveExecutionGateReason::VenueReadiness))
@@ -3170,6 +3166,7 @@ impl ExecutionVenue for LiveVenue {
             state.unresolved_live_order_count = unresolved;
             state.idempotency_clean = idempotency_clean;
             state.process_accounting_proven = account_reconcile.process_accounting_proven;
+            state.process_accounting_entry_safe = account_reconcile.process_accounting_entry_safe;
             state.process_accounting_status = account_reconcile.process_accounting_status.clone();
             state.credential_account_fingerprint_sha256 = account_reconcile
                 .credential_account_fingerprint_sha256
@@ -3269,14 +3266,13 @@ impl ExecutionVenue for LiveVenue {
         let order_submit_enabled = self.order_submission_enabled();
         let live_confirmed = order_submit_enabled
             && self.config.submit_auth_available()
-            && state.process_accounting_proven
+            && state.process_accounting_entry_safe
             && rest_fresh;
         let entries_enabled = live_confirmed
             && !global.halted
             && state.manual_entries_enabled
             && state.idempotency_clean
             && state.unresolved_live_order_count == 0
-            && state.pending_settlement_count == 0
             && state.reconciliation_error.is_none();
         let reason = if entries_enabled {
             None
@@ -3291,13 +3287,11 @@ impl ExecutionVenue for LiveVenue {
                 .manual_entries_reason
                 .clone()
                 .or_else(|| Some("manual_enable_required".to_string()))
-        } else if !state.process_accounting_proven {
+        } else if !state.process_accounting_entry_safe {
             Some(format!(
                 "live_process_accounting_not_proven:{}",
                 state.process_accounting_status
             ))
-        } else if state.pending_settlement_count != 0 {
-            Some("live_pending_settlement_present".to_string())
         } else if let Some(error) = state.reconciliation_error.as_deref() {
             Some(format!("live_reconciliation_degraded:{error}"))
         } else if !rest_fresh {
@@ -3839,7 +3833,7 @@ impl ExecutionVenue for LiveVenue {
         if !self.order_submission_enabled()
             || !self.config.submit_auth_available()
             || !rest_fresh
-            || !state.process_accounting_proven
+            || !state.process_accounting_entry_safe
             || !identity_matches
             || !state.idempotency_clean
             || state.unresolved_live_order_count != 0
@@ -4622,6 +4616,7 @@ mod tests {
             state.manual_entries_enabled = true;
             state.manual_entries_reason = None;
             state.process_accounting_proven = true;
+            state.process_accounting_entry_safe = true;
             state.process_accounting_status = "proven".to_string();
         }
         {
@@ -4672,6 +4667,7 @@ mod tests {
             state.manual_entries_enabled = true;
             state.manual_entries_reason = None;
             state.process_accounting_proven = true;
+            state.process_accounting_entry_safe = true;
             state.process_accounting_status = "proven".to_string();
         }
         {
@@ -4698,6 +4694,17 @@ mod tests {
         let recovered = venue.live_status().await.unwrap();
         assert!(recovered.entries_enabled);
         assert!(venue.readiness_state.lock().await.manual_entries_enabled);
+
+        venue
+            .update_live_reconciliation_health(1, None)
+            .await
+            .unwrap();
+        let settlement_pending = venue.live_status().await.unwrap();
+        assert!(settlement_pending.entries_enabled);
+        assert_eq!(
+            venue.readiness_state.lock().await.pending_settlement_count,
+            1
+        );
     }
 
     #[tokio::test]
@@ -4714,6 +4721,7 @@ mod tests {
             state.manual_entries_enabled = true;
             state.manual_entries_reason = None;
             state.process_accounting_proven = true;
+            state.process_accounting_entry_safe = true;
             state.process_accounting_status = "proven".to_string();
         }
         {
@@ -5160,6 +5168,7 @@ mod tests {
             state.idempotency_clean = true;
             state.unresolved_live_order_count = 0;
             state.process_accounting_proven = true;
+            state.process_accounting_entry_safe = true;
             state.process_accounting_status = "proven".to_string();
             state.credential_account_fingerprint_sha256 = Some(identity.fingerprint_sha256);
             state.reconciled_safety_generation = Some(0);

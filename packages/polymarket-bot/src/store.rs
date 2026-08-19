@@ -551,6 +551,13 @@ pub struct AccountPositionSnapshot {
     pub raw_payload: serde_json::Value,
 }
 
+#[derive(Debug, Clone)]
+pub struct LiveAccountPositionEvidence {
+    pub size: Decimal,
+    pub oldest_fill_at: DateTime<Utc>,
+    pub market_window_end: DateTime<Utc>,
+}
+
 impl Store {
     pub fn from_pool(pool: PgPool) -> Self {
         Self { pool }
@@ -2421,7 +2428,7 @@ impl Store {
     pub async fn live_account_position_sizes(
         &self,
         account_ref: &str,
-    ) -> Result<HashMap<String, Decimal>> {
+    ) -> Result<HashMap<String, LiveAccountPositionEvidence>> {
         const MAX_ACCOUNT_POSITION_TOKENS: usize = 4_000;
         let account_ref = account_ref.trim();
         if account_ref.is_empty() || account_ref.len() > 128 {
@@ -2432,6 +2439,8 @@ impl Store {
         struct PositionSizeRow {
             token_id: String,
             size: Decimal,
+            oldest_fill_at: DateTime<Utc>,
+            market_window_end: DateTime<Utc>,
         }
 
         let rows = sqlx::query_as::<_, PositionSizeRow>(
@@ -2448,11 +2457,15 @@ impl Store {
                     WHEN 'buy' THEN fill.size
                     WHEN 'sell' THEN -fill.size
                   END
-                )::numeric AS size
+                )::numeric AS size,
+                MIN(fill.timestamp_utc) AS oldest_fill_at,
+                MAX(market.window_end) AS market_window_end
               FROM polymarket.fills fill
               JOIN polymarket.orders orders
                 ON orders.order_id = fill.order_id
                AND orders.process_id = fill.process_id
+              JOIN polymarket.btc_interval_markets market
+                ON market.market_id = orders.market_id
               JOIN account_processes process
                 ON process.process_id = fill.process_id
               WHERE fill.source = 'live'
@@ -2484,7 +2497,9 @@ impl Store {
             )
             SELECT tokens.token_id,
               (COALESCE(filled.size, 0) - COALESCE(redeemed.size, 0)
-                - COALESCE(exited.size, 0))::numeric AS size
+                - COALESCE(exited.size, 0))::numeric AS size,
+              filled.oldest_fill_at,
+              filled.market_window_end
             FROM tokens
             LEFT JOIN filled USING (token_id)
             LEFT JOIN redeemed USING (token_id)
@@ -2511,7 +2526,12 @@ impl Store {
             if row.token_id.trim().is_empty() || row.size <= Decimal::ZERO {
                 bail!("live account position evidence contains an invalid net position");
             }
-            if positions.insert(row.token_id, row.size).is_some() {
+            let evidence = LiveAccountPositionEvidence {
+                size: row.size,
+                oldest_fill_at: row.oldest_fill_at,
+                market_window_end: row.market_window_end,
+            };
+            if positions.insert(row.token_id, evidence).is_some() {
                 bail!("live account position evidence contains a duplicate token identity");
             }
         }
