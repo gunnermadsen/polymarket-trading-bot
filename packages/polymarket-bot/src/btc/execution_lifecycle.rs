@@ -18,7 +18,6 @@ use super::{
 };
 
 const PAPER_RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
-const LIVE_PENDING_REDEMPTION_GATE_REASON: &str = "live_settlement_redemption_unproven";
 const LIVE_UNCLEAN_RECONCILIATION_GATE_REASON: &str = "live_reconciliation_unclean";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,7 +222,6 @@ impl BtcExecutionLifecycle for LiveExecutionLifecycle {
         config_hash: &str,
     ) -> Result<()> {
         let attempt = async {
-            let reconciliation = self.venue.reconcile().await?;
             let pending = repository
                 .discover_pending_settlements(process_id, run_id, BtcExecutionMode::Live)
                 .await?;
@@ -259,6 +257,9 @@ impl BtcExecutionLifecycle for LiveExecutionLifecycle {
                     pending_redemption_count = pending_redemption_count.saturating_add(1);
                 }
             }
+            // Zero-payout settlement evidence is durable before wallet reconciliation so the
+            // same cycle observes the credited ledger instead of waiting for the next poll.
+            let reconciliation = self.venue.reconcile().await?;
             Ok::<_, anyhow::Error>((reconciliation, pending_redemption_count))
         }
         .await;
@@ -321,14 +322,9 @@ impl BtcExecutionLifecycle for LiveExecutionLifecycle {
 
 fn live_reconciliation_gate_reason(
     report: &ReconciliationReport,
-    pending_settlement_count: usize,
+    _pending_settlement_count: usize,
 ) -> Option<&'static str> {
-    if pending_settlement_count != 0 {
-        Some(LIVE_PENDING_REDEMPTION_GATE_REASON)
-    } else if !report.balances_checked
-        || report.mismatches_found != 0
-        || report.unresolved_count != 0
-    {
+    if !report.balances_checked || report.mismatches_found != 0 || report.unresolved_count != 0 {
         Some(LIVE_UNCLEAN_RECONCILIATION_GATE_REASON)
     } else {
         None
@@ -342,8 +338,7 @@ mod tests {
     use crate::execution::ReconciliationReport;
 
     use super::{
-        live_reconciliation_gate_reason, BtcExecutionMode, LIVE_PENDING_REDEMPTION_GATE_REASON,
-        LIVE_UNCLEAN_RECONCILIATION_GATE_REASON,
+        live_reconciliation_gate_reason, BtcExecutionMode, LIVE_UNCLEAN_RECONCILIATION_GATE_REASON,
     };
 
     #[test]
@@ -385,17 +380,20 @@ mod tests {
         );
         assert_eq!(
             live_reconciliation_gate_reason(&unresolved, 1),
-            Some(LIVE_PENDING_REDEMPTION_GATE_REASON),
-            "unredeemed settlement is the stronger bounded gate reason"
+            Some(LIVE_UNCLEAN_RECONCILIATION_GATE_REASON),
+            "an actual unresolved order remains fail-closed"
         );
     }
 
     #[test]
-    fn pending_live_settlement_uses_a_bounded_redemption_proof_gate() {
-        assert_eq!(
-            LIVE_PENDING_REDEMPTION_GATE_REASON,
-            "live_settlement_redemption_unproven"
-        );
-        assert!(LIVE_PENDING_REDEMPTION_GATE_REASON.len() <= 128);
+    fn pending_live_settlement_is_diagnostic_when_reconciliation_is_clean() {
+        let clean = ReconciliationReport {
+            open_orders: 0,
+            balances_checked: true,
+            mismatches_found: 0,
+            unresolved_count: 0,
+            checked_at: Utc::now(),
+        };
+        assert_eq!(live_reconciliation_gate_reason(&clean, 1), None);
     }
 }
