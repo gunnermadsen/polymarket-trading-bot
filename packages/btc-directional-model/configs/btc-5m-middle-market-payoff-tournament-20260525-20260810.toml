@@ -1,0 +1,60 @@
+[training]
+profile = "btc_5m_middle_market_payoff_tournament"
+paper_only = true
+live_capital_allowed = false
+random_seed = 20260820
+
+[windows]
+fit_start = "2026-05-25T00:00:00Z"
+fit_end = "2026-07-06T00:00:00Z"
+calibration_end = "2026-07-13T00:00:00Z"
+risk_end = "2026-07-20T00:00:00Z"
+policy_end = "2026-08-02T00:00:00Z"
+holdout_end = "2026-08-10T00:00:00Z"
+oi_fit_start = "2026-07-03T00:00:00Z"
+oi_fit_end = "2026-07-13T00:00:00Z"
+oi_calibration_end = "2026-07-20T00:00:00Z"
+print_fit_start = "2026-07-22T00:00:00Z"
+print_fit_end = "2026-07-27T00:00:00Z"
+print_calibration_end = "2026-07-29T00:00:00Z"
+
+[entry]
+start_second = 90
+end_second_exclusive = 180
+cadence_seconds = 5
+calibration_cells = [[90, 120], [120, 150], [150, 180]]
+
+[execution]
+quantities = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175, 200]
+freshness_seconds = 10
+maximum_depth_participation = 0.25
+execution_reserve_per_share = 0.005
+stress_slippage_per_share = 0.01
+
+[policy]
+confidence_thresholds = [0.65, 0.70, 0.75, 0.80, 0.85]
+stress_edge_thresholds = [0.00, 0.005, 0.01, 0.02, 0.03, 0.05]
+wait_advantage_thresholds = [-0.02, 0.00, 0.02]
+price_bucket_edges = [0.00, 0.65, 0.75, 0.85, 1.01]
+rolling_fold_days = 3
+minimum_policy_trades = 100
+minimum_accuracy = 0.80
+minimum_profit_factor = 1.20
+minimum_profitable_fold_ratio = 0.75
+minimum_payoff_ratio = 0.3333333333
+minimum_side_trades = 20
+maximum_daily_pnl_concentration = 0.35
+minimum_active_days = 8
+conservative_z_score = 1.0
+coverage_targets = [0.01, 0.02, 0.03, 0.05, 0.08]
+
+[paths]
+development_config = "configs/btc-5m-continuous-edge-payoff-robust-20260525-20260802.toml"
+holdout_core_config = "configs/btc-5m-middle-market-holdout-features-20260802-20260810.toml"
+capacity_evidence = "data/btc-middle-market-tournament-20260802-20260810/capacity"
+external_evidence = "data/btc-middle-market-tournament-20260802-20260810/external"
+runs = "runs/btc-middle-market-payoff-tournament-20260525-20260810"
+committed_results = "training-results/btc-5m-middle-market-payoff-tournament-20260525-20260810"
+incumbent_artifact = "training-results/btc-5m-continuous-edge-payoff-aware-20260525-20260723/20260820T011148Z/model.joblib"
+l2_source_sql = "sql/btc-spot-l2-source.sql"
+trade_print_source_sql = "sql/btc-binance-trade-print-source.sql"
