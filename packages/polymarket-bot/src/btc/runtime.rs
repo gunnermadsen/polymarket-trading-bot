@@ -6,7 +6,7 @@ use std::{
     pin::Pin,
     str::FromStr,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::Duration as StdDuration,
@@ -131,7 +131,20 @@ struct ClobIngressTransport {
     sink: ClobSocketSink,
     events: mpsc::Receiver<ClobIngressEvent>,
     overflowed: Arc<AtomicBool>,
+    receipt_clock_started_at: Instant,
+    latest_receipt_elapsed_nanoseconds: Arc<AtomicU64>,
     reader_task: JoinHandle<()>,
+}
+
+impl ClobIngressTransport {
+    fn latest_receipt_instant(&self) -> Option<Instant> {
+        let encoded = self
+            .latest_receipt_elapsed_nanoseconds
+            .load(Ordering::Acquire);
+        (encoded != 0).then(|| {
+            self.receipt_clock_started_at + StdDuration::from_nanos(encoded.saturating_sub(1))
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -731,6 +744,7 @@ struct ClobFeedWatchdog {
     read_idle_deadline: Instant,
     pong_deadline: Option<Instant>,
     pending_pong_probe_sent_at: Option<Instant>,
+    last_transport_receipt_at: Option<Instant>,
 }
 
 impl ClobFeedWatchdog {
@@ -746,18 +760,33 @@ impl ClobFeedWatchdog {
             read_idle_deadline: now + CLOB_READ_IDLE_TIMEOUT,
             pong_deadline: None,
             pending_pong_probe_sent_at: None,
+            last_transport_receipt_at: None,
         };
         watchdog.refresh_bootstrap(now, registry, markets, checked_at);
         watchdog
     }
 
-    fn on_frame(&mut self, now: Instant) {
-        self.read_idle_deadline = now + CLOB_READ_IDLE_TIMEOUT;
-        // Any inbound frame proves that the transport is alive. Some CLOB edge
-        // connections continue delivering market data without echoing every
-        // application-level PING, so a missed text PONG alone must not retire
-        // an otherwise active connection.
-        self.pong_deadline = None;
+    fn observe_transport_receipt(&mut self, received_at: Option<Instant>) {
+        let Some(received_at) = received_at else {
+            return;
+        };
+        if self
+            .last_transport_receipt_at
+            .is_some_and(|observed_at| received_at <= observed_at)
+        {
+            return;
+        }
+        self.last_transport_receipt_at = Some(received_at);
+        self.read_idle_deadline = received_at + CLOB_READ_IDLE_TIMEOUT;
+        // Some CLOB edges deliver market data without echoing every text PING.
+        // Only transport evidence received after the pending probe proves that
+        // probe's connection remained alive.
+        if self
+            .pending_pong_probe_sent_at
+            .is_some_and(|sent_at| received_at >= sent_at)
+        {
+            self.pong_deadline = None;
+        }
     }
 
     fn record_text_ping(&mut self, now: Instant, pong_timeout: StdDuration) {
@@ -773,10 +802,13 @@ impl ClobFeedWatchdog {
         if !is_clob_text_pong(text) {
             return None;
         }
-        self.pong_deadline = None;
-        self.pending_pong_probe_sent_at
-            .take()
-            .map(|sent_at| now.saturating_duration_since(sent_at))
+        let sent_at = self.pending_pong_probe_sent_at?;
+        if now < sent_at {
+            return None;
+        }
+        self.observe_transport_receipt(Some(now));
+        self.pending_pong_probe_sent_at = None;
+        Some(now.saturating_duration_since(sent_at))
     }
 
     fn refresh_bootstrap(
@@ -1125,17 +1157,24 @@ fn start_clob_ingress(socket: ClobSocket) -> ClobIngressTransport {
     let (sender, events) = mpsc::channel(CLOB_INGRESS_FRAME_CAPACITY);
     let byte_budget = Arc::new(Semaphore::new(CLOB_INGRESS_BYTE_CAPACITY));
     let overflowed = Arc::new(AtomicBool::new(false));
+    let receipt_clock_started_at = Instant::now();
+    let latest_receipt_elapsed_nanoseconds = Arc::new(AtomicU64::new(0));
     let reader_overflowed = Arc::clone(&overflowed);
+    let reader_latest_receipt_elapsed_nanoseconds = Arc::clone(&latest_receipt_elapsed_nanoseconds);
     let reader_task = tokio::spawn(run_clob_ingress_reader(
         stream,
         sender,
         reader_overflowed,
         byte_budget,
+        receipt_clock_started_at,
+        reader_latest_receipt_elapsed_nanoseconds,
     ));
     ClobIngressTransport {
         sink,
         events,
         overflowed,
+        receipt_clock_started_at,
+        latest_receipt_elapsed_nanoseconds,
         reader_task,
     }
 }
@@ -1145,6 +1184,8 @@ async fn run_clob_ingress_reader(
     sender: mpsc::Sender<ClobIngressEvent>,
     overflowed: Arc<AtomicBool>,
     byte_budget: Arc<Semaphore>,
+    receipt_clock_started_at: Instant,
+    latest_receipt_elapsed_nanoseconds: Arc<AtomicU64>,
 ) {
     let mut sequence = 0u64;
     loop {
@@ -1152,6 +1193,14 @@ async fn run_clob_ingress_reader(
             Some(Ok(message)) => {
                 let received_instant = Instant::now();
                 let received_at = Utc::now();
+                let elapsed_nanoseconds = u64::try_from(
+                    received_instant
+                        .saturating_duration_since(receipt_clock_started_at)
+                        .as_nanos(),
+                )
+                .unwrap_or(u64::MAX)
+                .saturating_add(1);
+                latest_receipt_elapsed_nanoseconds.store(elapsed_nanoseconds, Ordering::Release);
                 sequence = sequence.saturating_add(1);
                 let payload_bytes = message.len();
                 let permit_count = match u32::try_from(payload_bytes.max(1)) {
@@ -3257,7 +3306,6 @@ async fn apply_active_clob_frame(
             .acknowledge_text_pong(text.as_str(), received_instant),
         _ => None,
     };
-    epoch.watchdog.on_frame(received_instant);
     epoch.telemetry.record_frame(received_at, received_instant);
     let parsed = match message {
         Message::Text(text) => {
@@ -3597,6 +3645,11 @@ async fn run_clob_supervisor(
             )));
         }
 
+        if let Some(epoch) = active.as_mut() {
+            let latest_receipt = epoch.transport.latest_receipt_instant();
+            epoch.watchdog.observe_transport_receipt(latest_receipt);
+        }
+
         let bootstrap_deadline = active
             .as_ref()
             .and_then(|epoch| epoch.watchdog.bootstrap_deadline);
@@ -3650,16 +3703,32 @@ async fn run_clob_supervisor(
                 }
             }
             _ = &mut pong_sleep, if pong_deadline.is_some() => {
-                active_failure = Some((
-                    "heartbeat_ack_timeout".to_string(),
-                    ClobDisconnectCause::TransportFailure,
-                ));
+                if let Some(epoch) = active.as_mut() {
+                    let latest_receipt = epoch.transport.latest_receipt_instant();
+                    epoch.watchdog.observe_transport_receipt(latest_receipt);
+                    if epoch
+                        .watchdog
+                        .pong_deadline
+                        .is_some_and(|deadline| deadline <= Instant::now())
+                    {
+                        active_failure = Some((
+                            "heartbeat_ack_timeout".to_string(),
+                            ClobDisconnectCause::TransportFailure,
+                        ));
+                    }
+                }
             }
             _ = &mut read_sleep, if read_deadline.is_some() => {
-                active_failure = Some((
-                    "read_idle_timeout".to_string(),
-                    ClobDisconnectCause::TransportFailure,
-                ));
+                if let Some(epoch) = active.as_mut() {
+                    let latest_receipt = epoch.transport.latest_receipt_instant();
+                    epoch.watchdog.observe_transport_receipt(latest_receipt);
+                    if epoch.watchdog.read_idle_deadline <= Instant::now() {
+                        active_failure = Some((
+                            "read_idle_timeout".to_string(),
+                            ClobDisconnectCause::TransportFailure,
+                        ));
+                    }
+                }
             }
             changed = markets.changed(), if market_watch_open => {
                 match market_watch_disposition(&changed) {
@@ -9156,6 +9225,7 @@ mod tests {
         let (client, mut server) = clob_socket_pair().await;
         let mut transport = start_clob_ingress(client);
         let sent_before = Utc::now();
+        let sent_before_instant = Instant::now();
         for payload in ["first", "second", "third"] {
             server
                 .send(Message::Text(payload.to_string().into()))
@@ -9165,6 +9235,9 @@ mod tests {
         tokio::time::sleep(StdDuration::from_millis(20)).await;
 
         assert_eq!(transport.events.len(), 3);
+        let latest_receipt_before_dequeue = transport.latest_receipt_instant().unwrap();
+        assert!(latest_receipt_before_dequeue >= sent_before_instant);
+        assert!(latest_receipt_before_dequeue <= Instant::now());
         for (expected_sequence, expected_payload) in [(1, "first"), (2, "second"), (3, "third")] {
             let event = timeout(StdDuration::from_secs(1), transport.events.recv())
                 .await
@@ -9776,7 +9849,7 @@ mod tests {
             .is_err());
     }
     #[test]
-    fn clob_watchdog_tracks_read_and_pong_deadlines_independently() {
+    fn clob_watchdog_uses_transport_receipt_time_for_liveness() {
         let now = Instant::now();
         let checked_at = market().window_start + Duration::minutes(1);
         let registry = BookRegistry::new(Uuid::new_v4());
@@ -9785,22 +9858,31 @@ mod tests {
         assert_eq!(watchdog.read_idle_deadline, initial_read_deadline);
         assert_eq!(watchdog.pong_deadline, None);
 
+        let pre_ping_frame_at = now + StdDuration::from_millis(500);
+        watchdog.observe_transport_receipt(Some(pre_ping_frame_at));
+        assert_eq!(
+            watchdog.read_idle_deadline,
+            pre_ping_frame_at + CLOB_READ_IDLE_TIMEOUT
+        );
+
         let ping_at = now + StdDuration::from_secs(1);
         let pong_timeout = StdDuration::from_secs(25);
         watchdog.record_text_ping(ping_at, pong_timeout);
         let pong_deadline = ping_at + pong_timeout;
-        assert_eq!(watchdog.read_idle_deadline, initial_read_deadline);
         assert_eq!(watchdog.pong_deadline, Some(pong_deadline));
 
-        let frame_at = now + StdDuration::from_secs(2);
-        watchdog.on_frame(frame_at);
+        watchdog.observe_transport_receipt(Some(pre_ping_frame_at));
+        assert_eq!(watchdog.pong_deadline, Some(pong_deadline));
+
+        let post_ping_frame_at = now + StdDuration::from_secs(2);
+        watchdog.observe_transport_receipt(Some(post_ping_frame_at));
         assert_eq!(
             watchdog.read_idle_deadline,
-            frame_at + CLOB_READ_IDLE_TIMEOUT
+            post_ping_frame_at + CLOB_READ_IDLE_TIMEOUT
         );
         assert_eq!(watchdog.pong_deadline, None);
         assert_eq!(watchdog.pending_pong_probe_sent_at, Some(ping_at));
-        let pong_at = frame_at + StdDuration::from_millis(7);
+        let pong_at = post_ping_frame_at + StdDuration::from_millis(7);
         assert_eq!(
             watchdog.acknowledge_text_pong(" pong \n", pong_at),
             Some(pong_at.saturating_duration_since(ping_at))
@@ -9813,8 +9895,45 @@ mod tests {
         assert_eq!(watchdog.pong_deadline, Some(later_ping_at + pong_timeout));
         assert_eq!(
             watchdog.read_idle_deadline,
-            frame_at + CLOB_READ_IDLE_TIMEOUT
+            pong_at + CLOB_READ_IDLE_TIMEOUT
         );
+    }
+
+    #[test]
+    fn clob_pong_acknowledgement_uses_its_transport_receipt_time() {
+        let now = Instant::now();
+        let checked_at = market().window_start + Duration::minutes(1);
+        let registry = BookRegistry::new(Uuid::new_v4());
+        let mut watchdog = ClobFeedWatchdog::new(now, &registry, &[], checked_at);
+        let ping_at = now + StdDuration::from_secs(1);
+        let pong_at = ping_at + StdDuration::from_millis(9);
+        watchdog.record_text_ping(ping_at, StdDuration::from_secs(25));
+        assert_eq!(
+            watchdog.acknowledge_text_pong("PONG", pong_at),
+            Some(StdDuration::from_millis(9))
+        );
+        assert_eq!(watchdog.pong_deadline, None);
+        assert_eq!(
+            watchdog.read_idle_deadline,
+            pong_at + CLOB_READ_IDLE_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn clob_stale_pong_cannot_acknowledge_a_later_probe() {
+        let now = Instant::now();
+        let checked_at = market().window_start + Duration::minutes(1);
+        let registry = BookRegistry::new(Uuid::new_v4());
+        let mut watchdog = ClobFeedWatchdog::new(now, &registry, &[], checked_at);
+        let ping_at = now + StdDuration::from_secs(2);
+        watchdog.record_text_ping(ping_at, StdDuration::from_secs(25));
+
+        assert_eq!(
+            watchdog.acknowledge_text_pong("PONG", ping_at - StdDuration::from_millis(1)),
+            None
+        );
+        assert_eq!(watchdog.pending_pong_probe_sent_at, Some(ping_at));
+        assert!(watchdog.pong_deadline.is_some());
     }
 
     #[test]
