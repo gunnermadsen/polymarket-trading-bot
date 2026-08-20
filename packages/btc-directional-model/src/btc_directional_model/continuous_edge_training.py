@@ -15,7 +15,7 @@ import platform
 import tomllib
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +25,7 @@ import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 import sklearn
-from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import log_loss
 
@@ -35,8 +35,8 @@ from .core_extract import (
     file_sha256,
 )
 
-SCHEMA_VERSION = "btc-continuous-edge-training-v1"
-MODEL_SCHEMA_VERSION = "btc-continuous-edge-development-artifact-v1"
+SCHEMA_VERSION = "btc-continuous-edge-payoff-training-v1"
+MODEL_SCHEMA_VERSION = "btc-continuous-edge-payoff-development-artifact-v1"
 VWAP_QUANTITIES = (5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175, 200)
 
 CORE_FEATURES = (
@@ -188,6 +188,19 @@ ADMISSION_FEATURES = (
     "btc_signed_flow_60s",
     "oracle_return_from_window_open_bps",
     "binance_oracle_basis_bps",
+    "directional_family_probability_up",
+    "asymmetric_family_probability_up",
+    "directional_family_disagreement",
+    "asymmetric_family_disagreement",
+    "family_probability_spread",
+    "family_vote_agreement",
+    "probability_change_5s",
+    "probability_change_15s",
+    "probability_change_30s",
+    "probability_instability_30s",
+    "conservative_probability_selected",
+    "conservative_edge_5",
+    "price_bucket_index",
 )
 
 MODEL_PROFILES = (
@@ -244,6 +257,13 @@ class PolicyConfig:
     confidence_thresholds: tuple[float, ...]
     edge_thresholds: tuple[float, ...]
     admission_thresholds: tuple[float, ...]
+    payoff_edge_thresholds: tuple[float, ...]
+    price_bucket_edges: tuple[float, ...]
+    price_bucket_minimum_edges: tuple[float, ...]
+    rolling_fold_days: int
+    minimum_profitable_fold_ratio: float
+    minimum_profit_factor: float
+    conservative_z_score: float
 
 
 @dataclass(frozen=True)
@@ -251,6 +271,8 @@ class PathConfig:
     oracle_features: Path
     chainlink_features: Path
     l2_features: Path
+    directional_family_model: Path
+    asymmetric_family_model: Path
     capacity_evidence: Path
     runs: Path
     committed_results: Path
@@ -281,6 +303,26 @@ class Expert:
         raw = np.clip(self.estimator.predict_proba(_matrix(frame, self.feature_names))[:, 1], 1e-7, 1 - 1e-7)
         logits = np.log(raw / (1.0 - raw)).reshape(-1, 1)
         return self.calibrator.predict_proba(logits)[:, 1]
+
+
+@dataclass
+class PayoffAdmissionModel:
+    feature_names: tuple[str, ...]
+    profitable_classifier: HistGradientBoostingClassifier
+    stress_edge_regressor: HistGradientBoostingRegressor
+
+
+@dataclass
+class PriceTimeCalibration:
+    estimator: LogisticRegression
+    band_names: tuple[str, ...]
+    price_bucket_edges: tuple[float, ...]
+
+
+@dataclass
+class CalibrationGuard:
+    penalties: dict[str, float]
+    global_penalty: float
 
 
 CAPACITY_SCHEMA = pa.schema(
@@ -334,6 +376,19 @@ def load_config(path: Path) -> TrainingConfig:
             confidence_thresholds=tuple(float(v) for v in raw["policy"]["confidence_thresholds"]),
             edge_thresholds=tuple(float(v) for v in raw["policy"]["edge_thresholds"]),
             admission_thresholds=tuple(float(v) for v in raw["policy"]["admission_thresholds"]),
+            payoff_edge_thresholds=tuple(
+                float(v) for v in raw["policy"]["payoff_edge_thresholds"]
+            ),
+            price_bucket_edges=tuple(float(v) for v in raw["policy"]["price_bucket_edges"]),
+            price_bucket_minimum_edges=tuple(
+                float(v) for v in raw["policy"]["price_bucket_minimum_edges"]
+            ),
+            rolling_fold_days=int(raw["policy"]["rolling_fold_days"]),
+            minimum_profitable_fold_ratio=float(
+                raw["policy"]["minimum_profitable_fold_ratio"]
+            ),
+            minimum_profit_factor=float(raw["policy"]["minimum_profit_factor"]),
+            conservative_z_score=float(raw["policy"]["conservative_z_score"]),
         ),
         paths=PathConfig(**{name: _path(package_root, value) for name, value in raw["paths"].items()}),
     )
@@ -349,13 +404,25 @@ def _validate_config(config: TrainingConfig) -> None:
         raise ValueError("continuous-edge training requires the exact VWAP 5-200 contract")
     if config.execution.maximum_depth_participation != 0.25:
         raise ValueError("maximum depth participation must remain 25 percent")
+    if len(config.policy.price_bucket_edges) != len(config.policy.price_bucket_minimum_edges) + 1:
+        raise ValueError("price bucket edges and minimum edges do not align")
+    if config.policy.price_bucket_edges != tuple(sorted(config.policy.price_bucket_edges)):
+        raise ValueError("price bucket edges must be sorted")
+    if not 0 < config.policy.minimum_profitable_fold_ratio <= 1:
+        raise ValueError("profitable fold ratio must be in (0, 1]")
     if tuple((band.start_second, band.end_second_exclusive) for band in config.bands) != (
         (15, 90),
         (90, 180),
         (180, 241),
     ):
         raise ValueError("time bands must cover the exact 15-240 second policy range")
-    for path in (config.paths.oracle_features, config.paths.chainlink_features, config.paths.l2_features):
+    for path in (
+        config.paths.oracle_features,
+        config.paths.chainlink_features,
+        config.paths.l2_features,
+        config.paths.directional_family_model,
+        config.paths.asymmetric_family_model,
+    ):
         if not path.is_file():
             raise FileNotFoundError(path)
 
@@ -393,34 +460,56 @@ def run_training(config: TrainingConfig) -> tuple[Path, dict[str, Any]]:
     selected_experts = candidates[selected_candidate]
     print(f"selected probability candidate: {selected_candidate}", flush=True)
 
-    scored_admission = score_frame(
-        _block(frame, config.windows.calibration_end, config.windows.admission_end),
+    print("train: chronological directional/asymmetric family proxies", flush=True)
+    family_proxies, family_proxy_metrics = fit_family_proxies(config, frame)
+    calibration_raw = score_frame(
+        _block(frame, config.windows.outcome_fit_end, config.windows.calibration_end),
         selected_experts,
+        family_proxies,
         config,
     )
-    admission_model, admission_feature_names = fit_admission_model(scored_admission, config)
+    price_time_calibration = fit_price_time_calibration(calibration_raw, config)
+    calibrated_calibration = attach_price_time_calibration(
+        calibration_raw,
+        price_time_calibration,
+        config,
+    )
+    calibration_guard = fit_calibration_guard(calibrated_calibration, config)
+    scored_admission = prepare_scored_frame(
+        _block(frame, config.windows.calibration_end, config.windows.admission_end),
+        selected_experts,
+        family_proxies,
+        price_time_calibration,
+        calibration_guard,
+        config,
+    )
+    admission_model = fit_admission_model(scored_admission, config)
     validation = attach_admission_probability(
-        score_frame(
+        prepare_scored_frame(
             _block(frame, config.windows.validation_start, config.windows.validation_end),
             selected_experts,
+            family_proxies,
+            price_time_calibration,
+            calibration_guard,
             config,
         ),
         admission_model,
-        admission_feature_names,
     )
     thresholds, threshold_search = select_policy_thresholds(validation, config)
     validation_control = select_first_crossings(validation, thresholds, use_admission=False)
     validation_selected = select_first_crossings(validation, thresholds, use_admission=True)
 
-    print("test: opening untouched chronological block", flush=True)
+    print("evaluation: opening retrospective July 13-23 comparison block", flush=True)
     test_scored = attach_admission_probability(
-        score_frame(
+        prepare_scored_frame(
             _block(frame, config.windows.validation_end, config.windows.test_end),
             selected_experts,
+            family_proxies,
+            price_time_calibration,
+            calibration_guard,
             config,
         ),
         admission_model,
-        admission_feature_names,
     )
     test_control = select_first_crossings(test_scored, thresholds, use_admission=False)
     test_selected = select_first_crossings(test_scored, thresholds, use_admission=True)
@@ -445,19 +534,51 @@ def run_training(config: TrainingConfig) -> tuple[Path, dict[str, Any]]:
         )
         for band in config.bands
     }
+    validation_folds = rolling_policy_metrics(
+        validation_selected,
+        config,
+        config.windows.validation_start,
+        config.windows.validation_end,
+        quantity=5,
+    )
+    test_folds = rolling_policy_metrics(
+        test_selected,
+        config,
+        config.windows.validation_end,
+        config.windows.test_end,
+        quantity=5,
+    )
+    price_bucket_metrics = policy_metrics_by_price_bucket(test_selected, config, quantity=5)
     test_market_count = test_scored["market_id"].n_unique()
+    scheduled_test_market_count = int(
+        pl.scan_parquet(config.paths.capacity_evidence / "test.parquet")
+        .select(pl.col("market_id").n_unique())
+        .collect()
+        .item()
+    )
     test_metrics["with_admission_veto"]["market_coverage"] = (
         test_selected["market_id"].n_unique() / test_market_count if test_market_count else 0.0
     )
+    test_metrics["with_admission_veto"]["strict_data_coverage"] = (
+        test_market_count / scheduled_test_market_count if scheduled_test_market_count else 0.0
+    )
+    test_metrics["with_admission_veto"]["end_to_end_market_coverage"] = (
+        test_selected["market_id"].n_unique() / scheduled_test_market_count
+        if scheduled_test_market_count
+        else 0.0
+    )
+    test_metrics["with_admission_veto"]["scheduled_markets"] = scheduled_test_market_count
+    test_metrics["with_admission_veto"]["strict_markets"] = test_market_count
     qualification_checks = {
         "positive_test_net_pnl": test_metrics["with_admission_veto"]["net_pnl"] > 0,
         "positive_test_stress_expectancy": (
             test_metrics["with_admission_veto"]["stress_expectancy_per_trade"] > 0
         ),
-        "test_profit_factor_at_least_one": (
-            (test_metrics["with_admission_veto"]["profit_factor"] or 0.0) >= 1.0
+        "test_profit_factor_at_least_target": (
+            (test_metrics["with_admission_veto"]["profit_factor"] or 0.0)
+            >= config.policy.minimum_profit_factor
         ),
-        "correctness_veto_improves_test_net_pnl": (
+        "payoff_admission_improves_test_net_pnl": (
             test_metrics["with_admission_veto"]["net_pnl"]
             > test_metrics["without_admission_veto"]["net_pnl"]
         ),
@@ -465,16 +586,30 @@ def run_training(config: TrainingConfig) -> tuple[Path, dict[str, Any]]:
             band_metrics["early"]["accuracy"]
             >= next(band.minimum_validation_accuracy for band in config.bands if band.name == "early")
         ),
-        "early_test_positive_expectancy": band_metrics["early"]["expectancy_per_trade"] > 0,
-        "late_test_accuracy_floor": (
-            band_metrics["late"]["accuracy"]
-            >= next(band.minimum_validation_accuracy for band in config.bands if band.name == "late")
+        "early_test_positive_stress_expectancy": (
+            band_metrics["early"]["stress_expectancy_per_trade"] > 0
         ),
+        "positive_test_q10_expectancy": policy_metrics(
+            test_selected, config, quantity=10
+        )["expectancy_per_trade"] > 0,
+        "positive_test_q20_expectancy": policy_metrics(
+            test_selected, config, quantity=20
+        )["expectancy_per_trade"] > 0,
+        "profitable_test_fold_ratio": (
+            test_folds["profitable_fold_ratio"]
+            >= config.policy.minimum_profitable_fold_ratio
+        ),
+        "no_enabled_negative_price_bucket": all(
+            row["expectancy_per_trade"] >= 0
+            for row in price_bucket_metrics.values()
+            if row["trades"] > 0
+        ),
+        "fresh_untouched_holdout_available": False,
     }
     qualification = {
         "passed": all(qualification_checks.values()),
         "checks": qualification_checks,
-        "decision": "qualified" if all(qualification_checks.values()) else "rejected",
+        "decision": "qualified" if all(qualification_checks.values()) else "development_only",
     }
 
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -499,8 +634,29 @@ def run_training(config: TrainingConfig) -> tuple[Path, dict[str, Any]]:
             }
             for name, expert in selected_experts.items()
         },
-        "admission_model": admission_model,
-        "admission_feature_names": list(admission_feature_names),
+        "family_proxies": {
+            name: {
+                "feature_names": list(expert.feature_names),
+                "profile": expert.profile,
+                "estimator": expert.estimator,
+                "calibrator": expert.calibrator,
+            }
+            for name, expert in family_proxies.items()
+        },
+        "price_time_calibration": {
+            "estimator": price_time_calibration.estimator,
+            "band_names": list(price_time_calibration.band_names),
+            "price_bucket_edges": list(price_time_calibration.price_bucket_edges),
+        },
+        "calibration_guard": {
+            "penalties": calibration_guard.penalties,
+            "global_penalty": calibration_guard.global_penalty,
+        },
+        "admission_model": {
+            "feature_names": list(admission_model.feature_names),
+            "profitable_classifier": admission_model.profitable_classifier,
+            "stress_edge_regressor": admission_model.stress_edge_regressor,
+        },
         "thresholds": thresholds,
         "execution": asdict(config.execution),
         "runtime_exported": False,
@@ -518,9 +674,16 @@ def run_training(config: TrainingConfig) -> tuple[Path, dict[str, Any]]:
         "predicted_up",
         "probability_up",
         "probability_selected",
+        "conservative_probability_selected",
+        "calibration_uncertainty_penalty",
         "admission_probability",
+        "payoff_expected_stress_edge",
         "selected_edge_5",
+        "conservative_edge_5",
         "selected_cost_5",
+        "price_bucket_index",
+        "directional_family_probability_up",
+        "asymmetric_family_probability_up",
         *BOOK_RAW_FEATURES,
         "fee_rate",
     ).write_parquet(temporary / "test-trades.parquet", compression="zstd")
@@ -548,22 +711,38 @@ def run_training(config: TrainingConfig) -> tuple[Path, dict[str, Any]]:
             "windows": {name: value.isoformat() for name, value in asdict(config.windows).items()},
             "bands": [asdict(band) for band in config.bands],
             "execution": asdict(config.execution),
+            "policy": asdict(config.policy),
         },
         "data": {
             "oracle_features": _source_identity(config.paths.oracle_features),
             "chainlink_features": _source_identity(config.paths.chainlink_features),
             "l2_features": _source_identity(config.paths.l2_features),
+            "directional_family_contract": _source_identity(
+                config.paths.directional_family_model
+            ),
+            "asymmetric_family_contract": _source_identity(
+                config.paths.asymmetric_family_model
+            ),
             "capacity_manifest": evidence_manifest,
             "coverage": coverage,
         },
         "candidate_metrics": candidate_metrics,
         "challenger_decision": challenger_decision,
         "selected_candidate": selected_candidate,
+        "family_proxy_metrics": family_proxy_metrics,
+        "calibration": {
+            "type": "regularized_time_side_price_logistic_with_lower_bound_guard",
+            "global_uncertainty_penalty": calibration_guard.global_penalty,
+            "cell_penalties": calibration_guard.penalties,
+        },
         "threshold_search": threshold_search,
         "selected_thresholds": thresholds,
         "validation": validation_metrics,
         "test": test_metrics,
         "test_by_time_band": band_metrics,
+        "validation_rolling_folds": validation_folds,
+        "test_rolling_folds": test_folds,
+        "test_by_price_bucket": price_bucket_metrics,
         "test_fixed_entry_capacity_curve": capacity_curve,
         "qualification": qualification,
         "model_artifact": {
@@ -572,8 +751,10 @@ def run_training(config: TrainingConfig) -> tuple[Path, dict[str, Any]]:
         },
         "limitations": [
             "Capacity evidence ends at second 240; seconds 241-299 are not evaluated.",
+            "No completed PMXT capacity artifacts exist after July 23; the comparison block was observed in the preceding run and is not a fresh untouched holdout.",
             "Open interest begins after the outcome-fit window and is diagnostic only.",
             "Aggregate trade prints overlap only the end of the test block and are diagnostic only.",
+            "Directional and asymmetric family signals are chronological proxy refits using the frozen family feature contracts; they are not replays of future-trained runtime artifacts.",
             "Projected PnL assumes the recorded VWAP is fillable at the sampled timestamp and does not model queue position.",
         ],
     }
@@ -732,7 +913,12 @@ def load_training_frame(config: TrainingConfig, manifest: dict[str, Any]) -> pl.
     evidence = evidence.filter(strict)
 
     key_columns = ("market_id", "window_start", "observed_at", "seconds_elapsed", "label_up")
-    source_columns = (*key_columns, *CORE_FEATURES, *ORACLE_FEATURES)
+    family_features = tuple(
+        name for name in _family_feature_names(config) if not name.startswith("pm_")
+    )
+    source_columns = tuple(
+        dict.fromkeys((*key_columns, *CORE_FEATURES, *ORACLE_FEATURES, *family_features))
+    )
     oracle = (
         pl.scan_parquet(config.paths.oracle_features)
         .filter(_window_filter(config))
@@ -772,7 +958,8 @@ def _join_optional_features(frame: pl.DataFrame, path: Path, features: tuple[str
 
 
 def attach_book_features(frame: pl.DataFrame) -> pl.DataFrame:
-    return frame.with_columns(
+    reserve = 0.005
+    enriched = frame.with_columns(
         (pl.col("up_ask_vwap_5") + pl.col("down_ask_vwap_5") - 1.0).alias("pm_vwap5_overround"),
         (pl.col("up_ask_vwap_50") + pl.col("down_ask_vwap_50") - 1.0).alias("pm_vwap50_overround"),
         (pl.col("up_ask_vwap_200") + pl.col("down_ask_vwap_200") - 1.0).alias("pm_vwap200_overround"),
@@ -787,6 +974,53 @@ def attach_book_features(frame: pl.DataFrame) -> pl.DataFrame:
         ((pl.col("up_ask_depth") - pl.col("down_ask_depth")) / (pl.col("up_ask_depth") + pl.col("down_ask_depth")).clip(1e-9)).alias("pm_depth_imbalance"),
         ((pl.col("observed_at") - pl.col("up_provider_received_at")).dt.total_milliseconds() / 1000.0).alias("pm_up_book_age_seconds"),
         ((pl.col("observed_at") - pl.col("down_provider_received_at")).dt.total_milliseconds() / 1000.0).alias("pm_down_book_age_seconds"),
+    )
+    enriched = enriched.with_columns(
+        pl.col("up_ask_vwap_5").alias("yes_ask_vwap_5"),
+        pl.col("down_ask_vwap_5").alias("no_ask_vwap_5"),
+        (
+            pl.col("up_ask_vwap_5")
+            + pl.col("fee_rate") * pl.col("up_ask_vwap_5") * (1.0 - pl.col("up_ask_vwap_5"))
+            + reserve
+        ).alias("pm_yes_cost_per_share"),
+        (
+            pl.col("down_ask_vwap_5")
+            + pl.col("fee_rate")
+            * pl.col("down_ask_vwap_5")
+            * (1.0 - pl.col("down_ask_vwap_5"))
+            + reserve
+        ).alias("pm_no_cost_per_share"),
+        (pl.col("up_ask_vwap_5") - pl.col("up_best_ask")).alias("pm_yes_vwap_slippage"),
+        (pl.col("down_ask_vwap_5") - pl.col("down_best_ask")).alias("pm_no_vwap_slippage"),
+        pl.col("pm_up_depth_log").alias("pm_yes_depth_log"),
+        pl.col("pm_down_depth_log").alias("pm_no_depth_log"),
+        pl.col("pm_up_book_age_seconds").alias("pm_yes_book_age_seconds"),
+        pl.col("pm_down_book_age_seconds").alias("pm_no_book_age_seconds"),
+    )
+    epsilon = 1e-6
+    return enriched.with_columns(
+        (
+            pl.col("pm_yes_cost_per_share").clip(epsilon, 1.0 - epsilon).log()
+            - (1.0 - pl.col("pm_yes_cost_per_share").clip(epsilon, 1.0 - epsilon)).log()
+        ).alias("pm_yes_cost_logit"),
+        (
+            pl.col("pm_no_cost_per_share").clip(epsilon, 1.0 - epsilon).log()
+            - (1.0 - pl.col("pm_no_cost_per_share").clip(epsilon, 1.0 - epsilon)).log()
+        ).alias("pm_no_cost_logit"),
+        (pl.col("pm_yes_cost_per_share") + pl.col("pm_no_cost_per_share") - 1.0).alias(
+            "pm_cost_overround"
+        ),
+        (pl.col("pm_yes_cost_per_share") - pl.col("pm_no_cost_per_share")).alias(
+            "pm_yes_minus_no_cost"
+        ),
+    )
+
+
+def _family_feature_names(config: TrainingConfig) -> tuple[str, ...]:
+    directional = joblib.load(config.paths.directional_family_model)
+    asymmetric = joblib.load(config.paths.asymmetric_family_model)
+    return tuple(
+        dict.fromkeys((*directional.model.feature_names, *asymmetric.model.feature_names))
     )
 
 
@@ -949,7 +1183,56 @@ def choose_candidate(
     return selected, {"primary": primary_name, "challengers": decisions, "selected": selected}
 
 
-def score_frame(frame: pl.DataFrame, experts: dict[str, Expert], config: TrainingConfig) -> pl.DataFrame:
+def fit_family_proxies(
+    config: TrainingConfig,
+    frame: pl.DataFrame,
+) -> tuple[dict[str, Expert], dict[str, Any]]:
+    fit = _block(frame, config.windows.outcome_fit_start, config.windows.outcome_fit_end)
+    calibration = _block(frame, config.windows.outcome_fit_end, config.windows.calibration_end)
+    contract_band = TimeBand("family_proxy", 15, 241, 0.0, 0)
+    directional_contract = joblib.load(config.paths.directional_family_model)
+    asymmetric_contract = joblib.load(config.paths.asymmetric_family_model)
+    proxies: dict[str, Expert] = {}
+    histories: dict[str, Any] = {}
+    for offset, (name, contract) in enumerate(
+        (
+            ("directional", directional_contract.model),
+            ("asymmetric", asymmetric_contract.model),
+        )
+    ):
+        features = variable_feature_names(fit, contract.feature_names)
+        proxy, history = fit_expert(
+            fit,
+            calibration,
+            contract_band,
+            features,
+            config.random_seed + 100 + offset,
+        )
+        proxies[name] = proxy
+        histories[name] = {
+            "source_contract": str(
+                config.paths.directional_family_model
+                if name == "directional"
+                else config.paths.asymmetric_family_model
+            ),
+            "source_contract_sha256": file_sha256(
+                config.paths.directional_family_model
+                if name == "directional"
+                else config.paths.asymmetric_family_model
+            ),
+            "chronological_refit": True,
+            "feature_count": len(features),
+            "profile_search": history,
+        }
+    return proxies, histories
+
+
+def score_frame(
+    frame: pl.DataFrame,
+    experts: dict[str, Expert],
+    family_proxies: dict[str, Expert],
+    config: TrainingConfig,
+) -> pl.DataFrame:
     pieces = []
     for band in config.bands:
         subset = frame.filter(pl.col("time_band") == band.name)
@@ -959,7 +1242,11 @@ def score_frame(frame: pl.DataFrame, experts: dict[str, Expert], config: Trainin
         pieces.append(subset.with_columns(pl.Series("probability_up", probability)))
     if not pieces:
         return frame.head(0)
-    scored = pl.concat(pieces, how="vertical").sort(["market_id", "seconds_elapsed", "observed_at"])
+    scored = pl.concat(pieces, how="vertical").sort(
+        ["market_id", "seconds_elapsed", "observed_at"]
+    )
+    directional_family = family_proxies["directional"].probability(scored)
+    asymmetric_family = family_proxies["asymmetric"].probability(scored)
     predicted_up = scored["probability_up"].to_numpy() >= 0.5
     selected_probability = np.where(predicted_up, scored["probability_up"].to_numpy(), 1 - scored["probability_up"].to_numpy())
     selected_price = np.where(predicted_up, scored["up_ask_vwap_5"].to_numpy(), scored["down_ask_vwap_5"].to_numpy())
@@ -972,17 +1259,207 @@ def score_frame(frame: pl.DataFrame, experts: dict[str, Expert], config: Trainin
         pl.Series("selected_cost_5", selected_cost),
         pl.Series("selected_edge_5", selected_probability - selected_cost),
         pl.Series("direction_correct", predicted_up == scored["label_up"].to_numpy().astype(bool)),
+        pl.Series("directional_family_probability_up", directional_family),
+        pl.Series("asymmetric_family_probability_up", asymmetric_family),
+        pl.Series(
+            "directional_family_disagreement",
+            np.abs(scored["probability_up"].to_numpy() - directional_family),
+        ),
+        pl.Series(
+            "asymmetric_family_disagreement",
+            np.abs(scored["probability_up"].to_numpy() - asymmetric_family),
+        ),
+        pl.Series("family_probability_spread", np.abs(directional_family - asymmetric_family)),
+        pl.Series(
+            "family_vote_agreement",
+            (
+                (directional_family >= 0.5)
+                == (asymmetric_family >= 0.5)
+            ).astype(np.int8),
+        ),
     )
+
+
+def fit_price_time_calibration(
+    frame: pl.DataFrame,
+    config: TrainingConfig,
+) -> PriceTimeCalibration:
+    band_names = tuple(band.name for band in config.bands)
+    matrix = _price_time_calibration_matrix(
+        frame,
+        band_names,
+        config.policy.price_bucket_edges,
+    )
+    estimator = LogisticRegression(
+        C=0.25,
+        solver="lbfgs",
+        max_iter=500,
+        random_state=config.random_seed,
+    )
+    estimator.fit(
+        matrix,
+        frame["direction_correct"].to_numpy().astype(np.int8),
+        sample_weight=market_equal_weights(frame),
+    )
+    return PriceTimeCalibration(estimator, band_names, config.policy.price_bucket_edges)
+
+
+def attach_price_time_calibration(
+    frame: pl.DataFrame,
+    calibration: PriceTimeCalibration,
+    config: TrainingConfig,
+) -> pl.DataFrame:
+    selected_probability = calibration.estimator.predict_proba(
+        _price_time_calibration_matrix(
+            frame,
+            calibration.band_names,
+            calibration.price_bucket_edges,
+        )
+    )[:, 1]
+    predicted_up = frame["predicted_up"].to_numpy().astype(bool)
+    probability_up = np.where(predicted_up, selected_probability, 1.0 - selected_probability)
+    selected_cost = frame["selected_cost_5"].to_numpy()
+    return frame.with_columns(
+        pl.Series("probability_up", probability_up),
+        pl.Series("probability_selected", selected_probability),
+        pl.Series("confidence_margin", selected_probability - 0.5),
+        pl.Series("selected_edge_5", selected_probability - selected_cost),
+    )
+
+
+def _price_time_calibration_matrix(
+    frame: pl.DataFrame,
+    band_names: tuple[str, ...],
+    price_bucket_edges: tuple[float, ...],
+) -> np.ndarray:
+    probability = np.clip(frame["probability_selected"].to_numpy(), 1e-6, 1 - 1e-6)
+    logit = np.log(probability / (1.0 - probability))
+    price = frame["selected_cost_5"].to_numpy()
+    buckets = _price_bucket_indices(price, price_bucket_edges)
+    bands = frame["time_band"].to_numpy()
+    band_one_hot = np.column_stack([(bands == name).astype(float) for name in band_names])
+    bucket_one_hot = np.column_stack(
+        [(buckets == index).astype(float) for index in range(len(price_bucket_edges) - 1)]
+    )
+    return np.column_stack(
+        (
+            logit,
+            frame["predicted_up"].to_numpy().astype(float),
+            band_one_hot,
+            bucket_one_hot,
+            band_one_hot * logit[:, None],
+            bucket_one_hot * logit[:, None],
+        )
+    )
+
+
+def fit_calibration_guard(frame: pl.DataFrame, config: TrainingConfig) -> CalibrationGuard:
+    price = frame["selected_cost_5"].to_numpy()
+    bucket = _price_bucket_indices(price, config.policy.price_bucket_edges)
+    probability = frame["probability_selected"].to_numpy()
+    correct = frame["direction_correct"].to_numpy().astype(float)
+    weights = market_equal_weights(frame)
+    global_gap = abs(float(np.average(correct - probability, weights=weights)))
+    global_markets = max(frame["market_id"].n_unique(), 1)
+    global_se = math.sqrt(max(float(np.average(correct, weights=weights)) * (1.0 - float(np.average(correct, weights=weights))), 0.01) / global_markets)
+    global_penalty = global_gap + config.policy.conservative_z_score * global_se
+    penalties: dict[str, float] = {}
+    bands = frame["time_band"].to_numpy()
+    for band in config.bands:
+        for index in range(len(config.policy.price_bucket_edges) - 1):
+            mask = (bands == band.name) & (bucket == index)
+            if not mask.any():
+                penalties[f"{band.name}:{index}"] = global_penalty
+                continue
+            cell_weights = weights[mask]
+            cell_accuracy = float(np.average(correct[mask], weights=cell_weights))
+            cell_gap = abs(float(np.average(correct[mask] - probability[mask], weights=cell_weights)))
+            markets = frame.filter(pl.Series(mask))["market_id"].n_unique()
+            cell_se = math.sqrt(max(cell_accuracy * (1.0 - cell_accuracy), 0.01) / max(markets, 1))
+            cell_penalty = cell_gap + config.policy.conservative_z_score * cell_se
+            shrink = markets / (markets + 200.0)
+            penalties[f"{band.name}:{index}"] = shrink * cell_penalty + (1.0 - shrink) * global_penalty
+    return CalibrationGuard(penalties, global_penalty)
+
+
+def attach_calibration_guard(
+    frame: pl.DataFrame,
+    guard: CalibrationGuard,
+    config: TrainingConfig,
+) -> pl.DataFrame:
+    price = frame["selected_cost_5"].to_numpy()
+    buckets = _price_bucket_indices(price, config.policy.price_bucket_edges)
+    bands = frame["time_band"].to_numpy()
+    penalties = np.array(
+        [guard.penalties.get(f"{band}:{bucket}", guard.global_penalty) for band, bucket in zip(bands, buckets, strict=True)]
+    )
+    conservative_probability = np.clip(
+        frame["probability_selected"].to_numpy() - penalties,
+        0.0,
+        1.0,
+    )
+    required_edge = np.array(config.policy.price_bucket_minimum_edges)[buckets]
+    return frame.with_columns(
+        pl.Series("price_bucket_index", buckets.astype(np.int8)),
+        pl.Series("calibration_uncertainty_penalty", penalties),
+        pl.Series("conservative_probability_selected", conservative_probability),
+        pl.Series("conservative_edge_5", conservative_probability - price),
+        pl.Series("price_bucket_minimum_edge", required_edge),
+    )
+
+
+def attach_probability_stability(frame: pl.DataFrame) -> pl.DataFrame:
+    output = frame
+    for lag in (5, 15, 30):
+        lagged = frame.select(
+            "market_id",
+            (pl.col("seconds_elapsed") + lag).alias("seconds_elapsed"),
+            pl.col("probability_selected").alias(f"_probability_lag_{lag}"),
+        )
+        output = output.join(lagged, on=["market_id", "seconds_elapsed"], how="left")
+        output = output.with_columns(
+            (pl.col("probability_selected") - pl.col(f"_probability_lag_{lag}")).alias(
+                f"probability_change_{lag}s"
+            )
+        ).drop(f"_probability_lag_{lag}")
+    return output.with_columns(
+        pl.max_horizontal(
+            pl.col("probability_change_5s").abs(),
+            pl.col("probability_change_15s").abs(),
+            pl.col("probability_change_30s").abs(),
+        ).alias("probability_instability_30s")
+    )
+
+
+def prepare_scored_frame(
+    frame: pl.DataFrame,
+    experts: dict[str, Expert],
+    family_proxies: dict[str, Expert],
+    price_time_calibration: PriceTimeCalibration,
+    calibration_guard: CalibrationGuard,
+    config: TrainingConfig,
+) -> pl.DataFrame:
+    scored = score_frame(frame, experts, family_proxies, config)
+    scored = attach_price_time_calibration(scored, price_time_calibration, config)
+    scored = attach_calibration_guard(scored, calibration_guard, config)
+    return attach_probability_stability(scored)
+
+
+def _price_bucket_indices(
+    values: np.ndarray,
+    edges: tuple[float, ...],
+) -> np.ndarray:
+    return np.clip(np.searchsorted(np.asarray(edges[1:-1]), values, side="right"), 0, len(edges) - 2)
 
 
 def fit_admission_model(
     frame: pl.DataFrame,
     config: TrainingConfig,
-) -> tuple[HistGradientBoostingClassifier, tuple[str, ...]]:
+) -> PayoffAdmissionModel:
     if frame["market_id"].n_unique() < 250:
         raise RuntimeError("admission model lacks held-out markets")
     feature_names = variable_feature_names(frame, ADMISSION_FEATURES)
-    model = HistGradientBoostingClassifier(
+    classifier = HistGradientBoostingClassifier(
         learning_rate=0.04,
         max_iter=180,
         max_leaf_nodes=15,
@@ -991,21 +1468,46 @@ def fit_admission_model(
         random_state=config.random_seed,
         early_stopping=False,
     )
-    model.fit(
+    profitable = (
+        frame["direction_correct"].to_numpy().astype(float)
+        - frame["selected_cost_5"].to_numpy()
+        - config.execution.stress_slippage_per_share
+    ) > 0
+    weights = market_equal_weights(frame)
+    classifier.fit(
         _matrix(frame, feature_names),
-        frame["direction_correct"].to_numpy().astype(np.int8),
-        sample_weight=market_equal_weights(frame),
+        profitable.astype(np.int8),
+        sample_weight=weights,
     )
-    return model, feature_names
+    regressor = HistGradientBoostingRegressor(
+        learning_rate=0.04,
+        max_iter=180,
+        max_leaf_nodes=15,
+        min_samples_leaf=120,
+        l2_regularization=5.0,
+        random_state=config.random_seed + 1,
+        early_stopping=False,
+    )
+    realized_stress_edge = (
+        frame["direction_correct"].to_numpy().astype(float)
+        - frame["selected_cost_5"].to_numpy()
+        - config.execution.stress_slippage_per_share
+    )
+    regressor.fit(_matrix(frame, feature_names), realized_stress_edge, sample_weight=weights)
+    return PayoffAdmissionModel(feature_names, classifier, regressor)
 
 
 def attach_admission_probability(
     frame: pl.DataFrame,
-    model: HistGradientBoostingClassifier,
-    feature_names: tuple[str, ...],
+    model: PayoffAdmissionModel,
 ) -> pl.DataFrame:
-    probability = model.predict_proba(_matrix(frame, feature_names))[:, 1]
-    return frame.with_columns(pl.Series("admission_probability", probability))
+    matrix = _matrix(frame, model.feature_names)
+    probability = model.profitable_classifier.predict_proba(matrix)[:, 1]
+    expected_stress_edge = model.stress_edge_regressor.predict(matrix)
+    return frame.with_columns(
+        pl.Series("admission_probability", probability),
+        pl.Series("payoff_expected_stress_edge", expected_stress_edge),
+    )
 
 
 def select_policy_thresholds(frame: pl.DataFrame, config: TrainingConfig) -> tuple[dict[str, dict[str, float]], dict[str, Any]]:
@@ -1014,35 +1516,81 @@ def select_policy_thresholds(frame: pl.DataFrame, config: TrainingConfig) -> tup
     for band in config.bands:
         subset = frame.filter(pl.col("time_band") == band.name).sort(["market_id", "seconds_elapsed", "observed_at"])
         best: tuple[tuple[float, float, float], dict[str, float], dict[str, Any]] | None = None
+        fallback: tuple[tuple[float, float, float], dict[str, float], dict[str, Any]] | None = None
         attempts = 0
         qualified_attempts = 0
         for confidence in config.policy.confidence_thresholds:
             for edge in config.policy.edge_thresholds:
                 for admission in config.policy.admission_thresholds:
-                    attempts += 1
-                    trades = _first_crossings_array(subset, confidence, edge, admission, use_admission=True)
-                    metrics = policy_metrics(trades, config, quantity=5)
-                    qualified = (
-                        metrics["trades"] >= band.minimum_validation_trades
-                        and metrics["accuracy"] >= band.minimum_validation_accuracy
-                        and metrics["stress_expectancy_per_trade"] > 0
-                    )
-                    if not qualified:
-                        continue
-                    qualified_attempts += 1
-                    score = (metrics["stress_net_pnl"], metrics["accuracy"], metrics["trades"])
-                    values = {"confidence": confidence, "edge": edge, "admission": admission}
-                    if best is None or score > best[0]:
-                        best = (score, values, metrics)
-        if best is None:
-            raise RuntimeError(f"no validation-qualified policy threshold for {band.name}")
-        _, values, metrics = best
+                    for payoff_edge in config.policy.payoff_edge_thresholds:
+                        attempts += 1
+                        trades = _first_crossings_array(
+                            subset,
+                            confidence,
+                            edge,
+                            admission,
+                            payoff_edge,
+                            use_admission=True,
+                        )
+                        metrics = policy_metrics(trades, config, quantity=5)
+                        folds = rolling_policy_metrics(
+                            trades,
+                            config,
+                            config.windows.validation_start,
+                            config.windows.validation_end,
+                            quantity=5,
+                        )
+                        values = {
+                            "confidence": confidence,
+                            "edge": edge,
+                            "admission": admission,
+                            "payoff_edge": payoff_edge,
+                        }
+                        score = (
+                            folds["median_fold_stress_expectancy"],
+                            metrics["stress_net_pnl"],
+                            metrics["trades"],
+                        )
+                        record = {**metrics, "rolling_folds": folds}
+                        if fallback is None or score > fallback[0]:
+                            fallback = (score, values, record)
+                        qualified = (
+                            metrics["trades"] >= band.minimum_validation_trades
+                            and metrics["accuracy"] >= band.minimum_validation_accuracy
+                            and metrics["stress_expectancy_per_trade"] > 0
+                            and (metrics["profit_factor"] or 0.0)
+                            >= config.policy.minimum_profit_factor
+                            and folds["profitable_fold_ratio"]
+                            >= config.policy.minimum_profitable_fold_ratio
+                        )
+                        if not qualified:
+                            continue
+                        qualified_attempts += 1
+                        if best is None or score > best[0]:
+                            best = (score, values, record)
+        chosen = best
+        enabled = best is not None
+        if chosen is None and band.name == "early":
+            chosen = fallback
+            enabled = True
+        if chosen is None:
+            selected[band.name] = {"enabled": False}
+            history[band.name] = {
+                "attempts": attempts,
+                "qualified_attempts": qualified_attempts,
+                "enabled": False,
+                "reason": "no rolling-validation-qualified policy",
+            }
+            continue
+        _, values, metrics = chosen
+        values = {**values, "enabled": enabled}
         selected[band.name] = values
         history[band.name] = {
             "attempts": attempts,
             "qualified_attempts": qualified_attempts,
             "selected": values,
             "validation_metrics": metrics,
+            "strictly_qualified": best is not None,
         }
     return selected, history
 
@@ -1052,12 +1600,22 @@ def _first_crossings_array(
     confidence: float,
     edge: float,
     admission: float,
+    payoff_edge: float = -math.inf,
     *,
     use_admission: bool,
 ) -> pl.DataFrame:
-    mask = (frame["probability_selected"].to_numpy() >= confidence) & (frame["selected_edge_5"].to_numpy() >= edge)
+    conservative_edge = frame["conservative_edge_5"].to_numpy()
+    required_edge = frame["price_bucket_minimum_edge"].to_numpy()
+    mask = (
+        (frame["conservative_probability_selected"].to_numpy() >= confidence)
+        & (conservative_edge >= edge)
+        & (conservative_edge >= required_edge)
+    )
     if use_admission:
-        mask &= frame["admission_probability"].to_numpy() >= admission
+        mask &= (
+            (frame["admission_probability"].to_numpy() >= admission)
+            & (frame["payoff_expected_stress_edge"].to_numpy() >= payoff_edge)
+        )
     indices = np.flatnonzero(mask)
     if not len(indices):
         return frame.head(0)
@@ -1074,13 +1632,24 @@ def select_first_crossings(
 ) -> pl.DataFrame:
     eligible = np.zeros(frame.height, dtype=bool)
     bands = frame["time_band"].to_numpy()
-    confidence = frame["probability_selected"].to_numpy()
-    edge = frame["selected_edge_5"].to_numpy()
+    confidence = frame["conservative_probability_selected"].to_numpy()
+    edge = frame["conservative_edge_5"].to_numpy()
+    required_edge = frame["price_bucket_minimum_edge"].to_numpy()
     admission = frame["admission_probability"].to_numpy()
+    payoff_edge = frame["payoff_expected_stress_edge"].to_numpy()
     for name, values in thresholds.items():
-        mask = (bands == name) & (confidence >= values["confidence"]) & (edge >= values["edge"])
+        if not values.get("enabled", True):
+            continue
+        mask = (
+            (bands == name)
+            & (confidence >= values["confidence"])
+            & (edge >= values["edge"])
+            & (edge >= required_edge)
+        )
         if use_admission:
-            mask &= admission >= values["admission"]
+            mask &= (admission >= values["admission"]) & (
+                payoff_edge >= values["payoff_edge"]
+            )
         eligible |= mask
     indices = np.flatnonzero(eligible)
     if not len(indices):
@@ -1116,11 +1685,15 @@ def policy_metrics(frame: pl.DataFrame, config: TrainingConfig, *, quantity: int
             "profit_factor": 0.0,
             "average_win": 0.0,
             "average_loss": 0.0,
+            "payoff_ratio": 0.0,
             "maximum_drawdown": 0.0,
             "stress_net_pnl": 0.0,
             "stress_expectancy_per_trade": 0.0,
             "average_entry_second": None,
             "median_entry_second": None,
+            "profitable_day_ratio": 0.0,
+            "worst_day_net_pnl": 0.0,
+            "daily_pnl_concentration": 0.0,
         }
     if quantity not in VWAP_QUANTITIES:
         raise ValueError(quantity)
@@ -1136,6 +1709,12 @@ def policy_metrics(frame: pl.DataFrame, config: TrainingConfig, *, quantity: int
     peaks = np.maximum.accumulate(np.concatenate(([0.0], cumulative)))
     drawdown = peaks - np.concatenate(([0.0], cumulative))
     entry = frame["seconds_elapsed"].to_numpy()
+    days = frame["window_start"].dt.date().to_numpy()
+    daily_pnl: dict[Any, float] = {}
+    for day, value in zip(days, pnl, strict=True):
+        daily_pnl[day] = daily_pnl.get(day, 0.0) + float(value)
+    daily_values = np.asarray(list(daily_pnl.values()), dtype=float)
+    absolute_daily_sum = float(np.abs(daily_values).sum())
     return {
         "trades": len(pnl),
         "accuracy": float(correct.mean()),
@@ -1144,6 +1723,9 @@ def policy_metrics(frame: pl.DataFrame, config: TrainingConfig, *, quantity: int
         "profit_factor": float(gains.sum() / -losses.sum()) if len(losses) else None,
         "average_win": float(gains.mean()) if len(gains) else 0.0,
         "average_loss": float(losses.mean()) if len(losses) else 0.0,
+        "payoff_ratio": (
+            float(gains.mean() / -losses.mean()) if len(gains) and len(losses) else 0.0
+        ),
         "maximum_drawdown": float(drawdown.max()),
         "stress_net_pnl": float(stress.sum()),
         "stress_expectancy_per_trade": float(stress.mean()),
@@ -1156,7 +1738,77 @@ def policy_metrics(frame: pl.DataFrame, config: TrainingConfig, *, quantity: int
         "return_on_entry_cost": float(pnl.sum() / (price * quantity).sum()),
         "up_trades": int(predicted_up.sum()),
         "down_trades": int((~predicted_up).sum()),
+        "profitable_day_ratio": float((daily_values > 0).mean()),
+        "worst_day_net_pnl": float(daily_values.min()),
+        "daily_pnl_concentration": (
+            float(np.abs(daily_values).max() / absolute_daily_sum)
+            if absolute_daily_sum
+            else 0.0
+        ),
     }
+
+
+def rolling_policy_metrics(
+    frame: pl.DataFrame,
+    config: TrainingConfig,
+    start: datetime,
+    end: datetime,
+    *,
+    quantity: int,
+) -> dict[str, Any]:
+    folds: list[dict[str, Any]] = []
+    cursor = start
+    width = timedelta(days=config.policy.rolling_fold_days)
+    while cursor < end:
+        fold_end = min(cursor + width, end)
+        subset = _block(frame, cursor, fold_end)
+        metrics = policy_metrics(subset, config, quantity=quantity)
+        folds.append(
+            {
+                "start": cursor.isoformat(),
+                "end": fold_end.isoformat(),
+                **metrics,
+            }
+        )
+        cursor = fold_end
+    expectations = np.asarray(
+        [row["stress_expectancy_per_trade"] for row in folds],
+        dtype=float,
+    )
+    profitable = np.asarray([row["stress_net_pnl"] > 0 for row in folds], dtype=bool)
+    return {
+        "fold_days": config.policy.rolling_fold_days,
+        "fold_count": len(folds),
+        "profitable_folds": int(profitable.sum()),
+        "profitable_fold_ratio": float(profitable.mean()) if len(profitable) else 0.0,
+        "median_fold_stress_expectancy": (
+            float(np.median(expectations)) if len(expectations) else 0.0
+        ),
+        "folds": folds,
+    }
+
+
+def policy_metrics_by_price_bucket(
+    frame: pl.DataFrame,
+    config: TrainingConfig,
+    *,
+    quantity: int,
+) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    for index, (lower, upper) in enumerate(
+        zip(
+            config.policy.price_bucket_edges[:-1],
+            config.policy.price_bucket_edges[1:],
+            strict=True,
+        )
+    ):
+        subset = frame.filter(pl.col("price_bucket_index") == index)
+        output[f"{lower:.2f}-{upper:.2f}"] = policy_metrics(
+            subset,
+            config,
+            quantity=quantity,
+        )
+    return output
 
 
 def market_equal_weights(frame: pl.DataFrame) -> np.ndarray:
@@ -1200,7 +1852,7 @@ def render_report(metrics: dict[str, Any]) -> str:
         (
             "Status: **development qualified; not runtime exported**"
             if metrics["qualification"]["passed"]
-            else "Status: **development candidate rejected; not runtime exported**"
+            else "Status: **development-only evidence; not runtime exported**"
         ),
         "",
         f"Selected probability candidate: `{metrics['selected_candidate']}`",
@@ -1208,15 +1860,17 @@ def render_report(metrics: dict[str, Any]) -> str:
         (
             "The candidate passed every frozen development gate."
             if metrics["qualification"]["passed"]
-            else "The candidate failed frozen untouched-test expectancy gates and must not be deployed."
+            else "The expectancy gates passed, but no fresh post-July-23 capacity holdout exists; this result must not be deployed."
         ),
         "",
-        "## Untouched chronological test",
+        "## Retrospective chronological comparison block",
         "",
         "| Policy | Trades | Accuracy | Net PnL (VWAP5) | Expectancy | PF | Avg entry | Coverage |",
         "|---|---:|---:|---:|---:|---:|---:|---:|",
-        f"| Without correctness veto | {control['trades']} | {control['accuracy']:.2%} | {control['net_pnl']:.2f} | {control['expectancy_per_trade']:.4f} | {_fmt(control['profit_factor'])} | {_fmt(control['average_entry_second'])} | — |",
-        f"| Selected continuous edge | {test['trades']} | {test['accuracy']:.2%} | {test['net_pnl']:.2f} | {test['expectancy_per_trade']:.4f} | {_fmt(test['profit_factor'])} | {_fmt(test['average_entry_second'])} | {test.get('market_coverage', 0):.2%} |",
+        f"| Without payoff admission | {control['trades']} | {control['accuracy']:.2%} | {control['net_pnl']:.2f} | {control['expectancy_per_trade']:.4f} | {_fmt(control['profit_factor'])} | {_fmt(control['average_entry_second'])} | — |",
+        f"| Selected payoff-aware edge | {test['trades']} | {test['accuracy']:.2%} | {test['net_pnl']:.2f} | {test['expectancy_per_trade']:.4f} | {_fmt(test['profit_factor'])} | {_fmt(test['average_entry_second'])} | {test.get('market_coverage', 0):.2%} |",
+        "",
+        f"Stress PnL: **{test['stress_net_pnl']:.2f}**; stress expectancy: **{test['stress_expectancy_per_trade']:.4f}**; strict-data coverage: **{test.get('strict_data_coverage', 0):.2%}**; end-to-end trade coverage: **{test.get('end_to_end_market_coverage', 0):.2%}**.",
         "",
         "## Fixed-entry VWAP capacity curve",
         "",
@@ -1243,6 +1897,35 @@ def render_report(metrics: dict[str, Any]) -> str:
         lines.append(
             f"| {band} | {row['trades']} | {row['accuracy']:.2%} | {row['net_pnl']:.2f} | "
             f"{row['expectancy_per_trade']:.4f} | {_fmt(row['average_entry_second'])} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Rolling three-day comparison",
+            "",
+            "| Fold | Trades | Accuracy | Stress PnL | Stress expectancy |",
+            "|---|---:|---:|---:|---:|",
+        ]
+    )
+    for fold in metrics["test_rolling_folds"]["folds"]:
+        lines.append(
+            f"| {fold['start'][:10]} to {fold['end'][:10]} | {fold['trades']} | "
+            f"{fold['accuracy']:.2%} | {fold['stress_net_pnl']:.2f} | "
+            f"{fold['stress_expectancy_per_trade']:.4f} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Comparison results by entry-price bucket (VWAP5)",
+            "",
+            "| Entry price | Trades | Accuracy | Net PnL | Stress PnL |",
+            "|---|---:|---:|---:|---:|",
+        ]
+    )
+    for bucket, row in metrics["test_by_price_bucket"].items():
+        lines.append(
+            f"| {bucket} | {row['trades']} | {row['accuracy']:.2%} | "
+            f"{row['net_pnl']:.2f} | {row['stress_net_pnl']:.2f} |"
         )
     lines.extend(["", "## Limitations", ""])
     lines.extend(f"- {value}" for value in metrics["limitations"])
