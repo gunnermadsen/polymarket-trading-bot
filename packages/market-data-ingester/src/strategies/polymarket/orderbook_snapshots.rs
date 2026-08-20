@@ -3402,6 +3402,11 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                     frame = stream.next() => {
                         read_deadline = Instant::now() + read_timeout;
                         let received_at = canonical_timestamp(Utc::now());
+                        if frame.as_ref().is_some_and(Result::is_ok) {
+                            // Explicit PONG is preferred, but any inbound frame
+                            // after our text PING proves the socket is live.
+                            pong_deadline = None;
+                        }
                         let event = match frame {
                             Some(Ok(Message::Text(text))) => {
                                 let value = text.as_str().trim();
