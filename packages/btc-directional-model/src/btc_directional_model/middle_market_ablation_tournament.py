@@ -624,9 +624,20 @@ def _oof_predictions(
             validation_start + timedelta(days=config.model.oof_fold_days),
             config.windows.fit_end,
         )
+        fit_block = _block(frame, config.windows.fit_start, fit_end)
+        calibration_block = _block(frame, fit_end, validation_start)
+        validation_block = _block(frame, validation_start, validation_end)
+        if (
+            fit_block["market_id"].n_unique() < 500
+            or calibration_block["market_id"].n_unique() < 150
+            or validation_block.is_empty()
+        ):
+            validation_start = validation_end
+            fold += 1
+            continue
         model = _fit_outcome(
-            _block(frame, config.windows.fit_start, fit_end),
-            _block(frame, fit_end, validation_start),
+            fit_block,
+            calibration_block,
             features,
             config.random_seed + 200 + fold,
             (config.windows.fit_start, fit_end),
@@ -634,9 +645,7 @@ def _oof_predictions(
             minimum_fit_markets=500,
             minimum_calibration_markets=150,
         )
-        scored = _attach_decision_scores(
-            _block(frame, validation_start, validation_end), model, config
-        )
+        scored = _attach_decision_scores(validation_block, model, config)
         pieces.append(scored.with_columns(pl.lit(fold).alias("oof_fold")))
         validation_start = validation_end
         fold += 1
