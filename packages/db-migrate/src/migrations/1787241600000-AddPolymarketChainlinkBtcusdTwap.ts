@@ -60,7 +60,7 @@ export class AddPolymarketChainlinkBtcusdTwap1787241600000
         ),
         CONSTRAINT chk_market_data_polymarket_chainlink_btcusd_twap_value CHECK (
           full_accuracy_value ~ '^-?[0-9]{1,29}$'
-          AND twap_price = full_accuracy_value::numeric / 1000000000000000000::numeric
+          AND twap_price * 1000000000000000000::numeric = full_accuracy_value::numeric
           AND twap_price > 0
         ),
         CONSTRAINT chk_market_data_polymarket_chainlink_btcusd_twap_time CHECK (
