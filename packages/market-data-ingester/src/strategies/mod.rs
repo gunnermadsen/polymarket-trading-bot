@@ -21,6 +21,7 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
         Arc::new(polymarket::PolymarketBtcFiveMinuteMarketContractsFactory),
         Arc::new(polymarket::PolymarketBtcFiveMinuteOrderbooksFactory),
         Arc::new(polymarket::PolymarketBtcFiveMinuteResolutionsFactory),
+        Arc::new(polymarket::PolymarketChainlinkBtcusdTwapFactory),
     ];
     StrategyRegistry::from_factories(factories)
 }
