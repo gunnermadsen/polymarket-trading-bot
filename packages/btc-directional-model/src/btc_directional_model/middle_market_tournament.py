@@ -854,6 +854,8 @@ def _train_candidate(
     seed: int,
 ) -> tuple[FrozenCandidate, pl.DataFrame, dict[str, Any]]:
     fit_start, fit_end, calibration_end = _candidate_windows(config, window_family)
+    minimum_fit_markets = 250 if window_family == "prints" else 500
+    minimum_calibration_markets = 100 if window_family == "prints" else 200
     eligibility_features = tuple(name for name in features if name not in PRIMARY_FEATURES)
     eligible = _candidate_eligible_frame(frame, eligibility_features)
     outcome = _fit_outcome(
@@ -863,6 +865,8 @@ def _train_candidate(
         seed,
         (fit_start, fit_end),
         (fit_end, calibration_end),
+        minimum_fit_markets=minimum_fit_markets,
+        minimum_calibration_markets=minimum_calibration_markets,
     )
     calibration = _attach_decision_scores(
         _block(eligible, fit_end, calibration_end), outcome, config
@@ -936,6 +940,10 @@ def _train_candidate(
         "feature_count": len(features),
         "fit_window": [fit_start.isoformat(), fit_end.isoformat()],
         "calibration_window": [fit_end.isoformat(), calibration_end.isoformat()],
+        "coverage_guard": {
+            "minimum_fit_markets": minimum_fit_markets,
+            "minimum_calibration_markets": minimum_calibration_markets,
+        },
         "fit_rows": _block(eligible, fit_start, fit_end).height,
         "fit_markets": _block(eligible, fit_start, fit_end)["market_id"].n_unique(),
         "policy_rows": scored_policy.height,
@@ -983,8 +991,14 @@ def _fit_outcome(
     seed: int,
     fit_window: tuple[datetime, datetime],
     calibration_window: tuple[datetime, datetime],
+    *,
+    minimum_fit_markets: int,
+    minimum_calibration_markets: int,
 ) -> OutcomeModel:
-    if fit["market_id"].n_unique() < 500 or calibration["market_id"].n_unique() < 200:
+    if (
+        fit["market_id"].n_unique() < minimum_fit_markets
+        or calibration["market_id"].n_unique() < minimum_calibration_markets
+    ):
         raise RuntimeError("candidate lacks minimum chronological outcome coverage")
     feature_names = _variable_features(fit, features)
     estimator = HistGradientBoostingClassifier(
