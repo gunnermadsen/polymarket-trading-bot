@@ -1,0 +1,1245 @@
+{
+  "candidate_metrics": {
+    "core_oracle_vwap_curve": {
+      "bands": {
+        "early": {
+          "calibration": {
+            "accuracy": 0.6032129148212699,
+            "bias": 7.484968463443157e-06,
+            "brier": 0.23221013249588304,
+            "log_loss": 0.6556934132165391,
+            "markets": 859,
+            "rows": 48436
+          },
+          "calibration_markets": 859,
+          "calibration_rows": 48436,
+          "fit_markets": 3787,
+          "fit_rows": 217773,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.6562940439424195,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.6600284512889901,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.6109360276983113,
+            "bias": -0.021872367634827874,
+            "brier": 0.23090956017136016,
+            "log_loss": 0.6532617076835869,
+            "markets": 2373,
+            "rows": 125835
+          },
+          "validation_markets": 2373,
+          "validation_rows": 125835
+        },
+        "late": {
+          "calibration": {
+            "accuracy": 0.8213486250764357,
+            "bias": 1.0634611322759744e-06,
+            "brier": 0.12908621882844498,
+            "log_loss": 0.40693422242586375,
+            "markets": 845,
+            "rows": 9444
+          },
+          "calibration_markets": 845,
+          "calibration_rows": 9444,
+          "fit_markets": 3594,
+          "fit_rows": 39850,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.4100525458787837,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.4169455720390219,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.8217922268703519,
+            "bias": -0.006804188095965077,
+            "brier": 0.1253662233546881,
+            "log_loss": 0.39210341354460077,
+            "markets": 2176,
+            "rows": 22787
+          },
+          "validation_markets": 2176,
+          "validation_rows": 22787
+        },
+        "mid": {
+          "calibration": {
+            "accuracy": 0.7457437265576802,
+            "bias": 2.8112166258263153e-06,
+            "brier": 0.17412220496658462,
+            "log_loss": 0.5229124646614471,
+            "markets": 860,
+            "rows": 13728
+          },
+          "calibration_markets": 860,
+          "calibration_rows": 13728,
+          "fit_markets": 3709,
+          "fit_rows": 60515,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.5249808411262886,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.5321557050899043,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.72481659510645,
+            "bias": -0.028393556433525428,
+            "brier": 0.17925875476588793,
+            "log_loss": 0.5315969895681552,
+            "markets": 2277,
+            "rows": 34190
+          },
+          "validation_markets": 2277,
+          "validation_rows": 34190
+        }
+      },
+      "feature_count": 114
+    },
+    "core_oracle_vwap_curve_chainlink": {
+      "bands": {
+        "early": {
+          "calibration": {
+            "accuracy": 0.5845394117710299,
+            "bias": -6.387512757687183e-05,
+            "brier": 0.237891176213986,
+            "log_loss": 0.6681941139889065,
+            "markets": 859,
+            "rows": 48436
+          },
+          "calibration_markets": 859,
+          "calibration_rows": 48436,
+          "fit_markets": 3607,
+          "fit_rows": 206912,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.6729087556136317,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.6851054384050009,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.5889297825985728,
+            "bias": -0.033946346562132655,
+            "brier": 0.23633153813928576,
+            "log_loss": 0.6649118614859945,
+            "markets": 2325,
+            "rows": 122821
+          },
+          "validation_markets": 2325,
+          "validation_rows": 122821
+        },
+        "late": {
+          "calibration": {
+            "accuracy": 0.8194123989094404,
+            "bias": 8.855762410409876e-06,
+            "brier": 0.1301094326486708,
+            "log_loss": 0.41125385587392993,
+            "markets": 845,
+            "rows": 9444
+          },
+          "calibration_markets": 845,
+          "calibration_rows": 9444,
+          "fit_markets": 3417,
+          "fit_rows": 37839,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.414851219600752,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.42812247384885416,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.8174547948396632,
+            "bias": -0.004228582903418082,
+            "brier": 0.1289112334722249,
+            "log_loss": 0.4011951213112977,
+            "markets": 2128,
+            "rows": 22215
+          },
+          "validation_markets": 2128,
+          "validation_rows": 22215
+        },
+        "mid": {
+          "calibration": {
+            "accuracy": 0.743209153952143,
+            "bias": 8.162261766126498e-06,
+            "brier": 0.1749430132102487,
+            "log_loss": 0.5257120253821629,
+            "markets": 860,
+            "rows": 13728
+          },
+          "calibration_markets": 860,
+          "calibration_rows": 13728,
+          "fit_markets": 3529,
+          "fit_rows": 57532,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.5263779320837256,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.533289030945371,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.7263813207760637,
+            "bias": -0.008815366431944584,
+            "brier": 0.1801787290753186,
+            "log_loss": 0.5345820054461464,
+            "markets": 2229,
+            "rows": 33382
+          },
+          "validation_markets": 2229,
+          "validation_rows": 33382
+        }
+      },
+      "feature_count": 122
+    },
+    "core_oracle_vwap_curve_l2": {
+      "bands": {
+        "early": {
+          "calibration": {
+            "accuracy": 0.5948163138603358,
+            "bias": -2.7331604037519072e-05,
+            "brier": 0.234368025193542,
+            "log_loss": 0.6603678378284311,
+            "markets": 859,
+            "rows": 48410
+          },
+          "calibration_markets": 859,
+          "calibration_rows": 48410,
+          "fit_markets": 1327,
+          "fit_rows": 74513,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.6681473943927024,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.6883459554188941,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.5775560103927107,
+            "bias": -0.007186098687832232,
+            "brier": 0.23927664197819604,
+            "log_loss": 0.6709683594861148,
+            "markets": 2325,
+            "rows": 122723
+          },
+          "validation_markets": 2325,
+          "validation_rows": 122723
+        },
+        "late": {
+          "calibration": {
+            "accuracy": 0.8046357061741678,
+            "bias": -1.0087716418415866e-08,
+            "brier": 0.1377530194810478,
+            "log_loss": 0.429632187260821,
+            "markets": 845,
+            "rows": 9443
+          },
+          "calibration_markets": 845,
+          "calibration_rows": 9443,
+          "fit_markets": 1286,
+          "fit_rows": 14316,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.44189501859799496,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.4617769009058626,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.7922870435211762,
+            "bias": -0.0009563861166072761,
+            "brier": 0.13936281517362148,
+            "log_loss": 0.4298871578360729,
+            "markets": 2127,
+            "rows": 22213
+          },
+          "validation_markets": 2127,
+          "validation_rows": 22213
+        },
+        "mid": {
+          "calibration": {
+            "accuracy": 0.7216970691756944,
+            "bias": 7.3997747721238195e-06,
+            "brier": 0.18123611705697762,
+            "log_loss": 0.5378497991639652,
+            "markets": 860,
+            "rows": 13691
+          },
+          "calibration_markets": 860,
+          "calibration_rows": 13691,
+          "fit_markets": 1319,
+          "fit_rows": 21213,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.5459033437901585,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.5713882510981309,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.7039939758558632,
+            "bias": 0.015366329874203433,
+            "brier": 0.18905139931125714,
+            "log_loss": 0.5536271213680587,
+            "markets": 2229,
+            "rows": 33344
+          },
+          "validation_markets": 2229,
+          "validation_rows": 33344
+        }
+      },
+      "feature_count": 127
+    }
+  },
+  "challenger_decision": {
+    "challengers": {
+      "core_oracle_vwap_curve_chainlink": {
+        "common_subset_bands": {
+          "early": {
+            "challenger": {
+              "accuracy": 0.5889297825985728,
+              "bias": -0.033946346562132655,
+              "brier": 0.23633153813928576,
+              "log_loss": 0.6649118614859945,
+              "markets": 2325,
+              "rows": 122821
+            },
+            "log_loss_improvement": -0.012275718149007075,
+            "primary": {
+              "accuracy": 0.6121790049702407,
+              "bias": -0.021475662290932878,
+              "brier": 0.2306255484593295,
+              "log_loss": 0.6526361433369874,
+              "markets": 2325,
+              "rows": 122821
+            },
+            "rows": 122821
+          },
+          "late": {
+            "challenger": {
+              "accuracy": 0.8174547948396632,
+              "bias": -0.004228582903418082,
+              "brier": 0.1289112334722249,
+              "log_loss": 0.4011951213112977,
+              "markets": 2128,
+              "rows": 22215
+            },
+            "log_loss_improvement": -0.008173381370140786,
+            "primary": {
+              "accuracy": 0.8213873089108052,
+              "bias": -0.0051773329841749835,
+              "brier": 0.12562728052890104,
+              "log_loss": 0.3930217399411569,
+              "markets": 2128,
+              "rows": 22215
+            },
+            "rows": 22215
+          },
+          "mid": {
+            "challenger": {
+              "accuracy": 0.7263813207760637,
+              "bias": -0.008815366431944584,
+              "brier": 0.1801787290753186,
+              "log_loss": 0.5345820054461464,
+              "markets": 2229,
+              "rows": 33382
+            },
+            "log_loss_improvement": -0.0028207754270604957,
+            "primary": {
+              "accuracy": 0.7248175570972657,
+              "bias": -0.026487924151259532,
+              "brier": 0.17928719661137102,
+              "log_loss": 0.5317612300190859,
+              "markets": 2229,
+              "rows": 33382
+            },
+            "rows": 33382
+          }
+        },
+        "improving_bands": 0,
+        "qualified": false,
+        "validation_row_coverage_ratio": 0.9759643787059931,
+        "weighted_log_loss_improvement": -0.009995912807132738
+      },
+      "core_oracle_vwap_curve_l2": {
+        "common_subset_bands": {
+          "early": {
+            "challenger": {
+              "accuracy": 0.5775560103927107,
+              "bias": -0.007186098687832232,
+              "brier": 0.23927664197819604,
+              "log_loss": 0.6709683594861148,
+              "markets": 2325,
+              "rows": 122723
+            },
+            "log_loss_improvement": -0.01836343506730642,
+            "primary": {
+              "accuracy": 0.6122805619188263,
+              "bias": -0.021493605305744207,
+              "brier": 0.23061052857603176,
+              "log_loss": 0.6526049244188084,
+              "markets": 2325,
+              "rows": 122723
+            },
+            "rows": 122723
+          },
+          "late": {
+            "challenger": {
+              "accuracy": 0.7922870435211762,
+              "bias": -0.0009563861166072761,
+              "brier": 0.13936281517362148,
+              "log_loss": 0.4298871578360729,
+              "markets": 2127,
+              "rows": 22213
+            },
+            "log_loss_improvement": -0.03669832625121178,
+            "primary": {
+              "accuracy": 0.8213033349140544,
+              "bias": -0.0051637386087306746,
+              "brier": 0.125683790438886,
+              "log_loss": 0.3931888315848611,
+              "markets": 2127,
+              "rows": 22213
+            },
+            "rows": 22213
+          },
+          "mid": {
+            "challenger": {
+              "accuracy": 0.7039939758558632,
+              "bias": 0.015366329874203433,
+              "brier": 0.18905139931125714,
+              "log_loss": 0.5536271213680587,
+              "markets": 2229,
+              "rows": 33344
+            },
+            "log_loss_improvement": -0.021870199227335907,
+            "primary": {
+              "accuracy": 0.7250130742154335,
+              "bias": -0.026614199233103306,
+              "brier": 0.17927978899825267,
+              "log_loss": 0.5317569221407228,
+              "markets": 2229,
+              "rows": 33344
+            },
+            "rows": 33344
+          }
+        },
+        "improving_bands": 0,
+        "qualified": false,
+        "validation_row_coverage_ratio": 0.975209504846509,
+        "weighted_log_loss_improvement": -0.021303767589294937
+      }
+    },
+    "primary": "core_oracle_vwap_curve",
+    "selected": "core_oracle_vwap_curve"
+  },
+  "configuration": {
+    "bands": [
+      {
+        "end_second_exclusive": 90,
+        "minimum_validation_accuracy": 0.78,
+        "minimum_validation_trades": 40,
+        "name": "early",
+        "start_second": 15
+      },
+      {
+        "end_second_exclusive": 180,
+        "minimum_validation_accuracy": 0.82,
+        "minimum_validation_trades": 40,
+        "name": "mid",
+        "start_second": 90
+      },
+      {
+        "end_second_exclusive": 241,
+        "minimum_validation_accuracy": 0.88,
+        "minimum_validation_trades": 40,
+        "name": "late",
+        "start_second": 180
+      }
+    ],
+    "execution": {
+      "execution_reserve_per_share": 0.005,
+      "freshness_seconds": 10,
+      "maximum_depth_participation": 0.25,
+      "quantities": [
+        5,
+        10,
+        15,
+        20,
+        25,
+        30,
+        40,
+        50,
+        75,
+        100,
+        125,
+        150,
+        175,
+        200
+      ],
+      "stress_slippage_per_share": 0.01
+    },
+    "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-continuous-edge-directional/packages/btc-directional-model/configs/btc-5m-continuous-edge-directional-20260525-20260723.toml",
+    "sha256": "483789846a0f67e80653acef1145db2bc9c2867442eacb1b092e756f7a5525cb",
+    "windows": {
+      "admission_end": "2026-06-15T00:00:00+00:00",
+      "calibration_end": "2026-06-11T00:00:00+00:00",
+      "outcome_fit_end": "2026-06-08T00:00:00+00:00",
+      "outcome_fit_start": "2026-05-25T00:00:00+00:00",
+      "test_end": "2026-07-23T17:00:00+00:00",
+      "validation_end": "2026-07-13T00:00:00+00:00",
+      "validation_start": "2026-06-29T00:00:00+00:00"
+    }
+  },
+  "created_at": "2026-08-20T00:05:15.431052+00:00",
+  "data": {
+    "capacity_manifest": {
+      "completed_artifacts_only": true,
+      "created_at": "2026-08-19T23:39:26.271566+00:00",
+      "intervals": [
+        {
+          "end": "2026-06-08T00:00:00+00:00",
+          "name": "outcome-fit",
+          "start": "2026-05-25T00:00:00+00:00"
+        },
+        {
+          "end": "2026-06-11T00:00:00+00:00",
+          "name": "calibration",
+          "start": "2026-06-08T00:00:00+00:00"
+        },
+        {
+          "end": "2026-06-15T00:00:00+00:00",
+          "name": "admission",
+          "start": "2026-06-11T00:00:00+00:00"
+        },
+        {
+          "end": "2026-07-13T00:00:00+00:00",
+          "name": "validation",
+          "start": "2026-06-29T00:00:00+00:00"
+        },
+        {
+          "end": "2026-07-23T17:00:00+00:00",
+          "name": "test",
+          "start": "2026-07-13T00:00:00+00:00"
+        }
+      ],
+      "partitions": [
+        {
+          "path": "outcome-fit.parquet",
+          "rows": 387072,
+          "sha256": "94d4d4d91c5048c71c2581aa5a18fa2677b9958831d631b836c946165116d7aa"
+        },
+        {
+          "path": "calibration.parquet",
+          "rows": 82944,
+          "sha256": "1ef21081c2ee43a8a391ce448419f8ab9ce75ada62d89c61b469050e970c8774"
+        },
+        {
+          "path": "admission.parquet",
+          "rows": 110592,
+          "sha256": "7d194b6d64f99520bea7bc829e28661b83311ffac1822e06026d58933cfba887"
+        },
+        {
+          "path": "validation.parquet",
+          "rows": 387072,
+          "sha256": "bbc928fc9b6a49ec958b93d8b4007b41a7a436a91af53b06413fdedee953949c"
+        },
+        {
+          "path": "test.parquet",
+          "rows": 296064,
+          "sha256": "0a1d025d62f4373ca9ee05ad9bf5572faa673d12f506997d554ee56c754e780d"
+        }
+      ],
+      "query_sha256": "e4f930c1ae3aeac2cc1b830b818095c0fd0a9095131fe700e766f9863a615886",
+      "rows": 1263744,
+      "schema_version": "btc-continuous-edge-capacity-evidence-v1",
+      "source_table": "polymarket.btc_market_capacity_execution_snapshots"
+    },
+    "chainlink_features": {
+      "bytes": 427239054,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/packages/btc-directional-model/data/btc-asymmetric-value-calibrated-20260414-20260802/features/development-candles.parquet",
+      "sha256": "ae48e947242e02be1fd149590ef697f2c1cd2021e90f9bd051ee6fff8bbb142c"
+    },
+    "coverage": {
+      "admission": {
+        "chainlink_markets": 270,
+        "chainlink_rows": 22054,
+        "l2_markets": 266,
+        "l2_rows": 21539,
+        "strict_full_curve_markets": 276,
+        "strict_full_curve_rows": 22522
+      },
+      "calibration": {
+        "chainlink_markets": 861,
+        "chainlink_rows": 71608,
+        "l2_markets": 861,
+        "l2_rows": 71544,
+        "strict_full_curve_markets": 861,
+        "strict_full_curve_rows": 71608
+      },
+      "outcome-fit": {
+        "chainlink_markets": 3675,
+        "chainlink_rows": 302283,
+        "l2_markets": 1333,
+        "l2_rows": 110042,
+        "strict_full_curve_markets": 3855,
+        "strict_full_curve_rows": 318138
+      },
+      "test": {
+        "chainlink_markets": 2260,
+        "chainlink_rows": 202034,
+        "l2_markets": 2260,
+        "l2_rows": 201632,
+        "strict_full_curve_markets": 2260,
+        "strict_full_curve_rows": 202034
+      },
+      "validation": {
+        "chainlink_markets": 2379,
+        "chainlink_rows": 178418,
+        "l2_markets": 2379,
+        "l2_rows": 178280,
+        "strict_full_curve_markets": 2427,
+        "strict_full_curve_rows": 182812
+      }
+    },
+    "l2_features": {
+      "bytes": 536013755,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/packages/btc-directional-model/data/btc-asymmetric-value-calibrated-20260414-20260802/features/development-l2.parquet",
+      "sha256": "da88de7a2b3f92d2148f31f98cec14a68bec21f8810e2bcfae04c31639a2568d"
+    },
+    "oracle_features": {
+      "bytes": 1269645826,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/packages/btc-directional-model/data/btc-asymmetric-value-calibrated-20260414-20260802/features/development-oracle-propagation-2s.parquet",
+      "sha256": "33e837f951228312c5e9725bf356b1ba1a1ba41244327e67c04f0a6593a4731c"
+    }
+  },
+  "limitations": [
+    "Capacity evidence ends at second 240; seconds 241-299 are not evaluated.",
+    "Open interest begins after the outcome-fit window and is diagnostic only.",
+    "Aggregate trade prints overlap only the end of the test block and are diagnostic only.",
+    "Projected PnL assumes the recorded VWAP is fillable at the sampled timestamp and does not model queue position."
+  ],
+  "model_artifact": {
+    "path": "model.joblib",
+    "sha256": "fded49e22200edc43378d076985044000c85aab33ddfff678e1766875037d676"
+  },
+  "paper_only": true,
+  "production_qualified": false,
+  "profile": "btc_5m_continuous_edge_directional",
+  "qualification": {
+    "checks": {
+      "correctness_veto_improves_test_net_pnl": true,
+      "early_test_accuracy_floor": true,
+      "early_test_positive_expectancy": true,
+      "late_test_accuracy_floor": false,
+      "positive_test_net_pnl": false,
+      "positive_test_stress_expectancy": false,
+      "test_profit_factor_at_least_one": false
+    },
+    "decision": "rejected",
+    "passed": false
+  },
+  "run_id": "20260820T000515Z",
+  "runtime": {
+    "numpy": "2.5.1",
+    "platform": "macOS-14.8.7-arm64-arm-64bit-Mach-O",
+    "polars": "1.43.0",
+    "python": "3.13.7",
+    "scikit_learn": "1.9.0"
+  },
+  "runtime_exported": false,
+  "schema_version": "btc-continuous-edge-training-v1",
+  "selected_candidate": "core_oracle_vwap_curve",
+  "selected_thresholds": {
+    "early": {
+      "admission": 0.8,
+      "confidence": 0.75,
+      "edge": 0.0
+    },
+    "late": {
+      "admission": 0.75,
+      "confidence": 0.75,
+      "edge": 0.0
+    },
+    "mid": {
+      "admission": 0.75,
+      "confidence": 0.82,
+      "edge": 0.05
+    }
+  },
+  "source_commit": "7262575a83350fe38793317e0481c8894461ce85",
+  "test": {
+    "with_admission_veto": {
+      "accuracy": 0.8104212860310421,
+      "average_entry_second": 142.8680709534368,
+      "average_loss": -3.8487160962387135,
+      "average_win": 0.8433746516542543,
+      "down_trades": 532,
+      "entry_second_p25": 70.0,
+      "entry_second_p75": 200.0,
+      "expectancy_per_trade": -0.04614587815694017,
+      "gross_notional": 3627.346,
+      "market_coverage": 0.3991150442477876,
+      "maximum_drawdown": 74.50765102705998,
+      "mean_vwap": 0.804289578713969,
+      "median_entry_second": 180.0,
+      "net_pnl": -41.62358209756003,
+      "profit_factor": 0.9367548151856854,
+      "return_on_entry_cost": -0.011474941209788102,
+      "stress_expectancy_per_trade": -0.09614587815694016,
+      "stress_net_pnl": -86.72358209756003,
+      "trades": 902,
+      "up_trades": 370
+    },
+    "without_admission_veto": {
+      "accuracy": 0.7793983591613491,
+      "average_entry_second": 131.28623518687328,
+      "average_loss": -3.7744467518645455,
+      "average_win": 0.975924465792959,
+      "down_trades": 709,
+      "entry_second_p25": 57.0,
+      "entry_second_p75": 195.0,
+      "expectancy_per_trade": -0.07201521941498637,
+      "gross_notional": 4263.464,
+      "maximum_drawdown": 103.15109761968,
+      "mean_vwap": 0.7772951686417503,
+      "median_entry_second": 155.0,
+      "net_pnl": -79.00069569824005,
+      "profit_factor": 0.913510726938567,
+      "return_on_entry_cost": -0.01852969690801659,
+      "stress_expectancy_per_trade": -0.12201521941498636,
+      "stress_net_pnl": -133.85069569824003,
+      "trades": 1097,
+      "up_trades": 388
+    }
+  },
+  "test_by_time_band": {
+    "early": {
+      "accuracy": 0.7962962962962963,
+      "average_entry_second": 46.766666666666666,
+      "average_loss": -3.9024048980203636,
+      "average_win": 1.0544099778124651,
+      "down_trades": 184,
+      "entry_second_p25": 31.25,
+      "entry_second_p75": 59.0,
+      "expectancy_per_trade": 0.04468842903170363,
+      "gross_notional": 1039.7412,
+      "maximum_drawdown": 31.798728618560006,
+      "mean_vwap": 0.7701786666666667,
+      "median_entry_second": 45.0,
+      "net_pnl": 12.065875838559979,
+      "profit_factor": 1.0562165040363647,
+      "return_on_entry_cost": 0.011604691473762875,
+      "stress_expectancy_per_trade": -0.005311570968296348,
+      "stress_net_pnl": -1.434124161440014,
+      "trades": 270,
+      "up_trades": 86
+    },
+    "late": {
+      "accuracy": 0.8296593186372746,
+      "average_entry_second": 199.8697394789579,
+      "average_loss": -3.7973687419494118,
+      "average_win": 0.6830948141443477,
+      "down_trades": 255,
+      "entry_second_p25": 180.0,
+      "entry_second_p75": 215.0,
+      "expectancy_per_trade": -0.08011040082152306,
+      "gross_notional": 2075.3648999999996,
+      "maximum_drawdown": 54.13050502641994,
+      "mean_vwap": 0.8318095791583165,
+      "median_entry_second": 195.0,
+      "net_pnl": -39.975090009940004,
+      "profit_factor": 0.8761523548155347,
+      "return_on_entry_cost": -0.019261716341998466,
+      "stress_expectancy_per_trade": -0.13011040082152303,
+      "stress_net_pnl": -64.92509000993999,
+      "trades": 499,
+      "up_trades": 244
+    },
+    "mid": {
+      "accuracy": 0.7669172932330827,
+      "average_entry_second": 124.09774436090225,
+      "average_loss": -3.8942529032258064,
+      "average_win": 1.0490928634688235,
+      "down_trades": 93,
+      "entry_second_p25": 100.0,
+      "entry_second_p75": 145.0,
+      "expectancy_per_trade": -0.10311554831714291,
+      "gross_notional": 512.2399,
+      "maximum_drawdown": 26.015120649040004,
+      "mean_vwap": 0.7702855639097744,
+      "median_entry_second": 120.0,
+      "net_pnl": -13.714367926180007,
+      "profit_factor": 0.8863969607638517,
+      "return_on_entry_cost": -0.026773330086508305,
+      "stress_expectancy_per_trade": -0.15311554831714294,
+      "stress_net_pnl": -20.364367926180012,
+      "trades": 133,
+      "up_trades": 40
+    }
+  },
+  "test_fixed_entry_capacity_curve": {
+    "10": {
+      "accuracy": 0.8104212860310421,
+      "average_entry_second": 142.8680709534368,
+      "average_loss": -7.698982370772691,
+      "average_win": 1.6854394165398499,
+      "down_trades": 532,
+      "entry_second_p25": 70.0,
+      "entry_second_p75": 200.0,
+      "expectancy_per_trade": -0.0936471972411309,
+      "gross_notional": 7255.9622,
+      "maximum_drawdown": 150.06040652995998,
+      "mean_vwap": 0.8044303991130822,
+      "median_entry_second": 180.0,
+      "net_pnl": -84.46977191150006,
+      "profit_factor": 0.9358388874597877,
+      "return_on_entry_cost": -0.011641429431853995,
+      "stress_expectancy_per_trade": -0.1936471972411309,
+      "stress_net_pnl": -174.66977191150005,
+      "trades": 902,
+      "up_trades": 370
+    },
+    "100": {
+      "accuracy": 0.8104212860310421,
+      "average_entry_second": 142.8680709534368,
+      "average_loss": -77.19668719226037,
+      "average_win": 16.602769194971923,
+      "down_trades": 532,
+      "entry_second_p25": 70.0,
+      "entry_second_p75": 200.0,
+      "expectancy_per_trade": -1.179611117906924,
+      "gross_notional": 72788.2991,
+      "maximum_drawdown": 1693.2112731512639,
+      "mean_vwap": 0.8069656219512195,
+      "median_entry_second": 180.0,
+      "net_pnl": -1064.0092283520455,
+      "profit_factor": 0.919397108664825,
+      "return_on_entry_cost": -0.01461786085824398,
+      "stress_expectancy_per_trade": -2.179611117906924,
+      "stress_net_pnl": -1966.0092283520457,
+      "trades": 902,
+      "up_trades": 370
+    },
+    "125": {
+      "accuracy": 0.8104212860310421,
+      "average_entry_second": 142.8680709534368,
+      "average_loss": -96.56766336690801,
+      "average_win": 20.680965707851826,
+      "down_trades": 532,
+      "entry_second_p25": 70.0,
+      "entry_second_p75": 200.0,
+      "expectancy_per_trade": -1.5468786067645062,
+      "gross_notional": 91053.3716,
+      "maximum_drawdown": 2174.5161084886913,
+      "mean_vwap": 0.8075687059866962,
+      "median_entry_second": 180.0,
+      "net_pnl": -1395.2845033015847,
+      "profit_factor": 0.9155042359486582,
+      "return_on_entry_cost": -0.01532380930857902,
+      "stress_expectancy_per_trade": -2.7968786067645057,
+      "stress_net_pnl": -2522.784503301584,
+      "trades": 902,
+      "up_trades": 370
+    },
+    "15": {
+      "accuracy": 0.8104212860310421,
+      "average_entry_second": 142.8680709534368,
+      "average_loss": -11.550196287337396,
+      "average_win": 2.525996739184213,
+      "down_trades": 532,
+      "entry_second_p25": 70.0,
+      "entry_second_p75": 200.0,
+      "expectancy_per_trade": -0.1425498323625663,
+      "gross_notional": 10885.89500085,
+      "maximum_drawdown": 226.6588386178481,
+      "mean_vwap": 0.8045746489911308,
+      "median_entry_second": 180.0,
+      "net_pnl": -128.5799487910348,
+      "profit_factor": 0.9348989829793525,
+      "return_on_entry_cost": -0.011811610233333589,
+      "stress_expectancy_per_trade": -0.29254983236256643,
+      "stress_net_pnl": -263.8799487910349,
+      "trades": 902,
+      "up_trades": 370
+    },
+    "150": {
+      "accuracy": 0.8104212860310421,
+      "average_entry_second": 142.8680709534368,
+      "average_loss": -115.9656958865256,
+      "average_win": 24.730357982543378,
+      "down_trades": 532,
+      "entry_second_p25": 70.0,
+      "entry_second_p75": 200.0,
+      "expectancy_per_trade": -1.9426189704619328,
+      "gross_notional": 109345.22438999999,
+      "maximum_drawdown": 2679.082525126192,
+      "mean_vwap": 0.8081686946784923,
+      "median_entry_second": 180.0,
+      "net_pnl": -1752.2423113566633,
+      "profit_factor": 0.9116373942981191,
+      "return_on_entry_cost": -0.016024863647514834,
+      "stress_expectancy_per_trade": -3.4426189704619325,
+      "stress_net_pnl": -3105.2423113566633,
+      "trades": 902,
+      "up_trades": 370
+    },
+    "175": {
+      "accuracy": 0.8104212860310421,
+      "average_entry_second": 142.8680709534368,
+      "average_loss": -135.39363899704244,
+      "average_win": 28.756509095535712,
+      "down_trades": 532,
+      "entry_second_p25": 70.0,
+      "entry_second_p75": 200.0,
+      "expectancy_per_trade": -2.3628648776692356,
+      "gross_notional": 127660.10210275,
+      "maximum_drawdown": 3202.609519875185,
+      "mean_vwap": 0.8087431238691797,
+      "median_entry_second": 180.0,
+      "net_pnl": -2131.3041196576505,
+      "profit_factor": 0.9079442219446073,
+      "return_on_entry_cost": -0.01669514660063662,
+      "stress_expectancy_per_trade": -4.112864877669235,
+      "stress_net_pnl": -3709.80411965765,
+      "trades": 902,
+      "up_trades": 370
+    },
+    "20": {
+      "accuracy": 0.8104212860310421,
+      "average_entry_second": 142.8680709534368,
+      "average_loss": -15.402642548360264,
+      "average_win": 3.364219581254966,
+      "down_trades": 532,
+      "entry_second_p25": 70.0,
+      "entry_second_p75": 200.0,
+      "expectancy_per_trade": -0.19357800651022744,
+      "gross_notional": 14517.8329,
+      "maximum_drawdown": 304.91618823070985,
+      "mean_vwap": 0.8047579212860311,
+      "median_entry_second": 180.0,
+      "net_pnl": -174.60736187222514,
+      "profit_factor": 0.9337064610661883,
+      "return_on_entry_cost": -0.012027095440134536,
+      "stress_expectancy_per_trade": -0.3935780065102274,
+      "stress_net_pnl": -355.0073618722251,
+      "trades": 902,
+      "up_trades": 370
+    },
+    "200": {
+      "accuracy": 0.8104212860310421,
+      "average_entry_second": 142.8680709534368,
+      "average_loss": -154.8460304611891,
+      "average_win": 32.75902973715629,
+      "down_trades": 532,
+      "entry_second_p25": 70.0,
+      "entry_second_p75": 200.0,
+      "expectancy_per_trade": -2.806896309314953,
+      "gross_notional": 145997.33419999998,
+      "maximum_drawdown": 3745.3320870764956,
+      "mean_vwap": 0.8092978614190688,
+      "median_entry_second": 180.0,
+      "net_pnl": -2531.8204710020873,
+      "profit_factor": 0.9043826462804297,
+      "return_on_entry_cost": -0.017341552740502624,
+      "stress_expectancy_per_trade": -4.806896309314953,
+      "stress_net_pnl": -4335.820471002088,
+      "trades": 902,
+      "up_trades": 370
+    },
+    "25": {
+      "accuracy": 0.8104212860310421,
+      "average_entry_second": 142.8680709534368,
+      "average_loss": -19.25599127435848,
+      "average_win": 4.200717115249783,
+      "down_trades": 532,
+      "entry_second_p25": 70.0,
+      "entry_second_p75": 200.0,
+      "expectancy_per_trade": -0.24617549519701573,
+      "gross_notional": 18151.2501,
+      "maximum_drawdown": 384.4657583904597,
+      "mean_vwap": 0.804933485587583,
+      "median_entry_second": 180.0,
+      "net_pnl": -222.05029666770818,
+      "profit_factor": 0.9325643781151927,
+      "return_on_entry_cost": -0.012233333541457189,
+      "stress_expectancy_per_trade": -0.4961754951970157,
+      "stress_net_pnl": -447.55029666770815,
+      "trades": 902,
+      "up_trades": 370
+    },
+    "30": {
+      "accuracy": 0.8104212860310421,
+      "average_entry_second": 142.8680709534368,
+      "average_loss": -23.1109561327046,
+      "average_win": 5.036223996102791,
+      "down_trades": 532,
+      "entry_second_p25": 70.0,
+      "entry_second_p75": 200.0,
+      "expectancy_per_trade": -0.29988221456912095,
+      "gross_notional": 21785.7019983,
+      "maximum_drawdown": 464.80336021943856,
+      "mean_vwap": 0.8050887656430156,
+      "median_entry_second": 180.0,
+      "net_pnl": -270.4937575413471,
+      "profit_factor": 0.9315547643143762,
+      "return_on_entry_cost": -0.01241611390638018,
+      "stress_expectancy_per_trade": -0.599882214569121,
+      "stress_net_pnl": -541.0937575413471,
+      "trades": 902,
+      "up_trades": 370
+    },
+    "40": {
+      "accuracy": 0.8104212860310421,
+      "average_entry_second": 142.8680709534368,
+      "average_loss": -30.82285911202125,
+      "average_win": 6.703358643915329,
+      "down_trades": 532,
+      "entry_second_p25": 70.0,
+      "entry_second_p75": 200.0,
+      "expectancy_per_trade": -0.4108134583741992,
+      "gross_notional": 29057.9181,
+      "maximum_drawdown": 628.2665665375625,
+      "mean_vwap": 0.8053746701773835,
+      "median_entry_second": 180.0,
+      "net_pnl": -370.55373945352767,
+      "profit_factor": 0.9296956546243427,
+      "return_on_entry_cost": -0.01275224667432481,
+      "stress_expectancy_per_trade": -0.8108134583741992,
+      "stress_net_pnl": -731.3537394535276,
+      "trades": 902,
+      "up_trades": 370
+    },
+    "5": {
+      "accuracy": 0.8104212860310421,
+      "average_entry_second": 142.8680709534368,
+      "average_loss": -3.8487160962387135,
+      "average_win": 0.8433746516542543,
+      "down_trades": 532,
+      "entry_second_p25": 70.0,
+      "entry_second_p75": 200.0,
+      "expectancy_per_trade": -0.04614587815694017,
+      "gross_notional": 3627.346,
+      "maximum_drawdown": 74.50765102705998,
+      "mean_vwap": 0.804289578713969,
+      "median_entry_second": 180.0,
+      "net_pnl": -41.62358209756003,
+      "profit_factor": 0.9367548151856854,
+      "return_on_entry_cost": -0.011474941209788102,
+      "stress_expectancy_per_trade": -0.09614587815694016,
+      "stress_net_pnl": -86.72358209756003,
+      "trades": 902,
+      "up_trades": 370
+    },
+    "50": {
+      "accuracy": 0.8104212860310421,
+      "average_entry_second": 142.8680709534368,
+      "average_loss": -38.539652070112105,
+      "average_win": 8.365280915693761,
+      "down_trades": 532,
+      "entry_second_p25": 70.0,
+      "entry_second_p75": 200.0,
+      "expectancy_per_trade": -0.526895958555466,
+      "gross_notional": 36334.975099999996,
+      "maximum_drawdown": 796.0929258025116,
+      "mean_vwap": 0.8056535498891353,
+      "median_entry_second": 180.0,
+      "net_pnl": -475.2601546170303,
+      "profit_factor": 0.927884684979744,
+      "return_on_entry_cost": -0.013079963679871364,
+      "stress_expectancy_per_trade": -1.026895958555466,
+      "stress_net_pnl": -926.2601546170304,
+      "trades": 902,
+      "up_trades": 370
+    },
+    "75": {
+      "accuracy": 0.8104212860310421,
+      "average_entry_second": 142.8680709534368,
+      "average_loss": -57.85659045864428,
+      "average_win": 12.496666198627938,
+      "down_trades": 532,
+      "entry_second_p25": 70.0,
+      "entry_second_p75": 200.0,
+      "expectancy_per_trade": -0.8408137219857493,
+      "gross_notional": 54549.9274965,
+      "maximum_drawdown": 1234.753255145785,
+      "mean_vwap": 0.8063551736363638,
+      "median_entry_second": 180.0,
+      "net_pnl": -758.4139772311459,
+      "profit_factor": 0.9233420182154989,
+      "return_on_entry_cost": -0.013903116136676932,
+      "stress_expectancy_per_trade": -1.5908137219857494,
+      "stress_net_pnl": -1434.913977231146,
+      "trades": 902,
+      "up_trades": 370
+    }
+  },
+  "threshold_search": {
+    "early": {
+      "attempts": 343,
+      "qualified_attempts": 1,
+      "selected": {
+        "admission": 0.8,
+        "confidence": 0.75,
+        "edge": 0.0
+      },
+      "validation_metrics": {
+        "accuracy": 0.7859531772575251,
+        "average_entry_second": 45.04013377926422,
+        "average_loss": -3.8153829065393747,
+        "average_win": 1.1049247149135317,
+        "down_trades": 208,
+        "entry_second_p25": 30.0,
+        "entry_second_p75": 58.0,
+        "expectancy_per_trade": 0.05174850162595312,
+        "gross_notional": 1133.3548,
+        "maximum_drawdown": 20.17865234834001,
+        "mean_vwap": 0.758096856187291,
+        "median_entry_second": 43.0,
+        "net_pnl": 15.472801986159983,
+        "profit_factor": 1.0633652078850018,
+        "return_on_entry_cost": 0.013652213751739509,
+        "stress_expectancy_per_trade": 0.0017485016259531244,
+        "stress_net_pnl": 0.5228019861599842,
+        "trades": 299,
+        "up_trades": 91
+      }
+    },
+    "late": {
+      "attempts": 343,
+      "qualified_attempts": 175,
+      "selected": {
+        "admission": 0.75,
+        "confidence": 0.75,
+        "edge": 0.0
+      },
+      "validation_metrics": {
+        "accuracy": 0.8982658959537573,
+        "average_entry_second": 196.97109826589596,
+        "average_loss": -3.858365830358409,
+        "average_win": 0.7178808674252509,
+        "down_trades": 474,
+        "entry_second_p25": 180.0,
+        "entry_second_p75": 210.0,
+        "expectancy_per_trade": 0.25232050973165315,
+        "gross_notional": 3607.0814,
+        "maximum_drawdown": 12.221882983759969,
+        "mean_vwap": 0.834007260115607,
+        "median_entry_second": 190.0,
+        "net_pnl": 218.25724091787998,
+        "profit_factor": 1.6428099430092078,
+        "return_on_entry_cost": 0.06050798879057179,
+        "stress_expectancy_per_trade": 0.2023205097316532,
+        "stress_net_pnl": 175.00724091788,
+        "trades": 865,
+        "up_trades": 391
+      }
+    },
+    "mid": {
+      "attempts": 343,
+      "qualified_attempts": 60,
+      "selected": {
+        "admission": 0.75,
+        "confidence": 0.82,
+        "edge": 0.05
+      },
+      "validation_metrics": {
+        "accuracy": 0.828080229226361,
+        "average_entry_second": 125.50143266475645,
+        "average_loss": -3.9019718269973334,
+        "average_win": 1.0610018877723875,
+        "down_trades": 254,
+        "entry_second_p25": 105.0,
+        "entry_second_p75": 145.0,
+        "expectancy_per_trade": 0.20776858437358162,
+        "gross_notional": 1342.3636999999999,
+        "maximum_drawdown": 19.042945000000007,
+        "mean_vwap": 0.769262865329513,
+        "median_entry_second": 125.0,
+        "net_pnl": 72.51123594637998,
+        "profit_factor": 1.3097204830503146,
+        "return_on_entry_cost": 0.05401757805755623,
+        "stress_expectancy_per_trade": 0.1577685843735816,
+        "stress_net_pnl": 55.06123594637997,
+        "trades": 349,
+        "up_trades": 95
+      }
+    }
+  },
+  "trading_processes_changed": false,
+  "validation": {
+    "with_admission_veto": {
+      "accuracy": 0.8451668092386655,
+      "average_entry_second": 142.14029084687766,
+      "average_loss": -3.8148474238116026,
+      "average_win": 0.9222514334780769,
+      "down_trades": 695,
+      "entry_second_p25": 85.0,
+      "entry_second_p75": 190.0,
+      "expectancy_per_trade": 0.18879130245204445,
+      "gross_notional": 4626.522,
+      "maximum_drawdown": 25.799046069780047,
+      "mean_vwap": 0.7915349871685201,
+      "median_entry_second": 175.0,
+      "net_pnl": 220.69703256643996,
+      "profit_factor": 1.3196250036903834,
+      "return_on_entry_cost": 0.047702579295297844,
+      "stress_expectancy_per_trade": 0.13879130245204446,
+      "stress_net_pnl": 162.24703256643997,
+      "trades": 1169,
+      "up_trades": 474
+    },
+    "without_admission_veto": {
+      "accuracy": 0.8141072740631888,
+      "average_entry_second": 132.88611315209405,
+      "average_loss": -3.7706412807678262,
+      "average_win": 1.0357593488151264,
+      "down_trades": 875,
+      "entry_second_p25": 65.0,
+      "entry_second_p75": 190.0,
+      "expectancy_per_trade": 0.1422844338375459,
+      "gross_notional": 5231.7153,
+      "maximum_drawdown": 34.8891418013,
+      "mean_vwap": 0.7688045995591476,
+      "median_entry_second": 150.0,
+      "net_pnl": 193.64911445289997,
+      "profit_factor": 1.2029923990597209,
+      "return_on_entry_cost": 0.03701445956986611,
+      "stress_expectancy_per_trade": 0.09228443383754589,
+      "stress_net_pnl": 125.59911445289997,
+      "trades": 1361,
+      "up_trades": 486
+    }
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "artifact": "btc-5m-continuous-edge-payoff-aware-20260525-20260723/20260820T011148Z",
+  "evaluation_type": "frozen_incumbent_on_previously_untouched_holdout",
+  "holdout": {
+    "start": "2026-07-23T17:00:00+00:00",
+    "end": "2026-08-02T00:00:00+00:00",
+    "scheduled_markets": 2676,
+    "strict_markets": 2208
+  },
+  "vwap5": {
+    "trades": 35,
+    "accuracy": 0.6857142857142857,
+    "net_pnl": -8.249065,
+    "stress_net_pnl": -9.999065000000002,
+    "expectancy_per_trade": -0.2356875714285714,
+    "stress_expectancy_per_trade": -0.2856875714285715,
+    "profit_factor": 0.7875412973168576,
+    "average_win": 1.2740670833333334,
+    "average_loss": -3.5296977272727266,
+    "payoff_ratio": 0.36095642793689314,
+    "maximum_drawdown": 15.277745000000003,
+    "mean_vwap": 0.714,
+    "average_entry_second": 89.85714285714286,
+    "median_entry_second": 55.0,
+    "entry_second_p25": 34.5,
+    "entry_second_p75": 180.0,
+    "active_days": 9,
+    "profitable_day_ratio": 0.4444444444444444,
+    "daily_pnl_concentration": 0.227075974522616,
+    "strict_market_coverage": 0.01585144927536232,
+    "end_to_end_market_coverage": 0.013079222720478326,
+    "up_trades": 4,
+    "down_trades": 31
+  },
+  "time_bands_vwap5": {
+    "early": {
+      "trades": 24,
+      "accuracy": 0.7083333333333334,
+      "net_pnl": -2.567065000000001,
+      "stress_net_pnl": -3.7670650000000023,
+      "average_entry_second": 41.875,
+      "median_entry_second": 42.0
+    },
+    "mid": {
+      "trades": 0,
+      "accuracy": 0.0,
+      "net_pnl": 0.0,
+      "stress_net_pnl": 0.0,
+      "average_entry_second": null,
+      "median_entry_second": null
+    },
+    "late": {
+      "trades": 11,
+      "accuracy": 0.6363636363636364,
+      "net_pnl": -5.681999999999999,
+      "stress_net_pnl": -6.231999999999998,
+      "average_entry_second": 194.54545454545453,
+      "median_entry_second": 190.0
+    }
+  },
+  "fixed_entry_vwap_pnl": {
+    "5": -8.249065,
+    "10": -16.546502500000003,
+    "20": -33.39974637136001,
+    "50": -85.42785991052202,
+    "100": -177.04521757903308,
+    "200": -378.98163795007565
+  },
+  "rolling_three_day": {
+    "profitable_folds": 0,
+    "fold_count": 4,
+    "profitable_fold_ratio": 0.0,
+    "median_fold_stress_expectancy": -0.19693880952380935
+  }
+}
