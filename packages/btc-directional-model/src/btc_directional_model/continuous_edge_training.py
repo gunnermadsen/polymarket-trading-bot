@@ -489,7 +489,16 @@ def run_training(config: TrainingConfig) -> tuple[Path, dict[str, Any]]:
         "selected_candidate": selected_candidate,
         "feature_names": list(candidate_specs[selected_candidate]),
         "bands": [asdict(band) for band in config.bands],
-        "experts": selected_experts,
+        "experts": {
+            name: {
+                "band": asdict(expert.band),
+                "feature_names": list(expert.feature_names),
+                "profile": expert.profile,
+                "estimator": expert.estimator,
+                "calibrator": expert.calibrator,
+            }
+            for name, expert in selected_experts.items()
+        },
         "admission_model": admission_model,
         "admission_feature_names": list(admission_feature_names),
         "thresholds": thresholds,
