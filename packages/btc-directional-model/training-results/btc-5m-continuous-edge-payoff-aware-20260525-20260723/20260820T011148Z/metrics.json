@@ -1,0 +1,2059 @@
+{
+  "calibration": {
+    "cell_penalties": {
+      "early:0": 0.018289405212288057,
+      "early:1": 0.021116239481968994,
+      "early:2": 0.020748392503684113,
+      "early:3": 0.036392495997207265,
+      "late:0": 0.027202831509454167,
+      "late:1": 0.02931963915434296,
+      "late:2": 0.032478558028249054,
+      "late:3": 0.018103400845618726,
+      "mid:0": 0.03011071373784036,
+      "mid:1": 0.03160585402683248,
+      "mid:2": 0.02728758917044691,
+      "mid:3": 0.017224488340636918
+    },
+    "global_uncertainty_penalty": 0.016143892594717553,
+    "type": "regularized_time_side_price_logistic_with_lower_bound_guard"
+  },
+  "candidate_metrics": {
+    "core_oracle_vwap_curve": {
+      "bands": {
+        "early": {
+          "calibration": {
+            "accuracy": 0.6032129148212699,
+            "bias": 7.484968463443157e-06,
+            "brier": 0.23221013249588304,
+            "log_loss": 0.6556934132165391,
+            "markets": 859,
+            "rows": 48436
+          },
+          "calibration_markets": 859,
+          "calibration_rows": 48436,
+          "fit_markets": 3787,
+          "fit_rows": 217773,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.6562940439424195,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.6600284512889901,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.6109360276983113,
+            "bias": -0.021872367634827874,
+            "brier": 0.23090956017136016,
+            "log_loss": 0.6532617076835869,
+            "markets": 2373,
+            "rows": 125835
+          },
+          "validation_markets": 2373,
+          "validation_rows": 125835
+        },
+        "late": {
+          "calibration": {
+            "accuracy": 0.8213486250764357,
+            "bias": 1.0634611322759744e-06,
+            "brier": 0.12908621882844498,
+            "log_loss": 0.40693422242586375,
+            "markets": 845,
+            "rows": 9444
+          },
+          "calibration_markets": 845,
+          "calibration_rows": 9444,
+          "fit_markets": 3594,
+          "fit_rows": 39850,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.4100525458787837,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.4169455720390219,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.8217922268703519,
+            "bias": -0.006804188095965077,
+            "brier": 0.1253662233546881,
+            "log_loss": 0.39210341354460077,
+            "markets": 2176,
+            "rows": 22787
+          },
+          "validation_markets": 2176,
+          "validation_rows": 22787
+        },
+        "mid": {
+          "calibration": {
+            "accuracy": 0.7457437265576802,
+            "bias": 2.8112166258263153e-06,
+            "brier": 0.17412220496658462,
+            "log_loss": 0.5229124646614471,
+            "markets": 860,
+            "rows": 13728
+          },
+          "calibration_markets": 860,
+          "calibration_rows": 13728,
+          "fit_markets": 3709,
+          "fit_rows": 60515,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.5249808411262886,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.5321557050899043,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.72481659510645,
+            "bias": -0.028393556433525428,
+            "brier": 0.17925875476588793,
+            "log_loss": 0.5315969895681552,
+            "markets": 2277,
+            "rows": 34190
+          },
+          "validation_markets": 2277,
+          "validation_rows": 34190
+        }
+      },
+      "feature_count": 114
+    },
+    "core_oracle_vwap_curve_chainlink": {
+      "bands": {
+        "early": {
+          "calibration": {
+            "accuracy": 0.5845394117710299,
+            "bias": -6.387512757687183e-05,
+            "brier": 0.237891176213986,
+            "log_loss": 0.6681941139889065,
+            "markets": 859,
+            "rows": 48436
+          },
+          "calibration_markets": 859,
+          "calibration_rows": 48436,
+          "fit_markets": 3607,
+          "fit_rows": 206912,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.6729087556136317,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.6851054384050009,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.5889297825985728,
+            "bias": -0.033946346562132655,
+            "brier": 0.23633153813928576,
+            "log_loss": 0.6649118614859945,
+            "markets": 2325,
+            "rows": 122821
+          },
+          "validation_markets": 2325,
+          "validation_rows": 122821
+        },
+        "late": {
+          "calibration": {
+            "accuracy": 0.8194123989094404,
+            "bias": 8.855762410409876e-06,
+            "brier": 0.1301094326486708,
+            "log_loss": 0.41125385587392993,
+            "markets": 845,
+            "rows": 9444
+          },
+          "calibration_markets": 845,
+          "calibration_rows": 9444,
+          "fit_markets": 3417,
+          "fit_rows": 37839,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.414851219600752,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.42812247384885416,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.8174547948396632,
+            "bias": -0.004228582903418082,
+            "brier": 0.1289112334722249,
+            "log_loss": 0.4011951213112977,
+            "markets": 2128,
+            "rows": 22215
+          },
+          "validation_markets": 2128,
+          "validation_rows": 22215
+        },
+        "mid": {
+          "calibration": {
+            "accuracy": 0.743209153952143,
+            "bias": 8.162261766126498e-06,
+            "brier": 0.1749430132102487,
+            "log_loss": 0.5257120253821629,
+            "markets": 860,
+            "rows": 13728
+          },
+          "calibration_markets": 860,
+          "calibration_rows": 13728,
+          "fit_markets": 3529,
+          "fit_rows": 57532,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.5263779320837256,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.533289030945371,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.7263813207760637,
+            "bias": -0.008815366431944584,
+            "brier": 0.1801787290753186,
+            "log_loss": 0.5345820054461464,
+            "markets": 2229,
+            "rows": 33382
+          },
+          "validation_markets": 2229,
+          "validation_rows": 33382
+        }
+      },
+      "feature_count": 122
+    },
+    "core_oracle_vwap_curve_l2": {
+      "bands": {
+        "early": {
+          "calibration": {
+            "accuracy": 0.5948163138603358,
+            "bias": -2.7331604037519072e-05,
+            "brier": 0.234368025193542,
+            "log_loss": 0.6603678378284311,
+            "markets": 859,
+            "rows": 48410
+          },
+          "calibration_markets": 859,
+          "calibration_rows": 48410,
+          "fit_markets": 1327,
+          "fit_rows": 74513,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.6681473943927024,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.6883459554188941,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.5775560103927107,
+            "bias": -0.007186098687832232,
+            "brier": 0.23927664197819604,
+            "log_loss": 0.6709683594861148,
+            "markets": 2325,
+            "rows": 122723
+          },
+          "validation_markets": 2325,
+          "validation_rows": 122723
+        },
+        "late": {
+          "calibration": {
+            "accuracy": 0.8046357061741678,
+            "bias": -1.0087716418415866e-08,
+            "brier": 0.1377530194810478,
+            "log_loss": 0.429632187260821,
+            "markets": 845,
+            "rows": 9443
+          },
+          "calibration_markets": 845,
+          "calibration_rows": 9443,
+          "fit_markets": 1286,
+          "fit_rows": 14316,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.44189501859799496,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.4617769009058626,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.7922870435211762,
+            "bias": -0.0009563861166072761,
+            "brier": 0.13936281517362148,
+            "log_loss": 0.4298871578360729,
+            "markets": 2127,
+            "rows": 22213
+          },
+          "validation_markets": 2127,
+          "validation_rows": 22213
+        },
+        "mid": {
+          "calibration": {
+            "accuracy": 0.7216970691756944,
+            "bias": 7.3997747721238195e-06,
+            "brier": 0.18123611705697762,
+            "log_loss": 0.5378497991639652,
+            "markets": 860,
+            "rows": 13691
+          },
+          "calibration_markets": 860,
+          "calibration_rows": 13691,
+          "fit_markets": 1319,
+          "fit_rows": 21213,
+          "tuning": [
+            {
+              "calibration_raw_log_loss": 0.5459033437901585,
+              "profile": "smooth_15"
+            },
+            {
+              "calibration_raw_log_loss": 0.5713882510981309,
+              "profile": "balanced_31"
+            }
+          ],
+          "validation": {
+            "accuracy": 0.7039939758558632,
+            "bias": 0.015366329874203433,
+            "brier": 0.18905139931125714,
+            "log_loss": 0.5536271213680587,
+            "markets": 2229,
+            "rows": 33344
+          },
+          "validation_markets": 2229,
+          "validation_rows": 33344
+        }
+      },
+      "feature_count": 127
+    }
+  },
+  "challenger_decision": {
+    "challengers": {
+      "core_oracle_vwap_curve_chainlink": {
+        "common_subset_bands": {
+          "early": {
+            "challenger": {
+              "accuracy": 0.5889297825985728,
+              "bias": -0.033946346562132655,
+              "brier": 0.23633153813928576,
+              "log_loss": 0.6649118614859945,
+              "markets": 2325,
+              "rows": 122821
+            },
+            "log_loss_improvement": -0.012275718149007075,
+            "primary": {
+              "accuracy": 0.6121790049702407,
+              "bias": -0.021475662290932878,
+              "brier": 0.2306255484593295,
+              "log_loss": 0.6526361433369874,
+              "markets": 2325,
+              "rows": 122821
+            },
+            "rows": 122821
+          },
+          "late": {
+            "challenger": {
+              "accuracy": 0.8174547948396632,
+              "bias": -0.004228582903418082,
+              "brier": 0.1289112334722249,
+              "log_loss": 0.4011951213112977,
+              "markets": 2128,
+              "rows": 22215
+            },
+            "log_loss_improvement": -0.008173381370140786,
+            "primary": {
+              "accuracy": 0.8213873089108052,
+              "bias": -0.0051773329841749835,
+              "brier": 0.12562728052890104,
+              "log_loss": 0.3930217399411569,
+              "markets": 2128,
+              "rows": 22215
+            },
+            "rows": 22215
+          },
+          "mid": {
+            "challenger": {
+              "accuracy": 0.7263813207760637,
+              "bias": -0.008815366431944584,
+              "brier": 0.1801787290753186,
+              "log_loss": 0.5345820054461464,
+              "markets": 2229,
+              "rows": 33382
+            },
+            "log_loss_improvement": -0.0028207754270604957,
+            "primary": {
+              "accuracy": 0.7248175570972657,
+              "bias": -0.026487924151259532,
+              "brier": 0.17928719661137102,
+              "log_loss": 0.5317612300190859,
+              "markets": 2229,
+              "rows": 33382
+            },
+            "rows": 33382
+          }
+        },
+        "improving_bands": 0,
+        "qualified": false,
+        "validation_row_coverage_ratio": 0.9759643787059931,
+        "weighted_log_loss_improvement": -0.009995912807132738
+      },
+      "core_oracle_vwap_curve_l2": {
+        "common_subset_bands": {
+          "early": {
+            "challenger": {
+              "accuracy": 0.5775560103927107,
+              "bias": -0.007186098687832232,
+              "brier": 0.23927664197819604,
+              "log_loss": 0.6709683594861148,
+              "markets": 2325,
+              "rows": 122723
+            },
+            "log_loss_improvement": -0.01836343506730642,
+            "primary": {
+              "accuracy": 0.6122805619188263,
+              "bias": -0.021493605305744207,
+              "brier": 0.23061052857603176,
+              "log_loss": 0.6526049244188084,
+              "markets": 2325,
+              "rows": 122723
+            },
+            "rows": 122723
+          },
+          "late": {
+            "challenger": {
+              "accuracy": 0.7922870435211762,
+              "bias": -0.0009563861166072761,
+              "brier": 0.13936281517362148,
+              "log_loss": 0.4298871578360729,
+              "markets": 2127,
+              "rows": 22213
+            },
+            "log_loss_improvement": -0.03669832625121178,
+            "primary": {
+              "accuracy": 0.8213033349140544,
+              "bias": -0.0051637386087306746,
+              "brier": 0.125683790438886,
+              "log_loss": 0.3931888315848611,
+              "markets": 2127,
+              "rows": 22213
+            },
+            "rows": 22213
+          },
+          "mid": {
+            "challenger": {
+              "accuracy": 0.7039939758558632,
+              "bias": 0.015366329874203433,
+              "brier": 0.18905139931125714,
+              "log_loss": 0.5536271213680587,
+              "markets": 2229,
+              "rows": 33344
+            },
+            "log_loss_improvement": -0.021870199227335907,
+            "primary": {
+              "accuracy": 0.7250130742154335,
+              "bias": -0.026614199233103306,
+              "brier": 0.17927978899825267,
+              "log_loss": 0.5317569221407228,
+              "markets": 2229,
+              "rows": 33344
+            },
+            "rows": 33344
+          }
+        },
+        "improving_bands": 0,
+        "qualified": false,
+        "validation_row_coverage_ratio": 0.975209504846509,
+        "weighted_log_loss_improvement": -0.021303767589294937
+      }
+    },
+    "primary": "core_oracle_vwap_curve",
+    "selected": "core_oracle_vwap_curve"
+  },
+  "configuration": {
+    "bands": [
+      {
+        "end_second_exclusive": 90,
+        "minimum_validation_accuracy": 0.8,
+        "minimum_validation_trades": 40,
+        "name": "early",
+        "start_second": 15
+      },
+      {
+        "end_second_exclusive": 180,
+        "minimum_validation_accuracy": 0.82,
+        "minimum_validation_trades": 40,
+        "name": "mid",
+        "start_second": 90
+      },
+      {
+        "end_second_exclusive": 241,
+        "minimum_validation_accuracy": 0.88,
+        "minimum_validation_trades": 40,
+        "name": "late",
+        "start_second": 180
+      }
+    ],
+    "execution": {
+      "execution_reserve_per_share": 0.005,
+      "freshness_seconds": 10,
+      "maximum_depth_participation": 0.25,
+      "quantities": [
+        5,
+        10,
+        15,
+        20,
+        25,
+        30,
+        40,
+        50,
+        75,
+        100,
+        125,
+        150,
+        175,
+        200
+      ],
+      "stress_slippage_per_share": 0.01
+    },
+    "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-continuous-edge-directional/packages/btc-directional-model/configs/btc-5m-continuous-edge-payoff-aware-20260525-20260723.toml",
+    "policy": {
+      "admission_thresholds": [
+        0.5,
+        0.6,
+        0.65,
+        0.7,
+        0.75,
+        0.8
+      ],
+      "confidence_thresholds": [
+        0.65,
+        0.75,
+        0.8,
+        0.82,
+        0.85,
+        0.88,
+        0.92
+      ],
+      "conservative_z_score": 1.0,
+      "edge_thresholds": [
+        0.0,
+        0.005,
+        0.01,
+        0.02,
+        0.03,
+        0.05
+      ],
+      "minimum_profit_factor": 1.1,
+      "minimum_profitable_fold_ratio": 0.75,
+      "payoff_edge_thresholds": [
+        -0.02,
+        0.0,
+        0.01,
+        0.02
+      ],
+      "price_bucket_edges": [
+        0.0,
+        0.65,
+        0.75,
+        0.85,
+        1.01
+      ],
+      "price_bucket_minimum_edges": [
+        0.0,
+        0.005,
+        0.015,
+        0.04
+      ],
+      "rolling_fold_days": 3
+    },
+    "sha256": "1af023d8f0486f7343b5fbe75c9fef32f7f538d5b4b03628dfe0647caa64cf81",
+    "windows": {
+      "admission_end": "2026-06-15T00:00:00+00:00",
+      "calibration_end": "2026-06-11T00:00:00+00:00",
+      "outcome_fit_end": "2026-06-08T00:00:00+00:00",
+      "outcome_fit_start": "2026-05-25T00:00:00+00:00",
+      "test_end": "2026-07-23T17:00:00+00:00",
+      "validation_end": "2026-07-13T00:00:00+00:00",
+      "validation_start": "2026-06-29T00:00:00+00:00"
+    }
+  },
+  "created_at": "2026-08-20T01:11:48.588821+00:00",
+  "data": {
+    "asymmetric_family_contract": {
+      "bytes": 211366,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/packages/btc-directional-model/artifacts/asymmetric-value-20260805/core_oracle_price_hgb.joblib",
+      "sha256": "f17dfca17a69c229a19ad35ba593f7a58904ba65530f750760eb4ea8c26e6b46"
+    },
+    "capacity_manifest": {
+      "completed_artifacts_only": true,
+      "created_at": "2026-08-19T23:39:26.271566+00:00",
+      "intervals": [
+        {
+          "end": "2026-06-08T00:00:00+00:00",
+          "name": "outcome-fit",
+          "start": "2026-05-25T00:00:00+00:00"
+        },
+        {
+          "end": "2026-06-11T00:00:00+00:00",
+          "name": "calibration",
+          "start": "2026-06-08T00:00:00+00:00"
+        },
+        {
+          "end": "2026-06-15T00:00:00+00:00",
+          "name": "admission",
+          "start": "2026-06-11T00:00:00+00:00"
+        },
+        {
+          "end": "2026-07-13T00:00:00+00:00",
+          "name": "validation",
+          "start": "2026-06-29T00:00:00+00:00"
+        },
+        {
+          "end": "2026-07-23T17:00:00+00:00",
+          "name": "test",
+          "start": "2026-07-13T00:00:00+00:00"
+        }
+      ],
+      "partitions": [
+        {
+          "path": "outcome-fit.parquet",
+          "rows": 387072,
+          "sha256": "94d4d4d91c5048c71c2581aa5a18fa2677b9958831d631b836c946165116d7aa"
+        },
+        {
+          "path": "calibration.parquet",
+          "rows": 82944,
+          "sha256": "1ef21081c2ee43a8a391ce448419f8ab9ce75ada62d89c61b469050e970c8774"
+        },
+        {
+          "path": "admission.parquet",
+          "rows": 110592,
+          "sha256": "7d194b6d64f99520bea7bc829e28661b83311ffac1822e06026d58933cfba887"
+        },
+        {
+          "path": "validation.parquet",
+          "rows": 387072,
+          "sha256": "bbc928fc9b6a49ec958b93d8b4007b41a7a436a91af53b06413fdedee953949c"
+        },
+        {
+          "path": "test.parquet",
+          "rows": 296064,
+          "sha256": "0a1d025d62f4373ca9ee05ad9bf5572faa673d12f506997d554ee56c754e780d"
+        }
+      ],
+      "query_sha256": "e4f930c1ae3aeac2cc1b830b818095c0fd0a9095131fe700e766f9863a615886",
+      "rows": 1263744,
+      "schema_version": "btc-continuous-edge-capacity-evidence-v1",
+      "source_table": "polymarket.btc_market_capacity_execution_snapshots"
+    },
+    "chainlink_features": {
+      "bytes": 427239054,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/packages/btc-directional-model/data/btc-asymmetric-value-calibrated-20260414-20260802/features/development-candles.parquet",
+      "sha256": "ae48e947242e02be1fd149590ef697f2c1cd2021e90f9bd051ee6fff8bbb142c"
+    },
+    "coverage": {
+      "admission": {
+        "chainlink_markets": 270,
+        "chainlink_rows": 22054,
+        "l2_markets": 266,
+        "l2_rows": 21539,
+        "strict_full_curve_markets": 276,
+        "strict_full_curve_rows": 22522
+      },
+      "calibration": {
+        "chainlink_markets": 861,
+        "chainlink_rows": 71608,
+        "l2_markets": 861,
+        "l2_rows": 71544,
+        "strict_full_curve_markets": 861,
+        "strict_full_curve_rows": 71608
+      },
+      "outcome-fit": {
+        "chainlink_markets": 3675,
+        "chainlink_rows": 302283,
+        "l2_markets": 1333,
+        "l2_rows": 110042,
+        "strict_full_curve_markets": 3855,
+        "strict_full_curve_rows": 318138
+      },
+      "test": {
+        "chainlink_markets": 2260,
+        "chainlink_rows": 202034,
+        "l2_markets": 2260,
+        "l2_rows": 201632,
+        "strict_full_curve_markets": 2260,
+        "strict_full_curve_rows": 202034
+      },
+      "validation": {
+        "chainlink_markets": 2379,
+        "chainlink_rows": 178418,
+        "l2_markets": 2379,
+        "l2_rows": 178280,
+        "strict_full_curve_markets": 2427,
+        "strict_full_curve_rows": 182812
+      }
+    },
+    "directional_family_contract": {
+      "bytes": 206289,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/packages/btc-directional-model/artifacts/btc-core-20260421-20260720/20260727T223616Z-histogram_enriched/training-model.joblib",
+      "sha256": "ac8076580d6628548b2aeff0e1ff8349e40af041b3bb37ed1c99435262c82019"
+    },
+    "l2_features": {
+      "bytes": 536013755,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/packages/btc-directional-model/data/btc-asymmetric-value-calibrated-20260414-20260802/features/development-l2.parquet",
+      "sha256": "da88de7a2b3f92d2148f31f98cec14a68bec21f8810e2bcfae04c31639a2568d"
+    },
+    "oracle_features": {
+      "bytes": 1269645826,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/packages/btc-directional-model/data/btc-asymmetric-value-calibrated-20260414-20260802/features/development-oracle-propagation-2s.parquet",
+      "sha256": "33e837f951228312c5e9725bf356b1ba1a1ba41244327e67c04f0a6593a4731c"
+    }
+  },
+  "family_proxy_metrics": {
+    "asymmetric": {
+      "chronological_refit": true,
+      "feature_count": 75,
+      "profile_search": [
+        {
+          "calibration_raw_log_loss": 0.5962697829036839,
+          "profile": "smooth_15"
+        },
+        {
+          "calibration_raw_log_loss": 0.6006590966240359,
+          "profile": "balanced_31"
+        }
+      ],
+      "source_contract": "/Users/gunnermadsen/development/polymarket-bot/packages/btc-directional-model/artifacts/asymmetric-value-20260805/core_oracle_price_hgb.joblib",
+      "source_contract_sha256": "f17dfca17a69c229a19ad35ba593f7a58904ba65530f750760eb4ea8c26e6b46"
+    },
+    "directional": {
+      "chronological_refit": true,
+      "feature_count": 58,
+      "profile_search": [
+        {
+          "calibration_raw_log_loss": 0.5924257609191023,
+          "profile": "smooth_15"
+        },
+        {
+          "calibration_raw_log_loss": 0.5962275926907347,
+          "profile": "balanced_31"
+        }
+      ],
+      "source_contract": "/Users/gunnermadsen/development/polymarket-bot/packages/btc-directional-model/artifacts/btc-core-20260421-20260720/20260727T223616Z-histogram_enriched/training-model.joblib",
+      "source_contract_sha256": "ac8076580d6628548b2aeff0e1ff8349e40af041b3bb37ed1c99435262c82019"
+    }
+  },
+  "limitations": [
+    "Capacity evidence ends at second 240; seconds 241-299 are not evaluated.",
+    "No completed PMXT capacity artifacts exist after July 23; the comparison block was observed in the preceding run and is not a fresh untouched holdout.",
+    "Open interest begins after the outcome-fit window and is diagnostic only.",
+    "Aggregate trade prints overlap only the end of the test block and are diagnostic only.",
+    "Directional and asymmetric family signals are chronological proxy refits using the frozen family feature contracts; they are not replays of future-trained runtime artifacts.",
+    "Projected PnL assumes the recorded VWAP is fillable at the sampled timestamp and does not model queue position."
+  ],
+  "model_artifact": {
+    "path": "model.joblib",
+    "sha256": "7a8ab1b5434df5610d4866d2f5ef6a3515b796d5cd5ea9e2ccc9bbfcb64ac180"
+  },
+  "paper_only": true,
+  "production_qualified": false,
+  "profile": "btc_5m_continuous_edge_payoff_aware",
+  "qualification": {
+    "checks": {
+      "early_test_accuracy_floor": true,
+      "early_test_positive_stress_expectancy": true,
+      "fresh_untouched_holdout_available": false,
+      "no_enabled_negative_price_bucket": true,
+      "payoff_admission_improves_test_net_pnl": true,
+      "positive_test_net_pnl": true,
+      "positive_test_q10_expectancy": true,
+      "positive_test_q20_expectancy": true,
+      "positive_test_stress_expectancy": true,
+      "profitable_test_fold_ratio": true,
+      "test_profit_factor_at_least_target": true
+    },
+    "decision": "development_only",
+    "passed": false
+  },
+  "run_id": "20260820T011148Z",
+  "runtime": {
+    "numpy": "2.5.1",
+    "platform": "macOS-14.8.7-arm64-arm-64bit-Mach-O",
+    "polars": "1.43.0",
+    "python": "3.13.7",
+    "scikit_learn": "1.9.0"
+  },
+  "runtime_exported": false,
+  "schema_version": "btc-continuous-edge-payoff-training-v1",
+  "selected_candidate": "core_oracle_vwap_curve",
+  "selected_thresholds": {
+    "early": {
+      "admission": 0.8,
+      "confidence": 0.75,
+      "edge": 0.0,
+      "enabled": true,
+      "payoff_edge": 0.02
+    },
+    "late": {
+      "admission": 0.75,
+      "confidence": 0.85,
+      "edge": 0.0,
+      "enabled": true,
+      "payoff_edge": -0.02
+    },
+    "mid": {
+      "enabled": false
+    }
+  },
+  "source_commit": "831717c732c3dfe726dad815470433f72996a5cb",
+  "test": {
+    "with_admission_veto": {
+      "accuracy": 0.8421052631578947,
+      "average_entry_second": 65.65789473684211,
+      "average_loss": -3.66309,
+      "average_win": 1.327518125,
+      "daily_pnl_concentration": 0.45645132836609614,
+      "down_trades": 24,
+      "end_to_end_market_coverage": 0.01232166018158236,
+      "entry_second_p25": 32.25,
+      "entry_second_p75": 65.0,
+      "expectancy_per_trade": 0.5395273684210526,
+      "gross_notional": 135.89999999999998,
+      "market_coverage": 0.016814159292035398,
+      "maximum_drawdown": 10.89193,
+      "mean_vwap": 0.7152631578947367,
+      "median_entry_second": 44.0,
+      "net_pnl": 20.50204,
+      "payoff_ratio": 0.36240390626492935,
+      "profit_factor": 1.9328208334129566,
+      "profitable_day_ratio": 0.8333333333333334,
+      "return_on_entry_cost": 0.1508612214863871,
+      "scheduled_markets": 3084,
+      "stress_expectancy_per_trade": 0.4895273684210526,
+      "stress_net_pnl": 18.60204,
+      "strict_data_coverage": 0.7328145265888456,
+      "strict_markets": 2260,
+      "trades": 38,
+      "up_trades": 14,
+      "worst_day_net_pnl": -2.276399999999996
+    },
+    "without_admission_veto": {
+      "accuracy": 0.7032967032967034,
+      "average_entry_second": 61.637362637362635,
+      "average_loss": -3.693292037037037,
+      "average_win": 1.313198761444375,
+      "daily_pnl_concentration": 0.3168527605722535,
+      "down_trades": 73,
+      "entry_second_p25": 32.0,
+      "entry_second_p75": 65.0,
+      "expectancy_per_trade": -0.17224356337978014,
+      "gross_notional": 327.0424,
+      "maximum_drawdown": 22.47654926755999,
+      "mean_vwap": 0.7187745054945055,
+      "median_entry_second": 45.0,
+      "net_pnl": -15.674164267559993,
+      "payoff_ratio": 0.35556320709961936,
+      "profit_factor": 0.8428164909028014,
+      "profitable_day_ratio": 0.5555555555555556,
+      "return_on_entry_cost": -0.04792700967079496,
+      "stress_expectancy_per_trade": -0.2222435633797801,
+      "stress_net_pnl": -20.22416426755999,
+      "trades": 91,
+      "up_trades": 18,
+      "worst_day_net_pnl": -12.845104999999998
+    }
+  },
+  "test_by_price_bucket": {
+    "0.00-0.65": {
+      "accuracy": 1.0,
+      "average_entry_second": 235.0,
+      "average_loss": 0.0,
+      "average_win": 2.8403350000000005,
+      "daily_pnl_concentration": 1.0,
+      "down_trades": 1,
+      "entry_second_p25": 235.0,
+      "entry_second_p75": 235.0,
+      "expectancy_per_trade": 2.8403350000000005,
+      "gross_notional": 2.05,
+      "maximum_drawdown": 0.0,
+      "mean_vwap": 0.41,
+      "median_entry_second": 235.0,
+      "net_pnl": 2.8403350000000005,
+      "payoff_ratio": 0.0,
+      "profit_factor": null,
+      "profitable_day_ratio": 1.0,
+      "return_on_entry_cost": 1.3855292682926832,
+      "stress_expectancy_per_trade": 2.7903350000000007,
+      "stress_net_pnl": 2.7903350000000007,
+      "trades": 1,
+      "up_trades": 0,
+      "worst_day_net_pnl": 2.8403350000000005
+    },
+    "0.65-0.75": {
+      "accuracy": 0.8125,
+      "average_entry_second": 50.4375,
+      "average_loss": -3.66309,
+      "average_win": 1.3680342307692308,
+      "daily_pnl_concentration": 0.41283303853034486,
+      "down_trades": 18,
+      "entry_second_p25": 32.75,
+      "entry_second_p75": 58.25,
+      "expectancy_per_trade": 0.4246984375,
+      "gross_notional": 113.3,
+      "maximum_drawdown": 10.891929999999999,
+      "mean_vwap": 0.7081249999999999,
+      "median_entry_second": 43.0,
+      "net_pnl": 13.59035,
+      "payoff_ratio": 0.3734645424407347,
+      "profit_factor": 1.6183463505765172,
+      "profitable_day_ratio": 0.8333333333333334,
+      "return_on_entry_cost": 0.11995013239187997,
+      "stress_expectancy_per_trade": 0.3746984375,
+      "stress_net_pnl": 11.99035,
+      "trades": 32,
+      "up_trades": 14,
+      "worst_day_net_pnl": -5.1167349999999985
+    },
+    "0.75-0.85": {
+      "accuracy": 1.0,
+      "average_entry_second": 80.33333333333333,
+      "average_loss": 0.0,
+      "average_win": 0.9351183333333334,
+      "daily_pnl_concentration": 0.37892352304788524,
+      "down_trades": 3,
+      "entry_second_p25": 30.5,
+      "entry_second_p75": 106.0,
+      "expectancy_per_trade": 0.9351183333333334,
+      "gross_notional": 11.95,
+      "maximum_drawdown": 0.0,
+      "mean_vwap": 0.7966666666666665,
+      "median_entry_second": 32.0,
+      "net_pnl": 2.805355,
+      "payoff_ratio": 0.0,
+      "profit_factor": null,
+      "profitable_day_ratio": 1.0,
+      "return_on_entry_cost": 0.2347577405857741,
+      "stress_expectancy_per_trade": 0.8851183333333333,
+      "stress_net_pnl": 2.655355,
+      "trades": 3,
+      "up_trades": 0,
+      "worst_day_net_pnl": 0.8233400000000002
+    },
+    "0.85-1.01": {
+      "accuracy": 1.0,
+      "average_entry_second": 202.5,
+      "average_loss": 0.0,
+      "average_win": 0.633,
+      "daily_pnl_concentration": 0.5750078988941549,
+      "down_trades": 2,
+      "entry_second_p25": 191.25,
+      "entry_second_p75": 213.75,
+      "expectancy_per_trade": 0.633,
+      "gross_notional": 8.600000000000001,
+      "maximum_drawdown": 0.0,
+      "mean_vwap": 0.86,
+      "median_entry_second": 202.5,
+      "net_pnl": 1.266,
+      "payoff_ratio": 0.0,
+      "profit_factor": null,
+      "profitable_day_ratio": 1.0,
+      "return_on_entry_cost": 0.14720930232558138,
+      "stress_expectancy_per_trade": 0.5830000000000001,
+      "stress_net_pnl": 1.1660000000000001,
+      "trades": 2,
+      "up_trades": 0,
+      "worst_day_net_pnl": 0.53804
+    }
+  },
+  "test_by_time_band": {
+    "early": {
+      "accuracy": 0.8181818181818182,
+      "average_entry_second": 43.78787878787879,
+      "average_loss": -3.66309,
+      "average_win": 1.3424616666666667,
+      "daily_pnl_concentration": 0.4019979509613975,
+      "down_trades": 19,
+      "entry_second_p25": 32.0,
+      "entry_second_p75": 53.0,
+      "expectancy_per_trade": 0.4323613636363636,
+      "gross_notional": 117.54999999999998,
+      "maximum_drawdown": 10.891929999999999,
+      "mean_vwap": 0.7124242424242424,
+      "median_entry_second": 41.0,
+      "net_pnl": 14.267925,
+      "payoff_ratio": 0.36648339698633303,
+      "profit_factor": 1.6491752864384988,
+      "profitable_day_ratio": 0.8333333333333334,
+      "return_on_entry_cost": 0.12137749893662272,
+      "stress_expectancy_per_trade": 0.3823613636363637,
+      "stress_net_pnl": 12.617925000000001,
+      "trades": 33,
+      "up_trades": 14,
+      "worst_day_net_pnl": -6.421174999999998
+    },
+    "late": {
+      "accuracy": 1.0,
+      "average_entry_second": 210.0,
+      "average_loss": 0.0,
+      "average_win": 1.2468230000000002,
+      "daily_pnl_concentration": 0.6648537923987607,
+      "down_trades": 5,
+      "entry_second_p25": 180.0,
+      "entry_second_p75": 230.0,
+      "expectancy_per_trade": 1.2468230000000002,
+      "gross_notional": 18.35,
+      "maximum_drawdown": 0.0,
+      "mean_vwap": 0.734,
+      "median_entry_second": 225.0,
+      "net_pnl": 6.234115000000001,
+      "payoff_ratio": 0.0,
+      "profit_factor": null,
+      "profitable_day_ratio": 1.0,
+      "return_on_entry_cost": 0.3397337874659401,
+      "stress_expectancy_per_trade": 1.1968230000000002,
+      "stress_net_pnl": 5.984115000000001,
+      "trades": 5,
+      "up_trades": 0,
+      "worst_day_net_pnl": 0.53804
+    },
+    "mid": {
+      "accuracy": 0.0,
+      "average_entry_second": null,
+      "average_loss": 0.0,
+      "average_win": 0.0,
+      "daily_pnl_concentration": 0.0,
+      "expectancy_per_trade": 0.0,
+      "maximum_drawdown": 0.0,
+      "median_entry_second": null,
+      "net_pnl": 0.0,
+      "payoff_ratio": 0.0,
+      "profit_factor": 0.0,
+      "profitable_day_ratio": 0.0,
+      "stress_expectancy_per_trade": 0.0,
+      "stress_net_pnl": 0.0,
+      "trades": 0,
+      "worst_day_net_pnl": 0.0
+    }
+  },
+  "test_fixed_entry_capacity_curve": {
+    "10": {
+      "accuracy": 0.8421052631578947,
+      "average_entry_second": 65.65789473684211,
+      "average_loss": -7.32618,
+      "average_win": 2.65503625,
+      "daily_pnl_concentration": 0.45645132836609614,
+      "down_trades": 24,
+      "entry_second_p25": 32.25,
+      "entry_second_p75": 65.0,
+      "expectancy_per_trade": 1.0790547368421053,
+      "gross_notional": 271.79999999999995,
+      "maximum_drawdown": 21.78386,
+      "mean_vwap": 0.7152631578947367,
+      "median_entry_second": 44.0,
+      "net_pnl": 41.00408,
+      "payoff_ratio": 0.36240390626492935,
+      "profit_factor": 1.9328208334129566,
+      "profitable_day_ratio": 0.8333333333333334,
+      "return_on_entry_cost": 0.1508612214863871,
+      "stress_expectancy_per_trade": 0.9790547368421052,
+      "stress_net_pnl": 37.20408,
+      "trades": 38,
+      "up_trades": 14,
+      "worst_day_net_pnl": -4.552799999999992
+    },
+    "100": {
+      "accuracy": 0.8421052631578947,
+      "average_entry_second": 65.65789473684211,
+      "average_loss": -73.6606816343065,
+      "average_win": 26.365092152335652,
+      "daily_pnl_concentration": 0.45181381495344886,
+      "down_trades": 24,
+      "entry_second_p25": 32.25,
+      "entry_second_p75": 65.0,
+      "expectancy_per_trade": 10.571548922865839,
+      "gross_notional": 2726.5794,
+      "maximum_drawdown": 218.18633690214799,
+      "mean_vwap": 0.7175208947368422,
+      "median_entry_second": 44.0,
+      "net_pnl": 401.7188590689019,
+      "payoff_ratio": 0.35792625817972956,
+      "profit_factor": 1.9089400436252242,
+      "profitable_day_ratio": 0.8333333333333334,
+      "return_on_entry_cost": 0.1473343703355574,
+      "stress_expectancy_per_trade": 9.571548922865839,
+      "stress_net_pnl": 363.7188590689019,
+      "trades": 38,
+      "up_trades": 14,
+      "worst_day_net_pnl": -49.83147013850599
+    },
+    "125": {
+      "accuracy": 0.8421052631578947,
+      "average_entry_second": 65.65789473684211,
+      "average_loss": -92.20313394232214,
+      "average_win": 32.8920549748185,
+      "daily_pnl_concentration": 0.45061093160704163,
+      "down_trades": 24,
+      "entry_second_p25": 32.25,
+      "entry_second_p75": 65.0,
+      "expectancy_per_trade": 13.140183040533136,
+      "gross_notional": 3411.1346000000003,
+      "maximum_drawdown": 273.03967924298,
+      "mean_vwap": 0.7181336,
+      "median_entry_second": 44.0,
+      "net_pnl": 499.3269555402592,
+      "payoff_ratio": 0.35673467450026364,
+      "profit_factor": 1.9025849306680729,
+      "profitable_day_ratio": 0.8333333333333334,
+      "return_on_entry_cost": 0.1463814871275555,
+      "stress_expectancy_per_trade": 11.890183040533136,
+      "stress_net_pnl": 451.8269555402592,
+      "trades": 38,
+      "up_trades": 14,
+      "worst_day_net_pnl": -63.67172018154476
+    },
+    "15": {
+      "accuracy": 0.8421052631578947,
+      "average_entry_second": 65.65789473684211,
+      "average_loss": -10.98927,
+      "average_win": 3.982554375,
+      "daily_pnl_concentration": 0.4564513283660961,
+      "down_trades": 24,
+      "entry_second_p25": 32.25,
+      "entry_second_p75": 65.0,
+      "expectancy_per_trade": 1.6185821052631582,
+      "gross_notional": 407.70000000000005,
+      "maximum_drawdown": 32.67579,
+      "mean_vwap": 0.7152631578947367,
+      "median_entry_second": 44.0,
+      "net_pnl": 61.50612000000001,
+      "payoff_ratio": 0.36240390626492935,
+      "profit_factor": 1.9328208334129564,
+      "profitable_day_ratio": 0.8333333333333334,
+      "return_on_entry_cost": 0.15086122148638706,
+      "stress_expectancy_per_trade": 1.4685821052631578,
+      "stress_net_pnl": 55.80612,
+      "trades": 38,
+      "up_trades": 14,
+      "worst_day_net_pnl": -6.829199999999992
+    },
+    "150": {
+      "accuracy": 0.8421052631578947,
+      "average_entry_second": 65.65789473684211,
+      "average_loss": -110.78908217961394,
+      "average_win": 39.37035694187155,
+      "daily_pnl_concentration": 0.4491284337189436,
+      "down_trades": 24,
+      "entry_second_p25": 32.25,
+      "entry_second_p75": 65.0,
+      "expectancy_per_trade": 15.66097181742647,
+      "gross_notional": 4097.5564994999995,
+      "maximum_drawdown": 327.9833781379075,
+      "mean_vwap": 0.7188695613157894,
+      "median_entry_second": 44.0,
+      "net_pnl": 595.1169290622058,
+      "payoff_ratio": 0.3553631474087255,
+      "profit_factor": 1.8952701195132025,
+      "profitable_day_ratio": 0.8333333333333334,
+      "return_on_entry_cost": 0.14523702824715765,
+      "stress_expectancy_per_trade": 14.160971817426471,
+      "stress_net_pnl": 538.1169290622059,
+      "trades": 38,
+      "up_trades": 14,
+      "worst_day_net_pnl": -78.6601470291142
+    },
+    "175": {
+      "accuracy": 0.8421052631578947,
+      "average_entry_second": 65.65789473684211,
+      "average_loss": -129.39384487376176,
+      "average_win": 45.8116083475946,
+      "daily_pnl_concentration": 0.4478909018874888,
+      "down_trades": 24,
+      "entry_second_p25": 32.25,
+      "entry_second_p75": 65.0,
+      "expectancy_per_trade": 18.147589417906758,
+      "gross_notional": 4785.299004500001,
+      "maximum_drawdown": 382.9270361502595,
+      "mean_vwap": 0.719593835263158,
+      "median_entry_second": 44.0,
+      "net_pnl": 689.6083978804568,
+      "payoff_ratio": 0.35404781728442314,
+      "profit_factor": 1.8882550255169235,
+      "profitable_day_ratio": 0.8333333333333334,
+      "return_on_entry_cost": 0.1441097823212223,
+      "stress_expectancy_per_trade": 16.397589417906758,
+      "stress_net_pnl": 623.1083978804568,
+      "trades": 38,
+      "up_trades": 14,
+      "worst_day_net_pnl": -94.39480099889883
+    },
+    "20": {
+      "accuracy": 0.8421052631578947,
+      "average_entry_second": 65.65789473684211,
+      "average_loss": -14.65236,
+      "average_win": 5.3085583984374995,
+      "daily_pnl_concentration": 0.4562307626915513,
+      "down_trades": 24,
+      "entry_second_p25": 32.25,
+      "entry_second_p75": 65.0,
+      "expectancy_per_trade": 2.1568344407894737,
+      "gross_notional": 543.6499999999999,
+      "maximum_drawdown": 43.56772,
+      "mean_vwap": 0.715328947368421,
+      "median_entry_second": 44.0,
+      "net_pnl": 81.95970875,
+      "payoff_ratio": 0.36230057126889453,
+      "profit_factor": 1.9322697134341043,
+      "profitable_day_ratio": 0.8333333333333334,
+      "return_on_entry_cost": 0.15075822450105772,
+      "stress_expectancy_per_trade": 1.9568344407894736,
+      "stress_net_pnl": 74.35970875,
+      "trades": 38,
+      "up_trades": 14,
+      "worst_day_net_pnl": -9.154051249999991
+    },
+    "200": {
+      "accuracy": 0.8421052631578947,
+      "average_entry_second": 65.65789473684211,
+      "average_loss": -148.0318760225426,
+      "average_win": 52.208641020131225,
+      "daily_pnl_concentration": 0.4463964394428102,
+      "down_trades": 24,
+      "entry_second_p25": 32.25,
+      "entry_second_p75": 65.0,
+      "expectancy_per_trade": 20.59171727655115,
+      "gross_notional": 5474.676399999999,
+      "maximum_drawdown": 437.87066643436253,
+      "mean_vwap": 0.720352157894737,
+      "median_entry_second": 44.0,
+      "net_pnl": 782.4852565089437,
+      "payoff_ratio": 0.3526851271693725,
+      "profit_factor": 1.8809873449033203,
+      "profitable_day_ratio": 0.8333333333333334,
+      "return_on_entry_cost": 0.14292812932449192,
+      "stress_expectancy_per_trade": 18.59171727655115,
+      "stress_net_pnl": 706.4852565089437,
+      "trades": 38,
+      "up_trades": 14,
+      "worst_day_net_pnl": -111.16855338981014
+    },
+    "25": {
+      "accuracy": 0.8421052631578947,
+      "average_entry_second": 65.65789473684211,
+      "average_loss": -18.320909293528,
+      "average_win": 6.634562750000001,
+      "daily_pnl_concentration": 0.45597942982501205,
+      "down_trades": 24,
+      "entry_second_p25": 32.25,
+      "entry_second_p75": 65.0,
+      "expectancy_per_trade": 2.694225058916631,
+      "gross_notional": 679.6338,
+      "maximum_drawdown": 54.45965,
+      "mean_vwap": 0.7154039999999999,
+      "median_entry_second": 44.0,
+      "net_pnl": 102.38055223883198,
+      "payoff_ratio": 0.3621306477590449,
+      "profit_factor": 1.9313634547149061,
+      "profitable_day_ratio": 0.8333333333333334,
+      "return_on_entry_cost": 0.15064076012527922,
+      "stress_expectancy_per_trade": 2.4442250589166314,
+      "stress_net_pnl": 92.880552238832,
+      "trades": 38,
+      "up_trades": 14,
+      "worst_day_net_pnl": -11.511647761168003
+    },
+    "30": {
+      "accuracy": 0.8421052631578947,
+      "average_entry_second": 65.65789473684211,
+      "average_loss": -21.992073746237633,
+      "average_win": 7.960567265625,
+      "daily_pnl_concentration": 0.45576453936768024,
+      "down_trades": 24,
+      "entry_second_p25": 32.25,
+      "entry_second_p75": 65.0,
+      "expectancy_per_trade": 3.231202895330901,
+      "gross_notional": 815.6337999000001,
+      "maximum_drawdown": 65.35158,
+      "mean_vwap": 0.7154682455263156,
+      "median_entry_second": 44.0,
+      "net_pnl": 122.78571002257425,
+      "payoff_ratio": 0.36197438029175766,
+      "profit_factor": 1.9305300282227076,
+      "profitable_day_ratio": 0.8333333333333334,
+      "return_on_entry_cost": 0.1505402424931731,
+      "stress_expectancy_per_trade": 2.931202895330901,
+      "stress_net_pnl": 111.38571002257423,
+      "trades": 38,
+      "up_trades": 14,
+      "worst_day_net_pnl": -13.884929977425761
+    },
+    "40": {
+      "accuracy": 0.8421052631578947,
+      "average_entry_second": 65.65789473684211,
+      "average_loss": -29.334399973455003,
+      "average_win": 10.604917238555156,
+      "daily_pnl_concentration": 0.4553825262739427,
+      "down_trades": 24,
+      "entry_second_p25": 32.25,
+      "entry_second_p75": 65.0,
+      "expectancy_per_trade": 4.298709257711448,
+      "gross_notional": 1087.8859999999997,
+      "maximum_drawdown": 87.13543999999999,
+      "mean_vwap": 0.7157144736842106,
+      "median_entry_second": 44.0,
+      "net_pnl": 163.35095179303505,
+      "payoff_ratio": 0.3615181237097624,
+      "profit_factor": 1.9280966597853995,
+      "profitable_day_ratio": 0.8333333333333334,
+      "return_on_entry_cost": 0.15015447555445616,
+      "stress_expectancy_per_trade": 3.8987092577114484,
+      "stress_net_pnl": 148.15095179303503,
+      "trades": 38,
+      "up_trades": 14,
+      "worst_day_net_pnl": -18.721978479499974
+    },
+    "5": {
+      "accuracy": 0.8421052631578947,
+      "average_entry_second": 65.65789473684211,
+      "average_loss": -3.66309,
+      "average_win": 1.327518125,
+      "daily_pnl_concentration": 0.45645132836609614,
+      "down_trades": 24,
+      "entry_second_p25": 32.25,
+      "entry_second_p75": 65.0,
+      "expectancy_per_trade": 0.5395273684210526,
+      "gross_notional": 135.89999999999998,
+      "maximum_drawdown": 10.89193,
+      "mean_vwap": 0.7152631578947367,
+      "median_entry_second": 44.0,
+      "net_pnl": 20.50204,
+      "payoff_ratio": 0.36240390626492935,
+      "profit_factor": 1.9328208334129566,
+      "profitable_day_ratio": 0.8333333333333334,
+      "return_on_entry_cost": 0.1508612214863871,
+      "stress_expectancy_per_trade": 0.4895273684210526,
+      "stress_net_pnl": 18.60204,
+      "trades": 38,
+      "up_trades": 14,
+      "worst_day_net_pnl": -2.276399999999996
+    },
+    "50": {
+      "accuracy": 0.8421052631578947,
+      "average_entry_second": 65.65789473684211,
+      "average_loss": -36.68693270331801,
+      "average_win": 13.238716780344124,
+      "daily_pnl_concentration": 0.45479352246485394,
+      "down_trades": 24,
+      "entry_second_p25": 32.25,
+      "entry_second_p75": 65.0,
+      "expectancy_per_trade": 5.355719493450104,
+      "gross_notional": 1360.5492000000002,
+      "maximum_drawdown": 108.9193,
+      "mean_vwap": 0.7160785263157895,
+      "median_entry_second": 44.0,
+      "net_pnl": 203.51734075110394,
+      "payoff_ratio": 0.3608564631827833,
+      "profit_factor": 1.924567803641511,
+      "profitable_day_ratio": 0.8333333333333334,
+      "return_on_entry_cost": 0.1495846976728985,
+      "stress_expectancy_per_trade": 4.855719493450104,
+      "stress_net_pnl": 184.51734075110394,
+      "trades": 38,
+      "up_trades": 14,
+      "worst_day_net_pnl": -23.70145558433
+    },
+    "75": {
+      "accuracy": 0.8421052631578947,
+      "average_entry_second": 65.65789473684211,
+      "average_loss": -55.14351394859994,
+      "average_win": 19.812141108126475,
+      "daily_pnl_concentration": 0.4534244858034604,
+      "down_trades": 24,
+      "entry_second_p25": 32.25,
+      "entry_second_p75": 65.0,
+      "expectancy_per_trade": 7.977037678117039,
+      "gross_notional": 2043.0384007500002,
+      "maximum_drawdown": 163.48481639142963,
+      "mean_vwap": 0.7168555792105263,
+      "median_entry_second": 44.0,
+      "net_pnl": 303.1274317684475,
+      "payoff_ratio": 0.35928325363149066,
+      "profit_factor": 1.9161773527012838,
+      "profitable_day_ratio": 0.8333333333333334,
+      "return_on_entry_cost": 0.1483708929098784,
+      "stress_expectancy_per_trade": 7.227037678117039,
+      "stress_net_pnl": 274.6274317684475,
+      "trades": 38,
+      "up_trades": 14,
+      "worst_day_net_pnl": -36.511572653409324
+    }
+  },
+  "test_rolling_folds": {
+    "fold_count": 4,
+    "fold_days": 3,
+    "folds": [
+      {
+        "accuracy": 0.0,
+        "average_entry_second": null,
+        "average_loss": 0.0,
+        "average_win": 0.0,
+        "daily_pnl_concentration": 0.0,
+        "end": "2026-07-16T00:00:00+00:00",
+        "expectancy_per_trade": 0.0,
+        "maximum_drawdown": 0.0,
+        "median_entry_second": null,
+        "net_pnl": 0.0,
+        "payoff_ratio": 0.0,
+        "profit_factor": 0.0,
+        "profitable_day_ratio": 0.0,
+        "start": "2026-07-13T00:00:00+00:00",
+        "stress_expectancy_per_trade": 0.0,
+        "stress_net_pnl": 0.0,
+        "trades": 0,
+        "worst_day_net_pnl": 0.0
+      },
+      {
+        "accuracy": 1.0,
+        "average_entry_second": 85.66666666666667,
+        "average_loss": 0.0,
+        "average_win": 1.3387766666666667,
+        "daily_pnl_concentration": 1.0,
+        "down_trades": 2,
+        "end": "2026-07-19T00:00:00+00:00",
+        "entry_second_p25": 38.5,
+        "entry_second_p75": 113.0,
+        "expectancy_per_trade": 1.3387766666666667,
+        "gross_notional": 10.7,
+        "maximum_drawdown": 0.0,
+        "mean_vwap": 0.7133333333333334,
+        "median_entry_second": 46.0,
+        "net_pnl": 4.01633,
+        "payoff_ratio": 0.0,
+        "profit_factor": null,
+        "profitable_day_ratio": 1.0,
+        "return_on_entry_cost": 0.37535794392523364,
+        "start": "2026-07-16T00:00:00+00:00",
+        "stress_expectancy_per_trade": 1.2887766666666665,
+        "stress_net_pnl": 3.8663299999999996,
+        "trades": 3,
+        "up_trades": 1,
+        "worst_day_net_pnl": 4.01633
+      },
+      {
+        "accuracy": 0.8,
+        "average_entry_second": 61.86666666666667,
+        "average_loss": -3.66309,
+        "average_win": 1.3448064583333335,
+        "daily_pnl_concentration": 0.7701421888715634,
+        "down_trades": 18,
+        "end": "2026-07-22T00:00:00+00:00",
+        "entry_second_p25": 32.25,
+        "entry_second_p75": 65.0,
+        "expectancy_per_trade": 0.34322716666666675,
+        "gross_notional": 106.85,
+        "maximum_drawdown": 10.891929999999999,
+        "mean_vwap": 0.7123333333333334,
+        "median_entry_second": 44.0,
+        "net_pnl": 10.296815000000002,
+        "payoff_ratio": 0.3671235100238688,
+        "profit_factor": 1.4684940400954751,
+        "profitable_day_ratio": 0.6666666666666666,
+        "return_on_entry_cost": 0.09636700982686011,
+        "start": "2026-07-19T00:00:00+00:00",
+        "stress_expectancy_per_trade": 0.2932271666666668,
+        "stress_net_pnl": 8.796815000000004,
+        "trades": 30,
+        "up_trades": 12,
+        "worst_day_net_pnl": -2.276399999999996
+      },
+      {
+        "accuracy": 1.0,
+        "average_entry_second": 76.4,
+        "average_loss": 0.0,
+        "average_win": 1.2377790000000002,
+        "daily_pnl_concentration": 0.5391657153659902,
+        "down_trades": 4,
+        "end": "2026-07-23T17:00:00+00:00",
+        "entry_second_p25": 34.0,
+        "entry_second_p75": 56.0,
+        "expectancy_per_trade": 1.2377790000000002,
+        "gross_notional": 18.349999999999998,
+        "maximum_drawdown": 0.0,
+        "mean_vwap": 0.734,
+        "median_entry_second": 35.0,
+        "net_pnl": 6.1888950000000005,
+        "payoff_ratio": 0.0,
+        "profit_factor": null,
+        "profitable_day_ratio": 1.0,
+        "return_on_entry_cost": 0.3372694822888284,
+        "start": "2026-07-22T00:00:00+00:00",
+        "stress_expectancy_per_trade": 1.187779,
+        "stress_net_pnl": 5.938895,
+        "trades": 5,
+        "up_trades": 1,
+        "worst_day_net_pnl": 2.852055
+      }
+    ],
+    "median_fold_stress_expectancy": 0.7405030833333334,
+    "profitable_fold_ratio": 0.75,
+    "profitable_folds": 3
+  },
+  "threshold_search": {
+    "early": {
+      "attempts": 1008,
+      "qualified_attempts": 11,
+      "selected": {
+        "admission": 0.8,
+        "confidence": 0.75,
+        "edge": 0.0,
+        "enabled": true,
+        "payoff_edge": 0.02
+      },
+      "strictly_qualified": true,
+      "validation_metrics": {
+        "accuracy": 0.851063829787234,
+        "average_entry_second": 41.212765957446805,
+        "average_loss": -3.374238571428571,
+        "average_win": 1.4013501176510001,
+        "daily_pnl_concentration": 0.23230754383619978,
+        "down_trades": 35,
+        "entry_second_p25": 31.5,
+        "entry_second_p75": 50.0,
+        "expectancy_per_trade": 0.6900922277880849,
+        "gross_notional": 162.92860000000002,
+        "maximum_drawdown": 10.50794,
+        "mean_vwap": 0.6933131914893618,
+        "median_entry_second": 43.0,
+        "net_pnl": 32.43433470603999,
+        "payoff_ratio": 0.4153085467983677,
+        "profit_factor": 2.3731916959906725,
+        "profitable_day_ratio": 0.8888888888888888,
+        "return_on_entry_cost": 0.19907084886287604,
+        "rolling_folds": {
+          "fold_count": 5,
+          "fold_days": 3,
+          "folds": [
+            {
+              "accuracy": 0.7142857142857143,
+              "average_entry_second": 43.5,
+              "average_loss": -3.2673087499999998,
+              "average_win": 1.4589958863499999,
+              "daily_pnl_concentration": 0.5928304673863106,
+              "down_trades": 11,
+              "end": "2026-07-02T00:00:00+00:00",
+              "entry_second_p25": 33.0,
+              "entry_second_p75": 52.25,
+              "expectancy_per_trade": 0.10862313310714282,
+              "gross_notional": 47.0655,
+              "maximum_drawdown": 10.50794,
+              "mean_vwap": 0.6723642857142857,
+              "median_entry_second": 47.0,
+              "net_pnl": 1.5207238634999996,
+              "payoff_ratio": 0.4465436228975912,
+              "profit_factor": 1.1163590572439779,
+              "profitable_day_ratio": 0.5,
+              "return_on_entry_cost": 0.03231079800490804,
+              "start": "2026-06-29T00:00:00+00:00",
+              "stress_expectancy_per_trade": 0.05862313310714278,
+              "stress_net_pnl": 0.8207238634999989,
+              "trades": 14,
+              "up_trades": 3,
+              "worst_day_net_pnl": -3.3350711365000003
+            },
+            {
+              "accuracy": 0.8888888888888888,
+              "average_entry_second": 38.666666666666664,
+              "average_loss": -3.5498649999999996,
+              "average_win": 1.3578863553175,
+              "daily_pnl_concentration": 0.42670909762526343,
+              "down_trades": 8,
+              "end": "2026-07-05T00:00:00+00:00",
+              "entry_second_p25": 31.0,
+              "entry_second_p75": 44.0,
+              "expectancy_per_trade": 0.8125806491711113,
+              "gross_notional": 31.813100000000002,
+              "maximum_drawdown": 3.5498649999999996,
+              "mean_vwap": 0.7069577777777778,
+              "median_entry_second": 37.0,
+              "net_pnl": 7.313225842540001,
+              "payoff_ratio": 0.38251774513044867,
+              "profit_factor": 3.0601419610435894,
+              "profitable_day_ratio": 1.0,
+              "return_on_entry_cost": 0.22988095603823586,
+              "start": "2026-07-02T00:00:00+00:00",
+              "stress_expectancy_per_trade": 0.7625806491711109,
+              "stress_net_pnl": 6.863225842539999,
+              "trades": 9,
+              "up_trades": 1,
+              "worst_day_net_pnl": 1.352935
+            },
+            {
+              "accuracy": 0.8823529411764706,
+              "average_entry_second": 41.94117647058823,
+              "average_loss": -3.500285,
+              "average_win": 1.434446,
+              "daily_pnl_concentration": 0.589473289005602,
+              "down_trades": 9,
+              "end": "2026-07-08T00:00:00+00:00",
+              "entry_second_p25": 32.0,
+              "entry_second_p75": 50.0,
+              "expectancy_per_trade": 0.8538894117647058,
+              "gross_notional": 58.800000000000004,
+              "maximum_drawdown": 4.19505,
+              "mean_vwap": 0.691764705882353,
+              "median_entry_second": 44.0,
+              "net_pnl": 14.516119999999999,
+              "payoff_ratio": 0.4098083441776884,
+              "profit_factor": 3.0735625813326632,
+              "profitable_day_ratio": 1.0,
+              "return_on_entry_cost": 0.24687278911564622,
+              "start": "2026-07-05T00:00:00+00:00",
+              "stress_expectancy_per_trade": 0.8038894117647057,
+              "stress_net_pnl": 13.666119999999998,
+              "trades": 17,
+              "up_trades": 8,
+              "worst_day_net_pnl": 1.2183
+            },
+            {
+              "accuracy": 1.0,
+              "average_entry_second": 38.142857142857146,
+              "average_loss": 0.0,
+              "average_win": 1.2977521428571428,
+              "daily_pnl_concentration": 1.0,
+              "down_trades": 7,
+              "end": "2026-07-11T00:00:00+00:00",
+              "entry_second_p25": 31.5,
+              "entry_second_p75": 48.0,
+              "expectancy_per_trade": 1.2977521428571428,
+              "gross_notional": 25.249999999999996,
+              "maximum_drawdown": 0.0,
+              "mean_vwap": 0.7214285714285715,
+              "median_entry_second": 41.0,
+              "net_pnl": 9.084265,
+              "payoff_ratio": 0.0,
+              "profit_factor": null,
+              "profitable_day_ratio": 1.0,
+              "return_on_entry_cost": 0.35977287128712876,
+              "start": "2026-07-08T00:00:00+00:00",
+              "stress_expectancy_per_trade": 1.2477521428571428,
+              "stress_net_pnl": 8.734264999999999,
+              "trades": 7,
+              "up_trades": 0,
+              "worst_day_net_pnl": 9.084265
+            },
+            {
+              "accuracy": 0.0,
+              "average_entry_second": null,
+              "average_loss": 0.0,
+              "average_win": 0.0,
+              "daily_pnl_concentration": 0.0,
+              "end": "2026-07-13T00:00:00+00:00",
+              "expectancy_per_trade": 0.0,
+              "maximum_drawdown": 0.0,
+              "median_entry_second": null,
+              "net_pnl": 0.0,
+              "payoff_ratio": 0.0,
+              "profit_factor": 0.0,
+              "profitable_day_ratio": 0.0,
+              "start": "2026-07-11T00:00:00+00:00",
+              "stress_expectancy_per_trade": 0.0,
+              "stress_net_pnl": 0.0,
+              "trades": 0,
+              "worst_day_net_pnl": 0.0
+            }
+          ],
+          "median_fold_stress_expectancy": 0.7625806491711109,
+          "profitable_fold_ratio": 0.8,
+          "profitable_folds": 4
+        },
+        "stress_expectancy_per_trade": 0.640092227788085,
+        "stress_net_pnl": 30.08433470604,
+        "trades": 47,
+        "up_trades": 12,
+        "worst_day_net_pnl": -3.3350711365000003
+      }
+    },
+    "late": {
+      "attempts": 1008,
+      "qualified_attempts": 299,
+      "selected": {
+        "admission": 0.75,
+        "confidence": 0.85,
+        "edge": 0.0,
+        "enabled": true,
+        "payoff_edge": -0.02
+      },
+      "strictly_qualified": true,
+      "validation_metrics": {
+        "accuracy": 0.926829268292683,
+        "average_entry_second": 206.82926829268294,
+        "average_loss": -3.806661666666667,
+        "average_win": 1.1902650365089473,
+        "daily_pnl_concentration": 0.4547662443628924,
+        "down_trades": 28,
+        "entry_second_p25": 190.0,
+        "entry_second_p75": 230.0,
+        "expectancy_per_trade": 0.8246362533497561,
+        "gross_notional": 152.6441,
+        "maximum_drawdown": 4.2720400000000005,
+        "mean_vwap": 0.7446053658536586,
+        "median_entry_second": 200.0,
+        "net_pnl": 33.81008638734,
+        "payoff_ratio": 0.3126794920945029,
+        "profit_factor": 3.9606068998637034,
+        "profitable_day_ratio": 0.8888888888888888,
+        "return_on_entry_cost": 0.22149618876419067,
+        "rolling_folds": {
+          "fold_count": 5,
+          "fold_days": 3,
+          "folds": [
+            {
+              "accuracy": 1.0,
+              "average_entry_second": 206.0,
+              "average_loss": 0.0,
+              "average_win": 1.445938,
+              "daily_pnl_concentration": 0.892718083347972,
+              "down_trades": 3,
+              "end": "2026-07-02T00:00:00+00:00",
+              "entry_second_p25": 180.0,
+              "entry_second_p75": 230.0,
+              "expectancy_per_trade": 1.445938,
+              "gross_notional": 17.299999999999997,
+              "maximum_drawdown": 0.0,
+              "mean_vwap": 0.692,
+              "median_entry_second": 200.0,
+              "net_pnl": 7.22969,
+              "payoff_ratio": 0.0,
+              "profit_factor": null,
+              "profitable_day_ratio": 1.0,
+              "return_on_entry_cost": 0.41790115606936423,
+              "start": "2026-06-29T00:00:00+00:00",
+              "stress_expectancy_per_trade": 1.395938,
+              "stress_net_pnl": 6.97969,
+              "trades": 5,
+              "up_trades": 2,
+              "worst_day_net_pnl": 0.7756150000000002
+            },
+            {
+              "accuracy": 0.8928571428571429,
+              "average_entry_second": 204.46428571428572,
+              "average_loss": -3.806661666666667,
+              "average_win": 1.2073234554936,
+              "daily_pnl_concentration": 0.7645717654529692,
+              "down_trades": 19,
+              "end": "2026-07-05T00:00:00+00:00",
+              "entry_second_p25": 188.75,
+              "entry_second_p75": 226.25,
+              "expectancy_per_trade": 0.6701107638335714,
+              "gross_notional": 103.79409999999999,
+              "maximum_drawdown": 4.27204,
+              "mean_vwap": 0.7413864285714286,
+              "median_entry_second": 195.0,
+              "net_pnl": 18.763101387339997,
+              "payoff_ratio": 0.31716069386087636,
+              "profit_factor": 2.6430057821739696,
+              "profitable_day_ratio": 0.6666666666666666,
+              "return_on_entry_cost": 0.1807723308679395,
+              "start": "2026-07-02T00:00:00+00:00",
+              "stress_expectancy_per_trade": 0.6201107638335716,
+              "stress_net_pnl": 17.363101387340002,
+              "trades": 28,
+              "up_trades": 9,
+              "worst_day_net_pnl": -1.6622499999999998
+            },
+            {
+              "accuracy": 1.0,
+              "average_entry_second": 211.0,
+              "average_loss": 0.0,
+              "average_win": 0.991009,
+              "daily_pnl_concentration": 0.5784680058405121,
+              "down_trades": 4,
+              "end": "2026-07-08T00:00:00+00:00",
+              "entry_second_p25": 195.0,
+              "entry_second_p75": 225.0,
+              "expectancy_per_trade": 0.991009,
+              "gross_notional": 19.65,
+              "maximum_drawdown": 0.0,
+              "mean_vwap": 0.7859999999999999,
+              "median_entry_second": 215.0,
+              "net_pnl": 4.955045,
+              "payoff_ratio": 0.0,
+              "profit_factor": null,
+              "profitable_day_ratio": 1.0,
+              "return_on_entry_cost": 0.25216513994910944,
+              "start": "2026-07-05T00:00:00+00:00",
+              "stress_expectancy_per_trade": 0.941009,
+              "stress_net_pnl": 4.705045,
+              "trades": 5,
+              "up_trades": 1,
+              "worst_day_net_pnl": 0.7279600000000002
+            },
+            {
+              "accuracy": 1.0,
+              "average_entry_second": 223.33333333333334,
+              "average_loss": 0.0,
+              "average_win": 0.9540833333333332,
+              "daily_pnl_concentration": 1.0,
+              "down_trades": 2,
+              "end": "2026-07-11T00:00:00+00:00",
+              "entry_second_p25": 220.0,
+              "entry_second_p75": 225.0,
+              "expectancy_per_trade": 0.9540833333333332,
+              "gross_notional": 11.9,
+              "maximum_drawdown": 0.0,
+              "mean_vwap": 0.7933333333333333,
+              "median_entry_second": 220.0,
+              "net_pnl": 2.8622499999999995,
+              "payoff_ratio": 0.0,
+              "profit_factor": null,
+              "profitable_day_ratio": 1.0,
+              "return_on_entry_cost": 0.24052521008403357,
+              "start": "2026-07-08T00:00:00+00:00",
+              "stress_expectancy_per_trade": 0.9040833333333332,
+              "stress_net_pnl": 2.7122499999999996,
+              "trades": 3,
+              "up_trades": 1,
+              "worst_day_net_pnl": 2.8622499999999995
+            },
+            {
+              "accuracy": 0.0,
+              "average_entry_second": null,
+              "average_loss": 0.0,
+              "average_win": 0.0,
+              "daily_pnl_concentration": 0.0,
+              "end": "2026-07-13T00:00:00+00:00",
+              "expectancy_per_trade": 0.0,
+              "maximum_drawdown": 0.0,
+              "median_entry_second": null,
+              "net_pnl": 0.0,
+              "payoff_ratio": 0.0,
+              "profit_factor": 0.0,
+              "profitable_day_ratio": 0.0,
+              "start": "2026-07-11T00:00:00+00:00",
+              "stress_expectancy_per_trade": 0.0,
+              "stress_net_pnl": 0.0,
+              "trades": 0,
+              "worst_day_net_pnl": 0.0
+            }
+          ],
+          "median_fold_stress_expectancy": 0.9040833333333332,
+          "profitable_fold_ratio": 0.8,
+          "profitable_folds": 4
+        },
+        "stress_expectancy_per_trade": 0.774636253349756,
+        "stress_net_pnl": 31.76008638734,
+        "trades": 41,
+        "up_trades": 13,
+        "worst_day_net_pnl": -1.6622499999999998
+      }
+    },
+    "mid": {
+      "attempts": 1008,
+      "enabled": false,
+      "qualified_attempts": 0,
+      "reason": "no rolling-validation-qualified policy"
+    }
+  },
+  "trading_processes_changed": false,
+  "validation": {
+    "with_admission_veto": {
+      "accuracy": 0.8837209302325582,
+      "average_entry_second": 116.01162790697674,
+      "average_loss": -3.5039654999999996,
+      "average_win": 1.3116463301760526,
+      "daily_pnl_concentration": 0.27814538447509646,
+      "down_trades": 62,
+      "entry_second_p25": 41.0,
+      "entry_second_p75": 195.0,
+      "expectancy_per_trade": 0.7516914662020929,
+      "gross_notional": 307.3227,
+      "maximum_drawdown": 6.80701,
+      "mean_vwap": 0.714703953488372,
+      "median_entry_second": 58.0,
+      "net_pnl": 64.64546609338,
+      "payoff_ratio": 0.37433197620697256,
+      "profit_factor": 2.8449230191729917,
+      "profitable_day_ratio": 0.7777777777777778,
+      "return_on_entry_cost": 0.21035044301439496,
+      "stress_expectancy_per_trade": 0.7016914662020929,
+      "stress_net_pnl": 60.34546609337999,
+      "trades": 86,
+      "up_trades": 24,
+      "worst_day_net_pnl": -3.3350711365000003
+    },
+    "without_admission_veto": {
+      "accuracy": 0.7880794701986755,
+      "average_entry_second": 92.82781456953643,
+      "average_loss": -3.6356560937499998,
+      "average_win": 1.2986496274522685,
+      "daily_pnl_concentration": 0.3358226293653091,
+      "down_trades": 121,
+      "entry_second_p25": 37.0,
+      "entry_second_p75": 185.0,
+      "expectancy_per_trade": 0.2529689448133775,
+      "gross_notional": 542.6290999999999,
+      "maximum_drawdown": 14.049995000000013,
+      "mean_vwap": 0.7187140397350992,
+      "median_entry_second": 53.0,
+      "net_pnl": 38.19831066682001,
+      "payoff_ratio": 0.357198149100174,
+      "profit_factor": 1.328330616966272,
+      "profitable_day_ratio": 0.6666666666666666,
+      "return_on_entry_cost": 0.07039488053040284,
+      "stress_expectancy_per_trade": 0.2029689448133775,
+      "stress_net_pnl": 30.648310666820002,
+      "trades": 151,
+      "up_trades": 30,
+      "worst_day_net_pnl": -7.0790561365
+    }
+  },
+  "validation_rolling_folds": {
+    "fold_count": 5,
+    "fold_days": 3,
+    "folds": [
+      {
+        "accuracy": 0.7647058823529411,
+        "average_entry_second": 70.52941176470588,
+        "average_loss": -3.2673087499999998,
+        "average_win": 1.5554379895,
+        "daily_pnl_concentration": 0.7587058761453646,
+        "down_trades": 13,
+        "end": "2026-07-02T00:00:00+00:00",
+        "entry_second_p25": 36.0,
+        "entry_second_p75": 55.0,
+        "expectancy_per_trade": 0.4206740507941176,
+        "gross_notional": 56.115500000000004,
+        "maximum_drawdown": 6.80701,
+        "mean_vwap": 0.6601823529411766,
+        "median_entry_second": 50.0,
+        "net_pnl": 7.151458863499999,
+        "payoff_ratio": 0.47606091389434807,
+        "profit_factor": 1.5471979701566312,
+        "profitable_day_ratio": 0.5,
+        "return_on_entry_cost": 0.12744177390382333,
+        "start": "2026-06-29T00:00:00+00:00",
+        "stress_expectancy_per_trade": 0.3706740507941177,
+        "stress_net_pnl": 6.301458863500001,
+        "trades": 17,
+        "up_trades": 4,
+        "worst_day_net_pnl": -3.3350711365000003
+      },
+      {
+        "accuracy": 0.8918918918918919,
+        "average_entry_second": 164.13513513513513,
+        "average_loss": -3.7424625000000002,
+        "average_win": 1.243823552420606,
+        "daily_pnl_concentration": 0.7495114607242972,
+        "down_trades": 27,
+        "end": "2026-07-05T00:00:00+00:00",
+        "entry_second_p25": 180.0,
+        "entry_second_p75": 210.0,
+        "expectancy_per_trade": 0.7047656008075676,
+        "gross_notional": 135.6072,
+        "maximum_drawdown": 4.272039999999999,
+        "mean_vwap": 0.733011891891892,
+        "median_entry_second": 190.0,
+        "net_pnl": 26.07632722988,
+        "payoff_ratio": 0.3323543128142516,
+        "profit_factor": 2.7419230807175756,
+        "profitable_day_ratio": 0.6666666666666666,
+        "return_on_entry_cost": 0.1922930879030022,
+        "start": "2026-07-02T00:00:00+00:00",
+        "stress_expectancy_per_trade": 0.6547656008075676,
+        "stress_net_pnl": 24.226327229880003,
+        "trades": 37,
+        "up_trades": 10,
+        "worst_day_net_pnl": -0.30931500000000023
+      },
+      {
+        "accuracy": 0.9090909090909091,
+        "average_entry_second": 80.36363636363636,
+        "average_loss": -3.500285,
+        "average_win": 1.32358675,
+        "daily_pnl_concentration": 0.4768499984464206,
+        "down_trades": 13,
+        "end": "2026-07-08T00:00:00+00:00",
+        "entry_second_p25": 33.5,
+        "entry_second_p75": 68.75,
+        "expectancy_per_trade": 0.8850529545454543,
+        "gross_notional": 78.45,
+        "maximum_drawdown": 4.195049999999999,
+        "mean_vwap": 0.7131818181818181,
+        "median_entry_second": 49.0,
+        "net_pnl": 19.471164999999996,
+        "payoff_ratio": 0.37813685171350336,
+        "profit_factor": 3.781368517135033,
+        "profitable_day_ratio": 1.0,
+        "return_on_entry_cost": 0.24819840662842568,
+        "start": "2026-07-05T00:00:00+00:00",
+        "stress_expectancy_per_trade": 0.8350529545454545,
+        "stress_net_pnl": 18.371164999999998,
+        "trades": 22,
+        "up_trades": 9,
+        "worst_day_net_pnl": 2.5790499999999996
+      },
+      {
+        "accuracy": 1.0,
+        "average_entry_second": 93.7,
+        "average_loss": 0.0,
+        "average_win": 1.1946515,
+        "daily_pnl_concentration": 1.0,
+        "down_trades": 9,
+        "end": "2026-07-11T00:00:00+00:00",
+        "entry_second_p25": 35.75,
+        "entry_second_p75": 178.0,
+        "expectancy_per_trade": 1.1946515,
+        "gross_notional": 37.15,
+        "maximum_drawdown": 0.0,
+        "mean_vwap": 0.743,
+        "median_entry_second": 48.0,
+        "net_pnl": 11.946515,
+        "payoff_ratio": 0.0,
+        "profit_factor": null,
+        "profitable_day_ratio": 1.0,
+        "return_on_entry_cost": 0.32157510094212655,
+        "start": "2026-07-08T00:00:00+00:00",
+        "stress_expectancy_per_trade": 1.1446515,
+        "stress_net_pnl": 11.446515,
+        "trades": 10,
+        "up_trades": 1,
+        "worst_day_net_pnl": 11.946515
+      },
+      {
+        "accuracy": 0.0,
+        "average_entry_second": null,
+        "average_loss": 0.0,
+        "average_win": 0.0,
+        "daily_pnl_concentration": 0.0,
+        "end": "2026-07-13T00:00:00+00:00",
+        "expectancy_per_trade": 0.0,
+        "maximum_drawdown": 0.0,
+        "median_entry_second": null,
+        "net_pnl": 0.0,
+        "payoff_ratio": 0.0,
+        "profit_factor": 0.0,
+        "profitable_day_ratio": 0.0,
+        "start": "2026-07-11T00:00:00+00:00",
+        "stress_expectancy_per_trade": 0.0,
+        "stress_net_pnl": 0.0,
+        "trades": 0,
+        "worst_day_net_pnl": 0.0
+      }
+    ],
+    "median_fold_stress_expectancy": 0.6547656008075676,
+    "profitable_fold_ratio": 0.8,
+    "profitable_folds": 4
+  }
+}
