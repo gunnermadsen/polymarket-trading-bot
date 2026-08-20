@@ -2303,7 +2303,6 @@ enum PersistenceCommand {
     },
     Gap {
         gap: OwnedGapObservation,
-        response: oneshot::Sender<Result<(), StrategyError>>,
     },
     Seal {
         response: oneshot::Sender<Result<(), StrategyError>>,
@@ -2336,26 +2335,15 @@ impl PersistenceClient {
             })
     }
 
-    async fn record_gap(&self, gap: GapObservation<'_>) -> Result<(), StrategyError> {
-        let (response, result) = oneshot::channel();
+    fn record_gap(&self, gap: GapObservation<'_>) -> Result<(), StrategyError> {
         self.sender
-            .send(PersistenceCommand::Gap {
-                gap: gap.into(),
-                response,
-            })
-            .await
-            .map_err(|_| {
+            .try_send(PersistenceCommand::Gap { gap: gap.into() })
+            .map_err(|error| {
                 database_error(
-                    "polymarket_persistence_stopped",
-                    "Polymarket persistence worker stopped before recording a data gap",
+                    "polymarket_persistence_backpressure",
+                    format!("Polymarket gap persistence queue is unavailable: {error}"),
                 )
-            })?;
-        result.await.map_err(|_| {
-            database_error(
-                "polymarket_persistence_stopped",
-                "Polymarket persistence worker stopped while recording a data gap",
-            )
-        })?
+            })
     }
 }
 
@@ -2385,7 +2373,7 @@ impl CapturePersistence {
                             return;
                         }
                     }
-                    PersistenceCommand::Gap { gap, response } => {
+                    PersistenceCommand::Gap { gap } => {
                         let result = writer
                             .record_gap(GapObservation {
                                 kind: &gap.kind,
@@ -2397,9 +2385,8 @@ impl CapturePersistence {
                                 end_cursor: gap.end_cursor,
                             })
                             .await;
-                        let failed = result.is_err();
-                        let _ = response.send(result);
-                        if failed {
+                        if let Err(error) = result {
+                            let _ = results_sender.send(Err(error)).await;
                             return;
                         }
                     }
@@ -3464,23 +3451,20 @@ impl IngesterStrategy for PolymarketBtcFiveMinuteOrderbooksStrategy {
                 Err(error) if error.kind == StrategyErrorKind::TransientSource => {
                     if !gap_was_recorded(error.code) {
                         if let Some(last_sampled_at) = continuity.last_sampled_at {
-                            persistence
-                                .client
-                                .record_gap(GapObservation {
-                                    kind: "transport_interruption",
-                                    code: error.code,
-                                    message: &error.message,
-                                    source_start: continuity.last_source_timestamp,
-                                    source_end: None,
-                                    start_cursor: continuity.last_cursor.clone().or_else(|| {
-                                        Some(format!(
-                                            "after_sample:{}",
-                                            last_sampled_at.timestamp_micros()
-                                        ))
-                                    }),
-                                    end_cursor: None,
-                                })
-                                .await?;
+                            persistence.client.record_gap(GapObservation {
+                                kind: "transport_interruption",
+                                code: error.code,
+                                message: &error.message,
+                                source_start: continuity.last_source_timestamp,
+                                source_end: None,
+                                start_cursor: continuity.last_cursor.clone().or_else(|| {
+                                    Some(format!(
+                                        "after_sample:{}",
+                                        last_sampled_at.timestamp_micros()
+                                    ))
+                                }),
+                                end_cursor: None,
+                            })?;
                         }
                     }
                     warn!(
@@ -3720,7 +3704,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                         source_end: None,
                         start_cursor: continuity.last_cursor.clone().or_else(|| Some(format!("connection_epoch:{connection_epoch}"))),
                         end_cursor: Some("awaiting_initial_full_books".to_owned()),
-                    }).await?;
+                    })?;
                     return Err(source_error("polymarket_clob_bootstrap_timeout", message));
                 }
                 _ = sample_tick.tick() => {
@@ -3742,7 +3726,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                             source_end: None,
                             start_cursor: Some(format!("sampling_bucket:{first_missed}")),
                             end_cursor: Some(format!("sampling_bucket:{last_missed}")),
-                        }).await?;
+                        })?;
                     }
                     if !registry.all_bootstrapped() {
                         let bucket = scheduled_at.timestamp_millis().div_euclid(
@@ -3759,7 +3743,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                             source_end: None,
                             start_cursor: Some(format!("sampling_bucket:{bucket}")),
                             end_cursor: Some(format!("sampling_bucket:{bucket}")),
-                        }).await?;
+                        })?;
                         continue;
                     }
                     let current_window = aligned_market_window(scheduled_at);
@@ -3780,7 +3764,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                                 source_end: Some(current_window + TimeDelta::seconds(MARKET_INTERVAL_SECONDS)),
                                 start_cursor: Some(format!("window_start:{}", current_window.timestamp())),
                                 end_cursor: Some("current_contract_missing".to_owned()),
-                            }).await?;
+                            })?;
                             return Err(source_error("polymarket_current_contract_gap", message));
                         }
                     }
@@ -3928,21 +3912,19 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
         error: &StrategyError,
         source_end: Option<DateTime<Utc>>,
     ) -> Result<(), StrategyError> {
-        persistence
-            .record_gap(GapObservation {
-                kind,
-                code: error.code,
-                message: &error.message,
-                source_start: continuity.last_source_timestamp,
-                source_end,
-                start_cursor: continuity
-                    .last_cursor
-                    .clone()
-                    .or_else(|| Some(format!("connection_epoch:{connection_epoch}"))),
-                end_cursor: source_end
-                    .map(|timestamp| format!("source_timestamp:{}", timestamp.timestamp_micros())),
-            })
-            .await
+        persistence.record_gap(GapObservation {
+            kind,
+            code: error.code,
+            message: &error.message,
+            source_start: continuity.last_source_timestamp,
+            source_end,
+            start_cursor: continuity
+                .last_cursor
+                .clone()
+                .or_else(|| Some(format!("connection_epoch:{connection_epoch}"))),
+            end_cursor: source_end
+                .map(|timestamp| format!("source_timestamp:{}", timestamp.timestamp_micros())),
+        })
     }
 }
 
