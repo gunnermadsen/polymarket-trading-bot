@@ -198,6 +198,7 @@ class FrozenCandidate:
     outcome: OutcomeModel
     correctness: CorrectnessModel
     feature_names: tuple[str, ...]
+    eligibility_features: tuple[str, ...]
     score_mode: str
     risk_model: HistGradientBoostingClassifier | None = None
     risk_feature_names: tuple[str, ...] = ()
@@ -853,7 +854,8 @@ def _train_candidate(
     seed: int,
 ) -> tuple[FrozenCandidate, pl.DataFrame, dict[str, Any]]:
     fit_start, fit_end, calibration_end = _candidate_windows(config, window_family)
-    eligible = frame.drop_nulls(features)
+    eligibility_features = tuple(name for name in features if name not in PRIMARY_FEATURES)
+    eligible = _candidate_eligible_frame(frame, eligibility_features)
     outcome = _fit_outcome(
         _block(eligible, fit_start, fit_end),
         _block(eligible, fit_end, calibration_end),
@@ -876,6 +878,7 @@ def _train_candidate(
         outcome=outcome,
         correctness=correctness,
         feature_names=features,
+        eligibility_features=eligibility_features,
         score_mode=mode,
     )
     if mode == "failure_risk":
@@ -1184,7 +1187,7 @@ def _score_candidate(
     candidate: FrozenCandidate,
     config: TournamentConfig,
 ) -> pl.DataFrame:
-    eligible = frame.drop_nulls(candidate.feature_names)
+    eligible = _candidate_eligible_frame(frame, candidate.eligibility_features)
     scored = _score_base(eligible, candidate, config)
     if candidate.risk_model is not None:
         probability = candidate.risk_model.predict_proba(
@@ -1620,6 +1623,15 @@ def _matrix(frame: pl.DataFrame, features: tuple[str, ...]) -> np.ndarray:
     matrix = frame.select(*features).cast(pl.Float64).to_numpy()
     matrix[~np.isfinite(matrix)] = np.nan
     return matrix
+
+
+def _candidate_eligible_frame(
+    frame: pl.DataFrame,
+    eligibility_features: tuple[str, ...],
+) -> pl.DataFrame:
+    if not eligibility_features:
+        return frame
+    return frame.drop_nulls(eligibility_features)
 
 
 def _bucket_indices(values: np.ndarray, edges: tuple[float, ...]) -> np.ndarray:

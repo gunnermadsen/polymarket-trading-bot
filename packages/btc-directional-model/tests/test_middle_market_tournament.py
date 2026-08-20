@@ -7,6 +7,7 @@ import polars as pl
 from btc_directional_model.middle_market_tournament import (
     TRADE_PRINT_FEATURES,
     _bucket_indices,
+    _candidate_eligible_frame,
     _derive_trade_print_features,
     _join_trade_print_features,
     load_config,
@@ -34,6 +35,18 @@ def test_price_bucket_indices_include_outer_edges() -> None:
     result = _bucket_indices(values, (0.0, 0.65, 0.75, 0.85, 1.01))
 
     assert result.tolist() == [0, 0, 1, 2, 3, 3]
+
+
+def test_core_candidates_keep_rows_with_causally_unavailable_long_horizons() -> None:
+    frame = pl.DataFrame(
+        {
+            "core": [1.0, None],
+            "optional": [2.0, None],
+        }
+    )
+
+    assert _candidate_eligible_frame(frame, ()).height == 2
+    assert _candidate_eligible_frame(frame, ("optional",)).height == 1
 
 
 def test_trade_print_features_are_causal_and_stale_values_are_nulled() -> None:
