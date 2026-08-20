@@ -13,7 +13,7 @@ execution; backfill jobs are durable operational jobs that prepare training inpu
 | `btc_five_minute_resolutions` | five minutes | official CLOB outcomes on the existing market identities |
 | `binance_btcusdt_agg_trades` | UTC day | checksummed BTCUSDT aggregate trades |
 | `binance_btcusdt_one_second_klines` | UTC day | checksummed BTCUSDT one-second candles |
-| `polymarket_btc_five_minute_execution_snapshots` | UTC hour | causal five-second executable-book snapshots from 90 through 140 seconds for validated BTC five-minute markets |
+| `polymarket_btc_five_minute_execution_snapshots` | UTC hour | causal executable-book capacity snapshots from seconds 1 through 240 for validated BTC five-minute markets |
 | `chainlink_btcusd_reference_ticks` | UTC day | optional decoded, signed Chainlink BTC/USD Data Streams v3 reports |
 | `polygon_chainlink_btcusd_oracle_rounds` | UTC day | every on-chain Polygon Chainlink BTC/USD `AnswerUpdated` round |
 
@@ -71,8 +71,8 @@ trades in memory. Completed artifacts and BTC reference facts are immutable, and
 must match the original values.
 
 PMXT files use the same bounded, atomic cache path but are Parquet rather than ZIP CSV. The cache is
-bound to `/Volumes/docker-data/polymarket-bot/backfill-cache`, separated by worker, capped at 40 GiB
-per worker, and removes partial or stale files on worker startup. Each transfer is checked against
+stored in the Compose-managed `polymarket-backfill-cache` Docker volume, separated by worker,
+capped at 8 GiB per worker, and removes partial or stale files on worker startup. Each transfer is checked against
 the source object's content length and ETag before it is atomically published; invalid cached or
 new transfers are removed and downloaded again. Each worker prefetches up to four archives
 concurrently and bounds its ready queue to 48 archives so network transfer can overlap Parquet
@@ -82,13 +82,14 @@ only the columns required to reconstruct the compact book, rejects schema drift,
 events for validated BTC five-minute condition and outcome-token IDs through the bounded batch
 channel.
 
-The compact ingester reconstructs each token book using only events whose provider receipt time is
-at or before the sample. It persists one row per market every five seconds from 90 through 140
-seconds after open with both outcomes: best bid/ask and sizes, total depth, executable ask VWAP
-for 1, 5, and 10 shares, imbalance, source timestamps, and explicit missing, stale, crossed-book,
-and insufficient-depth flags. It does not fabricate a book. Each five-minute market therefore has
-exactly 11 rows and a full UTC day has 3,168 rows. The preceding UTC hour is read for full-book
-seeds. When a completed raw
+The capacity ingester reconstructs each token book using only events whose provider receipt time is
+at or before the sample. It persists one row per market every second from seconds 1 through 59 and
+every five seconds from seconds 60 through 240 with both outcomes: best bid/ask and sizes, total
+depth, executable ask VWAP for 1, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175,
+and 200 shares, imbalance, source timestamps, and
+separate missing, stale, crossed-book, and quantity-depth flags. It does not fabricate a book.
+Each five-minute market therefore has exactly 96 rows and a full UTC day has 27,648 rows. The
+preceding UTC hour is read for full-book seeds. When a completed raw
 materialization exists, it is reprocessed without downloading the source again; otherwise the
 worker streams the PMXT files directly to compact rows and removes the hourly cache as it advances.
 Raw database chunks may be pruned only after exact market coverage, cadence, causality, completed

@@ -26,6 +26,8 @@ from .asymmetric_training_readiness import (
 from .asymmetric_value_benchmark import run_asymmetric_value_benchmark
 from .asymmetric_value_config import load_asymmetric_value_config
 from .benchmark_config import load_entry_benchmark_config
+from .capacity_training import extract_capacity_evidence, run_capacity_training
+from .capacity_training_config import load_capacity_training_config
 from .chainlink_oi_benchmark import run_chainlink_oi_benchmark
 from .chainlink_oi_config import load_chainlink_oi_benchmark_config
 from .chainlink_oi_forward_score import run_chainlink_oi_forward_score
@@ -198,6 +200,10 @@ def main() -> None:
     loss_tail_run.add_argument("--force", action="store_true")
     champion_vwap_run = subparsers.add_parser("champion-vwap-calibration-run")
     champion_vwap_run.add_argument("--config", type=Path, required=True)
+    for name in ("capacity-evidence-extract", "capacity-training-run"):
+        command = subparsers.add_parser(name)
+        command.add_argument("--config", type=Path, required=True)
+        command.add_argument("--force", action="store_true")
     chainlink_oi_run = subparsers.add_parser(
         "chainlink-oi-champion-benchmark-run"
     )
@@ -526,6 +532,20 @@ def main() -> None:
             f"{benchmark['promotion']['selected_candidate'] or 'champion retained'}"
         )
         print("runtime changed: false")
+        return
+    if args.command == "capacity-evidence-extract":
+        config = load_capacity_training_config(args.config)
+        manifest = extract_capacity_evidence(config, force=args.force)
+        print(f"evidence manifest: {config.evidence / 'manifest.json'}")
+        print(f"rows: {manifest['rows']}")
+        print("trading processes changed: false")
+        return
+    if args.command == "capacity-training-run":
+        config = load_capacity_training_config(args.config)
+        run_dir, result = run_capacity_training(config, force=args.force)
+        print(f"report: {run_dir / 'training-report.md'}")
+        print(f"status: {result['status']}")
+        print("runtime/trading processes changed: false")
         return
     if args.command == "chainlink-oi-champion-benchmark-run":
         config = load_chainlink_oi_benchmark_config(args.config)
