@@ -8323,7 +8323,6 @@ fn clob_subscription(markets: &[BtcIntervalMarket]) -> String {
     serde_json::json!({
         "assets_ids": clob_asset_ids(markets),
         "type": "market",
-        "custom_feature_enabled": true,
         "initial_dump": true
     })
     .to_string()
@@ -8394,7 +8393,6 @@ fn clob_subscription_operation(assets: &[String], operation: ClobSubscriptionOpe
         ClobSubscriptionOperation::Subscribe => serde_json::json!({
             "assets_ids": assets,
             "operation": "subscribe",
-            "custom_feature_enabled": true,
             "initial_dump": true
         }),
         ClobSubscriptionOperation::Unsubscribe => serde_json::json!({
@@ -11642,8 +11640,14 @@ mod tests {
         let market = market();
         let clob: serde_json::Value =
             serde_json::from_str(&clob_subscription(&[market.clone(), market])).unwrap();
-        assert_eq!(clob["assets_ids"], serde_json::json!(["down", "up"]));
-        assert_eq!(clob["initial_dump"], true);
+        assert_eq!(
+            clob,
+            serde_json::json!({
+                "assets_ids": ["down", "up"],
+                "type": "market",
+                "initial_dump": true
+            })
+        );
         let rtds: serde_json::Value = serde_json::from_str(&rtds_subscription()).unwrap();
         assert_eq!(rtds["subscriptions"][0]["filters"], "btcusdt");
         assert_eq!(
@@ -11669,7 +11673,6 @@ mod tests {
             serde_json::json!({
                 "assets_ids": ["down", "up"],
                 "operation": "subscribe",
-                "custom_feature_enabled": true,
                 "initial_dump": true
             })
         );
