@@ -12,8 +12,8 @@ use crate::{
     idempotency::event_hash,
     models::{DataApiActivity, DataApiPosition},
     store::{
-        AccountLiveFillEvidence, AccountPositionSnapshot, AccountTrade, LiveRedemptionEvidence,
-        Store,
+        AccountLiveFillEvidence, AccountPositionSnapshot, AccountTrade,
+        LiveAccountPositionEvidence, LiveRedemptionEvidence, Store,
     },
 };
 
@@ -21,8 +21,9 @@ const DATA_API_RECONCILIATION_PAGE_SIZE: usize = 500;
 const MAX_DATA_API_RECONCILIATION_ROWS: usize = 4_000;
 const MAX_DATA_API_RECONCILIATION_REQUESTS: usize =
     MAX_DATA_API_RECONCILIATION_ROWS / DATA_API_RECONCILIATION_PAGE_SIZE + 1;
+const DATA_API_POSITION_PUBLICATION_GRACE_SECONDS: i64 = 60;
 fn data_api_position_size_tolerance() -> Decimal {
-    Decimal::new(1, 6)
+    Decimal::new(1, 4)
 }
 
 fn data_api_trade_price_tolerance() -> Decimal {
@@ -61,6 +62,13 @@ pub struct AccountPositionMismatch {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AccountPositionTransition {
+    pub token_id: String,
+    pub expected_size: Decimal,
+    pub transition_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProcessAccountingProof {
     pub status: String,
     pub position_ownership: String,
@@ -74,6 +82,7 @@ pub struct AccountReconcileReport {
     pub account_ref: Option<String>,
     pub credential_account_fingerprint_sha256: Option<String>,
     pub process_accounting_proven: bool,
+    pub process_accounting_entry_safe: bool,
     pub process_accounting_status: String,
     pub process_accounting_proof: ProcessAccountingProof,
     pub account_address: String,
@@ -93,6 +102,7 @@ pub struct AccountReconcileReport {
     pub position_adjustments_applied: u64,
     pub position_adjustment_size_applied: Decimal,
     pub mismatches: Vec<AccountPositionMismatch>,
+    pub transitions: Vec<AccountPositionTransition>,
     pub unmatched_trades: u64,
 }
 
@@ -385,7 +395,7 @@ pub async fn reconcile_account_positions(
         }
     }
 
-    let (process_accounting_proof, mismatches) = if let Some(process_id) = process_id {
+    let (process_accounting_proof, mismatches, transitions) = if let Some(process_id) = process_id {
         // Validate the bound sleeve's own immutable order/fill lineage independently, then prove
         // custody against the aggregate of every sleeve assigned to the account.
         let _process_positions = store.live_process_position_sizes(process_id).await?;
@@ -404,6 +414,7 @@ pub async fn reconcile_account_positions(
             &snapshots,
             unmatched_trades,
             &unsettled_resolved_positions,
+            activity_window_end,
         )?
     } else {
         (
@@ -414,15 +425,18 @@ pub async fn reconcile_account_positions(
                 reason: "legacy_account_wide_admin_reconciliation".to_string(),
             },
             Vec::new(),
+            Vec::new(),
         )
     };
     let process_accounting_proven = process_accounting_proof.status == "proven";
+    let process_accounting_entry_safe = unmatched_trades == 0 && mismatches.is_empty();
     let process_accounting_status = process_accounting_proof.status.clone();
     let report = AccountReconcileReport {
         process_id,
         account_ref,
         credential_account_fingerprint_sha256,
         process_accounting_proven,
+        process_accounting_entry_safe,
         process_accounting_status,
         process_accounting_proof,
         account_address,
@@ -442,6 +456,7 @@ pub async fn reconcile_account_positions(
         position_adjustments_applied: 0,
         position_adjustment_size_applied: Decimal::ZERO,
         mismatches,
+        transitions,
         unmatched_trades,
     };
     store.insert_account_reconciliation_run(&report).await?;
@@ -449,11 +464,16 @@ pub async fn reconcile_account_positions(
 }
 
 fn process_accounting_proof(
-    expected_account_positions: &HashMap<String, Decimal>,
+    expected_account_positions: &HashMap<String, LiveAccountPositionEvidence>,
     account_positions: &[AccountPositionSnapshot],
     unmatched_trades: u64,
     unsettled_resolved_positions: &[(String, Decimal)],
-) -> Result<(ProcessAccountingProof, Vec<AccountPositionMismatch>)> {
+    checked_at: chrono::DateTime<Utc>,
+) -> Result<(
+    ProcessAccountingProof,
+    Vec<AccountPositionMismatch>,
+    Vec<AccountPositionTransition>,
+)> {
     let mut account_sizes = HashMap::with_capacity(account_positions.len());
     for position in account_positions {
         if position.size <= Decimal::ZERO || is_settled_zero_payout_position(position) {
@@ -478,10 +498,11 @@ fn process_accounting_proof(
     token_ids.sort_unstable();
     token_ids.dedup();
     let mut mismatches = Vec::new();
+    let mut transitions = Vec::new();
     for token_id in token_ids {
-        let process_size = expected_account_positions
-            .get(&token_id)
-            .copied()
+        let expected_evidence = expected_account_positions.get(&token_id);
+        let process_size = expected_evidence
+            .map(|evidence| evidence.size)
             .unwrap_or(Decimal::ZERO);
         let account_size = account_sizes
             .get(&token_id)
@@ -489,6 +510,29 @@ fn process_accounting_proof(
             .unwrap_or(Decimal::ZERO);
         if decimal_difference(process_size, account_size) <= data_api_position_size_tolerance() {
             continue;
+        }
+        if account_size == Decimal::ZERO {
+            if let Some(evidence) = expected_evidence {
+                let publication_age = checked_at - evidence.oldest_fill_at;
+                let transition_type = if checked_at >= evidence.market_window_end {
+                    Some("pending_settlement_credit")
+                } else if publication_age >= -LIVE_EXTERNAL_EVENT_CLOCK_SKEW
+                    && publication_age
+                        <= chrono::Duration::seconds(DATA_API_POSITION_PUBLICATION_GRACE_SECONDS)
+                {
+                    Some("pending_position_visibility")
+                } else {
+                    None
+                };
+                if let Some(transition_type) = transition_type {
+                    transitions.push(AccountPositionTransition {
+                        token_id,
+                        expected_size: process_size,
+                        transition_type: transition_type.to_string(),
+                    });
+                    continue;
+                }
+            }
         }
         let mismatch_type = if process_size == Decimal::ZERO {
             "foreign_account_position"
@@ -507,13 +551,16 @@ fn process_accounting_proof(
     }
 
     for (token_id, unsettled_size) in unsettled_resolved_positions {
-        mismatches.push(AccountPositionMismatch {
-            token_id: token_id.clone(),
-            db_open_size: *unsettled_size,
-            account_size: Decimal::ZERO,
-            delta_size: -*unsettled_size,
-            mismatch_type: "resolved_fill_missing_credited_settlement".to_string(),
-        });
+        if !transitions
+            .iter()
+            .any(|transition| transition.token_id == *token_id)
+        {
+            transitions.push(AccountPositionTransition {
+                token_id: token_id.clone(),
+                expected_size: *unsettled_size,
+                transition_type: "pending_settlement_credit".to_string(),
+            });
+        }
     }
 
     let proof = if unmatched_trades > 0 {
@@ -530,6 +577,13 @@ fn process_accounting_proof(
             realized_pnl: "unproven".to_string(),
             reason: "account_positions_do_not_match_aggregate_sleeve_live_fills".to_string(),
         }
+    } else if !transitions.is_empty() {
+        ProcessAccountingProof {
+            status: "pending".to_string(),
+            position_ownership: "account_sleeve_fill_transition".to_string(),
+            realized_pnl: "pending_settlement_ledger".to_string(),
+            reason: "account_position_publication_or_settlement_pending".to_string(),
+        }
     } else {
         ProcessAccountingProof {
             status: "proven".to_string(),
@@ -544,7 +598,7 @@ fn process_accounting_proof(
             },
         }
     };
-    Ok((proof, mismatches))
+    Ok((proof, mismatches, transitions))
 }
 
 fn is_settled_zero_payout_position(position: &AccountPositionSnapshot) -> bool {
@@ -1449,13 +1503,48 @@ mod tests {
         }
     }
 
+    fn accounting_proof(
+        expected_sizes: &HashMap<String, Decimal>,
+        positions: &[AccountPositionSnapshot],
+        unmatched_trades: u64,
+        unsettled: &[(String, Decimal)],
+    ) -> (
+        ProcessAccountingProof,
+        Vec<AccountPositionMismatch>,
+        Vec<AccountPositionTransition>,
+    ) {
+        let checked_at = Utc::now();
+        let expected = expected_sizes
+            .iter()
+            .map(|(token_id, size)| {
+                (
+                    token_id.clone(),
+                    LiveAccountPositionEvidence {
+                        size: *size,
+                        oldest_fill_at: checked_at - chrono::Duration::minutes(2),
+                        market_window_end: checked_at + chrono::Duration::minutes(3),
+                    },
+                )
+            })
+            .collect();
+        process_accounting_proof(
+            &expected,
+            positions,
+            unmatched_trades,
+            unsettled,
+            checked_at,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn clean_account_baseline_proves_process_accounting() {
-        let (proof, mismatches) = process_accounting_proof(&HashMap::new(), &[], 0, &[]).unwrap();
+        let (proof, mismatches, transitions) = accounting_proof(&HashMap::new(), &[], 0, &[]);
 
         assert_eq!(proof.status, "proven");
         assert_eq!(proof.reason, "clean_account_baseline");
         assert!(mismatches.is_empty());
+        assert!(transitions.is_empty());
     }
 
     #[test]
@@ -1463,8 +1552,7 @@ mod tests {
         let process_positions = HashMap::from([("token-1".to_string(), dec!(2.5))]);
         let positions = vec![account_position("token-1", dec!(2.5))];
 
-        let (proof, mismatches) =
-            process_accounting_proof(&process_positions, &positions, 0, &[]).unwrap();
+        let (proof, mismatches, _) = accounting_proof(&process_positions, &positions, 0, &[]);
 
         assert_eq!(proof.status, "proven");
         assert_eq!(
@@ -1476,14 +1564,132 @@ mod tests {
 
     #[test]
     fn rounded_data_api_position_within_resolution_proves_accounting() {
-        let process_positions = HashMap::from([("token-1".to_string(), dec!(2.5000005))]);
-        let positions = vec![account_position("token-1", dec!(2.5))];
+        let process_positions = HashMap::from([("token-1".to_string(), dec!(5.287355))]);
+        let positions = vec![account_position("token-1", dec!(5.2873))];
 
-        let (proof, mismatches) =
-            process_accounting_proof(&process_positions, &positions, 0, &[]).unwrap();
+        let (proof, mismatches, _) = accounting_proof(&process_positions, &positions, 0, &[]);
 
         assert_eq!(proof.status, "proven");
         assert!(mismatches.is_empty());
+    }
+
+    #[test]
+    fn data_api_position_difference_above_resolution_fails_closed() {
+        let process_positions = HashMap::from([("token-1".to_string(), dec!(5.287401))]);
+        let positions = vec![account_position("token-1", dec!(5.2873))];
+
+        let (proof, mismatches, _) = accounting_proof(&process_positions, &positions, 0, &[]);
+
+        assert_eq!(proof.status, "unproven");
+        assert_eq!(mismatches[0].mismatch_type, "position_size_mismatch");
+        assert_eq!(mismatches[0].delta_size, dec!(-0.000101));
+    }
+
+    #[test]
+    fn recent_owned_fill_waiting_for_position_publication_is_entry_safe() {
+        let checked_at = Utc::now();
+        let expected = HashMap::from([(
+            "token-1".to_string(),
+            LiveAccountPositionEvidence {
+                size: dec!(5.182922),
+                oldest_fill_at: checked_at - chrono::Duration::seconds(30),
+                market_window_end: checked_at + chrono::Duration::minutes(4),
+            },
+        )]);
+
+        let (proof, mismatches, transitions) =
+            process_accounting_proof(&expected, &[], 0, &[], checked_at).unwrap();
+
+        assert_eq!(proof.status, "pending");
+        assert!(mismatches.is_empty());
+        assert_eq!(
+            transitions[0].transition_type,
+            "pending_position_visibility"
+        );
+    }
+
+    #[test]
+    fn unpublished_position_after_grace_fails_closed() {
+        let checked_at = Utc::now();
+        let expected = HashMap::from([(
+            "token-1".to_string(),
+            LiveAccountPositionEvidence {
+                size: dec!(5),
+                oldest_fill_at: checked_at - chrono::Duration::seconds(61),
+                market_window_end: checked_at + chrono::Duration::minutes(3),
+            },
+        )]);
+
+        let (proof, mismatches, transitions) =
+            process_accounting_proof(&expected, &[], 0, &[], checked_at).unwrap();
+
+        assert_eq!(proof.status, "unproven");
+        assert_eq!(mismatches[0].mismatch_type, "missing_account_position");
+        assert!(transitions.is_empty());
+    }
+
+    #[test]
+    fn implausibly_future_fill_cannot_open_publication_grace() {
+        let checked_at = Utc::now();
+        let expected = HashMap::from([(
+            "token-1".to_string(),
+            LiveAccountPositionEvidence {
+                size: dec!(5),
+                oldest_fill_at: checked_at
+                    + LIVE_EXTERNAL_EVENT_CLOCK_SKEW
+                    + chrono::Duration::microseconds(1),
+                market_window_end: checked_at + chrono::Duration::minutes(4),
+            },
+        )]);
+
+        let (proof, mismatches, transitions) =
+            process_accounting_proof(&expected, &[], 0, &[], checked_at).unwrap();
+
+        assert_eq!(proof.status, "unproven");
+        assert_eq!(mismatches[0].mismatch_type, "missing_account_position");
+        assert!(transitions.is_empty());
+    }
+
+    #[test]
+    fn ended_market_waiting_for_settlement_credit_is_entry_safe_but_pending() {
+        let checked_at = Utc::now();
+        let expected = HashMap::from([(
+            "token-1".to_string(),
+            LiveAccountPositionEvidence {
+                size: dec!(5),
+                oldest_fill_at: checked_at - chrono::Duration::minutes(8),
+                market_window_end: checked_at - chrono::Duration::seconds(1),
+            },
+        )]);
+
+        let (proof, mismatches, transitions) =
+            process_accounting_proof(&expected, &[], 0, &[], checked_at).unwrap();
+
+        assert_eq!(proof.status, "pending");
+        assert_eq!(proof.realized_pnl, "pending_settlement_ledger");
+        assert!(mismatches.is_empty());
+        assert_eq!(transitions[0].transition_type, "pending_settlement_credit");
+    }
+
+    #[test]
+    fn nonzero_size_conflict_stays_blocking_during_publication_grace() {
+        let checked_at = Utc::now();
+        let expected = HashMap::from([(
+            "token-1".to_string(),
+            LiveAccountPositionEvidence {
+                size: dec!(5),
+                oldest_fill_at: checked_at - chrono::Duration::seconds(10),
+                market_window_end: checked_at + chrono::Duration::minutes(4),
+            },
+        )]);
+        let positions = vec![account_position("token-1", dec!(4.5))];
+
+        let (proof, mismatches, transitions) =
+            process_accounting_proof(&expected, &positions, 0, &[], checked_at).unwrap();
+
+        assert_eq!(proof.status, "unproven");
+        assert_eq!(mismatches[0].mismatch_type, "position_size_mismatch");
+        assert!(transitions.is_empty());
     }
 
     #[test]
@@ -1496,8 +1702,7 @@ mod tests {
             "redeemable": true
         });
 
-        let (proof, mismatches) =
-            process_accounting_proof(&HashMap::new(), &[losing_position], 0, &[]).unwrap();
+        let (proof, mismatches, _) = accounting_proof(&HashMap::new(), &[losing_position], 0, &[]);
 
         assert_eq!(proof.status, "proven");
         assert!(mismatches.is_empty());
@@ -1505,31 +1710,27 @@ mod tests {
 
     #[test]
     fn unresolved_fill_settlement_coverage_prevents_realized_pnl_proof() {
-        let (proof, mismatches) = process_accounting_proof(
+        let (proof, mismatches, transitions) = accounting_proof(
             &HashMap::new(),
             &[],
             0,
             &[("losing-token".to_string(), dec!(2.5))],
-        )
-        .unwrap();
-
-        assert_eq!(proof.status, "unproven");
-        assert_eq!(proof.realized_pnl, "unproven");
-        assert_eq!(
-            mismatches[0].mismatch_type,
-            "resolved_fill_missing_credited_settlement"
         );
+
+        assert_eq!(proof.status, "pending");
+        assert_eq!(proof.realized_pnl, "pending_settlement_ledger");
+        assert!(mismatches.is_empty());
+        assert_eq!(transitions[0].transition_type, "pending_settlement_credit");
     }
 
     #[test]
     fn foreign_position_or_unmatched_trade_fails_process_accounting_closed() {
         let foreign = vec![account_position("foreign-token", dec!(1))];
-        let (foreign_proof, mismatches) =
-            process_accounting_proof(&HashMap::new(), &foreign, 0, &[]).unwrap();
+        let (foreign_proof, mismatches, _) = accounting_proof(&HashMap::new(), &foreign, 0, &[]);
         assert_eq!(foreign_proof.status, "unproven");
         assert_eq!(mismatches[0].mismatch_type, "foreign_account_position");
 
-        let (trade_proof, _) = process_accounting_proof(&HashMap::new(), &[], 1, &[]).unwrap();
+        let (trade_proof, _, _) = accounting_proof(&HashMap::new(), &[], 1, &[]);
         assert_eq!(trade_proof.status, "unproven");
         assert_eq!(trade_proof.reason, "unmatched_account_trades");
     }
@@ -1539,8 +1740,7 @@ mod tests {
         let process_positions = HashMap::from([("token-1".to_string(), dec!(2.5))]);
         let positions = vec![account_position("token-1", dec!(2))];
 
-        let (proof, mismatches) =
-            process_accounting_proof(&process_positions, &positions, 0, &[]).unwrap();
+        let (proof, mismatches, _) = accounting_proof(&process_positions, &positions, 0, &[]);
 
         assert_eq!(proof.status, "unproven");
         assert_eq!(mismatches[0].mismatch_type, "position_size_mismatch");

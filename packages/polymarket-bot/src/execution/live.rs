@@ -59,7 +59,7 @@ use crate::{
     idempotency::event_hash,
     models::{EffectiveProcessExecutionConfig, FillRecord, OrderRecord, OrderRequest},
     models::{FillSource, OrderSide, OrderState, OrderType},
-    store::Store,
+    store::{validate_live_cumulative_fill_economics, Store},
 };
 
 type AuthenticatedClient = SdkClient<Authenticated<Normal>>;
@@ -121,6 +121,7 @@ struct LiveVenueState {
     manual_entries_enabled: bool,
     manual_entries_reason: Option<String>,
     process_accounting_proven: bool,
+    process_accounting_entry_safe: bool,
     process_accounting_status: String,
     credential_account_fingerprint_sha256: Option<String>,
     reconciled_safety_generation: Option<u64>,
@@ -161,6 +162,7 @@ impl LiveVenueState {
             manual_entries_enabled: false,
             manual_entries_reason: Some("manual_enable_required".to_string()),
             process_accounting_proven: false,
+            process_accounting_entry_safe: false,
             process_accounting_status: "unproven".to_string(),
             credential_account_fingerprint_sha256: None,
             reconciled_safety_generation: None,
@@ -377,7 +379,13 @@ impl LiveVenue {
         let fills = live_fill_records_from_event(store, event).await?;
         for (order, fill) in &fills {
             store.insert_fill(fill).await?;
-            let cumulative_filled_size = store.order_filled_size(&order.order_id).await?;
+            let (cumulative_filled_size, cumulative_filled_notional) =
+                store.order_filled_economics(&order.order_id).await?;
+            validate_live_cumulative_fill_economics(
+                &order.request,
+                cumulative_filled_size,
+                cumulative_filled_notional,
+            )?;
             store
                 .mark_order_fill_progress(
                     &order.order_id,
@@ -1151,14 +1159,14 @@ impl LiveVenue {
             self.bound_account_ref()
                 .context("live risk checks require a process account_ref")?,
         )?;
-        let (process_accounting_proven, reconciled_fingerprint) = {
+        let (process_accounting_entry_safe, reconciled_fingerprint) = {
             let state = self.readiness_state.lock().await;
             (
-                state.process_accounting_proven,
+                state.process_accounting_entry_safe,
                 state.credential_account_fingerprint_sha256.clone(),
             )
         };
-        if !process_accounting_proven {
+        if !process_accounting_entry_safe {
             return Ok(Some(LiveExecutionGateReason::ProcessAccountingReadiness));
         }
         if reconciled_fingerprint.as_deref() != Some(identity.fingerprint_sha256.as_str()) {
@@ -1219,9 +1227,6 @@ impl LiveVenue {
             account_orders_read,
             collateral_read,
         )?;
-        if exposure.has_unredeemed_settlement {
-            return Ok(Some(LiveExecutionGateReason::SettlementRedemptionUnproven));
-        }
         let requested_exposure = Store::conservative_live_request_exposure(request)?;
         let resulting_exposure = exposure
             .total_exposure_usd
@@ -1306,16 +1311,13 @@ impl LiveVenue {
             return Ok(Some(LiveExecutionGateReason::GlobalHalt));
         }
         let state = self.readiness_state.lock().await;
-        if state.pending_settlement_count != 0 {
-            return Ok(Some(LiveExecutionGateReason::SettlementRedemptionUnproven));
-        }
         if state.reconciliation_error.is_some() {
             return Ok(Some(LiveExecutionGateReason::ProcessAccountingReadiness));
         }
         if !state.manual_entries_enabled {
             return Ok(Some(LiveExecutionGateReason::ManualEnableRequired));
         }
-        if !state.process_accounting_proven {
+        if !state.process_accounting_entry_safe {
             return Ok(Some(LiveExecutionGateReason::ProcessAccountingReadiness));
         }
         Ok(Some(LiveExecutionGateReason::VenueReadiness))
@@ -1903,7 +1905,8 @@ fn fill_record_from_trade_for_order(
     if price <= Decimal::ZERO || price > Decimal::ONE {
         bail!("live REST fill trade {} has an invalid price", trade.id);
     }
-    if size <= Decimal::ZERO || size > order.request.size {
+    if size <= Decimal::ZERO || (order.request.side == OrderSide::Sell && size > order.request.size)
+    {
         bail!("live REST fill trade {} has an invalid size", trade.id);
     }
     if fee_rate_bps < Decimal::ZERO || fee_rate_bps > Decimal::from(10_000) {
@@ -2092,13 +2095,13 @@ async fn persist_rest_fill_backfill(
         let order = local_orders
             .get(order_id.as_str())
             .context("live REST fill progress points to missing local order")?;
-        let cumulative_filled_size = store.order_filled_size(&order_id).await?;
-        if cumulative_filled_size <= Decimal::ZERO || cumulative_filled_size > order.request.size {
-            bail!(
-                "live REST cumulative fill size is invalid for order {}",
-                order_id
-            );
-        }
+        let (cumulative_filled_size, cumulative_filled_notional) =
+            store.order_filled_economics(&order_id).await?;
+        validate_live_cumulative_fill_economics(
+            &order.request,
+            cumulative_filled_size,
+            cumulative_filled_notional,
+        )?;
         let updated = store
             .mark_order_fill_progress(
                 &order_id,
@@ -2647,7 +2650,22 @@ impl ExecutionVenue for LiveVenue {
             self.enforce_submission_risk(process_id, &request, None),
             self.prewarm_order_metadata(&client, token_id),
         );
-        if let Some(reason) = risk_result? {
+        let risk_result = match risk_result {
+            Ok(result) => result,
+            Err(error) => {
+                warn!(
+                    client_order_id = %request.client_order_id,
+                    process_id = ?request.process_id,
+                    error = %format!("{error:#}"),
+                    "live pre-submit risk validation rejected this order; preserving trading process liveness"
+                );
+                return live_execution_gate_closed_order(
+                    request,
+                    LiveExecutionGateReason::ProcessAccountingReadiness,
+                );
+            }
+        };
+        if let Some(reason) = risk_result {
             return live_execution_gate_closed_order(request, reason);
         }
         if let Err(error) = metadata_result {
@@ -3170,6 +3188,7 @@ impl ExecutionVenue for LiveVenue {
             state.unresolved_live_order_count = unresolved;
             state.idempotency_clean = idempotency_clean;
             state.process_accounting_proven = account_reconcile.process_accounting_proven;
+            state.process_accounting_entry_safe = account_reconcile.process_accounting_entry_safe;
             state.process_accounting_status = account_reconcile.process_accounting_status.clone();
             state.credential_account_fingerprint_sha256 = account_reconcile
                 .credential_account_fingerprint_sha256
@@ -3269,14 +3288,13 @@ impl ExecutionVenue for LiveVenue {
         let order_submit_enabled = self.order_submission_enabled();
         let live_confirmed = order_submit_enabled
             && self.config.submit_auth_available()
-            && state.process_accounting_proven
+            && state.process_accounting_entry_safe
             && rest_fresh;
         let entries_enabled = live_confirmed
             && !global.halted
             && state.manual_entries_enabled
             && state.idempotency_clean
             && state.unresolved_live_order_count == 0
-            && state.pending_settlement_count == 0
             && state.reconciliation_error.is_none();
         let reason = if entries_enabled {
             None
@@ -3291,13 +3309,11 @@ impl ExecutionVenue for LiveVenue {
                 .manual_entries_reason
                 .clone()
                 .or_else(|| Some("manual_enable_required".to_string()))
-        } else if !state.process_accounting_proven {
+        } else if !state.process_accounting_entry_safe {
             Some(format!(
                 "live_process_accounting_not_proven:{}",
                 state.process_accounting_status
             ))
-        } else if state.pending_settlement_count != 0 {
-            Some("live_pending_settlement_present".to_string())
         } else if let Some(error) = state.reconciliation_error.as_deref() {
             Some(format!("live_reconciliation_degraded:{error}"))
         } else if !rest_fresh {
@@ -3839,7 +3855,7 @@ impl ExecutionVenue for LiveVenue {
         if !self.order_submission_enabled()
             || !self.config.submit_auth_available()
             || !rest_fresh
-            || !state.process_accounting_proven
+            || !state.process_accounting_entry_safe
             || !identity_matches
             || !state.idempotency_clean
             || state.unresolved_live_order_count != 0
@@ -4521,6 +4537,50 @@ mod tests {
     }
 
     #[test]
+    fn rest_fill_backfill_accepts_price_improved_buy_shares_within_authorized_notional() {
+        let process_id = Uuid::new_v4();
+        let checked_at = Utc::now();
+        let order = rest_backfill_order(
+            process_id,
+            "venue-order-price-improved",
+            OrderSide::Buy,
+            dec!(0.82),
+            dec!(5),
+            checked_at - chrono::Duration::seconds(1),
+        );
+        let trade = taker_trade(
+            "trade-price-improved",
+            "venue-order-price-improved",
+            dec!(0.80),
+            dec!(5.125),
+            Decimal::ZERO,
+            checked_at,
+        );
+        let owned_orders = HashMap::from([(
+            "venue-order-price-improved".to_string(),
+            "venue-order-price-improved".to_string(),
+        )]);
+
+        let fills = rest_fill_backfill_plan(
+            process_id,
+            std::slice::from_ref(&order),
+            &owned_orders,
+            &[trade],
+            checked_at,
+        )
+        .unwrap();
+
+        assert_eq!(fills[0].price, dec!(0.80));
+        assert_eq!(fills[0].size, dec!(5.125));
+        validate_live_cumulative_fill_economics(
+            &order.request,
+            fills[0].size,
+            fills[0].price * fills[0].size,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn live_fill_fee_uses_sealed_rate_for_websocket_and_rest_economics() {
         let order = rest_backfill_order(
             Uuid::new_v4(),
@@ -4622,6 +4682,7 @@ mod tests {
             state.manual_entries_enabled = true;
             state.manual_entries_reason = None;
             state.process_accounting_proven = true;
+            state.process_accounting_entry_safe = true;
             state.process_accounting_status = "proven".to_string();
         }
         {
@@ -4672,6 +4733,7 @@ mod tests {
             state.manual_entries_enabled = true;
             state.manual_entries_reason = None;
             state.process_accounting_proven = true;
+            state.process_accounting_entry_safe = true;
             state.process_accounting_status = "proven".to_string();
         }
         {
@@ -4698,6 +4760,17 @@ mod tests {
         let recovered = venue.live_status().await.unwrap();
         assert!(recovered.entries_enabled);
         assert!(venue.readiness_state.lock().await.manual_entries_enabled);
+
+        venue
+            .update_live_reconciliation_health(1, None)
+            .await
+            .unwrap();
+        let settlement_pending = venue.live_status().await.unwrap();
+        assert!(settlement_pending.entries_enabled);
+        assert_eq!(
+            venue.readiness_state.lock().await.pending_settlement_count,
+            1
+        );
     }
 
     #[tokio::test]
@@ -4714,6 +4787,7 @@ mod tests {
             state.manual_entries_enabled = true;
             state.manual_entries_reason = None;
             state.process_accounting_proven = true;
+            state.process_accounting_entry_safe = true;
             state.process_accounting_status = "proven".to_string();
         }
         {
@@ -5160,6 +5234,7 @@ mod tests {
             state.idempotency_clean = true;
             state.unresolved_live_order_count = 0;
             state.process_accounting_proven = true;
+            state.process_accounting_entry_safe = true;
             state.process_accounting_status = "proven".to_string();
             state.credential_account_fingerprint_sha256 = Some(identity.fingerprint_sha256);
             state.reconciled_safety_generation = Some(0);

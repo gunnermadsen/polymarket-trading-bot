@@ -608,17 +608,6 @@ fn apply_trade_to_kline(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum MarketFeedEventType {
-    Book,
-    PriceChange,
-    BestBidAsk,
-    TickSizeChange,
-    LastTradePrice,
-    MarketResolved,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum FeedIntegrityStatus {
     Ok,
     PreSnapshot,
@@ -629,22 +618,6 @@ pub enum FeedIntegrityStatus {
     TopOfBookMismatch,
     UnknownToken,
     MarketMismatch,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MarketFeedEvent {
-    pub event_id: Uuid,
-    pub market_id: String,
-    pub token_id: Option<String>,
-    pub event_type: MarketFeedEventType,
-    pub source_timestamp: DateTime<Utc>,
-    pub received_at: DateTime<Utc>,
-    pub connection_id: Uuid,
-    pub ingest_sequence: u64,
-    pub source_hash: Option<String>,
-    pub applied: bool,
-    pub integrity_status: FeedIntegrityStatus,
-    pub raw_payload: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
