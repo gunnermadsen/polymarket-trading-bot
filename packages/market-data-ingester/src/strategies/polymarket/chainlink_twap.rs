@@ -450,7 +450,9 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
                 }
                 event = events_rx.recv() => match event {
                     Some(IoEvent::Frame { bytes, received_at }) => {
-                        let observation = decode_observation(&bytes, received_at)?;
+                        let Some(observation) = decode_observation(&bytes, received_at)? else {
+                            continue;
+                        };
                         self.persist_observation(checkpoint, &observation).await?;
                         if observation.window_seconds == 30 { thirty_seen_at = Some(Instant::now()); }
                         else { sixty_seen_at = Some(Instant::now()); }
@@ -867,15 +869,24 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
 fn decode_observation(
     bytes: &[u8],
     received_at: DateTime<Utc>,
-) -> Result<TwapObservation, StrategyError> {
+) -> Result<Option<TwapObservation>, StrategyError> {
     if bytes.len() > MAX_FRAME_BYTES {
         return Err(integrity(
             "polymarket_twap_frame_too_large",
             "RTDS frame exceeded 64 KiB",
         ));
     }
-    let envelope: RtdsEnvelope =
-        serde_json::from_slice(bytes).map_err(integrity_err("polymarket_twap_decode"))?;
+    let source_payload =
+        serde_json::from_slice::<Value>(bytes).map_err(integrity_err("polymarket_twap_decode"))?;
+    if source_payload.get("topic").is_none()
+        && source_payload
+            .get("connection_id")
+            .is_some_and(Value::is_string)
+    {
+        return Ok(None);
+    }
+    let envelope: RtdsEnvelope = serde_json::from_value(source_payload.clone())
+        .map_err(integrity_err("polymarket_twap_decode"))?;
     let expected_window = match envelope.topic.as_str() {
         TOPIC_THIRTY => 30,
         TOPIC_SIXTY => 60,
@@ -927,8 +938,6 @@ fn decode_observation(
             "RTDS timestamps are not causally ordered",
         ));
     }
-    let source_payload =
-        serde_json::from_slice::<Value>(bytes).map_err(integrity_err("polymarket_twap_payload"))?;
     if source_payload.to_string().len() > 4_096 {
         return Err(integrity(
             "polymarket_twap_payload_too_large",
@@ -937,7 +946,7 @@ fn decode_observation(
     }
     let canonical = serde_json::to_vec(&json!({"topic": envelope.topic, "type": envelope.message_type, "timestamp": envelope.timestamp, "payload": envelope.payload}))
         .map_err(integrity_err("polymarket_twap_hash_encode"))?;
-    Ok(TwapObservation {
+    Ok(Some(TwapObservation {
         source_timestamp,
         published_at,
         received_at,
@@ -946,7 +955,7 @@ fn decode_observation(
         full_accuracy_value: raw.clone(),
         source_payload,
         payload_sha256: hex_digest(Sha256::digest(canonical)),
-    })
+    }))
 }
 
 fn validate_checkpoint(checkpoint: &TwapCheckpoint) -> Result<(), StrategyFactoryError> {
@@ -1060,7 +1069,7 @@ mod tests {
             }))
             .unwrap();
             let received = Utc.timestamp_millis_opt(1_785_178_800_500).unwrap();
-            let decoded = decode_observation(&bytes, received).unwrap();
+            let decoded = decode_observation(&bytes, received).unwrap().unwrap();
             assert_eq!(decoded.window_seconds, window);
             assert_eq!(decoded.price, Decimal::from_str("65000.5").unwrap());
         }
@@ -1079,5 +1088,11 @@ mod tests {
             decode_observation(&bytes, Utc.timestamp_millis_opt(1_785_178_800_500).unwrap())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn ignores_connection_control_frame() {
+        let bytes = br#"{"connection_id":"90bc5f25-3f12-4f11-b961-0af0b37a6da2"}"#;
+        assert!(decode_observation(bytes, Utc::now()).unwrap().is_none());
     }
 }
