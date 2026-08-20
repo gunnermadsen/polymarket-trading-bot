@@ -500,7 +500,16 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
         .bind(artifact.artifact_id)
         .fetch_optional(&mut *transaction)
         .await
-        .map_err(db("polymarket_twap_insert"))?;
+        .map_err(|error| {
+            StrategyError::new(
+                StrategyErrorKind::TransientDatabase,
+                "polymarket_twap_insert",
+                format!(
+                    "window={} exact={} decimal={}: {error}",
+                    observation.window_seconds, observation.full_accuracy_value, observation.price
+                ),
+            )
+        })?;
         if inserted.is_none() {
             let stored = sqlx::query_as::<_, StoredTwap>(
                 r#"
