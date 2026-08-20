@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::{
     net::TcpStream,
-    sync::{mpsc, watch, OwnedSemaphorePermit, RwLock, Semaphore},
+    sync::{mpsc, watch, Mutex, OwnedSemaphorePermit, RwLock, Semaphore},
     task::JoinHandle,
     time::{interval, interval_at, sleep, sleep_until, timeout, Instant, MissedTickBehavior},
 };
@@ -119,6 +119,11 @@ struct ClobIngressFrame {
 #[derive(Debug)]
 enum ClobIngressEvent {
     Frame(ClobIngressFrame),
+    HeartbeatSent {
+        observed_at: DateTime<Utc>,
+        scheduled_at: Instant,
+        sent_at: Instant,
+    },
     TransportError {
         reason: String,
         detail: ClobTransportErrorDetail,
@@ -128,12 +133,13 @@ enum ClobIngressEvent {
 
 #[derive(Debug)]
 struct ClobIngressTransport {
-    sink: ClobSocketSink,
+    sink: Arc<Mutex<ClobSocketSink>>,
     events: mpsc::Receiver<ClobIngressEvent>,
     overflowed: Arc<AtomicBool>,
     receipt_clock_started_at: Instant,
     latest_receipt_elapsed_nanoseconds: Arc<AtomicU64>,
     reader_task: JoinHandle<()>,
+    heartbeat_task: JoinHandle<()>,
 }
 
 impl ClobIngressTransport {
@@ -1152,8 +1158,13 @@ fn clob_socket_provenance(
     provenance
 }
 
-fn start_clob_ingress(socket: ClobSocket) -> ClobIngressTransport {
+fn start_clob_ingress(
+    socket: ClobSocket,
+    heartbeat_interval: StdDuration,
+    shutdown: watch::Receiver<bool>,
+) -> ClobIngressTransport {
     let (sink, stream) = socket.split();
+    let sink = Arc::new(Mutex::new(sink));
     let (sender, events) = mpsc::channel(CLOB_INGRESS_FRAME_CAPACITY);
     let byte_budget = Arc::new(Semaphore::new(CLOB_INGRESS_BYTE_CAPACITY));
     let overflowed = Arc::new(AtomicBool::new(false));
@@ -1163,11 +1174,17 @@ fn start_clob_ingress(socket: ClobSocket) -> ClobIngressTransport {
     let reader_latest_receipt_elapsed_nanoseconds = Arc::clone(&latest_receipt_elapsed_nanoseconds);
     let reader_task = tokio::spawn(run_clob_ingress_reader(
         stream,
-        sender,
+        sender.clone(),
         reader_overflowed,
         byte_budget,
         receipt_clock_started_at,
         reader_latest_receipt_elapsed_nanoseconds,
+    ));
+    let heartbeat_task = tokio::spawn(run_clob_heartbeat_sender(
+        Arc::clone(&sink),
+        sender,
+        heartbeat_interval,
+        shutdown,
     ));
     ClobIngressTransport {
         sink,
@@ -1176,6 +1193,65 @@ fn start_clob_ingress(socket: ClobSocket) -> ClobIngressTransport {
         receipt_clock_started_at,
         latest_receipt_elapsed_nanoseconds,
         reader_task,
+        heartbeat_task,
+    }
+}
+
+async fn run_clob_heartbeat_sender(
+    sink: Arc<Mutex<ClobSocketSink>>,
+    sender: mpsc::Sender<ClobIngressEvent>,
+    heartbeat_interval: StdDuration,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let started_at = Instant::now();
+    let mut heartbeat = interval_at(started_at + heartbeat_interval, heartbeat_interval);
+    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        let scheduled_at = tokio::select! {
+            biased;
+            _ = shutdown.changed() => return,
+            scheduled_at = heartbeat.tick() => scheduled_at,
+        };
+        let mut socket = tokio::select! {
+            biased;
+            _ = shutdown.changed() => return,
+            socket = sink.lock() => socket,
+        };
+        match send_clob_text(&mut *socket, "PING".to_string(), &mut shutdown).await {
+            Ok(()) => {
+                let sent_at = Instant::now();
+                let event = ClobIngressEvent::HeartbeatSent {
+                    observed_at: Utc::now(),
+                    scheduled_at,
+                    sent_at,
+                };
+                match sender.try_send(event) {
+                    Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
+                    Err(mpsc::error::TrySendError::Closed(_)) => return,
+                }
+            }
+            Err(ClobSendFailure::Shutdown) => return,
+            Err(ClobSendFailure::Timeout) => {
+                let _ = sender
+                    .send(ClobIngressEvent::TransportError {
+                        reason: "heartbeat_send_timeout".to_string(),
+                        detail: ClobTransportErrorDetail {
+                            class: "send_timeout",
+                            io_kind: None,
+                            os_error_code: None,
+                        },
+                    })
+                    .await;
+                return;
+            }
+            Err(ClobSendFailure::Transport { error, detail }) => {
+                let reason = bounded_clob_error_reason(&format!("heartbeat_send_failed:{error}"));
+                let _ = sender
+                    .send(ClobIngressEvent::TransportError { reason, detail })
+                    .await;
+                return;
+            }
+        }
     }
 }
 
@@ -1397,6 +1473,7 @@ struct ClobEpoch {
 impl Drop for ClobEpoch {
     fn drop(&mut self) {
         self.transport.reader_task.abort();
+        self.transport.heartbeat_task.abort();
     }
 }
 
@@ -1429,6 +1506,7 @@ async fn connect_clob_epoch(
     config: BtcRuntimeConfig,
     desired_markets: Vec<BtcIntervalMarket>,
     connection_epoch: i32,
+    heartbeat_interval: StdDuration,
     mut shutdown: watch::Receiver<bool>,
 ) -> ClobConnectOutcome {
     let connection_id = Uuid::new_v4();
@@ -1568,7 +1646,7 @@ async fn connect_clob_epoch(
         epoch: Box::new(ClobEpoch {
             connection_id,
             connection_epoch,
-            transport: start_clob_ingress(socket),
+            transport: start_clob_ingress(socket, heartbeat_interval, shutdown.clone()),
             registry,
             markets: desired_markets,
             session,
@@ -3206,7 +3284,8 @@ async fn update_clob_epoch_subscriptions(
             &delta.removed_assets,
             ClobSubscriptionOperation::Unsubscribe,
         );
-        match send_clob_text(&mut epoch.transport.sink, payload, shutdown).await {
+        let mut sink = epoch.transport.sink.lock().await;
+        match send_clob_text(&mut *sink, payload, shutdown).await {
             Ok(()) => {}
             Err(ClobSendFailure::Shutdown) => return Err(ClobEpochUpdateError::Shutdown),
             Err(ClobSendFailure::Timeout) => {
@@ -3225,7 +3304,8 @@ async fn update_clob_epoch_subscriptions(
     if !delta.added_assets.is_empty() {
         let payload =
             clob_subscription_operation(&delta.added_assets, ClobSubscriptionOperation::Subscribe);
-        match send_clob_text(&mut epoch.transport.sink, payload, shutdown).await {
+        let mut sink = epoch.transport.sink.lock().await;
+        match send_clob_text(&mut *sink, payload, shutdown).await {
             Ok(()) => {}
             Err(ClobSendFailure::Shutdown) => return Err(ClobEpochUpdateError::Shutdown),
             Err(ClobSendFailure::Timeout) => {
@@ -3476,7 +3556,9 @@ async fn complete_clob_epoch_with_close(
     let disconnected_at = Utc::now();
     let disconnected_instant = Instant::now();
     epoch.transport.reader_task.abort();
-    match attempt_clob_close(&mut epoch.transport.sink, close_action).await {
+    epoch.transport.heartbeat_task.abort();
+    let mut sink = epoch.transport.sink.lock().await;
+    match attempt_clob_close(&mut *sink, close_action).await {
         ClobCloseOutcome::Skipped => {}
         ClobCloseOutcome::Completed => {
             tracing::debug!(
@@ -3606,12 +3688,10 @@ async fn run_clob_supervisor(
     metrics.write().await.clob_recovery_unavailable_since = recovery_window.since;
 
     let started_at = Instant::now();
-    let mut heartbeat = interval_at(started_at + heartbeat_interval, heartbeat_interval);
     let mut checkpoints = interval_at(
         started_at + config.checkpoint_interval,
         config.checkpoint_interval,
     );
-    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
     checkpoints.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let dormant_deadline = Instant::now() + StdDuration::from_secs(86_400);
@@ -3641,6 +3721,7 @@ async fn run_clob_supervisor(
                 config.clone(),
                 desired_markets,
                 connection_epoch,
+                heartbeat_interval,
                 shutdown.clone(),
             )));
         }
@@ -3842,6 +3923,23 @@ async fn run_clob_supervisor(
                                 ClobDisconnectCause::TransportFailure,
                             ));
                         }
+                    }
+                    Some(ClobIngressEvent::HeartbeatSent {
+                        observed_at,
+                        scheduled_at,
+                        sent_at,
+                    }) => {
+                        let epoch = active.as_mut().expect("CLOB epoch remains installed");
+                        epoch.watchdog.record_text_ping(sent_at, pong_timeout);
+                        epoch
+                            .watchdog
+                            .observe_transport_receipt(epoch.transport.latest_receipt_instant());
+                        let sample = epoch.telemetry.record_heartbeat_probe(
+                            observed_at,
+                            sent_at,
+                            sent_at.saturating_duration_since(scheduled_at),
+                        );
+                        record_active_clob_heartbeat_probe_metrics(&metrics, sample).await;
                     }
                     Some(ClobIngressEvent::TransportError { reason, detail }) => {
                         active
@@ -4127,44 +4225,6 @@ async fn run_clob_supervisor(
                                     }
                                 }
                             }
-                        }
-                    }
-                }
-            }
-            scheduled_at = heartbeat.tick() => {
-                if let Some(epoch) = active.as_mut() {
-                    match send_clob_text(
-                        &mut epoch.transport.sink,
-                        "PING".to_string(),
-                        &mut shutdown,
-                    )
-                    .await
-                    {
-                        Ok(()) => {
-                            let sent_instant = Instant::now();
-                            epoch.watchdog.record_text_ping(sent_instant, pong_timeout);
-                            let sample = epoch.telemetry.record_heartbeat_probe(
-                                Utc::now(),
-                                sent_instant,
-                                sent_instant.saturating_duration_since(scheduled_at),
-                            );
-                            record_active_clob_heartbeat_probe_metrics(&metrics, sample).await;
-                        }
-                        Err(ClobSendFailure::Shutdown) => shutdown_requested = true,
-                        Err(ClobSendFailure::Timeout) => {
-                            active_failure = Some((
-                                "heartbeat_send_timeout".to_string(),
-                                ClobDisconnectCause::TransportFailure,
-                            ));
-                        }
-                        Err(ClobSendFailure::Transport { error, detail }) => {
-                            epoch.telemetry.last_transport_error = Some(detail);
-                            active_failure = Some((
-                                bounded_clob_error_reason(&format!(
-                                    "heartbeat_send_failed:{error}"
-                                )),
-                                ClobDisconnectCause::TransportFailure,
-                            ));
                         }
                     }
                 }
@@ -9220,10 +9280,58 @@ mod tests {
         (client, server)
     }
 
+    fn start_test_clob_ingress(socket: ClobSocket) -> ClobIngressTransport {
+        let (_shutdown_tx, shutdown) = watch::channel(false);
+        start_clob_ingress(socket, StdDuration::from_secs(3_600), shutdown)
+    }
+
+    #[tokio::test]
+    async fn clob_heartbeat_transmission_does_not_wait_for_frame_processing() {
+        let (client, mut server) = clob_socket_pair().await;
+        let (_shutdown_tx, shutdown) = watch::channel(false);
+        let mut transport = start_clob_ingress(client, StdDuration::from_millis(20), shutdown);
+        server
+            .send(Message::Text("queued-frame".to_string().into()))
+            .await
+            .unwrap();
+        timeout(StdDuration::from_secs(1), async {
+            while transport.events.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let heartbeat = timeout(StdDuration::from_secs(1), server.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(heartbeat.into_text().unwrap(), "PING");
+
+        let mut heartbeat_timing = None;
+        while heartbeat_timing.is_none() {
+            let event = timeout(StdDuration::from_secs(1), transport.events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if let ClobIngressEvent::HeartbeatSent {
+                scheduled_at,
+                sent_at,
+                ..
+            } = event
+            {
+                heartbeat_timing = Some((scheduled_at, sent_at));
+            }
+        }
+        let (scheduled_at, sent_at) = heartbeat_timing.unwrap();
+        assert!(sent_at >= scheduled_at);
+    }
+
     #[tokio::test]
     async fn clob_ingress_reader_drains_in_order_before_processing() {
         let (client, mut server) = clob_socket_pair().await;
-        let mut transport = start_clob_ingress(client);
+        let mut transport = start_test_clob_ingress(client);
         let sent_before = Utc::now();
         let sent_before_instant = Instant::now();
         for payload in ["first", "second", "third"] {
@@ -9257,7 +9365,7 @@ mod tests {
     #[tokio::test]
     async fn clob_ingress_overflow_invalidates_instead_of_dropping_and_continuing() {
         let (client, mut server) = clob_socket_pair().await;
-        let transport = start_clob_ingress(client);
+        let transport = start_test_clob_ingress(client);
         for _ in 0..=CLOB_INGRESS_FRAME_CAPACITY {
             if server
                 .send(Message::Text("x".to_string().into()))
@@ -9284,7 +9392,7 @@ mod tests {
     #[tokio::test]
     async fn clob_ingress_is_scoped_to_its_connection_epoch() {
         let (first_client, mut first_server) = clob_socket_pair().await;
-        let first_transport = start_clob_ingress(first_client);
+        let first_transport = start_test_clob_ingress(first_client);
         first_server
             .send(Message::Text("old-epoch".to_string().into()))
             .await
@@ -9299,7 +9407,7 @@ mod tests {
         drop(first_transport);
 
         let (second_client, mut second_server) = clob_socket_pair().await;
-        let mut second_transport = start_clob_ingress(second_client);
+        let mut second_transport = start_test_clob_ingress(second_client);
         second_server
             .send(Message::Text("new-epoch".to_string().into()))
             .await
@@ -9333,7 +9441,7 @@ mod tests {
         let mut epoch = ClobEpoch {
             connection_id,
             connection_epoch: 1,
-            transport: start_clob_ingress(socket),
+            transport: start_test_clob_ingress(socket),
             registry: registry.clone(),
             markets: vec![current.clone()],
             session: new_session(
@@ -9416,7 +9524,7 @@ mod tests {
         let mut epoch = ClobEpoch {
             connection_id,
             connection_epoch: 1,
-            transport: start_clob_ingress(socket),
+            transport: start_test_clob_ingress(socket),
             registry,
             markets: vec![current.clone()],
             session: new_session(
@@ -9746,7 +9854,7 @@ mod tests {
         let mut epoch = ClobEpoch {
             connection_id,
             connection_epoch: 1,
-            transport: start_clob_ingress(client),
+            transport: start_test_clob_ingress(client),
             registry,
             markets: vec![current.clone()],
             session: new_session(
