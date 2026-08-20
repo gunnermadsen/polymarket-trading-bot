@@ -122,6 +122,7 @@ struct TwapCheckpoint {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RtdsEnvelope {
+    connection_id: Option<String>,
     topic: String,
     #[serde(rename = "type")]
     message_type: String,
@@ -897,6 +898,16 @@ fn decode_observation(
             ))
         }
     };
+    if envelope
+        .connection_id
+        .as_deref()
+        .is_some_and(|value| Uuid::parse_str(value).is_err())
+    {
+        return Err(integrity(
+            "polymarket_twap_connection_id",
+            "RTDS connection identity was not a UUID",
+        ));
+    }
     if envelope.message_type != "update"
         || envelope.payload.symbol != SYMBOL
         || envelope.payload.window_s != expected_window
@@ -1062,6 +1073,7 @@ mod tests {
     fn decodes_each_exact_twap_window() {
         for (topic, window) in [(TOPIC_THIRTY, 30), (TOPIC_SIXTY, 60)] {
             let bytes = serde_json::to_vec(&json!({
+                "connection_id": "90bc5f25-3f12-4f11-b961-0af0b37a6da2",
                 "topic": topic, "type": "update", "timestamp": 1_785_178_800_123_i64,
                 "payload": {"symbol": "btc/usd", "value": 65000.5,
                     "full_accuracy_value": "65000500000000000000000",
