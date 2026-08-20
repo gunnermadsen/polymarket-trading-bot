@@ -16,6 +16,7 @@ use tokio_tungstenite::{
     tungstenite::{protocol::WebSocketConfig, Message},
 };
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::{
@@ -270,6 +271,12 @@ impl IngesterStrategy for PolymarketChainlinkBtcusdTwapStrategy {
                     return Ok(());
                 }
                 Err(error) => {
+                    warn!(
+                        strategy = %STRATEGY_KEY,
+                        error_code = error.code,
+                        error = %error,
+                        "Polymarket RTDS session will reconnect"
+                    );
                     if checkpoint.thirty_source_timestamp_ms.is_some()
                         || checkpoint.sixty_source_timestamp_ms.is_some()
                     {
