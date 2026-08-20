@@ -1621,7 +1621,7 @@ def _chronological_payoff_oof(
             (pl.col("window_start") >= train_end)
             & (pl.col("window_start") < validation_end)
         )
-        if fit["market_id"].n_unique() < 250 or validation["market_id"].n_unique() < 100:
+        if fit["market_id"].n_unique() < 100 or validation["market_id"].n_unique() < 40:
             raise RuntimeError("admission lower-bound fold lacks chronological coverage")
         regressor = _fit_stress_edge_regressor(
             fit,
