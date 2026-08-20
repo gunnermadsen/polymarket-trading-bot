@@ -901,11 +901,11 @@ fn decode_observation(
     if envelope
         .connection_id
         .as_deref()
-        .is_some_and(|value| Uuid::parse_str(value).is_err())
+        .is_some_and(|value| value.is_empty() || value.len() > 256 || !value.is_ascii())
     {
         return Err(integrity(
             "polymarket_twap_connection_id",
-            "RTDS connection identity was not a UUID",
+            "RTDS connection identity was empty, non-ASCII, or oversized",
         ));
     }
     if envelope.message_type != "update"
