@@ -23,7 +23,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
-use tokio::{sync::mpsc, task::JoinHandle, time::Instant};
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+    time::Instant,
+};
 use tokio_tungstenite::{
     connect_async_with_config,
     tungstenite::{protocol::WebSocketConfig, Message},
@@ -67,6 +71,7 @@ const MAX_SOURCE_HASH_BYTES: usize = 256;
 const MAX_NUMERIC_BYTES: usize = 64;
 const MAX_PROVIDER_CLOCK_LEAD_MILLISECONDS: i64 = 1_000;
 const WEBSOCKET_EVENT_BUFFER: usize = 4_096;
+const PERSISTENCE_BUFFER: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -2265,6 +2270,206 @@ struct GapObservation<'a> {
     end_cursor: Option<String>,
 }
 
+#[derive(Debug)]
+struct OwnedGapObservation {
+    kind: String,
+    code: String,
+    message: String,
+    source_start: Option<DateTime<Utc>>,
+    source_end: Option<DateTime<Utc>>,
+    start_cursor: Option<String>,
+    end_cursor: Option<String>,
+}
+
+impl From<GapObservation<'_>> for OwnedGapObservation {
+    fn from(gap: GapObservation<'_>) -> Self {
+        Self {
+            kind: gap.kind.to_owned(),
+            code: gap.code.to_owned(),
+            message: gap.message.to_owned(),
+            source_start: gap.source_start,
+            source_end: gap.source_end,
+            start_cursor: gap.start_cursor,
+            end_cursor: gap.end_cursor,
+        }
+    }
+}
+
+enum PersistenceCommand {
+    Samples {
+        samples: Vec<BookSample>,
+        sampled_at: DateTime<Utc>,
+        connection_epoch: Uuid,
+    },
+    Gap {
+        gap: OwnedGapObservation,
+        response: oneshot::Sender<Result<(), StrategyError>>,
+    },
+    Seal {
+        response: oneshot::Sender<Result<(), StrategyError>>,
+    },
+}
+
+#[derive(Clone)]
+struct PersistenceClient {
+    sender: mpsc::Sender<PersistenceCommand>,
+}
+
+impl PersistenceClient {
+    fn persist_samples(
+        &self,
+        samples: Vec<BookSample>,
+        sampled_at: DateTime<Utc>,
+        connection_epoch: Uuid,
+    ) -> Result<(), StrategyError> {
+        self.sender
+            .try_send(PersistenceCommand::Samples {
+                samples,
+                sampled_at,
+                connection_epoch,
+            })
+            .map_err(|error| {
+                database_error(
+                    "polymarket_persistence_backpressure",
+                    format!("Polymarket sample persistence queue is unavailable: {error}"),
+                )
+            })
+    }
+
+    async fn record_gap(&self, gap: GapObservation<'_>) -> Result<(), StrategyError> {
+        let (response, result) = oneshot::channel();
+        self.sender
+            .send(PersistenceCommand::Gap {
+                gap: gap.into(),
+                response,
+            })
+            .await
+            .map_err(|_| {
+                database_error(
+                    "polymarket_persistence_stopped",
+                    "Polymarket persistence worker stopped before recording a data gap",
+                )
+            })?;
+        result.await.map_err(|_| {
+            database_error(
+                "polymarket_persistence_stopped",
+                "Polymarket persistence worker stopped while recording a data gap",
+            )
+        })?
+    }
+}
+
+struct CapturePersistence {
+    client: PersistenceClient,
+    results: mpsc::Receiver<Result<Vec<SnapshotFact>, StrategyError>>,
+    handle: JoinHandle<()>,
+}
+
+impl CapturePersistence {
+    fn start(mut writer: CaptureWriter) -> Self {
+        let (sender, mut commands) = mpsc::channel(PERSISTENCE_BUFFER);
+        let (results_sender, results) = mpsc::channel(PERSISTENCE_BUFFER);
+        let handle = tokio::spawn(async move {
+            while let Some(command) = commands.recv().await {
+                match command {
+                    PersistenceCommand::Samples {
+                        samples,
+                        sampled_at,
+                        connection_epoch,
+                    } => {
+                        let result = writer
+                            .persist_samples(samples, sampled_at, connection_epoch)
+                            .await;
+                        let failed = result.is_err();
+                        if results_sender.send(result).await.is_err() || failed {
+                            return;
+                        }
+                    }
+                    PersistenceCommand::Gap { gap, response } => {
+                        let result = writer
+                            .record_gap(GapObservation {
+                                kind: &gap.kind,
+                                code: &gap.code,
+                                message: &gap.message,
+                                source_start: gap.source_start,
+                                source_end: gap.source_end,
+                                start_cursor: gap.start_cursor,
+                                end_cursor: gap.end_cursor,
+                            })
+                            .await;
+                        let failed = result.is_err();
+                        let _ = response.send(result);
+                        if failed {
+                            return;
+                        }
+                    }
+                    PersistenceCommand::Seal { response } => {
+                        let result = writer.seal_owned_drain().await;
+                        let failed = result.is_err();
+                        let _ = response.send(result);
+                        if failed {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        Self {
+            client: PersistenceClient { sender },
+            results,
+            handle,
+        }
+    }
+
+    async fn seal_owned_drain(&mut self) -> Result<(), StrategyError> {
+        let (response, mut result) = oneshot::channel();
+        let send = self
+            .client
+            .sender
+            .send(PersistenceCommand::Seal { response });
+        tokio::pin!(send);
+        loop {
+            tokio::select! {
+                sent = &mut send => {
+                    sent.map_err(|_| database_error(
+                        "polymarket_persistence_stopped",
+                        "Polymarket persistence worker stopped before draining the artifact",
+                    ))?;
+                    break;
+                }
+                persisted = self.results.recv() => {
+                    persisted.ok_or_else(|| database_error(
+                        "polymarket_persistence_stopped",
+                        "Polymarket persistence worker stopped before draining queued samples",
+                    ))??;
+                }
+            }
+        }
+        loop {
+            tokio::select! {
+                sealed = &mut result => {
+                    return sealed.map_err(|_| database_error(
+                        "polymarket_persistence_stopped",
+                        "Polymarket persistence worker stopped while draining the artifact",
+                    ))?;
+                }
+                persisted = self.results.recv() => {
+                    persisted.ok_or_else(|| database_error(
+                        "polymarket_persistence_stopped",
+                        "Polymarket persistence worker stopped before draining queued samples",
+                    ))??;
+                }
+            }
+        }
+    }
+}
+
+impl Drop for CapturePersistence {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
 struct CaptureWriter {
     pool: PgPool,
     artifacts: ArtifactRepository,
@@ -3212,6 +3417,7 @@ impl IngesterStrategy for PolymarketBtcFiveMinuteOrderbooksStrategy {
     async fn run(&self, shutdown: CancellationToken) -> Result<(), StrategyError> {
         let mut writer = CaptureWriter::new(self)?;
         writer.initialize().await?;
+        let mut persistence = CapturePersistence::start(writer);
         let mut sampling_clock = SamplingClock::default();
         let mut continuity = Continuity::default();
         let mut reconnect_delay = Duration::from_millis(self.config.reconnect_initial_ms);
@@ -3219,14 +3425,15 @@ impl IngesterStrategy for PolymarketBtcFiveMinuteOrderbooksStrategy {
 
         loop {
             if shutdown.is_cancelled() {
-                writer.seal_owned_drain().await?;
+                persistence.seal_owned_drain().await?;
                 return Ok(());
             }
             let connection_epoch = Uuid::new_v4();
             let session_started_at = Instant::now();
             let result = self
                 .capture_session(
-                    &mut writer,
+                    &persistence.client,
+                    &mut persistence.results,
                     &mut sampling_clock,
                     &mut continuity,
                     connection_epoch,
@@ -3235,11 +3442,11 @@ impl IngesterStrategy for PolymarketBtcFiveMinuteOrderbooksStrategy {
                 .await;
             match result {
                 Ok(()) => {
-                    writer.seal_owned_drain().await?;
+                    persistence.seal_owned_drain().await?;
                     return Ok(());
                 }
                 Err(error) if is_current_profile_lease_loss(&error) => {
-                    match writer.seal_owned_drain().await {
+                    match persistence.seal_owned_drain().await {
                         Ok(()) => {
                             info!(
                                 error_code = error.code,
@@ -3257,7 +3464,8 @@ impl IngesterStrategy for PolymarketBtcFiveMinuteOrderbooksStrategy {
                 Err(error) if error.kind == StrategyErrorKind::TransientSource => {
                     if !gap_was_recorded(error.code) {
                         if let Some(last_sampled_at) = continuity.last_sampled_at {
-                            writer
+                            persistence
+                                .client
                                 .record_gap(GapObservation {
                                     kind: "transport_interruption",
                                     code: error.code,
@@ -3286,7 +3494,7 @@ impl IngesterStrategy for PolymarketBtcFiveMinuteOrderbooksStrategy {
                     }
                     tokio::select! {
                         _ = shutdown.cancelled() => {
-                            writer.seal_owned_drain().await?;
+                            persistence.seal_owned_drain().await?;
                             return Ok(());
                         }
                         _ = tokio::time::sleep(reconnect_delay) => {}
@@ -3305,7 +3513,8 @@ impl IngesterStrategy for PolymarketBtcFiveMinuteOrderbooksStrategy {
 impl PolymarketBtcFiveMinuteOrderbooksStrategy {
     async fn capture_session(
         &self,
-        writer: &mut CaptureWriter,
+        persistence: &PersistenceClient,
+        persisted_results: &mut mpsc::Receiver<Result<Vec<SnapshotFact>, StrategyError>>,
         sampling_clock: &mut SamplingClock,
         continuity: &mut Continuity,
         connection_epoch: Uuid,
@@ -3503,7 +3712,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                 _ = shutdown.cancelled() => return Ok(()),
                 _ = &mut bootstrap_sleep, if bootstrap_deadline.is_some() => {
                     let message = "Polymarket CLOB did not deliver every subscribed token's initial full book within the bootstrap bound";
-                    writer.record_gap(GapObservation {
+                    persistence.record_gap(GapObservation {
                         kind: "snapshot_bootstrap",
                         code: "polymarket_clob_bootstrap_timeout",
                         message,
@@ -3525,7 +3734,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                         let message = format!(
                             "local sampler skipped aligned buckets {first_missed} through {last_missed}"
                         );
-                        writer.record_gap(GapObservation {
+                        persistence.record_gap(GapObservation {
                             kind: "local_sampling_cadence",
                             code: "polymarket_sampling_bucket_gap",
                             message: &message,
@@ -3542,7 +3751,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                         let message = format!(
                             "aligned sampling bucket {bucket} had incomplete subscribed books"
                         );
-                        writer.record_gap(GapObservation {
+                        persistence.record_gap(GapObservation {
                             kind: "local_sampling_cadence",
                             code: "polymarket_sampling_bucket_unavailable",
                             message: &message,
@@ -3563,7 +3772,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                         let missing_since = missing_current_since.get_or_insert_with(Instant::now);
                         if missing_since.elapsed() >= Duration::from_millis(self.config.contract_grace_ms) {
                             let message = format!("current Polymarket contract {current_window} remained unavailable after the configured grace");
-                            writer.record_gap(GapObservation {
+                            persistence.record_gap(GapObservation {
                                 kind: "contract_rotation",
                                 code: "polymarket_current_contract_gap",
                                 message: &message,
@@ -3579,9 +3788,13 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                     // Capture the selection instant after copying immutable book
                     // values so received_at can never causally follow sampled_at.
                     let sampled_at = canonical_timestamp(Utc::now());
-                    let facts = writer
-                        .persist_samples(samples, sampled_at, connection_epoch)
-                        .await?;
+                    persistence.persist_samples(samples, sampled_at, connection_epoch)?;
+                }
+                result = persisted_results.recv() => {
+                    let facts = result.ok_or_else(|| database_error(
+                        "polymarket_persistence_stopped",
+                        "Polymarket persistence worker stopped before reporting sample durability",
+                    ))??;
                     if !facts.is_empty() {
                         sampling_clock.mark_durable();
                     }
@@ -3638,7 +3851,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                     match event {
                         Some(ClobIoEvent::Frame { bytes, received_at }) => {
                             self.apply_frame(
-                                writer,
+                                persistence,
                                 continuity,
                                 &mut registry,
                                 connection_epoch,
@@ -3664,7 +3877,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
 impl PolymarketBtcFiveMinuteOrderbooksStrategy {
     async fn apply_frame(
         &self,
-        writer: &mut CaptureWriter,
+        persistence: &PersistenceClient,
         continuity: &Continuity,
         registry: &mut BookRegistry,
         connection_epoch: Uuid,
@@ -3675,7 +3888,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
             Ok(messages) => messages,
             Err(error) => {
                 self.record_frame_gap(
-                    writer,
+                    persistence,
                     continuity,
                     connection_epoch,
                     "message_decode",
@@ -3692,7 +3905,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                 registry.apply(message, received_at, self.config.max_levels_per_side)
             {
                 self.record_frame_gap(
-                    writer,
+                    persistence,
                     continuity,
                     connection_epoch,
                     "book_integrity",
@@ -3708,14 +3921,14 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
 
     async fn record_frame_gap(
         &self,
-        writer: &mut CaptureWriter,
+        persistence: &PersistenceClient,
         continuity: &Continuity,
         connection_epoch: Uuid,
         kind: &str,
         error: &StrategyError,
         source_end: Option<DateTime<Utc>>,
     ) -> Result<(), StrategyError> {
-        writer
+        persistence
             .record_gap(GapObservation {
                 kind,
                 code: error.code,
