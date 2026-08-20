@@ -1202,6 +1202,8 @@ def _score_candidate(
     config: TournamentConfig,
 ) -> pl.DataFrame:
     eligible = _candidate_eligible_frame(frame, candidate.eligibility_features)
+    if eligible.is_empty():
+        return _empty_scored_frame(eligible)
     scored = _score_base(eligible, candidate, config)
     if candidate.risk_model is not None:
         probability = candidate.risk_model.predict_proba(
@@ -1228,6 +1230,26 @@ def _score_candidate(
     else:
         scored = scored.with_columns(pl.lit(0.0).alias("wait_advantage"))
     return scored
+
+
+def _empty_scored_frame(frame: pl.DataFrame) -> pl.DataFrame:
+    float_columns = (
+        "probability_up",
+        "probability_selected",
+        "selected_cost_5",
+        "selected_edge_5",
+        "correctness_probability",
+        "correctness_uncertainty_penalty",
+        "lower_correctness_probability",
+        "stress_edge_lower_bound",
+        "wait_advantage",
+    )
+    return frame.with_columns(
+        *(pl.lit(None).cast(pl.Float64).alias(name) for name in float_columns),
+        pl.lit(None).cast(pl.Boolean).alias("predicted_up"),
+        pl.lit(None).cast(pl.Boolean).alias("direction_correct"),
+        pl.lit(None).cast(pl.Int8).alias("price_bucket_index"),
+    )
 
 
 def _fit_binary_model(

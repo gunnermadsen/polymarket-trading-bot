@@ -9,6 +9,7 @@ from btc_directional_model.middle_market_tournament import (
     _bucket_indices,
     _candidate_eligible_frame,
     _derive_trade_print_features,
+    _empty_scored_frame,
     _join_trade_print_features,
     load_config,
 )
@@ -47,6 +48,15 @@ def test_core_candidates_keep_rows_with_causally_unavailable_long_horizons() -> 
 
     assert _candidate_eligible_frame(frame, ()).height == 2
     assert _candidate_eligible_frame(frame, ("optional",)).height == 1
+
+
+def test_empty_optional_holdout_produces_scoreable_zero_trade_frame() -> None:
+    scored = _empty_scored_frame(pl.DataFrame({"market_id": [], "label_up": []}))
+
+    assert scored.is_empty()
+    assert scored.schema["probability_up"] == pl.Float64
+    assert scored.schema["predicted_up"] == pl.Boolean
+    assert scored.schema["price_bucket_index"] == pl.Int8
 
 
 def test_trade_print_features_are_causal_and_stale_values_are_nulled() -> None:
