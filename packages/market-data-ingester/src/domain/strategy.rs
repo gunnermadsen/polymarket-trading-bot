@@ -18,10 +18,11 @@ pub enum IngesterStrategyKey {
     PolymarketBtcFiveMinuteMarketContracts,
     PolymarketBtcFiveMinuteOrderbooks,
     PolymarketBtcFiveMinuteResolutions,
+    PolymarketChainlinkBtcusdTwap,
 }
 
 impl IngesterStrategyKey {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::BinanceSpotBtcusdtAggregateTrades,
         Self::BinanceSpotBtcusdtOneSecondOhlcv,
         Self::BinanceSpotBtcusdtL2Snapshots,
@@ -32,6 +33,7 @@ impl IngesterStrategyKey {
         Self::PolymarketBtcFiveMinuteMarketContracts,
         Self::PolymarketBtcFiveMinuteOrderbooks,
         Self::PolymarketBtcFiveMinuteResolutions,
+        Self::PolymarketChainlinkBtcusdTwap,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -48,6 +50,7 @@ impl IngesterStrategyKey {
             }
             Self::PolymarketBtcFiveMinuteOrderbooks => "polymarket_btc_five_minute_orderbooks",
             Self::PolymarketBtcFiveMinuteResolutions => "polymarket_btc_five_minute_resolutions",
+            Self::PolymarketChainlinkBtcusdTwap => "polymarket_chainlink_btcusd_twap",
         }
     }
 }
