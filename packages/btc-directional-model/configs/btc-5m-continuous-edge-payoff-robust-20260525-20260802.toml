@@ -1,0 +1,70 @@
+[training]
+profile = "btc_5m_continuous_edge_payoff_robust"
+paper_only = true
+live_capital_allowed = false
+fresh_holdout = true
+random_seed = 20260820
+
+[windows]
+outcome_fit_start = "2026-05-25T00:00:00Z"
+outcome_fit_end = "2026-06-08T00:00:00Z"
+calibration_end = "2026-06-11T00:00:00Z"
+admission_end = "2026-06-22T00:00:00Z"
+validation_start = "2026-06-29T00:00:00Z"
+validation_end = "2026-07-23T17:00:00Z"
+test_end = "2026-08-02T00:00:00Z"
+
+[[time_bands]]
+name = "early"
+start_second = 15
+end_second_exclusive = 90
+minimum_validation_accuracy = 0.80
+minimum_validation_trades = 40
+
+[[time_bands]]
+name = "mid"
+start_second = 90
+end_second_exclusive = 180
+minimum_validation_accuracy = 0.82
+minimum_validation_trades = 40
+
+[[time_bands]]
+name = "late"
+start_second = 180
+end_second_exclusive = 241
+minimum_validation_accuracy = 0.88
+minimum_validation_trades = 40
+
+[execution]
+quantities = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175, 200]
+freshness_seconds = 10
+maximum_depth_participation = 0.25
+execution_reserve_per_share = 0.005
+stress_slippage_per_share = 0.01
+
+[policy]
+confidence_thresholds = [0.65, 0.75, 0.80, 0.82, 0.85, 0.88, 0.92]
+edge_thresholds = [0.00, 0.005, 0.01, 0.02, 0.03, 0.05]
+admission_thresholds = [0.50, 0.60, 0.65, 0.70, 0.75, 0.80]
+payoff_lower_bound_thresholds = [-0.20, -0.10, -0.05, 0.00]
+price_bucket_edges = [0.00, 0.65, 0.75, 0.85, 1.01]
+price_bucket_minimum_edges = [0.00, 0.005, 0.015, 0.04]
+rolling_fold_days = 3
+minimum_profitable_fold_ratio = 0.75
+minimum_profit_factor = 1.10
+minimum_stress_expectancy_per_trade = 0.10
+minimum_payoff_ratio = 0.30
+minimum_active_days = 6
+maximum_daily_pnl_concentration = 0.50
+conservative_z_score = 1.0
+payoff_lower_bound_quantile = 0.20
+
+[paths]
+oracle_features = "../../../../../packages/btc-directional-model/data/btc-asymmetric-value-calibrated-20260414-20260802/features/development-oracle-propagation-2s.parquet"
+chainlink_features = "../../../../../packages/btc-directional-model/data/btc-asymmetric-value-calibrated-20260414-20260802/features/development-candles.parquet"
+l2_features = "../../../../../packages/btc-directional-model/data/btc-asymmetric-value-calibrated-20260414-20260802/features/development-l2.parquet"
+directional_family_model = "../../../../../packages/btc-directional-model/artifacts/btc-core-20260421-20260720/20260727T223616Z-histogram_enriched/training-model.joblib"
+asymmetric_family_model = "../../../../../packages/btc-directional-model/artifacts/asymmetric-value-20260805/core_oracle_price_hgb.joblib"
+capacity_evidence = "data/btc-continuous-edge-payoff-robust-20260525-20260802/capacity"
+runs = "runs/btc-continuous-edge-payoff-robust-20260525-20260802"
+committed_results = "training-results/btc-5m-continuous-edge-payoff-robust-20260525-20260802"

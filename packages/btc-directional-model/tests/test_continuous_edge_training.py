@@ -13,6 +13,7 @@ from btc_directional_model.continuous_edge_training import (
     TimeBand,
     TrainingConfig,
     WindowConfig,
+    _coverage_expectancy_frontier,
     _first_crossings_array,
     _price_bucket_indices,
     market_equal_weights,
@@ -28,6 +29,7 @@ def _config(tmp_path) -> TrainingConfig:
         package_root=tmp_path,
         profile="test",
         random_seed=1,
+        fresh_holdout=False,
         windows=WindowConfig(
             instant,
             instant,
@@ -40,16 +42,21 @@ def _config(tmp_path) -> TrainingConfig:
         bands=(TimeBand("early", 15, 90, 0.5, 1),),
         execution=ExecutionConfig(VWAP_QUANTITIES, 10, 0.25, 0.005, 0.01),
         policy=PolicyConfig(
-            (0.5,),
-            (0.0,),
-            (0.5,),
-            (0.0,),
-            (0.0, 0.65, 0.75, 0.85, 1.01),
-            (0.0, 0.005, 0.015, 0.04),
-            3,
-            0.75,
-            1.10,
-            1.0,
+            confidence_thresholds=(0.5,),
+            edge_thresholds=(0.0,),
+            admission_thresholds=(0.5,),
+            payoff_lower_bound_thresholds=(0.0,),
+            price_bucket_edges=(0.0, 0.65, 0.75, 0.85, 1.01),
+            price_bucket_minimum_edges=(0.0, 0.005, 0.015, 0.04),
+            rolling_fold_days=3,
+            minimum_profitable_fold_ratio=0.75,
+            minimum_profit_factor=1.10,
+            minimum_stress_expectancy_per_trade=0.0,
+            minimum_payoff_ratio=0.0,
+            minimum_active_days=1,
+            maximum_daily_pnl_concentration=1.0,
+            conservative_z_score=1.0,
+            payoff_lower_bound_quantile=0.20,
         ),
         paths=PathConfig(*(tmp_path for _ in range(8))),
     )
@@ -73,7 +80,7 @@ def test_first_crossing_uses_earliest_qualified_row_per_market() -> None:
             "conservative_edge_5": [0.00, 0.03, 0.05, 0.04, 0.05],
             "price_bucket_minimum_edge": [0.0] * 5,
             "admission_probability": [0.90, 0.90, 0.90, 0.40, 0.90],
-            "payoff_expected_stress_edge": [0.05] * 5,
+            "payoff_stress_edge_lower_bound": [0.05] * 5,
         }
     )
 
@@ -149,3 +156,15 @@ def test_rolling_metrics_count_empty_chronological_fold(tmp_path) -> None:
     assert metrics["fold_count"] == 2
     assert metrics["profitable_folds"] == 1
     assert metrics["profitable_fold_ratio"] == 0.5
+
+
+def test_coverage_expectancy_frontier_removes_dominated_policies() -> None:
+    records = [
+        {"name": "wide", "trades": 100, "stress_expectancy_per_trade": 0.10},
+        {"name": "dominated", "trades": 80, "stress_expectancy_per_trade": 0.08},
+        {"name": "selective", "trades": 60, "stress_expectancy_per_trade": 0.20},
+    ]
+
+    frontier = _coverage_expectancy_frontier(records)
+
+    assert [row["name"] for row in frontier] == ["wide", "selective"]
