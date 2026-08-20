@@ -18,6 +18,7 @@ import polars as pl
 import sklearn
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import brier_score_loss, log_loss
 from sklearn.preprocessing import StandardScaler
 
 from .chainlink_oi_features import BINANCE_OI_FEATURES
@@ -465,6 +466,12 @@ def run_development_tournament(config: TournamentConfig) -> tuple[Path, dict[str
             "features": list(candidate.feature_names),
             "eligible_rows": scored.height,
             "eligible_markets": scored["market_id"].n_unique(),
+            "candidate_feature_market_coverage": (
+                scored["market_id"].n_unique() / policy["market_id"].n_unique()
+                if policy["market_id"].n_unique()
+                else 0.0
+            ),
+            "probability": _probability_metrics(scored),
             "profiles": profiles,
             "submitted": submitted,
             "search": search,
@@ -475,6 +482,23 @@ def run_development_tournament(config: TournamentConfig) -> tuple[Path, dict[str
             "cells": _cell_metrics(selected, config),
             "directions": _direction_metrics(selected, config),
             "price_buckets": policy_metrics_by_price_bucket(selected, config, quantity=5),
+            "loss_tail": _loss_tail_metrics(selected, config),
+        }
+
+    control_metrics = results["payoff_control"]["submitted"]["metrics"]
+    for result in results.values():
+        row = result["submitted"]["metrics"]
+        result["control_relative"] = {
+            "coverage_change": row["strict_market_coverage"]
+            - control_metrics["strict_market_coverage"],
+            "accuracy_change": row["accuracy"] - control_metrics["accuracy"],
+            "stress_pnl_change": row["stress_net_pnl"] - control_metrics["stress_net_pnl"],
+            "average_entry_second_change": (
+                row["average_entry_second"] - control_metrics["average_entry_second"]
+                if row["average_entry_second"] is not None
+                and control_metrics["average_entry_second"] is not None
+                else None
+            ),
         }
 
     qualified = [
@@ -1159,6 +1183,9 @@ def _full_metrics(
     metrics["drawdown_to_net_pnl"] = (
         metrics["maximum_drawdown"] / metrics["net_pnl"] if metrics["net_pnl"] > 0 else math.inf
     )
+    metrics["trades_per_active_day"] = (
+        metrics["trades"] / metrics["active_days"] if metrics["active_days"] else 0.0
+    )
     return metrics
 
 
@@ -1293,6 +1320,72 @@ def _direction_metrics(frame: pl.DataFrame, config: TournamentConfig) -> dict[st
     return {
         name: policy_metrics(frame.filter(pl.col("predicted_up") == value), config, quantity=5)
         for name, value in (("up", True), ("down", False))
+    }
+
+
+def _probability_metrics(frame: pl.DataFrame) -> dict[str, Any]:
+    if frame.is_empty():
+        return {
+            "rows": 0,
+            "markets": 0,
+            "accuracy": 0.0,
+            "brier": None,
+            "log_loss": None,
+            "bias": None,
+            "ece": None,
+        }
+    probability = np.clip(frame["probability_up"].to_numpy(), 1e-6, 1 - 1e-6)
+    labels = frame["label_up"].to_numpy().astype(np.int8)
+    bins = np.minimum((probability * 10).astype(int), 9)
+    ece = 0.0
+    for index in range(10):
+        mask = bins == index
+        if mask.any():
+            ece += float(mask.mean()) * abs(
+                float(probability[mask].mean()) - float(labels[mask].mean())
+            )
+    return {
+        "rows": frame.height,
+        "markets": frame["market_id"].n_unique(),
+        "accuracy": float(np.mean((probability >= 0.5) == labels.astype(bool))),
+        "brier": float(brier_score_loss(labels, probability)),
+        "log_loss": float(log_loss(labels, probability, labels=[0, 1])),
+        "bias": float(np.mean(probability - labels)),
+        "ece": ece,
+    }
+
+
+def _loss_tail_metrics(
+    frame: pl.DataFrame,
+    config: TournamentConfig,
+) -> dict[str, Any]:
+    if frame.is_empty():
+        return {
+            "worst_trade_stress_pnl": 0.0,
+            "worst_five_percent_mean_stress_pnl": 0.0,
+            "loss_trade_ratio": 0.0,
+        }
+    predicted = frame["predicted_up"].to_numpy().astype(bool)
+    correct = predicted == frame["label_up"].to_numpy().astype(bool)
+    price = np.where(
+        predicted,
+        frame["up_ask_vwap_5"].to_numpy(),
+        frame["down_ask_vwap_5"].to_numpy(),
+    )
+    fee = frame["fee_rate"].to_numpy() * price * (1.0 - price)
+    stress = (
+        correct.astype(float)
+        - price
+        - fee
+        - config.execution.execution_reserve_per_share
+        - config.execution.stress_slippage_per_share
+    ) * 5
+    tail_count = max(1, math.ceil(len(stress) * 0.05))
+    tail = np.sort(stress)[:tail_count]
+    return {
+        "worst_trade_stress_pnl": float(stress.min()),
+        "worst_five_percent_mean_stress_pnl": float(tail.mean()),
+        "loss_trade_ratio": float((stress < 0).mean()),
     }
 
 

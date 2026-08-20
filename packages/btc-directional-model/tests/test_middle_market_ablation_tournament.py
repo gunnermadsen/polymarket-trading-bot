@@ -5,6 +5,7 @@ import polars as pl
 
 from btc_directional_model.middle_market_ablation_tournament import (
     _apply_policy,
+    _probability_metrics,
     _wait_training_frame,
     _wilson_lower,
     load_config,
@@ -71,3 +72,19 @@ def test_policy_takes_first_qualifying_crossing_per_market() -> None:
 
     assert result.height == 2
     assert result["lower_correctness_probability"].to_list() == [0.70, 0.90]
+
+
+def test_probability_metrics_include_calibration_error() -> None:
+    frame = pl.DataFrame(
+        {
+            "market_id": ["a", "b"],
+            "probability_up": [0.8, 0.2],
+            "label_up": [1, 0],
+        }
+    )
+
+    metrics = _probability_metrics(frame)
+
+    assert metrics["accuracy"] == 1.0
+    assert abs(metrics["brier"] - 0.04) < 1e-12
+    assert abs(metrics["ece"] - 0.2) < 1e-12
