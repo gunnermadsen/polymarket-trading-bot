@@ -21,11 +21,13 @@ from . import PROCESS_ID
 from .asymmetric_benchmark import (
     _build_candidates,
     _candidate_coverage,
+    _candidate_key,
     _date_range,
     _json_default,
     _json_safe,
     _market_rows,
     _policy_metrics,
+    _price_cells,
 )
 from .config import Settings
 from .modeling import (
@@ -753,6 +755,12 @@ def _economic_benchmark(
             }
             if candidate == champion:
                 selected_by_period[period_name] = selected
+                output["candidates"][candidate][period_name]["price_cells"] = (
+                    _price_cells(
+                        period_candidates,
+                        {_candidate_key(row) for row in selected},
+                    )
+                )
                 output["candidates"][candidate][period_name]["slippage_stress"] = {
                     f"{slippage:.3f}": _selected_trade_stress(selected, slippage)
                     for slippage in (0.0, 0.005, 0.01, 0.02)
