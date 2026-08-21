@@ -2058,7 +2058,7 @@ fn validate_config(config: &BtcStrategyConfig) -> Result<(), BtcRejectReason> {
                     })
                     && config.max_reference_age_ms == config.max_book_age_ms
                     && model.probability_up_threshold() == 0.5
-                    && model.confidence_threshold() > 0.5
+                    && (model.is_payoff_aware() || model.confidence_threshold() > 0.5)
                     && model.confidence_threshold() < 1.0
             })
         }
@@ -3102,6 +3102,27 @@ mod tests {
             min_seconds_before_close: 60,
             ..BtcStrategyConfig::default()
         }
+    }
+
+    #[test]
+    fn payoff_aware_directional_model_uses_internal_admission_threshold() {
+        let config = BtcStrategyConfig {
+            strategy_version: BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION.to_string(),
+            feature_schema_version: "btc-5m-payoff-aware-q5-features-v1".to_string(),
+            decision_strategy: Some(BtcDecisionStrategyConfig::BtcDirectionalModel {
+                model_key: "btc-5m-payoff-aware-q5-paper-20260820".to_string(),
+                artifact_sha256: "ddb2c1cfedb9132d1120dfcdb405ab7737d808b124306e36da8f850ef51d803e"
+                    .to_string(),
+                feature_schema_sha256:
+                    "eccc1787cfbb14f6faacc7ec20be6b2d6d16ca7fdac7c685be86410d63581158".to_string(),
+            }),
+            min_seconds_after_open: 15,
+            min_seconds_before_close: 60,
+            max_directional_feature_age_ms: Some(1_000),
+            ..BtcStrategyConfig::default()
+        };
+
+        assert!(config.validate().is_ok());
     }
 
     fn packaged_directional_model_vector(action: &str) -> Vec<f64> {
