@@ -1828,27 +1828,25 @@ impl BtcProcessRunner {
                         return Ok(());
                     }
                 }
+                if directional_schema_requires_opening_boundary(model.feature_schema_version()) {
+                    directional_opening_reference = self
+                        .repository
+                        .load_market_opening_reference(
+                            market,
+                            feature_as_of,
+                            chrono::Duration::milliseconds(
+                                self.config.strategy.max_chainlink_open_delay_ms,
+                            ),
+                        )
+                        .await?;
+                }
                 if model.is_asymmetric_value() || model.is_payoff_aware() {
                     directional_candidate = Some(candidate);
                     (feature_as_of, None, None)
                 } else {
-                    let opening_reference = if directional_schema_requires_opening_boundary(
-                        model.feature_schema_version(),
-                    ) {
-                        self.repository
-                            .load_market_opening_reference(
-                                market,
-                                feature_as_of,
-                                chrono::Duration::milliseconds(
-                                    self.config.strategy.max_chainlink_open_delay_ms,
-                                ),
-                            )
-                            .await?
-                    } else {
-                        None
-                    };
-                    let opening_boundary = opening_reference.as_ref().map(|tick| tick.price);
-                    directional_opening_reference = opening_reference;
+                    let opening_boundary = directional_opening_reference
+                        .as_ref()
+                        .map(|tick| tick.price);
                     let features = match directional_external_decision_snapshot(
                         &observation.state.directional_external,
                         feature_as_of,
