@@ -15,7 +15,8 @@ LABEL org.opencontainers.image.revision="$POLYMARKET_GIT_REVISION"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    POLYMARKET_GIT_REVISION="$POLYMARKET_GIT_REVISION"
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y ca-certificates libeccodes0 \

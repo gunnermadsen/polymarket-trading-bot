@@ -12,6 +12,7 @@ import psycopg
 
 from .config import Settings
 from .database import connection, insert_artifact
+from .fees import fee_schedule_from_market
 from .jobs import Job, update_progress
 from .sources import atomic_write, source_client
 
@@ -93,18 +94,6 @@ def resolved_yes(market: dict[str, Any]) -> bool | None:
     return outcomes[winners[0]] == "yes"
 
 
-def _fee_rate_bps(market: dict[str, Any]) -> int | None:
-    schedule = market.get("fee_schedule") or market.get("feeSchedule") or {}
-    for value in (
-        schedule.get("fee_rate_bps") if isinstance(schedule, dict) else None,
-        schedule.get("feeRateBps") if isinstance(schedule, dict) else None,
-        market.get("feeRateBps"),
-    ):
-        if value is not None:
-            return int(value)
-    return None
-
-
 def _market_rows(event: dict[str, Any]) -> list[dict[str, Any]]:
     if not TITLE_PATTERN.search(str(event.get("title") or "")):
         return []
@@ -114,6 +103,7 @@ def _market_rows(event: dict[str, Any]) -> list[dict[str, Any]]:
     event_date = parse_event_date(event)
     rows = []
     for market in markets:
+        fee_schedule = fee_schedule_from_market(market)
         question = str(market.get("question") or "")
         lower, upper = parse_bucket(question)
         tokens = [str(value) for value in _json_array(market.get("clobTokenIds", []))]
@@ -147,7 +137,11 @@ def _market_rows(event: dict[str, Any]) -> list[dict[str, Any]]:
                 "resolved_yes": resolution,
                 "resolved_at": resolved_at,
                 "resolution_source": "gamma_terminal_prices" if resolution is not None else None,
-                "fee_rate_bps": _fee_rate_bps(market),
+                "fee_rate_bps": round(fee_schedule.rate * 10_000),
+                "fees_enabled": fee_schedule.enabled,
+                "fee_rate": fee_schedule.rate,
+                "fee_exponent": fee_schedule.exponent,
+                "fee_taker_only": fee_schedule.taker_only,
                 "raw_payload": market,
             }
         )
@@ -238,13 +232,16 @@ def ingest_markets(settings: Settings, job: Job) -> dict[str, Any]:
                               market_id,event_id,event_slug,market_slug,event_date,question,
                               condition_id,yes_token_id,no_token_id,bucket_lower_f,bucket_upper_f,
                               active,closed,accepting_orders,volume_usd,liquidity_usd,resolved_yes,
-                              resolved_at,resolution_source,fee_rate_bps,source_artifact_id,raw_payload
+                              resolved_at,resolution_source,fee_rate_bps,fees_enabled,fee_rate,
+                              fee_exponent,fee_taker_only,source_artifact_id,raw_payload
                             ) VALUES (
                               %(market_id)s,%(event_id)s,%(event_slug)s,%(market_slug)s,%(event_date)s,
                               %(question)s,%(condition_id)s,%(yes_token_id)s,%(no_token_id)s,
                               %(bucket_lower_f)s,%(bucket_upper_f)s,%(active)s,%(closed)s,
                               %(accepting_orders)s,%(volume_usd)s,%(liquidity_usd)s,%(resolved_yes)s,
-                              %(resolved_at)s,%(resolution_source)s,%(fee_rate_bps)s,%(artifact_id)s,
+                              %(resolved_at)s,%(resolution_source)s,%(fee_rate_bps)s,
+                              %(fees_enabled)s,%(fee_rate)s,%(fee_exponent)s,
+                              %(fee_taker_only)s,%(artifact_id)s,
                               %(raw_payload)s
                             )
                             ON CONFLICT (market_id) DO UPDATE SET
@@ -254,6 +251,10 @@ def ingest_markets(settings: Settings, job: Job) -> dict[str, Any]:
                               resolved_yes=EXCLUDED.resolved_yes, resolved_at=EXCLUDED.resolved_at,
                               resolution_source=EXCLUDED.resolution_source,
                               fee_rate_bps=EXCLUDED.fee_rate_bps,
+                              fees_enabled=EXCLUDED.fees_enabled,
+                              fee_rate=EXCLUDED.fee_rate,
+                              fee_exponent=EXCLUDED.fee_exponent,
+                              fee_taker_only=EXCLUDED.fee_taker_only,
                               source_artifact_id=EXCLUDED.source_artifact_id,
                               raw_payload=EXCLUDED.raw_payload, refreshed_at=now()
                             """,
