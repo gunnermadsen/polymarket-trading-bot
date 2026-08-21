@@ -9,6 +9,7 @@ from . import PROCESS_ID
 from .asos_ingestion import ingest_asos, ingest_asos_one_minute, ingest_asos_resolution
 from .asymmetric_benchmark import run_asymmetric_benchmark
 from .benchmark import run_benchmark
+from .challenger_tournament import run_challenger_tournament
 from .config import Settings
 from .database import connection
 from .execution_ingestion import ingest_pmxt_execution
@@ -178,6 +179,17 @@ def build_parser() -> argparse.ArgumentParser:
     residual.add_argument("--source-policy-run-id", required=True)
     residual.add_argument("--weather-model-image-id", required=True, type=_sha256_image_id)
     residual.add_argument("--bootstrap-iterations", type=int, default=1000)
+    tournament = subparsers.add_parser("challenger-tournament")
+    tournament.add_argument("--training-start", required=True, type=_date)
+    tournament.add_argument("--training-end", required=True, type=_date)
+    tournament.add_argument("--calibration-start", required=True, type=_date)
+    tournament.add_argument("--calibration-end", required=True, type=_date)
+    tournament.add_argument("--economic-start", required=True, type=_date)
+    tournament.add_argument("--economic-end", required=True, type=_date)
+    tournament.add_argument("--sealed-start", required=True, type=_date)
+    tournament.add_argument(
+        "--weather-model-image-id", required=True, type=_sha256_image_id
+    )
     subparsers.add_parser("readiness")
     return parser
 
@@ -312,6 +324,18 @@ def main() -> None:
             source_policy_run_id=args.source_policy_run_id,
             weather_model_image_id=args.weather_model_image_id,
             bootstrap_iterations=args.bootstrap_iterations,
+        )
+    elif args.command == "challenger-tournament":
+        result = run_challenger_tournament(
+            settings,
+            training_start=args.training_start,
+            training_end=args.training_end,
+            calibration_start=args.calibration_start,
+            calibration_end=args.calibration_end,
+            economic_start=args.economic_start,
+            economic_end=args.economic_end,
+            sealed_start=args.sealed_start,
+            weather_model_image_id=args.weather_model_image_id,
         )
     elif args.command == "readiness":
         result = _readiness(settings)
