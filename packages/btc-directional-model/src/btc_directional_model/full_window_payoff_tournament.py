@@ -385,7 +385,7 @@ def run_tournament(config: TournamentConfig) -> tuple[Path, dict[str, Any]]:
             "price_time_calibration": price_time_calibration,
             "calibration_guard": calibration_guard,
             "admission_model": admission_model,
-            "challenger_specs": SPECS,
+            "challenger_specs": {name: asdict(spec) for name, spec in SPECS.items()},
             "policies": policies,
             "preselected_champion": preselected_champion,
             "runtime_exported": False,
