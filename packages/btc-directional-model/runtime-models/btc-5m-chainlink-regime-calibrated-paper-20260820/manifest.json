@@ -1,0 +1,15 @@
+{
+  "deployment_scope": "paper_only",
+  "feature_schema_sha256": "c5ee6795278581871472d72945c32ee0b5f8f95f5efec5bcefbb6fb0926ee913",
+  "feature_schema_version": "btc-5m-payoff-aware-middle-features-v1",
+  "golden_vectors_file": "golden-vectors.json",
+  "golden_vectors_sha256": "a6a9b7fc92d94932bfeff57e5b79d202becf2fb0f1237ac90b2a65b0e44f611c",
+  "live_capital_allowed": false,
+  "model_file": "model.json",
+  "model_key": "btc-5m-chainlink-regime-calibrated-paper-20260820",
+  "model_sha256": "7473fc33a9bd1438e432462ce9d06a4cfb4cd5a73ea5e4c3aec0024c9ead2369",
+  "production_qualified": false,
+  "schema_version": "capitonic-btc-directional-runtime-manifest-v1",
+  "source_freeze_manifest_sha256": "b986c10b8da98aa30a4d44409e4c5d9c1c78cba607aed5a8a24d061b9e1a018a",
+  "source_training_model_sha256": "b986c10b8da98aa30a4d44409e4c5d9c1c78cba607aed5a8a24d061b9e1a018a"
+}

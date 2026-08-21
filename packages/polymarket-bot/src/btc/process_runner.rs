@@ -34,7 +34,7 @@ use super::{
     asymmetric_value_features::build_asymmetric_value_feature_snapshot,
     directional_external_runtime::DirectionalExternalState,
     directional_features::{
-        build_directional_features_for_schema_with_external,
+        build_directional_features_for_schema_with_external, build_payoff_aware_feature_values,
         directional_external_feature_requirements, directional_schema_requires_opening_boundary,
         DirectionalBinanceOpenInterest, DirectionalChainlinkCandle, DirectionalChainlinkRefPrice,
         DirectionalExternalFeatureInputs, DirectionalFeatureError, DirectionalFeatureVector,
@@ -1828,7 +1828,7 @@ impl BtcProcessRunner {
                         return Ok(());
                     }
                 }
-                if model.is_asymmetric_value() {
+                if model.is_asymmetric_value() || model.is_payoff_aware() {
                     directional_candidate = Some(candidate);
                     (feature_as_of, None, None)
                 } else {
@@ -1946,6 +1946,69 @@ impl BtcProcessRunner {
                             "code": "asymmetric_value_features_unavailable",
                             "detail": error.to_string(),
                         }));
+                    }
+                }
+            }
+            if model.is_payoff_aware() && snapshot.directional_model.is_none() {
+                let payoff_features = (|| -> Result<BtcDirectionalModelFeatureSnapshot> {
+                    let opening_boundary = inputs
+                        .chainlink_open
+                        .as_ref()
+                        .context("payoff-aware model opening boundary is unavailable")?
+                        .price;
+                    let external = directional_external_decision_snapshot(
+                        &observation.state.directional_external,
+                        snapshot_identity_at,
+                        model.feature_schema_version(),
+                    )?
+                    .context("payoff-aware external feature snapshot is unavailable")?;
+                    let values = build_payoff_aware_feature_values(
+                        &observation.state.binance_one_second_window,
+                        market.window_start,
+                        snapshot_identity_at,
+                        opening_boundary,
+                        &external.inputs(),
+                        inputs
+                            .up_book
+                            .as_ref()
+                            .context("payoff-aware UP book is unavailable")?,
+                        inputs
+                            .down_book
+                            .as_ref()
+                            .context("payoff-aware DOWN book is unavailable")?,
+                        inputs
+                            .fee_rate
+                            .and_then(|value| value.to_f64())
+                            .context("payoff-aware fee is unavailable")?,
+                        model.feature_names(),
+                    )?;
+                    let input_sha256 = directional_model_input_sha256(
+                        selection,
+                        model.feature_schema_version(),
+                        &market.market_id,
+                        market.window_start,
+                        snapshot_identity_at,
+                        (snapshot_identity_at - market.window_start).num_seconds(),
+                        &values,
+                    )?;
+                    Ok(BtcDirectionalModelFeatureSnapshot {
+                        model_key: selection.model_key.clone(),
+                        model_artifact_sha256: selection.artifact_sha256.clone(),
+                        feature_schema_version: model.feature_schema_version().to_string(),
+                        feature_schema_sha256: selection.feature_schema_sha256.clone(),
+                        feature_as_of: snapshot_identity_at,
+                        seconds_elapsed: (snapshot_identity_at - market.window_start).num_seconds(),
+                        feature_values: values,
+                        input_sha256,
+                    })
+                })();
+                match payoff_features {
+                    Ok(features) => snapshot.directional_model = Some(features),
+                    Err(error) => {
+                        directional_model_feature_error = Some(serde_json::json!({
+                            "code": "payoff_aware_features_unavailable",
+                            "detail": error.to_string(),
+                        }))
                     }
                 }
             }
@@ -3777,6 +3840,7 @@ mod tests {
             cadence_seconds: 5,
             early_end_second: None,
             early_cadence_seconds: None,
+            late_start_second: None,
         };
 
         assert_eq!(

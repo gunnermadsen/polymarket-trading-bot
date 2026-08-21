@@ -1,0 +1,29 @@
+{
+  "name": "BTC 5m payoff-aware q5 paper",
+  "process_type": "btc_5m",
+  "process_scope": "realtime_paper",
+  "process_key": "btc-5m-payoff-aware-q5-paper",
+  "enabled": false,
+  "status": "created",
+  "config": {
+    "execution": { "mode": "paper", "execute_signals": true, "live_capital": false },
+    "raw": { "btc_realtime_paper": {
+      "schema_version": "btc_realtime_paper_process_v3",
+      "next_experiment_key": "btc-5m-payoff-aware-q5-paper-run-v1",
+      "preregistration_sha256": "e051a9c84dd408e4555ba70bf459ceadb7e745f1b97e1776ef30efb3fd85c4f9",
+      "strategy": {
+        "decision_strategy": { "type": "btc_directional_model", "model_key": "btc-5m-payoff-aware-q5-paper-20260820", "artifact_sha256": "ddb2c1cfedb9132d1120dfcdb405ab7737d808b124306e36da8f850ef51d803e", "feature_schema_sha256": "eccc1787cfbb14f6faacc7ec20be6b2d6d16ca7fdac7c685be86410d63581158" },
+        "target_size": "5", "min_seconds_after_open": 15, "min_seconds_before_close": 60,
+        "max_reference_age_ms": 2000, "max_directional_feature_age_ms": 5000, "max_chainlink_open_delay_ms": 5000, "max_book_age_ms": 2000, "max_source_skew_ms": 1000, "max_fee_age_ms": 3600000,
+        "min_entry_price": "0.30", "max_entry_price": "0.95", "max_depth_participation": "0.25",
+        "volatility_floor_per_sqrt_second": "0.00005", "probability_floor": "0.01", "basis_lead_weight": "0.25", "momentum_1s_weight": "0.05", "momentum_5s_weight": "0.10", "momentum_30s_weight": "0.10", "max_lead_sigma_fraction": "0.25", "base_probability_uncertainty": "0.015", "basis_uncertainty_weight": "1", "feed_age_uncertainty_per_second": "0.002", "max_probability_uncertainty": "0.10", "spread_reserve_fraction": "0.10", "slippage_reserve_bps": "25", "latency_reserve_per_share": "0.005", "min_net_edge_per_share": "0.015", "min_net_edge_usd": "0.02", "max_fee_rate": "1"
+      },
+      "runtime": { "strategy_interval_ms": 1000, "official_resolution_audit_grace_secs": 120, "official_resolution_watch_retention_secs": 3600 },
+      "paper": { "arrival_latency_ms": 150, "visible_depth_haircut": "0.80", "starting_collateral_usd": "1000", "directional_model_entry_policy": "execute_directional_prediction", "stress_previews": [
+        { "scenario_key": "latency_300ms_depth_65pct", "arrival_latency_ms": 300, "visible_depth_haircut": "0.65" },
+        { "scenario_key": "latency_600ms_depth_50pct", "arrival_latency_ms": 600, "visible_depth_haircut": "0.50" }
+      ] }
+    } }
+  },
+  "metadata": { "strategy_family": "btc_5m_directional_model", "model_key": "btc-5m-payoff-aware-q5-paper-20260820", "model_artifact_sha256": "ddb2c1cfedb9132d1120dfcdb405ab7737d808b124306e36da8f850ef51d803e", "model_feature_schema_version": "btc-5m-payoff-aware-q5-features-v1", "model_feature_schema_sha256": "eccc1787cfbb14f6faacc7ec20be6b2d6d16ca7fdac7c685be86410d63581158", "deployment_scope": "paper_only", "production_qualified": false, "directional_model_entry_policy": "execute_directional_prediction", "preregistration": "2026-08-20|btc-5m-payoff-aware-q5-paper-20260820|shared-runner-paper|target-size-5|early-15-89-every-1s|mid-disabled|late-180-240-every-5s|model-driven-only" }
+}
