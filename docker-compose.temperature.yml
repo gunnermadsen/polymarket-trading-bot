@@ -10,7 +10,7 @@ x-weather-environment: &weather-environment
   WEATHER_REPORT_DIR: "/var/lib/weather/reports"
   POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
   POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
-  POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://r2v2.pmxt.dev"
+  POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://archive.pmxt.dev/Polymarket/v2"
   IEM_ASOS_METAR_URL: "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
   IEM_ASOS_ONE_MINUTE_URL: "https://mesonet.agron.iastate.edu/cgi-bin/request/asos1min.py"
   WEATHER_WORKER_POLL_SECONDS: "2"
@@ -100,6 +100,8 @@ services:
       POSTGRES_PORT: "5432"
       POSTGRES_USER: "postgres"
       POSTGRES_DB: "temperature_expectancy"
+    volumes:
+      - ./packages/db-migrate/src/migrations/weather/1787331600000-AddTemperaturePmxtLastTradePrices.ts:/usr/src/app/src/migrations/weather/1787331600000-AddTemperaturePmxtLastTradePrices.ts:ro
     networks:
       - temperature-data
     depends_on:
