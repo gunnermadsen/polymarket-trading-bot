@@ -21,7 +21,13 @@ def _parser() -> argparse.ArgumentParser:
         description="Run the frozen PF_XBTUSD classical-ML edge benchmarks.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("prepare", "develop", "prepare-expectancy", "develop-expectancy"):
+    for name in (
+        "prepare",
+        "develop",
+        "prepare-expectancy",
+        "develop-expectancy",
+        "tournament",
+    ):
         command = subparsers.add_parser(name)
         command.add_argument("--config", type=Path, required=True)
         command.add_argument(
@@ -90,6 +96,7 @@ def _main(argv: list[str] | None = None) -> int:
         "prepare-expectancy",
         "develop-expectancy",
         "evaluate-expectancy",
+        "tournament",
     }:
         config = load_expectancy_config(arguments.config)
     elif arguments.command == "backfill-funding":
@@ -214,6 +221,22 @@ def _main(argv: list[str] | None = None) -> int:
                 "net_expectancy_bps": result["economics"]["net_expectancy_bps"],
                 "profit_factor": result["economics"]["profit_factor"],
                 "elapsed_seconds": result["elapsed_seconds"],
+            }
+        )
+        return 0
+
+    if arguments.command == "tournament":
+        from .tournament import run_tournament
+
+        result = run_tournament(config, refresh=arguments.refresh)
+        _print_summary(
+            {
+                "run_id": result["run_id"],
+                "verdict": result["verdict"],
+                "selected_candidate": result["selected"]["candidate_id"],
+                "qualified_for_confirmation": result["qualified_for_confirmation"],
+                "confirmation_status": result["confirmation"]["status"],
+                "holdout_status": result["holdout"]["status"],
             }
         )
         return 0
