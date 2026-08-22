@@ -733,23 +733,27 @@ def _generation_three(
         [row for row in generation_two if row["status"] != "failed"], limit=2
     )
     if eligible:
+        candidates: list[TournamentCandidate] = []
+        for parent_index, parent in enumerate(eligible, start=1):
+            feature_sets = tuple(dict.fromkeys((parent["feature_set"], "flow")))
+            for feature_set in feature_sets:
+                for seed_index in (1, 2):
+                    candidates.append(
+                        TournamentCandidate(
+                            f"g3_{parent_index}_{parent['model']}_{parent['horizon']}_"
+                            f"{feature_set}_s{seed_index}",
+                            3,
+                            parent["model"],
+                            parent["horizon_bars"],
+                            feature_set,
+                            parent["target_variant"],
+                            parent["candidate_id"],
+                            parent["parameter_variant"],
+                            seed_index * 10_000,
+                        )
+                    )
         return (
-            [
-                TournamentCandidate(
-                    f"g3_{parent_index}_{parent['model']}_{parent['horizon']}_{feature_set}_s{seed_index}",
-                    3,
-                    parent["model"],
-                    parent["horizon_bars"],
-                    feature_set,
-                    parent["target_variant"],
-                    parent["candidate_id"],
-                    parent["parameter_variant"],
-                    seed_index * 10_000,
-                )
-                for parent_index, parent in enumerate(eligible, start=1)
-                for feature_set in (parent["feature_set"], "flow")
-                for seed_index in (1, 2)
-            ],
+            candidates,
             "harden eligible Generation 2 lineages across features and deterministic seeds",
         )
     parent = generation_two[0]

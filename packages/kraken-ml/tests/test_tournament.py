@@ -58,6 +58,23 @@ def test_failed_generation_pivots_then_falsifies() -> None:
     assert "falsification" in decision_three
 
 
+def test_generation_three_deduplicates_parent_flow_feature() -> None:
+    parent = {
+        "candidate_id": "flow-parent",
+        "model": "ridge",
+        "horizon": "4h",
+        "horizon_bars": 16,
+        "feature_set": "flow",
+        "target_variant": "vol_scaled",
+        "parameter_variant": 1,
+        "status": "predictive_only",
+    }
+    candidates, decision = _generation_three([parent])
+    assert len(candidates) == 2
+    assert len({candidate.candidate_id for candidate in candidates}) == 2
+    assert "harden" in decision
+
+
 def test_holm_adjustment_is_monotonic() -> None:
     rows = [
         {"raw_positive_p_value": 0.01},
