@@ -408,6 +408,7 @@ def _distribution_metrics(
                     )
                 )
                 for month in range(1, 13)
+                if any(row.event_date.month == month for row in rows)
             },
         },
         daily_log_loss,
@@ -461,7 +462,7 @@ def _train_hour(
         probability_matrices, target, calibration_rows
     )
     probability_matrices["convex_ensemble"] = ensemble_probabilities
-    points["convex_ensemble"] = ensemble_probabilities @ SUPPORT.astype(np.float64)
+    points["convex_ensemble"] = _pmf_median(ensemble_probabilities)
 
     metrics = {}
     daily_losses = {}
@@ -624,7 +625,7 @@ def _predict_hour(
         artifact["ensemble_final_weights"][index] * predictions[name][1]
         for index, name in enumerate(ENSEMBLE_COMPONENTS)
     )
-    predictions["convex_ensemble"] = (ensemble @ SUPPORT, ensemble)
+    predictions["convex_ensemble"] = (_pmf_median(ensemble), ensemble)
     return predictions
 
 
@@ -635,6 +636,11 @@ def _bucket_probability(pmf: np.ndarray, lower: int | None, upper: int | None) -
     if upper is not None:
         selected &= SUPPORT <= upper
     return float(pmf[selected].sum())
+
+
+def _pmf_median(probabilities: np.ndarray) -> np.ndarray:
+    indices = np.argmax(np.cumsum(probabilities, axis=1) >= 0.5, axis=1)
+    return SUPPORT[indices].astype(np.float64)
 
 
 def _probability_lower(probability: float) -> float:

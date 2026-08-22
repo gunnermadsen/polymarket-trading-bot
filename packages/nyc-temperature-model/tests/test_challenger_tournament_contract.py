@@ -6,6 +6,7 @@ from nyc_temperature_model.challenger_tournament import (
     SUPPORT,
     _bucket_probability,
     _fit_ensemble_weights,
+    _pmf_median,
     _probability_lower,
     _rounded_samples_probability,
     _select_champion,
@@ -32,6 +33,13 @@ def test_probability_lower_is_conservative_for_both_sides():
 
         assert 0.0 <= yes_lower < probability
         assert 0.0 <= no_lower < 1.0 - probability
+
+
+def test_distribution_point_uses_median_not_uniform_tail_mean():
+    probabilities = np.full((1, len(SUPPORT)), 0.1 / len(SUPPORT))
+    probabilities[0, np.flatnonzero(SUPPORT == 82)[0]] += 0.9
+
+    assert _pmf_median(probabilities).tolist() == [82.0]
 
 
 def test_convex_ensemble_weights_are_bounded_normalized_and_repeatable():
