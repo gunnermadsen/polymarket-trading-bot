@@ -741,7 +741,24 @@ def _economic_benchmark(
             "start": period_start,
             "end": period_end,
             "available": True,
+            "forecast_metrics": {},
         }
+        for hour in (0, 12):
+            forecast_rows = build_feature_rows(
+                settings.database_url,
+                period_start,
+                period_end + timedelta(days=1),
+                hour,
+            )
+            predictions = _predict_hour(artifacts[hour], forecast_rows)
+            output["periods"][period_name]["forecast_metrics"][str(hour)] = {
+                candidate: _distribution_metrics(
+                    probabilities,
+                    points,
+                    forecast_rows,
+                )[0]
+                for candidate, (points, probabilities) in predictions.items()
+            }
         for candidate in MODEL_CANDIDATES:
             period_candidates = [
                 row
