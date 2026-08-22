@@ -1,0 +1,120 @@
+[training]
+profile = "btc_5m_q5_optimal_stopping_tournament"
+paper_only = true
+live_capital_allowed = false
+fresh_holdout = false
+random_seed = 20260821
+
+[[outer_folds]]
+name = "fold_1"
+fit_end = "2026-06-08T00:00:00Z"
+selection_start = "2026-06-08T00:00:00Z"
+selection_end = "2026-06-11T00:00:00Z"
+evaluation_start = "2026-06-29T00:00:00Z"
+evaluation_end = "2026-07-06T00:00:00Z"
+
+[[outer_folds]]
+name = "fold_2"
+fit_end = "2026-07-03T00:00:00Z"
+selection_start = "2026-07-03T00:00:00Z"
+selection_end = "2026-07-06T00:00:00Z"
+evaluation_start = "2026-07-06T00:00:00Z"
+evaluation_end = "2026-07-09T00:00:00Z"
+
+[[outer_folds]]
+name = "fold_3"
+fit_end = "2026-07-06T00:00:00Z"
+selection_start = "2026-07-06T00:00:00Z"
+selection_end = "2026-07-09T00:00:00Z"
+evaluation_start = "2026-07-14T00:00:00Z"
+evaluation_end = "2026-07-20T00:00:00Z"
+
+[[outer_folds]]
+name = "fold_4"
+fit_end = "2026-07-17T00:00:00Z"
+selection_start = "2026-07-17T00:00:00Z"
+selection_end = "2026-07-20T00:00:00Z"
+evaluation_start = "2026-07-20T00:00:00Z"
+evaluation_end = "2026-07-26T00:00:00Z"
+
+[[outer_folds]]
+name = "fold_5"
+fit_end = "2026-07-23T00:00:00Z"
+selection_start = "2026-07-23T00:00:00Z"
+selection_end = "2026-07-26T00:00:00Z"
+evaluation_start = "2026-07-26T00:00:00Z"
+evaluation_end = "2026-08-02T00:00:00Z"
+
+[[selection_cells]]
+name = "early_15_89"
+start_second = 15
+end_second_exclusive = 90
+minimum_accuracy = 0.80
+
+[[selection_cells]]
+name = "middle_90_119"
+start_second = 90
+end_second_exclusive = 120
+minimum_accuracy = 0.78
+
+[[selection_cells]]
+name = "middle_120_149"
+start_second = 120
+end_second_exclusive = 150
+minimum_accuracy = 0.78
+
+[[selection_cells]]
+name = "middle_150_179"
+start_second = 150
+end_second_exclusive = 180
+minimum_accuracy = 0.78
+
+[[selection_cells]]
+name = "late_180_240"
+start_second = 180
+end_second_exclusive = 241
+minimum_accuracy = 0.85
+
+[model]
+learning_rate = 0.04
+max_iter = 140
+max_leaf_nodes = 15
+min_samples_leaf = 120
+l2_regularization = 5.0
+quantile = 0.20
+meta_training_start = "2026-06-15T00:00:00Z"
+residual_calibration_days = 3
+
+[policy]
+veto_thresholds = [0.40, 0.50, 0.60, 0.70, 0.80]
+value_thresholds = [-0.05, 0.00, 0.02, 0.05, 0.10]
+stopping_margins = [-0.05, 0.00, 0.02, 0.05, 0.10]
+coverage_targets = [0.03, 0.05, 0.10, 0.15]
+minimum_inner_trades = 10
+
+[gates]
+minimum_directional_trades = 100
+minimum_asymmetric_trades = 75
+minimum_profit_factor_directional = 1.10
+minimum_profit_factor_asymmetric = 1.20
+minimum_asymmetric_payoff_ratio = 2.00
+minimum_profitable_fold_ratio = 0.60
+minimum_q10_stress_pnl = 0.0
+minimum_bootstrap_lower = 0.0
+bootstrap_resamples = 1000
+bootstrap_confidence = 0.95
+minimum_populated_cell_trades = 20
+minimum_populated_direction_trades = 20
+
+[execution]
+quantities = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175, 200]
+freshness_seconds = 10
+maximum_depth_participation = 0.25
+execution_reserve_per_share = 0.005
+stress_slippage_per_share = 0.01
+
+[paths]
+source_training_config = "configs/btc-5m-continuous-edge-payoff-robust-20260525-20260802.toml"
+incumbent_artifact = "training-results/btc-5m-continuous-edge-payoff-aware-20260525-20260723/20260820T011148Z/model.joblib"
+runs = "runs/btc-q5-optimal-stopping-tournament-20260525-20260802"
+committed_results = "training-results/btc-5m-q5-optimal-stopping-tournament-20260525-20260802"
