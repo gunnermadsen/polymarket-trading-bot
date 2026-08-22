@@ -6,6 +6,7 @@ import polars as pl
 from btc_directional_model.fair_value_challenger_tournament import (
     CHALLENGERS,
     EXOGENOUS_FEATURES,
+    INCUMBENTS,
     _apply_policy,
     _attach_entry_cells,
     _fresh_readiness,
@@ -25,6 +26,11 @@ def test_contract_is_offline_chronological_and_complete() -> None:
     assert config.fresh_holdout is False
     assert len(config.folds) == 5
     assert len(CHALLENGERS) == 6
+    assert INCUMBENTS[1:] == (
+        "chainlink_stratified_payoff",
+        "chainlink_full_combined",
+        "chainlink_regime_calibrated",
+    )
     assert config.folds[0].evaluation_start == datetime(2026, 6, 29, tzinfo=UTC)
     assert config.folds[-1].evaluation_end == datetime(2026, 8, 2, tzinfo=UTC)
     assert config.source.execution.quantities[-1] == 200

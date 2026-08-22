@@ -892,12 +892,15 @@ def _score_all(
     output["groupwise_entry_ranker"] = ranked.with_columns(
         pl.Series("candidate_rank", fair["ranker"].predict(_matrix(ranked, RANKING_FEATURES)))
     )
+    middle_frame = frame.filter(
+        (pl.col("seconds_elapsed") >= 90) & (pl.col("seconds_elapsed") < 180)
+    )
     for name in INCUMBENTS[1:]:
         candidate = middle.get(name)
         if candidate is None:
             output[name] = _empty_scored(frame)
             continue
-        scored = score_middle_candidate(frame, candidate, config.middle)
+        scored = score_middle_candidate(middle_frame, candidate, config.middle)
         output[name] = scored.with_columns(
             pl.col("lower_correctness_probability").alias("candidate_confidence"),
             pl.col("stress_edge_lower_bound").alias("candidate_edge"),
