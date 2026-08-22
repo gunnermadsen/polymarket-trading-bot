@@ -296,11 +296,12 @@ def run_tournament(config: TournamentConfig) -> tuple[Path, dict[str, Any]]:
     combined_ledgers: dict[str, pl.DataFrame] = {}
     total_markets = len(evaluated_markets)
     scheduled_markets = _scheduled_market_count(config, manifest)
-    for index, name in enumerate(CANDIDATES):
-        ledger = (
+    for name in CANDIDATES:
+        combined_ledgers[name] = (
             pl.concat(ledgers[name], how="diagonal_relaxed") if ledgers[name] else scored.head(0)
         )
-        combined_ledgers[name] = ledger
+    for index, name in enumerate(CANDIDATES):
+        ledger = combined_ledgers[name]
         result = _aggregate_candidate(
             name,
             ledger,
@@ -308,6 +309,7 @@ def run_tournament(config: TournamentConfig) -> tuple[Path, dict[str, Any]]:
             total_markets,
             scheduled_markets,
             config,
+            incumbent=combined_ledgers["q5_incumbent"],
             seed=config.random_seed + 10_000 + index,
         )
         combined[name] = result
@@ -1041,6 +1043,7 @@ def _aggregate_candidate(
     scheduled_markets: int,
     config: TournamentConfig,
     *,
+    incumbent: pl.DataFrame,
     seed: int,
 ) -> dict[str, Any]:
     metrics = policy_metrics(ledger, config.source, quantity=5)
@@ -1073,7 +1076,11 @@ def _aggregate_candidate(
         "directions": directions,
         "price_buckets": policy_metrics_by_price_bucket(ledger, config.source, quantity=5),
         "loss_tail": _loss_tail(ledger, config.source),
-        "stopping": _stopping_diagnostics(ledger, ledger, ledger.head(0)),
+        "stopping": _stopping_diagnostics(
+            ledger,
+            eligible_market_count=total_markets,
+            incumbent=incumbent,
+        ),
         "qualification": qualification,
     }
 
@@ -1188,11 +1195,18 @@ def _loss_tail(frame: pl.DataFrame, source: TrainingConfig) -> dict[str, Any]:
 
 
 def _stopping_diagnostics(
-    selected: pl.DataFrame, eligible: pl.DataFrame, incumbent: pl.DataFrame
+    selected: pl.DataFrame,
+    eligible: pl.DataFrame | None = None,
+    incumbent: pl.DataFrame | None = None,
+    *,
+    eligible_market_count: int | None = None,
 ) -> dict[str, Any]:
-    eligible_markets = eligible["market_id"].n_unique()
+    if eligible_market_count is None:
+        eligible_market_count = eligible["market_id"].n_unique() if eligible is not None else 0
     wait_rate = (
-        1.0 - selected["market_id"].n_unique() / eligible_markets if eligible_markets else 0.0
+        1.0 - selected["market_id"].n_unique() / eligible_market_count
+        if eligible_market_count
+        else 0.0
     )
     if selected.is_empty():
         return {
@@ -1217,7 +1231,7 @@ def _stopping_diagnostics(
             on="market_id",
             how="inner",
         )
-        if not incumbent.is_empty()
+        if incumbent is not None and not incumbent.is_empty()
         else pl.DataFrame()
     )
     return {

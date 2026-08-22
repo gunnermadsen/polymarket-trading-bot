@@ -9,6 +9,7 @@ from btc_directional_model.q5_optimal_stopping_tournament import (
     _abstained_markets,
     _first_crossing,
     _future_max_by_market,
+    _stopping_diagnostics,
     _with_action,
     load_config,
 )
@@ -82,3 +83,33 @@ def test_expander_eligibility_excludes_incumbent_markets() -> None:
     eligible = _abstained_markets(frame, incumbent)
 
     assert eligible["market_id"].to_list() == ["b"]
+
+
+def test_aggregate_stopping_diagnostics_use_full_market_denominator_and_q5_timing() -> None:
+    selected = pl.DataFrame(
+        {
+            "market_id": ["a", "b"],
+            "seconds_elapsed": [30, 120],
+            "predicted_up": [True, False],
+            "up_stress_reward": [0.4, -0.6],
+            "down_stress_reward": [-0.4, 0.6],
+            "best_realized_action_value": [0.5, 0.7],
+            "future_best_action_value": [0.6, 0.8],
+        }
+    )
+    incumbent = pl.DataFrame(
+        {
+            "market_id": ["a", "b"],
+            "seconds_elapsed": [60, 90],
+        }
+    )
+
+    diagnostics = _stopping_diagnostics(
+        selected,
+        eligible_market_count=4,
+        incumbent=incumbent,
+    )
+
+    assert diagnostics["wait_rate"] == 0.5
+    assert diagnostics["earlier_than_q5_rate"] == 0.5
+    assert diagnostics["average_entry_lead_seconds"] == 0.0
