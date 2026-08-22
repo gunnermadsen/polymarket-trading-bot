@@ -5,6 +5,7 @@ import os
 import resource
 import subprocess
 import time
+import warnings
 from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
@@ -17,6 +18,7 @@ import polars as pl
 from joblib import Parallel, delayed, parallel_config
 from scipy.stats import ttest_1samp
 from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import ElasticNet, Ridge
 from sklearn.metrics import balanced_accuracy_score
@@ -60,12 +62,19 @@ class FittedSignedRegressor:
     estimator: Any
     calibrator: NonnegativeAffineCalibrator
     hyperparameters: dict[str, Any]
+    convergence_warnings: tuple[str, ...]
 
     def predict(self, frame: pl.DataFrame) -> np.ndarray:
-        raw = np.asarray(
-            self.estimator.predict(feature_matrix(frame, self.feature_names)),
-            dtype=np.float64,
-        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="X does not have valid feature names",
+                category=UserWarning,
+            )
+            raw = np.asarray(
+                self.estimator.predict(feature_matrix(frame, self.feature_names)),
+                dtype=np.float64,
+            )
         calibrated = self.calibrator.predict(raw)
         if self.candidate.target_variant == "vol_scaled":
             calibrated = calibrated * _volatility_scale(frame)
@@ -115,10 +124,10 @@ def _model_parameters(candidate: TournamentCandidate, *, seed: int) -> dict[str,
         return {"alpha": (1.0, 10.0, 100.0, 0.1)[variant % 4], "solver": "lsqr"}
     if candidate.model == "elastic_net":
         return {
-            "alpha": (0.001, 0.01, 0.1, 1.0)[variant % 4],
+            "alpha": (0.1, 0.3, 1.0, 3.0)[variant % 4],
             "l1_ratio": (0.1, 0.35, 0.65, 0.9)[variant % 4],
-            "max_iter": 5_000,
-            "tol": 1e-4,
+            "max_iter": 20_000,
+            "tol": 1e-3,
             "random_state": seed,
         }
     if candidate.model == "histogram":
@@ -212,16 +221,33 @@ def _fit_model(
 ) -> FittedSignedRegressor:
     features = tuple(REGRESSION_FEATURE_SETS[candidate.feature_set])
     estimator, parameters = _build_estimator(candidate, seed=seed)
-    with threadpool_limits(limits=1):
+    with warnings.catch_warnings(record=True) as caught, threadpool_limits(limits=1):
+        warnings.simplefilter("always", ConvergenceWarning)
         estimator.fit(feature_matrix(fit, features), _target(fit, candidate.target_variant))
-        raw_calibration = np.asarray(
-            estimator.predict(feature_matrix(calibration, features)), dtype=np.float64
-        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="X does not have valid feature names",
+                category=UserWarning,
+            )
+            raw_calibration = np.asarray(
+                estimator.predict(feature_matrix(calibration, features)), dtype=np.float64
+            )
+    convergence_warnings = tuple(
+        str(item.message) for item in caught if issubclass(item.category, ConvergenceWarning)
+    )
     calibrator = NonnegativeAffineCalibrator.fit(
         raw_calibration,
         _target(calibration, candidate.target_variant),
     )
-    return FittedSignedRegressor(candidate, features, estimator, calibrator, parameters)
+    return FittedSignedRegressor(
+        candidate,
+        features,
+        estimator,
+        calibrator,
+        parameters,
+        convergence_warnings,
+    )
 
 
 def _actions(predictions: np.ndarray, hurdle_bps: float, *, no_trade: bool = False) -> np.ndarray:
@@ -387,6 +413,7 @@ def _fold_task(
         "policy_grid": grid,
         "hyperparameters": fitted.hyperparameters,
         "calibration": asdict(fitted.calibrator),
+        "convergence_warnings": list(fitted.convergence_warnings),
         "predictive": {
             **regression_metrics(observed, prediction),
             **_directional_accuracy(observed, prediction),
@@ -496,8 +523,10 @@ def _aggregate(
         for row in folds
     )
     profit_factor = nominal["profit_factor"] or 0.0
+    converged = not any(row["convergence_warnings"] for row in folds)
     if (
-        nominal["net_expectancy_bps"] is not None
+        converged
+        and nominal["net_expectancy_bps"] is not None
         and nominal["net_expectancy_bps"] > 0
         and positive_folds >= 4
         and profit_factor > 1.0
@@ -505,7 +534,7 @@ def _aggregate(
         and predictive["spearman"] > 0
     ):
         status = "promising"
-    elif lower is not None and lower > 0:
+    elif converged and lower is not None and lower > 0:
         status = "predictive_only"
     else:
         status = "failed"
@@ -517,6 +546,7 @@ def _aggregate(
         "horizon": HORIZON_LABELS[candidate.horizon_bars],
         "feature_count": len(REGRESSION_FEATURE_SETS[candidate.feature_set]),
         "status": status,
+        "converged": converged,
         "rows": rows,
         "positive_folds": positive_folds,
         "positive_stress_folds": sum(
@@ -555,6 +585,9 @@ def _run_candidates(
     feature_paths: dict[int, Path],
     config: ExpectancyConfig,
 ) -> list[dict[str, Any]]:
+    candidate_ids = [candidate.candidate_id for candidate in candidates]
+    if len(candidate_ids) != len(set(candidate_ids)):
+        raise RuntimeError("tournament candidate ids must be unique within a comparison")
     jobs = [
         (candidate, fold_index)
         for candidate in candidates
@@ -575,6 +608,12 @@ def _run_candidates(
     by_id = {candidate.candidate_id: candidate for candidate in candidates}
     for row in fold_results:
         grouped.setdefault(row["candidate_id"], []).append(row)
+    for candidate_id, rows in grouped.items():
+        if len(rows) != len(config.validation.folds):
+            raise RuntimeError(
+                f"candidate {candidate_id} produced {len(rows)} folds; "
+                f"expected {len(config.validation.folds)}"
+            )
     return sorted(
         [_aggregate(by_id[candidate_id], rows, config) for candidate_id, rows in grouped.items()],
         key=_rank_key,
@@ -610,26 +649,54 @@ def _generation_one() -> list[TournamentCandidate]:
 
 
 def _feature_ablation(parents: list[dict[str, Any]]) -> list[TournamentCandidate]:
-    return [
-        TournamentCandidate(
-            f"g1_ablate_{parent_index}_{parent['model']}_{parent['horizon']}_{feature_set}",
-            1,
-            parent["model"],
-            parent["horizon_bars"],
-            feature_set,
-            parent_id=parent["candidate_id"],
-        )
-        for parent_index, parent in enumerate(parents[:3], start=1)
-        for feature_set in ("price", "flow", "microstructure")
-    ]
+    candidates: list[TournamentCandidate] = []
+    seen: set[tuple[str, int, str]] = set()
+    parent_index = 0
+    for parent in parents:
+        lineage = (parent["model"], parent["horizon_bars"], parent["feature_set"])
+        if lineage in seen:
+            continue
+        seen.add(lineage)
+        parent_index += 1
+        for feature_set in ("price", "flow", "microstructure"):
+            candidates.append(
+                TournamentCandidate(
+                    f"g1_ablate_{parent_index}_{parent['model']}_{parent['horizon']}_{feature_set}",
+                    1,
+                    parent["model"],
+                    parent["horizon_bars"],
+                    feature_set,
+                    parent_id=parent["candidate_id"],
+                )
+            )
+        if parent_index == 3:
+            break
+    return candidates
+
+
+def _unique_lineages(rows: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[str, int, str]] = set()
+    for row in rows:
+        key = (row["model"], row["horizon_bars"], row["feature_set"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+        if len(unique) == limit:
+            break
+    return unique
 
 
 def _generation_two(generation_one: list[dict[str, Any]]) -> tuple[list[TournamentCandidate], str]:
-    eligible = [row for row in generation_one if row["status"] != "failed"][:2]
+    eligible = _unique_lineages(
+        [row for row in generation_one if row["status"] != "failed"], limit=2
+    )
     if eligible:
         candidates = [
             TournamentCandidate(
-                f"g2_{parent['model']}_{parent['horizon']}_{parent['feature_set']}_v{variant}",
+                f"g2_{parent_index}_{parent['model']}_{parent['horizon']}_"
+                f"{parent['feature_set']}_v{variant}",
                 2,
                 parent["model"],
                 parent["horizon_bars"],
@@ -638,7 +705,7 @@ def _generation_two(generation_one: list[dict[str, Any]]) -> tuple[list[Tourname
                 parent["candidate_id"],
                 variant,
             )
-            for parent in eligible
+            for parent_index, parent in enumerate(eligible, start=1)
             for variant in range(4)
         ]
         return candidates, "improve eligible Generation 1 lineages with bounded local tuning"
@@ -662,7 +729,9 @@ def _generation_two(generation_one: list[dict[str, Any]]) -> tuple[list[Tourname
 def _generation_three(
     generation_two: list[dict[str, Any]],
 ) -> tuple[list[TournamentCandidate], str]:
-    eligible = [row for row in generation_two if row["status"] != "failed"][:2]
+    eligible = _unique_lineages(
+        [row for row in generation_two if row["status"] != "failed"], limit=2
+    )
     if eligible:
         return (
             [
@@ -737,6 +806,7 @@ def _qualification(row: dict[str, Any]) -> dict[str, Any]:
         and row["delayed_entry"]["net_expectancy_bps"] > 0,
         "holm_significance": row["holm_adjusted_p_value"] is not None
         and row["holm_adjusted_p_value"] < 0.05,
+        "converged": row["converged"],
     }
     return {"pass": all(checks.values()), "checks": checks}
 
