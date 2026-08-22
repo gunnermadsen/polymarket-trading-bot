@@ -10,7 +10,7 @@ x-weather-environment: &weather-environment
   WEATHER_REPORT_DIR: "/var/lib/weather/reports"
   POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
   POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
-  POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://archive.pmxt.dev/Polymarket/v2"
+  POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://r2v2.pmxt.dev"
   IEM_ASOS_METAR_URL: "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
   IEM_ASOS_ONE_MINUTE_URL: "https://mesonet.agron.iastate.edu/cgi-bin/request/asos1min.py"
   WEATHER_WORKER_POLL_SECONDS: "2"
