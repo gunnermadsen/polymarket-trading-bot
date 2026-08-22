@@ -25,6 +25,7 @@ from .jobs import (
 from .market_ingestion import ingest_markets, ingest_price_history
 from .modeling import reconcile_labels, train_model
 from .residual_opportunity_benchmark import run_residual_opportunity_benchmark
+from .tail_calibration_tournament import run_tail_calibration_tournament
 
 HANDLERS = {
     "polymarket_temperature_markets": ingest_markets,
@@ -190,6 +191,16 @@ def build_parser() -> argparse.ArgumentParser:
     tournament.add_argument(
         "--weather-model-image-id", required=True, type=_sha256_image_id
     )
+    tail_tournament = subparsers.add_parser("tail-calibration-tournament")
+    tail_tournament.add_argument("--training-start", required=True, type=_date)
+    tail_tournament.add_argument("--training-end", required=True, type=_date)
+    tail_tournament.add_argument("--calibration-start", required=True, type=_date)
+    tail_tournament.add_argument("--calibration-end", required=True, type=_date)
+    tail_tournament.add_argument("--economic-start", required=True, type=_date)
+    tail_tournament.add_argument("--economic-end", required=True, type=_date)
+    tail_tournament.add_argument("--sealed-start", required=True, type=_date)
+    tail_tournament.add_argument("--git-revision", required=True)
+    tail_tournament.add_argument("--runner-image-id", required=True, type=_sha256_image_id)
     subparsers.add_parser("readiness")
     return parser
 
@@ -336,6 +347,19 @@ def main() -> None:
             economic_end=args.economic_end,
             sealed_start=args.sealed_start,
             weather_model_image_id=args.weather_model_image_id,
+        )
+    elif args.command == "tail-calibration-tournament":
+        result = run_tail_calibration_tournament(
+            settings,
+            training_start=args.training_start,
+            training_end=args.training_end,
+            calibration_start=args.calibration_start,
+            calibration_end=args.calibration_end,
+            economic_start=args.economic_start,
+            economic_end=args.economic_end,
+            sealed_start=args.sealed_start,
+            git_revision=args.git_revision,
+            runner_image_id=args.runner_image_id,
         )
     elif args.command == "readiness":
         result = _readiness(settings)

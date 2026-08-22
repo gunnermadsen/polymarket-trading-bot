@@ -479,6 +479,7 @@ def _train_hour(
         "training_rows": train_rows,
         "calibration_rows": calibration_rows,
         "calibration_points": points,
+        "calibration_probability_matrices": probability_matrices,
         "calibration_targets": target,
         "calibration_residuals": {
             name: target - points[name]
