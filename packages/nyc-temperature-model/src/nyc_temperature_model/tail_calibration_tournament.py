@@ -39,7 +39,11 @@ from .challenger_tournament import (
 from .config import Settings
 from .modeling import FeatureRow, _impute, _matrix, build_feature_rows
 from .residual_opportunity import market_offset_probability
-from .residual_opportunity_benchmark import FIXED_POLICY, _compact_policy_metrics
+from .residual_opportunity_benchmark import (
+    FIXED_POLICY,
+    _compact_policy_metrics,
+    _selected_trade_stress,
+)
 from .sources import file_sha256
 
 SCHEMA_VERSION = "nyc-temperature-tail-calibration-tournament-v1"
@@ -496,32 +500,96 @@ def _economic_benchmark(
             for policy_name in POLICY_CANDIDATES:
                 transformed = _policy_candidates(period_candidates, policy_name)
                 metrics, selected, _ = _policy_metrics(transformed, dates, FIXED_POLICY)
+                price_bands = []
+                for lower, upper, label in (
+                    (0.00, 0.04, "0-4c"),
+                    (0.04, 0.08, "4-8c"),
+                    (0.08, 0.12, "8-12c"),
+                    (0.12, 0.16, "12-16c"),
+                    (0.16, 0.25, "16-25c"),
+                ):
+                    band_trades = [
+                        trade
+                        for trade in selected
+                        if lower <= float(trade["ask_vwap"]) < upper
+                    ]
+                    band_pnl = [
+                        float(trade["realized_net_per_share"]) * float(trade["quantity"])
+                        for trade in band_trades
+                    ]
+                    price_bands.append(
+                        {
+                            "price_band": label,
+                            "trades": len(band_trades),
+                            "wins": sum(value > 0 for value in band_pnl),
+                            "total_net": float(sum(band_pnl)),
+                        }
+                    )
+                slippage_stress = {
+                    f"{slippage:.3f}": _selected_trade_stress(selected, slippage)
+                    for slippage in (0.0, 0.01)
+                }
+                positive_profit = sum(
+                    max(0.0, float(band["total_net"])) for band in price_bands
+                )
+                maximum_band_profit_share = (
+                    max(
+                        max(0.0, float(band["total_net"])) for band in price_bands
+                    )
+                    / positive_profit
+                    if positive_profit > 0
+                    else None
+                )
+                checks = {
+                    "positive_total_net": metrics["total_net"] > 0,
+                    "positive_all_chronological_folds": all(
+                        fold["total_net"] > 0 for fold in metrics["chronological_folds"]
+                    ),
+                    "positive_lower_90pct_block_bootstrap_mean_daily_net": (
+                        metrics["lower_90pct_block_bootstrap_mean_daily_net"] > 0
+                    ),
+                    "positive_without_best_three_trades": (
+                        metrics["net_without_best_three_trades"] > 0
+                    ),
+                    "minimum_30_distinct_event_day_trades": metrics["trades"] >= 30,
+                    "selected_hit_rate_exceeds_mean_break_even_probability": (
+                        metrics["hit_rate"] > metrics["mean_break_even_probability"]
+                    ),
+                    "no_price_band_exceeds_70pct_of_positive_profit": (
+                        maximum_band_profit_share is not None
+                        and maximum_band_profit_share <= 0.70
+                    ),
+                    "positive_at_zero_slippage": slippage_stress["0.000"]["total_net"] > 0,
+                    "positive_at_one_cent_slippage": (
+                        slippage_stress["0.010"]["total_net"] > 0
+                    ),
+                }
                 entry = {
                     "metrics": _compact_policy_metrics(metrics),
                     "candidate_coverage": _candidate_coverage(transformed),
-                    "selected_price_bands": dict(
-                        sorted(
-                            (
-                                label,
-                                sum(
-                                    1
-                                    for trade in selected
-                                    if lower <= float(trade["ask_vwap"]) < upper
-                                ),
-                            )
-                            for lower, upper, label in (
-                                (0.00, 0.04, "0-4c"),
-                                (0.04, 0.08, "4-8c"),
-                                (0.08, 0.12, "8-12c"),
-                                (0.12, 0.16, "12-16c"),
-                                (0.16, 0.25, "16-25c"),
-                            )
-                        )
-                    ),
+                    "selected_price_bands": price_bands,
+                    "maximum_price_band_positive_profit_share": maximum_band_profit_share,
+                    "slippage_stress": slippage_stress,
+                    "qualification_checks": checks,
+                    "qualification_supported": all(checks.values()),
                 }
                 output["models"].setdefault(model, {}).setdefault(policy_name, {})[
                     period_name
                 ] = entry
+    for model in MODEL_CANDIDATES:
+        for policy_name in POLICY_CANDIDATES:
+            periods_for_policy = output["models"][model][policy_name]
+            retrospective_supported = periods_for_policy["retrospective"][
+                "qualification_supported"
+            ]
+            sealed_trades = periods_for_policy["sealed_post_freeze_backfill"]["metrics"][
+                "trades"
+            ]
+            periods_for_policy["overall_qualification"] = {
+                "retrospective_checks_supported": retrospective_supported,
+                "nonzero_sealed_executable_trade_evidence": sealed_trades > 0,
+                "production_qualified": retrospective_supported and sealed_trades > 0,
+            }
     output["execution_contract"] = asdict(FIXED_POLICY) | {
         "quantity": 5.0,
         "modeled_slippage_per_share": 0.01,
