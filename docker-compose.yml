@@ -813,6 +813,7 @@ services:
       GRAFANA_POSTGRES_PORT: "6432"
       GRAFANA_POSTGRES_MAX_OPEN_CONNS: "2"
       GRAFANA_POSTGRES_MAX_IDLE_CONNS: "1"
+      GRAFANA_ALERT_ENVIRONMENT: "development"
       GF_LIVE_MAX_CONNECTIONS: "100"
       GF_LIVE_ALLOWED_ORIGINS: "http://localhost:3030,http://127.0.0.1:3030"
       GF_PLUGINS_PREINSTALL_SYNC: "yesoreyeram-infinity-datasource@3.11.1"

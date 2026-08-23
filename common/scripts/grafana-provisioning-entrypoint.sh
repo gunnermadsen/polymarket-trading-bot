@@ -31,6 +31,7 @@ require_env GRAFANA_POSTGRES_USER
 require_env GRAFANA_POSTGRES_SSL_MODE
 require_env GRAFANA_POSTGRES_MAX_OPEN_CONNS
 require_env GRAFANA_POSTGRES_MAX_IDLE_CONNS
+require_env GRAFANA_ALERT_ENVIRONMENT
 require_env POLYMARKET_HTTP_ADMIN_TOKEN
 
 case "${GRAFANA_POSTGRES_MAX_OPEN_CONNS_VALUE}" in
@@ -63,8 +64,13 @@ if [ ! -f "${SRC_DIR}/dashboards/dashboards.yml" ]; then
   echo "Missing Grafana dashboard provisioning source" >&2
   exit 1
 fi
+if [ ! -f "${SRC_DIR}/alerting/rules-clob-market-data.yml" ]; then
+  echo "Missing Grafana alert provisioning source" >&2
+  exit 1
+fi
 
 cp "${SRC_DIR}/dashboards/dashboards.yml" "${DST_DIR}/dashboards/dashboards.yml"
+cp "${SRC_DIR}/alerting/rules-clob-market-data.yml" "${DST_DIR}/alerting/rules-clob-market-data.yml"
 
 cat > "${DST_DIR}/datasources/postgres.yml" <<EOF
 apiVersion: 1
