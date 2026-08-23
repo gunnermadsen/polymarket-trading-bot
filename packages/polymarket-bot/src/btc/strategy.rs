@@ -3314,6 +3314,7 @@ mod tests {
             "btc-5m-chainlink-regime-calibrated-paper-20260820",
             "btc-5m-chainlink-stratified-payoff-paper-20260820",
             "btc-5m-chainlink-full-combined-paper-20260820",
+            "btc-5m-specialist-distilled-fair-value-paper-20260823-v1",
         ] {
             let (config, snapshot) = payoff_model_case(directory, "down", false);
             let accepted = DeterministicBtcStrategy::evaluate_with_directional_model_entry_policy(

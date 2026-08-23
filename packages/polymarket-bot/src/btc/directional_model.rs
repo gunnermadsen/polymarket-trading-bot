@@ -742,6 +742,13 @@ struct RuntimeQ5Threshold {
 }
 
 #[derive(Debug)]
+struct RuntimeFairValueThreshold {
+    enabled: bool,
+    confidence: f64,
+    stress_edge: f64,
+}
+
+#[derive(Debug)]
 enum RuntimePayoffModel {
     Q5 {
         feature_names: Vec<String>,
@@ -773,6 +780,14 @@ enum RuntimePayoffModel {
         eligibility_indices: Vec<usize>,
         probability_modifier: Option<RuntimeProbabilityModifier>,
         loss_model: Option<RuntimeDerivedSubmodel>,
+    },
+    FairValue {
+        feature_names: Vec<String>,
+        stress_slippage: f64,
+        outcome: RuntimeSubmodel,
+        yes_cost_index: usize,
+        no_cost_index: usize,
+        cells: HashMap<String, RuntimeFairValueThreshold>,
     },
 }
 
@@ -808,6 +823,7 @@ impl RuntimePayoffModel {
         match self {
             Self::Q5 { .. } => self.score_q5(features, seconds, None),
             Self::Middle { .. } => self.score_middle(features, seconds),
+            Self::FairValue { .. } => self.score_fair_value(features, seconds),
         }
     }
 
@@ -820,6 +836,7 @@ impl RuntimePayoffModel {
         match self {
             Self::Q5 { .. } => self.score_q5(features, seconds, Some(window_key)),
             Self::Middle { .. } => self.score_middle(features, seconds),
+            Self::FairValue { .. } => self.score_fair_value(features, seconds),
         }
     }
 
@@ -1164,6 +1181,69 @@ impl RuntimePayoffModel {
             action,
             accepted,
         })
+    }
+
+    fn score_fair_value(&self, features: &[f64], seconds: i64) -> Result<RuntimeModelScore> {
+        let Self::FairValue {
+            feature_names,
+            stress_slippage,
+            outcome,
+            yes_cost_index,
+            no_cost_index,
+            cells,
+        } = self
+        else {
+            unreachable!()
+        };
+        if features.len() != feature_names.len() {
+            bail!("BTC fair-value feature width is invalid");
+        }
+        let probability_up = outcome.score(features)?.clamp(1e-6, 1.0 - 1e-6);
+        let predicted_up = probability_up >= 0.5;
+        let confidence = if predicted_up {
+            probability_up
+        } else {
+            1.0 - probability_up
+        };
+        let cost = features[if predicted_up {
+            *yes_cost_index
+        } else {
+            *no_cost_index
+        }];
+        if !cost.is_finite() {
+            return Ok(no_trade_score());
+        }
+        let cell = fair_value_cell(seconds)
+            .and_then(|name| cells.get(name))
+            .context("BTC fair-value entry cell is missing")?;
+        let accepted = cell.enabled
+            && confidence >= cell.confidence
+            && confidence - cost - stress_slippage >= cell.stress_edge;
+        let action = if !accepted {
+            RuntimeModelAction::NoTrade
+        } else if predicted_up {
+            RuntimeModelAction::Up
+        } else {
+            RuntimeModelAction::Down
+        };
+        Ok(RuntimeModelScore {
+            raw_logit: (probability_up / (1.0 - probability_up)).ln(),
+            probability_up,
+            confidence,
+            action,
+            accepted,
+        })
+    }
+}
+
+fn fair_value_cell(seconds: i64) -> Option<&'static str> {
+    match seconds {
+        15..=89 => Some("early_15_89"),
+        90..=119 => Some("middle_90_119"),
+        120..=149 => Some("middle_120_149"),
+        150..=179 => Some("middle_150_179"),
+        180..=240 => Some("late_180_240"),
+        _ => None,
     }
 }
 
@@ -1607,6 +1687,13 @@ enum RuntimePayoffModelFile {
         probability_modifier: Option<RuntimeProbabilityModifierFile>,
         loss_model: Option<RuntimeDerivedSubmodelFile>,
     },
+    FairValue {
+        stress_slippage_per_share: f64,
+        outcome: RuntimeSubmodelFile,
+        yes_cost_feature_index: usize,
+        no_cost_feature_index: usize,
+        policy: RuntimeFairValuePolicyFile,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -1691,6 +1778,20 @@ struct RuntimeMiddlePolicyFile {
     confidence: f64,
     stress_edge: f64,
     loss_severity: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeFairValuePolicyFile {
+    cells: HashMap<String, RuntimeFairValueThresholdFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeFairValueThresholdFile {
+    enabled: bool,
+    confidence: f64,
+    stress_edge: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2354,6 +2455,63 @@ fn compile_payoff_model(
                 eligibility_indices: eligibility_feature_indices,
                 probability_modifier,
                 loss_model,
+            })
+        }
+        RuntimePayoffModelFile::FairValue {
+            stress_slippage_per_share,
+            outcome,
+            yes_cost_feature_index,
+            no_cost_feature_index,
+            policy,
+        } => {
+            validate_payoff_numbers(&[stress_slippage_per_share])?;
+            if yes_cost_feature_index >= feature_count
+                || no_cost_feature_index >= feature_count
+                || yes_cost_feature_index == no_cost_feature_index
+            {
+                bail!("BTC fair-value cost feature indices are invalid");
+            }
+            let expected_cells = HashSet::from([
+                "early_15_89",
+                "middle_90_119",
+                "middle_120_149",
+                "middle_150_179",
+                "late_180_240",
+            ]);
+            if policy
+                .cells
+                .keys()
+                .map(String::as_str)
+                .collect::<HashSet<_>>()
+                != expected_cells
+            {
+                bail!("BTC fair-value policy cells are invalid");
+            }
+            let cells = policy
+                .cells
+                .into_iter()
+                .map(|(name, value)| {
+                    validate_payoff_numbers(&[value.confidence, value.stress_edge])?;
+                    if !(0.5..=1.0).contains(&value.confidence) {
+                        bail!("BTC fair-value confidence threshold is invalid");
+                    }
+                    Ok((
+                        name,
+                        RuntimeFairValueThreshold {
+                            enabled: value.enabled,
+                            confidence: value.confidence,
+                            stress_edge: value.stress_edge,
+                        },
+                    ))
+                })
+                .collect::<Result<HashMap<_, _>>>()?;
+            Ok(RuntimePayoffModel::FairValue {
+                feature_names: feature_names.to_vec(),
+                stress_slippage: stress_slippage_per_share,
+                outcome: compile_submodel(outcome, feature_count)?,
+                yes_cost_index: yes_cost_feature_index,
+                no_cost_index: no_cost_feature_index,
+                cells,
             })
         }
     }

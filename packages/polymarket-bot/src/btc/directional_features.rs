@@ -527,6 +527,11 @@ pub fn directional_external_feature_requirements(
             chainlink_candles: true,
             ..DirectionalExternalFeatureRequirements::default()
         },
+        "btc-5m-payoff-aware-fair-value-features-v1" => DirectionalExternalFeatureRequirements {
+            oracle: true,
+            chainlink_candles: true,
+            ..DirectionalExternalFeatureRequirements::default()
+        },
         "btc-5m-payoff-aware-middle-oi-features-v1" => DirectionalExternalFeatureRequirements {
             oracle: true,
             chainlink_candles: true,
@@ -3560,6 +3565,15 @@ mod tests {
                 refprice: true,
                 chainlink_candles: true,
                 open_interest: true,
+            }
+        );
+        assert_eq!(
+            directional_external_feature_requirements("btc-5m-payoff-aware-fair-value-features-v1"),
+            DirectionalExternalFeatureRequirements {
+                oracle: true,
+                refprice: false,
+                chainlink_candles: true,
+                open_interest: false,
             }
         );
     }
