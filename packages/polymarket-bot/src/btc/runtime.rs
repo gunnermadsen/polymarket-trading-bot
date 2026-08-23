@@ -474,6 +474,8 @@ pub struct BtcRuntimeMetrics {
     pub clob_last_subscription_update_at: Option<DateTime<Utc>>,
     pub clob_last_disconnect_at: Option<DateTime<Utc>>,
     pub clob_recovery_unavailable_since: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub clob_recovery_unavailable_age_milliseconds: Option<u64>,
     pub clob_last_disconnect_reason: Option<String>,
     #[serde(default)]
     pub clob_remote_close_1013_count: u64,
@@ -597,6 +599,12 @@ fn runtime_metrics_snapshot(
         .filter(|closed_at| *closed_at <= checked_at)
         .map(|closed_at| {
             u64::try_from((checked_at - closed_at).num_milliseconds()).unwrap_or(u64::MAX)
+        });
+    metrics.clob_recovery_unavailable_age_milliseconds = metrics
+        .clob_recovery_unavailable_since
+        .filter(|unavailable_since| *unavailable_since <= checked_at)
+        .map(|unavailable_since| {
+            u64::try_from((checked_at - unavailable_since).num_milliseconds()).unwrap_or(u64::MAX)
         });
     metrics
 }
@@ -9945,6 +9953,22 @@ mod tests {
         assert_eq!(
             snapshot.clob_last_remote_close_1013_age_milliseconds,
             Some(1250)
+        );
+    }
+
+    #[test]
+    fn runtime_metrics_snapshot_reports_current_clob_unavailable_age() {
+        let checked_at = Utc.timestamp_opt(1_784_736_010, 0).unwrap();
+        let metrics = BtcRuntimeMetrics {
+            clob_recovery_unavailable_since: Some(checked_at - Duration::seconds(95)),
+            ..BtcRuntimeMetrics::default()
+        };
+
+        let snapshot = runtime_metrics_snapshot(metrics, checked_at);
+
+        assert_eq!(
+            snapshot.clob_recovery_unavailable_age_milliseconds,
+            Some(95_000)
         );
     }
 
