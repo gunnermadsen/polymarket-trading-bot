@@ -476,6 +476,14 @@ pub struct BtcRuntimeMetrics {
     pub clob_recovery_unavailable_since: Option<DateTime<Utc>>,
     pub clob_last_disconnect_reason: Option<String>,
     #[serde(default)]
+    pub clob_remote_close_1013_count: u64,
+    #[serde(default)]
+    pub clob_last_remote_close_1013_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub clob_last_remote_close_1013_age_milliseconds: Option<u64>,
+    #[serde(default)]
+    pub clob_last_remote_close_1013_reason: Option<String>,
+    #[serde(default)]
     pub clob_book_unavailable_reason: Option<String>,
     #[serde(default)]
     pub clob_book_unavailable_market_id: Option<String>,
@@ -583,6 +591,12 @@ fn runtime_metrics_snapshot(
         .filter(|received_at| *received_at <= checked_at)
         .map(|received_at| {
             u64::try_from((checked_at - received_at).num_milliseconds()).unwrap_or(u64::MAX)
+        });
+    metrics.clob_last_remote_close_1013_age_milliseconds = metrics
+        .clob_last_remote_close_1013_at
+        .filter(|closed_at| *closed_at <= checked_at)
+        .map(|closed_at| {
+            u64::try_from((checked_at - closed_at).num_milliseconds()).unwrap_or(u64::MAX)
         });
     metrics
 }
@@ -1041,6 +1055,19 @@ impl ClobSocketTelemetry {
             .map(|frame| frame.reason.as_str())
             .filter(|reason| !reason.is_empty())
             .map(bounded_clob_error_reason);
+    }
+}
+
+fn record_clob_remote_close_1013(
+    metrics: &mut BtcRuntimeMetrics,
+    telemetry: &ClobSocketTelemetry,
+    observed_at: DateTime<Utc>,
+) {
+    if telemetry.remote_close_observed && telemetry.remote_close_code == Some(1013) {
+        metrics.clob_remote_close_1013_count =
+            metrics.clob_remote_close_1013_count.saturating_add(1);
+        metrics.clob_last_remote_close_1013_at = Some(observed_at);
+        metrics.clob_last_remote_close_1013_reason = telemetry.remote_close_reason.clone();
     }
 }
 
@@ -4212,13 +4239,18 @@ async fn run_clob_supervisor(
                 ClobRetryAction::Backoff(delay) => Instant::now() + delay,
                 ClobRetryAction::Stop => Instant::now(),
             };
+            let unavailable_at = Utc::now();
             {
                 let mut runtime_metrics = metrics.write().await;
                 clob_disconnect_metrics(&mut runtime_metrics, cause, retry_action);
-                runtime_metrics.clob_last_disconnect_at = Some(Utc::now());
+                runtime_metrics.clob_last_disconnect_at = Some(unavailable_at);
                 runtime_metrics.clob_last_disconnect_reason = Some(reason.clone());
+                record_clob_remote_close_1013(
+                    &mut runtime_metrics,
+                    &failed.telemetry,
+                    unavailable_at,
+                );
             }
-            let unavailable_at = Utc::now();
             let unavailable_instant = Instant::now();
             quarantine_clob_books_on_disconnect(&mut failed.registry, &shared_books).await;
             record_clob_epoch_unavailable(
@@ -9350,6 +9382,41 @@ mod tests {
     }
 
     #[test]
+    fn remote_clob_close_1013_updates_only_its_telemetry() {
+        let observed_at = Utc.timestamp_opt(1_784_736_010, 0).unwrap();
+        let frame = CloseFrame {
+            code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Again,
+            reason: "service overloaded".into(),
+        };
+        let mut telemetry = ClobSocketTelemetry::new(std::slice::from_ref(&market()));
+        let mut metrics = BtcRuntimeMetrics::default();
+        telemetry.record_remote_close(Some(&frame));
+
+        record_clob_remote_close_1013(&mut metrics, &telemetry, observed_at);
+
+        assert_eq!(metrics.clob_remote_close_1013_count, 1);
+        assert_eq!(metrics.clob_last_remote_close_1013_at, Some(observed_at));
+        assert_eq!(
+            metrics.clob_last_remote_close_1013_reason.as_deref(),
+            Some("service overloaded")
+        );
+
+        let non_1013 = CloseFrame {
+            code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Away,
+            reason: "planned maintenance".into(),
+        };
+        telemetry.record_remote_close(Some(&non_1013));
+        record_clob_remote_close_1013(&mut metrics, &telemetry, observed_at + Duration::seconds(1));
+
+        assert_eq!(metrics.clob_remote_close_1013_count, 1);
+        assert_eq!(metrics.clob_last_remote_close_1013_at, Some(observed_at));
+        assert_eq!(
+            metrics.clob_last_remote_close_1013_reason.as_deref(),
+            Some("service overloaded")
+        );
+    }
+
+    #[test]
     fn clob_close_actions_are_explicit_and_failure_safe() {
         let mut telemetry = ClobSocketTelemetry::new(std::slice::from_ref(&market()));
         let causes = [
@@ -9861,6 +9928,22 @@ mod tests {
 
         assert_eq!(
             snapshot.clob_active_last_inbound_frame_age_milliseconds,
+            Some(1250)
+        );
+    }
+
+    #[test]
+    fn runtime_metrics_snapshot_reports_recent_1013_age() {
+        let checked_at = Utc.timestamp_opt(1_784_736_010, 0).unwrap();
+        let metrics = BtcRuntimeMetrics {
+            clob_last_remote_close_1013_at: Some(checked_at - Duration::milliseconds(1250)),
+            ..BtcRuntimeMetrics::default()
+        };
+
+        let snapshot = runtime_metrics_snapshot(metrics, checked_at);
+
+        assert_eq!(
+            snapshot.clob_last_remote_close_1013_age_milliseconds,
             Some(1250)
         );
     }
@@ -10974,6 +11057,9 @@ mod tests {
             clob_active_max_shared_books_lock_wait_milliseconds: 4,
             clob_active_heartbeat_probes: 11,
             clob_active_heartbeat_acknowledgements: 10,
+            clob_remote_close_1013_count: 2,
+            clob_last_remote_close_1013_at: Some(updated_at),
+            clob_last_remote_close_1013_reason: Some("service overloaded".to_string()),
             ..BtcRuntimeMetrics::default()
         }));
         let status = runtime_status_from_inputs(
@@ -11028,6 +11114,15 @@ mod tests {
         assert_eq!(
             value["metrics"]["clob_last_subscription_update_at"],
             serde_json::json!(updated_at)
+        );
+        assert_eq!(value["metrics"]["clob_remote_close_1013_count"], 2);
+        assert_eq!(
+            value["metrics"]["clob_last_remote_close_1013_at"],
+            serde_json::json!(updated_at)
+        );
+        assert_eq!(
+            value["metrics"]["clob_last_remote_close_1013_reason"],
+            "service overloaded"
         );
         assert!(value["metrics"].get("clob_planned_reconnects").is_none());
     }
