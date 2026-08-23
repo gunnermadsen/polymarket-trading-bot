@@ -4,6 +4,7 @@
 !.env.grafana.example
 !.env.postgres.example
 !.env.market-data-ingester.example
+!.env.prometheus.example
 target/
 node_modules/
 dist/
