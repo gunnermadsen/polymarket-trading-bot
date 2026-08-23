@@ -4,6 +4,7 @@ editables==0.5
 hatchling==1.27.0
 iniconfig==2.3.0
 joblib==1.5.3
+lightgbm==4.6.0
 narwhals==2.24.0
 numpy==2.5.1
 packaging==26.2
