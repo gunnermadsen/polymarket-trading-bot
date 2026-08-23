@@ -12,7 +12,9 @@ import psycopg
 
 from . import PROCESS_ID
 from .config import Settings
+from .contracts import canonical_market_rows
 from .database import connection
+from .fees import taker_fee_per_share
 from .modeling import (
     build_feature_rows,
     load_model,
@@ -78,11 +80,12 @@ def _noise_sensitivity(trades: list[dict]) -> dict[str, Any]:
 
 def _market_rows(database_url: str, start: date, end: date) -> list[dict]:
     with connection(database_url) as conn:
-        return list(
+        rows = list(
             conn.execute(
                 """
-                SELECT market_id,event_date,bucket_lower_f,bucket_upper_f,resolved_yes,
-                       yes_token_id,COALESCE(fee_rate_bps,0) AS fee_rate_bps
+                SELECT market_id,event_id,event_slug,event_date,bucket_lower_f,bucket_upper_f,
+                       resolved_yes,yes_token_id,fees_enabled,fee_rate::double precision,
+                       fee_exponent::double precision
                 FROM weather.temperature_markets
                 WHERE event_date >= %s AND event_date <= %s AND resolved_yes IS NOT NULL
                 ORDER BY event_date,market_id
@@ -90,6 +93,7 @@ def _market_rows(database_url: str, start: date, end: date) -> list[dict]:
                 (start, end),
             ).fetchall()
         )
+    return canonical_market_rows(rows)
 
 
 def _prices(database_url: str, model_run_id: str, quantity: float, evidence_tier: str) -> list[dict]:
@@ -99,7 +103,8 @@ def _prices(database_url: str, model_run_id: str, quantity: float, evidence_tier
                 conn.execute(
                     """
                     SELECT p.market_id,p.decision_time,m.event_date,m.resolved_yes,
-                           m.fee_rate_bps,p.probability_yes::double precision,
+                           m.fees_enabled,m.fee_rate::double precision,
+                           m.fee_exponent::double precision,p.probability_yes::double precision,
                            e.yes_ask_vwap::double precision AS price,e.quality_flags
                     FROM weather.predictions p
                     JOIN weather.temperature_markets m ON m.market_id=p.market_id
@@ -119,7 +124,8 @@ def _prices(database_url: str, model_run_id: str, quantity: float, evidence_tier
             conn.execute(
                 """
                 SELECT p.market_id,p.decision_time,m.event_date,m.resolved_yes,
-                       m.fee_rate_bps,p.probability_yes::double precision,
+                       m.fees_enabled,m.fee_rate::double precision,
+                       m.fee_exponent::double precision,p.probability_yes::double precision,
                        ph.price::double precision AS price,'[]'::jsonb AS quality_flags
                 FROM weather.predictions p
                 JOIN weather.temperature_markets m ON m.market_id=p.market_id
@@ -156,6 +162,9 @@ def run_benchmark(
     if not 0 <= safety_buffer <= 0.25:
         raise ValueError("safety_buffer must be between 0 and 0.25")
     bundle = load_model(model_path)
+    calibration_end = date.fromisoformat(bundle["ranges"]["calibration_end"])
+    if evaluation_start <= calibration_end:
+        raise ValueError("evaluation_start must be after the model calibration period")
     decision_hour = int(bundle["decision_hour_local"])
     feature_rows = build_feature_rows(
         settings.database_url,
@@ -253,11 +262,17 @@ def run_benchmark(
             flag.startswith(("missing_yes", "insufficient_yes")) for flag in flags
         ):
             continue
-        fee_per_share = float(row["price"]) * int(row["fee_rate_bps"] or 0) / 10_000
-        edge = float(row["probability_yes"]) - float(row["price"]) - fee_per_share - safety_buffer
-        if edge <= 0:
+        fee_per_share = taker_fee_per_share(
+            float(row["price"]),
+            quantity=quantity,
+            enabled=bool(row["fees_enabled"]),
+            rate=float(row["fee_rate"]),
+            exponent=float(row["fee_exponent"]),
+        )
+        economic_edge = float(row["probability_yes"]) - float(row["price"]) - fee_per_share
+        if economic_edge <= safety_buffer:
             continue
-        eligible.append({**row, "edge": edge, "fee_per_share": fee_per_share})
+        eligible.append({**row, "edge": economic_edge, "fee_per_share": fee_per_share})
     selected = {}
     for row in eligible:
         previous = selected.get(row["event_date"])
@@ -265,7 +280,7 @@ def run_benchmark(
             selected[row["event_date"]] = row
     trades = []
     for row in selected.values():
-        fee_and_buffer = row["fee_per_share"] + safety_buffer
+        fee_and_buffer = row["fee_per_share"]
         net_per_share = (
             (1 - float(row["price"])) if row["resolved_yes"] else -float(row["price"])
         ) - fee_and_buffer
