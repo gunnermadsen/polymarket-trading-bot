@@ -9,6 +9,9 @@ GRAFANA_ADMIN_PASSWORD_VALUE="${GRAFANA_ADMIN_PASSWORD:-${GF_SECURITY_ADMIN_PASS
 POLYMARKET_HTTP_ADMIN_TOKEN_VALUE="${POLYMARKET_HTTP_ADMIN_TOKEN:-}"
 GRAFANA_POSTGRES_MAX_OPEN_CONNS_VALUE="${GRAFANA_POSTGRES_MAX_OPEN_CONNS:-}"
 GRAFANA_POSTGRES_MAX_IDLE_CONNS_VALUE="${GRAFANA_POSTGRES_MAX_IDLE_CONNS:-}"
+GRAFANA_PROMETHEUS_URL_VALUE="${GRAFANA_PROMETHEUS_URL:-}"
+PROMETHEUS_BASIC_AUTH_USER_VALUE="${PROMETHEUS_BASIC_AUTH_USER:-}"
+PROMETHEUS_BASIC_AUTH_PASSWORD_VALUE="${PROMETHEUS_BASIC_AUTH_PASSWORD:-}"
 
 require_env() {
   name="$1"
@@ -31,6 +34,9 @@ require_env GRAFANA_POSTGRES_USER
 require_env GRAFANA_POSTGRES_SSL_MODE
 require_env GRAFANA_POSTGRES_MAX_OPEN_CONNS
 require_env GRAFANA_POSTGRES_MAX_IDLE_CONNS
+require_env GRAFANA_PROMETHEUS_URL
+require_env PROMETHEUS_BASIC_AUTH_USER
+require_env PROMETHEUS_BASIC_AUTH_PASSWORD
 require_env POLYMARKET_HTTP_ADMIN_TOKEN
 
 case "${GRAFANA_POSTGRES_MAX_OPEN_CONNS_VALUE}" in
@@ -63,8 +69,13 @@ if [ ! -f "${SRC_DIR}/dashboards/dashboards.yml" ]; then
   echo "Missing Grafana dashboard provisioning source" >&2
   exit 1
 fi
+if [ ! -f "${SRC_DIR}/alerting/rules-prometheus.yml" ]; then
+  echo "Missing Grafana Prometheus alert provisioning source" >&2
+  exit 1
+fi
 
 cp "${SRC_DIR}/dashboards/dashboards.yml" "${DST_DIR}/dashboards/dashboards.yml"
+cp "${SRC_DIR}/alerting/rules-prometheus.yml" "${DST_DIR}/alerting/rules-prometheus.yml"
 
 cat > "${DST_DIR}/datasources/postgres.yml" <<EOF
 apiVersion: 1
@@ -105,6 +116,26 @@ datasources:
       allowDangerousHTTPMethods: false
     secureJsonData:
       bearerToken: ${POLYMARKET_HTTP_ADMIN_TOKEN_VALUE}
+EOF
+
+cat > "${DST_DIR}/datasources/prometheus.yml" <<EOF
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: ${GRAFANA_PROMETHEUS_URL_VALUE}
+    editable: false
+    basicAuth: true
+    basicAuthUser: ${PROMETHEUS_BASIC_AUTH_USER_VALUE}
+    jsonData:
+      httpMethod: POST
+      timeInterval: 20s
+      prometheusType: Prometheus
+      prometheusVersion: 3.13.2
+    secureJsonData:
+      basicAuthPassword: ${PROMETHEUS_BASIC_AUTH_PASSWORD_VALUE}
 EOF
 
 export GF_PATHS_PROVISIONING="${DST_DIR}"

@@ -16,6 +16,11 @@ x-grafana-env-file: &grafana-env-file
   path: ./.env.grafana
   required: false
 
+x-prometheus-env-file: &prometheus-env-file
+  path: ./.env.prometheus.production
+  required: true
+  format: raw
+
 x-watchtower-labels: &watchtower-labels
   com.centurylinklabs.watchtower.enable: "true"
 
@@ -249,6 +254,44 @@ services:
     stop_grace_period: 60s
     restart: unless-stopped
 
+  prometheus:
+    image: prom/prometheus:v3.13.2@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
+    container_name: prometheus
+    hostname: prometheus
+    init: true
+    mem_limit: 384m
+    cpus: "0.20"
+    pids_limit: 128
+    labels: *watchtower-labels
+    logging: *default-logging
+    entrypoint:
+      - /usr/local/bin/prometheus-provisioning-entrypoint.sh
+    command:
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=5GB
+      - --web.listen-address=0.0.0.0:9090
+    env_file:
+      - *prometheus-env-file
+    environment:
+      PROMETHEUS_ENVIRONMENT: "production"
+    volumes:
+      - prometheus-data:/prometheus
+      - ./common/configs/prometheus:/etc/prometheus-src:ro
+      - ./common/scripts/prometheus-provisioning-entrypoint.sh:/usr/local/bin/prometheus-provisioning-entrypoint.sh:ro
+      - ./common/scripts/prometheus-healthcheck.sh:/usr/local/bin/prometheus-healthcheck.sh:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/prometheus-healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 30s
+    restart: unless-stopped
+
   grafana:
     image: grafana/grafana:${GRAFANA_VERSION:-12.4.2}
     container_name: grafana
@@ -262,6 +305,7 @@ services:
     env_file:
       - *postgres-env-file
       - *grafana-env-file
+      - *prometheus-env-file
     environment:
       GF_USERS_DEFAULT_THEME: "dark"
       GF_DATE_FORMATS_DEFAULT_TIMEZONE: "browser"
@@ -269,6 +313,8 @@ services:
       GRAFANA_POSTGRES_PORT: "6432"
       GRAFANA_POSTGRES_MAX_OPEN_CONNS: "2"
       GRAFANA_POSTGRES_MAX_IDLE_CONNS: "1"
+      GRAFANA_PROMETHEUS_URL: "http://prometheus:9090"
+      PROMETHEUS_ENVIRONMENT: "production"
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
@@ -278,6 +324,8 @@ services:
       - ./common/scripts/grafana-provisioning-entrypoint.sh:/usr/local/bin/grafana-provisioning-entrypoint.sh:ro
     depends_on:
       pgbouncer:
+        condition: service_healthy
+      prometheus:
         condition: service_healthy
     restart: unless-stopped
 
@@ -305,4 +353,5 @@ services:
 volumes:
   timescaledb-0-data:
   grafana-data:
+  prometheus-data:
   polymarket-backfill-cache:
