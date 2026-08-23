@@ -717,7 +717,6 @@ mod tests {
                 }],
                 source_timestamp,
                 source_hash: Some(format!("book-hash-{token_id}")),
-                raw_payload: serde_json::json!({}),
             },
             received_at,
         );

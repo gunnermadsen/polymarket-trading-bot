@@ -26,13 +26,11 @@ pub enum ClobMessage {
         asks: Vec<OrderbookLevel>,
         source_timestamp: DateTime<Utc>,
         source_hash: Option<String>,
-        raw_payload: Value,
     },
     PriceChange {
         market_id: String,
         changes: Vec<PriceChange>,
         source_timestamp: DateTime<Utc>,
-        raw_payload: Value,
     },
     BestBidAsk {
         market_id: String,
@@ -40,7 +38,6 @@ pub enum ClobMessage {
         best_bid: Option<Decimal>,
         best_ask: Option<Decimal>,
         source_timestamp: DateTime<Utc>,
-        raw_payload: Value,
     },
     TickSizeChange {
         market_id: String,
@@ -48,7 +45,6 @@ pub enum ClobMessage {
         old_tick_size: Decimal,
         new_tick_size: Decimal,
         source_timestamp: DateTime<Utc>,
-        raw_payload: Value,
     },
     LastTradePrice {
         market_id: String,
@@ -56,14 +52,12 @@ pub enum ClobMessage {
         price: Decimal,
         size: Decimal,
         source_timestamp: DateTime<Utc>,
-        raw_payload: Value,
     },
     MarketResolved {
         market_id: String,
         winning_token_id: String,
         winning_outcome: String,
         source_timestamp: DateTime<Utc>,
-        raw_payload: Value,
     },
 }
 
@@ -111,7 +105,6 @@ pub fn parse_clob_messages(value: &Value) -> Result<Vec<ClobMessage>> {
             asks: parse_levels(object.get("asks"), "asks")?,
             source_timestamp,
             source_hash: string_field(object, &["hash"]),
-            raw_payload: Value::Null,
         },
         "price_change" => {
             let raw_changes = object
@@ -147,7 +140,6 @@ pub fn parse_clob_messages(value: &Value) -> Result<Vec<ClobMessage>> {
                 market_id,
                 changes,
                 source_timestamp,
-                raw_payload: Value::Null,
             }
         }
         "best_bid_ask" => ClobMessage::BestBidAsk {
@@ -156,7 +148,6 @@ pub fn parse_clob_messages(value: &Value) -> Result<Vec<ClobMessage>> {
             best_bid: optional_decimal_field(object, &["best_bid"])?,
             best_ask: optional_decimal_field(object, &["best_ask"])?,
             source_timestamp,
-            raw_payload: Value::Null,
         },
         "tick_size_change" => ClobMessage::TickSizeChange {
             market_id,
@@ -164,7 +155,6 @@ pub fn parse_clob_messages(value: &Value) -> Result<Vec<ClobMessage>> {
             old_tick_size: required_decimal(object, &["old_tick_size"])?,
             new_tick_size: required_decimal(object, &["new_tick_size"])?,
             source_timestamp,
-            raw_payload: Value::Null,
         },
         "last_trade_price" => ClobMessage::LastTradePrice {
             market_id,
@@ -172,14 +162,12 @@ pub fn parse_clob_messages(value: &Value) -> Result<Vec<ClobMessage>> {
             price: required_decimal(object, &["price"])?,
             size: required_decimal(object, &["size"])?,
             source_timestamp,
-            raw_payload: Value::Null,
         },
         "market_resolved" => ClobMessage::MarketResolved {
             market_id,
             winning_token_id: required_string(object, &["winning_asset_id"])?,
             winning_outcome: required_string(object, &["winning_outcome"])?,
             source_timestamp,
-            raw_payload: Value::Null,
         },
         other => bail!("unsupported CLOB market event type {other}"),
     };
@@ -861,7 +849,6 @@ impl BookRegistry {
                 asks,
                 source_timestamp,
                 source_hash,
-                raw_payload: _,
             } => {
                 let sequence = self.take_sequence();
                 let mut book_mutated = false;
@@ -895,7 +882,6 @@ impl BookRegistry {
                 market_id,
                 changes,
                 source_timestamp,
-                raw_payload: _,
             } => {
                 let mut entries = Vec::with_capacity(changes.len());
                 for change in changes {
@@ -1017,7 +1003,6 @@ impl BookRegistry {
                 best_bid: _,
                 best_ask: _,
                 source_timestamp,
-                raw_payload: _,
             } => vec![self.non_mutating_result(market_id, token_id, source_timestamp)],
             ClobMessage::TickSizeChange {
                 market_id,
@@ -1025,7 +1010,6 @@ impl BookRegistry {
                 old_tick_size: _,
                 new_tick_size,
                 source_timestamp,
-                raw_payload: _,
             } => {
                 let sequence = self.take_sequence();
                 let mut applied = false;
@@ -1064,14 +1048,12 @@ impl BookRegistry {
                 price: _,
                 size: _,
                 source_timestamp,
-                raw_payload: _,
             } => vec![self.non_mutating_result(market_id, token_id, source_timestamp)],
             ClobMessage::MarketResolved {
                 market_id,
                 winning_token_id,
                 winning_outcome: _,
                 source_timestamp,
-                raw_payload: _,
             } => vec![self.non_mutating_result(market_id, winning_token_id, source_timestamp)],
         }
     }
@@ -1965,7 +1947,6 @@ mod tests {
                 best_ask: Some(dec!(0.52)),
             }],
             source_timestamp: ts(1_783_902_701_000),
-            raw_payload: serde_json::json!({}),
         };
         let events = registry.apply(delta, ts(1_783_902_701_010));
         assert!(!events[0].applied);
@@ -1992,7 +1973,6 @@ mod tests {
                 }],
                 source_timestamp: ts(1_783_902_701_000),
                 source_hash: None,
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_005),
         );
@@ -2022,7 +2002,6 @@ mod tests {
                 }],
                 source_timestamp: ts(millis),
                 source_hash: Some(format!("hash-{token}")),
-                raw_payload: serde_json::json!({}),
             },
             ts(millis + 5),
         );
@@ -2048,7 +2027,6 @@ mod tests {
                 }],
                 source_timestamp: ts(millis),
                 source_hash: Some(format!("hash-{token_id}")),
-                raw_payload: serde_json::json!({}),
             },
             ts(millis + 5),
         );
@@ -2239,7 +2217,6 @@ mod tests {
                 }],
                 source_timestamp: ts(1_783_902_701_200),
                 source_hash: Some("retired-frame".to_string()),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_205),
         );
@@ -2262,7 +2239,6 @@ mod tests {
                     best_ask: Some(dec!(0.61)),
                 }],
                 source_timestamp: ts(1_783_902_701_210),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_215),
         );
@@ -2327,7 +2303,6 @@ mod tests {
                     best_ask: Some(dec!(0.52)),
                 }],
                 source_timestamp: ts(1_783_902_701_010),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_015),
         );
@@ -2432,7 +2407,6 @@ mod tests {
                     .collect(),
                 source_timestamp: ts(millis),
                 source_hash: Some(source_hash.to_string()),
-                raw_payload: serde_json::json!({}),
             },
             ts(millis + 1),
         )
@@ -2484,7 +2458,6 @@ mod tests {
                     },
                 ],
                 source_timestamp: ts(1_783_902_701_100),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_101),
         );
@@ -2516,7 +2489,6 @@ mod tests {
                     },
                 ],
                 source_timestamp: ts(1_783_902_701_100),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_102),
         );
@@ -2597,7 +2569,6 @@ mod tests {
                     },
                 ],
                 source_timestamp: ts(1_783_902_701_100),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_105),
         );
@@ -2635,7 +2606,6 @@ mod tests {
                     best_ask: Some(dec!(0.52)),
                 }],
                 source_timestamp: ts(1_783_902_701_100),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_105),
         );
@@ -2668,7 +2638,6 @@ mod tests {
                     best_ask: Some(dec!(0.52)),
                 }],
                 source_timestamp: ts(1_783_902_701_200),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_205),
         );
@@ -2727,7 +2696,6 @@ mod tests {
                     },
                 ],
                 source_timestamp: ts(1_783_902_701_100),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_105),
         );
@@ -2757,7 +2725,6 @@ mod tests {
                     best_ask: Some(dec!(0.52)),
                 }],
                 source_timestamp: ts(1_783_902_701_200),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_205),
         );
@@ -2823,7 +2790,6 @@ mod tests {
                     best_ask: Some(dec!(0.52)),
                 }],
                 source_timestamp: ts(1_783_902_701_100),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_105),
         );
@@ -2843,7 +2809,6 @@ mod tests {
                     best_ask: None,
                 }],
                 source_timestamp: ts(1_783_902_700_000),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_200),
         );

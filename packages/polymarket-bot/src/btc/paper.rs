@@ -1403,7 +1403,6 @@ mod tests {
                 asks,
                 source_timestamp: source_at,
                 source_hash: Some("book-hash".to_string()),
-                raw_payload: serde_json::json!({}),
             },
             received_at,
         );
