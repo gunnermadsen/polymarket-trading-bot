@@ -434,6 +434,7 @@ pub struct BtcRuntimeMetrics {
     pub markets_discovered: u64,
     pub reference_ticks_received: u64,
     pub clob_messages_received: u64,
+    pub feed_events_applied: u64,
     pub checkpoints_queued: u64,
     pub labels_created: u64,
     pub finalized_boundary_ticks_quarantined: u64,
@@ -691,6 +692,14 @@ struct ClobSubscriptionStats {
     last_updated_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Default)]
+struct ClobPendingFrameMetrics {
+    messages_received: u64,
+    events_applied: u64,
+    integrity_gaps: u64,
+    last_source_to_receive_lag_milliseconds: Option<i64>,
+}
+
 #[derive(Debug, Clone)]
 struct ClobSubscriptionDelta {
     added_assets: Vec<String>,
@@ -904,6 +913,7 @@ struct ClobSocketTelemetry {
     ingress_frames: u64,
     ingress_bytes: u64,
     last_ingress_sequence: u64,
+    ingress_queue_depth: usize,
     last_ingress_queue_dwell: StdDuration,
     max_ingress_queue_dwell: StdDuration,
     ingress_overflows: u64,
@@ -937,6 +947,7 @@ impl ClobSocketTelemetry {
             ingress_frames: 0,
             ingress_bytes: 0,
             last_ingress_sequence: 0,
+            ingress_queue_depth: 0,
             last_ingress_queue_dwell: StdDuration::ZERO,
             max_ingress_queue_dwell: StdDuration::ZERO,
             ingress_overflows: 0,
@@ -1385,6 +1396,8 @@ fn publish_active_clob_socket_metrics(
     metrics.clob_active_ingress_frames = telemetry.ingress_frames;
     metrics.clob_active_ingress_bytes = telemetry.ingress_bytes;
     metrics.clob_active_last_ingress_sequence = telemetry.last_ingress_sequence;
+    metrics.clob_active_ingress_queue_depth =
+        u64::try_from(telemetry.ingress_queue_depth).unwrap_or(u64::MAX);
     metrics.clob_active_last_ingress_queue_dwell_milliseconds =
         duration_milliseconds(telemetry.last_ingress_queue_dwell);
     metrics.clob_active_max_ingress_queue_dwell_milliseconds =
@@ -1463,6 +1476,7 @@ struct ClobEpoch {
     watchdog: ClobFeedWatchdog,
     healthy_epoch: bool,
     books_usable: bool,
+    pending_frame_metrics: ClobPendingFrameMetrics,
 }
 
 impl Drop for ClobEpoch {
@@ -1615,6 +1629,7 @@ async fn connect_clob_epoch(
             watchdog,
             healthy_epoch: false,
             books_usable: false,
+            pending_frame_metrics: ClobPendingFrameMetrics::default(),
         }),
         connect_latency: attempt_started_at.elapsed(),
     }
@@ -3287,13 +3302,34 @@ enum ClobFrameAction {
     Disconnect,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClobFrameOutcome {
+    action: ClobFrameAction,
+    readiness_may_have_changed: bool,
+}
+
+impl ClobFrameOutcome {
+    const fn continue_with(readiness_may_have_changed: bool) -> Self {
+        Self {
+            action: ClobFrameAction::Continue,
+            readiness_may_have_changed,
+        }
+    }
+
+    const fn disconnect() -> Self {
+        Self {
+            action: ClobFrameAction::Disconnect,
+            readiness_may_have_changed: false,
+        }
+    }
+}
+
 async fn publish_clob_registry(registry: &BookRegistry, shared_books: &Arc<RwLock<BookRegistry>>) {
     *shared_books.write().await = registry.clone();
 }
 
-async fn finish_active_clob_frame(
+fn finish_active_clob_frame(
     epoch: &mut ClobEpoch,
-    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
     processing_started: Instant,
     shared_books_lock_wait: StdDuration,
 ) {
@@ -3301,9 +3337,25 @@ async fn finish_active_clob_frame(
         Instant::now().saturating_duration_since(processing_started),
         shared_books_lock_wait,
     );
+    epoch.telemetry.ingress_queue_depth = epoch.transport.events.len();
+}
+
+async fn flush_clob_frame_metrics(epoch: &mut ClobEpoch, metrics: &Arc<RwLock<BtcRuntimeMetrics>>) {
+    let pending = std::mem::take(&mut epoch.pending_frame_metrics);
     let mut runtime_metrics = metrics.write().await;
-    runtime_metrics.clob_active_ingress_queue_depth =
-        u64::try_from(epoch.transport.events.len()).unwrap_or(u64::MAX);
+    runtime_metrics.clob_messages_received = runtime_metrics
+        .clob_messages_received
+        .saturating_add(pending.messages_received);
+    runtime_metrics.feed_events_applied = runtime_metrics
+        .feed_events_applied
+        .saturating_add(pending.events_applied);
+    runtime_metrics.integrity_gaps = runtime_metrics
+        .integrity_gaps
+        .saturating_add(pending.integrity_gaps);
+    if let Some(lag_milliseconds) = pending.last_source_to_receive_lag_milliseconds {
+        runtime_metrics.clob_active_last_source_to_receive_lag_milliseconds =
+            Some(lag_milliseconds);
+    }
     publish_active_clob_socket_metrics(&mut runtime_metrics, &epoch.telemetry);
 }
 
@@ -3312,9 +3364,8 @@ async fn apply_active_clob_frame(
     frame: ClobIngressFrame,
     shared_books: &Arc<RwLock<BookRegistry>>,
     metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
-) -> ClobFrameAction {
+) -> ClobFrameOutcome {
     let processing_started = Instant::now();
-    let ingress_queue_depth = epoch.transport.events.len();
     epoch
         .telemetry
         .record_ingress_frame(&frame, processing_started);
@@ -3344,10 +3395,10 @@ async fn apply_active_clob_frame(
                     );
                     record_active_clob_heartbeat_acknowledgement_metrics(metrics, sample).await;
                 }
-                return ClobFrameAction::Continue;
+                return ClobFrameOutcome::continue_with(false);
             }
             if text.trim().is_empty() {
-                return ClobFrameAction::Continue;
+                return ClobFrameOutcome::continue_with(false);
             }
             serde_json::from_str::<serde_json::Value>(&text)
                 .context("failed to decode CLOB websocket JSON")
@@ -3358,20 +3409,15 @@ async fn apply_active_clob_frame(
             .and_then(|value| parse_clob_messages(&value)),
         Message::Close(frame) => {
             epoch.telemetry.record_remote_close(frame.as_ref());
-            return ClobFrameAction::Disconnect;
+            return ClobFrameOutcome::disconnect();
         }
-        _ => return ClobFrameAction::Continue,
+        _ => return ClobFrameOutcome::continue_with(false),
     };
     epoch.telemetry.last_data_or_heartbeat_at = Some(received_at);
-    {
-        let mut runtime_metrics = metrics.write().await;
-        runtime_metrics.clob_messages_received =
-            runtime_metrics.clob_messages_received.saturating_add(1);
-        runtime_metrics.clob_active_last_data_or_heartbeat_at = Some(received_at);
-        runtime_metrics.clob_active_ingress_queue_depth =
-            u64::try_from(ingress_queue_depth).unwrap_or(u64::MAX);
-        publish_active_clob_socket_metrics(&mut runtime_metrics, &epoch.telemetry);
-    }
+    epoch.pending_frame_metrics.messages_received = epoch
+        .pending_frame_metrics
+        .messages_received
+        .saturating_add(1);
     let messages = match parsed {
         Ok(messages) => messages,
         Err(error) => {
@@ -3388,54 +3434,65 @@ async fn apply_active_clob_frame(
             }
             record_error(metrics, error).await;
             epoch.telemetry.last_shared_books_lock_wait = shared_books_lock_wait;
-            return ClobFrameAction::Continue;
+            return ClobFrameOutcome::continue_with(true);
         }
     };
-    let mut events = Vec::new();
+    let mut applied_count = 0_u64;
+    let mut integrity_gap_count = 0_u64;
+    let mut source_to_receive_lag_milliseconds: Option<i64> = None;
+    let mut mutated_token_ids = Vec::<String>::new();
     for message in messages {
-        events.extend(epoch.registry.apply(message, received_at));
-    }
-    let applied_count = events.iter().filter(|event| event.applied).count();
-    let integrity_gap_count = events.len().saturating_sub(applied_count);
-    let source_to_receive_lag_milliseconds = events
-        .iter()
-        .filter(|event| event.applied)
-        .map(|event| {
-            (received_at - event.source_timestamp)
-                .num_milliseconds()
-                .max(0)
-        })
-        .max();
-    let frame_token_ids = events
-        .iter()
-        .filter_map(|event| event.token_id.as_deref())
-        .fold(Vec::<String>::new(), |mut token_ids, token_id| {
-            if !token_ids.iter().any(|existing| existing == token_id) {
-                token_ids.push(token_id.to_string());
+        for event in epoch.registry.apply(message, received_at) {
+            if event.applied {
+                applied_count = applied_count.saturating_add(1);
+                let lag_milliseconds = (received_at - event.source_timestamp)
+                    .num_milliseconds()
+                    .max(0);
+                source_to_receive_lag_milliseconds = Some(
+                    source_to_receive_lag_milliseconds
+                        .unwrap_or_default()
+                        .max(lag_milliseconds),
+                );
+            } else {
+                integrity_gap_count = integrity_gap_count.saturating_add(1);
             }
-            token_ids
-        });
-    {
-        let mut runtime_metrics = metrics.write().await;
-        runtime_metrics.integrity_gaps = runtime_metrics
-            .integrity_gaps
-            .saturating_add(u64::try_from(integrity_gap_count).unwrap_or(u64::MAX));
-        if let Some(lag_milliseconds) = source_to_receive_lag_milliseconds {
-            runtime_metrics.clob_active_last_source_to_receive_lag_milliseconds =
-                Some(lag_milliseconds);
+            if event.book_mutated {
+                if let Some(token_id) = event.token_id {
+                    if !mutated_token_ids
+                        .iter()
+                        .any(|existing| existing == &token_id)
+                    {
+                        mutated_token_ids.push(token_id);
+                    }
+                }
+            }
         }
     }
-    let frame_changed = !events.is_empty();
+    epoch.pending_frame_metrics.events_applied = epoch
+        .pending_frame_metrics
+        .events_applied
+        .saturating_add(applied_count);
+    epoch.pending_frame_metrics.integrity_gaps = epoch
+        .pending_frame_metrics
+        .integrity_gaps
+        .saturating_add(integrity_gap_count);
+    if source_to_receive_lag_milliseconds.is_some() {
+        epoch
+            .pending_frame_metrics
+            .last_source_to_receive_lag_milliseconds = source_to_receive_lag_milliseconds;
+    }
     let mut shared_books_lock_wait = StdDuration::ZERO;
-    if frame_changed {
+    if !mutated_token_ids.is_empty() {
         let lock_wait_started = Instant::now();
         let mut published_books = shared_books.write().await;
         shared_books_lock_wait = Instant::now().saturating_duration_since(lock_wait_started);
-        published_books
-            .publish_frame_books_from(&epoch.registry, frame_token_ids.iter().map(String::as_str));
+        published_books.publish_frame_books_from(
+            &epoch.registry,
+            mutated_token_ids.iter().map(String::as_str),
+        );
     }
     epoch.telemetry.last_shared_books_lock_wait = shared_books_lock_wait;
-    ClobFrameAction::Continue
+    ClobFrameOutcome::continue_with(!mutated_token_ids.is_empty())
 }
 
 #[derive(Debug)]
@@ -3768,6 +3825,7 @@ async fn run_clob_supervisor(
                                 Ok(delta) => {
                                     let updated_at = Utc::now();
                                     publish_clob_registry(&epoch.registry, &shared_books).await;
+                                    flush_clob_frame_metrics(epoch, &metrics).await;
                                     if !delta.is_empty() {
                                         let mut runtime_metrics = metrics.write().await;
                                         runtime_metrics.clob_subscription_updates = runtime_metrics
@@ -3889,61 +3947,59 @@ async fn run_clob_supervisor(
                     Some(ClobIngressEvent::Frame(frame)) => {
                         let epoch = active.as_mut().expect("CLOB epoch remains installed");
                         let processing_started = Instant::now();
-                        match apply_active_clob_frame(
+                        let outcome = apply_active_clob_frame(
                             epoch,
                             frame,
                             &shared_books,
                             &metrics,
                         )
-                        .await
-                        {
+                        .await;
+                        match outcome.action {
                             ClobFrameAction::Disconnect => {
                                 let shared_books_lock_wait =
                                     epoch.telemetry.last_shared_books_lock_wait;
                                 finish_active_clob_frame(
                                     epoch,
-                                    &metrics,
                                     processing_started,
                                     shared_books_lock_wait,
-                                )
-                                .await;
+                                );
                                 active_failure = Some((
                                     "remote_close".to_string(),
                                     ClobDisconnectCause::TransportFailure,
                                 ));
                             }
                             ClobFrameAction::Continue => {
-                                let checked_at = Utc::now();
-                                epoch.watchdog.refresh_bootstrap(
-                                    Instant::now(),
-                                    &epoch.registry,
-                                    &epoch.markets,
-                                    checked_at,
-                                );
-                                update_clob_usability(
-                                    &epoch.registry,
-                                    &epoch.markets,
-                                    checked_at,
-                                    Instant::now(),
-                                    max_book_age,
-                                    &mut epoch.books_usable,
-                                    &mut epoch.healthy_epoch,
-                                    &metrics,
-                                    epoch.connection_id,
-                                    epoch.connection_epoch,
-                                    &mut consecutive_failures,
-                                    &mut recovery_window,
-                                )
-                                .await;
+                                if outcome.readiness_may_have_changed {
+                                    let checked_at = Utc::now();
+                                    epoch.watchdog.refresh_bootstrap(
+                                        Instant::now(),
+                                        &epoch.registry,
+                                        &epoch.markets,
+                                        checked_at,
+                                    );
+                                    update_clob_usability(
+                                        &epoch.registry,
+                                        &epoch.markets,
+                                        checked_at,
+                                        Instant::now(),
+                                        max_book_age,
+                                        &mut epoch.books_usable,
+                                        &mut epoch.healthy_epoch,
+                                        &metrics,
+                                        epoch.connection_id,
+                                        epoch.connection_epoch,
+                                        &mut consecutive_failures,
+                                        &mut recovery_window,
+                                    )
+                                    .await;
+                                }
                                 let shared_books_lock_wait =
                                     epoch.telemetry.last_shared_books_lock_wait;
                                 finish_active_clob_frame(
                                     epoch,
-                                    &metrics,
                                     processing_started,
                                     shared_books_lock_wait,
-                                )
-                                .await;
+                                );
                             }
                         }
                     }
@@ -4108,6 +4164,7 @@ async fn run_clob_supervisor(
                         &mut recovery_window,
                     )
                     .await;
+                    flush_clob_frame_metrics(epoch, &metrics).await;
                     for market in &epoch.markets {
                         if !market.is_trade_window(checked_at) {
                             continue;
@@ -4147,6 +4204,7 @@ async fn run_clob_supervisor(
             let Some(mut failed) = active.take() else {
                 continue;
             };
+            flush_clob_frame_metrics(&mut failed, &metrics).await;
             let retry_action =
                 clob_retry_action(&config, failed.healthy_epoch, &mut consecutive_failures);
             retry_at = match retry_action {
@@ -4203,6 +4261,7 @@ async fn run_clob_supervisor(
     let stop_cause = ClobDisconnectCause::Shutdown;
     let stop_reason = "shutdown";
     if let Some(mut epoch) = active.take() {
+        flush_clob_frame_metrics(&mut epoch, &metrics).await;
         quarantine_clob_books_on_disconnect(&mut epoch.registry, &shared_books).await;
         let close_action = clob_stop_close_action(&epoch.telemetry);
         complete_clob_epoch_with_close(
@@ -9094,7 +9153,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_clob_frame_publishes_canonical_book_without_persistence() {
+    async fn direct_clob_frame_publishes_only_mutated_canonical_books() {
         let current = market();
         let received_at = current.window_start + Duration::seconds(100);
         let received_instant = Instant::now();
@@ -9121,6 +9180,7 @@ mod tests {
             watchdog,
             healthy_epoch: false,
             books_usable: false,
+            pending_frame_metrics: ClobPendingFrameMetrics::default(),
         };
         let shared_books = Arc::new(RwLock::new(registry));
         let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
@@ -9149,7 +9209,11 @@ mod tests {
         )
         .await;
 
-        assert_eq!(action, ClobFrameAction::Continue);
+        assert_eq!(action.action, ClobFrameAction::Continue);
+        assert!(action.readiness_may_have_changed);
+        let shared_books_lock_wait = epoch.telemetry.last_shared_books_lock_wait;
+        finish_active_clob_frame(&mut epoch, received_instant, shared_books_lock_wait);
+        flush_clob_frame_metrics(&mut epoch, &metrics).await;
         let checkpoint = shared_books
             .read()
             .await
@@ -9157,11 +9221,57 @@ mod tests {
             .unwrap();
         assert_eq!(checkpoint.best_bid, Some(dec!(0.48)));
         assert_eq!(checkpoint.best_ask, Some(dec!(0.52)));
-        let metrics = metrics.read().await;
-        assert_eq!(metrics.dropped_messages, 0);
-        assert_eq!(metrics.clob_active_ingress_frames, 1);
-        assert_eq!(metrics.clob_active_last_ingress_sequence, 1);
-        assert_eq!(metrics.clob_active_ingress_overflows, 0);
+        {
+            let runtime_metrics = metrics.read().await;
+            assert_eq!(runtime_metrics.dropped_messages, 0);
+            assert_eq!(runtime_metrics.clob_messages_received, 1);
+            assert_eq!(runtime_metrics.feed_events_applied, 1);
+            assert_eq!(runtime_metrics.clob_active_ingress_frames, 1);
+            assert_eq!(runtime_metrics.clob_active_last_ingress_sequence, 1);
+            assert_eq!(runtime_metrics.clob_active_ingress_overflows, 0);
+        }
+
+        let unpublished_connection_id = Uuid::new_v4();
+        *shared_books.write().await = BookRegistry::new(unpublished_connection_id);
+        let payload = serde_json::json!({
+            "event_type": "last_trade_price",
+            "market": current.market_id,
+            "asset_id": current.up_token_id,
+            "price": "0.50",
+            "size": "1",
+            "timestamp": received_at.timestamp_millis().to_string()
+        });
+        let message = Message::Text(payload.to_string().into());
+        let outcome = apply_active_clob_frame(
+            &mut epoch,
+            ClobIngressFrame {
+                payload_bytes: message.len(),
+                message,
+                received_at,
+                received_instant,
+                sequence: 2,
+                _byte_permit: None,
+            },
+            &shared_books,
+            &metrics,
+        )
+        .await;
+
+        assert_eq!(outcome.action, ClobFrameAction::Continue);
+        assert!(!outcome.readiness_may_have_changed);
+        assert_eq!(
+            shared_books.read().await.connection_id(),
+            unpublished_connection_id
+        );
+        {
+            let runtime_metrics = metrics.read().await;
+            assert_eq!(runtime_metrics.clob_messages_received, 1);
+            assert_eq!(runtime_metrics.feed_events_applied, 1);
+        }
+        flush_clob_frame_metrics(&mut epoch, &metrics).await;
+        let runtime_metrics = metrics.read().await;
+        assert_eq!(runtime_metrics.clob_messages_received, 2);
+        assert_eq!(runtime_metrics.feed_events_applied, 2);
     }
 
     #[tokio::test]
@@ -9198,6 +9308,7 @@ mod tests {
             watchdog,
             healthy_epoch: false,
             books_usable: false,
+            pending_frame_metrics: ClobPendingFrameMetrics::default(),
         };
         let (_shutdown_tx, mut shutdown) = watch::channel(false);
 
@@ -9521,6 +9632,7 @@ mod tests {
             watchdog,
             healthy_epoch: false,
             books_usable: false,
+            pending_frame_metrics: ClobPendingFrameMetrics::default(),
         };
         let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
         let mut failures = 0;

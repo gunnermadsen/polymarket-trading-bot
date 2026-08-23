@@ -9,8 +9,11 @@ from nyc_temperature_model.execution_ingestion import (
     Book,
     _apply_event,
     _decode_archive_with_redownload,
+    _last_trade_rows,
     _levels,
     _load_archive_events,
+    _manifest_digest,
+    _retryable_archive_gap,
     _vwap,
 )
 from nyc_temperature_model.sources import download_atomic
@@ -179,3 +182,60 @@ def test_pmxt_missing_archive_is_recorded_as_a_quality_gap(monkeypatch):
     assert quality_flag == "pmxt_archive_missing_2026-06-11T04Z"
     assert recorded["availability"] == "missing"
     assert recorded["uri"].endswith("polymarket_orderbook_2026-06-11T04.parquet")
+
+
+def test_archive_gap_snapshots_are_retryable():
+    assert _retryable_archive_gap(["pmxt_archive_missing_2026-08-13T04Z"])
+    assert _retryable_archive_gap('["pmxt_archive_corrupt_2026-08-13T04Z"]')
+    assert not _retryable_archive_gap(["insufficient_yes_ask_depth_5"])
+
+
+def test_manifest_digest_covers_both_archive_hours_and_token_identity():
+    decision = datetime(2026, 8, 13, 4, tzinfo=UTC)
+    market = {
+        "market_id": "market-1",
+        "condition_id": "condition-1",
+        "yes_token_id": "yes-1",
+        "no_token_id": "no-1",
+    }
+
+    first, archive_count = _manifest_digest([(decision, [market])])
+    second, _ = _manifest_digest([(decision, [{**market, "yes_token_id": "yes-2"}])])
+
+    assert archive_count == 2
+    assert first != second
+
+
+def test_last_trade_prices_are_causal_filtered_and_content_addressed():
+    decision = datetime(2026, 8, 13, 16, tzinfo=UTC)
+    base = {
+        "event_type": "last_trade_price",
+        "asset_id": "yes-token",
+        "timestamp": datetime(2026, 8, 13, 15, 59, 57, tzinfo=UTC),
+        "timestamp_received": datetime(2026, 8, 13, 15, 59, 58, tzinfo=UTC),
+        "price": "0.12",
+        "size": "5",
+        "side": "BUY",
+        "_source_artifact_id": "artifact-1",
+    }
+    future = {
+        **base,
+        "timestamp_received": datetime(2026, 8, 13, 16, 0, 1, tzinfo=UTC),
+    }
+    rows = _last_trade_rows(
+        [base, future],
+        [
+            {
+                "market_id": "market-1",
+                "yes_token_id": "yes-token",
+                "no_token_id": "no-token",
+            }
+        ],
+        decision,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["outcome"] == "YES"
+    assert rows[0]["price"] == Decimal("0.12")
+    assert len(rows[0]["event_id"]) == 64
+    assert rows[0]["provider_received_at"] <= decision

@@ -30,12 +30,16 @@ pub const RUNTIME_MODEL_TIME_BANDED_SCHEMA_VERSION: &str =
     "capitonic-btc-directional-runtime-model-v2";
 pub const RUNTIME_MODEL_ASYMMETRIC_VALUE_SCHEMA_VERSION: &str =
     "capitonic-btc-asymmetric-value-runtime-model-v1";
+pub const RUNTIME_MODEL_PAYOFF_AWARE_SCHEMA_VERSION: &str =
+    "capitonic-btc-payoff-aware-runtime-model-v1";
 pub const RUNTIME_MANIFEST_SCHEMA_VERSION: &str = "capitonic-btc-directional-runtime-manifest-v1";
 pub const GOLDEN_VECTORS_SCHEMA_VERSION: &str = "capitonic-btc-directional-golden-vectors-v1";
 pub const TIME_BANDED_GOLDEN_VECTORS_SCHEMA_VERSION: &str =
     "capitonic-btc-directional-golden-vectors-v2";
 pub const ASYMMETRIC_VALUE_GOLDEN_VECTORS_SCHEMA_VERSION: &str =
     "capitonic-btc-asymmetric-value-golden-vectors-v1";
+pub const PAYOFF_AWARE_GOLDEN_VECTORS_SCHEMA_VERSION: &str =
+    "capitonic-btc-payoff-aware-golden-vectors-v1";
 pub const BTC_DIRECTIONAL_MODEL_INPUT_CONTRACT: &str = "btc_directional_model_input_v1";
 pub const BTC_ASYMMETRIC_VALUE_MODEL_INPUT_CONTRACT: &str = "btc_asymmetric_value_model_input_v1";
 
@@ -53,8 +57,16 @@ pub fn directional_model_input_sha256(
     seconds_elapsed: i64,
     feature_values: &[f64],
 ) -> Result<String> {
-    let feature_names = directional_feature_names(feature_schema_version)
-        .context("BTC directional model feature schema is not supported")?;
+    let feature_names = if let Some(names) = directional_feature_names(feature_schema_version) {
+        names
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>()
+    } else if feature_schema_version.starts_with("btc-5m-payoff-aware-") {
+        runtime_model(selection)?.feature_names().to_vec()
+    } else {
+        bail!("BTC directional model feature schema is not supported");
+    };
     if feature_values.len() != feature_names.len() {
         bail!(
             "BTC directional model input has {} feature values; schema {} requires {}",
@@ -178,6 +190,7 @@ pub struct RuntimePredictionPolicy {
     pub cadence_seconds: i64,
     pub early_end_second: Option<i64>,
     pub early_cadence_seconds: Option<i64>,
+    pub late_start_second: Option<i64>,
 }
 
 impl RuntimePredictionPolicy {
@@ -190,6 +203,13 @@ impl RuntimePredictionPolicy {
         let (start, cadence) = match (self.early_end_second, self.early_cadence_seconds) {
             (Some(end), Some(cadence)) if seconds_elapsed <= end => {
                 (self.minimum_seconds_after_open, cadence)
+            }
+            (Some(_), Some(_)) if self.late_start_second.is_some() => {
+                let start = self.late_start_second.expect("checked above");
+                if seconds_elapsed < start {
+                    return false;
+                }
+                (start, self.cadence_seconds)
             }
             (Some(end), Some(_)) => (end + 1, self.cadence_seconds),
             _ => (self.minimum_seconds_after_open, self.cadence_seconds),
@@ -216,6 +236,7 @@ pub struct RuntimeDirectionalModel {
     decision: RuntimeDecision,
     prediction_policy: RuntimePredictionPolicy,
     asymmetric_value_calibration: Option<RuntimeAsymmetricValueCalibration>,
+    payoff_model: Option<RuntimePayoffModel>,
 }
 
 impl RuntimeDirectionalModel {
@@ -269,6 +290,10 @@ impl RuntimeDirectionalModel {
         self.asymmetric_value_calibration.is_some()
     }
 
+    pub fn is_payoff_aware(&self) -> bool {
+        self.payoff_model.is_some()
+    }
+
     pub fn probability_up_threshold(&self) -> f64 {
         self.decision.probability_up_threshold
     }
@@ -303,6 +328,16 @@ impl RuntimeDirectionalModel {
         validate_sha256("feature input", &snapshot.input_sha256)?;
         if !self.prediction_policy.accepts(snapshot.seconds_elapsed) {
             bail!("BTC directional model feature snapshot is outside its prediction policy");
+        }
+        if let Some(payoff) = &self.payoff_model {
+            let window_key = (snapshot.feature_as_of
+                - chrono::Duration::seconds(snapshot.seconds_elapsed))
+            .timestamp();
+            return payoff.score_snapshot(
+                &snapshot.feature_values,
+                snapshot.seconds_elapsed,
+                window_key,
+            );
         }
         self.score_at_seconds(&snapshot.feature_values, snapshot.seconds_elapsed)
     }
@@ -386,6 +421,9 @@ impl RuntimeDirectionalModel {
     ) -> Result<RuntimeModelScore> {
         if !self.prediction_policy.accepts(seconds_elapsed) {
             bail!("BTC directional model elapsed time is outside its prediction policy");
+        }
+        if let Some(payoff) = &self.payoff_model {
+            return payoff.score(features, seconds_elapsed);
         }
         let policy = self.calibration_policy.at(seconds_elapsed)?;
         self.score_with_policy(features, policy)
@@ -549,6 +587,7 @@ impl RuntimeTree {
                 RuntimeTreeNode::Split {
                     feature_index,
                     threshold,
+                    missing_go_to_left: _,
                     left,
                     right,
                 } => {
@@ -564,6 +603,40 @@ impl RuntimeTree {
         }
         bail!("BTC directional model tree traversal exceeded the validated node bound")
     }
+
+    fn score_native_missing(&self, features: &[f64]) -> Result<f64> {
+        let mut node_index = 0usize;
+        for _ in 0..=self.nodes.len() {
+            match self
+                .nodes
+                .get(node_index)
+                .context("BTC payoff tree traversal left its validated range")?
+            {
+                RuntimeTreeNode::Leaf { value } => return Ok(*value),
+                RuntimeTreeNode::Split {
+                    feature_index,
+                    threshold,
+                    missing_go_to_left,
+                    left,
+                    right,
+                } => {
+                    let value = features[*feature_index];
+                    node_index = if !value.is_finite() {
+                        if *missing_go_to_left {
+                            *left
+                        } else {
+                            *right
+                        }
+                    } else if value <= *threshold {
+                        *left
+                    } else {
+                        *right
+                    };
+                }
+            }
+        }
+        bail!("BTC payoff tree traversal exceeded the validated node bound")
+    }
 }
 
 #[derive(Debug)]
@@ -571,12 +644,573 @@ enum RuntimeTreeNode {
     Split {
         feature_index: usize,
         threshold: f64,
+        missing_go_to_left: bool,
         left: usize,
         right: usize,
     },
     Leaf {
         value: f64,
     },
+}
+
+#[derive(Debug)]
+struct RuntimeSubmodel {
+    feature_indices: Vec<usize>,
+    baseline: f64,
+    probability_output: bool,
+    trees: Vec<RuntimeTree>,
+}
+
+impl RuntimeSubmodel {
+    fn score(&self, source: &[f64]) -> Result<f64> {
+        let values = self
+            .feature_indices
+            .iter()
+            .map(|index| source[*index])
+            .collect::<Vec<_>>();
+        let mut value = self.baseline;
+        for tree in &self.trees {
+            value += tree.score_native_missing(&values)?;
+        }
+        Ok(if self.probability_output {
+            sigmoid(value)
+        } else {
+            value
+        })
+    }
+
+    fn score_derived(&self, values: &[f64]) -> Result<f64> {
+        let mut value = self.baseline;
+        for tree in &self.trees {
+            value += tree.score_native_missing(values)?;
+        }
+        Ok(if self.probability_output {
+            sigmoid(value)
+        } else {
+            value
+        })
+    }
+}
+
+#[derive(Debug)]
+struct RuntimeLogistic {
+    coefficients: Vec<f64>,
+    intercept: f64,
+    means: Option<Vec<f64>>,
+    scales: Option<Vec<f64>>,
+}
+
+impl RuntimeLogistic {
+    fn probability(&self, values: &[f64]) -> Result<f64> {
+        if values.len() != self.coefficients.len() {
+            bail!("BTC payoff logistic input width is invalid");
+        }
+        let mut logit = self.intercept;
+        for (index, raw) in values.iter().enumerate() {
+            let mut value = if raw.is_finite() { *raw } else { 0.0 };
+            if let (Some(means), Some(scales)) = (&self.means, &self.scales) {
+                value = (value - means[index]) / scales[index];
+            }
+            logit += self.coefficients[index] * value;
+        }
+        Ok(sigmoid(logit))
+    }
+}
+
+#[derive(Debug)]
+struct RuntimePayoffExpert {
+    start_second: i64,
+    end_second_exclusive: i64,
+    outcome: RuntimeSubmodel,
+    calibrator: RuntimeLogistic,
+}
+
+impl RuntimePayoffExpert {
+    fn probability(&self, features: &[f64]) -> Result<f64> {
+        let raw = self.outcome.score(features)?.clamp(1e-7, 1.0 - 1e-7);
+        self.calibrator.probability(&[(raw / (1.0 - raw)).ln()])
+    }
+}
+
+#[derive(Debug)]
+struct RuntimeQ5Threshold {
+    enabled: bool,
+    confidence: f64,
+    edge: f64,
+    admission: f64,
+    payoff_lower_bound: f64,
+}
+
+#[derive(Debug)]
+enum RuntimePayoffModel {
+    Q5 {
+        feature_names: Vec<String>,
+        price_edges: Vec<f64>,
+        minimum_edges: Vec<f64>,
+        experts: HashMap<String, RuntimePayoffExpert>,
+        family_proxies: HashMap<String, RuntimePayoffExpert>,
+        price_band_names: Vec<String>,
+        price_calibrator: RuntimeLogistic,
+        guard_penalties: HashMap<String, f64>,
+        global_guard_penalty: f64,
+        admission_feature_names: Vec<String>,
+        admission_classifier: RuntimeSubmodel,
+        admission_regressor: RuntimeSubmodel,
+        thresholds: HashMap<String, RuntimeQ5Threshold>,
+        history: Mutex<HashMap<i64, Vec<(i64, f64)>>>,
+    },
+    Middle {
+        feature_names: Vec<String>,
+        execution_reserve: f64,
+        stress_slippage: f64,
+        price_edges: Vec<f64>,
+        outcome: RuntimeSubmodel,
+        outcome_calibrator: RuntimeLogistic,
+        correctness: RuntimeCorrectness,
+        confidence_threshold: f64,
+        stress_edge_threshold: f64,
+        loss_threshold: Option<f64>,
+        eligibility_indices: Vec<usize>,
+        probability_modifier: Option<RuntimeProbabilityModifier>,
+        loss_model: Option<RuntimeDerivedSubmodel>,
+    },
+}
+
+#[derive(Debug)]
+struct RuntimeCorrectness {
+    model: RuntimeLogistic,
+    regime_indices: Vec<usize>,
+    global_penalty: f64,
+    locals: HashMap<String, RuntimeLocalCalibration>,
+}
+
+#[derive(Debug)]
+struct RuntimeLocalCalibration {
+    model: RuntimeLogistic,
+    weight: f64,
+    penalty: f64,
+}
+
+#[derive(Debug)]
+struct RuntimeProbabilityModifier {
+    feature_indices: Vec<usize>,
+    model: RuntimeLogistic,
+}
+
+#[derive(Debug)]
+struct RuntimeDerivedSubmodel {
+    feature_names: Vec<String>,
+    model: RuntimeSubmodel,
+}
+
+impl RuntimePayoffModel {
+    fn score(&self, features: &[f64], seconds: i64) -> Result<RuntimeModelScore> {
+        match self {
+            Self::Q5 { .. } => self.score_q5(features, seconds, None),
+            Self::Middle { .. } => self.score_middle(features, seconds),
+        }
+    }
+
+    fn score_snapshot(
+        &self,
+        features: &[f64],
+        seconds: i64,
+        window_key: i64,
+    ) -> Result<RuntimeModelScore> {
+        match self {
+            Self::Q5 { .. } => self.score_q5(features, seconds, Some(window_key)),
+            Self::Middle { .. } => self.score_middle(features, seconds),
+        }
+    }
+
+    fn score_q5(
+        &self,
+        features: &[f64],
+        seconds: i64,
+        window_key: Option<i64>,
+    ) -> Result<RuntimeModelScore> {
+        let Self::Q5 {
+            feature_names,
+            price_edges,
+            minimum_edges,
+            experts,
+            family_proxies,
+            price_band_names,
+            price_calibrator,
+            guard_penalties,
+            global_guard_penalty,
+            admission_feature_names,
+            admission_classifier,
+            admission_regressor,
+            thresholds,
+            history,
+        } = self
+        else {
+            unreachable!()
+        };
+        if features.len() != feature_names.len() {
+            bail!("BTC payoff-aware q5 feature width is invalid");
+        }
+        let band = if seconds < 90 {
+            "early"
+        } else if seconds < 180 {
+            "mid"
+        } else {
+            "late"
+        };
+        let expert = experts.get(band).context("BTC q5 expert band is missing")?;
+        if seconds < expert.start_second || seconds >= expert.end_second_exclusive {
+            bail!("BTC q5 expert is outside its frozen time band");
+        }
+        let initial_up = expert.probability(features)?;
+        let predicted_up = initial_up >= 0.5;
+        let initial_selected = if predicted_up {
+            initial_up
+        } else {
+            1.0 - initial_up
+        };
+        let directional = family_proxies
+            .get("directional")
+            .context("directional proxy missing")?
+            .probability(features)?;
+        let asymmetric = family_proxies
+            .get("asymmetric")
+            .context("asymmetric proxy missing")?
+            .probability(features)?;
+        let get = |name: &str| -> Result<f64> {
+            feature_names
+                .iter()
+                .position(|value| value == name)
+                .map(|index| features[index])
+                .with_context(|| format!("BTC q5 runtime feature {name} is missing"))
+        };
+        let cost = if predicted_up {
+            get("pm_yes_cost_per_share")?
+        } else {
+            get("pm_no_cost_per_share")?
+        };
+        let bucket = bucket_index(cost, price_edges);
+        let band_hot = price_band_names
+            .iter()
+            .map(|name| f64::from(name == band))
+            .collect::<Vec<_>>();
+        let bucket_hot = (0..price_edges.len() - 1)
+            .map(|index| f64::from(index == bucket))
+            .collect::<Vec<_>>();
+        let initial_logit = (initial_selected.clamp(1e-6, 1.0 - 1e-6)
+            / (1.0 - initial_selected.clamp(1e-6, 1.0 - 1e-6)))
+        .ln();
+        let mut calibration = vec![initial_logit, f64::from(predicted_up)];
+        calibration.extend_from_slice(&band_hot);
+        calibration.extend_from_slice(&bucket_hot);
+        calibration.extend(band_hot.iter().map(|hot| hot * initial_logit));
+        calibration.extend(bucket_hot.iter().map(|hot| hot * initial_logit));
+        let selected_probability = price_calibrator.probability(&calibration)?;
+        let probability_up = if predicted_up {
+            selected_probability
+        } else {
+            1.0 - selected_probability
+        };
+        let penalty = guard_penalties
+            .get(&format!("{band}:{bucket}"))
+            .copied()
+            .unwrap_or(*global_guard_penalty);
+        let conservative = (selected_probability - penalty).clamp(0.0, 1.0);
+        let conservative_edge = conservative - cost;
+        let mut derived = HashMap::new();
+        derived.insert("probability_selected", selected_probability);
+        derived.insert("confidence_margin", selected_probability - 0.5);
+        derived.insert("selected_edge_5", selected_probability - cost);
+        derived.insert("selected_cost_5", cost);
+        derived.insert("directional_family_probability_up", directional);
+        derived.insert("asymmetric_family_probability_up", asymmetric);
+        derived.insert(
+            "directional_family_disagreement",
+            (probability_up - directional).abs(),
+        );
+        derived.insert(
+            "asymmetric_family_disagreement",
+            (probability_up - asymmetric).abs(),
+        );
+        derived.insert(
+            "family_probability_spread",
+            (directional - asymmetric).abs(),
+        );
+        derived.insert(
+            "family_vote_agreement",
+            f64::from((directional >= 0.5) == (asymmetric >= 0.5)),
+        );
+        let changes = if let Some(window_key) = window_key {
+            let mut histories = history
+                .lock()
+                .map_err(|_| anyhow::anyhow!("BTC q5 probability history lock is poisoned"))?;
+            histories.retain(|key, _| *key >= window_key - 600);
+            let points = histories.entry(window_key).or_default();
+            let mut changes = [f64::NAN; 3];
+            for (index, lag) in [5, 15, 30].iter().enumerate() {
+                if let Some((_, previous)) = points
+                    .iter()
+                    .find(|(previous_second, _)| *previous_second == seconds - lag)
+                {
+                    changes[index] = selected_probability - previous;
+                }
+            }
+            if let Some(point) = points
+                .iter_mut()
+                .find(|(point_second, _)| *point_second == seconds)
+            {
+                point.1 = selected_probability;
+            } else {
+                points.push((seconds, selected_probability));
+            }
+            changes
+        } else {
+            [f64::NAN; 3]
+        };
+        derived.insert("probability_change_5s", changes[0]);
+        derived.insert("probability_change_15s", changes[1]);
+        derived.insert("probability_change_30s", changes[2]);
+        derived.insert(
+            "probability_instability_30s",
+            changes
+                .iter()
+                .filter(|value| value.is_finite())
+                .map(|value| value.abs())
+                .reduce(f64::max)
+                .unwrap_or(f64::NAN),
+        );
+        derived.insert("conservative_probability_selected", conservative);
+        derived.insert("conservative_edge_5", conservative_edge);
+        derived.insert("price_bucket_index", bucket as f64);
+        let admission_values = admission_feature_names
+            .iter()
+            .map(|name| {
+                derived
+                    .get(name.as_str())
+                    .copied()
+                    .or_else(|| {
+                        feature_names
+                            .iter()
+                            .position(|value| value == name)
+                            .map(|index| features[index])
+                    })
+                    .unwrap_or(f64::NAN)
+            })
+            .collect::<Vec<_>>();
+        let admission_probability = admission_classifier.score_derived(&admission_values)?;
+        let payoff_edge = admission_regressor.score_derived(&admission_values)?;
+        let threshold = thresholds
+            .get(band)
+            .context("BTC q5 threshold band is missing")?;
+        let accepted = threshold.enabled
+            && conservative >= threshold.confidence
+            && conservative_edge >= threshold.edge
+            && conservative_edge >= minimum_edges[bucket]
+            && admission_probability >= threshold.admission
+            && payoff_edge >= threshold.payoff_lower_bound;
+        let action = if !accepted {
+            RuntimeModelAction::NoTrade
+        } else if predicted_up {
+            RuntimeModelAction::Up
+        } else {
+            RuntimeModelAction::Down
+        };
+        Ok(RuntimeModelScore {
+            raw_logit: (probability_up / (1.0 - probability_up)).ln(),
+            probability_up,
+            confidence: selected_probability,
+            action,
+            accepted,
+        })
+    }
+
+    fn score_middle(&self, features: &[f64], seconds: i64) -> Result<RuntimeModelScore> {
+        let Self::Middle {
+            feature_names,
+            execution_reserve,
+            stress_slippage,
+            price_edges,
+            outcome,
+            outcome_calibrator,
+            correctness,
+            confidence_threshold,
+            stress_edge_threshold,
+            loss_threshold,
+            eligibility_indices,
+            probability_modifier,
+            loss_model,
+        } = self
+        else {
+            unreachable!()
+        };
+        if features.len() != feature_names.len()
+            || eligibility_indices
+                .iter()
+                .any(|index| !features[*index].is_finite())
+        {
+            return Ok(no_trade_score());
+        }
+        let raw_probability = outcome.score(features)?.clamp(1e-6, 1.0 - 1e-6);
+        let mut probability_up =
+            outcome_calibrator.probability(&[(raw_probability / (1.0 - raw_probability)).ln()])?;
+        if let Some(modifier) = probability_modifier {
+            let mut values = vec![(probability_up.clamp(1e-6, 1.0 - 1e-6)
+                / (1.0 - probability_up.clamp(1e-6, 1.0 - 1e-6)))
+            .ln()];
+            values.extend(
+                modifier
+                    .feature_indices
+                    .iter()
+                    .map(|index| features[*index]),
+            );
+            probability_up = modifier.model.probability(&values)?;
+        }
+        let predicted_up = probability_up >= 0.5;
+        let selected = if predicted_up {
+            probability_up
+        } else {
+            1.0 - probability_up
+        };
+        let get = |name: &str| -> Result<f64> {
+            feature_names
+                .iter()
+                .position(|value| value == name)
+                .map(|index| features[index])
+                .with_context(|| format!("BTC middle runtime feature {name} is missing"))
+        };
+        let price = if predicted_up {
+            get("up_ask_vwap_5")?
+        } else {
+            get("down_ask_vwap_5")?
+        };
+        let fee_rate = get("fee_rate")?;
+        let cost = price + fee_rate * price * (1.0 - price) + execution_reserve;
+        let bucket = bucket_index(cost, price_edges);
+        let cell = if seconds < 120 {
+            "90-119"
+        } else if seconds < 150 {
+            "120-149"
+        } else {
+            "150-179"
+        };
+        let cells = ["90-119", "120-149", "150-179"];
+        let logit =
+            (selected.clamp(1e-6, 1.0 - 1e-6) / (1.0 - selected.clamp(1e-6, 1.0 - 1e-6))).ln();
+        let cell_hot = cells
+            .iter()
+            .map(|value| f64::from(*value == cell))
+            .collect::<Vec<_>>();
+        let bucket_hot = (0..price_edges.len() - 1)
+            .map(|index| f64::from(index == bucket))
+            .collect::<Vec<_>>();
+        let mut matrix = vec![logit, f64::from(predicted_up)];
+        matrix.extend_from_slice(&cell_hot);
+        matrix.extend_from_slice(&bucket_hot);
+        matrix.extend(cell_hot.iter().map(|hot| hot * logit));
+        matrix.extend(bucket_hot.iter().map(|hot| hot * logit));
+        matrix.extend(correctness.regime_indices.iter().map(|index| {
+            if features[*index].is_finite() {
+                features[*index]
+            } else {
+                0.0
+            }
+        }));
+        let global = correctness.model.probability(&matrix)?;
+        let key = format!(
+            "{cell}:{}:{bucket}",
+            if predicted_up { "up" } else { "down" }
+        );
+        let (correct_probability, penalty) = if let Some(local) = correctness.locals.get(&key) {
+            let local_probability = local.model.probability(&[logit])?;
+            (
+                local.weight * local_probability + (1.0 - local.weight) * global,
+                local.weight * local.penalty + (1.0 - local.weight) * correctness.global_penalty,
+            )
+        } else {
+            (global, correctness.global_penalty)
+        };
+        let lower = (correct_probability - penalty).clamp(0.0, 1.0);
+        let stress_edge = lower - cost - stress_slippage;
+        let loss = if let Some(loss) = loss_model {
+            let values = derived_middle_values(
+                &loss.feature_names,
+                feature_names,
+                features,
+                selected,
+                cost,
+                selected - cost,
+                lower,
+                stress_edge,
+                seconds,
+            )?;
+            loss.model.score_derived(&values)?
+        } else {
+            0.0
+        };
+        let accepted = lower >= *confidence_threshold
+            && stress_edge >= *stress_edge_threshold
+            && loss_threshold.is_none_or(|threshold| loss <= threshold);
+        let action = if !accepted {
+            RuntimeModelAction::NoTrade
+        } else if predicted_up {
+            RuntimeModelAction::Up
+        } else {
+            RuntimeModelAction::Down
+        };
+        Ok(RuntimeModelScore {
+            raw_logit: (probability_up / (1.0 - probability_up)).ln(),
+            probability_up,
+            confidence: lower,
+            action,
+            accepted,
+        })
+    }
+}
+
+fn bucket_index(value: f64, edges: &[f64]) -> usize {
+    edges[1..edges.len() - 1]
+        .iter()
+        .take_while(|edge| value >= **edge)
+        .count()
+}
+
+fn no_trade_score() -> RuntimeModelScore {
+    RuntimeModelScore {
+        raw_logit: 0.0,
+        probability_up: 0.5,
+        confidence: 0.5,
+        action: RuntimeModelAction::NoTrade,
+        accepted: false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derived_middle_values(
+    names: &[String],
+    feature_names: &[String],
+    features: &[f64],
+    selected: f64,
+    cost: f64,
+    edge: f64,
+    lower: f64,
+    stress_edge: f64,
+    _seconds: i64,
+) -> Result<Vec<f64>> {
+    names
+        .iter()
+        .map(|name| match name.as_str() {
+            "probability_selected" => Ok(selected),
+            "selected_cost_5" => Ok(cost),
+            "selected_edge_5" => Ok(edge),
+            "lower_correctness_probability" => Ok(lower),
+            "stress_edge_lower_bound" => Ok(stress_edge),
+            other => feature_names
+                .iter()
+                .position(|value| value == other)
+                .map(|index| features[index])
+                .with_context(|| format!("BTC derived middle feature {other} is missing")),
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -788,6 +1422,7 @@ struct RuntimeModelFile {
     time_bands: Option<Vec<RuntimeTimeBandFile>>,
     target: Option<RuntimeTargetFile>,
     asymmetric_value_calibration: Option<RuntimeAsymmetricValueCalibrationFile>,
+    payoff_model: Option<RuntimePayoffModelFile>,
     decision: RuntimeDecisionFile,
     prediction_policy: RuntimePredictionPolicyFile,
     provenance: serde_json::Value,
@@ -941,6 +1576,135 @@ struct RuntimePredictionPolicyFile {
     early_end_second: Option<i64>,
     #[serde(default)]
     early_cadence_seconds: Option<i64>,
+    #[serde(default)]
+    late_start_second: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum RuntimePayoffModelFile {
+    Q5 {
+        execution_reserve_per_share: f64,
+        stress_slippage_per_share: f64,
+        price_bucket_edges: Vec<f64>,
+        price_bucket_minimum_edges: Vec<f64>,
+        experts: HashMap<String, RuntimePayoffExpertFile>,
+        family_proxies: HashMap<String, RuntimePayoffExpertFile>,
+        price_time_calibration: RuntimePriceTimeCalibrationFile,
+        calibration_guard: RuntimePenaltyFile,
+        admission: RuntimeAdmissionFile,
+        thresholds: HashMap<String, RuntimeQ5ThresholdFile>,
+    },
+    Middle {
+        execution_reserve_per_share: f64,
+        stress_slippage_per_share: f64,
+        price_bucket_edges: Vec<f64>,
+        outcome: RuntimeSubmodelFile,
+        outcome_calibrator: RuntimeLogisticFile,
+        correctness: RuntimeCorrectnessFile,
+        policy: RuntimeMiddlePolicyFile,
+        eligibility_feature_indices: Vec<usize>,
+        probability_modifier: Option<RuntimeProbabilityModifierFile>,
+        loss_model: Option<RuntimeDerivedSubmodelFile>,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeSubmodelFile {
+    feature_indices: Vec<usize>,
+    baseline: f64,
+    output: String,
+    trees: Vec<RuntimeTreeFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeLogisticFile {
+    coefficients: Vec<f64>,
+    intercept: f64,
+    means: Option<Vec<f64>>,
+    scales: Option<Vec<f64>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimePayoffExpertFile {
+    start_second: i64,
+    end_second_exclusive: i64,
+    outcome: RuntimeSubmodelFile,
+    calibrator: RuntimeLogisticFile,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimePriceTimeCalibrationFile {
+    band_names: Vec<String>,
+    model: RuntimeLogisticFile,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimePenaltyFile {
+    penalties: HashMap<String, f64>,
+    global_penalty: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeAdmissionFile {
+    feature_names: Vec<String>,
+    classifier: RuntimeSubmodelFile,
+    regressor: RuntimeSubmodelFile,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeQ5ThresholdFile {
+    enabled: bool,
+    confidence: f64,
+    edge: f64,
+    admission: f64,
+    payoff_lower_bound: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeCorrectnessFile {
+    model: RuntimeLogisticFile,
+    regime_feature_indices: Vec<usize>,
+    global_penalty: f64,
+    locals: HashMap<String, RuntimeLocalCalibrationFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeLocalCalibrationFile {
+    model: RuntimeLogisticFile,
+    weight: f64,
+    penalty: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeMiddlePolicyFile {
+    confidence: f64,
+    stress_edge: f64,
+    loss_severity: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeProbabilityModifierFile {
+    feature_indices: Vec<usize>,
+    model: RuntimeLogisticFile,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeDerivedSubmodelFile {
+    feature_names: Vec<String>,
+    model: RuntimeSubmodelFile,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1009,7 +1773,10 @@ fn validate_manifest(
         || (directional_feature_names(&manifest.feature_schema_version).is_none()
             && !manifest
                 .feature_schema_version
-                .starts_with("btc-5m-asymmetric-"))
+                .starts_with("btc-5m-asymmetric-")
+            && !manifest
+                .feature_schema_version
+                .starts_with("btc-5m-payoff-aware-"))
         || manifest.feature_schema_sha256 != selection.feature_schema_sha256
     {
         bail!("BTC directional runtime model manifest does not match its frozen contract");
@@ -1072,12 +1839,14 @@ fn compile_runtime_model(
     let legacy_schema = file.schema_version == RUNTIME_MODEL_SCHEMA_VERSION;
     let time_banded_schema = file.schema_version == RUNTIME_MODEL_TIME_BANDED_SCHEMA_VERSION;
     let asymmetric_schema = file.schema_version == RUNTIME_MODEL_ASYMMETRIC_VALUE_SCHEMA_VERSION;
-    if (!legacy_schema && !time_banded_schema && !asymmetric_schema)
+    let payoff_schema = file.schema_version == RUNTIME_MODEL_PAYOFF_AWARE_SCHEMA_VERSION;
+    if (!legacy_schema && !time_banded_schema && !asymmetric_schema && !payoff_schema)
         || file.model_key != selection.model_key
         || file.features.schema_version != manifest.feature_schema_version
         || file.features.schema_sha256 != manifest.feature_schema_sha256
         || file.features.numeric_type != "float64"
-        || file.features.non_finite_policy != "median_imputation"
+        || (file.features.non_finite_policy != "median_imputation"
+            && !(payoff_schema && file.features.non_finite_policy == "native_missing_branch"))
     {
         bail!("BTC directional runtime model identity or feature contract is invalid");
     }
@@ -1128,7 +1897,45 @@ fn compile_runtime_model(
     {
         bail!("BTC directional runtime model feature contract is malformed");
     }
-    if asymmetric_schema {
+    if payoff_schema {
+        let prediction_policy = compile_payoff_prediction_policy(&file.prediction_policy)?;
+        let payoff_model = compile_payoff_model(
+            file.payoff_model
+                .context("BTC payoff-aware runtime model payload is missing")?,
+            &file.features.names,
+        )?;
+        return Ok(RuntimeDirectionalModel {
+            model_key: file.model_key,
+            artifact_sha256,
+            feature_schema_version: file.features.schema_version,
+            feature_schema_sha256: file.features.schema_sha256,
+            deployment_scope,
+            production_qualified,
+            live_capital_allowed,
+            feature_names: file.features.names,
+            imputation_medians: file.features.imputation_medians,
+            baseline_logit: 0.0,
+            trees: Vec::new(),
+            calibration_policy: RuntimeCalibrationPolicy::Global {
+                calibration: RuntimeCalibration {
+                    slope: 1.0,
+                    intercept: 0.0,
+                    input_probability_minimum: 1e-9,
+                    input_probability_maximum: 1.0 - 1e-9,
+                    output_logit_minimum: -40.0,
+                    output_logit_maximum: 40.0,
+                },
+                confidence_threshold: 0.5,
+            },
+            target: RuntimeTarget::OutcomeUp,
+            decision: RuntimeDecision {
+                probability_up_threshold: 0.5,
+            },
+            prediction_policy,
+            asymmetric_value_calibration: None,
+            payoff_model: Some(payoff_model),
+        });
+    } else if asymmetric_schema {
         validate_asymmetric_feature_order(&file.features.names)?;
     } else {
         validate_frozen_feature_order(&file.features.schema_version, &file.features.names)?;
@@ -1188,6 +1995,7 @@ fn compile_runtime_model(
         cadence_seconds: prediction_policy.cadence_seconds,
         early_end_second: prediction_policy.early_end_second,
         early_cadence_seconds: prediction_policy.early_cadence_seconds,
+        late_start_second: prediction_policy.late_start_second,
     };
 
     let (calibration_policy, target, asymmetric_value_calibration) = if legacy_schema {
@@ -1277,7 +2085,278 @@ fn compile_runtime_model(
         },
         prediction_policy,
         asymmetric_value_calibration,
+        payoff_model: None,
     })
+}
+
+fn compile_payoff_prediction_policy(
+    file: &RuntimePredictionPolicyFile,
+) -> Result<RuntimePredictionPolicy> {
+    if file.policy_type != "first_confidence_crossing"
+        || file.minimum_seconds_after_open < 0
+        || file.maximum_seconds_after_open >= 300
+        || file.maximum_seconds_after_open < file.minimum_seconds_after_open
+        || file.cadence_seconds <= 0
+    {
+        bail!("BTC payoff-aware prediction policy is invalid");
+    }
+    if let Some(start) = file.late_start_second {
+        if file.early_end_second.is_none()
+            || file.early_cadence_seconds.is_none()
+            || start <= file.early_end_second.unwrap_or_default()
+            || start > file.maximum_seconds_after_open
+        {
+            bail!("BTC payoff-aware split prediction policy is invalid");
+        }
+    }
+    Ok(RuntimePredictionPolicy {
+        minimum_seconds_after_open: file.minimum_seconds_after_open,
+        maximum_seconds_after_open: file.maximum_seconds_after_open,
+        cadence_seconds: file.cadence_seconds,
+        early_end_second: file.early_end_second,
+        early_cadence_seconds: file.early_cadence_seconds,
+        late_start_second: file.late_start_second,
+    })
+}
+
+fn compile_logistic(file: RuntimeLogisticFile) -> Result<RuntimeLogistic> {
+    let width = file.coefficients.len();
+    if width == 0
+        || !file.intercept.is_finite()
+        || file.coefficients.iter().any(|value| !value.is_finite())
+    {
+        bail!("BTC payoff logistic model is invalid");
+    }
+    match (&file.means, &file.scales) {
+        (None, None) => {}
+        (Some(means), Some(scales))
+            if means.len() == width
+                && scales.len() == width
+                && means.iter().all(|value| value.is_finite())
+                && scales.iter().all(|value| value.is_finite() && *value > 0.0) => {}
+        _ => bail!("BTC payoff logistic scaling contract is invalid"),
+    }
+    Ok(RuntimeLogistic {
+        coefficients: file.coefficients,
+        intercept: file.intercept,
+        means: file.means,
+        scales: file.scales,
+    })
+}
+
+fn compile_submodel(file: RuntimeSubmodelFile, source_width: usize) -> Result<RuntimeSubmodel> {
+    if file.feature_indices.is_empty()
+        || file
+            .feature_indices
+            .iter()
+            .any(|index| *index >= source_width)
+        || !file.baseline.is_finite()
+        || !matches!(file.output.as_str(), "probability" | "regression")
+        || file.trees.is_empty()
+    {
+        bail!("BTC payoff histogram submodel is invalid");
+    }
+    let local_width = file.feature_indices.len();
+    let trees = file
+        .trees
+        .into_iter()
+        .enumerate()
+        .map(|(index, tree)| compile_tree(tree, local_width, index))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(RuntimeSubmodel {
+        feature_indices: file.feature_indices,
+        baseline: file.baseline,
+        probability_output: file.output == "probability",
+        trees,
+    })
+}
+
+fn compile_expert(
+    file: RuntimePayoffExpertFile,
+    feature_count: usize,
+) -> Result<RuntimePayoffExpert> {
+    if file.start_second < 0 || file.end_second_exclusive <= file.start_second {
+        bail!("BTC payoff expert time band is invalid");
+    }
+    Ok(RuntimePayoffExpert {
+        start_second: file.start_second,
+        end_second_exclusive: file.end_second_exclusive,
+        outcome: compile_submodel(file.outcome, feature_count)?,
+        calibrator: compile_logistic(file.calibrator)?,
+    })
+}
+
+fn validate_payoff_numbers(values: &[f64]) -> Result<()> {
+    if values.iter().any(|value| !value.is_finite()) {
+        bail!("BTC payoff contract contains a non-finite value");
+    }
+    Ok(())
+}
+
+fn compile_payoff_model(
+    file: RuntimePayoffModelFile,
+    feature_names: &[String],
+) -> Result<RuntimePayoffModel> {
+    let feature_count = feature_names.len();
+    match file {
+        RuntimePayoffModelFile::Q5 {
+            execution_reserve_per_share,
+            stress_slippage_per_share,
+            price_bucket_edges,
+            price_bucket_minimum_edges,
+            experts,
+            family_proxies,
+            price_time_calibration,
+            calibration_guard,
+            admission,
+            thresholds,
+        } => {
+            validate_payoff_numbers(&[
+                execution_reserve_per_share,
+                stress_slippage_per_share,
+                calibration_guard.global_penalty,
+            ])?;
+            validate_payoff_numbers(&price_bucket_edges)?;
+            validate_payoff_numbers(&price_bucket_minimum_edges)?;
+            if price_bucket_edges.len() < 2
+                || price_bucket_minimum_edges.len() + 1 != price_bucket_edges.len()
+            {
+                bail!("BTC q5 price buckets are invalid");
+            }
+            let experts = experts
+                .into_iter()
+                .map(|(key, value)| Ok((key, compile_expert(value, feature_count)?)))
+                .collect::<Result<HashMap<_, _>>>()?;
+            let family_proxies = family_proxies
+                .into_iter()
+                .map(|(key, value)| Ok((key, compile_expert(value, feature_count)?)))
+                .collect::<Result<HashMap<_, _>>>()?;
+            let admission_width = admission.feature_names.len();
+            let admission_classifier = compile_submodel(admission.classifier, admission_width)?;
+            let admission_regressor = compile_submodel(admission.regressor, admission_width)?;
+            let thresholds = thresholds
+                .into_iter()
+                .map(|(key, value)| {
+                    validate_payoff_numbers(&[
+                        value.confidence,
+                        value.edge,
+                        value.admission,
+                        value.payoff_lower_bound,
+                    ])?;
+                    Ok((
+                        key,
+                        RuntimeQ5Threshold {
+                            enabled: value.enabled,
+                            confidence: value.confidence,
+                            edge: value.edge,
+                            admission: value.admission,
+                            payoff_lower_bound: value.payoff_lower_bound,
+                        },
+                    ))
+                })
+                .collect::<Result<HashMap<_, _>>>()?;
+            Ok(RuntimePayoffModel::Q5 {
+                feature_names: feature_names.to_vec(),
+                price_edges: price_bucket_edges,
+                minimum_edges: price_bucket_minimum_edges,
+                experts,
+                family_proxies,
+                price_band_names: price_time_calibration.band_names,
+                price_calibrator: compile_logistic(price_time_calibration.model)?,
+                guard_penalties: calibration_guard.penalties,
+                global_guard_penalty: calibration_guard.global_penalty,
+                admission_feature_names: admission.feature_names,
+                admission_classifier,
+                admission_regressor,
+                thresholds,
+                history: Mutex::new(HashMap::new()),
+            })
+        }
+        RuntimePayoffModelFile::Middle {
+            execution_reserve_per_share,
+            stress_slippage_per_share,
+            price_bucket_edges,
+            outcome,
+            outcome_calibrator,
+            correctness,
+            policy,
+            eligibility_feature_indices,
+            probability_modifier,
+            loss_model,
+        } => {
+            validate_payoff_numbers(&[
+                execution_reserve_per_share,
+                stress_slippage_per_share,
+                policy.confidence,
+                policy.stress_edge,
+                correctness.global_penalty,
+            ])?;
+            if eligibility_feature_indices
+                .iter()
+                .any(|index| *index >= feature_count)
+            {
+                bail!("BTC middle eligibility feature index is invalid");
+            }
+            let locals = correctness
+                .locals
+                .into_iter()
+                .map(|(key, value)| {
+                    Ok((
+                        key,
+                        RuntimeLocalCalibration {
+                            model: compile_logistic(value.model)?,
+                            weight: value.weight,
+                            penalty: value.penalty,
+                        },
+                    ))
+                })
+                .collect::<Result<HashMap<_, _>>>()?;
+            let probability_modifier = probability_modifier
+                .map(|value| -> Result<_> {
+                    if value
+                        .feature_indices
+                        .iter()
+                        .any(|index| *index >= feature_count)
+                    {
+                        bail!("BTC middle modifier feature index is invalid");
+                    }
+                    Ok(RuntimeProbabilityModifier {
+                        feature_indices: value.feature_indices,
+                        model: compile_logistic(value.model)?,
+                    })
+                })
+                .transpose()?;
+            let loss_model = loss_model
+                .map(|value| -> Result<_> {
+                    let width = value.feature_names.len();
+                    Ok(RuntimeDerivedSubmodel {
+                        feature_names: value.feature_names,
+                        model: compile_submodel(value.model, width)?,
+                    })
+                })
+                .transpose()?;
+            Ok(RuntimePayoffModel::Middle {
+                feature_names: feature_names.to_vec(),
+                execution_reserve: execution_reserve_per_share,
+                stress_slippage: stress_slippage_per_share,
+                price_edges: price_bucket_edges,
+                outcome: compile_submodel(outcome, feature_count)?,
+                outcome_calibrator: compile_logistic(outcome_calibrator)?,
+                correctness: RuntimeCorrectness {
+                    model: compile_logistic(correctness.model)?,
+                    regime_indices: correctness.regime_feature_indices,
+                    global_penalty: correctness.global_penalty,
+                    locals,
+                },
+                confidence_threshold: policy.confidence,
+                stress_edge_threshold: policy.stress_edge,
+                loss_threshold: policy.loss_severity,
+                eligibility_indices: eligibility_feature_indices,
+                probability_modifier,
+                loss_model,
+            })
+        }
+    }
 }
 
 fn compile_calibration(file: RuntimeCalibrationFile) -> Result<RuntimeCalibration> {
@@ -1626,12 +2705,13 @@ fn compile_tree(
             RuntimeTreeNodeFile::Split {
                 feature_index,
                 threshold,
+                _missing_go_to_left: missing_go_to_left,
                 left,
                 right,
-                ..
             } => RuntimeTreeNode::Split {
                 feature_index,
                 threshold,
+                missing_go_to_left,
                 left,
                 right,
             },
@@ -1773,6 +2853,7 @@ mod tests {
                     RuntimeTreeNode::Split {
                         feature_index: 0,
                         threshold: 0.0,
+                        missing_go_to_left: true,
                         left: 1,
                         right: 2,
                     },
@@ -1801,8 +2882,10 @@ mod tests {
                 cadence_seconds: 5,
                 early_end_second: None,
                 early_cadence_seconds: None,
+                late_start_second: None,
             },
             asymmetric_value_calibration: None,
+            payoff_model: None,
         }
     }
 
@@ -2036,6 +3119,31 @@ mod tests {
     }
 
     #[test]
+    fn split_prediction_policy_disables_the_middle_interval() {
+        let policy = RuntimePredictionPolicy {
+            minimum_seconds_after_open: 15,
+            maximum_seconds_after_open: 240,
+            cadence_seconds: 5,
+            early_end_second: Some(89),
+            early_cadence_seconds: Some(1),
+            late_start_second: Some(180),
+        };
+
+        for accepted in [15, 16, 89, 180, 185, 240] {
+            assert!(
+                policy.accepts(accepted),
+                "second {accepted} must be eligible"
+            );
+        }
+        for rejected in [14, 90, 179, 181, 241] {
+            assert!(
+                !policy.accepts(rejected),
+                "second {rejected} must be ineligible"
+            );
+        }
+    }
+
+    #[test]
     fn time_band_contract_must_exactly_cover_prediction_policy() {
         let policy = RuntimePredictionPolicy {
             minimum_seconds_after_open: 60,
@@ -2043,6 +3151,7 @@ mod tests {
             cadence_seconds: 5,
             early_end_second: None,
             early_cadence_seconds: None,
+            late_start_second: None,
         };
         let valid = vec![
             RuntimeTimeBandFile {
@@ -2183,6 +3292,7 @@ mod tests {
                 vectors.schema_version == GOLDEN_VECTORS_SCHEMA_VERSION
                     || vectors.schema_version == TIME_BANDED_GOLDEN_VECTORS_SCHEMA_VERSION
                     || vectors.schema_version == ASYMMETRIC_VALUE_GOLDEN_VECTORS_SCHEMA_VERSION
+                    || vectors.schema_version == PAYOFF_AWARE_GOLDEN_VECTORS_SCHEMA_VERSION
             );
             assert_eq!(vectors.model_key, selection.model_key);
             if let Some(feature_schema_version) = vectors.feature_schema_version.as_deref() {
@@ -2224,6 +3334,9 @@ mod tests {
                                 vector.no_ask_vwap.unwrap(),
                             )
                             .unwrap()
+                    }
+                    (PAYOFF_AWARE_GOLDEN_VECTORS_SCHEMA_VERSION, Some(seconds_elapsed)) => {
+                        model.score_at_seconds(&features, seconds_elapsed).unwrap()
                     }
                     _ => panic!(
                         "{}:{} golden-vector elapsed-time contract mismatch",

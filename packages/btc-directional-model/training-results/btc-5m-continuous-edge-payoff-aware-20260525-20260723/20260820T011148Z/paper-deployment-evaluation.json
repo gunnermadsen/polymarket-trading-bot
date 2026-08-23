@@ -1,0 +1,35 @@
+{
+  "schema_version": "btc-payoff-aware-paper-deployment-evaluation-v1",
+  "source_model_sha256": "7a8ab1b5434df5610d4866d2f5ef6a3515b796d5cd5ea9e2ccc9bbfcb64ac180",
+  "timing_contract": {
+    "early": { "start_second": 15, "end_second": 89, "cadence_seconds": 1 },
+    "mid": { "enabled": false },
+    "late": { "start_second": 180, "end_second": 240, "cadence_seconds": 5 }
+  },
+  "corrected_original_test": {
+    "trades": 38,
+    "accuracy": 0.8421052631578947,
+    "projected_vwap5_net_pnl": 20.064045000000004,
+    "projected_vwap5_stress_net_pnl": 18.164045000000005,
+    "expectancy_per_trade": 0.5280011842105264,
+    "profit_factor": 1.9128925306230535,
+    "average_entry_second": 66.05263157894737,
+    "median_entry_second": 44.0,
+    "minimum_eligible_second": 15,
+    "rows_before_minimum_second": 0,
+    "early": { "trades": 33, "accuracy": 0.8181818181818182, "projected_vwap5_net_pnl": 13.829930000000001, "average_entry_second": 44.24242424242424 },
+    "late": { "trades": 5, "accuracy": 1.0, "projected_vwap5_net_pnl": 6.234115000000001, "average_entry_second": 210.0 }
+  },
+  "fresh_post_training_holdout": {
+    "start": "2026-07-23T17:00:00Z",
+    "end": "2026-08-02T00:00:00Z",
+    "strict_markets": 2208,
+    "trades": 35,
+    "accuracy": 0.6857142857142857,
+    "projected_vwap5_net_pnl": -8.249065,
+    "projected_vwap5_stress_net_pnl": -9.999065000000002,
+    "average_entry_second": 89.85714285714286,
+    "strict_market_coverage": 0.01585144927536232,
+    "result": "failed_fresh_holdout; paper_only"
+  }
+}

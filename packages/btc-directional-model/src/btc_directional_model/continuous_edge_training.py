@@ -988,6 +988,17 @@ def load_training_frame(config: TrainingConfig, manifest: dict[str, Any]) -> pl.
     frame = oracle.join(evidence, on=list(key_columns), how="inner", validate="1:1")
     if frame.is_empty():
         raise RuntimeError("oracle feature and capacity evidence keys do not overlap")
+    minimum_second = min(band.start_second for band in config.bands)
+    maximum_second = max(band.end_second_exclusive for band in config.bands) - 1
+    frame = frame.filter(
+        pl.col("seconds_elapsed").is_between(
+            minimum_second,
+            maximum_second,
+            closed="both",
+        )
+    )
+    if frame.is_empty():
+        raise RuntimeError("no rows remain inside the frozen model timing contract")
     frame = attach_book_features(frame)
     frame = _join_optional_features(frame, config.paths.chainlink_features, CHAINLINK_FEATURES)
     frame = _join_optional_features(frame, config.paths.l2_features, L2_FEATURES)

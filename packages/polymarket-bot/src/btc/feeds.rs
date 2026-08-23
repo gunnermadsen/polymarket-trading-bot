@@ -701,6 +701,7 @@ pub struct BookApplyResult {
     pub(crate) token_id: Option<String>,
     pub(crate) source_timestamp: DateTime<Utc>,
     pub(crate) applied: bool,
+    pub(crate) book_mutated: bool,
     pub(crate) integrity_status: FeedIntegrityStatus,
 }
 
@@ -850,10 +851,12 @@ impl BookRegistry {
                 source_hash,
             } => {
                 let sequence = self.take_sequence();
+                let mut book_mutated = false;
                 let status = if let Some(book) = self.books.get_mut(&token_id) {
                     if !book.matches_market(&market_id) {
                         FeedIntegrityStatus::MarketMismatch
                     } else {
+                        book_mutated = true;
                         book.bids = levels_to_map(bids);
                         book.asks = levels_to_map(asks);
                         book.bootstrapped = true;
@@ -871,6 +874,7 @@ impl BookRegistry {
                     Some(token_id),
                     source_timestamp,
                     status == FeedIntegrityStatus::Ok,
+                    book_mutated,
                     status,
                 )]
             }
@@ -892,9 +896,11 @@ impl BookRegistry {
                         .or_default()
                         .push(index);
                 }
-                let mut outcomes = vec![(false, FeedIntegrityStatus::UnknownToken); entries.len()];
+                let mut outcomes =
+                    vec![(false, false, FeedIntegrityStatus::UnknownToken); entries.len()];
 
                 for (token_id, indexes) in by_token {
+                    let mut book_mutated = false;
                     let status = if let Some(book) = self.books.get_mut(&token_id) {
                         if !book.matches_market(&market_id) {
                             FeedIntegrityStatus::MarketMismatch
@@ -945,6 +951,7 @@ impl BookRegistry {
                             let status =
                                 book.reconcile_advertised_top(best_bid, best_ask, &mut undo);
                             if status == FeedIntegrityStatus::Ok {
+                                book_mutated = true;
                                 book.source_timestamp = Some(source_timestamp);
                                 book.received_at = Some(received_at);
                                 book.source_hash = indexes
@@ -967,19 +974,26 @@ impl BookRegistry {
                             | FeedIntegrityStatus::DecodeError
                     ) {
                         if let Some(current) = self.books.get_mut(&token_id) {
+                            book_mutated = current.integrity_status != status;
                             current.integrity_status = status;
                         }
                     }
                     for index in indexes {
-                        outcomes[index] = (status == FeedIntegrityStatus::Ok, status);
+                        outcomes[index] = (status == FeedIntegrityStatus::Ok, book_mutated, status);
                     }
                 }
 
                 entries
                     .into_iter()
                     .zip(outcomes)
-                    .map(|((change, _sequence), (applied, status))| {
-                        book_apply_result(Some(change.token_id), source_timestamp, applied, status)
+                    .map(|((change, _sequence), (applied, book_mutated, status))| {
+                        book_apply_result(
+                            Some(change.token_id),
+                            source_timestamp,
+                            applied,
+                            book_mutated,
+                            status,
+                        )
                     })
                     .collect()
             }
@@ -999,16 +1013,19 @@ impl BookRegistry {
             } => {
                 let sequence = self.take_sequence();
                 let mut applied = false;
+                let mut book_mutated = false;
                 let status = if let Some(book) = self.books.get_mut(&token_id) {
                     if !book.matches_market(&market_id) {
                         FeedIntegrityStatus::MarketMismatch
                     } else if new_tick_size <= Decimal::ZERO {
                         FeedIntegrityStatus::DecodeError
                     } else if !book.bootstrapped {
+                        book_mutated = true;
                         book.tick_size = new_tick_size;
                         book.ingest_sequence = sequence;
                         FeedIntegrityStatus::PreSnapshot
                     } else {
+                        book_mutated = true;
                         book.tick_size = new_tick_size;
                         book.ingest_sequence = sequence;
                         applied = true;
@@ -1021,6 +1038,7 @@ impl BookRegistry {
                     Some(token_id),
                     source_timestamp,
                     applied,
+                    book_mutated,
                     status,
                 )]
             }
@@ -1171,7 +1189,7 @@ impl BookRegistry {
             Some(_) => (false, FeedIntegrityStatus::PreSnapshot),
             None => (false, FeedIntegrityStatus::UnknownToken),
         };
-        book_apply_result(Some(token_id), source_timestamp, applied, status)
+        book_apply_result(Some(token_id), source_timestamp, applied, false, status)
     }
 
     fn take_sequence(&mut self) -> u64 {
@@ -1342,12 +1360,14 @@ fn book_apply_result(
     token_id: Option<String>,
     source_timestamp: DateTime<Utc>,
     applied: bool,
+    book_mutated: bool,
     integrity_status: FeedIntegrityStatus,
 ) -> BookApplyResult {
     BookApplyResult {
         token_id,
         source_timestamp,
         applied,
+        book_mutated,
         integrity_status,
     }
 }

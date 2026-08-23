@@ -100,6 +100,8 @@ services:
       POSTGRES_PORT: "5432"
       POSTGRES_USER: "postgres"
       POSTGRES_DB: "temperature_expectancy"
+    volumes:
+      - ./packages/db-migrate/src/migrations/weather/1787331600000-AddTemperaturePmxtLastTradePrices.ts:/usr/src/app/src/migrations/weather/1787331600000-AddTemperaturePmxtLastTradePrices.ts:ro
     networks:
       - temperature-data
     depends_on:

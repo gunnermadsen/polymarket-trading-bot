@@ -61,7 +61,17 @@ python3 -m venv .venv
 .venv/bin/python -m kraken_ml evaluate-expectancy \
   --config configs/pf_xbtusd_15m_expectancy.toml \
   --run-id RUN_ID
+.venv/bin/python -m kraken_ml tournament \
+  --config configs/pf_xbtusd_15m_expectancy.toml
 ```
+
+`tournament` runs three adaptive classical-ML generations. Each subsequent
+generation is constructed only from prior-generation development and
+out-of-fold evidence. It compares signed-return Ridge, Elastic Net, histogram
+gradient boosting, Extra Trees, and LightGBM models across 30-minute through
+12-hour horizons, writes per-model predictive/economic/compute statistics, and
+leaves confirmation and the global holdout sealed unless every development
+qualification gate passes.
 
 `develop` materializes deterministic features across the configured range, but
 never uses holdout rows for model fitting, calibration, policy selection, or

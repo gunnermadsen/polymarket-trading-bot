@@ -14,6 +14,8 @@ export class RetireFeedAuditTables1787313600000
    */
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
+      SET LOCAL lock_timeout = '10s';
+
       DO $$
       BEGIN
         IF to_regclass('polymarket.market_feed_events') IS NULL THEN

@@ -1,0 +1,15 @@
+{
+  "deployment_scope": "paper_only",
+  "feature_schema_sha256": "eccc1787cfbb14f6faacc7ec20be6b2d6d16ca7fdac7c685be86410d63581158",
+  "feature_schema_version": "btc-5m-payoff-aware-q5-features-v1",
+  "golden_vectors_file": "golden-vectors.json",
+  "golden_vectors_sha256": "70b41236eafd91b34f8bebda8058a8281869d35f028d39d3c1d507d1875577fc",
+  "live_capital_allowed": false,
+  "model_file": "model.json",
+  "model_key": "btc-5m-payoff-aware-q5-paper-20260820",
+  "model_sha256": "ddb2c1cfedb9132d1120dfcdb405ab7737d808b124306e36da8f850ef51d803e",
+  "production_qualified": false,
+  "schema_version": "capitonic-btc-directional-runtime-manifest-v1",
+  "source_freeze_manifest_sha256": "7a8ab1b5434df5610d4866d2f5ef6a3515b796d5cd5ea9e2ccc9bbfcb64ac180",
+  "source_training_model_sha256": "7a8ab1b5434df5610d4866d2f5ef6a3515b796d5cd5ea9e2ccc9bbfcb64ac180"
+}
