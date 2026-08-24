@@ -15,7 +15,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 const DEFAULT_START: &str = "2026-08-01";
-const MATERIALIZATION_CONTRACT: &str = "pmdata-chainlink-btcusd-twap-v1";
+const MATERIALIZATION_CONTRACT: &str = "pmdata-chainlink-btcusd-twap-v2";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -112,5 +112,6 @@ mod tests {
             ChronoDuration::days(1)
         );
         assert!(request.idempotency_key.contains("2026-08-01"));
+        assert!(request.idempotency_key.ends_with(MATERIALIZATION_CONTRACT));
     }
 }

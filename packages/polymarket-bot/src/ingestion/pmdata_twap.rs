@@ -216,8 +216,9 @@ fn parse_archive_blocking(
         .context("invalid PMData source date")?
         .and_utc();
     let day_end = day_start + chrono::Duration::days(1);
-    let mut records = Vec::with_capacity(86_400);
+    let mut records: Vec<PmdataChainlinkBtcusdTwapRecord> = Vec::with_capacity(86_400);
     let mut previous_timestamp = None;
+    let mut archive_row_number = 0i64;
 
     for batch in reader {
         let batch = batch.context("failed to decode PMData Parquet batch")?;
@@ -237,11 +238,11 @@ fn parse_archive_blocking(
                 timestamp_value(received, row, "receiveMicrosecondTimestamp")?;
             let valid_from_timestamp = timestamp_value(valid_from, row, "validFromTimestamp")?;
             let expires_at = timestamp_value(expires_at, row, "expiresAt")?;
-            if source_timestamp < day_start || source_timestamp >= day_end {
-                bail!("PMData observation timestamp falls outside source date {date}");
+            if provider_received_at < day_start || provider_received_at >= day_end {
+                bail!("PMData receive timestamp falls outside archive date {date}");
             }
-            if previous_timestamp.is_some_and(|previous| previous >= source_timestamp) {
-                bail!("PMData observation timestamps are not strictly increasing");
+            if previous_timestamp.is_some_and(|previous| previous > source_timestamp) {
+                bail!("PMData observation timestamps are decreasing");
             }
             if valid_from_timestamp > source_timestamp || expires_at <= source_timestamp {
                 bail!("PMData report validity interval does not contain its observation");
@@ -261,9 +262,7 @@ fn parse_archive_blocking(
             if report_version.is_empty() {
                 bail!("PMData report version must not be empty");
             }
-            let archive_row_number =
-                i64::try_from(records.len()).context("PMData archive row count exceeds bigint")?;
-            records.push(PmdataChainlinkBtcusdTwapRecord {
+            let candidate = PmdataChainlinkBtcusdTwapRecord {
                 source_timestamp,
                 provider_received_at,
                 valid_from_timestamp,
@@ -274,7 +273,36 @@ fn parse_archive_blocking(
                 report_version,
                 source_date: date,
                 archive_row_number,
-            });
+            };
+            archive_row_number = archive_row_number
+                .checked_add(1)
+                .context("PMData archive row count exceeds bigint")?;
+
+            // PMData partitions by receive time, so a report observed immediately before
+            // midnight can appear in the following day's archive. Observation-date ownership
+            // keeps adjacent daily shards disjoint.
+            if source_timestamp < day_start || source_timestamp >= day_end {
+                previous_timestamp = Some(source_timestamp);
+                continue;
+            }
+            if records
+                .last()
+                .is_some_and(|previous| previous.source_timestamp == candidate.source_timestamp)
+            {
+                let previous = records.last().expect("checked above");
+                if previous.valid_from_timestamp != candidate.valid_from_timestamp
+                    || previous.expires_at != candidate.expires_at
+                    || previous.window_seconds != candidate.window_seconds
+                    || previous.twap_price != candidate.twap_price
+                    || previous.full_accuracy_value != candidate.full_accuracy_value
+                    || previous.report_version != candidate.report_version
+                {
+                    bail!("PMData duplicate observation contains conflicting report values");
+                }
+                previous_timestamp = Some(source_timestamp);
+                continue;
+            }
+            records.push(candidate);
             previous_timestamp = Some(source_timestamp);
         }
     }
@@ -447,22 +475,45 @@ mod tests {
             ),
             Field::new("version", DataType::LargeUtf8, false),
         ]));
-        let source_micros = 1_785_543_118_000_000i64;
+        let source_date = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        let day_start_micros = source_date
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp_micros();
+        let spill_micros = day_start_micros - 2_000_000;
+        let source_micros = day_start_micros + 10_000_000;
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(TimestampMicrosecondArray::from(vec![source_micros])),
                 Arc::new(TimestampMicrosecondArray::from(vec![
-                    source_micros + 1_014_022,
+                    spill_micros,
+                    source_micros,
+                    source_micros,
                 ])),
-                Arc::new(LargeStringArray::from(vec!["63018805980689359437824"])),
-                Arc::new(LargeStringArray::from(vec!["none"])),
-                Arc::new(LargeStringArray::from(vec!["none"])),
-                Arc::new(TimestampMicrosecondArray::from(vec![source_micros])),
                 Arc::new(TimestampMicrosecondArray::from(vec![
+                    day_start_micros + 32_716,
+                    source_micros + 1_014_022,
+                    source_micros + 1_114_022,
+                ])),
+                Arc::new(LargeStringArray::from(vec![
+                    "63018805980689359437824",
+                    "63018805980689359437824",
+                    "63018805980689359437824",
+                ])),
+                Arc::new(LargeStringArray::from(vec!["none", "none", "none"])),
+                Arc::new(LargeStringArray::from(vec!["none", "none", "none"])),
+                Arc::new(TimestampMicrosecondArray::from(vec![
+                    spill_micros,
+                    source_micros,
+                    source_micros,
+                ])),
+                Arc::new(TimestampMicrosecondArray::from(vec![
+                    spill_micros + 2_592_000_000_000,
+                    source_micros + 2_592_000_000_000,
                     source_micros + 2_592_000_000_000,
                 ])),
-                Arc::new(LargeStringArray::from(vec!["V2"])),
+                Arc::new(LargeStringArray::from(vec!["V2", "V2", "V2"])),
             ],
         )
         .unwrap();
@@ -471,15 +522,11 @@ mod tests {
         writer.write(&batch).unwrap();
         writer.close().unwrap();
 
-        let parsed = parse_archive(
-            archive,
-            NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
-            PmdataTwapWindow::Seconds60,
-            4_000,
-        )
-        .await
-        .unwrap();
+        let parsed = parse_archive(archive, source_date, PmdataTwapWindow::Seconds60, 4_000)
+            .await
+            .unwrap();
         assert_eq!(parsed.records.len(), 1);
+        assert_eq!(parsed.records[0].archive_row_number, 1);
         assert_eq!(parsed.records[0].window_seconds, 60);
         assert_eq!(
             parsed.records[0].full_accuracy_value,
