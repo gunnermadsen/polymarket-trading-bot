@@ -26,7 +26,7 @@ export class AddPmdataChainlinkBtcusdTwap1787594400000
         CONSTRAINT pk_market_data_pmdata_chainlink_btcusd_twap
           PRIMARY KEY (source_timestamp, window_seconds),
         CONSTRAINT uq_market_data_pmdata_chainlink_btcusd_twap_archive_row
-          UNIQUE (artifact_id, archive_row_number),
+          UNIQUE (artifact_id, source_timestamp, archive_row_number),
         CONSTRAINT fk_market_data_pmdata_chainlink_btcusd_twap_artifact
           FOREIGN KEY (artifact_id)
           REFERENCES polymarket.backfill_artifacts (artifact_id)
