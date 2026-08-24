@@ -7,6 +7,7 @@ pub mod execution_snapshots;
 pub mod executor;
 pub mod huggingface_binance_l2;
 pub mod job;
+pub mod pmdata_twap;
 pub mod pmxt_archive;
 pub mod polygon_chainlink_oracle;
 pub mod repository;

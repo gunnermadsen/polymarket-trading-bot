@@ -1,6 +1,7 @@
 use std::{
     env,
     path::PathBuf,
+    str::FromStr,
     time::{Duration, SystemTime},
 };
 
@@ -28,7 +29,11 @@ use super::{
     cryptohft_binance_l2::{CryptoHftBinanceL2Config, DEFAULT_CRYPTOHFT_BASE_URL},
     executor::{IngestionExecutor, IngestionExecutorConfig},
     huggingface_binance_l2::{HuggingFaceBinanceL2Config, DEFAULT_HUGGINGFACE_GOOODDY_BASE_URL},
-    job::{BackfillEventLevel, BackfillFailureKind, BackfillJobSummary, ClaimedJob, WorkerControl},
+    job::{
+        BackfillEventLevel, BackfillFailureKind, BackfillJobSummary, ClaimedJob, IngesterKey,
+        WorkerControl,
+    },
+    pmdata_twap::{PmdataTwapConfig, DEFAULT_PMDATA_BASE_URL},
     pmxt_archive::DEFAULT_PMXT_ARCHIVE_URL,
     polygon_chainlink_oracle::{
         PolygonChainlinkOracleConfig, DEFAULT_POLYGON_ARCHIVE_LOG_RPC_URL,
@@ -50,6 +55,7 @@ pub struct BackfillWorkerConfig {
     pub batch_rows: usize,
     pub maximum_cache_bytes: u64,
     pub stale_cache_age: Duration,
+    pub allowed_ingesters: Vec<IngesterKey>,
 }
 
 impl BackfillWorkerConfig {
@@ -82,6 +88,7 @@ impl BackfillWorkerConfig {
                 "POLYMARKET_BACKFILL_CACHE_STALE_SECS",
                 48 * 60 * 60,
             )?),
+            allowed_ingesters: allowed_ingesters_from_env()?,
         };
         config.validate()?;
         Ok(config)
@@ -114,6 +121,9 @@ impl BackfillWorkerConfig {
         }
         if self.stale_cache_age < Duration::from_secs(60 * 60) {
             bail!("POLYMARKET_BACKFILL_CACHE_STALE_SECS must be at least one hour");
+        }
+        if self.allowed_ingesters.is_empty() {
+            bail!("POLYMARKET_BACKFILL_ALLOWED_INGESTERS must select at least one ingester");
         }
         Ok(())
     }
@@ -211,6 +221,21 @@ impl BackfillWorker {
                     ),
                     maximum_block_range: env_u64("POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE", 30_000)?,
                 },
+                pmdata_twap: PmdataTwapConfig {
+                    base_url: env_string("POLYMARKET_PMDATA_BASE_URL", DEFAULT_PMDATA_BASE_URL),
+                    api_key: env::var("POLYMARKET_PMDATA_API_KEY")
+                        .ok()
+                        .filter(|value| !value.trim().is_empty())
+                        .or_else(|| {
+                            env::var("PM_DATA_API_KEY")
+                                .ok()
+                                .filter(|value| !value.trim().is_empty())
+                        }),
+                    archive_root: PathBuf::from(env_string(
+                        "POLYMARKET_PMDATA_ARCHIVE_ROOT",
+                        "/var/lib/polymarket/backfill-cache/pmdata-archive",
+                    )),
+                },
                 cache_directory: config.cache_directory.clone(),
                 batch_rows: config.batch_rows,
                 pmxt_prefetch_concurrency: env_usize("POLYMARKET_PMXT_PREFETCH_CONCURRENCY", 4)?,
@@ -233,7 +258,11 @@ impl BackfillWorker {
             }
             let claim = self
                 .repository
-                .claim_next(&self.config.worker_id, self.config.lease_duration)
+                .claim_next_for(
+                    &self.config.worker_id,
+                    self.config.lease_duration,
+                    &self.config.allowed_ingesters,
+                )
                 .await
                 .context("failed to claim a backfill job")?;
             if let Some(claim) = claim {
@@ -504,6 +533,28 @@ fn env_string(key: &str, default: &str) -> String {
         .unwrap_or_else(|| default.to_string())
 }
 
+fn allowed_ingesters_from_env() -> Result<Vec<IngesterKey>> {
+    let Some(value) = env::var("POLYMARKET_BACKFILL_ALLOWED_INGESTERS")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(IngesterKey::DEFAULT_WORKER.to_vec());
+    };
+    let mut allowed = Vec::new();
+    for raw in value.split(',') {
+        let key = IngesterKey::from_str(raw.trim()).with_context(|| {
+            format!("invalid POLYMARKET_BACKFILL_ALLOWED_INGESTERS value {raw}")
+        })?;
+        if !allowed.contains(&key) {
+            allowed.push(key);
+        }
+    }
+    if allowed.is_empty() {
+        bail!("POLYMARKET_BACKFILL_ALLOWED_INGESTERS must select at least one ingester");
+    }
+    Ok(allowed)
+}
+
 fn cryptohft_binance_l2_config_from_env(
     worker: &BackfillWorkerConfig,
 ) -> Result<Option<CryptoHftBinanceL2Config>> {
@@ -692,6 +743,7 @@ mod tests {
             batch_rows: 4_000,
             maximum_cache_bytes: 20 * 1024 * 1024 * 1024,
             stale_cache_age: Duration::from_secs(48 * 60 * 60),
+            allowed_ingesters: IngesterKey::ALL.to_vec(),
         }
     }
 

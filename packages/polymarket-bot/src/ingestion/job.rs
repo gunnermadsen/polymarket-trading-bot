@@ -12,6 +12,7 @@ pub const BINANCE_L2_HISTORICAL_START_EPOCH: i64 = 1_776_124_800;
 pub const BINANCE_L2_HISTORICAL_END_EPOCH: i64 = 1_785_628_800;
 pub const BINANCE_SPOT_L2_HISTORICAL_START_EPOCH: i64 = BINANCE_L2_HISTORICAL_START_EPOCH;
 pub const BINANCE_SPOT_L2_HISTORICAL_END_EPOCH: i64 = BINANCE_L2_HISTORICAL_END_EPOCH;
+pub const PMDATA_TWAP_HISTORICAL_START_EPOCH: i64 = 1_785_542_400;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -75,10 +76,31 @@ pub enum IngesterKey {
     ChainlinkBtcusdOneMinuteCandles,
     BinanceBtcusdtFiveMinuteOpenInterest,
     PolygonChainlinkBtcusdOracleRounds,
+    #[serde(rename = "pmdata_chainlink_btcusd_twap_30s")]
+    PmdataChainlinkBtcusdTwap30s,
+    #[serde(rename = "pmdata_chainlink_btcusd_twap_60s")]
+    PmdataChainlinkBtcusdTwap60s,
 }
 
 impl IngesterKey {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 14] = [
+        Self::BtcFiveMinuteMarkets,
+        Self::BtcFiveMinuteResolutions,
+        Self::BinanceBtcusdtAggTrades,
+        Self::BinanceBtcusdtL2OneSecondFeatures,
+        Self::BinanceSpotBtcusdtL2OneSecondFeatures,
+        Self::BinanceBtcusdtOneSecondKlines,
+        Self::PolymarketBtcFiveMinuteOrderbooks,
+        Self::PolymarketBtcFiveMinuteExecutionSnapshots,
+        Self::ChainlinkBtcusdReferenceTicks,
+        Self::ChainlinkBtcusdOneMinuteCandles,
+        Self::BinanceBtcusdtFiveMinuteOpenInterest,
+        Self::PolygonChainlinkBtcusdOracleRounds,
+        Self::PmdataChainlinkBtcusdTwap30s,
+        Self::PmdataChainlinkBtcusdTwap60s,
+    ];
+
+    pub const DEFAULT_WORKER: [Self; 12] = [
         Self::BtcFiveMinuteMarkets,
         Self::BtcFiveMinuteResolutions,
         Self::BinanceBtcusdtAggTrades,
@@ -113,6 +135,8 @@ impl IngesterKey {
                 "binance_btcusdt_five_minute_open_interest"
             }
             Self::PolygonChainlinkBtcusdOracleRounds => "polygon_chainlink_btcusd_oracle_rounds",
+            Self::PmdataChainlinkBtcusdTwap30s => "pmdata_chainlink_btcusd_twap_30s",
+            Self::PmdataChainlinkBtcusdTwap60s => "pmdata_chainlink_btcusd_twap_60s",
         }
     }
 
@@ -136,7 +160,9 @@ impl IngesterKey {
             | Self::ChainlinkBtcusdReferenceTicks
             | Self::ChainlinkBtcusdOneMinuteCandles
             | Self::BinanceBtcusdtFiveMinuteOpenInterest
-            | Self::PolygonChainlinkBtcusdOracleRounds => 86_400,
+            | Self::PolygonChainlinkBtcusdOracleRounds
+            | Self::PmdataChainlinkBtcusdTwap30s
+            | Self::PmdataChainlinkBtcusdTwap60s => 86_400,
         }
     }
 
@@ -184,6 +210,8 @@ impl FromStr for IngesterKey {
             "polygon_chainlink_btcusd_oracle_rounds" => {
                 Ok(Self::PolygonChainlinkBtcusdOracleRounds)
             }
+            "pmdata_chainlink_btcusd_twap_30s" => Ok(Self::PmdataChainlinkBtcusdTwap30s),
+            "pmdata_chainlink_btcusd_twap_60s" => Ok(Self::PmdataChainlinkBtcusdTwap60s),
             other => Err(BackfillRequestValidationError::new(format!(
                 "unsupported ingester {other}"
             ))),
@@ -286,6 +314,14 @@ impl BackfillRequest {
                     "Binance spot BTCUSDT L2 historical requests must remain within [2026-04-14T00:00:00Z, 2026-08-02T00:00:00Z)",
                 ));
             }
+            IngesterKey::PmdataChainlinkBtcusdTwap30s
+            | IngesterKey::PmdataChainlinkBtcusdTwap60s
+                if self.range_start.timestamp() < PMDATA_TWAP_HISTORICAL_START_EPOCH =>
+            {
+                return Err(BackfillRequestValidationError::new(
+                    "PMData Chainlink BTC/USD TWAP requests must start on or after 2026-08-01T00:00:00Z",
+                ));
+            }
             _ => {}
         }
 
@@ -302,11 +338,13 @@ impl BackfillRequest {
             self.ingester,
             IngesterKey::BinanceBtcusdtL2OneSecondFeatures
                 | IngesterKey::BinanceSpotBtcusdtL2OneSecondFeatures
+                | IngesterKey::PmdataChainlinkBtcusdTwap30s
+                | IngesterKey::PmdataChainlinkBtcusdTwap60s
         ) && !is_huggingface_goooddy
             && expected_work_units != 1
         {
             return Err(BackfillRequestValidationError::new(
-                "Binance BTCUSDT L2 requests must contain exactly one UTC-day shard",
+                "daily archive requests must contain exactly one UTC-day shard",
             ));
         }
         if is_huggingface_goooddy {
@@ -893,6 +931,20 @@ pub struct ChainlinkBtcusdArchiveTick {
     pub bid: Decimal,
     pub ask: Decimal,
     pub report_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PmdataChainlinkBtcusdTwapRecord {
+    pub source_timestamp: DateTime<Utc>,
+    pub provider_received_at: DateTime<Utc>,
+    pub valid_from_timestamp: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub window_seconds: i16,
+    pub twap_price: Decimal,
+    pub full_accuracy_value: String,
+    pub report_version: String,
+    pub source_date: NaiveDate,
+    pub archive_row_number: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]

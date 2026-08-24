@@ -23,8 +23,9 @@ use crate::ingestion::job::{
     BinanceL2OneSecondFeature, BinanceOneSecondKlineRecord, BtcExecutionSnapshot,
     BtcIntervalMarket, BtcOrderbookArchiveEvent, BtcOrderbookMarketScope, BtcOutcome,
     BtcReferenceFact, BtcResolutionCandidate, ChainlinkBtcusdArchiveTick,
-    ChainlinkBtcusdOneMinuteCandle, ClaimedJob, IngesterKey, PolygonChainlinkBtcusdOracleRound,
-    PreparedArtifact, TrainingReadiness, ValidatedBackfillRequest, WorkerControl,
+    ChainlinkBtcusdOneMinuteCandle, ClaimedJob, IngesterKey, PmdataChainlinkBtcusdTwapRecord,
+    PolygonChainlinkBtcusdOracleRound, PreparedArtifact, TrainingReadiness,
+    ValidatedBackfillRequest, WorkerControl,
 };
 
 const MAX_DATABASE_BATCH_ROWS: usize = 4_000;
@@ -393,13 +394,26 @@ impl IngestionRepository {
         worker_id: &str,
         lease_duration: Duration,
     ) -> Result<Option<ClaimedJob>> {
+        self.claim_next_for(worker_id, lease_duration, &IngesterKey::ALL)
+            .await
+    }
+
+    pub async fn claim_next_for(
+        &self,
+        worker_id: &str,
+        lease_duration: Duration,
+        allowed_ingesters: &[IngesterKey],
+    ) -> Result<Option<ClaimedJob>> {
         let worker_id = worker_id.trim();
         if worker_id.is_empty() {
             bail!("backfill worker_id must not be empty");
         }
+        if allowed_ingesters.is_empty() {
+            bail!("backfill worker must allow at least one ingester");
+        }
         let lease_seconds = positive_duration_seconds(lease_duration, "lease duration")?;
         let lease_token = Uuid::new_v4();
-        let supported = IngesterKey::ALL
+        let supported = allowed_ingesters
             .iter()
             .map(|key| key.as_str().to_string())
             .collect::<Vec<_>>();
@@ -1650,6 +1664,108 @@ impl IngestionRepository {
             .rows_affected();
         tx.commit().await?;
         batch_write_result(records.len(), inserted, "Chainlink tick")
+    }
+
+    pub async fn insert_pmdata_twap_batch(
+        &self,
+        claim: &ClaimedJob,
+        artifact_id: Uuid,
+        records: &[PmdataChainlinkBtcusdTwapRecord],
+    ) -> Result<BatchWriteResult> {
+        if records.is_empty() {
+            return Ok(BatchWriteResult::default());
+        }
+        if records.len() > MAX_DATABASE_BATCH_ROWS {
+            bail!("PMData TWAP batch exceeds {MAX_DATABASE_BATCH_ROWS} rows");
+        }
+        validate_pmdata_twap_batch(records)?;
+        let mut tx = self.pool.begin().await?;
+        require_active_lease(&mut tx, claim).await?;
+        require_writable_artifact(&mut tx, claim, artifact_id).await?;
+        let timestamps = records
+            .iter()
+            .map(|record| record.source_timestamp)
+            .collect::<Vec<_>>();
+        let window_seconds = records[0].window_seconds;
+        let existing = sqlx::query_as::<_, ExistingPmdataTwapRow>(
+            r#"
+            SELECT source_timestamp, provider_received_at, valid_from_timestamp,
+              expires_at, window_seconds, twap_price, full_accuracy_value,
+              report_version, source_date, archive_row_number, artifact_id
+            FROM market_data.pmdata_chainlink_btcusd_twap
+            WHERE window_seconds = $1 AND source_timestamp = ANY($2)
+            "#,
+        )
+        .bind(window_seconds)
+        .bind(&timestamps)
+        .fetch_all(&mut *tx)
+        .await
+        .context("failed to inspect existing PMData TWAP rows")?;
+        for stored in &existing {
+            let candidate = records
+                .iter()
+                .find(|record| record.source_timestamp == stored.source_timestamp)
+                .context("stored PMData TWAP identity was absent from candidate batch")?;
+            if !stored.same_as(candidate, artifact_id) {
+                bail!(
+                    "immutable PMData TWAP conflict for {}:{}",
+                    stored.window_seconds,
+                    stored.source_timestamp
+                );
+            }
+        }
+
+        let mut query = QueryBuilder::<Postgres>::new(
+            "INSERT INTO market_data.pmdata_chainlink_btcusd_twap (source_timestamp, \
+             provider_received_at, valid_from_timestamp, expires_at, window_seconds, \
+             twap_price, full_accuracy_value, report_version, source_date, \
+             archive_row_number, artifact_id) ",
+        );
+        query.push_values(records, |mut row, record| {
+            row.push_bind(record.source_timestamp)
+                .push_bind(record.provider_received_at)
+                .push_bind(record.valid_from_timestamp)
+                .push_bind(record.expires_at)
+                .push_bind(record.window_seconds)
+                .push_bind(record.twap_price)
+                .push_bind(&record.full_accuracy_value)
+                .push_bind(&record.report_version)
+                .push_bind(record.source_date)
+                .push_bind(record.archive_row_number)
+                .push_bind(artifact_id);
+        });
+        query.push(" ON CONFLICT (source_timestamp, window_seconds) DO NOTHING");
+        let inserted = query
+            .build()
+            .execute(&mut *tx)
+            .await
+            .context("failed to persist PMData TWAP batch")?
+            .rows_affected();
+        tx.commit().await?;
+        batch_write_result(records.len(), inserted, "PMData TWAP")
+    }
+
+    pub async fn pmdata_twap_artifact_stats(
+        &self,
+        artifact_id: Uuid,
+    ) -> Result<(u64, Option<DateTime<Utc>>, Option<DateTime<Utc>>)> {
+        let (count, minimum, maximum) =
+            sqlx::query_as::<_, (i64, Option<DateTime<Utc>>, Option<DateTime<Utc>>)>(
+                r#"
+            SELECT count(*)::bigint, min(source_timestamp), max(source_timestamp)
+            FROM market_data.pmdata_chainlink_btcusd_twap
+            WHERE artifact_id = $1
+            "#,
+            )
+            .bind(artifact_id)
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to inspect PMData TWAP artifact coverage")?;
+        Ok((
+            u64::try_from(count).context("PMData TWAP artifact count was negative")?,
+            minimum,
+            maximum,
+        ))
     }
 
     pub async fn insert_chainlink_candle_batch(
@@ -3705,6 +3821,21 @@ struct ExistingChainlinkTickRow {
 }
 
 #[derive(Debug, FromRow)]
+struct ExistingPmdataTwapRow {
+    source_timestamp: DateTime<Utc>,
+    provider_received_at: DateTime<Utc>,
+    valid_from_timestamp: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+    window_seconds: i16,
+    twap_price: Decimal,
+    full_accuracy_value: String,
+    report_version: String,
+    source_date: NaiveDate,
+    archive_row_number: i64,
+    artifact_id: Uuid,
+}
+
+#[derive(Debug, FromRow)]
 struct ExistingChainlinkCandleRow {
     symbol: String,
     open_timestamp: DateTime<Utc>,
@@ -3777,6 +3908,22 @@ impl ExistingChainlinkTickRow {
             && self.bid == row.bid
             && self.ask == row.ask
             && self.report_sha256 == row.report_sha256
+            && self.artifact_id == artifact_id
+    }
+}
+
+impl ExistingPmdataTwapRow {
+    fn same_as(&self, row: &PmdataChainlinkBtcusdTwapRecord, artifact_id: Uuid) -> bool {
+        self.source_timestamp == row.source_timestamp
+            && self.provider_received_at == row.provider_received_at
+            && self.valid_from_timestamp == row.valid_from_timestamp
+            && self.expires_at == row.expires_at
+            && self.window_seconds == row.window_seconds
+            && self.twap_price == row.twap_price
+            && self.full_accuracy_value == row.full_accuracy_value
+            && self.report_version == row.report_version
+            && self.source_date == row.source_date
+            && self.archive_row_number == row.archive_row_number
             && self.artifact_id == artifact_id
     }
 }
@@ -4215,6 +4362,37 @@ fn validate_chainlink_tick_batch(records: &[ChainlinkBtcusdArchiveTick]) -> Resu
             bail!("Chainlink tick timestamps must be strictly increasing within a batch");
         }
         previous = Some(record.source_timestamp);
+    }
+    Ok(())
+}
+
+fn validate_pmdata_twap_batch(records: &[PmdataChainlinkBtcusdTwapRecord]) -> Result<()> {
+    let window_seconds = records[0].window_seconds;
+    let source_date = records[0].source_date;
+    let mut previous_timestamp = None;
+    let mut previous_row_number = None;
+    for record in records {
+        if record.window_seconds != window_seconds
+            || !matches!(record.window_seconds, 30 | 60)
+            || record.source_date != source_date
+            || record.source_timestamp.date_naive() != source_date
+            || record.valid_from_timestamp > record.source_timestamp
+            || record.expires_at <= record.source_timestamp
+            || record.twap_price <= Decimal::ZERO
+            || record.twap_price.scale() != 18
+            || record.twap_price.mantissa().to_string() != record.full_accuracy_value
+            || record.report_version.trim().is_empty()
+            || record.archive_row_number < 0
+        {
+            bail!("invalid PMData Chainlink BTC/USD TWAP record");
+        }
+        if previous_timestamp.is_some_and(|timestamp| record.source_timestamp <= timestamp)
+            || previous_row_number.is_some_and(|row| record.archive_row_number <= row)
+        {
+            bail!("PMData TWAP rows must be strictly ordered within a batch");
+        }
+        previous_timestamp = Some(record.source_timestamp);
+        previous_row_number = Some(record.archive_row_number);
     }
     Ok(())
 }

@@ -46,6 +46,10 @@ use super::{
         BINANCE_L2_HISTORICAL_END_EPOCH, BINANCE_L2_HISTORICAL_START_EPOCH,
         BINANCE_SPOT_L2_HISTORICAL_END_EPOCH, BINANCE_SPOT_L2_HISTORICAL_START_EPOCH,
     },
+    pmdata_twap::{
+        parse_archive as parse_pmdata_archive, PmdataTwapConfig, PmdataTwapWindow,
+        PMDATA_TWAP_PROVIDER,
+    },
     pmxt_archive::{
         download_archive as download_pmxt_archive,
         spawn_archive_prefetch as spawn_pmxt_archive_prefetch,
@@ -71,6 +75,7 @@ pub struct IngestionExecutorConfig {
     pub chainlink_candlesticks: ChainlinkCandlestickConfig,
     pub binance_open_interest: BinanceOpenInterestConfig,
     pub polygon_chainlink: PolygonChainlinkOracleConfig,
+    pub pmdata_twap: PmdataTwapConfig,
     pub cryptohft_binance_l2: Option<CryptoHftBinanceL2Config>,
     pub cryptohft_binance_spot_l2: Option<CryptoHftBinanceL2Config>,
     pub huggingface_binance_spot_l2: Option<HuggingFaceBinanceL2Config>,
@@ -93,6 +98,7 @@ impl IngestionExecutorConfig {
         self.chainlink_candlesticks.validate()?;
         self.binance_open_interest.validate()?;
         self.polygon_chainlink.validate()?;
+        self.pmdata_twap.validate()?;
         if let Some(config) = &self.cryptohft_binance_l2 {
             config.validate()?;
         }
@@ -304,6 +310,28 @@ impl IngestionExecutor {
                     range_end,
                     progress,
                     &cancellation,
+                )
+                .await
+            }
+            IngesterKey::PmdataChainlinkBtcusdTwap30s => {
+                self.ingest_pmdata_twap(
+                    claim,
+                    range_start,
+                    range_end,
+                    progress,
+                    &cancellation,
+                    PmdataTwapWindow::Seconds30,
+                )
+                .await
+            }
+            IngesterKey::PmdataChainlinkBtcusdTwap60s => {
+                self.ingest_pmdata_twap(
+                    claim,
+                    range_start,
+                    range_end,
+                    progress,
+                    &cancellation,
+                    PmdataTwapWindow::Seconds60,
                 )
                 .await
             }
@@ -3025,6 +3053,178 @@ impl IngestionExecutor {
             .map_err(IngestionExecutionError::transient)
     }
 
+    async fn ingest_pmdata_twap(
+        &self,
+        claim: &ClaimedJob,
+        range_start: DateTime<Utc>,
+        range_end: DateTime<Utc>,
+        mut progress: BackfillProgress,
+        cancellation: &ArchiveCancellation,
+        window: PmdataTwapWindow,
+    ) -> std::result::Result<BackfillJobSummary, IngestionExecutionError> {
+        let mut summary = summary_from_progress(&progress);
+        let mut date = checkpoint_date(claim).unwrap_or(range_start.date_naive());
+        while date.and_hms_opt(0, 0, 0).unwrap().and_utc() < range_end {
+            self.ensure_continue(claim, cancellation).await?;
+            let ingester = match window {
+                PmdataTwapWindow::Seconds30 => IngesterKey::PmdataChainlinkBtcusdTwap30s,
+                PmdataTwapWindow::Seconds60 => IngesterKey::PmdataChainlinkBtcusdTwap60s,
+            };
+            let logical_key = self.config.pmdata_twap.logical_key(date, window);
+            let source_uri = self.config.pmdata_twap.source_uri(date, window);
+            progress.current_logical_key = Some(logical_key.clone());
+            let prepared = self
+                .repository
+                .prepare_artifact(
+                    claim,
+                    &ArtifactSpec {
+                        job_id: claim.job.job_id,
+                        ingester,
+                        logical_key,
+                        provider: PMDATA_TWAP_PROVIDER.to_string(),
+                        source_uri: source_uri.clone(),
+                        source_date: Some(date),
+                        expected_checksum: None,
+                        metadata: serde_json::json!({
+                            "symbol": "BTCUSD",
+                            "window_seconds": window.seconds(),
+                            "source_date": date,
+                            "archive_retention": "permanent"
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+
+            if prepared.disposition != ArtifactDisposition::AlreadyCompleted {
+                self.set_artifact_status(
+                    claim,
+                    prepared.artifact.artifact_id,
+                    BackfillArtifactStatus::Downloading,
+                )
+                .await?;
+            }
+            let archive = self
+                .config
+                .pmdata_twap
+                .ensure_archive(
+                    &self.client,
+                    date,
+                    window,
+                    prepared.artifact.actual_checksum.as_deref(),
+                    cancellation,
+                )
+                .await
+                .map_err(classify_pmdata_error)?;
+            progress.bytes_downloaded = progress.bytes_downloaded.saturating_add(archive.bytes);
+            let parsed =
+                parse_pmdata_archive(archive.path.clone(), date, window, self.config.batch_rows)
+                    .await
+                    .map_err(IngestionExecutionError::permanent)?;
+
+            if prepared.disposition == ArtifactDisposition::AlreadyCompleted {
+                let expected_records = prepared
+                    .artifact
+                    .record_count
+                    .and_then(|value| value.try_into().ok());
+                let stats = self
+                    .repository
+                    .pmdata_twap_artifact_stats(prepared.artifact.artifact_id)
+                    .await
+                    .map_err(IngestionExecutionError::transient)?;
+                if expected_records != Some(parsed.records.len() as u64)
+                    || stats.0 != parsed.records.len() as u64
+                    || stats.1 != Some(parsed.minimum_timestamp)
+                    || stats.2 != Some(parsed.maximum_timestamp)
+                    || prepared.artifact.minimum_source_timestamp != Some(parsed.minimum_timestamp)
+                    || prepared.artifact.maximum_source_timestamp != Some(parsed.maximum_timestamp)
+                {
+                    return Err(IngestionExecutionError::permanent(
+                        "completed PMData artifact does not match its archive and database rows",
+                    ));
+                }
+                observe_reused_artifact(&mut progress, &mut summary, &prepared.artifact);
+                date += ChronoDuration::days(1);
+                self.finish_work_unit(claim, &mut progress, range_end, Some(date))
+                    .await?;
+                continue;
+            }
+
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Downloaded,
+            )
+            .await?;
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Verified,
+            )
+            .await?;
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Ingesting,
+            )
+            .await?;
+
+            for batch in parsed.records.chunks(self.config.batch_rows) {
+                self.ensure_continue(claim, cancellation).await?;
+                let result = self
+                    .repository
+                    .insert_pmdata_twap_batch(claim, prepared.artifact.artifact_id, batch)
+                    .await
+                    .map_err(IngestionExecutionError::permanent)?;
+                observe_batch(&mut progress, &mut summary, result);
+            }
+            let stats = self
+                .repository
+                .pmdata_twap_artifact_stats(prepared.artifact.artifact_id)
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            if stats.0 != parsed.records.len() as u64
+                || stats.1 != Some(parsed.minimum_timestamp)
+                || stats.2 != Some(parsed.maximum_timestamp)
+            {
+                return Err(IngestionExecutionError::permanent(
+                    "PMData database coverage does not exactly match the source archive",
+                ));
+            }
+            self.repository
+                .complete_artifact(
+                    claim,
+                    prepared.artifact.artifact_id,
+                    &ArtifactCompletion {
+                        actual_checksum: archive.sha256,
+                        compressed_bytes: archive.bytes,
+                        record_count: parsed.records.len() as u64,
+                        minimum_source_timestamp: Some(parsed.minimum_timestamp),
+                        maximum_source_timestamp: Some(parsed.maximum_timestamp),
+                        metadata: serde_json::json!({
+                            "archive_path": archive.path,
+                            "database_row_count": stats.0,
+                            "window_seconds": window.seconds(),
+                            "source_date": date
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            summary.artifacts_completed = summary.artifacts_completed.saturating_add(1);
+            date += ChronoDuration::days(1);
+            self.finish_work_unit(claim, &mut progress, range_end, Some(date))
+                .await?;
+        }
+        summary.completed_work_units = progress.completed_work_units;
+        summary.details = serde_json::json!({
+            "provider": PMDATA_TWAP_PROVIDER,
+            "window_seconds": window.seconds(),
+            "archives_permanent": true
+        });
+        Ok(summary)
+    }
+
     async fn finish_work_unit(
         &self,
         claim: &ClaimedJob,
@@ -3077,6 +3277,28 @@ fn classify_chainlink_error(error: anyhow::Error) -> IngestionExecutionError {
         || error.to_string().contains("credentials are not configured")
         || error.to_string().contains("invalid Chainlink")
         || error.to_string().contains("failed to decode Chainlink")
+    {
+        IngestionExecutionError::permanent(error)
+    } else {
+        IngestionExecutionError::transient(error)
+    }
+}
+
+fn classify_pmdata_error(error: anyhow::Error) -> IngestionExecutionError {
+    let status = error.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .and_then(reqwest::Error::status)
+    });
+    let message = error.to_string();
+    if status.is_some_and(|status| {
+        status.is_client_error()
+            && status != reqwest::StatusCode::NOT_FOUND
+            && status != reqwest::StatusCode::TOO_MANY_REQUESTS
+            && status != reqwest::StatusCode::REQUEST_TIMEOUT
+    }) || message.contains("API_KEY is not configured")
+        || message.contains("not a complete Parquet")
+        || message.contains("checksum conflicts")
     {
         IngestionExecutionError::permanent(error)
     } else {
@@ -3803,6 +4025,11 @@ mod tests {
                     super::super::polygon_chainlink_oracle::DEFAULT_POLYGON_CHAINLINK_BTCUSD_PROXY
                         .to_string(),
                 maximum_block_range: 2_000,
+            },
+            pmdata_twap: PmdataTwapConfig {
+                base_url: "https://pmdata.example".to_string(),
+                api_key: None,
+                archive_root: PathBuf::from("/archive"),
             },
             cryptohft_binance_l2: None,
             cryptohft_binance_spot_l2: None,
