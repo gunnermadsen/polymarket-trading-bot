@@ -1794,10 +1794,14 @@ impl IngestionRepository {
               expires_at, price, bid, ask, report_version, source_date,
               archive_row_number, backfill_artifact_id AS artifact_id, report_sha256
             FROM market_data.chainlink_btcusd_reference_prices
-            WHERE source = 'pmdata_chainlink_streams' AND source_timestamp = ANY($1)
+            WHERE source = 'pmdata_chainlink_streams'
+              AND source_timestamp >= $2 AND source_timestamp <= $3
+              AND source_timestamp = ANY($1)
         "#,
         )
         .bind(&timestamps)
+        .bind(records.first().unwrap().source_timestamp)
+        .bind(records.last().unwrap().source_timestamp)
         .fetch_all(&mut *tx)
         .await
         .context("failed to inspect existing PMData RefPrice rows")?;
