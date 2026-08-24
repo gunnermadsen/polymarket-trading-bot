@@ -16,6 +16,11 @@ x-grafana-env-file: &grafana-env-file
   path: ./.env.grafana
   required: false
 
+x-prometheus-env-file: &prometheus-env-file
+  path: ./.env.prometheus
+  required: true
+  format: raw
+
 x-kraken-worker-env: &kraken-worker-env
   RUST_LOG: "info,sqlx=error"
   POSTGRES_HOST: "kraken-timescaledb"
@@ -794,6 +799,65 @@ services:
       <<: *kraken-worker-env
       KRAKEN_BACKFILL_WORKER_ID: "kraken-backfill-worker-6"
 
+  prometheus:
+    image: prom/prometheus:v3.13.2@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
+    container_name: prometheus
+    hostname: prometheus
+    init: true
+    mem_limit: 512m
+    cpus: "0.50"
+    pids_limit: 128
+    logging: *default-logging
+    entrypoint:
+      - /usr/local/bin/prometheus-provisioning-entrypoint.sh
+    command:
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --storage.tsdb.retention.size=2GB
+      - --web.listen-address=0.0.0.0:9090
+    env_file:
+      - *prometheus-env-file
+    environment:
+      PROMETHEUS_ENVIRONMENT: "development"
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - prometheus-data:/prometheus
+      - ./common/configs/prometheus:/etc/prometheus-src:ro
+      - ./common/scripts/prometheus-provisioning-entrypoint.sh:/usr/local/bin/prometheus-provisioning-entrypoint.sh:ro
+      - ./common/scripts/prometheus-healthcheck.sh:/usr/local/bin/prometheus-healthcheck.sh:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/prometheus-healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.7.6@sha256:efd47c67f9bac88ca29bcf8cb997d9ab29d1848bd0aff579282295542a745952
+    container_name: loki
+    hostname: loki
+    init: true
+    mem_limit: 384m
+    cpus: "0.25"
+    pids_limit: 128
+    logging: *default-logging
+    command:
+      - -config.file=/etc/loki/loki.yml
+    volumes:
+      - loki-data:/loki
+      - ./common/configs/loki/loki.yml:/etc/loki/loki.yml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 30s
+    restart: unless-stopped
+
   grafana:
     image: grafana/grafana:${GRAFANA_VERSION:-12.4.2}
     container_name: grafana
@@ -806,6 +870,7 @@ services:
     env_file:
       - *postgres-env-file
       - *grafana-env-file
+      - *prometheus-env-file
     environment:
       GF_USERS_DEFAULT_THEME: "dark"
       GF_DATE_FORMATS_DEFAULT_TIMEZONE: "browser"
@@ -814,6 +879,13 @@ services:
       GRAFANA_POSTGRES_MAX_OPEN_CONNS: "2"
       GRAFANA_POSTGRES_MAX_IDLE_CONNS: "1"
       GRAFANA_ALERT_ENVIRONMENT: "development"
+      GRAFANA_PROMETHEUS_URL: "http://prometheus:9090"
+      GRAFANA_LOKI_URL: "http://loki:3100"
+      PROMETHEUS_ENVIRONMENT: "development"
+      GF_UNIFIED_ALERTING_STATE_HISTORY_ENABLED: "true"
+      GF_UNIFIED_ALERTING_STATE_HISTORY_BACKEND: "loki"
+      GF_UNIFIED_ALERTING_STATE_HISTORY_LOKI_REMOTE_URL: "http://loki:3100"
+      GF_FEATURE_TOGGLES_ENABLE: "alertingCentralAlertHistory"
       GF_LIVE_MAX_CONNECTIONS: "100"
       GF_LIVE_ALLOWED_ORIGINS: "http://localhost:3030,http://127.0.0.1:3030"
       GF_PLUGINS_PREINSTALL_SYNC: "yesoreyeram-infinity-datasource@3.11.1"
@@ -828,11 +900,17 @@ services:
     depends_on:
       pgbouncer:
         condition: service_healthy
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
   timescaledb-0-data:
   grafana-data:
+  prometheus-data:
+  loki-data:
   polymarket-backfill-cache:
     external: true
     name: polymarket-backfill-cache
