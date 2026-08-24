@@ -3330,7 +3330,9 @@ impl IngestionExecutor {
                 BackfillArtifactStatus::Ingesting,
             )
             .await?;
-            for batch in parsed.records.chunks(self.config.batch_rows.min(3_000)) {
+            // Dense RefPrice archives can exhaust PostgreSQL's shared lock table when
+            // a single TimescaleDB transaction spans thousands of rows.
+            for batch in parsed.records.chunks(self.config.batch_rows.min(500)) {
                 self.ensure_continue(claim, cancellation).await?;
                 let result = self
                     .repository
