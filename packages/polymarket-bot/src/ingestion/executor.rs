@@ -47,8 +47,8 @@ use super::{
         BINANCE_SPOT_L2_HISTORICAL_END_EPOCH, BINANCE_SPOT_L2_HISTORICAL_START_EPOCH,
     },
     pmdata_twap::{
-        parse_archive as parse_pmdata_archive, PmdataTwapConfig, PmdataTwapWindow,
-        PMDATA_TWAP_PROVIDER,
+        parse_archive as parse_pmdata_archive, parse_refprice_archive, PmdataTwapConfig,
+        PmdataTwapWindow, PMDATA_REFPRICE_PROVIDER, PMDATA_TWAP_PROVIDER,
     },
     pmxt_archive::{
         download_archive as download_pmxt_archive,
@@ -334,6 +334,10 @@ impl IngestionExecutor {
                     PmdataTwapWindow::Seconds60,
                 )
                 .await
+            }
+            IngesterKey::PmdataChainlinkBtcusdRefprice => {
+                self.ingest_pmdata_refprice(claim, range_start, range_end, progress, &cancellation)
+                    .await
             }
         }
     }
@@ -3222,6 +3226,158 @@ impl IngestionExecutor {
             "window_seconds": window.seconds(),
             "archives_permanent": true
         });
+        Ok(summary)
+    }
+
+    async fn ingest_pmdata_refprice(
+        &self,
+        claim: &ClaimedJob,
+        range_start: DateTime<Utc>,
+        range_end: DateTime<Utc>,
+        mut progress: BackfillProgress,
+        cancellation: &ArchiveCancellation,
+    ) -> std::result::Result<BackfillJobSummary, IngestionExecutionError> {
+        let mut summary = summary_from_progress(&progress);
+        let mut date = checkpoint_date(claim).unwrap_or(range_start.date_naive());
+        while date.and_hms_opt(0, 0, 0).unwrap().and_utc() < range_end {
+            self.ensure_continue(claim, cancellation).await?;
+            let logical_key = self.config.pmdata_twap.refprice_logical_key(date);
+            let source_uri = self.config.pmdata_twap.refprice_source_uri(date);
+            progress.current_logical_key = Some(logical_key.clone());
+            let prepared = self
+                .repository
+                .prepare_artifact(
+                    claim,
+                    &ArtifactSpec {
+                        job_id: claim.job.job_id,
+                        ingester: IngesterKey::PmdataChainlinkBtcusdRefprice,
+                        logical_key,
+                        provider: PMDATA_REFPRICE_PROVIDER.to_string(),
+                        source_uri,
+                        source_date: Some(date),
+                        expected_checksum: None,
+                        metadata: serde_json::json!({
+                            "symbol": "BTCUSD", "data_type": "streams",
+                            "source_date": date, "archive_retention": "permanent"
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            if prepared.disposition != ArtifactDisposition::AlreadyCompleted {
+                self.set_artifact_status(
+                    claim,
+                    prepared.artifact.artifact_id,
+                    BackfillArtifactStatus::Downloading,
+                )
+                .await?;
+            }
+            let archive = self
+                .config
+                .pmdata_twap
+                .ensure_refprice_archive(
+                    &self.client,
+                    date,
+                    prepared.artifact.actual_checksum.as_deref(),
+                    cancellation,
+                )
+                .await
+                .map_err(classify_pmdata_error)?;
+            progress.bytes_downloaded = progress.bytes_downloaded.saturating_add(archive.bytes);
+            let parsed = parse_refprice_archive(archive.path.clone(), date, self.config.batch_rows)
+                .await
+                .map_err(IngestionExecutionError::permanent)?;
+            if prepared.disposition == ArtifactDisposition::AlreadyCompleted {
+                let stats = self
+                    .repository
+                    .pmdata_refprice_artifact_stats(prepared.artifact.artifact_id)
+                    .await
+                    .map_err(IngestionExecutionError::transient)?;
+                if prepared
+                    .artifact
+                    .record_count
+                    .and_then(|value| value.try_into().ok())
+                    != Some(parsed.records.len() as u64)
+                    || stats.0 != parsed.records.len() as u64
+                    || stats.1 != Some(parsed.minimum_timestamp)
+                    || stats.2 != Some(parsed.maximum_timestamp)
+                {
+                    return Err(IngestionExecutionError::permanent(
+                        "completed PMData RefPrice artifact does not match its archive and database rows",
+                    ));
+                }
+                observe_reused_artifact(&mut progress, &mut summary, &prepared.artifact);
+                date += ChronoDuration::days(1);
+                self.finish_work_unit(claim, &mut progress, range_end, Some(date))
+                    .await?;
+                continue;
+            }
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Downloaded,
+            )
+            .await?;
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Verified,
+            )
+            .await?;
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Ingesting,
+            )
+            .await?;
+            for batch in parsed.records.chunks(self.config.batch_rows.min(3_000)) {
+                self.ensure_continue(claim, cancellation).await?;
+                let result = self
+                    .repository
+                    .insert_pmdata_refprice_batch(claim, prepared.artifact.artifact_id, batch)
+                    .await
+                    .map_err(|error| IngestionExecutionError::permanent(format!("{error:#}")))?;
+                observe_batch(&mut progress, &mut summary, result);
+            }
+            let stats = self
+                .repository
+                .pmdata_refprice_artifact_stats(prepared.artifact.artifact_id)
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            if stats.0 != parsed.records.len() as u64
+                || stats.1 != Some(parsed.minimum_timestamp)
+                || stats.2 != Some(parsed.maximum_timestamp)
+            {
+                return Err(IngestionExecutionError::permanent(
+                    "PMData RefPrice database coverage does not exactly match the source archive",
+                ));
+            }
+            self.repository
+                .complete_artifact(
+                    claim,
+                    prepared.artifact.artifact_id,
+                    &ArtifactCompletion {
+                        actual_checksum: archive.sha256,
+                        compressed_bytes: archive.bytes,
+                        record_count: parsed.records.len() as u64,
+                        minimum_source_timestamp: Some(parsed.minimum_timestamp),
+                        maximum_source_timestamp: Some(parsed.maximum_timestamp),
+                        metadata: serde_json::json!({
+                            "archive_path": archive.path, "database_row_count": stats.0,
+                            "data_type": "streams", "source_date": date
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            summary.artifacts_completed = summary.artifacts_completed.saturating_add(1);
+            date += ChronoDuration::days(1);
+            self.finish_work_unit(claim, &mut progress, range_end, Some(date))
+                .await?;
+        }
+        summary.completed_work_units = progress.completed_work_units;
+        summary.details =
+            serde_json::json!({"provider": PMDATA_REFPRICE_PROVIDER, "archives_permanent": true});
         Ok(summary)
     }
 

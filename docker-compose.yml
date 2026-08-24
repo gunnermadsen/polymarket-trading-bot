@@ -76,7 +76,7 @@ x-pmdata-worker-env: &pmdata-worker-env
   POLYMARKET_PMDATA_BASE_URL: "https://api.pmdata.dev"
   POLYMARKET_PMDATA_API_KEY: "${PM_DATA_API_KEY:-}"
   POLYMARKET_PMDATA_ARCHIVE_ROOT: "/var/lib/polymarket/backfill-cache/pmdata-archive"
-  POLYMARKET_BACKFILL_ALLOWED_INGESTERS: "pmdata_chainlink_btcusd_twap_30s,pmdata_chainlink_btcusd_twap_60s"
+  POLYMARKET_BACKFILL_ALLOWED_INGESTERS: "pmdata_chainlink_btcusd_twap_30s,pmdata_chainlink_btcusd_twap_60s,pmdata_chainlink_btcusd_refprice"
   POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
   POLYMARKET_BACKFILL_LEASE_SECS: "120"
   POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
@@ -738,6 +738,36 @@ services:
       POSTGRES_SSL_CA_FILE: ""
       POLYMARKET_PMDATA_TWAP_START_DATE: "${POLYMARKET_PMDATA_TWAP_START_DATE:-2026-08-01}"
       POLYMARKET_PMDATA_TWAP_END_DATE: "${POLYMARKET_PMDATA_TWAP_END_DATE:-2026-08-24}"
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      pgbouncer:
+        condition: service_healthy
+    restart: "no"
+
+  pmdata-refprice-backfill-plan:
+    build:
+      context: ${POLYMARKET_PMDATA_BUILD_CONTEXT:-.}
+      dockerfile: packages/polymarket-bot/Dockerfile
+      args:
+        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
+    image: ${POLYMARKET_PMDATA_WORKER_IMAGE:-polymarket/pmdata-backfill-worker:latest}
+    entrypoint:
+      - /usr/local/bin/pmdata-refprice-backfill-plan
+    profiles:
+      - pmdata-backfill-plan
+    logging: *default-logging
+    env_file:
+      - *postgres-env-file
+    environment:
+      POSTGRES_HOST: "pgbouncer"
+      POSTGRES_PORT: "6432"
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "polymarket"
+      POSTGRES_SSL_MODE: "disable"
+      POSTGRES_SSL_CA_FILE: ""
+      POLYMARKET_PMDATA_REFPRICE_START_DATE: "${POLYMARKET_PMDATA_REFPRICE_START_DATE:-2026-06-07}"
+      POLYMARKET_PMDATA_REFPRICE_END_DATE: "${POLYMARKET_PMDATA_REFPRICE_END_DATE:-2026-08-24}"
     depends_on:
       db-migrate:
         condition: service_completed_successfully

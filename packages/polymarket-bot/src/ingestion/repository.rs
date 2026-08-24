@@ -23,9 +23,9 @@ use crate::ingestion::job::{
     BinanceL2OneSecondFeature, BinanceOneSecondKlineRecord, BtcExecutionSnapshot,
     BtcIntervalMarket, BtcOrderbookArchiveEvent, BtcOrderbookMarketScope, BtcOutcome,
     BtcReferenceFact, BtcResolutionCandidate, ChainlinkBtcusdArchiveTick,
-    ChainlinkBtcusdOneMinuteCandle, ClaimedJob, IngesterKey, PmdataChainlinkBtcusdTwapRecord,
-    PolygonChainlinkBtcusdOracleRound, PreparedArtifact, TrainingReadiness,
-    ValidatedBackfillRequest, WorkerControl,
+    ChainlinkBtcusdOneMinuteCandle, ClaimedJob, IngesterKey, PmdataChainlinkBtcusdRefpriceRecord,
+    PmdataChainlinkBtcusdTwapRecord, PolygonChainlinkBtcusdOracleRound, PreparedArtifact,
+    TrainingReadiness, ValidatedBackfillRequest, WorkerControl,
 };
 
 const MAX_DATABASE_BATCH_ROWS: usize = 4_000;
@@ -1763,6 +1763,116 @@ impl IngestionRepository {
             .context("failed to inspect PMData TWAP artifact coverage")?;
         Ok((
             u64::try_from(count).context("PMData TWAP artifact count was negative")?,
+            minimum,
+            maximum,
+        ))
+    }
+
+    pub async fn insert_pmdata_refprice_batch(
+        &self,
+        claim: &ClaimedJob,
+        artifact_id: Uuid,
+        records: &[PmdataChainlinkBtcusdRefpriceRecord],
+    ) -> Result<BatchWriteResult> {
+        if records.is_empty() {
+            return Ok(BatchWriteResult::default());
+        }
+        if records.len() > MAX_DATABASE_BATCH_ROWS {
+            bail!("PMData RefPrice batch exceeds {MAX_DATABASE_BATCH_ROWS} rows");
+        }
+        validate_pmdata_refprice_batch(records)?;
+        let mut tx = self.pool.begin().await?;
+        require_active_lease(&mut tx, claim).await?;
+        require_writable_artifact(&mut tx, claim, artifact_id).await?;
+        let timestamps = records
+            .iter()
+            .map(|record| record.source_timestamp)
+            .collect::<Vec<_>>();
+        let existing = sqlx::query_as::<_, ExistingPmdataRefpriceRow>(
+            r#"
+            SELECT source_timestamp, received_at AS provider_received_at, valid_from_timestamp,
+              expires_at, price, bid, ask, report_version, source_date,
+              archive_row_number, backfill_artifact_id AS artifact_id, report_sha256
+            FROM market_data.chainlink_btcusd_reference_prices
+            WHERE source = 'pmdata_chainlink_streams' AND source_timestamp = ANY($1)
+        "#,
+        )
+        .bind(&timestamps)
+        .fetch_all(&mut *tx)
+        .await
+        .context("failed to inspect existing PMData RefPrice rows")?;
+        for stored in &existing {
+            let candidate = records
+                .iter()
+                .find(|record| {
+                    record.source_timestamp == stored.source_timestamp
+                        && record.canonical_row_sha256 == stored.report_sha256
+                })
+                .context("stored PMData RefPrice identity was absent from candidate batch")?;
+            if !stored.same_as(candidate, artifact_id) {
+                bail!(
+                    "immutable PMData RefPrice conflict for {}",
+                    stored.source_timestamp
+                );
+            }
+        }
+        let mut query = QueryBuilder::<Postgres>::new(
+            "INSERT INTO market_data.chainlink_btcusd_reference_prices (source, feed_id, \
+             source_timestamp, valid_from_timestamp, provider_available_at, received_at, \
+             price, bid, ask, report_sha256, payload_sha256, strategy_key, \
+             capture_artifact_id, expires_at, report_version, source_date, \
+             archive_row_number, backfill_artifact_id, report_hash_kind) ",
+        );
+        query.push_values(records, |mut row, record| {
+            row.push_bind("pmdata_chainlink_streams")
+                .push_bind("0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8")
+                .push_bind(record.source_timestamp)
+                .push_bind(record.valid_from_timestamp)
+                .push_bind(record.provider_received_at)
+                .push_bind(record.provider_received_at)
+                .push_bind(record.price)
+                .push_bind(record.bid)
+                .push_bind(record.ask)
+                .push_bind(&record.canonical_row_sha256)
+                .push_bind(&record.canonical_row_sha256)
+                .push_bind("chainlink_btcusd_reference_price")
+                .push_bind(Option::<Uuid>::None)
+                .push_bind(record.expires_at)
+                .push_bind(&record.report_version)
+                .push_bind(record.source_date)
+                .push_bind(record.archive_row_number)
+                .push_bind(artifact_id)
+                .push_bind("canonical_archive_row");
+        });
+        query.push(" ON CONFLICT (feed_id, source_timestamp, report_sha256) DO NOTHING");
+        let inserted = query
+            .build()
+            .execute(&mut *tx)
+            .await
+            .context("failed to persist PMData RefPrice batch")?
+            .rows_affected();
+        tx.commit().await?;
+        batch_write_result(records.len(), inserted, "PMData RefPrice")
+    }
+
+    pub async fn pmdata_refprice_artifact_stats(
+        &self,
+        artifact_id: Uuid,
+    ) -> Result<(u64, Option<DateTime<Utc>>, Option<DateTime<Utc>>)> {
+        let (count, minimum, maximum) =
+            sqlx::query_as::<_, (i64, Option<DateTime<Utc>>, Option<DateTime<Utc>>)>(
+                r#"
+            SELECT count(*)::bigint, min(source_timestamp), max(source_timestamp)
+            FROM market_data.chainlink_btcusd_reference_prices
+            WHERE backfill_artifact_id = $1
+        "#,
+            )
+            .bind(artifact_id)
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to inspect PMData RefPrice artifact coverage")?;
+        Ok((
+            u64::try_from(count).context("PMData RefPrice artifact count was negative")?,
             minimum,
             maximum,
         ))
@@ -3836,6 +3946,22 @@ struct ExistingPmdataTwapRow {
 }
 
 #[derive(Debug, FromRow)]
+struct ExistingPmdataRefpriceRow {
+    source_timestamp: DateTime<Utc>,
+    provider_received_at: DateTime<Utc>,
+    valid_from_timestamp: Option<DateTime<Utc>>,
+    expires_at: Option<DateTime<Utc>>,
+    price: Decimal,
+    bid: Option<Decimal>,
+    ask: Option<Decimal>,
+    report_version: Option<String>,
+    source_date: NaiveDate,
+    archive_row_number: i64,
+    artifact_id: Uuid,
+    report_sha256: String,
+}
+
+#[derive(Debug, FromRow)]
 struct ExistingChainlinkCandleRow {
     symbol: String,
     open_timestamp: DateTime<Utc>,
@@ -3925,6 +4051,23 @@ impl ExistingPmdataTwapRow {
             && self.source_date == row.source_date
             && self.archive_row_number == row.archive_row_number
             && self.artifact_id == artifact_id
+    }
+}
+
+impl ExistingPmdataRefpriceRow {
+    fn same_as(&self, row: &PmdataChainlinkBtcusdRefpriceRecord, artifact_id: Uuid) -> bool {
+        self.source_timestamp == row.source_timestamp
+            && self.provider_received_at == row.provider_received_at
+            && self.valid_from_timestamp == row.valid_from_timestamp
+            && self.expires_at == row.expires_at
+            && self.price == row.price
+            && self.bid == row.bid
+            && self.ask == row.ask
+            && self.report_version == row.report_version
+            && self.source_date == row.source_date
+            && self.archive_row_number == row.archive_row_number
+            && self.artifact_id == artifact_id
+            && self.report_sha256 == row.canonical_row_sha256
     }
 }
 
@@ -4386,10 +4529,52 @@ fn validate_pmdata_twap_batch(records: &[PmdataChainlinkBtcusdTwapRecord]) -> Re
         {
             bail!("invalid PMData Chainlink BTC/USD TWAP record");
         }
-        if previous_timestamp.is_some_and(|timestamp| record.source_timestamp <= timestamp)
+        if previous_timestamp.is_some_and(|timestamp| record.source_timestamp < timestamp)
             || previous_row_number.is_some_and(|row| record.archive_row_number <= row)
         {
             bail!("PMData TWAP rows must be strictly ordered within a batch");
+        }
+        previous_timestamp = Some(record.source_timestamp);
+        previous_row_number = Some(record.archive_row_number);
+    }
+    Ok(())
+}
+
+fn validate_pmdata_refprice_batch(records: &[PmdataChainlinkBtcusdRefpriceRecord]) -> Result<()> {
+    let source_date = records[0].source_date;
+    let mut previous_timestamp = None;
+    let mut previous_row_number = None;
+    for record in records {
+        if record.source_date != source_date
+            || record.source_timestamp.date_naive() != source_date
+            || record
+                .valid_from_timestamp
+                .is_some_and(|value| value > record.source_timestamp)
+            || record
+                .expires_at
+                .is_some_and(|value| value <= record.source_timestamp)
+            || record.price <= Decimal::ZERO
+            || record
+                .bid
+                .is_some_and(|value| value <= Decimal::ZERO || record.price < value)
+            || record.ask.is_some_and(|value| value < record.price)
+            || record.bid.is_some() != record.ask.is_some()
+            || record
+                .report_version
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+            || record.archive_row_number < 0
+        {
+            bail!("invalid PMData Chainlink BTC/USD RefPrice record");
+        }
+        validate_sha256(
+            &record.canonical_row_sha256,
+            "PMData canonical row checksum",
+        )?;
+        if previous_timestamp.is_some_and(|timestamp| record.source_timestamp < timestamp)
+            || previous_row_number.is_some_and(|row| record.archive_row_number <= row)
+        {
+            bail!("PMData RefPrice rows must not move backward within a batch");
         }
         previous_timestamp = Some(record.source_timestamp);
         previous_row_number = Some(record.archive_row_number);

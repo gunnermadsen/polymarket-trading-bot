@@ -12,9 +12,13 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
-use super::{binance_archive::ArchiveCancellation, job::PmdataChainlinkBtcusdTwapRecord};
+use super::{
+    binance_archive::ArchiveCancellation,
+    job::{PmdataChainlinkBtcusdRefpriceRecord, PmdataChainlinkBtcusdTwapRecord},
+};
 
 pub const PMDATA_TWAP_PROVIDER: &str = "pmdata_chainlink_streams_twap";
+pub const PMDATA_REFPRICE_PROVIDER: &str = "pmdata_chainlink_streams";
 pub const DEFAULT_PMDATA_BASE_URL: &str = "https://api.pmdata.dev";
 const MAX_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
 
@@ -61,6 +65,13 @@ pub struct PmdataParsedDay {
     pub maximum_timestamp: DateTime<Utc>,
 }
 
+#[derive(Debug)]
+pub struct PmdataRefpriceParsedDay {
+    pub records: Vec<PmdataChainlinkBtcusdRefpriceRecord>,
+    pub minimum_timestamp: DateTime<Utc>,
+    pub maximum_timestamp: DateTime<Utc>,
+}
+
 impl PmdataTwapConfig {
     pub fn validate(&self) -> Result<()> {
         if self.base_url.trim().is_empty() {
@@ -85,6 +96,27 @@ impl PmdataTwapConfig {
             "{}/chainlink/BTCUSD/{data_type}/BTCUSD_{data_type}_{date}.parquet",
             self.base_url.trim_end_matches('/')
         )
+    }
+
+    pub fn refprice_source_uri(&self, date: NaiveDate) -> String {
+        format!(
+            "{}/chainlink/BTCUSD/streams/BTCUSD_streams_{date}.parquet",
+            self.base_url.trim_end_matches('/')
+        )
+    }
+
+    pub fn refprice_logical_key(&self, date: NaiveDate) -> String {
+        format!("chainlink:BTCUSD:streams:{date}")
+    }
+
+    pub fn refprice_archive_path(&self, date: NaiveDate) -> PathBuf {
+        self.archive_root
+            .join("chainlink")
+            .join("BTCUSD")
+            .join("streams")
+            .join(format!("{:04}", date.year()))
+            .join(format!("{:02}", date.month()))
+            .join(format!("BTCUSD_streams_{date}.parquet"))
     }
 
     pub fn logical_key(&self, date: NaiveDate, window: PmdataTwapWindow) -> String {
@@ -185,6 +217,204 @@ impl PmdataTwapConfig {
             bytes: body.len() as u64,
         })
     }
+
+    pub async fn ensure_refprice_archive(
+        &self,
+        client: &reqwest::Client,
+        date: NaiveDate,
+        expected_sha256: Option<&str>,
+        cancellation: &ArchiveCancellation,
+    ) -> Result<PmdataArchive> {
+        self.validate()?;
+        let final_path = self.refprice_archive_path(date);
+        if final_path.is_file() {
+            return verify_archive(&final_path, expected_sha256).await;
+        }
+        let api_key = self
+            .api_key
+            .as_deref()
+            .context("POLYMARKET_PMDATA_API_KEY is not configured for this worker")?;
+        if cancellation.is_cancelled() {
+            bail!("archive operation was cancelled");
+        }
+        let parent = final_path
+            .parent()
+            .context("PMData archive path has no parent")?;
+        tokio::fs::create_dir_all(parent).await?;
+        let source_uri = self.refprice_source_uri(date);
+        let response = client
+            .get(&source_uri)
+            .header("api_key", api_key.trim())
+            .send()
+            .await
+            .with_context(|| format!("failed to request PMData archive {source_uri}"))?
+            .error_for_status()
+            .with_context(|| format!("PMData rejected archive request {source_uri}"))?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_ARCHIVE_BYTES as u64)
+        {
+            bail!("PMData archive exceeds {MAX_ARCHIVE_BYTES} bytes");
+        }
+        let body = response
+            .bytes()
+            .await
+            .context("failed to read PMData archive response")?;
+        if body.len() > MAX_ARCHIVE_BYTES {
+            bail!("PMData archive exceeds {MAX_ARCHIVE_BYTES} bytes");
+        }
+        validate_parquet_magic(&body)?;
+        let sha256 = format!("{:x}", Sha256::digest(&body));
+        if expected_sha256.is_some_and(|expected| expected != sha256) {
+            bail!("downloaded PMData archive checksum conflicts with completed artifact");
+        }
+        let partial_path = final_path.with_extension(format!("parquet.part.{}", Uuid::new_v4()));
+        let write_result = async {
+            let mut file = tokio::fs::File::create(&partial_path).await?;
+            file.write_all(&body).await?;
+            file.sync_all().await?;
+            drop(file);
+            tokio::fs::rename(&partial_path, &final_path).await?;
+            Result::<()>::Ok(())
+        }
+        .await;
+        if write_result.is_err() {
+            let _ = tokio::fs::remove_file(&partial_path).await;
+        }
+        write_result?;
+        Ok(PmdataArchive {
+            path: final_path,
+            sha256,
+            bytes: body.len() as u64,
+        })
+    }
+}
+
+pub async fn parse_refprice_archive(
+    path: PathBuf,
+    date: NaiveDate,
+    batch_rows: usize,
+) -> Result<PmdataRefpriceParsedDay> {
+    tokio::task::spawn_blocking(move || parse_refprice_archive_blocking(&path, date, batch_rows))
+        .await
+        .context("PMData RefPrice Parquet parser task failed")?
+}
+
+fn parse_refprice_archive_blocking(
+    path: &Path,
+    date: NaiveDate,
+    batch_rows: usize,
+) -> Result<PmdataRefpriceParsedDay> {
+    let file = StdFile::open(path)
+        .with_context(|| format!("failed to open PMData archive {}", path.display()))?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)?
+        .with_batch_size(batch_rows)
+        .build()?;
+    let day_start = date
+        .and_hms_opt(0, 0, 0)
+        .context("invalid PMData source date")?
+        .and_utc();
+    let day_end = day_start + chrono::Duration::days(1);
+    let mut records = Vec::with_capacity(86_400);
+    let mut previous_timestamp = None;
+    let mut archive_row_number = 0i64;
+    for batch in reader {
+        let batch = batch.context("failed to decode PMData RefPrice Parquet batch")?;
+        let schema = batch.schema();
+        let observation = timestamp_column(&batch, &schema, "observationsTimestamp")?;
+        let received = timestamp_column(&batch, &schema, "receiveMicrosecondTimestamp")?;
+        let valid_from = timestamp_column(&batch, &schema, "validFromTimestamp")?;
+        let expires_at = timestamp_column(&batch, &schema, "expiresAt")?;
+        let price = string_column(&batch, &schema, "price")?;
+        let bid = string_column(&batch, &schema, "bid")?;
+        let ask = string_column(&batch, &schema, "ask")?;
+        let version = string_column(&batch, &schema, "version")?;
+        for row in 0..batch.num_rows() {
+            let source_timestamp = timestamp_value(observation, row, "observationsTimestamp")?;
+            let provider_received_at =
+                timestamp_value(received, row, "receiveMicrosecondTimestamp")?;
+            let valid_from_timestamp =
+                timestamp_value_optional(valid_from, row, "validFromTimestamp")?;
+            let expires_at = timestamp_value_optional(expires_at, row, "expiresAt")?;
+            if provider_received_at < day_start || provider_received_at >= day_end {
+                bail!("PMData receive timestamp falls outside archive date {date}");
+            }
+            if previous_timestamp.is_some_and(|previous| previous > source_timestamp) {
+                bail!("PMData observation timestamps are decreasing");
+            }
+            let price = scaled_price(price.value(row)?)?;
+            let bid = bid.value_optional(row).map(scaled_price).transpose()?;
+            let ask = ask.value_optional(row).map(scaled_price).transpose()?;
+            let report_version = version
+                .value_optional(row)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let canonical_row_sha256 = format!(
+                "{:x}",
+                Sha256::digest(format!(
+                    "{}|{}|{:?}|{:?}|{}|{:?}|{:?}|{:?}",
+                    source_timestamp.timestamp_micros(),
+                    provider_received_at.timestamp_micros(),
+                    valid_from_timestamp.map(|value| value.timestamp_micros()),
+                    expires_at.map(|value| value.timestamp_micros()),
+                    price,
+                    bid,
+                    ask,
+                    report_version
+                ))
+            );
+            let candidate = PmdataChainlinkBtcusdRefpriceRecord {
+                source_timestamp,
+                provider_received_at,
+                valid_from_timestamp,
+                expires_at,
+                price,
+                bid,
+                ask,
+                report_version,
+                canonical_row_sha256,
+                source_date: date,
+                archive_row_number,
+            };
+            archive_row_number = archive_row_number
+                .checked_add(1)
+                .context("PMData archive row count exceeds bigint")?;
+            previous_timestamp = Some(source_timestamp);
+            if source_timestamp < day_start || source_timestamp >= day_end {
+                continue;
+            }
+            if candidate
+                .valid_from_timestamp
+                .is_some_and(|value| value > candidate.source_timestamp)
+                || candidate
+                    .expires_at
+                    .is_some_and(|value| value <= candidate.source_timestamp)
+                || candidate.price <= Decimal::ZERO
+                || candidate
+                    .bid
+                    .is_some_and(|value| value <= Decimal::ZERO || candidate.price < value)
+                || candidate.ask.is_some_and(|value| value < candidate.price)
+                || candidate.bid.is_some() != candidate.ask.is_some()
+            {
+                bail!("invalid PMData Chainlink BTC/USD RefPrice record");
+            }
+            records.push(candidate);
+        }
+    }
+    let minimum_timestamp = records
+        .first()
+        .map(|record| record.source_timestamp)
+        .context("PMData archive contained no RefPrice records")?;
+    let maximum_timestamp = records
+        .last()
+        .map(|record| record.source_timestamp)
+        .context("PMData archive contained no RefPrice records")?;
+    Ok(PmdataRefpriceParsedDay {
+        records,
+        minimum_timestamp,
+        maximum_timestamp,
+    })
 }
 
 pub async fn parse_archive(
@@ -373,6 +603,14 @@ impl StringColumn<'_> {
             _ => bail!("PMData string column contains null"),
         }
     }
+
+    fn value_optional(&self, row: usize) -> Option<&str> {
+        match self {
+            Self::Utf8(values) if !values.is_null(row) => Some(values.value(row)),
+            Self::LargeUtf8(values) if !values.is_null(row) => Some(values.value(row)),
+            _ => None,
+        }
+    }
 }
 
 fn string_column<'a>(
@@ -403,6 +641,26 @@ fn timestamp_value(
     }
     DateTime::from_timestamp_micros(values.value(row))
         .with_context(|| format!("PMData column {name} contains an invalid timestamp"))
+}
+
+fn timestamp_value_optional(
+    values: &TimestampMicrosecondArray,
+    row: usize,
+    name: &str,
+) -> Result<Option<DateTime<Utc>>> {
+    if values.is_null(row) {
+        return Ok(None);
+    }
+    DateTime::from_timestamp_micros(values.value(row))
+        .map(Some)
+        .with_context(|| format!("PMData column {name} contains an invalid timestamp"))
+}
+
+fn scaled_price(value: &str) -> Result<Decimal> {
+    let unscaled = value
+        .parse::<i128>()
+        .with_context(|| format!("invalid PMData scaled price {value}"))?;
+    Ok(Decimal::from_i128_with_scale(unscaled, 18))
 }
 
 #[cfg(test)]
@@ -442,6 +700,20 @@ mod tests {
         assert_eq!(
             config.source_uri(date, PmdataTwapWindow::Seconds30),
             "https://api.pmdata.dev/chainlink/BTCUSD/streams_twap30s/BTCUSD_streams_twap30s_2026-08-01.parquet"
+        );
+        assert_eq!(
+            config.refprice_source_uri(date),
+            "https://api.pmdata.dev/chainlink/BTCUSD/streams/BTCUSD_streams_2026-08-01.parquet"
+        );
+        assert_eq!(
+            config.refprice_archive_path(date),
+            PathBuf::from(
+                "/archive/chainlink/BTCUSD/streams/2026/08/BTCUSD_streams_2026-08-01.parquet"
+            )
+        );
+        assert_eq!(
+            scaled_price("60856603973114020000000").unwrap(),
+            Decimal::from_str_exact("60856.60397311402").unwrap()
         );
     }
 

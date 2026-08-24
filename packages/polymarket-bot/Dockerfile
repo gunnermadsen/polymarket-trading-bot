@@ -41,6 +41,7 @@ RUN --mount=type=cache,id=polymarket-bot-dev-cargo-registry,target=/usr/local/ca
       --bin binance-spot-l2-backfill-plan \
       --bin binance-spot-l2-huggingface-backfill-plan \
       --bin pmdata-twap-backfill-plan \
+      --bin pmdata-refprice-backfill-plan \
       --bin kraken-backfill-worker \
       --bin kraken-backfill-plan \
       --bin derive-clob-creds \
@@ -51,6 +52,7 @@ RUN --mount=type=cache,id=polymarket-bot-dev-cargo-registry,target=/usr/local/ca
     && cp /app/target/release/binance-spot-l2-backfill-plan /opt/polymarket-artifacts/ \
     && cp /app/target/release/binance-spot-l2-huggingface-backfill-plan /opt/polymarket-artifacts/ \
     && cp /app/target/release/pmdata-twap-backfill-plan /opt/polymarket-artifacts/ \
+    && cp /app/target/release/pmdata-refprice-backfill-plan /opt/polymarket-artifacts/ \
     && cp /app/target/release/kraken-backfill-worker /opt/polymarket-artifacts/ \
     && cp /app/target/release/kraken-backfill-plan /opt/polymarket-artifacts/ \
     && cp /app/target/release/derive-clob-creds /opt/polymarket-artifacts/
@@ -92,6 +94,7 @@ COPY --from=builder /opt/polymarket-artifacts/binance-l2-backfill-plan /usr/loca
 COPY --from=builder /opt/polymarket-artifacts/binance-spot-l2-backfill-plan /usr/local/bin/binance-spot-l2-backfill-plan
 COPY --from=builder /opt/polymarket-artifacts/binance-spot-l2-huggingface-backfill-plan /usr/local/bin/binance-spot-l2-huggingface-backfill-plan
 COPY --from=builder /opt/polymarket-artifacts/pmdata-twap-backfill-plan /usr/local/bin/pmdata-twap-backfill-plan
+COPY --from=builder /opt/polymarket-artifacts/pmdata-refprice-backfill-plan /usr/local/bin/pmdata-refprice-backfill-plan
 COPY --from=builder /opt/polymarket-artifacts/kraken-backfill-worker /usr/local/bin/kraken-backfill-worker
 COPY --from=builder /opt/polymarket-artifacts/kraken-backfill-plan /usr/local/bin/kraken-backfill-plan
 COPY --from=builder /opt/polymarket-artifacts/derive-clob-creds /usr/local/bin/derive-clob-creds
