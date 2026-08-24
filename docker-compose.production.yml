@@ -292,6 +292,27 @@ services:
     stop_grace_period: 30s
     restart: unless-stopped
 
+  loki:
+    image: grafana/loki:3.7.6@sha256:efd47c67f9bac88ca29bcf8cb997d9ab29d1848bd0aff579282295542a745952
+    container_name: loki
+    hostname: loki
+    init: true
+    mem_limit: 384m
+    cpus: "0.20"
+    pids_limit: 128
+    labels: *watchtower-labels
+    logging: *default-logging
+    command:
+      - -config.file=/etc/loki/loki.yml
+    volumes:
+      - loki-data:/loki
+      - ./common/configs/loki/loki.yml:/etc/loki/loki.yml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 30s
+    restart: unless-stopped
+
   grafana:
     image: grafana/grafana:${GRAFANA_VERSION:-12.4.2}
     container_name: grafana
@@ -314,7 +335,12 @@ services:
       GRAFANA_POSTGRES_MAX_OPEN_CONNS: "2"
       GRAFANA_POSTGRES_MAX_IDLE_CONNS: "1"
       GRAFANA_PROMETHEUS_URL: "http://prometheus:9090"
+      GRAFANA_LOKI_URL: "http://loki:3100"
       PROMETHEUS_ENVIRONMENT: "production"
+      GF_UNIFIED_ALERTING_STATE_HISTORY_ENABLED: "true"
+      GF_UNIFIED_ALERTING_STATE_HISTORY_BACKEND: "loki"
+      GF_UNIFIED_ALERTING_STATE_HISTORY_LOKI_REMOTE_URL: "http://loki:3100"
+      GF_FEATURE_TOGGLES_ENABLE: "alertingCentralAlertHistory"
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
@@ -327,6 +353,8 @@ services:
         condition: service_healthy
       prometheus:
         condition: service_healthy
+      loki:
+        condition: service_started
     restart: unless-stopped
 
   watchtower:
@@ -354,4 +382,5 @@ volumes:
   timescaledb-0-data:
   grafana-data:
   prometheus-data:
+  loki-data:
   polymarket-backfill-cache:
